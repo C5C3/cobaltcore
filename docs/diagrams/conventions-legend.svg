@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1286" viewBox="0 0 1808 1286" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Diagram notation">
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1464" viewBox="0 0 1808 1464" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Diagram notation">
 <title>Diagram notation</title>
-<rect width="1808" height="1286" fill="#F6F5F1"/>
+<rect width="1808" height="1464" fill="#F6F5F1"/>
 <rect x="40" y="40" width="850" height="272" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Frames</text>
 <rect x="61.5" y="103.5" width="540" height="185" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
@@ -127,15 +127,21 @@
 <text x="186" y="1104.64" font-size="24" font-weight="700" fill="#17202B">worker-1</text>
 <rect x="88" y="1128" width="190" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
 <text x="183" y="1153.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">nova-compute</text>
-<rect x="480" y="1121" width="190" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
-<text x="575" y="1153.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/libvirt</text>
-<polyline points="278,1145 480,1145" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="545" y="1121" width="190" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="640" y="1153.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">/run/libvirt</text>
+<polyline points="278,1145 545,1145" fill="none" stroke="#7D8794" stroke-width="2"/>
 <text x="786" y="1103.2" font-size="20" font-weight="400" fill="#55606E">Node frame</text>
-<text x="379" y="1217.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Mount</text>
-<text x="575" y="1217.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Host path</text>
+<text x="411.5" y="1217.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Mount</text>
+<text x="640" y="1217.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Host path, emptyDir, NFS export</text>
 <polyline points="1283.5,1145 1402.5,1145" fill="none" stroke="#B38A00" stroke-width="3"/>
 <polygon points="1413,1145 1398,1152.2 1398,1137.8" fill="#B38A00"/>
 <polygon points="1273,1145 1288,1137.8 1288,1152.2" fill="#B38A00"/>
 <text x="1343" y="1126.2" font-size="20" font-weight="400" fill="#6F5600" text-anchor="middle">Geneve</text>
 <text x="1343" y="1217.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Node-to-node traffic</text>
+<rect x="40" y="1274" width="850" height="150" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="1313.36" font-size="26" font-weight="700" fill="#2B3440">Browser hops</text>
+<polyline points="84.5,1349 224.5,1349" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="210.5,1342 224.5,1349 210.5,1356" fill="none" stroke="#2457C5" stroke-width="3"/>
+<text x="154.5" y="1387.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Browser hop</text>
+<text x="268" y="1356.2" font-size="20" font-weight="400" fill="#55606E">sent by the browser: a link, a redirect or a form</text>
 </svg>
