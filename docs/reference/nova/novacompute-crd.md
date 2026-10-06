@@ -677,6 +677,35 @@ deleted, or for every node when the CR is deleted:
    host mapping. A delete Nova refuses because instances came back returns the
    node to `Draining`.
 
+On a compute cluster openstack-hypervisor-operator (hvo) empties the host
+before the pool label comes off. The figure draws that order, and its numbers
+are the steps below. The statements about hvo are as read at `a2baf3f`, the
+commit `images/openstack-hypervisor-operator/Dockerfile` pins.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](../../diagrams/compute-node-drain.svg)
+
+1. A person sets `spec.maintenance: manual` on the node's `Hypervisor`.
+2. hvo disables the compute service, with the reason
+   `Hypervisor CRD: spec.maintenance=manual`.
+3. hvo creates an `Eviction` named after the node. It migrates every server
+   away, and hvo sets `status.evicted` to `true`. Up to here clearing
+   `spec.maintenance` makes hvo enable the service and delete the Eviction.
+4. The person removes the pool label from the Node. The node goes `Draining`.
+   From here on `spec.maintenance` stays set: the pool never enables a
+   service, and hvo would enable it under a node that is leaving.
+5. The pool counts the servers on the host and finds none. The service is
+   disabled already, so the pool disables nothing and hvo's reason stays.
+6. The node goes `Releasing`. The pool releases its pod and waits until the
+   pod is gone, polling every 10 seconds.
+7. The pool deletes the compute service. Nova drops the host mapping, the
+   resource providers and the aggregate membership with it. This is the point
+   of no return: a node labelled again afterwards starts as a new `Pending`
+   entry and registers a new service.
+
+Without hvo the order starts at step 4: the pool disables the service itself,
+with the reason `c5c3.io: leaving NovaCompute <namespace>/<name>`, and whoever
+owns the servers moves them.
+
 The pool never enables a service. A node selected again mid-drain goes back to
 `Active` with its service still disabled, and so does a node another pool takes
 over (`Releasing` without a disable): the new pool finds the service as the old

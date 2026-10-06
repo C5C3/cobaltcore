@@ -571,7 +571,12 @@ mount. Leave the console with `Ctrl+]`.
 
 The step evicts the node that holds `lab-0`, which `host` names since Step 8.
 Manual maintenance makes the hypervisor operator create an `Eviction` that
-live-migrates every server off the node, `lab-0` with its volume:
+live-migrates every server off the node, `lab-0` with its volume.
+
+The figure shows a whole drain. This step runs its steps 1 to 3 and then clears
+`maintenance` again, so the pool label stays on and the node stays `Active`.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](./diagrams/compute-node-drain.svg)
 
 ```bash
 kubectl patch hypervisor "${host}" --type merge \
