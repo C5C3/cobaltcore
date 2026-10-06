@@ -66,6 +66,13 @@ The admin password is not stored on the Keystone CR. It flows through three hops
 | External Secrets Operator (ESO) | The admin Secret `controlplane-keystone-admin-credentials` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/openstack/controlplane-keystone/admin`, property `password` |
 | Keystone operator | The `controlplane-keystone-bootstrap` Job's pod template | The admin Secret `controlplane-keystone-admin-credentials` (key `password`) |
 
+The figure shows these hops as steps 3 to 6, which the
+[scheduled-rotation guide](./keystone-admin-password-scheduled-rotation.md#_3-topology-what-the-operator-stands-up)
+lists. A manual rotation enters at the "by hand" chip. On this devstack the
+admin Secret is `controlplane-keystone-admin-credentials`.
+
+![Rotation of the Keystone admin password in six numbered steps. On a standalone Keystone a CronJob generates a password and patches it onto a staging Secret, the keystone-operator validates it and commits it to a push-source Secret, and a PushSecret writes it to OpenBao. A person can instead write the password to the same OpenBao path by hand. From OpenBao an ExternalSecret updates the admin Secret, the keystone-operator sees the changed password hash and recreates the bootstrap Job, and keystone-manage bootstrap sets the new password in the Keystone database without restarting the API pods. A rejected password raises the event AdminPasswordRotationRejected and is not pushed.](../../diagrams/secrets-rotation-admin-password.svg)
+
 On every reconcile the operator reads the `password` key of the admin Secret,
 computes `hex(SHA-256(password))`, and stamps it onto the bootstrap Job's pod
 template as the `cobaltcore.c5c3.io/admin-password-hash` annotation. It passes that
