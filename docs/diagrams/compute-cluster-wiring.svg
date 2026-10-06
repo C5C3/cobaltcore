@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2080" viewBox="0 0 1808 2080" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Control-plane cluster and compute cluster">
+<title>Control-plane cluster and compute cluster</title>
+<rect width="1808" height="2080" fill="#F6F5F1"/>
+<rect x="41.5" y="41.5" width="813" height="1890" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="68" y="62" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="106" y="88.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="158" y="90.8" font-size="30" font-weight="700" fill="#17202B">Control-plane cluster</text>
+<text x="158" y="123.2" font-size="20" font-weight="400" fill="#55606E">the management cluster, with the Nova children on it</text>
+<rect x="953.5" y="41.5" width="813" height="1890" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="980" y="62" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="1018" y="88.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1070" y="90.8" font-size="30" font-weight="700" fill="#17202B">Compute cluster {cluster}</text>
+<rect x="64" y="230" width="768" height="1678" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="247" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="269.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="270.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="976" y="330" width="768" height="1578" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="994" y="347" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1020" y="369.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1060" y="370.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<text x="1122.69" y="369.2" font-size="20" font-weight="400" fill="#55606E">the same name on both clusters</text>
+<rect x="88" y="145" width="400" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="288" y="170.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">nova-, neutron- and ovn-operator</text>
+<polyline points="488,162 878,162 878,410 965.5,410" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="976,410 961,417.2 961,402.8" fill="#2F8A57"/>
+<text x="683" y="151.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">DaemonSets and ConfigMaps</text>
+<text x="500" y="191.2" font-size="20" font-weight="400" fill="#55606E">through the registered target cluster</text>
+<rect x="88" y="300" width="370" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="273" y="325.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Keystone and the service APIs</text>
+<rect x="560" y="300" width="244" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="682" y="325.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{cp}-nova-metadata</text>
+<text x="560" y="361.2" font-size="20" font-weight="400" fill="#55606E">port 8775</text>
+<rect x="88" y="410" width="150" height="220" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="163" y="528.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Gateway</text>
+<text x="88" y="657.2" font-size="20" font-weight="400" fill="#55606E">public endpoints of Keystone and the service APIs</text>
+<text x="88" y="683.2" font-size="20" font-weight="400" fill="#55606E">metadata hostname of services.nova.metadataGateway</text>
+<polyline points="148,410 148,344.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="148,334 155.2,349 140.8,349" fill="#2457C5"/>
+<polyline points="238,430 690,430 690,344.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="690,334 697.2,349 682.8,349" fill="#2457C5"/>
+<text x="464" y="419.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">HTTPRoute {cp}-nova-metadata</text>
+<rect x="400" y="723" width="204" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="502" y="748.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">message broker</text>
+<text x="400" y="784.2" font-size="20" font-weight="400" fill="#55606E">external TLS listener</text>
+<text x="400" y="810.2" font-size="20" font-weight="400" fill="#55606E">provided by the owner</text>
+<path d="M88 866 H192 L208 882 V914 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="192,866 192,882 208,882" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="148" y="898.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">bus URL</text>
+<rect x="104" y="828" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="156" y="849.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="224" y="884.2" font-size="20" font-weight="400" fill="#55606E">named by services.nova.remoteCompute.transportURLSecretRef</text>
+<text x="224" y="910.2" font-size="20" font-weight="400" fill="#55606E">key transport_url: the external TLS listener of the broker</text>
+<path d="M88 996 H482 L498 1012 V1044 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="482,996 482,1012 498,1012" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="293" y="1028.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-remote-compute-config</text>
+<text x="88" y="1071.2" font-size="20" font-weight="400" fill="#55606E">written by the nova-operator</text>
+<text x="88" y="1097.2" font-size="20" font-weight="400" fill="#55606E">public Keystone URL, public catalog rows, the external bus URL</text>
+<polyline points="148,914 148,985.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="148,996 140.8,981 155.2,981" fill="#B0387F"/>
+<text x="164" y="948.2" font-size="20" font-weight="400" fill="#8A2B63">transport_url</text>
+<text x="164" y="974.2" font-size="20" font-weight="400" fill="#55606E">through {cp}-nova-remote-messaging</text>
+<path d="M88 1126 H502 L518 1142 V1174 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="502,1126 502,1142 518,1142" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="303" y="1158.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-hypervisor-operator-auth</text>
+<text x="88" y="1201.2" font-size="20" font-weight="400" fill="#55606E">written by the c5c3-operator; seven keys, auth_url among them</text>
+<path d="M88 1236 H392 L408 1252 V1284 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="392,1236 392,1252 408,1252" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="248" y="1268.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-compute-config</text>
+<text x="88" y="1311.2" font-size="20" font-weight="400" fill="#55606E">written by the nova-operator</text>
+<text x="88" y="1337.2" font-size="20" font-weight="400" fill="#55606E">in-cluster addresses; key metadata_proxy_shared_secret</text>
+<path d="M88 1516 H262 L278 1532 V1564 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="262,1516 262,1532 278,1532" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="183" y="1548.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{central}-client</text>
+<text x="88" y="1591.2" font-size="20" font-weight="400" fill="#55606E">issued by cert-manager for OVNCentral {central}</text>
+<path d="M1000 996 H1304 L1320 1012 V1044 H1000 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1304,996 1304,1012 1320,1012" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1160" y="1028.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-compute-config</text>
+<text x="1000" y="1071.2" font-size="20" font-weight="400" fill="#55606E">the mirror</text>
+<text x="1000" y="1097.2" font-size="20" font-weight="400" fill="#55606E">label nova.openstack.c5c3.io/compute-config-mirror</text>
+<path d="M1000 1126 H1414 L1430 1142 V1174 H1000 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1414,1126 1414,1142 1430,1142" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1215" y="1158.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-hypervisor-operator-auth</text>
+<text x="1000" y="1201.2" font-size="20" font-weight="400" fill="#55606E">the copy, same label</text>
+<path d="M1000 1236 H1384 L1400 1252 V1284 H1000 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1384,1236 1384,1252 1400,1252" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1200" y="1268.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cp}-nova-metadata-agent-secret</text>
+<text x="1000" y="1311.2" font-size="20" font-weight="400" fill="#55606E">key shared_secret</text>
+<text x="1000" y="1337.2" font-size="20" font-weight="400" fill="#55606E">label neutron.openstack.c5c3.io/metadata-shared-secret-mirror</text>
+<path d="M1000 1386 H1134 L1150 1402 V1434 H1000 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1134,1386 1134,1402 1150,1402" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1075" y="1418.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">CA bundle</text>
+<rect x="1046" y="1348" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1098" y="1369.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="1000" y="1461.2" font-size="20" font-weight="400" fill="#55606E">named by spec.novaMetadata.caBundleSecretRef</text>
+<text x="1000" y="1487.2" font-size="20" font-weight="400" fill="#55606E">not delivered: the owner places it</text>
+<path d="M1000 1516 H1234 L1250 1532 V1564 H1000 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1234,1516 1234,1532 1250,1532" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1125" y="1548.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{chassis}-ovn-client</text>
+<polyline points="498,1020 989.5,1020" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1000,1020 985,1027.2 985,1012.8" fill="#B0387F"/>
+<text x="514" y="1009.2" font-size="20" font-weight="400" fill="#8A2B63">mirrored by the c5c3-operator</text>
+<polyline points="518,1150 989.5,1150" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1000,1150 985,1157.2 985,1142.8" fill="#B0387F"/>
+<text x="534" y="1139.2" font-size="20" font-weight="400" fill="#8A2B63">copied by the c5c3-operator</text>
+<polyline points="408,1260 989.5,1260" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1000,1260 985,1267.2 985,1252.8" fill="#B0387F"/>
+<text x="424" y="1249.2" font-size="20" font-weight="400" fill="#8A2B63">one key, copied by the c5c3-operator</text>
+<polyline points="278,1540 989.5,1540" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1000,1540 985,1547.2 985,1532.8" fill="#B0387F"/>
+<text x="294" y="1529.2" font-size="20" font-weight="400" fill="#8A2B63">copied by the ovn-operator</text>
+<rect x="1430" y="523" width="250" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1555" y="548.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">hypervisor operator</text>
+<text x="1430" y="584.2" font-size="20" font-weight="400" fill="#55606E">installed by the owner</text>
+<rect x="1000" y="586" width="190" height="48" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1095" y="618.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">nova-compute</text>
+<text x="1206" y="617.2" font-size="20" font-weight="400" fill="#55606E">DaemonSet {pool}-nova-compute</text>
+<rect x="1480" y="1640" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1580" y="1672.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">metadata agent</text>
+<text x="1680" y="1715.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">DaemonSet {agent}-metadata-agent</text>
+<rect x="1000" y="1640" width="190" height="48" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1095" y="1672.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovn-controller</text>
+<text x="1000" y="1715.2" font-size="20" font-weight="400" fill="#55606E">DaemonSet {chassis}-ovn-controller</text>
+<polyline points="1100,996 1100,644.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1100,634 1107.2,649 1092.8,649" fill="#B0387F"/>
+<polyline points="1430,1150 1650,1150 1650,567.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1650,557 1657.2,572 1642.8,572" fill="#B0387F"/>
+<polyline points="1400,1260 1640,1260 1640,1629.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1640,1640 1632.8,1625 1647.2,1625" fill="#B0387F"/>
+<polyline points="1150,1410 1580,1410 1580,1629.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1580,1640 1572.8,1625 1587.2,1625" fill="#B0387F"/>
+<polyline points="1250,1540 1520,1540 1520,1629.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1520,1640 1512.8,1625 1527.2,1625" fill="#B0387F"/>
+<polyline points="1095,1564 1095,1629.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1095,1640 1087.8,1625 1102.2,1625" fill="#B0387F"/>
+<polyline points="1680,1654 1700,1654 1700,480 248.5,480" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="238,480 253,472.8 253,487.2" fill="#2457C5"/>
+<text x="300" y="471.2" font-size="20" font-weight="400" fill="#2B3440">https: nova_metadata_host</text>
+<polyline points="1430,540 248.5,540" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="238,540 253,532.8 253,547.2" fill="#2457C5"/>
+<text x="300" y="531.2" font-size="20" font-weight="400" fill="#2B3440">https: auth_url</text>
+<polyline points="1000,600 248.5,600" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="238,600 253,592.8 253,607.2" fill="#2457C5"/>
+<text x="300" y="591.2" font-size="20" font-weight="400" fill="#2B3440">https: public Keystone, then the public catalog rows</text>
+<polyline points="1000,620 896,620 896,740 614.5,740" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="604,740 619,732.8 619,747.2" fill="#2457C5"/>
+<text x="620" y="731.2" font-size="20" font-weight="400" fill="#2B3440">AMQP over TLS</text>
+<rect x="300" y="1647" width="220" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="410" y="1672.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-sb-relay</text>
+<text x="300" y="1708.2" font-size="20" font-weight="400" fill="#55606E">node port 30661</text>
+<text x="300" y="1734.2" font-size="20" font-weight="400" fill="#55606E">only with spec.relay.externallyReachable</text>
+<rect x="360" y="1750" width="160" height="90" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="440" y="1803.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-sb</text>
+<text x="360" y="1867.2" font-size="20" font-weight="400" fill="#55606E">Southbound members</text>
+<text x="360" y="1893.2" font-size="20" font-weight="400" fill="#55606E">node ports from 30651</text>
+<polyline points="1000,1664 530.5,1664" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="520,1664 535,1656.8 535,1671.2" fill="#2457C5"/>
+<text x="536" y="1655.2" font-size="20" font-weight="400" fill="#2B3440">ssl, in place of the members</text>
+<polyline points="1000,1676 914,1676 914,1770 530.5,1770" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="520,1770 535,1762.8 535,1777.2" fill="#2457C5"/>
+<text x="536" y="1761.2" font-size="20" font-weight="400" fill="#2B3440">ssl, node ports</text>
+<polyline points="1680,1674 1716,1674 1716,1820 530.5,1820" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="520,1820 535,1812.8 535,1827.2" fill="#2457C5"/>
+<text x="1200" y="1811.2" font-size="20" font-weight="400" fill="#2B3440">ssl, node ports, never the relay</text>
+<text x="40" y="1981.2" font-size="20" font-weight="400" fill="#55606E">{cp}: the ControlPlane. {ns}: the Nova namespace, by default also the namespace of the OVN central. {cluster}: the target cluster the pool, the chassis and the agent name.</text>
+<text x="40" y="2007.2" font-size="20" font-weight="400" fill="#55606E">{central}, {chassis}, {agent}, {pool}: the OVNCentral, the OVNChassis, the NeutronMetadataAgent and the NovaCompute.</text>
+<text x="40" y="2033.2" font-size="20" font-weight="400" fill="#55606E">The operators reach the compute cluster through its Kubernetes API. The console proxy's connection to a hypervisor is not drawn.</text>
+</svg>
