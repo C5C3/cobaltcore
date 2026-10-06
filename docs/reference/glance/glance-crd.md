@@ -26,7 +26,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
-| `cache` | `CacheSpec` | yes | Memcached backing the Glance image cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
+| `cache` | `CacheSpec` | yes | Memcached for the cache of validated tokens (`[keystone_authtoken] memcached_servers`). It has no part in the image cache of `spec.imageCache`. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; must match `^https?://` and parse with a host. Consumed server-side on every request, so it must be reachable from inside the cluster — use the cluster-local Service URL, not an externally routable address |
 | `keystonePublicEndpoint` | `string` | no | The browser/client-facing Keystone base URL rendered as `[keystone_authtoken] www_authenticate_uri` (the address a 401 points unauthenticated clients at); must match `^https?://` when set. When empty the operator falls back to `keystoneEndpoint` at render time (see `EffectiveKeystonePublicEndpoint`), correct only when the internal and public Keystone URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | yes | The Keystone service account Glance authenticates as, and the Secret holding its password |
@@ -38,7 +38,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
 | `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`), `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`), and `maintenanceResources` sizes the maintenance sidecar (default `25m` CPU request, `256Mi` memory request and limit). All three resolve at render time, so an unset field keeps tracking the operator default |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
-| `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
+| `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (the ports of DNS, the database, the cache and the attached S3 backends, to any destination). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior |
 | `logging` | `*LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the operator resolves `SecretsReady` against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used. Normally projected from the owning ControlPlane |
@@ -215,9 +215,10 @@ section appears in no option catalog.
 
 Changing the filter rewrites the content-hashed config ConfigMap, and the new
 hash rolls the Deployment. When `spec.networkPolicy` is set on the CR, a
-`web-download` import additionally needs a matching
-`spec.networkPolicy.additionalEgress` rule: the auto-derived egress covers DNS,
-the database, the cache, and the backends' S3 hosts, and nothing beyond them.
+`web-download` import needs a matching `spec.networkPolicy.additionalEgress`
+rule when the port of its mirror is none the auto-derived egress opens: that
+egress allows the ports of DNS, the database, the cache and the S3 backends, to
+any destination, and no other port.
 
 ### ImportPluginsSpec
 
@@ -479,9 +480,12 @@ un-suspend, and step the retention down while watching
 ### StagingSpec
 
 Every image import lands on local disk before the data reaches the backing
-store. The reserved `os_glance_staging_store` takes the uploaded or downloaded
-image, the reserved `os_glance_tasks_store` the async task's working copy, and
-both are `emptyDir` volumes on the node filesystem. This block caps them.
+store. The reserved `os_glance_staging_store` takes the image an import
+downloads or copies, and what an import plugin makes of it. The reserved
+`os_glance_tasks_store` takes no image bytes of an import: Glance keeps the
+working copy of the Tasks API (`POST /v2/tasks`, open to admins only) and the
+marker files of running operations there. Both are `emptyDir` volumes on the
+node filesystem. This block caps them.
 
 The figure shows the two volumes of this block and the cache volume of
 [ImageCacheSpec](#imagecachespec), with the paths that write to each.
@@ -625,7 +629,8 @@ could report it. `image_cache_max_size` at or above the `emptyDir` bound leaves
 the pruner nothing to prune down to, so the volume grows until the kubelet
 evicts the pod. `image_cache_dir` elsewhere does not create an unbounded path —
 the root filesystem is read-only, so every writable path in the pod is already
-a bounded `emptyDir` — it spends a different volume's bound, filling the
+an `emptyDir`, bounded unless `spec.staging.unbounded` is set — it spends a
+different volume's bound, filling the
 staging or tasks-work budget and evicting the pod mid-import.
 `image_cache_driver` is covered below.
 

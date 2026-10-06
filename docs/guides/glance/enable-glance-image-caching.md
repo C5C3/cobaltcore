@@ -114,10 +114,11 @@ kubectl get controlplane controlplane -n openstack \
 
 ## Sizing the bound
 
-`sizeLimit` bounds the cache volume; the pruner threshold the API respects is
-80% of it. The operator renders `image_cache_max_size` as `sizeLimit / 10 * 8`,
-so a `20Gi` bound gives the pruner `17179869184` bytes to prune down to and
-leaves the remaining 20% as headroom. Glance's pruner only prunes down to that
+`sizeLimit` bounds the cache volume; the threshold of the pruner is 80% of it,
+and the API does not check it when it writes. The operator renders
+`image_cache_max_size` as `sizeLimit / 10 * 8`, so a `20Gi` bound gives the
+pruner `17179869184` bytes to prune down to and leaves the remaining 20% as
+headroom. Glance's pruner only prunes down to that
 threshold, and only when the maintenance loop runs it, so the cache sits above
 the mark between two passes; the headroom is what keeps those writes from
 crossing the `emptyDir` bound and getting the pod evicted.

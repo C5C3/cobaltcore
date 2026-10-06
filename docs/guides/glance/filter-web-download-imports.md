@@ -267,9 +267,10 @@ the denylist cannot:
 - **`allowedHosts`** turns the question around — an allow-list refuses every
   host it does not name, including the spellings nobody thought to deny.
 - **`spec.networkPolicy.additionalEgress`** bounds where the API pods may
-  connect at all. The auto-derived egress covers DNS, the database, the cache,
-  and the backends' S3 hosts only, so a per-CR NetworkPolicy without an explicit
-  rule blocks every `web-download` mirror — and grants nothing else. See
+  connect at all. The auto-derived egress opens the ports of DNS, the database,
+  the cache and the S3 backends, to any destination. A per-CR NetworkPolicy
+  without an explicit rule therefore blocks a `web-download` mirror on any other
+  port, and lets one on those ports through. See
   [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md).
 
 Neither of these is reachable through `spec.extraConfig`: all six
