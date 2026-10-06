@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# stestr exclude-list for Neutron 2026.2
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+#
+# No pattern.
+# Record a future environment failure here as one escaped regex with a
+# comment above it stating the reason.
