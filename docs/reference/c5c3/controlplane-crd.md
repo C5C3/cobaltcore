@@ -3489,9 +3489,10 @@ store.
 
 Set by `reconcileDBCredentials`. In managed mode (`database.clusterRef` set) it
 create-or-updates the per-ControlPlane DB-credential `ExternalSecret`
-(`{name}-keystone-db-credentials`, reading OpenBao path
-`openstack/keystone/{namespace}/{name}/db`, hourly refresh) and mirrors its
-Ready status. The OpenBao-backed `ClusterSecretStore` is checked first so an
+(`{name}-keystone-db-credentials`; in the default Dynamic mode fed by a
+`VaultDynamicSecret` generator with a 24h refresh, in Static mode reading OpenBao
+path `openstack/keystone/{namespace}/{name}/db` with an hourly refresh) and
+mirrors its Ready status. The ControlPlane's secret store is checked first so an
 ESO/OpenBao outage surfaces promptly instead of hiding behind the
 ExternalSecret's stale per-object Ready cache.
 

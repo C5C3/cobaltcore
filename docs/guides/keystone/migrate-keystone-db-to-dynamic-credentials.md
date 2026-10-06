@@ -19,15 +19,17 @@ engine wired for the Keystone service DB user (issue #439).
 
 - **Before:** the Keystone DB password is a long-lived value materialised from an
   OpenBao KV path (`openstack/keystone/{namespace}/{name}/db`) into the
-  `{name}-keystone-db-credentials` Secret. It is only rotated when an operator
-  rotates it.
+  `{name}-keystone-db-credentials` Secret. Nothing seeds that path, so on the
+  static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
-  (`database/mariadb/creds/keystone-{namespace}`). The External Secrets
-  Operator re-issues a fresh lease before the previous one expires and
-  materialises the current username and password into the same Secret. No
-  long-lived static DB password remains at rest.
+  (`database/mariadb/creds/keystone-{namespace}`, where `{namespace}` is the
+  Keystone service namespace, the ControlPlane's own namespace unless Keystone
+  runs in a dedicated one). The External Secrets Operator re-issues a fresh
+  lease before the previous one expires and materialises the current username
+  and password into the same Secret. No long-lived static DB password remains
+  at rest.
 
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Keystone database and drops it at lease end.
@@ -155,7 +157,7 @@ Once the ControlPlane reports `DBCredentialsReady=True` on the dynamic path and
 Keystone is Ready:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
-   long-lived `keystone` login the engine no longer uses):
+   `<controlplane>-keystone` login the engine no longer uses):
 
    ```bash
    kubectl delete user,grant <keystone-cr-name> -n <namespace> --ignore-not-found

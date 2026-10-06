@@ -19,8 +19,8 @@ engine wired for the Glance service DB user.
 
 - **Before:** the Glance DB password is a long-lived value materialised from an
   OpenBao KV path (`openstack/glance/{namespace}/{name}/db`) into the
-  `{name}-glance-db-credentials` Secret. It is only rotated when an operator
-  rotates it.
+  `{name}-glance-db-credentials` Secret. Nothing seeds that path, so on the
+  static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
@@ -184,7 +184,7 @@ onto an engine-issued login. This is the no-downtime property.
 Once the ControlPlane reports `GlanceReady=True` on the dynamic path:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
-   long-lived `glance` login the engine no longer uses):
+   `<controlplane>-glance` login the engine no longer uses):
 
    ```bash
    kubectl delete user,grant <glance-cr-name> -n <namespace> --ignore-not-found
