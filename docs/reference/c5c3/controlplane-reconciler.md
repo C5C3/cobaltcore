@@ -1305,10 +1305,9 @@ The database is **managed** when the effective `clusterRef` is set and
   and never references OpenBao or the selected secret store; `DBCredentialsReady`
   is reported `True` immediately so the chain proceeds to Keystone.
 - **Managed defaults to Dynamic (engine-issued).** After gating (via
-  `secrets.IsStoreRefReady`) on the store the ControlPlane selected through
-  `spec.secretStoreRef` — a `ClusterSecretStore` (default `openbao-cluster-store`)
-  or a namespaced `SecretStore` resolved in `childNamespace(cp)` — the operator
-  projects (all owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
+  `secrets.IsStoreRefReady`) on the
+  [ControlPlane's store](#reconcileesotenantstore), the operator projects (all
+  owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
   `Certificate` from the cluster-scoped `openbao-ca-issuer`, a
   `generators.external-secrets.io/v1alpha1` `VaultDynamicSecret` reading
   `database/mariadb/creds/keystone-{cp.Namespace}`
@@ -1325,8 +1324,8 @@ The database is **managed** when the effective `clusterRef` is set and
   static DB password remains at rest.
 - **Managed Static is the opt-out** — and the only mode a **dedicated** managed
   database has. The operator projects the stage-(a) KV-backed `ExternalSecret`
-  (`SecretStoreRef` the selected store — default `openbao-cluster-store`, built via
-  `secrets.ESOSecretStoreRef` — with `username`/`password` `Data` reading
+  (`SecretStoreRef` the [ControlPlane's store](#reconcileesotenantstore), built
+  via `secrets.ESOSecretStoreRef`, with `username`/`password` `Data` reading
   `openstack/keystone/{cp.Namespace}/{cp.Name}/db`) and tears down any leftover
   dynamic-mode objects.
 
@@ -1393,9 +1392,8 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
   Keystone.
 - **Managed projects the ExternalSecret.** The owned ExternalSecret has
   `RefreshInterval` 1h, its `SecretStoreRef` built from the ControlPlane's
-  `spec.secretStoreRef` via `secrets.ESOSecretStoreRef` (default
-  `Kind: ClusterSecretStore, Name: openbao-cluster-store`; a namespaced
-  `SecretStore` when selected),
+  `spec.secretStoreRef` via `secrets.ESOSecretStoreRef` (default: the
+  [ControlPlane's store](#reconcileesotenantstore)),
   and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
   same name). Its single `password` `Data` key reads from the per-CP remote key
   `bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin`
@@ -3183,7 +3181,7 @@ digest and drives a hash-driven re-mint.
 | --- | --- |
 | File | `reconcile_admincredential.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True`, the store selected via `spec.secretStoreRef` (default the OpenBao-backed cluster store `openbao-cluster-store`) is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
+| Gate | `KORCReady == True`, the [ControlPlane's store](#reconcileesotenantstore) is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while any gate is unmet (including a stale/absent materialised clouds.yaml) |
 
@@ -3208,8 +3206,8 @@ OpenBao:
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (applied via server-side
   apply under a fixed field manager that owns only the fields the operator sets,
   so repeated applies of an unchanged desired spec are no-ops at the API server)
-  builds the PushSecret to the selected store (default `openbao-cluster-store`;
-  its store ref comes from `spec.secretStoreRef` via `secrets.PushSecretStoreRefs`,
+  builds the PushSecret to the [ControlPlane's store](#reconcileesotenantstore)
+  (its store ref comes from `spec.secretStoreRef` via `secrets.PushSecretStoreRefs`,
   and switching the ref moves the push in place — unchanged name and remote key) at
   the per-ControlPlane remote
   key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`

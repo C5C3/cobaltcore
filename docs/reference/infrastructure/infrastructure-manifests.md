@@ -1413,8 +1413,9 @@ the CR for GC and created in the ControlPlane's child namespace. It is named aft
 `spec.korc.adminCredential.cloudCredentialsRef.secretName` (default
 `k-orc-clouds-yaml`) and reads the per-CR OpenBao key
 `openstack/keystone/{namespace}/{name}/admin/app-credential` (property
-`clouds.yaml`, store-relative to the KV-v2 mount) via the `openbao-cluster-store`
-`ClusterSecretStore`, with `creationPolicy: Owner` and `refreshInterval: 1h`.
+`clouds.yaml`, store-relative to the KV-v2 mount) through the ControlPlane's
+store, by default the namespaced `SecretStore` `openbao-tenant-store`, with
+`creationPolicy: Owner` and `refreshInterval: 1h`.
 Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
 arbitrarily named ControlPlane resolves to the correct key with **no manifest
 edit** — the operator now resolves what was previously deferred for this ExternalSecret.

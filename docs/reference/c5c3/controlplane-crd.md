@@ -218,7 +218,7 @@ status:
 | `sizing` | [`*ControlPlaneSizingSpec`](#sizingspec) | No | `nil` (the `Standard` profile) | Sizes and places every component the ControlPlane creates: the service API, worker, and Job pods, the Keystone federation proxy, and the managed backing services. A built-in profile (`Minimal` or `Standard`), overlaid by a referenced cluster-scoped [`SizingProfile`](#sizingprofile), overlaid by the values set here. Unset resolves to `Standard`, which projects the same children as before the field existed. **Forbidden in External mode** (webhook). See [SizingSpec](#sizingspec). |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
 | `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, Placement, and Barbican today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
-| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
+| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (the operator-provisioned `SecretStore` `openbao-tenant-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, Neutron, Cinder, Nova and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, the c5c3-operator provisions the namespaced `SecretStore` `openbao-tenant-store` in the ControlPlane namespace and routes the control plane through it. Set the field only to use a store you manage yourself: `{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own namespace; the shared `openbao-cluster-store` lacks the per-ControlPlane grants and is not an option. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
 ### SecretStoreRefSpec
@@ -230,15 +230,20 @@ through. It reuses the shared `commonv1.SecretStoreRefSpec` — a `kind`
 required non-empty `name`; see the canonical two-field table in the
 [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec).
 
-When omitted the field defaults to the shared cluster-scoped `ClusterSecretStore`
-named `openbao-cluster-store`, so existing deployments are unchanged. Set
-`{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity,
-always resolved in the ControlPlane's own namespace (there is no namespace
-field). The field is **mutable** — switching stores is supported, and the
-operator moves the fernet/credential key material in place rather than
-re-creating it. Its value is **projected onto the Keystone, Horizon, Glance, and
-Placement children**, so operators normally set it on the ControlPlane rather
-than on the individual service CRs.
+When omitted, the c5c3-operator provisions the namespaced `SecretStore`
+`openbao-tenant-store` in the ControlPlane namespace and routes the control
+plane through it. Set the field only to use a store you manage yourself:
+`{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own
+namespace (there is no namespace field). The store's OpenBao identity needs the
+grants of the `eso-tenant` policy. The shared `ClusterSecretStore`
+`openbao-cluster-store` is not an option: it admits only the namespaces
+`openstack` and `shared-services`, and its `eso-management` policy reads only
+`bootstrap/*` and `infrastructure/*`, so the ControlPlane's PushSecrets and its
+`openstack/keystone/...` reads fail. The field is **mutable** — switching stores is
+supported, and the operator moves the fernet/credential key material in place
+rather than re-creating it. Its value is **projected onto the Keystone, Horizon,
+Glance, Placement, Neutron, Cinder, Nova and Barbican children**, so operators
+normally set it on the ControlPlane rather than on the individual service CRs.
 
 ---
 
@@ -3776,8 +3781,9 @@ Set by `reconcileKORC`.
 
 ### AdminCredentialReady
 
-Set by `reconcileAdminCredential` (gated on `KORCReady`, the OpenBao-backed
-`ClusterSecretStore` being Ready, the K-ORC `clouds.yaml` ExternalSecret being
+Set by `reconcileAdminCredential` (gated on `KORCReady`, the ControlPlane's
+secret store being Ready (by default the `SecretStore` `openbao-tenant-store`),
+the K-ORC `clouds.yaml` ExternalSecret being
 Ready, the admin app-credential `PushSecret` having actually synced to OpenBao,
 **and** the materialised `clouds.yaml` Secret semantically matching (parsed
 application-credential id+secret) the freshly assembled credential).
