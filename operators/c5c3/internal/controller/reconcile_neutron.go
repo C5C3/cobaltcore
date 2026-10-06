@@ -295,6 +295,7 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	if override := cp.Spec.Services.Neutron.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the network service (the
 	// ControlPlane's own unless services.neutron.namespace says otherwise). A child

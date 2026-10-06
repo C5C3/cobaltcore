@@ -62,8 +62,10 @@ func (r *NeutronReconciler) reconcileSecrets(ctx context.Context, children clien
 	// Neutron selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in the
 	// Neutron's own namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(neutron.Spec.SecretStoreRef), neutron.Namespace,
+		secrets.EffectiveStoreRef(neutron.Spec.SecretStoreRef), neutron.Namespace, r.NamespaceScoped,
 		&neutron.Status.Conditions, neutron.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", "", err

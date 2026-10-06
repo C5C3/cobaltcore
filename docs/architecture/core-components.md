@@ -8,6 +8,11 @@ The components of the CobaltCore stack, organized by layer. Each entry links
 to the reference page that documents it in depth; the way the layers fit
 together is described on the [Architecture](./index.md) page.
 
+The figure shows where the components of the first five sections sit on the
+management cluster.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
+
 ## Orchestration
 
 The **c5c3-operator** (`operators/c5c3/`) owns the top of the stack. It
@@ -124,4 +129,4 @@ the [Hypervisor Cluster](../future/hypervisor-cluster.md), the
 [Storage Cluster](../future/storage-cluster.md), and a dedicated
 [Management Cluster](../future/management-cluster.md). The not-yet-onboarded
 OpenStack services are listed on the
-[Architecture](./index.md#the-original-multi-cluster-picture) page.
+[Architecture](./index.md#services-not-onboarded-yet) page.

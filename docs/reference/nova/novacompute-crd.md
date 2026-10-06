@@ -36,10 +36,10 @@ compute service is deleted after the pod is gone.
 | `novaRef` | [`NovaRef`](#novaref) | yes | none | The Nova this pool joins. The pods mount its compute contract and its API registers their services. Immutable, enforced by a CEL transition rule and by the webhook |
 | `nodeSelector` | `map[string]string` (MinProperties=1) | yes | none | The nodes of the pool. At least one label is required: an empty selector matches every node in the cluster. It may change, and a node that stops matching is drained (see [The drain](#the-drain)) |
 | `tolerations` | `[]corev1.Toleration` | no | none | Lets the pods run on tainted nodes. A toleration of `kvm.cloud.sap/offboarding:NoExecute` without `tolerationSeconds` is rejected (see [Webhook rules](#webhook-rules)) |
-| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | `ghcr.io/c5c3/nova-compute:<Nova status.installedRelease>` | The nova-compute image. When nil the tag is the release the referenced Nova has installed, not the one it is moving to: the control plane upgrades first, and the pool follows once the schemas have moved |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | `ghcr.io/c5c3/nova-compute:<Nova status.installedRelease>` | The nova-compute image. When nil the tag is the release the referenced Nova has installed, not the one it is moving to: the control plane upgrades first, and the pool follows once the schemas have moved. An unset image names no `pullPolicy` of its own, so its containers take the operator default (`--default-image-pull-policy`) or the rule: `Always` for the tag (see [pull policy resolution](../keystone/keystone-crd.md#pull-policy-resolution)) |
 | `libvirt` | [`NovaComputeLibvirtSpec`](#novacomputelibvirtspec) | no | `{}` | The `[libvirt]` options the pool renders |
 | `updateStrategy` | [`NovaComputeUpdateStrategy`](#novacomputeupdatestrategy) | no | `{}` | Paces the DaemonSet rollout |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to the `wait-for-chassis` init container too. Nil renders none |
+| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to both init containers too. Nil renders none |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the pool DaemonSet (`{name}-nova-compute`) for as long as the operator renders it into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
@@ -58,6 +58,96 @@ compute service is deleted after the pod is gone.
 | `cpuMode` | `string` (Enum `host-model`, `host-passthrough`, `custom`, `none`) | no | none | `[libvirt] cpu_mode`. When empty the key is not rendered and Nova's default applies |
 | `cpuModels` | `[]string` (items `^[A-Za-z0-9_.-]+$`) | no | none | `[libvirt] cpu_models`, rendered comma-joined. Required with `cpuMode: custom` and refused otherwise |
 | `imagesType` | `string` (Enum `default`, `qcow2`, `raw`, `flat`) | no | none | `[libvirt] images_type`. When empty the key is not rendered. The `rbd`, `lvm` and `ploop` backends are not offered: the image carries neither a Ceph client nor `lvm2` |
+
+### Changing the libvirt settings of a pool with servers
+
+A change of `virtType`, `cpuMode`, `cpuModels` or `imagesType` renders a new
+`{name}-config-<hash>` ConfigMap, and the pod template names it. Under
+`RollingUpdate` the pool's pods restart, `maxUnavailable` nodes at a time.
+Under `OnDelete` a pod keeps the old file until it is deleted.
+
+`nova-compute` reads `compute-pool.conf` when it starts. A server that runs
+keeps the CPU of its domain: the restart of `nova-compute` leaves the domain
+alone. A hard reboot (`openstack server reboot --hard`) builds the domain anew
+from the configuration of the `nova-compute` process on the server's node and
+replaces its live and its persistent definition. It applies the new CPU only
+once that node's pod has restarted. A hard reboot handled by the old pod keeps
+the old CPU and has to be repeated.
+
+The pod has no probe, so it counts as ready as soon as its container starts.
+On the lab `nova-compute` took requests 24 to 28 seconds after its pod
+started, and a hard reboot sent in that window is lost. At start-up
+`nova-compute` clears the reboot's task state, Nova records the reboot action
+as `Error` (`openstack server event list <server>`), and the server stays
+`ACTIVE` with its old domain. `openstack server reboot --hard --wait` reports
+success all the same.
+
+Before the hard reboot, wait for three things:
+
+- `ConfigReady` is `True` and its `observedGeneration` equals
+  `metadata.generation`: the operator has rendered the current spec, and the
+  condition's message names the ConfigMap. `status.observedGeneration` does
+  not show this. Every pass sets it, including one that stopped before the
+  ConfigMap or the DaemonSet step.
+- The pod on the server's node mounts that ConfigMap in its `pool-config`
+  volume. `DaemonSetReady`, which step 2 below waits for, does not prove it:
+  the operator reads the DaemonSet back from its cache right after it applies
+  the template, and a read that still shows the previous rollout reports
+  `True` for a moment. Otherwise `DaemonSetReady` stays `False` under
+  `OnDelete` until the pods that run the old template are deleted, and
+  `kubectl rollout status` answers
+  `rollout status is only available for RollingUpdate strategy type`.
+- The compute service of the server's node has reported since the pod's
+  `nova-compute` container started. `nova-compute` reports to Nova once it
+  takes requests, every `report_interval` (10 seconds by default). Read
+  `Updated At` while the container runs, and wait until it has changed twice
+  while the container's `startedAt` stays the same. The first change can come
+  from something else: a report the old process sent before it died that
+  `nova-conductor` applied late, a report the old process sent while it shut
+  down after `kubectl delete pod --force` had the DaemonSet start the new pod,
+  or another write to the service row such as `openstack compute service set`.
+  Do not compare `Updated At` with `startedAt`: `nova-conductor` stamps
+  `Updated At` with its own clock, `startedAt` comes from the node's, and a
+  skew between them can make the old process's last report look later than
+  the new container's start.
+
+```bash
+# 1. the operator has rendered the current spec, and the ConfigMap it names;
+#    kubectl wait skips a condition whose observedGeneration is older than
+#    metadata.generation
+kubectl wait novacompute/<name> -n <namespace> --for=condition=ConfigReady --timeout=5m
+kubectl get novacompute <name> -n <namespace> \
+  -o jsonpath='{.status.conditions[?(@.type=="ConfigReady")].message}{"\n"}'
+
+# 2. every pod runs the current template (rollout status: RollingUpdate only)
+kubectl rollout status daemonset/<name>-nova-compute -n <namespace> --timeout=15m
+kubectl wait novacompute/<name> -n <namespace> --for=condition=DaemonSetReady --timeout=15m
+
+# 3. the pod on the server's node: its name, the ConfigMap it mounts, the start
+#    of its nova-compute container, and the CPU keys it read
+kubectl get pod -n <namespace> -o name \
+  -l app.kubernetes.io/instance=<name>,app.kubernetes.io/component=nova-compute \
+  --field-selector spec.nodeName=<node>
+kubectl get -n <namespace> <pod> \
+  -o jsonpath='{.spec.volumes[?(@.name=="pool-config")].configMap.name}{"\n"}'
+kubectl get -n <namespace> <pod> \
+  -o jsonpath='{.status.containerStatuses[?(@.name=="nova-compute")].state.running.startedAt}{"\n"}'
+kubectl exec -n <namespace> <pod> -c nova-compute -- \
+  grep -E '^cpu_(mode|models)' /etc/nova/compute-pool.conf.d/compute-pool.conf
+
+# 4. the last report of the node's compute service: read it while the container
+#    runs, and again until it has changed twice
+openstack compute service list --service nova-compute --host <node> -c 'Updated At' -f value
+```
+
+`<node>` is the server's host
+(`openstack server show <server> -c OS-EXT-SRV-ATTR:host -f value`). With
+`spec.targetClusterRef` set, the `rollout status` line and the four pod lines
+run against the target cluster, the others against the management cluster.
+
+The lab moved its pool to `cpuMode: custom` because live migration between its
+nodes needed a named model; [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)
+records that and the reproduction behind this section.
 
 ### NovaComputeUpdateStrategy
 
@@ -198,11 +288,16 @@ deleted, so the record of a drain outlives the selection.
 
 | Phase | Meaning |
 | --- | --- |
-| `Pending` | Selected; no compute service is registered under the node name yet |
-| `Active` | Selected; the service is registered |
+| `Pending` | Selected; no compute service is registered under the node name yet, or its host is not mapped into the cell yet |
+| `Active` | Selected; the service is registered and the pool has seen its host mapped |
 | `Draining` | The node left the pool. Its pod stays, its service is disabled, and Nova still counts instances on it |
 | `Releasing` | No instance is left, or another pool took the node over. The pod is released, and the service is deleted once the pod is gone |
 | `Conflict` | Selected, but another NovaCompute of the same Nova on the same cluster holds the node. No pod of this CR runs there |
+
+A `Pending` node with a registered service turns `Active` once Nova lists its
+host as a hypervisor, which Nova does only for a host with a host mapping.
+Until then the pool runs the host discovery (see [Reaching Nova](#reaching-nova)).
+An `Active` node is not checked again.
 
 A node is held by a CR when it appears in that CR's `status.nodes` in any phase
 but `Conflict`. The rules, in order:
@@ -243,8 +338,8 @@ stays out of the aggregate. For the pipeline see
 | `NodesReady` | False | `NodeConflict` | A selected node is held by another pool; the message lists `node (held by <pool>)`. A Warning event `NodeConflict` records each new conflict once |
 | `NodesReady` | False | `NodesForbidden` | The Node list answered 403, which is the nova chart installed with `rbac.namespaceScoped=true` and a pool on the local cluster |
 | `NodesReady` | False | `NodeListError` | Listing or reading Nodes failed otherwise |
-| `ConfigReady` | True | `ConfigRendered` | `compute-pool.conf` is rendered into its ConfigMap |
-| `ConfigReady` | False | `WaitingForComputeConfig` | The contract Secret is not in the CR's namespace on the pool's cluster. The ControlPlane mirrors it for a ControlPlane-managed Nova; otherwise copy it ([Connect a compute cluster](../../guides/nova/connect-a-compute-cluster.md)) |
+| `ConfigReady` | True | `ConfigRendered` | `compute-pool.conf` is rendered into its ConfigMap; the message names it |
+| `ConfigReady` | False | `WaitingForComputeConfig` | The contract Secret is not in the CR's namespace on the pool's cluster. The ControlPlane mirrors it for a ControlPlane-managed Nova; otherwise copy it ([Connect a compute cluster](../../guides/nova/connect-a-compute-cluster.md#standalone-nova-without-a-controlplane)) |
 | `ConfigReady` | False | `ComputeConfigIncomplete` | `nova-compute.conf`, `transport_url` or `password` is missing or empty; the message names them |
 | `ConfigReady` | False | `ConfigError` | Reading the Secret, or writing or pruning the ConfigMaps, failed |
 | `DaemonSetReady` | True | `DaemonSetReady` | Every node the DaemonSet selects runs a ready pod, or the pool holds no node and the DaemonSet was removed |
@@ -258,9 +353,11 @@ stays out of the aggregate. For the pipeline see
 | `AggregatesReady` | False | `NovaComputeListError` | Listing the other NovaComputes of the Nova failed, on a pass that did not run the Nodes step |
 | `ServicesReady` | True | `ServicesUp` | Every node's compute service is registered and up |
 | `ServicesReady` | True | `Draining` | Nodes are Draining or Releasing; the message counts the instances per node |
-| `ServicesReady` | False | `WaitingForServices` | A selected node has no compute service yet |
+| `ServicesReady` | False | `WaitingForServices` | A selected node has no compute service yet. Reported before `WaitingForHostMapping` |
+| `ServicesReady` | False | `WaitingForHostMapping` | A selected node's service is registered, but Nova has not mapped its host into the cell yet. The message names the hosts and the state of the host discovery Job; the pool looks again after 10 seconds |
+| `ServicesReady` | False | `HostDiscoveryError` | Reading the Nova API Deployment, or reading, creating or deleting the host discovery Job failed, or a Job of that name on a target cluster does not belong to the Nova. Logged and retried at the pool's poll, after 30 seconds at most |
 | `ServicesReady` | False | `ServicesDown` | Nova reports an Active node's service down |
-| `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds |
+| `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds at most: a failed hypervisor list keeps a `Releasing` node's 10-second poll |
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
 | `Ready` | True | `AllReady` | All six sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
@@ -278,7 +375,9 @@ stays out of the aggregate. For the pipeline see
 | ConfigMap | `{name}-config-<hash>` | The immutable `compute-pool.conf`; the three newest before the mounted one are kept |
 
 The compute contract Secret is not a child: the Nova publishes it, or the
-ControlPlane mirrors it. On a target cluster the children carry the ownership
+ControlPlane mirrors it. Neither is the host discovery Job
+`{nova}-discover-hosts`, which belongs to the Nova (see
+[Reaching Nova](#reaching-nova)). On a target cluster the children carry the ownership
 labels instead of an owner reference, and the teardown sweeps them.
 
 ## Node contract
@@ -305,7 +404,7 @@ probe; the service state Nova reports is the health signal.
 | the contract Secret | `/etc/nova/compute-config` | read-only; the fragment's `ssl_ca_file` names `ca.crt` here |
 | the pool ConfigMap | `/etc/nova/compute-pool.conf.d` | read-only |
 | hostPath `/run/libvirt` | same | `DirectoryOrCreate`; the libvirt socket |
-| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS volumes os-brick mounts below it reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity |
+| hostPath `/var/lib/nova` | same | `DirectoryOrCreate`, `mountPropagation: Bidirectional`, so the NFS exports nova mounts below it (in `/var/lib/nova/mnt`) reach the host's QEMU. The node's `compute_id` lives here, so a restarted pod keeps its identity. The `create-instances-dir` init container mounts it as well, without propagation |
 | hostPath `/run/openvswitch` | same | `DirectoryOrCreate`; the node's Open vSwitch database |
 | hostPath `/dev` | same | |
 | hostPath `/sys/fs/cgroup` | same | read-only |
@@ -314,12 +413,37 @@ probe; the service state Nova reports is the health signal.
 | hostPath `/etc/multipath.conf` | same | `FileOrCreate` |
 | emptyDir | `/tmp` | |
 
+A Cinder NFS volume needs more of the node than the pod brings. The kernel
+modules `nfs` and `nfsv4` have to be loaded, because os-brick mounts the share
+from inside the pod through the node's kernel. The mount has to reach wherever
+libvirtd runs: a libvirtd on the host sees it through the `Bidirectional`
+propagation above, and a libvirtd in a pod needs the same propagation on its
+own `/var/lib/nova` mount. libvirt also has to leave the volume file's owner
+alone (`dynamic_ownership = 0` in `qemu.conf`): Cinder's NFS backends keep
+their files `42424:42424` with mode `660` (see
+[Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
+and a file handed to QEMU's user shuts Cinder out of the volume. On the
+metal-stack lab the
+[Lab NFS stack](../infrastructure/infrastructure-manifests.md#lab-nfs-stack)
+loads the modules, and the
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)
+carry the propagation and the setting.
+
 The `wait-for-chassis` init container runs the image's `python3` under the
 restricted profile and waits until the node's OVN chassis has written
-`external_ids:system-id` into the local Open vSwitch database, the gate the
-[metadata agent](../neutron/index.md) runs. It speaks the OVSDB JSON-RPC
-protocol itself, because the image ships no `ovsdb-client`, so a pool's nodes
-need an [OVNChassis](../ovn/ovn-chassis-crd.md).
+`external_ids:system-id` into the local Open vSwitch database. It speaks the
+OVSDB JSON-RPC protocol itself, because the image ships no `ovsdb-client`, so a
+pool's nodes need an [OVNChassis](../ovn/ovn-chassis-crd.md).
+
+The `create-instances-dir` init container runs first, as uid 0 and gid 0. It is
+not privileged, and every capability is dropped but `DAC_OVERRIDE`. It runs
+`mkdir -p -m 0755 /var/lib/nova/instances`, nova's default `instances_path`:
+the host mount hides the directory the image ships, and the kubelet creates
+`/var/lib/nova` and nothing below it. An existing directory keeps its owner and
+mode. When `mkdir` fails, the pod stays in its init phase, `nova-compute` does
+not start, and the pool reports `DaemonSetReady=False` with reason
+`DaemonSetProgressing`. A file at the path fails it with `File exists`, a
+read-only host filesystem with `Read-only file system`.
 
 ### The namespace
 
@@ -344,7 +468,8 @@ to it on onboarding.
 ### Reaching Nova
 
 The operator calls Keystone and the Nova API itself: it lists and disables the
-compute services, counts the servers on a host and keeps the aggregates. It
+compute services, reads the hypervisor list, counts the servers on a host and
+keeps the aggregates. It
 authenticates as the Nova's `spec.serviceUser` at microversion 2.53, and lists
 the services at 2.69: below it Nova leaves out a cell that does not answer, and
 the servers list skips that cell as well, so its draining hosts would read as
@@ -356,6 +481,28 @@ user lacks it reports `ComputeAPIError` with HTTP 403. The operator reaches the
 local Nova at its Service URL and a placed one through the target cluster's
 service proxy, so a NetworkPolicy in front of Keystone or Nova has to admit the
 nova-operator.
+
+Nova 32.0.0 and 33.0.0 leave the compute node of a host without a host mapping
+out of `GET /os-hypervisors/detail`, so a registered host missing from that
+list is not mapped into its cell yet. The pool reads the list, page by page
+at microversion 2.88, whose entries carry no `cpu_info` or resource counters,
+only while a `Pending` node has a registered service. A failed read keeps
+those nodes `Pending`, and the pool's other nodes still move. For such a host
+it runs `nova-manage cell_v2 discover_hosts --verbose` in the Job
+`<nova>-discover-hosts`, which the operator creates in the Nova's namespace on
+the Nova's cluster as a child of the Nova: with an owner reference locally,
+with the Nova's ownership labels on a target cluster. Its pod is the one the
+archive CronJob runs `nova-manage` in, with the image and the config of the
+Nova API Deployment. That Deployment rolls to `spec.image` only once the Nova
+has migrated its schemas, so during an upgrade the Job runs the release the
+schemas are at. No Job is created while that Deployment mounts no config.
+Every pool of the Nova shares the Job. While a host stays unmapped, a finished
+Job is replaced 30 seconds after it ended, a failed one after the
+`HostDiscoveryFailed` event; the last Job is removed 300 seconds after it
+finished. The
+`[scheduler] discover_hosts_in_cells_interval` periodic of
+[Host discovery](./nova-cells.md#host-discovery) still maps a compute without
+a pool.
 
 ### The aggregates
 
@@ -408,7 +555,16 @@ configures none of it:
   `/etc/pki/libvirt/servercert.pem` and `/etc/pki/qemu/server-cert.pem`, and
   the key at `/etc/pki/libvirt/private/serverkey.pem` and
   `/etc/pki/qemu/server-key.pem`. The client certificate and key in both
-  directories link to the server ones.
+  directories link to the server ones. The
+  [kvm-node-agent image](../ci-cd/container-images.md#kvm-node-agent) of this
+  repository writes the keys with mode 0600. QEMU opens its key itself, so a
+  host whose QEMU does not run as root sets `PKI_KEY_GROUP` on the agent to
+  the numeric group QEMU runs in, which gives `/etc/pki/qemu/server-key.pem`
+  that group and mode 0640. The agent container then needs the `CHOWN`
+  capability or that group among its groups; without either, the agent fails
+  every update and keeps the previous files. All key files hold the same key,
+  so that group can read the key the node authenticates with to the libvirtd
+  of its peers as well.
 - TCP 16514 and QEMU's migration ports, 49152 to 49215 by default, open between
   every pair of nodes that can migrate to each other and closed to every other
   source.
@@ -489,8 +645,11 @@ openstack server migrate --live-migration <server>
 
 ### The drain
 
-Leaving the pool is the drain. It starts when a node stops matching the
-selector, when its Node is deleted, or for every node when the CR is deleted:
+Leaving the pool is the drain, and
+[Drain a Compute Node](../../guides/nova/drain-a-compute-node.md) walks it on
+the devstack and on a compute cluster under openstack-hypervisor-operator. The
+drain starts when a node stops matching the selector, when its Node is
+deleted, or for every node when the CR is deleted:
 
 1. The node goes `Draining`. The pool disables its compute service once, with
    the reason `c5c3.io: leaving NovaCompute <namespace>/<name>`, and keeps its
@@ -516,13 +675,20 @@ re-enables it by hand. A node deleted while it still holds instances stays
 
 The CR carries the finalizer `nova.openstack.c5c3.io/compute-drain` until every
 node is released and the aggregates are cleaned up, so an unreachable Nova API
-holds a deletion. The escape is removing the finalizer by hand, which leaves the
-compute services and the marked aggregates in Nova:
+holds a deletion. The escape is removing that finalizer, and only that one, by
+hand, which leaves the compute services and the marked aggregates in Nova:
 
 ```bash
-kubectl patch novacompute <name> -n <namespace> --type=merge \
-  -p '{"metadata":{"finalizers":null}}'
+i="$(kubectl get novacompute <name> -n <namespace> -o json \
+  | jq '.metadata.finalizers | index("nova.openstack.c5c3.io/compute-drain")')"
+kubectl patch novacompute <name> -n <namespace> --type=json -p "[
+  {\"op\":\"test\",\"path\":\"/metadata/finalizers/$i\",\"value\":\"nova.openstack.c5c3.io/compute-drain\"},
+  {\"op\":\"remove\",\"path\":\"/metadata/finalizers/$i\"}]"
 ```
+
+A placed pool also carries `openstack.c5c3.io/remote-children`, which stays:
+with it the operator still deletes the pool's children on the target cluster
+and reaps the mirrors below before it releases the CR.
 
 When the Nova is gone, or the target cluster was abandoned, the teardown skips
 the Nova side. The last pool of a Nova on a cluster also deletes two Secrets in
@@ -532,8 +698,9 @@ ControlPlane's mirror: the compute contract `<nova>-compute-config`, and
 `<nova>-hypervisor-operator-auth`, the credentials the ControlPlane copies there
 for openstack-hypervisor-operator. Each deleted Secret gets a
 `ComputeConfigMirrorReaped` event of its own, and an absent one is skipped. A
-pool being deleted that still holds a node counts as one left: its draining pod
-mounts the contract.
+pool being deleted that still drains a node counts as one left: its draining pod
+mounts the contract. One whose drain finalizer was removed, or whose Nova is
+gone, drains nothing and does not count.
 
 ## Example
 

@@ -5,15 +5,27 @@ quadrant: infrastructure
 
 # Hypervisor Cluster
 
-> **Status: sketch — not implemented.** Carried over in raw form from the
-> original
+> **Status: sketch — the dedicated cluster is not implemented.** Carried over
+> in raw form from the original
 > [C5C3 architecture document](https://c5c3.github.io/C5C3/03-components/02-hypervisor).
-> Nothing on this page exists in this repository yet.
+> What exists is the node layer: this repository has `NovaCompute`,
+> `OVNChassis` and `NeutronMetadataAgent`, and the
+> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on two
+> workers of the control-plane cluster, beside a containerized libvirt
+> DaemonSet and the upstream openstack-hypervisor-operator and kvm-node-agent.
+> Their `Hypervisor` CRs belong to the API group `kvm.cloud.sap`, not to the
+> sketched `hypervisor.c5c3.io`.
 
 The original document plans a dedicated bare-metal Kubernetes cluster for
 compute virtualization: IronCore provisions the servers and installs
 GardenLinux, Gardener manages the resulting cluster, and the control plane
 reaches it through the Nova and Neutron APIs and the OVN southbound database.
+
+In the
+[multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture)
+this cluster is the one labelled OpenStack Compute.
+
+![Five Kubernetes clusters on Garden Linux nodes: CobaltCore Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, and OpenStack Network. Gardener manages the clusters, IronCore provisions the bare-metal nodes and manages them out of band. API users call the OpenStack API on the control plane; end users reach the VMs through the network cluster.](../diagrams/cobaltcore-architecture.svg)
 
 ## Sketched components
 
@@ -37,16 +49,18 @@ reaches it through the Nova and Neutron APIs and the OVN southbound database.
 
 ## Open questions
 
-Whether the implemented management/target-cluster mechanics
-([Target Clusters](../reference/target-clusters.md)) extend to a hypervisor
-cluster is unexamined. The [Nova](../reference/nova/index.md) and
-[Neutron](../reference/neutron/index.md) control planes this cluster presumes
-are onboarded, and the [OVN operator](../reference/ovn/index.md) already
-projects `ovs` and `ovn-controller` onto labelled nodes. The compute side is
-missing: `nova-compute` and the node agents on dedicated compute clusters are
-tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013). What such a
-cluster reads from the control plane, and what it has to provide in return, is
-written down in [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md).
+A hypervisor cluster is a registered target cluster
+([Target Clusters](../reference/target-clusters.md)). `nova-compute` runs there
+as a `NovaCompute` pool, beside openstack-hypervisor-operator and
+kvm-node-agent, which CobaltCore adopts from cobaltcore-dev as they are. The
+[Nova](../reference/nova/index.md) and [Neutron](../reference/neutron/index.md)
+control planes this cluster presumes are onboarded, and the
+[OVN operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller`
+onto labelled nodes. What such a cluster reads from the control plane, and what
+it has to provide in return, is written down in
+[Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md). The
+dedicated bare-metal cluster of the original document, provisioned by IronCore
+and managed by Gardener, stays a sketch.
 
 ## Source
 

@@ -9,8 +9,10 @@ Two guards refuse the mode:
     cluster-scoped webhook configurations.
   - a non-empty "operator-library.chart.namespaceScopedUnsupported" hook — a
     chart whose operator cannot run namespace-scoped at all (ovn-operator
-    watches cluster-scoped Nodes; neutron-operator reads across namespaces)
-    overrides the hook with the reason, and the render fails with it.
+    watches cluster-scoped Nodes; c5c3-operator watches cluster-scoped
+    Namespaces, SizingProfiles and ClusterSecretStores; neutron-operator reads
+    across namespaces) overrides the hook with the reason, and the render fails
+    with it.
 */}}
 {{- define "operator-library.role" -}}
 {{- if and .Values.rbac.namespaceScoped .Values.webhook.enabled }}

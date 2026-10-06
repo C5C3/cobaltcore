@@ -185,6 +185,16 @@ func TestNeutronMetadataAgentValidateCreate_AcceptedShapes(t *testing.T) {
 				}
 			},
 		},
+		// root_helper is owned but not Rejected: a custom image may need another
+		// helper, so an extraConfig value is rendered and reported.
+		{
+			name: "extraConfig agent root_helper is admitted",
+			mutate: func(o *NeutronMetadataAgent) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"agent": {"root_helper": "sudo"},
+				}
+			},
+		},
 		{
 			name: "extraConfig nova_metadata_insecure is admitted",
 			mutate: func(o *NeutronMetadataAgent) {

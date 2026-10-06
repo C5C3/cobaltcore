@@ -54,7 +54,8 @@ prefer; the host-port override path documents the privileged-port tradeoffs for
 those runtimes below.
 
 You need `make` for the install and deployment targets below. The `KIND_HOST_PORT`
-override path also needs `yq` v4.x on `PATH`.
+override path also needs [`yq`](https://github.com/mikefarah/yq) v4.40.1 or
+newer on `PATH`.
 
 ::: tip Nix users
 Instead of `make install-test-deps`, you can run `nix develop` to get every
@@ -535,8 +536,8 @@ one never reaches the login screen: the TLS handshake is reset, which the toolin
 mTLS posture here.
 
 Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is signed by the same
-`selfsigned-cluster-issuer` CA as the server cert, and the listener verifies only chain-to-CA
-(not SANs) on client auth, so this certificate is accepted:
+CA as the server cert, `openbao-ca` (ClusterIssuer `openbao-ca-issuer`), and the listener
+verifies only chain-to-CA (not SANs) on client auth, so this certificate is accepted:
 
 ```bash
 kubectl get secret openbao-client-tls -n shared-services \

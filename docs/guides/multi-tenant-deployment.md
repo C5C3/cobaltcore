@@ -23,13 +23,14 @@ the [ControlPlane Quick Start](../quick-start-controlplane.md); the namespace-sc
 operator RBAC described here is the complementary, lower-level concern.
 
 For a control plane confined to one namespace, namespace-scoped operators can
-reduce Secret access once their watches work without cluster permissions. Set
-`rbac.namespaceScoped: true` for each operator after verifying its watches.
+confine Secret access without cluster permissions. Set
+`rbac.namespaceScoped: true`.
 This replaces an operator's
 cluster-wide `ClusterRole` with a `Role` bound to a single namespace. The
 operator pod can then only access that namespace's Secrets. The
 [Security trade-off](#security-trade-off-the-cluster-wide-rbac-default) below
-explains the privilege-escalation path this closes.
+explains the privilege-escalation path this closes, and why it stays open for
+the c5c3-operator.
 
 The chart still ships cluster-wide (`rbac.namespaceScoped: false`) by default
 because some capabilities still need cluster scope; see
@@ -88,6 +89,14 @@ needs cluster scope, which namespace-scoped mode cannot provide:
   through cluster-scoped `ValidatingWebhookConfiguration` /
   `MutatingWebhookConfiguration` objects, which only a `ClusterRole` can manage
   (see [Webhook caveat](#webhook-caveat)).
+- **`ClusterSecretStore` reads** — a CR reads its secrets through a
+  `ClusterSecretStore`, such as the shared `openbao-cluster-store`. A
+  namespace-scoped operator refuses such a CR (see
+  [Secret stores in namespace-scoped mode](#secret-stores-in-namespace-scoped-mode)).
+- **The c5c3-operator, ovn-operator and neutron-operator charts** — these
+  charts refuse `rbac.namespaceScoped=true` at render time. The c5c3 and ovn
+  operators watch cluster-scoped kinds, and the neutron operator reads across
+  namespaces.
 
 ---
 
@@ -116,6 +125,13 @@ OpenStack admin password in cleartext into a `clouds.yaml` `Secret` in each
 tenant's child namespace (see
 [ControlPlane Reconciler → RBAC Permissions](../reference/c5c3/controlplane-reconciler.md#rbac-permissions)).
 Cluster-wide Secret read access exposes all of those projected passwords.
+
+The c5c3-operator chart refuses `rbac.namespaceScoped: true` (see
+[When cluster-wide RBAC is still required](#when-cluster-wide-rbac-is-still-required)),
+so the ControlPlane operator's cluster-wide Secret and RoleBinding grants cannot
+be scoped down. Protect it by other means: limit who can exec into its pod or
+read its ServiceAccount token, run it on dedicated nodes, and audit the API
+requests its ServiceAccount makes from anywhere other than that pod.
 
 ### Contrast: the per-CronJob rotation RBAC
 
@@ -189,6 +205,40 @@ CRD-level CEL validation rules remain active.
 These rules cover structural constraints such as `database` mutual exclusivity,
 `autoscaling` metric requirements, and minimum-value checks, as well as the
 immutability transition rules.
+
+---
+
+## Secret stores in namespace-scoped mode
+
+A namespace-scoped operator cannot read a `ClusterSecretStore`. The kind is
+cluster-scoped, so the `Role` the chart renders grants nothing for it, and an
+operator started with `--namespace` registers no watch on it. Every CR such an
+operator reconciles sets `spec.secretStoreRef` to a namespaced `SecretStore`
+in the CR's own namespace:
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+  namespace: team-alpha
+spec:
+  # …
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+```
+
+A CR that omits the field resolves to the shared `ClusterSecretStore`
+`openbao-cluster-store`. The operator refuses it, and any CR that names a
+`ClusterSecretStore`, without reading the store. The CR reports
+`SecretsReady=False` with reason `ClusterSecretStoreUnsupported` and a message
+that names the store and the namespace, and the operator checks it again every
+15 seconds. Setting `spec.secretStoreRef` to a `SecretStore` clears the
+condition.
+
+`setup-eso-tenant.sh` creates `openbao-tenant-store` in a namespace; the command
+is under [Migrating an existing deployment](#migrating-an-existing-deployment).
 
 ---
 
@@ -328,6 +378,11 @@ every readable and writable path to the caller's own namespace. A tenant token
 in namespace `team-alpha` can therefore only reach `team-alpha`'s key
 and bootstrap material and is denied on any other tenant's paths. OpenBao
 isolates one control plane's secret material from another.
+
+The figure shows the tenant store of one ControlPlane namespace beside the
+shared cluster store.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../diagrams/secrets-flow.svg)
 
 This is the **enforced default**: you configure nothing, and existing
 operator-managed ControlPlanes migrate onto it on operator upgrade. The shared

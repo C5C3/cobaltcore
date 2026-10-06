@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -22,7 +23,6 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
-	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -189,8 +189,14 @@ func TestBuildAgentDaemonSet_ContainerPostures(t *testing.T) {
 	g.Expect(init.Command).To(Equal([]string{"/bin/sh", "-c", waitForChassisScript}))
 	g.Expect(init.Command[2]).To(ContainSubstring("ovsdb-client --timeout=5 transact"),
 		"ovs-vsctl is not in the neutron image")
-	g.Expect(init.Command[2]).To(ContainSubstring("grep -q system-id"))
-	g.Expect(init.VolumeMounts).To(ConsistOf(corev1.VolumeMount{Name: runOVSVolumeName, MountPath: ovsRunDir}))
+	g.Expect(init.Command[2]).To(ContainSubstring("Chassis_Private"),
+		"a system-id left in a reused database must not pass the gate")
+	g.Expect(init.Command[2]).To(ContainSubstring("--no-leader-only"))
+	g.Expect(init.Env).To(Equal([]corev1.EnvVar{{Name: "OVN_SB_CONNECTION", Value: testSouthboundAddress}}))
+	g.Expect(init.VolumeMounts).To(Equal([]corev1.VolumeMount{
+		{Name: "run-ovs", MountPath: "/run/openvswitch"},
+		{Name: "ovn-tls", MountPath: "/etc/ovn/tls", ReadOnly: true},
+	}))
 
 	agent := ds.Spec.Template.Spec.Containers[0]
 	g.Expect(agent.Name).To(Equal(metadataAgentComponent))
@@ -379,24 +385,47 @@ func TestBuildAgentDaemonSet_SharedSecretDigestAnnotation(t *testing.T) {
 	}))
 }
 
+// agentResourceDefaults is the block both agent containers get when the CR
+// names neither CPU nor memory: a 230m CPU request, no CPU limit, and 2Gi of
+// memory as request and limit. The figures are literals on purpose, so a test
+// comparing a rendered container against them does not follow a change of the
+// operator's constants.
+func agentResourceDefaults() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("230m"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+	}
+}
+
 // A CR that names no resources still lands in the Burstable QoS class: an
 // unbounded agent on a compute node competes with the instances it serves. The
-// defaults fill each resource on its own, so a CPU-only block still gets its
-// memory, and a block naming both is used as written.
-func TestEffectiveAgentResources_FallsBackToTheSharedDefaults(t *testing.T) {
+// CPU request and the memory are the agent's own figures. The defaults fill
+// each resource on its own, so a CPU-only block still gets its memory, a
+// memory-only block still gets its CPU request, a block naming both is used as
+// written, and a memory named as the zero quantity counts as named.
+func TestEffectiveAgentResources_FillsTheAgentDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(effectiveAgentResources(validAgent())).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(effectiveAgentResources(validAgent())).To(Equal(agentResourceDefaults()))
 
 	cpuOnly := validAgent()
 	cpuOnly.Spec.Resources = corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m")},
 	}
 	g.Expect(effectiveAgentResources(cpuOnly)).To(Equal(corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("368Mi")},
-		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("368Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 	}))
 	g.Expect(cpuOnly.Spec.Resources.Limits).To(BeNil(), "the fill must not write into the CR")
+
+	memoryOnly := validAgent()
+	memoryOnly.Spec.Resources = corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}
+	g.Expect(effectiveAgentResources(memoryOnly)).To(Equal(corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("230m")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}))
 
 	full := validAgent()
 	full.Spec.Resources = corev1.ResourceRequirements{
@@ -404,6 +433,14 @@ func TestEffectiveAgentResources_FallsBackToTheSharedDefaults(t *testing.T) {
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("256Mi")},
 	}
 	g.Expect(effectiveAgentResources(full)).To(Equal(full.Spec.Resources))
+
+	zero := validAgent()
+	zero.Spec.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("0")},
+	}
+	got := effectiveAgentResources(zero)
+	g.Expect(got).To(Equal(zero.Spec.Resources))
+	g.Expect(got.Limits).NotTo(HaveKey(corev1.ResourceMemory), "a memory named as zero must not get a limit")
 }
 
 // The DaemonSet must select its own pods rather than the chassis pods sharing
@@ -420,8 +457,8 @@ func TestAgentSelectorLabels_NarrowByComponent(t *testing.T) {
 }
 
 // TestBuildAgentDaemonSet_RendersResourceDefaults verifies that both agent
-// containers, the wait-for-chassis init container and the agent, render 368Mi
-// as memory request and limit beside a 70m CPU request and no CPU limit when
+// containers, the wait-for-chassis init container and the agent, render 2Gi
+// as memory request and limit beside a 230m CPU request and no CPU limit when
 // spec.resources names nothing.
 func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -429,7 +466,50 @@ func TestBuildAgentDaemonSet_RendersResourceDefaults(t *testing.T) {
 	ds := buildAgentDaemonSet(validAgent(), resolvedForAgentConfig(), "agent-config", "", "")
 
 	g.Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(ds.Spec.Template.Spec.InitContainers[0].Resources).To(Equal(agentResourceDefaults()))
 	g.Expect(ds.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
+	g.Expect(ds.Spec.Template.Spec.Containers[0].Resources).To(Equal(agentResourceDefaults()))
+}
+
+// TestNeutronMetadataAgentDaemonSet_ImagePullPolicy pins the pull policy of every container and init
+// container of every workload the operator renders from spec.image:
+// a tag without pullPolicy resolves to Always, a digest to IfNotPresent,
+// and an explicit pullPolicy wins over both.
+func TestNeutronMetadataAgentDaemonSet_ImagePullPolicy(t *testing.T) {
+	podSpecs := func(o *neutronv1alpha1.NeutronMetadataAgent) map[string]corev1.PodSpec {
+		return map[string]corev1.PodSpec{
+			"metadata-agent": buildAgentDaemonSet(o, pinAgentChassis(), "agent-config", "", "").Spec.Template.Spec,
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := validAgent()
+			tc.mutate(&o.Spec.Image)
+
+			specs := podSpecs(o)
+			g.Expect(specs).To(HaveLen(1))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+			g.Expect(specs["metadata-agent"].InitContainers).To(HaveLen(1), "wait-for-chassis")
+		})
+	}
 }

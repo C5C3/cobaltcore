@@ -48,8 +48,10 @@ func (r *PlacementReconciler) reconcileSecrets(ctx context.Context, children cli
 	// Placement selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in the
 	// Placement's own namespace.
+	// Under --namespace a cluster-scoped store is refused with
+	// ClusterSecretStoreUnsupported and not read.
 	storeReady, err := secrets.GateStoreReady(ctx, children,
-		secrets.EffectiveStoreRef(placement.Spec.SecretStoreRef), placement.Namespace,
+		secrets.EffectiveStoreRef(placement.Spec.SecretStoreRef), placement.Namespace, r.NamespaceScoped,
 		&placement.Status.Conditions, placement.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

@@ -88,7 +88,7 @@ not depool a Nova whose API serves fine.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMetadataSharedSecret`, `MetadataSharedSecretEmpty`, `WaitingForMessagingCA`, `WaitingForMessagingCredentials`, `TransportURLRejected`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForMetadataSharedSecret`, `MetadataSharedSecretEmpty`, `WaitingForMessagingCA`, `WaitingForMessagingCredentials`, `TransportURLRejected`, `ConfigError` |
 | `ComputeConfigReady` | `ComputeConfigPublished` | `ComputeConfigError`, `WaitingForRemoteTransportURL` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `ImageReleaseMismatch`, `DBSyncFailed`, `DBSyncInProgress`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `ConductorReady` | `ConductorReady` | `WaitingForConductor` |
@@ -342,6 +342,8 @@ Beyond the owned set it watches:
   rather than twice when both name the same one.
 - Both the cluster-scoped `ClusterSecretStore` and the namespaced `SecretStore`
   a Nova can select, so a store-backend outage reflects in `SecretsReady`.
+  The `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 
 The Secret index is registered on the local field indexer, never on the fleet: it indexes a CR kind, which exists on the management cluster alone, and
 registering it on the fleet would fail the engagement of every target cluster.
@@ -487,13 +489,28 @@ error. Only a completed pass lets a deleting pool release its finalizer.
 
 Lists the `nova-compute` services once, at microversion 2.69, and fails the
 pass with `ComputeAPIError` when a cell did not answer, since its hosts would
-otherwise read as serviceless and empty. It then walks the nodes: `Pending` and
-`Active` follow the registration, `Draining` disables an enabled service once
+otherwise read as serviceless and empty. While a `Pending` node has a
+registered service, it also reads the mapped hosts from
+`GET /os-hypervisors/detail` at microversion 2.88, which leaves out a host
+without a host mapping. A failed read keeps those nodes `Pending` and is
+reported as a `ComputeAPIError` after the walk, so the other nodes still move.
+It then walks the nodes: `Pending` and
+`Active` follow the registration, and a registered `Pending` node turns `Active`
+only once its host is mapped, while an `Active` node is not checked again.
+`Draining` disables an enabled service once
 and counts the servers on the host, and `Releasing` waits until no pod of the
 pool runs on the node and then deletes the service, or drops the entry with no
 call under a handover or when the service is already gone. The pods are listed
 once per pass: on the node for a single `Releasing` node, and for the whole
-pool when there are more. Its requeue is the
+pool when there are more. When the walk leaves a registered node unmapped,
+`ensureHostDiscovery` (`reconcile_novacompute_hostdiscovery.go`) runs the
+Nova's host discovery Job `<nova>-discover-hosts` on the Nova's cluster:
+it creates the Job when none exists, leaves a running one alone, and deletes one
+that finished more than 30 seconds ago so the next pass creates a fresh one.
+`ServicesReady` then reports `WaitingForHostMapping` with the Job's state, and
+a failed Kubernetes call or a refused claim reports `HostDiscoveryError`, logs
+the error and requeues without it, so the other nodes keep their poll instead of
+the controller's growing backoff. Its requeue is the
 periodic poll of Nova: the shortest interval any node needs at entry or at exit.
 
 ### Requeue and teardown
@@ -503,6 +520,7 @@ periodic poll of Nova: the shortest interval any node needs at entry or at exit.
 | 1s | `RequeueNextPass` | After a finalizer add |
 | 10s | `RequeueComputeReleasePolling` | A `Releasing` node, and a node dropped in this pass |
 | 10s | `RequeueDeploymentPolling` | An aggregate created concurrently |
+| 10s | `RequeueHostDiscoveryPolling` | A registered node whose host is not mapped yet |
 | 15s | `RequeueSecretPolling` | The waits of `NovaReady`, `ConfigReady`, `NodesForbidden`, and an unresolvable target |
 | 30s | `RequeueComputeDrainPolling` | A `Draining` or `Pending` node, and the retry after a failed Keystone or Nova call |
 | 60s | `RequeueComputeServicePolling` | A pool whose nodes are all settled |
@@ -514,11 +532,13 @@ empties the aggregates the host sat in after its Aggregates step ran. Once the
 pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
 from a stale copy of the CR cannot recreate what the sweep removed. When the
 Nova is gone, or the target cluster was abandoned, that part is skipped. Then
-the remote children (the DaemonSet, the ConfigMaps and the opt-in
-VerticalPodAutoscaler) are swept, the
-ControlPlane's contract mirror and the hypervisor operator's auth mirror are
-reaped when no other pool of the Nova on the cluster is live or still holds a
-node, and the finalizers are released.
+the ControlPlane's contract mirror and the hypervisor operator's auth mirror are
+reaped when no other pool of the Nova on the cluster is live or still drains a
+node, the remote children (the DaemonSet, the ConfigMaps and the opt-in
+VerticalPodAutoscaler) are swept, and the finalizers are released. A pool
+drains only while it carries the drain finalizer and the Nova exists. The reap
+comes first, so a pool whose drain finalizer was removed by hand still holds
+`openstack.c5c3.io/remote-children` while it runs, and a failed reap is retried.
 
 ### Watches
 

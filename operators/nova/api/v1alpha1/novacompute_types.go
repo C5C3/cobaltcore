@@ -50,9 +50,11 @@ type NovaComputeNodePhase string
 // The node phases.
 const (
 	// NovaComputeNodePending is a selected node whose nova-compute has not
-	// registered a compute service under the node name yet.
+	// registered a compute service under the node name yet, or whose host
+	// Nova has not mapped into its cell yet.
 	NovaComputeNodePending NovaComputeNodePhase = "Pending"
-	// NovaComputeNodeActive is a selected node with a registered service.
+	// NovaComputeNodeActive is a selected node with a registered service whose
+	// host the pool has seen mapped into its cell.
 	NovaComputeNodeActive NovaComputeNodePhase = "Active"
 	// NovaComputeNodeDraining is a node that left the pool and keeps its pod
 	// while Nova still reports instances on it. Its service is disabled.
@@ -147,8 +149,8 @@ type NovaComputeSpec struct {
 	UpdateStrategy NovaComputeUpdateStrategy `json:"updateStrategy,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits of the
-	// nova-compute container and of its wait-for-chassis init container. When
-	// nil both carry none.
+	// nova-compute container and of its two init containers,
+	// create-instances-dir and wait-for-chassis. When nil all three carry none.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 

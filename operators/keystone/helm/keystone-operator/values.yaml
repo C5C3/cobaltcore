@@ -54,6 +54,12 @@ controller:
   # Rendered as --max-concurrent-reconciles; omit the key to fall back to the
   # operator's built-in default.
   maxConcurrentReconciles: 2
+  # imagePullPolicy of every container the operator renders from an image
+  # reference that names no pullPolicy: Always, IfNotPresent or Never. Unset
+  # applies the rule: IfNotPresent for a digest, Always for a tag. Set
+  # IfNotPresent where nodes hold preloaded images under the published tag.
+  # Rendered as --default-image-pull-policy.
+  # defaultImagePullPolicy: IfNotPresent
 
 # Federation metadata fetch (OIDC discovery documents and SAML IdP metadata)
 # is SSRF-guarded: by default the operator refuses to dial any non-public

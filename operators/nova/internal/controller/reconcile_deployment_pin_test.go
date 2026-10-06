@@ -114,6 +114,7 @@ spec:
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -306,6 +307,7 @@ spec:
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -494,6 +496,7 @@ spec:
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

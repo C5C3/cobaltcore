@@ -79,6 +79,10 @@ func GateSyncedSecret(ctx context.Context, c client.Client, key client.ObjectKey
 	}
 }
 
+// ReasonClusterSecretStoreUnsupported is the reason GateStoreReady sets when a
+// namespace-scoped operator is asked to gate on a ClusterSecretStore.
+const ReasonClusterSecretStoreUnsupported = "ClusterSecretStoreUnsupported"
+
 // GateStoreReady checks the readiness of the store selected by ref — a
 // cluster-scoped ClusterSecretStore or a namespaced SecretStore resolved in
 // namespace — before the per-Secret gate, so an upstream backend outage
@@ -87,9 +91,29 @@ func GateSyncedSecret(ctx context.Context, c client.Client, key client.ObjectKey
 // store it sets a SecretStoreNotReady condition (naming the kind and name) on
 // conds and returns (false, nil); the caller requeues. A backend error — or an
 // unknown store kind — is propagated as (false, err).
+//
+// namespaceScoped is true for an operator running with --namespace. Its Role
+// cannot grant the cluster-scoped kind, and a cached read of a
+// ClusterSecretStore would start an informer whose list is forbidden and block
+// the reconcile worker waiting for it to sync. Such an operator therefore
+// refuses a ref of kind ClusterSecretStore without any client call: it sets a
+// ReasonClusterSecretStoreUnsupported condition that names the store and the
+// namespace a SecretStore would have to live in, and returns (false, nil). The
+// refusal clears once spec.secretStoreRef selects a SecretStore.
 func GateStoreReady(ctx context.Context, c client.Client, ref commonv1.SecretStoreRefSpec,
-	namespace string, conds *[]metav1.Condition, generation int64, conditionType string,
+	namespace string, namespaceScoped bool, conds *[]metav1.Condition, generation int64, conditionType string,
 ) (bool, error) {
+	if namespaceScoped && ref.Kind == commonv1.SecretStoreKindCluster {
+		conditions.SetCondition(conds, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: generation,
+			Reason:             ReasonClusterSecretStoreUnsupported,
+			Message: fmt.Sprintf("ClusterSecretStore %q cannot be read by a namespace-scoped operator; "+
+				"set spec.secretStoreRef to a SecretStore in namespace %q", ref.Name, namespace),
+		})
+		return false, nil
+	}
 	ready, err := IsStoreRefReady(ctx, c, ref, namespace)
 	if err != nil {
 		return false, err

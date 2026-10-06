@@ -113,6 +113,18 @@ spec:
                       re-pushed behind a stable name, at the cost of disabling release tracking.
                     pattern: ^sha256:[a-f0-9]{64}$
                     type: string
+                  pullPolicy:
+                    description: |-
+                      PullPolicy sets imagePullPolicy on every container that runs this image.
+                      Empty leaves the choice to the operator default and then to the rule:
+                      IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                      is schema-only and has no webhook twin: a CRD older than the operator
+                      prunes the field before any webhook sees it, so a twin could never answer.
+                    enum:
+                    - Always
+                    - IfNotPresent
+                    - Never
+                    type: string
                   repository:
                     description: |-
                       Repository is the OCI image repository, optionally including the registry
@@ -394,8 +406,10 @@ spec:
                   container and its wait-for-chassis init container. The operator never
                   writes defaults into this field; it resolves them when it renders the
                   pod, per resource: a CPU the block names neither as request nor as limit
-                  gets a 70m request and no limit, and a memory the block names neither
-                  way gets 368Mi as both request and limit. A resource the block names is
+                  gets a 230m request and no limit, which covers a minute of 31 servers
+                  booting on the node, and a memory the block names neither way gets 2Gi
+                  as both request and limit, which fits 32 networks on the node; a node
+                  with more networks needs a larger value. A resource the block names is
                   used as written, and anything else it sets is kept.
                 properties:
                   claims:
@@ -513,11 +527,17 @@ spec:
                     description: |-
                       UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                       recommends, Initial sets requests at pod creation, Recreate and Auto
-                      evict pods to apply them.
+                      evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                      and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                      available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                      feature gate InPlacePodVerticalScaling on. A cluster whose
+                      VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                      applies, and VPAReady turns False with reason VPAError.
                     enum:
                     - "Off"
                     - Initial
                     - Recreate
+                    - InPlaceOrRecreate
                     - Auto
                     type: string
                 required:

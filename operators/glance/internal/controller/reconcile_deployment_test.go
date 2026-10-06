@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -1188,4 +1189,51 @@ func TestBuildPodDisruptionBudget_FollowsTheHPAMinimum(t *testing.T) {
 	pdb = buildPodDisruptionBudget(glance)
 	g.Expect(pdb.Spec.MinAvailable).To(HaveValue(Equal(intstr.FromInt32(1))))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+}
+
+// TestGlanceWorkloads_ImagePullPolicy pins the pull policy of every container
+// and init container of every workload the operator renders from spec.image:
+// the image cache maintenance sidecar included; a tag without pullPolicy resolves to Always, a digest to IfNotPresent,
+// and an explicit pullPolicy wins over both.
+func TestGlanceWorkloads_ImagePullPolicy(t *testing.T) {
+	podSpecs := func(o *glancev1alpha1.Glance) map[string]corev1.PodSpec {
+		o.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("256Mi"))}
+		return map[string]corev1.PodSpec{
+			"api":       buildGlanceDeployment(o, testArtifacts(), "", "").Spec.Template.Spec,
+			"db-sync":   database.SyncJob(glanceJobSetParams(o, dbPurgeConfigMapName)).Spec.Template.Spec,
+			"db-expand": database.BuildJob(glanceJobSetParams(o, dbPurgeConfigMapName), o.Spec.Image.Repository+":2026.2", "db-expand", nil, 4).Spec.Template.Spec,
+			"db-purge":  dbPurgeCronJob(o, dbPurgeConfigMapName).Spec.JobTemplate.Spec.Template.Spec,
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*commonv1.ImageSpec)
+		want   corev1.PullPolicy
+	}{
+		{name: "tag without pullPolicy", mutate: func(*commonv1.ImageSpec) {}, want: corev1.PullAlways},
+		{
+			name:   "digest without pullPolicy",
+			mutate: func(i *commonv1.ImageSpec) { i.Tag, i.Digest = "", "sha256:"+strings.Repeat("a", 64) },
+			want:   corev1.PullIfNotPresent,
+		},
+		{name: "explicit pullPolicy Never", mutate: func(i *commonv1.ImageSpec) { i.PullPolicy = corev1.PullNever }, want: corev1.PullNever},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			o := managedGlance()
+			tc.mutate(&o.Spec.Image)
+
+			specs := podSpecs(o)
+			g.Expect(specs).To(HaveLen(4))
+			for name, spec := range specs {
+				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
+				g.Expect(containers).NotTo(BeEmpty(), name)
+				for _, c := range containers {
+					g.Expect(c.ImagePullPolicy).To(Equal(tc.want), "%s/%s", name, c.Name)
+				}
+			}
+			g.Expect(specs["api"].Containers).To(HaveLen(2), "glance-api and the cache maintenance sidecar")
+		})
+	}
 }

@@ -8,12 +8,16 @@
 #     the aggregate Ready=True with reason AllReady
 #   - the DaemonSet lands on the node the OVNChassis selects, with the chassis's
 #     own nodeSelector copied verbatim and hostNetwork on, and runs a ready pod
-#   - the wait-for-chassis init container exited 0, which means it found this
-#     node's system-id in the local Open vSwitch database over the socket the
-#     chassis pods create, and the agent container is ready without a restart
+#   - the wait-for-chassis init container exited 0, which means it read this
+#     node's system-id from the local Open vSwitch database over the socket the
+#     chassis pods create and found its Chassis_Private row in the Southbound
+#     database; its log names the id the OVNChassis reports for the node, the
+#     agent wrote its registration into that row, and the agent container is
+#     ready without a restart
 #   - the rendered neutron_ovn_metadata_agent.ini points the agent at that local
 #     database and at the Southbound address the OVNCentral published, pins
-#     metadata_workers = 4, and carries no transport_url line
+#     metadata_workers = 4 and root_helper = env, and carries no transport_url
+#     line
 #
 # That last assertion is what #904 owes this suite: an agent with spec.messaging
 # unset opens no broker connection, and the decision that the transport URL
@@ -30,6 +34,32 @@
 #     shared secret reaches the agent container as an env var sourced from its
 #     Secret, and the file the container reads at /etc/nova-metadata-ca/ca.crt
 #     is the Secret's ca.crt, byte for byte
+#
+# Steps 9 to 11 measure the memory of the agent container with networks on its
+# node (#1173). The operator's memory default is sized for 32 networks, and no
+# other suite makes the agent provision one:
+#   - step 9 takes the reading of an agent with no network
+#   - step 10 writes one network and then 31 more into the Northbound database,
+#     binds a port of each on the node, and reads the container's cgroup once
+#     the agent runs one haproxy per network
+#   - step 11 restarts the agent into 2026.1, where it provisions all 32
+#     networks in one pass
+# Every phase prints a MEMORY-READING line and fails on a container restart, on
+# an OOM kill and on a working set above 90% of the container's memory limit,
+# so a default that no longer holds 32 networks fails this suite.
+# docs/reference/testing/sizing-calibration.md (Metadata agent memory) has the
+# rule that turns the readings into the default.
+#
+# ── The seeded model ──────────────────────────────────────────────────
+# Neutron writes the logical model on a real deployment. Here ovn-nbctl writes
+# it: a switch named neutron-<network>, a localport with the device owner
+# network:distributed, a MAC and neutron:cidrs, and a VIF port the chassis
+# claims. northd copies the switch name and the ports' external_ids into the
+# Southbound rows, and the agent provisions a network from them. If the agent
+# starts no haproxy, the catch output says which input _get_provision_params
+# missed (a metadata port without a MAC, no neutron:cidrs, no VIF port with an
+# IPv4 address on the chassis), and the model in 07-memory-probe-script.yaml
+# is to be corrected to supply it.
 #
 # spec.concurrent is false because the agent pods run with hostNetwork and share
 # /run/openvswitch and /run/netns on the node with the OVNChassis pods.
@@ -202,11 +232,20 @@ spec:
           status:
             desiredNumberScheduled: 1
             numberReady: 1
-    # A ready pod says nothing about how it got there. The init container polls
-    # the local Open vSwitch database until the chassis on this node has written
-    # its system-id, and an agent container that crash-looped its way to
-    # readiness would have spent that time not answering instances.
+    # A ready pod says nothing about how it got there. The init container waits
+    # until the system-id in the local Open vSwitch database has a
+    # Chassis_Private row in the Southbound database, and its last log line
+    # names that id. The agent reads the same id once at start and writes its
+    # registration (the key neutron:ovn-metadata-id) into that row, so an agent
+    # on a stale id is ready and never registers. The id therefore has to be the
+    # one the OVNChassis reports for the pod's node, and the key has to appear
+    # on its row. An agent container that crash-looped its way to readiness
+    # would have spent that time not answering instances.
+    #
+    # The poll for the key takes up to 60 seconds, longer than the shared exec
+    # timeout allows.
     - script:
+        timeout: 2m
         content: |
           set -eu
           PODS="$(kubectl get pods -n openstack \
@@ -214,6 +253,12 @@ spec:
             -o name)"
           if [ -z "${PODS}" ]; then
             echo "FAIL: no pod of the metadata-agent DaemonSet found"
+            exit 1
+          fi
+          SB="$(kubectl get ovncentral neutron-agent-ovn -n openstack \
+            -o 'jsonpath={.status.southbound.internalDbAddress}')"
+          if [ -z "${SB}" ]; then
+            echo "FAIL: OVNCentral neutron-agent-ovn reports no Southbound address"
             exit 1
           fi
           STATUS=0
@@ -237,8 +282,40 @@ spec:
               echo "FAIL: ${pod} container metadata-agent restarted ${RESTARTS} time(s)"
               POD_STATUS=1
             fi
+            NODE="$(kubectl get "${pod}" -n openstack -o 'jsonpath={.spec.nodeName}')"
+            ID="$(kubectl get ovnchassis neutron-agent-chassis -n openstack -o \
+              "jsonpath={.status.nodes[?(@.name=='${NODE}')].systemID}")"
+            if [ -z "${ID}" ]; then
+              echo "FAIL: ${pod} OVNChassis neutron-agent-chassis reports no systemID for node '${NODE}'"
+              POD_STATUS=1
+            else
+              LINE="chassis ${ID} is registered in the Southbound database"
+              if ! kubectl logs "${pod}" -n openstack -c wait-for-chassis | grep -Fxq "${LINE}"; then
+                echo "FAIL: ${pod} wait-for-chassis log lacks the line '${LINE}'"
+                POD_STATUS=1
+              fi
+              REGISTERED=""
+              DEADLINE=$(( $(date +%s) + 60 ))
+              while :; do
+                if kubectl exec "${pod}" -n openstack -c metadata-agent -- \
+                  ovsdb-client --timeout=5 --no-leader-only \
+                  -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+                  transact "${SB}" \
+                  '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"${ID}"'"]],"columns":["external_ids"]}]' \
+                  2>/dev/null | grep -q 'neutron:ovn-metadata-id'; then
+                  REGISTERED=yes
+                  break
+                fi
+                [ "$(date +%s)" -lt "${DEADLINE}" ] || break
+                sleep 2
+              done
+              if [ -z "${REGISTERED}" ]; then
+                echo "FAIL: ${pod} Chassis_Private row ${ID} carries no neutron:ovn-metadata-id after 60s"
+                POD_STATUS=1
+              fi
+            fi
             if [ "${POD_STATUS}" -eq 0 ]; then
-              echo "OK: ${pod} wait-for-chassis exited 0, metadata-agent ready, no restart"
+              echo "OK: ${pod} wait-for-chassis exited 0 on chassis ${ID}, metadata-agent ready and registered, no restart"
             else
               STATUS=1
             fi
@@ -283,6 +360,11 @@ spec:
   #
   # The CR sets no spec.metadataWorkers, so the file carries the operator
   # default, metadata_workers = 4.
+  #
+  # The CR sets no spec.extraConfig either, so the command the agent starts
+  # privsep-helper through is the operator's own, env. Steps 10 and 11 prove it
+  # on the node: an agent that cannot start privsep-helper provisions no
+  # network.
   - try:
     - script:
         content: |
@@ -298,11 +380,12 @@ spec:
           test -n "$SB"
           grep -Fxq "ovn_sb_connection = ${SB}" /tmp/neutron-agent.ini
           grep -Fxq 'metadata_workers = 4' /tmp/neutron-agent.ini
+          grep -Fxq 'root_helper = env' /tmp/neutron-agent.ini
           if grep -q '^transport_url' /tmp/neutron-agent.ini; then
             echo "ERROR: neutron_ovn_metadata_agent.ini carries a transport_url line"
             exit 1
           fi
-          echo "OK: $CM reads the local database and ${SB}, pins metadata_workers = 4, and renders no transport_url"
+          echo "OK: $CM reads the local database and ${SB}, pins metadata_workers = 4 and root_helper = env, and renders no transport_url"
     catch:
     - script:
         content: |
@@ -487,3 +570,305 @@ spec:
           kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 9: Take the idle reading ──────────────────────────────────────
+  # Steps 9 to 11 read the memory of the agent container out of its cgroup
+  # while the agent provisions networks. Each phase prints one MEMORY-READING
+  # line and fails on a restart, an OOM kill or a working set above 90% of
+  # the container's memory limit. The functions that take the readings are in
+  # memory-lib.sh beside this file. Chainsaw scripts share no shell state but
+  # run in the suite directory, so every script of these steps sources it.
+  #
+  # This step takes the reading with no network on the node. The probe script
+  # is applied here and not in step 10, whose cleanup still runs it: chainsaw
+  # runs the step cleanups last-in first-out, so this step's ConfigMap outlives
+  # the cleanup of the step after it.
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: neutron-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - apply:
+        file: 07-memory-probe-script.yaml
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          source ./memory-lib.sh
+
+          agent_pod
+          phase 2025.2 0 60
+    catch: &agent-memory-dump
+    # The dump is the same at steps 9, 10 and 11: what the agent reports and
+    # logged, what it left on the node, and what the chassis and the probe pods
+    # said. The agent log is where a network that was not provisioned shows
+    # which input was missing. Each command is guarded so an object that a
+    # given step never reached does not short-circuit the rest.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          echo "=== NeutronMetadataAgent CR ==="
+          kubectl get neutronmetadataagent neutron-agent -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n "$NAMESPACE" 2>&1 || true
+          echo "=== Agent pods ==="
+          kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "=== $pod: logs (init containers included) ==="
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=200 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=200 --previous 2>&1 || true
+            echo "=== $pod: ip netns list ==="
+            kubectl exec -n "$NAMESPACE" "$pod" -c metadata-agent -- ip netns list 2>&1 || true
+            echo "=== $pod: process names ==="
+            kubectl exec -n "$NAMESPACE" "$pod" -c metadata-agent -- sh -c 'cat /proc/[0-9]*/comm 2>/dev/null' 2>&1 | sort | uniq -c || true
+          done
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-agent-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== ovs-vsctl show ==="
+          kubectl exec ds/neutron-agent-chassis-ovs -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 show 2>&1 || true
+          echo "=== Probe pods ==="
+          for pod in neutron-agent-memory-probe-seed-1 neutron-agent-memory-probe-seed-2 \
+            neutron-agent-memory-probe-cleanup; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --tail=200 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 10: Provision one network, then 32 ─────────────────────────────
+  # The probe writes the logical model into the Northbound database, and an
+  # internal interface on br-int carrying external_ids:iface-id makes the
+  # chassis claim the network's VIF port, which is what a hypervisor's port
+  # plug does. The agent then builds the ovnmeta- namespace and starts one
+  # haproxy for the network.
+  #
+  # The reading at one network is the figure the lab run of #1142 is compared
+  # with, and the reading at 32 is what the operator's memory default has to
+  # hold.
+  - try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          source ./memory-lib.sh
+
+          # run_probe <pod> <mode> <first> <last> <sentinel>
+          #
+          # Runs probe.sh in a pod of the OVN image and reads the verdict from the
+          # pod log after a terminal phase. The sentinel, not the phase, is the
+          # verdict: a probe that fails ends in Failed before it prints one.
+          run_probe() {
+            local pod="$1" mode="$2" first="$3" last="$4" sentinel="$5" pod_phase out
+            kubectl run "$pod" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+              --overrides="$(probe_overrides "$pod" "$mode" "$first" "$last")"
+
+            pod_phase=""
+            for _ in $(seq 1 90); do
+              pod_phase="$(kubectl get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              case "${pod_phase}" in Succeeded|Failed) break ;; esac
+              sleep 2
+            done
+            out="$(kubectl logs -n "$NAMESPACE" "$pod" 2>&1 || true)"
+            echo "${out}"
+            echo "pod phase: ${pod_phase:-<none>}"
+            if ! grep -qx "$sentinel" <<< "${out}"; then
+              echo "FAIL: the log of probe pod ${pod} carries no ${sentinel}"
+              exit 1
+            fi
+          }
+
+          DS=ds/neutron-agent-chassis-ovs
+          NB="$(kubectl get ovncentral neutron-agent-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts neutron-agent-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          # br-int is created by ovn-controller rather than by the operator, so
+          # its existence is polled instead of assumed.
+          FOUND=""
+          for _ in $(seq 1 24); do
+            if kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 br-exists br-int >/dev/null 2>&1; then
+              FOUND=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${FOUND}" ]; then
+            echo "FAIL: ovn-controller never created br-int on the node"
+            kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 list-br 2>&1 || true
+            exit 1
+          fi
+
+          # plug <first> <last>: what a hypervisor's port plug does for each
+          # network of the range, an internal interface on br-int that carries the
+          # VIF port's name as external_ids:iface-id.
+          plug() {
+            local i
+            for i in $(seq "$1" "$2"); do
+              kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+                ovs-vsctl --timeout=15 --may-exist add-port br-int "memvif-${i}" \
+                -- set Interface "memvif-${i}" type=internal "external_ids:iface-id=memvif-${i}"
+            done
+          }
+
+          agent_pod
+
+          run_probe neutron-agent-memory-probe-seed-1 nb-seed 1 1 NB-SEED-OK
+          plug 1 1
+          phase 2025.2 1 180
+
+          run_probe neutron-agent-memory-probe-seed-2 nb-seed 2 "$NETWORKS" NB-SEED-OK
+          plug 2 "$NETWORKS"
+          phase 2025.2 "$NETWORKS" 600
+          processes 2025.2
+    catch: *agent-memory-dump
+    cleanup:
+    # Leaves the node as the step found it: the interfaces on br-int, the
+    # logical switches, the ovnmeta- namespaces and the probe pods. This is a
+    # step cleanup rather than a finally: chainsaw runs it at the end of the
+    # test, after the catch has read the probe pods, and before the cleanups of
+    # the earlier steps delete the agent, the control plane and the probe
+    # script it needs. Every command tolerates a step that failed early and
+    # created nothing. The one verdict is the cleanup probe's: when it ran and
+    # its log carries no sentinel, the cleanup fails, after the rest of the
+    # teardown has run.
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -uo pipefail
+          source ./memory-lib.sh
+          DS=ds/neutron-agent-chassis-ovs
+          STATUS=0
+
+          if kubectl get "$DS" -n "$NAMESPACE" >/dev/null 2>&1; then
+            for i in $(seq 1 "$NETWORKS"); do
+              kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+                ovs-vsctl --timeout=15 --if-exists del-port br-int "memvif-${i}" 2>&1 || true
+            done
+          fi
+
+          # The switches are dropped from the database before the database goes
+          # away. Skipped when the central is already gone: the probe would only
+          # wait out its own connection budget.
+          PROBE=neutron-agent-memory-probe-cleanup
+          NB="$(kubectl get ovncentral neutron-agent-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
+          IMG="$(kubectl get sts neutron-agent-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+          if [ -n "${NB}" ] && [ -n "${IMG}" ]; then
+            kubectl run "$PROBE" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+              --overrides="$(probe_overrides "$PROBE" nb-cleanup 1 "$NETWORKS")" 2>&1 || true
+            pod_phase=""
+            for _ in $(seq 1 60); do
+              pod_phase="$(kubectl get pod "$PROBE" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              case "${pod_phase}" in Succeeded|Failed) break ;; esac
+              sleep 2
+            done
+            OUT="$(kubectl logs -n "$NAMESPACE" "$PROBE" 2>&1 || true)"
+            echo "${OUT}"
+            echo "pod phase: ${pod_phase:-<none>}"
+            if ! grep -qx NB-CLEANUP-OK <<< "${OUT}"; then
+              echo "FAIL: the log of probe pod ${PROBE} carries no NB-CLEANUP-OK"
+              STATUS=1
+            fi
+          fi
+
+          POD="$(find_agent_pod 2>/dev/null)"
+
+          if [ -n "$POD" ]; then
+            # The agent tears a namespace down when the last VIF port of its
+            # network goes. A namespace still there after two minutes is deleted
+            # by hand, with the veth end the agent put on br-int for it.
+            LEFT=""
+            for _ in $(seq 1 24); do
+              if ! LIST="$(kubectl exec -n "$NAMESPACE" "$POD" -c metadata-agent -- ip netns list)"; then
+                echo "cannot list the network namespaces in ${POD}"
+                LEFT=""
+                break
+              fi
+              LEFT="$(awk '$1 ~ /^ovnmeta-/ {print $1}' <<< "$LIST")"
+              if [ -z "$LEFT" ]; then break; fi
+              sleep 5
+            done
+            for ns in $LEFT; do
+              kubectl exec -n "$NAMESPACE" "$POD" -c metadata-agent -- ip netns delete "$ns" 2>&1 || true
+              net="${ns#ovnmeta-}"
+              kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+                ovs-vsctl --timeout=15 --if-exists del-port br-int "tap${net:0:10}0" 2>&1 || true
+            done
+          fi
+
+          kubectl delete pod neutron-agent-memory-probe-seed-1 neutron-agent-memory-probe-seed-2 \
+            neutron-agent-memory-probe-cleanup -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+
+          # What is left. A command that cannot run prints its own error here, so
+          # an empty list is one the node answered with.
+          echo "=== ovnmeta- namespaces left on the node ==="
+          if [ -n "$POD" ]; then
+            kubectl exec -n "$NAMESPACE" "$POD" -c metadata-agent -- ip netns list | grep '^ovnmeta-' || true
+          fi
+          echo "=== memvif- and tap ports left on br-int ==="
+          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 list-ports br-int | grep -E '^(memvif-|tap)' || true
+          exit "$STATUS"
+  # ── Step 11: Restart into 2026.1 and resync ─────────────────────────────
+  # The haproxy processes die with the old container while the namespaces stay
+  # on the node, so the new agent's first sync provisions all 32 networks in
+  # one pass. That is the path an OOM-killed agent takes on every restart, and
+  # it gives the reading for the second release the default serves.
+  - try:
+    - script:
+        timeout: 15m
+        shell: bash
+        content: |
+          set -euo pipefail
+          source ./memory-lib.sh
+
+          kubectl patch neutronmetadataagent neutron-agent -n "$NAMESPACE" --type merge -p '{"spec":{"openStackRelease":"2026.1","image":{"tag":"2026.1"}}}'
+
+          # Wait for the operator to render the new image into the DaemonSet, so
+          # the rollout status below does not return for the old template.
+          IMAGE=""
+          for _ in $(seq 1 24); do
+            IMAGE="$(kubectl get ds neutron-agent-metadata-agent -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.containers[?(@.name=="metadata-agent")].image}')"
+            case "$IMAGE" in *:2026.1) break ;; esac
+            sleep 5
+          done
+          case "$IMAGE" in
+          *:2026.1) ;;
+          *)
+            echo "FAIL: the DaemonSet still runs ${IMAGE} 2m after the release patch"
+            exit 1
+            ;;
+          esac
+
+          kubectl rollout status ds/neutron-agent-metadata-agent -n "$NAMESPACE" --timeout=5m
+
+          agent_pod
+          phase 2026.1 "$NETWORKS" 600
+          processes 2026.1
+    catch: *agent-memory-dump

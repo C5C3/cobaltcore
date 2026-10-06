@@ -310,6 +310,7 @@ func dbPurgeCronJob(glance *glancev1alpha1.Glance, configMapName string) *batchv
 							Containers: []corev1.Container{{
 								Name:            "db-purge",
 								Image:           glance.Spec.Image.Reference(),
+								ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 								Command:         []string{"/bin/sh", "-eu", "-c", script},
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								// Override [database].connection via the oslo.config env-var so

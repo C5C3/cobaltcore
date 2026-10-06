@@ -21,3 +21,10 @@ every dedicated OpenBao instance.
   value: {{ .serviceAccount | quote }}
 {{- end }}
 {{- end }}
+
+{{/*
+Why rbac.namespaceScoped=true fails the render (operator-library chart hook).
+*/}}
+{{- define "operator-library.chart.namespaceScopedUnsupported" -}}
+the ControlPlane controller watches cluster-scoped Namespaces, SizingProfiles and ClusterSecretStores and creates ClusterRoleBindings, none of which a namespaced Role can grant, and the manager fails its cache sync at startup
+{{- end }}

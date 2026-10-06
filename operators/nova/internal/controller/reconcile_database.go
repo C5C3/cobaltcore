@@ -680,6 +680,7 @@ func novaJobSetParams(nova *novav1alpha1.Nova, configMapName string) database.Jo
 		InstanceName:      nova.Name,
 		Namespace:         nova.Namespace,
 		Image:             nova.Spec.Image.Reference(),
+		ImagePullPolicy:   nova.Spec.Image.EffectivePullPolicy(),
 		ConfigMapName:     configMapName,
 		ConfigMountPath:   novaConfigDir,
 		Env:               novaWorkloadEnv(nova, roleManage),

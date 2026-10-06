@@ -35,6 +35,12 @@ install a single finalizer to sequence K-ORC teardown ahead of
 Keystone/infrastructure teardown on deletion — see
 [Owner-ref / GC model](#owner-ref-gc-model).
 
+The figure places the operator among what it creates and what it relies on: the
+`ControlPlane` CR, the infrastructure CRs, service CRs and K-ORC resources it
+projects, and the service operators that turn those CRs into workloads.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
+
 ## Controller Registration
 
 The c5c3 operator registers **two** reconcilers and an optional webhook with the
@@ -57,7 +63,7 @@ bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
     TargetClusters:   true,
-    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool) error {
+    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
         mgr := mcMgr.GetLocalManager()
         if err := (&controller.ControlPlaneReconciler{
             Client:   mgr.GetClient(),
@@ -206,7 +212,7 @@ deduplicates what the two produce.
 What keeps a registered cluster from reaching a ControlPlane that never named it
 is `RemoteRequestsAmong`. For every request a mapper produces it reads that
 ControlPlane on the management cluster and compares the cluster the event arrived
-from against `TargetClusterNames()`, the deduplicated set of the five per-service
+from against `TargetClusterNames()`, the deduplicated set of the eight per-service
 refs; a cluster outside the set drops the event. The set comes from the CR, never
 from the object that raised the event, so an object planted in a shared namespace
 on any registered cluster cannot name a ControlPlane it does not belong to. A CR
@@ -290,6 +296,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints`, `regions`, `users`, `domains`, `projects`, `roles`, `roleassignments` | get, list, watch, create, update, patch, delete |
 | `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status` | patch |
+| `apps` | `deployments` (`resourceNames: orc-controller-manager`) | get, patch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `generators.external-secrets.io` | `vaultdynamicsecrets`, `passwords` | get, list, watch, create, update, patch, delete |
@@ -304,6 +311,11 @@ is what the `priorityclasses` grant is for.
 The `patch` grant on the K-ORC status subresources lets the reconcilers clear a
 latched K-ORC transport error from a child's status
 (`unlatchKORCTransportErrors` in `korc_unlatch.go`).
+
+The `get` and `patch` grant on the `orc-controller-manager` Deployment serves
+[`reconcileKORCCatalogRefresh`](#reconcilekorccatalogrefresh), which reads that
+Deployment by name through the uncached reader and patches one annotation onto
+its pod template.
 
 The `CredentialRotationReconciler` markers (in
 `reconcile_credentialrotation.go`) are scoped tighter — it never mints, so it
@@ -338,179 +350,87 @@ details that privilege-escalation path. Two specifics apply to this operator:
   `bind` only on `system:auth-delegator` (narrowed by `resourceNames`), so it can
   hand out no permission it does not already hold. The cluster-wide Secret read
   therefore remains the dominant risk.
+- It can roll the K-ORC pod. The `apps/deployments` grant names
+  `orc-controller-manager`, and `resourceNames` matches that name in every
+  namespace. RBAC cannot narrow a patch to one annotation, so the grant covers
+  the whole Deployment, its image included. A pod running under K-ORC's
+  ServiceAccount adds nothing to what this identity reaches already: the
+  `serviceaccounts/token` grant lets it mint a token for that account directly.
 
-A single-namespace deployment — one where no service is placed in a namespace of
-its own — co-locates every projected resource in the ControlPlane's own
-namespace, so it can run the operator namespace-scoped
-(`rbac.namespaceScoped: true`), bounding both the RBAC grant and the informer
-cache to that namespace. Keep the default only when
-[cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
-
-[Dedicated service namespaces](./controlplane-crd.md#service-namespaces) are
-**incompatible with namespace-scoped mode**: placing a service in a namespace of
-its own needs cluster-scoped `namespaces` verbs (`create`, `delete`) and
-cross-namespace access to the children, which only the default ClusterRole mode
-grants. The markers therefore add `core/namespaces` with
-`get;list;watch;create;delete`.
+The c5c3-operator chart refuses `rbac.namespaceScoped: true`: the render fails
+with `rbac.namespaceScoped=true is not supported by c5c3-operator`. The
+ControlPlane controller watches the cluster-scoped `Namespace`, `SizingProfile`
+and `ClusterSecretStore` kinds and creates `ClusterRoleBinding` objects. A
+namespaced Role grants none of them, so the manager would fail its cache sync at
+startup. Placing a service in a
+[dedicated namespace](./controlplane-crd.md#service-namespaces) needs the
+cluster-scoped `namespaces` verbs as well, which is why the markers add
+`core/namespaces` with `get;list;watch;create;delete`. See
+[When cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
 
 ---
 
 ## Reconciliation Flow
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                    CONTROLPLANE RECONCILIATION FLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                     │
-│  ControlPlane CR changed (or requeue timer fires)                                   │
-│         │                                                                           │
-│         ▼                                                                           │
-│  Fetch ControlPlane CR (return empty result if NotFound)                            │
-│         │                                                                           │
-│         ▼                                                                           │
-│  Duplicate guard — park all but the oldest ControlPlane in the namespace            │
-│  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)             │
-│         │                                                                           │
-│         ▼                                                                           │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileSizing          │  Resolve spec.sizing (built-in + SizingProfile)       │
-│  │  (gate: none)            │  Sets: SizingReady                                    │
-│  └────────┬─────────────────┘  Error (stops the pass) when the profile is missing   │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileNamespaces      │  Ensure the namespaces services are placed in         │
-│  │  (gate: none)            │  Sets: NamespacesReady                                │
-│  └────────┬─────────────────┘  Requeue: 15s while a namespace is unusable           │
-│           │  (True immediately when no service declares a namespace)                │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children          │
-│  │  (gate: none)            │  Sets: InfrastructureReady                            │
-│  └────────┬─────────────────┘  Requeue: 15s while a child is not Ready              │
-│           │  early-return if !result.IsZero() || err                                │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileESOTenantStore  │  Provision the per-tenant SecretStore + SA +          │
-│  │  (gate: none)            │  mTLS cert. Sets: ESOTenantStoreReady                 │
-│  └────────┬─────────────────┘  Requeue: 10s while the store is not Ready            │
-│           │  (skipped when spec.secretStoreRef overrides the default)               │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret          │
-│  │  (gate: none)            │  Sets: DBCredentialsReady                             │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileAdminPassword   │  Project per-CP admin-password ExternalSecret         │
-│  │  (gate: none)            │  Sets: AdminPasswordReady                             │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileKeystone        │  Project the Keystone child CR                        │
-│  │  (gate: InfraReady)      │  Sets: KeystoneReady                                  │
-│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready              │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ╔════════════════════════════════════════════════════════════════════════════════╗ │
-│  ║  RunSequentialGroup — tail group · non-short-circuiting                        ║ │
-│  ║                                                                                ║ │
-│  ║  every member runs each pass · each member condition always persists           ║ │
-│  ║                                                                                ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileHorizon         │  Project the Horizon dashboard child CR          ║ │
-│  ║  │  (gate: KeystoneReady)   │  Sets: HorizonReady (not-managed when unset)     ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileKORC            │  Mint the admin ApplicationCredential            ║ │
-│  ║  │  (gate: none*)           │  Sets: KORCReady                                 ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s while AC not Available             ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileAdminCredential │  Commit minted Secret + PushSecret to OpenBao    ║ │
-│  ║  │  (gate: KORCReady)       │  Sets: AdminCredentialReady                      ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s gated / clouds.yaml not Ready      ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileCatalog         │  Register identity Service + public Endpoint     ║ │
-│  ║  │  (gate: AdminCredReady)  │  Sets: CatalogReady (Service+Endpoint Available) ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal   ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileGlance          │  Project the Glance image-service child CR       ║ │
-│  ║  │ (gate: KS + its registr.)│  Sets: GlanceReady (not-managed when unset)      ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcilePlacement       │  Project the Placement child CR                  ║ │
-│  ║  │ (gate: KS + its registr.)│  Sets: PlacementReady (not-managed when unset)   ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileBarbican        │  Project the Barbican child, its secret store,   ║ │
-│  ║  │ (gate: KS + its registr.)│  and a dedicated OpenBao instance                ║ │
-│  ║  └────────┬─────────────────┘  Sets: BarbicanReady (not-managed when unset)    ║ │
-│  ║           │                    Requeue: 5s gated / 15s instance or child       ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileOVN             │  Mirror the referenced OVNCentral's readiness    ║ │
-│  ║  │  (gate: none)            │  Sets: OVNReady (not-managed when unset)         ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 15s while the central is not usable    ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileNeutron         │  Deliver the shared bus, then project the        ║ │
-│  ║  │ (gate: KS + OVN + its    │  Neutron network-service child CR                ║ │
-│  ║  │  registration)           │  Sets: NeutronReady (not-managed when unset)     ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileCinder          │  Deliver the shared bus and the two satellite    ║ │
-│  ║  │ (gate: KS + its registr.)│  kinds, then project the Cinder child CR         ║ │
-│  ║  └────────┬─────────────────┘  Sets: CinderReady (not-managed when unset)      ║ │
-│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileNova            │  Deliver the shared bus, the two DB              ║ │
-│  ║  │ (gate: KS + Placement +  │  credentials and the metadata secret,            ║ │
-│  ║  │  its registration)       │  then project the Nova child CR                  ║ │
-│  ║  └────────┬─────────────────┘  Sets: NovaReady (not-managed when unset)        ║ │
-│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileServiceAccounts │  Fold the seven registration children's          ║ │
-│  ║  │  (gate: none)            │  readiness. Sets: ServiceAccountsReady           ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s while one is not Ready             ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────────┐                                              ║ │
-│  ║  │ reconcileRegistrationTenant- │  Tenant-store trio in each allowlisted       ║ │
-│  ║  │ Stores    (gate: none)       │  registration namespace                      ║ │
-│  ║  └──────────────────────────────┘  Sets: RegistrationTenantStoresReady         ║ │
-│  ║                                    Requeue: 10s while a store is not Ready     ║ │
-│  ║                                                                                ║ │
-│  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
-│  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
-│              │                                                                      │
-│              ▼                                                                      │
-│  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)                │
-│  updateStatus()       — stamp status.observedGeneration, persist                    │
-│                                                                                     │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+A pass runs a blocking prefix of seven steps and then one group of fourteen
+members that all run. The figure draws an arrow only where one condition gates
+another.
 
-  * reconcileKORC has no condition gate, but it defers (KORCReady=False,
-    requeue) until the admin-password Secret can be read.
-```
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+
+One pass, in order:
+
+1. Fetches the ControlPlane. `NotFound` ends the pass with an empty result.
+2. Hands a ControlPlane that carries a deletion timestamp to `reconcileDelete`
+   (see [Owner-ref / GC model](#owner-ref-gc-model)).
+3. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
+   parked with `Ready=False/DuplicateControlPlane` and requeued after 30s, and
+   none of its sub-reconcilers run (see [Multi-instance](#multi-instance)).
+4. Installs the finalizer `c5c3.io/orc-teardown`, and
+   `openstack.c5c3.io/remote-children` once a target cluster the spec names
+   resolves. A pass that installs one ends with a requeue.
+5. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
+   step that returns a requeue or an error ends the pass.
+6. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
+   runs. Member requeues collapse to the shortest (`ShortestRequeue`), member
+   errors are joined (`errors.Join`).
+7. Calls `updateStatus()` on every exit path of steps 5 and 6: it recomputes the
+   aggregate `Ready` as `AllTrue(subConditionTypes)`, writes `status.services`,
+   stamps `status.observedGeneration`, and skips the write when nothing changed.
+
+The 21 sub-reconcilers, in call order. The Gate column names the conditions a
+step checks itself and, after them, what else it waits for. A prefix step also
+runs only after the step before it has converged.
+
+| # | Step | Sets | Gate | Does | Requeue |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `reconcileSizing` | `SizingReady` | nothing | Resolves `spec.sizing` from the built-in profile or a `SizingProfile` | none: a missing or unreadable profile returns the error |
+| 2 | `reconcileNamespaces` | `NamespacesReady` | nothing | Ensures or verifies the namespaces services are placed in. `True/NoDedicatedNamespaces` when no service declares one | 15s while a namespace is unusable |
+| 3 | `reconcileInfrastructure` | `InfrastructureReady` | nothing | Ensures the managed MariaDB, Memcached and RabbitMQ children | 15s while a child is not Ready |
+| 4 | `reconcileESOTenantStore` | `ESOTenantStoreReady` | nothing | Provisions ServiceAccount, client Certificate and the `SecretStore` `openbao-tenant-store` in every namespace the ControlPlane occupies. `True/StoreRefOverridden` when `spec.secretStoreRef` is set | 10s while a store is not Ready |
+| 5 | `reconcileDBCredentials` | `DBCredentialsReady` | the secret store, and in Dynamic mode the tenant onboarding a person runs (`setup-database-tenant.sh`) | Projects the DB-credential `ExternalSecret` of Keystone | 10s while it has not synced (`WaitingForDBCredentialSecret`) |
+| 6 | `reconcileAdminPassword` | `AdminPasswordReady` | the secret store | Projects the admin-password `ExternalSecret` | 10s while it has not synced |
+| 7 | `reconcileKeystone` | `KeystoneReady` | `InfrastructureReady` | Projects the Keystone child | 5s gated, 15s while the child is not Ready |
+| 8 | `reconcileHorizon` | `HorizonReady` | `KeystoneReady` | Projects the Horizon child | 5s gated, 15s child |
+| 9 | `reconcileKORC` | `KORCReady` | no condition. The admin-password Secret, and the Keystone CA bundle when one is referenced | Writes the password-based `clouds.yaml`, has K-ORC mint the admin `ApplicationCredential`, and drives a re-mint | 10s |
+| 10 | `reconcileAdminCredential` | `AdminCredentialReady` | `KORCReady` | Assembles the credential Secret, pushes it to OpenBao and waits until `k-orc-clouds-yaml` carries it | 10s |
+| 11 | `reconcileCatalog` | `CatalogReady` | `AdminCredentialReady` | Managed mode: registers the identity `Service`, its public `Endpoint` and the adopted `Region`. External mode: imports the catalog | 10s |
+| 12 | `reconcileGlance` | `GlanceReady` | `KeystoneReady`. Then its registration's `AccountReady` and its DB credential | Projects the `KeystoneService` registration, the DB credential, the Glance child and its backends | 5s gated, 10s registration or DB credential, 15s child |
+| 13 | `reconcilePlacement` | `PlacementReady` | `KeystoneReady`. Then its registration's `AccountReady` and its DB credential | Projects the registration, the DB credential and the Placement child | 5s gated, 10s registration or DB credential, 15s child |
+| 14 | `reconcileBarbican` | `BarbicanReady` | `KeystoneReady`. Then its registration's `AccountReady`, its DB credential, and on a dedicated secret store the OpenBao instance serving (`WaitingForOpenBaoInstance`) | Projects the registration, the DB credential, the dedicated OpenBao instance, the secret store and the Barbican child | 5s gated, 10s registration or DB credential, 15s instance or child |
+| 15 | `reconcileOVN` | `OVNReady` | nothing | Reads the `OVNCentral` that `services.neutron.ovn.centralRef` names and mirrors its readiness. Writes nothing | 15s while the central is not usable |
+| 16 | `reconcileNeutron` | `NeutronReady` | `KeystoneReady`, `OVNReady`. Then the message bus delivered into its namespace, its registration's `AccountReady` (and the notifier's while Nova is set) and its DB credential | Delivers the bus, projects the registrations, the DB credential and the Neutron child | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 17 | `reconcileCinder` | `CinderReady` | `KeystoneReady`. Then the bus, its registration's `AccountReady` and its DB credential | Delivers the bus, projects the registration, the DB credential, the `CinderBackend` and `CinderBackupBackend` satellites and the Cinder child | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 18 | `reconcileNova` | `NovaReady` | `KeystoneReady`, `PlacementReady`. Then the bus, its registration's `AccountReady` and its two DB credentials | Delivers the bus, projects the registration, the two DB credentials, the metadata shared secret and the Nova child, then the hypervisor operator's account when it is set | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 19 | `reconcileServiceAccounts` | `ServiceAccountsReady` | nothing | Folds the `Ready` of the registrations the legs projected, up to eight | 10s while one is not Ready |
+| 20 | `reconcileKORCCatalogRefresh` | none | `ServiceAccountsReady`, and every registration settled | Records the catalog epoch on the K-ORC pod template. A change rolls the pod | none |
+| 21 | `reconcileRegistrationTenantStores` | `RegistrationTenantStoresReady` | nothing | Provisions the tenant-store trio in each allowlisted namespace that holds a registration. `True/NoRegistrationNamespaces` when there is none | 10s while a store is not Ready |
+
+A service whose block is not set reports its condition `True` with a
+`NotManaged` reason, so the aggregate is not blocked: `KeystoneNotManaged`,
+`HorizonNotManaged`, `GlanceNotManaged`, `PlacementNotManaged`,
+`BarbicanNotManaged`, `OVNNotManaged`, `NeutronNotManaged`, `CinderNotManaged`,
+`NovaNotManaged`.
 
 ### Execution Model
 
@@ -529,8 +449,9 @@ in `instrumenter.Instrument` (see
 error counter are emitted under a stable `sub_reconciler` label.
 
 **Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog, Glance,
-Placement, Barbican, OVN, Neutron, ServiceAccounts and RegistrationTenantStores
-are the eleven named members of one `commonreconcile.RunSequentialGroup`,
+Placement, Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
+KORCCatalogRefresh and RegistrationTenantStores are the fourteen named members of
+one `commonreconcile.RunSequentialGroup`,
 embedded as the pipeline's final **bare (unnamed)** `Step`. The group members
 self-instrument through `instrumenter.Instrument` — following the keystone
 self-instrumenting-group convention — which is why the enclosing group step
@@ -538,21 +459,26 @@ carries no `sub_reconciler` name of its own. `RunSequentialGroup` attempts
 **every** member on **every** pass and never short-circuits: each member
 self-gates on the conditions it needs (Horizon on `KeystoneReady`; KORC until the
 admin-password Secret is readable; AdminCredential on `KORCReady`; Catalog on
-`AdminCredentialReady`; Glance, Placement, Barbican and Neutron on `KeystoneReady`
-and on the `AccountReady` of the `KeystoneService` registration each projects for
-itself, see [Built-in service registrations](#built-in-service-registrations)), so
+`AdminCredentialReady`; Glance, Placement, Barbican, Neutron, Cinder and Nova on
+`KeystoneReady` and on the `AccountReady` of the `KeystoneService` registration
+each projects for itself, see
+[Built-in service registrations](#built-in-service-registrations)), so
 running all of them each pass is safe. Barbican carries one gate the others do
 not: on a dedicated secret store it holds the projection until the OpenBao
-instance it provisions serves requests. Neutron carries two: `OVNReady`, and the
-shared message bus having been delivered into its namespace. OVN itself carries
+instance it provisions serves requests. Neutron, Cinder and Nova also wait for
+the shared message bus to be delivered into their namespace. Neutron gates on
+`OVNReady` as well, and Nova on `PlacementReady`. OVN itself carries
 none, because the `OVNCentral` it mirrors is deployed outside the plane and
 nothing this chain produces can converge it.
 
-The last two members carry **no** gate, and their order in the group is what
-makes that safe. ServiceAccounts only folds the registration children the four
+The three members that close the group depend on their order in it.
+ServiceAccounts carries **no** gate: it only folds the registration children the
 service legs wrote earlier in the same pass, so it must run after them and has
-nothing to defer. RegistrationTenantStores consumes no condition this chain
-produces — the trio it writes depends on cert-manager and OpenBao alone, exactly
+nothing to defer. KORCCatalogRefresh is gated on the `ServiceAccountsReady` that
+ServiceAccounts has just written, so it acts on the same pass's aggregate (see
+[reconcileKORCCatalogRefresh](#reconcilekorccatalogrefresh)).
+RegistrationTenantStores carries no gate either. It consumes no condition this
+chain produces — the trio it writes depends on cert-manager and OpenBao alone, exactly
 like its blocking-prefix twin — and sits in the group rather than in that prefix
 so a namespace the control plane does not own can never park DBCredentials,
 AdminPassword and Keystone behind it.
@@ -575,8 +501,8 @@ pipeline := []commonreconcile.Step{
             []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
                 // KORC, AdminCredential, Catalog, Glance, Placement,
-                // Barbican, OVN, Neutron, ServiceAccounts,
-                // RegistrationTenantStores
+                // Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
+                // KORCCatalogRefresh, RegistrationTenantStores
             })
     }},
 }
@@ -593,9 +519,9 @@ This guarantees:
 2. **Group (phase 2) — every member runs each pass.** No member's non-zero
    result or error prevents a later member from running, so a still-converging
    or failing Horizon no longer parks KORC, the AdminCredential/Catalog
-   identity bootstrap, Glance, Placement, Barbican, OVN, Neutron, or the two
-   ungated members that close the group. Each member's condition therefore
-   always persists.
+   identity bootstrap, Glance, Placement, Barbican, OVN, Neutron, Cinder,
+   Nova, or the three members that close the group. Each member's condition
+   therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
    is nil. When one or more members error, the group returns `ctrl.Result{}`
@@ -643,8 +569,9 @@ return or final), a stale status is always distinguishable from a current one.
 
 ### Ready Condition Aggregation
 
-After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether every
-sub-condition type is `True` using `aggregateReady()`, which delegates to
+On every status write, including a pass that ends early, `setReadyCondition()`
+evaluates whether every sub-condition type is `True` using `aggregateReady()`,
+which delegates to
 `conditions.AllTrue(conds, subConditionTypes...)`:
 
 | All Sub-Conditions True | Ready Condition | Reason | Message |
@@ -656,7 +583,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
+SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, CinderReady, NovaReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -675,15 +602,16 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set), then `barbican` (present when `spec.services.barbican` is set), then `neutron` (present when `spec.services.neutron` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
+| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set), then `barbican` (present when `spec.services.barbican` is set), then `neutron` (present when `spec.services.neutron` is set), then `cinder` (present when `spec.services.cinder` is set), then `nova` (present when `spec.services.nova` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
 
 ---
 
 ## Sub-Reconciler Contracts
 
-Each sub-reconciler owns exactly one Ready sub-condition. The tables below give
-each one's gate, what it projects/owns, and the condition reasons it sets on the
-`True`, requeue, and error paths. All condition constants are the exported
+Each sub-reconciler owns exactly one Ready sub-condition, except
+[`reconcileKORCCatalogRefresh`](#reconcilekorccatalogrefresh), which owns none.
+The tables below give each one's gate, what it projects/owns, and the condition
+reasons it sets on the `True`, requeue, and error paths. All condition constants are the exported
 source-of-truth strings in `controlplane_controller.go`; sub-reconcilers
 reference the constants (never inline literals) so a rename is a compile error
 and is caught by the no-inline-literals drift guard.
@@ -783,9 +711,11 @@ to the same cluster (`sameTargetCluster` compares the two
 [`targetClusterRef`](../target-clusters.md)s, with "no ref" meaning the
 management cluster), the public URL as soon as they do not.
 
-- **The four dependents of Keystone.** `horizonKeystoneEndpoint`,
-  `glanceKeystoneEndpoint`, `placementKeystoneEndpoint` and
-  `barbicanKeystoneEndpoint` compare their own service's ref against Keystone's.
+- **The seven dependents of Keystone.** `horizonKeystoneEndpoint`,
+  `glanceKeystoneEndpoint`, `placementKeystoneEndpoint`,
+  `barbicanKeystoneEndpoint`, `neutronKeystoneEndpoint`,
+  `cinderKeystoneEndpoint` and `novaKeystoneEndpoint` compare their own
+  service's ref against Keystone's.
   A service that shares Keystone's cluster keeps the conventional
   `http://{controlplane.Name}-keystone.<keystone-namespace>.svc:5000/v3`; one on
   another cluster gets `keystonePublicEndpoint` — `services.keystone.publicEndpoint`
@@ -795,9 +725,10 @@ management cluster), the public URL as soon as they do not.
   are read by K-ORC, which always runs on the management cluster wherever the
   ControlPlane places its services, so they render the public URL as soon as
   Keystone names a cluster — a placed Keystone's Service DNS name is an address
-  K-ORC cannot dial. A service account's `clouds.yaml` is read on the cluster its
-  delivery namespace lives on, so that namespace's ref is what it resolves
-  against. External mode is untouched, and a co-located Keystone renders the
+  K-ORC cannot dial. A registration's `clouds.yaml` is rendered with no
+  target-cluster ref, because a registration is delivered on the management
+  cluster. It resolves like a document read there. External mode is untouched,
+  and a co-located Keystone renders the
   in-cluster URL byte for byte as before.
 - **The catalog.** A placed service registers its public URL on its `internal`
   interface as well as its `public` one (`internalCatalogURL`), because that
@@ -805,7 +736,8 @@ management cluster), the public URL as soon as they do not.
   The identity row is unaffected: it registers a public interface only.
 
 Admission is what keeps those public URLs from being empty. A placed catalog
-service (keystone, glance, placement, barbican) must declare a `publicEndpoint`
+service (keystone, glance, placement, barbican, neutron, cinder, nova) must
+declare a `publicEndpoint`
 or a `gateway`, and Keystone must declare one as soon as ANY other service is
 placed away from it — the per-service rule only reaches a service carrying a ref
 of its own, so an unplaced Keystone would otherwise leave every dependent child
@@ -957,23 +889,25 @@ the uWSGI, Job and Glance launch-mode helpers. See
 | --- | --- |
 | File | `reconcile_namespaces.go` |
 | Condition | `NamespacesReady` |
-| Gate | none (runs first) |
+| Gate | none (second in the prefix, after `reconcileSizing`) |
 | Projects / Owns | `Namespace` objects for every service placed in a namespace of its own under the `Managed` lifecycle, on the management cluster and on the target cluster of a service that names one |
 | Requeue | `namespaceRequeueAfter` = **15s** while a namespace is unusable |
 
 `reconcileNamespaces` ensures the namespaces the ControlPlane's services are
 placed in outside its own (see
 [Service Namespaces](./controlplane-crd.md#service-namespaces)), and runs
-**first** because every later sub-reconciler projects into one of them — applying
-into a namespace that does not exist fails with an error naming neither the
-ControlPlane nor the assignment behind it. A ControlPlane with no assignments (the
-default) has nothing to ensure and reports `NamespacesReady=True` immediately, so
-the step costs nothing on the common path.
+ahead of every sub-reconciler that projects, because each of them projects into
+one of them — applying into a namespace that does not exist fails with an error
+naming neither the ControlPlane nor the assignment behind it. A ControlPlane
+with no assignments (the default) has nothing to ensure and reports
+`NamespacesReady=True` immediately, so the step costs nothing on the common
+path.
 
 The two lifecycles are asymmetric. Under **`Managed`** the operator creates the
 namespace and stamps it with the ownership labels plus
-`app.kubernetes.io/managed-by`, and on a target cluster the annotation
-`c5c3.io/controlplane-uid` as well; a namespace that already exists without the
+`app.kubernetes.io/managed-by`, and the annotation `c5c3.io/controlplane-uid`,
+which holds the ControlPlane's UID. Adoption requires it on a target cluster. A
+namespace that already exists without the
 labels is **never adopted** — the condition fails loud rather than taking over a
 namespace it did not create. On a target cluster the mark is required on top of
 them, because the labels alone are forgeable there: both are derived from the CR's
@@ -1278,10 +1212,9 @@ The database is **managed** when the effective `clusterRef` is set and
   and never references OpenBao or the selected secret store; `DBCredentialsReady`
   is reported `True` immediately so the chain proceeds to Keystone.
 - **Managed defaults to Dynamic (engine-issued).** After gating (via
-  `secrets.IsStoreRefReady`) on the store the ControlPlane selected through
-  `spec.secretStoreRef` — a `ClusterSecretStore` (default `openbao-cluster-store`)
-  or a namespaced `SecretStore` resolved in `childNamespace(cp)` — the operator
-  projects (all owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
+  `secrets.IsStoreRefReady`) on the
+  [ControlPlane's store](#reconcileesotenantstore), the operator projects (all
+  owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
   `Certificate` from the cluster-scoped `openbao-ca-issuer`, a
   `generators.external-secrets.io/v1alpha1` `VaultDynamicSecret` reading
   `database/mariadb/creds/keystone-{cp.Namespace}`
@@ -1298,8 +1231,8 @@ The database is **managed** when the effective `clusterRef` is set and
   static DB password remains at rest.
 - **Managed Static is the opt-out** — and the only mode a **dedicated** managed
   database has. The operator projects the stage-(a) KV-backed `ExternalSecret`
-  (`SecretStoreRef` the selected store — default `openbao-cluster-store`, built via
-  `secrets.ESOSecretStoreRef` — with `username`/`password` `Data` reading
+  (`SecretStoreRef` the [ControlPlane's store](#reconcileesotenantstore), built
+  via `secrets.ESOSecretStoreRef`, with `username`/`password` `Data` reading
   `openstack/keystone/{cp.Namespace}/{cp.Name}/db`) and tears down any leftover
   dynamic-mode objects.
 
@@ -1366,9 +1299,8 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
   Keystone.
 - **Managed projects the ExternalSecret.** The owned ExternalSecret has
   `RefreshInterval` 1h, its `SecretStoreRef` built from the ControlPlane's
-  `spec.secretStoreRef` via `secrets.ESOSecretStoreRef` (default
-  `Kind: ClusterSecretStore, Name: openbao-cluster-store`; a namespaced
-  `SecretStore` when selected),
+  `spec.secretStoreRef` via `secrets.ESOSecretStoreRef` (default: the
+  [ControlPlane's store](#reconcileesotenantstore)),
   and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
   same name). Its single `password` `Data` key reads from the per-CP remote key
   `bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin`
@@ -1460,7 +1392,8 @@ the ControlPlane provisioned:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/keystone` with the tag derived
   from `spec.openStackRelease`; `spec.services.keystone.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database / Cache:** `keystone.Spec.Database` and `keystone.Spec.Cache` are
   DeepCopies of the **effective** instances — the service's
   [dedicated](./controlplane-crd.md#dedicatedbackingservices) database/cache when
@@ -1486,7 +1419,8 @@ the ControlPlane provisioned:
   `spec.federation.proxyResources`. Every field is assigned on every pass.
 - **Federation:** `spec.federation.proxyImage` is the
   `spec.services.keystone.federationProxyImage` override when set, else
-  `ghcr.io/c5c3/keystone-federation-proxy:latest`;
+  `ghcr.io/c5c3/keystone-federation-proxy:latest`, either with
+  `spec.imagePullPolicy` when it names no `pullPolicy` of its own;
   `spec.federation.trustedDashboards` is the ControlPlane's own dashboard origin
   (`cp.Spec.Services.Horizon.DerivedPublicEndpoint() + "/auth/websso/"`), or `nil` when no dashboard is
   externally reachable. Both are assigned unconditionally, so clearing the
@@ -1553,7 +1487,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/horizon` with the tag derived
   from `spec.openStackRelease`; `spec.services.horizon.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveHorizonCache`) —
   the dashboard's [dedicated](./controlplane-crd.md#dedicatedbackingservices)
   cache when it opted into one, the shared `spec.infrastructure.cache` otherwise
@@ -1733,10 +1668,10 @@ the `ServiceRegistrationFieldsReclaimed` condition record it: an event ages out 
 etcd on the cluster's TTL, and without the condition a tampering remediated at
 02:00 would leave the ControlPlane reporting `Ready=True` with no durable trace.
 
-**One registration carries no catalog entry at all.** Both spec blocks of a
+**Two registrations carry no catalog entry at all.** Both spec blocks of a
 `KeystoneService` are optional, so a registration naming only the account
 provisions the Keystone user and touches the catalog not at all.
-`desiredNeutronNovaNotifierRegistration` builds the one such registration: the
+`desiredNeutronNovaNotifierRegistration` builds one of them: the
 `{controlplane.Name}-neutron-nova` child carrying the user the network service
 posts its port-status notifications to the compute service as. A user another
 service authenticates as answers no requests itself, so it has no endpoint to
@@ -1749,7 +1684,10 @@ service's own registration does not: nova resolves the instance behind a notifie
 port with the caller's own context, unelevated, so an account holding `service`
 alone has every notification answered 404 and leaves the port in `BUILD`. Every
 other rule `builtinRegistration` documents holds here too, the explicit
-ControlPlane namespace and the unset `adopt` flags among them.
+ControlPlane namespace and the unset `adopt` flags among them. The other is
+`{controlplane.Name}-nova-hypervisor-operator`, which
+`desiredNovaHypervisorOperatorRegistration` builds while
+`services.nova.hypervisorOperator` is set.
 
 **Credentials follow a placed service.** For a service on a target cluster the leg
 mirrors the registration's consumer credentials there
@@ -1777,27 +1715,30 @@ aggregate condition over every projected registration, see
 | Condition | `GlanceReady` |
 | Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — the per-ControlPlane DB-credential objects in the Glance service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `glance-db-creds`, an mTLS client Certificate `{controlplane.Name}-glance-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/glance-{glance-namespace}` (auth role `glance-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-glance-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `infraRequeueAfter` = **15s** while the child is not Ready |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
-`reconcileGlance` runs **last** in the pipeline (after `reconcileServiceAccounts`),
-because it gates on the per-account readiness that stage computes into status in
-the same pass. It is optional: `spec.services.glance` unset means this ControlPlane
-manages no image service, and the sub-reconciler reports `GlanceReady=True` /
-`GlanceNotManaged` so the aggregate is not blocked (staged adoption). A
-previously-projected child — and its `GlanceBackend` children, DB-credential
-ExternalSecret, and (from a prior Dynamic deployment) the `VaultDynamicSecret`
-generator, its client Certificate, and the `glance-db-creds` ServiceAccount — is
-**preserved** unless the ControlPlane opts in with
-`c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the image catalog
-K-ORC CRs, are deleted). Cross-namespace children are ownership-checked, so a
-hand-created `GlanceBackend` sharing the namespace is never touched.
+`reconcileGlance` is the fifth member of the tail group and runs before
+`reconcileServiceAccounts`. It gates on the `AccountReady` of the registration
+it projects itself, and `reconcileServiceAccounts` folds that registration later
+in the same pass. It is optional: `spec.services.glance` unset means this
+ControlPlane manages no image service, and the sub-reconciler reports
+`GlanceReady=True` / `GlanceNotManaged` so the aggregate is not blocked (staged
+adoption). A previously-projected child — and its `GlanceBackend` children,
+DB-credential ExternalSecret, and (from a prior Dynamic deployment) the
+`VaultDynamicSecret` generator, its client Certificate, and the
+`glance-db-creds` ServiceAccount — is **preserved** unless the ControlPlane opts
+in with `c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the
+image catalog K-ORC CRs, are deleted). Cross-namespace children are
+ownership-checked, so a hand-created `GlanceBackend` sharing the namespace is
+never touched.
 
 When managed, the projection mirrors the Keystone/Horizon *thin* discipline,
 reusing the ControlPlane's own specs so Glance points at the same backing services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/glance` with the tag derived
   from `spec.openStackRelease`; `spec.services.glance.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database (`effectiveGlanceDatabase`
   — Glance's [dedicated](./controlplane-crd.md#dedicatedbackingservices) database
   when it opted into one, the shared `spec.infrastructure.database` otherwise) with
@@ -1889,9 +1830,9 @@ unowned, and the finalizer sweeps it by those labels.
 | Projects / Owns | one `Placement` child named `{controlplane.Name}-placement` (`placementNameSuffix`) in `cp.PlacementNamespace()`; and, on a managed database only, the per-ControlPlane DB-credential objects in the Placement service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `placement-db-creds`, an mTLS client Certificate `{controlplane.Name}-placement-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/placement-{placement-namespace}` (auth role `placement-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-placement-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/placement/{placement-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.placement` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `placement` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
-`reconcilePlacement` runs after `reconcileServiceAccounts` (and after
-`reconcileGlance`, last in the pipeline) because it gates on the per-account
-readiness that stage computes into status in the same pass. It is optional:
+`reconcilePlacement` is the sixth member of the tail group, after
+`reconcileGlance` and before `reconcileServiceAccounts`. It gates on the
+`AccountReady` of the registration it projects itself. It is optional:
 `spec.services.placement` unset means this ControlPlane manages no placement
 service, and the sub-reconciler reports `PlacementReady=True` /
 `PlacementNotManaged` so the aggregate is not blocked (staged adoption). A
@@ -1916,7 +1857,8 @@ points at the same backing services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/placement` with the tag derived
   from `spec.openStackRelease`; `spec.services.placement.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectivePlacementDatabase`: Placement's
   [dedicated](./controlplane-crd.md#dedicatedbackingservices) database when it
@@ -2035,7 +1977,8 @@ Horizon, Glance, and Placement siblings:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/barbican` with the tag derived
   from `spec.openStackRelease`; `spec.services.barbican.image` overrides the
-  whole image reference when set.
+  whole image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectiveBarbicanDatabase`: Barbican's
   [dedicated](./controlplane-crd.md#barbicandedicatedbackingservicesspec)
@@ -2134,7 +2077,7 @@ on both clusters.
 The instance's `spec.network` carries two allowlists. `trustedIngressPeers` names
 the barbican operator's pods and the Barbican API pods, the only sources admitted
 to the API port. `apiServerEndpointIPs` is the egress half, and
-`resolveAPIServerEndpoints` resolves it per pass from the EndpointSlice
+`resolveAPIServerAccess` resolves it per pass from the EndpointSlice
 `kubernetes` in `default` **on the cluster the instance runs on**, deduplicated
 and sorted. The policy is enforced by the CNI there, over pods that reach their
 own API server, so for a placed Barbican the management cluster's addresses would
@@ -2155,12 +2098,38 @@ the slice's port (kube-apiserver publishes one, `https`) and projects
 port, in the same sorted order. On kind the rules duplicate the operator's own. A
 slice that carries addresses but no port is refused like an empty one.
 
+The same pass reads the Service `kubernetes` in `default` on that cluster and
+writes `https://<ClusterIP>:<port>` as the `kubernetes_host` of the instance's
+Kubernetes auth method, the address OpenBao sends its TokenReviews to. The
+ClusterIP rather than the name `kubernetes.default.svc`, because the name needs a
+lookup and the operator-rendered NetworkPolicy admits DNS on port 53 alone. Where
+the resolver answers on another port behind its Service (Gardener's CoreDNS
+listens on 8053, and a CNI enforcing post-DNAT sees that port) the lookup is
+dropped, every login through the auth method waits out its deadline, and the
+store reports `ProvisioningReady=False/OpenBaoUnreachable`. The ClusterIP needs no
+lookup and is a subject alternative name of the API server's certificate on
+every cluster, which the endpoint addresses are not (Gardener's advertise address
+is absent from it). A Service without a ClusterIP or port is refused like an
+empty slice.
+
+Once the instance exists, `spec.selfInit` is carried over from it like
+`spec.storage`: self-init ran once against its storage, and the openbao-operator
+ignores the field on an initialised instance, so a re-projected host would
+change nothing inside OpenBao. An instance created before the operator wrote the
+ClusterIP therefore keeps `https://kubernetes.default.svc`, in its spec and in
+`auth/kubernetes/config`. Where that name resolves for the instance pods nothing
+changes. Where it does not, as on a Gardener shoot, the store stays at
+`ProvisioningReady=False/OpenBaoUnreachable`. Deleting the `OpenBaoCluster` has
+the next pass recreate it with the ClusterIP, but `deletionPolicy: DeletePVCs`
+takes its PVC and every secret Barbican stored in it, so do that only while the
+store holds nothing Barbican still needs. For a placed Barbican, grant the
+Service read on the target before upgrading the operator (see
+[Target Clusters](../target-clusters.md)).
+
 That resolution fails closed. An instance created without the egress rules is
-recoverable only by deleting it together with its PVC, so a pass that cannot resolve
-the addresses writes no `OpenBaoCluster` at all and reports
-`BarbicanReady=False/BarbicanOpenBaoError`. Under `rbac.namespaceScoped`, where the
-operator's Role cannot read across into `default`, every dedicated store takes that
-path.
+recoverable only by deleting it together with its PVC, and self-init is one-shot,
+so a pass that cannot resolve the addresses or the Service writes no
+`OpenBaoCluster` at all and reports `BarbicanReady=False/BarbicanOpenBaoError`.
 
 The store, and with it the child, waits until the instance is `Available`
 (`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an
@@ -2338,7 +2307,8 @@ the same backing services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/neutron` with the tag derived
   from `spec.openStackRelease`; `spec.services.neutron.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database
   (`effectiveNeutronDatabase`: Neutron's
   [dedicated](./controlplane-crd.md#neutrondedicatedbackingservicesspec) database
@@ -2481,7 +2451,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/cinder` with the tag derived
   from `spec.openStackRelease`; `spec.services.cinder.image` overrides the whole
-  image reference when set.
+  image reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Database:** a DeepCopy of the **effective** database (`effectiveCinderDatabase`:
   Cinder's [dedicated](./controlplane-crd.md#cinderdedicatedbackingservicesspec)
   database when it opted into one, the shared `spec.infrastructure.database`
@@ -2663,7 +2634,8 @@ services:
 
 - **Image:** repository defaults to `ghcr.io/c5c3/nova` with the tag derived from
   `spec.openStackRelease`; `spec.services.nova.image` overrides the whole image
-  reference when set.
+  reference when set. An image without a `pullPolicy` of its own
+  takes `spec.imagePullPolicy` (`withControlPlanePullPolicy`).
 - **Two databases:** both blocks are a DeepCopy of the **effective** database
   (`effectiveNovaDatabase`: Nova's
   [dedicated](./controlplane-crd.md#novadedicatedbackingservicesspec) database
@@ -2912,7 +2884,7 @@ unowned, and the finalizer sweeps it by those labels.
 | Condition | `KORCReady` |
 | Gate | none (but defers until the admin-password Secret is readable) |
 | Projects / Owns | one K-ORC `ApplicationCredential` named `{controlplane.Name}-admin-app-credential` and the password-based clouds.yaml Secret `{controlplane.Name}-admin-password-cloud`, both in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while deferring, while the CRD is missing, while a re-mint is in progress, or while the AC is not yet Available |
+| Requeue | `korcRequeueAfter` = **10s** while deferring, while a re-mint is in progress, or while the AC is not yet Available |
 
 `reconcileKORC` create-or-updates an **owned** K-ORC `ApplicationCredential` CR
 that instructs K-ORC to mint the admin application credential, and drives re-mint. Key behaviours:
@@ -3121,17 +3093,18 @@ digest and drives a hash-driven re-mint.
 | --- | --- |
 | File | `reconcile_admincredential.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True`, the store selected via `spec.secretStoreRef` (default the OpenBao-backed cluster store `openbao-cluster-store`) is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
+| Gate | `KORCReady == True`, the [ControlPlane's store](#reconcileesotenantstore) is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while any gate is unmet (including a stale/absent materialised clouds.yaml) |
 
 `reconcileAdminCredential` commits the minted credential and mirrors it to
 OpenBao:
 
-- **Clobber-safe operator Secret.** The Secret K-ORC writes the minted
-  credential into is ensured by the operator, but the `CreateOrUpdate` mutate
-  closure **never touches `secret.Data`** — only the owner reference. K-ORC owns
-  the data, so a reconcile can never overwrite a freshly minted credential.
+- **Operator-owned Secret.** The operator generates key `value` of
+  `{name}-admin-app-credential` once and keeps it across reconciles, because a
+  new value would force a re-mint. K-ORC only reads `value` and passes it to
+  Keystone. `reconcileAdminCredential` writes key `clouds.yaml` and skips the
+  write when the content is unchanged.
 - **clouds.yaml gate.** Readiness is checked via
   `secrets.WaitForExternalSecret(childNamespace(cp)/CloudCredentialsRef.SecretName)`
   so the credential is never published before K-ORC can actually authenticate.
@@ -3146,16 +3119,14 @@ OpenBao:
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (applied via server-side
   apply under a fixed field manager that owns only the fields the operator sets,
   so repeated applies of an unchanged desired spec are no-ops at the API server)
-  builds the PushSecret to the selected store (default `openbao-cluster-store`;
-  its store ref comes from `spec.secretStoreRef` via `secrets.PushSecretStoreRefs`,
+  builds the PushSecret to the [ControlPlane's store](#reconcileesotenantstore)
+  (its store ref comes from `spec.secretStoreRef` via `secrets.PushSecretStoreRefs`,
   and switching the ref moves the push in place — unchanged name and remote key) at
   the per-ControlPlane remote
   key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
-  (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: None`** — the
-  admin credential is a per-ControlPlane persistent bootstrap secret, so deleting
-  the PushSecret on ControlPlane teardown (or when rotation is disabled) leaves the
-  last-pushed credential intact in OpenBao at that CR's own path, so re-adoption
-  works and the admin is never locked out.
+  (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: Delete`**; see
+  [Security invariant](#security-invariant) for why the credential leaves
+  OpenBao with the ControlPlane.
 - **Forced re-push on credential change.** ESO's PushSecret controller does
   **not** watch its source Secret: its refresh gate reacts only to the PushSecret
   object's own label/annotation hash, so a source-Secret update — e.g. the
@@ -3476,6 +3447,119 @@ the projected `KeystoneService` children and waits for them, because their K-ORC
 CRs belong to the registration and its controller tears them down through the
 admin credential the next step revokes.
 
+### reconcileKORCCatalogRefresh
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_korc_catalog_refresh.go` |
+| Condition | none; its errors are counted under `condition_type="KORCReady"` (see [Metrics Instrumentation](#metrics-instrumentation)) |
+| Gate | `ServiceAccountsReady == True`, which [`reconcileServiceAccounts`](#reconcileserviceaccounts) wrote earlier in the same pass |
+| Writes | one pod-template annotation on `Deployment orc-system/orc-controller-manager` |
+| Requeue | none |
+
+K-ORC keeps one provider client per `clouds.yaml` cloud for half the token
+lifetime, and that client carries the service catalog of the token it logged in
+with. A service registered after the ControlPlane's first K-ORC login is missing
+from that catalog, so a K-ORC `Flavor`, `Network`, `Subnet` or `VolumeType` that
+needs it fails with `No suitable endpoint could be found in the service catalog`
+until the cache expires. The cache lives in the K-ORC process and has no eviction
+API; only a new process starts with an empty one
+([k-orc/openstack-resource-controller#941](https://github.com/k-orc/openstack-resource-controller/issues/941)).
+This member rolls the K-ORC pod once the catalog registered through the
+ControlPlane has settled on a value K-ORC has not seen.
+
+**The epoch.** `korcCatalogEpoch` reads every `KeystoneService` registered
+through the ControlPlane, found through the `spec.controlPlaneRef` field index:
+the projected built-in children and the standalone registrations from
+allowlisted namespaces alike.
+
+1. A registration counts when it declares `spec.catalog`, is not Terminating and
+   comes from a namespace the ControlPlane admits: its own, a dedicated service
+   namespace, or one in `spec.korc.serviceRegistrations.allowedNamespaces`. A
+   registration from any other namespace projects nothing and stays
+   `CatalogReady=False` with reason `NamespaceNotAllowed`, so it never holds the
+   epoch. The account-only registrations (the network service's compute
+   notifier, the hypervisor operator) never count.
+2. A counted registration is settled when its `CatalogReady` is `True` at its
+   current generation. One unsettled registration leaves the pass without an
+   epoch, so an edited endpoint URL changes nothing until Keystone has the new
+   row.
+3. With no counted registration there is nothing to record.
+4. Otherwise the epoch is the first 16 hex characters of a SHA-256 over the
+   ControlPlane's UID followed by, per registration in namespace/name order, its
+   `<namespace>/<name>`, service type, service name (the CR name when unset) and
+   one `<interface>=<url>` per endpoint in interface order.
+
+The UID is part of the epoch because a deleted and re-created ControlPlane of
+the same name logs into K-ORC with a new credential before its services are
+registered. It needs a new pod although its registrations match the old ones.
+The recipe is pinned by `TestKORCCatalogEpoch_HashesTheDocumentedByteStream`:
+changing it changes every epoch, and the first pass after such an upgrade rolls
+the pod once per ControlPlane.
+
+**The rollout.** The epoch is recorded on the pod template of
+`Deployment orc-system/orc-controller-manager` under the key
+`c5c3.io/korc-catalog-epoch-<hash>`, where `<hash>` is the first 10 hex
+characters of the SHA-256 of the ControlPlane's `<namespace>/<name>`. The value
+is `<namespace>/<name>=<epoch>`, so a reader of the Deployment sees which
+ControlPlane wrote which key, and several ControlPlanes share one K-ORC without
+overwriting each other. A changed pod template is what `kubectl rollout restart`
+writes: the Deployment controller replaces the pod, and the new process logs in
+against the current catalog.
+
+The member reads the Deployment through the uncached reader, so no Deployment
+informer starts, and sends a JSON merge patch that carries only its own key
+under the field manager `cobaltcore-operator`. The `k-orc` Flux Kustomization
+reverts fields a `kubectl` manager owns and leaves this one alone, so the key
+stays and no rollout loop forms (see the
+[K-ORC manifests](../infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller)).
+
+| Path | Result | Event |
+| --- | --- | --- |
+| `ServiceAccountsReady` absent or not `True` | returns before any read | none |
+| a counted registration is unsettled | nothing written | none |
+| no registration declares a catalog entry | nothing written | none |
+| the recorded value equals the epoch | nothing written | none |
+| the epoch changed | patches the annotation; the K-ORC pod rolls | `Normal` `KORCRestarted` |
+| the Deployment Get or Patch answers NotFound or Forbidden, or admission denies the Patch (BadRequest from a webhook, Invalid from a ValidatingAdmissionPolicy) | nothing written, nil error | `Warning` `KORCRestartSkipped` |
+| any other List, Get or Patch error | returns the wrapped error | none |
+
+`KORCRestarted` reads `restarted Deployment orc-system/orc-controller-manager:
+the service catalog registered through ControlPlane <namespace>/<name> changed`,
+and the same line is logged at info level. `KORCRestartSkipped` reads
+`Deployment orc-system/orc-controller-manager cannot be restarted (<err>); K-ORC
+keeps its cached service catalog for up to half a token lifetime`. A missing or
+forbidden Deployment, or a denied patch, is no error, because the outcome is the
+behavior without this member, and an error would hold the whole ControlPlane in
+a permanent backoff: every retry meets the same refusal.
+
+**Why the gate.** The built-in registrations are projected one after another.
+Without the gate each one turning Ready would settle the list again and roll
+the pod again. `ServiceAccountsReady` turns `True` only once every projected
+child is Ready, so a bring-up costs one rollout.
+
+**What a rollout costs and what it misses.**
+
+- It interrupts K-ORC for every ControlPlane on the cluster. K-ORC retries a
+  failed resource once the new pod runs; the ControlPlane's `Ready` does not
+  wait for the rollout.
+- The first pass after an operator upgrade finds no key and rolls the pod once
+  for each ControlPlane with settled catalog registrations.
+- A registration's deletion changes the epoch as soon as it starts, so the pod
+  rolls during that registration's teardown and the new process resumes it.
+- A deleted ControlPlane's key stays on the Deployment. Removing it would change
+  the pod template in the middle of that ControlPlane's teardown, which K-ORC
+  itself executes.
+- A projected child's status change wakes the plane through its ownership legs.
+  A standalone registration's status change starts no pass (its watch leg drops
+  status-only writes), so the epoch it settles is read on the plane's next pass.
+- A service registered in Keystone outside a `KeystoneService`, for example
+  with the OpenStack CLI, is invisible to the operator and waits for the cache
+  to expire as before.
+
+The member is a workaround. [#1202](https://github.com/C5C3/cobaltcore/issues/1202)
+replaces it with the upstream fix once K-ORC evicts the stale client.
+
 ### reconcileRegistrationTenantStores
 
 | Aspect | Value |
@@ -3637,41 +3721,57 @@ field indexers.
 ## K-ORC admin credential chain
 
 The end-to-end path that delivers the admin application credential to the K-ORC
-controller spans three sub-reconcilers and the ESO/OpenBao backend:
+controller spans four sub-reconcilers (`reconcileAdminPassword`,
+`reconcileKORC`, `reconcileAdminCredential`, `reconcileCatalog`) and the
+ESO/OpenBao backend.
 
-```text
-OpenBao kv  bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin   (admin password)
-        │  (managed mode; reconcileAdminPassword, owner-ref'd to the ControlPlane)
-        ▼
-ExternalSecret  →  {control-plane ns}/{controlplane.Name}-keystone-admin-credentials
-        │            (ESO owns the materialised Secret; CreationPolicy: Owner)
-        ▼
-admin-password Secret (the effective admin-password ref; read by c5c3-operator)
-        │  SHA-256 → cobaltcore.c5c3.io/admin-password-hash annotation
-        ▼
-c5c3-operator mints a RESTRICTED ApplicationCredential        (reconcileKORC)
-   restricted:true  ⇒  K-ORC spec.resource.unrestricted=false  (INVERSION)
-        │
-        ▼
-K-ORC writes the minted credential into the operator-owned Secret
-   {controlplane.Name}-admin-app-credential   (Resource.SecretRef target)
-        │
-        ▼  (reconcileAdminCredential, gated on KORCReady + clouds.yaml ES)
-PushSecret  →  OpenBao kv  openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
-   (DeletionPolicy: None — per-ControlPlane bootstrap secret survives teardown;
-    ESO does not watch the source Secret, so a content-hash annotation nudge
-    forces the re-push on credential change, and the clouds.yaml force-sync
-    below is keyed on that hash + the completed push's syncedResourceVersion)
-        │
-        ▼
-ExternalSecret  →  {control-plane ns}/k-orc-clouds-yaml  (the clouds.yaml gate;
-        │            operator-created per-CR by reconcileKORC, owner-ref'd to
-        │            the ControlPlane; the orc-system copy is the retained
-        │            STATIC manifest for K-ORC's global mount)
-        ▼
-K-ORC controller authenticates with the admin clouds.yaml and reconciles
-   the catalog Service + Endpoint                              (reconcileCatalog)
-```
+The path passes OpenBao twice. The numbers in the figure are the steps below.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
+
+1. ESO reads property `password` of
+   `kv-v2/bootstrap/{keystone namespace}/{cp}-keystone/admin` into the Secret
+   `{cp}-keystone-admin-credentials`. `reconcileAdminPassword` creates the
+   ExternalSecret in managed mode, owner-referenced to the ControlPlane. The
+   Keystone namespace is the ControlPlane namespace unless
+   `spec.services.keystone.namespace` is set.
+2. `reconcileKORC` reads the password, writes the Secret
+   `{cp}-admin-password-cloud` with a password-based `clouds.yaml` on every
+   pass, and keeps the SHA-256 of the password for the
+   `cobaltcore.c5c3.io/admin-password-hash` annotation. Until the password
+   exists: `KORCReady=False`, reason `WaitingForAdminPassword`.
+3. `reconcileKORC` writes the Secret `{cp}-admin-app-credential`. Its key
+   `value` is the secret of the future application credential, 32 random bytes
+   that the operator generates. Its key `clouds.yaml` is seeded with the
+   password-based document while it is empty (`seedBootstrapCloudsYAML`).
+4. ESO pushes the Secret whole through the PushSecret
+   `{cp}-admin-app-credential-backup` to
+   `kv-v2/openstack/keystone/{ns}/{cp}/admin/app-credential`. The deletion
+   policy is `Delete`: the key leaves OpenBao with the ControlPlane.
+5. ESO reads property `clouds.yaml`, and `cacert` when a CA bundle is set, into
+   the Secret that `spec.korc.adminCredential.cloudCredentialsRef.secretName`
+   names, by default `k-orc-clouds-yaml`, in the ControlPlane namespace
+   (`ensureKORCCloudsYAMLExternalSecret`, refresh 1h, `creationPolicy: Owner`,
+   owner-referenced to the ControlPlane). `orc-system` holds no copy: K-ORC
+   resolves the `cloudCredentialsRef` of a resource in that resource's own
+   namespace.
+6. K-ORC resolves the unmanaged imports `Domain` `{cp}-domain-default` and
+   `User` `{cp}-user-admin` with `k-orc-clouds-yaml`, which still carries the
+   password.
+7. K-ORC creates the `ApplicationCredential` `{cp}-admin-app-credential` in
+   Keystone. It authenticates with `{cp}-admin-password-cloud` and passes
+   `value` as the secret. `restricted: true`, the default, becomes
+   `unrestricted: false` on the K-ORC resource. `KORCReady` turns True with
+   reason `ApplicationCredentialMinted`.
+8. `reconcileAdminCredential` takes the credential id from the ControlPlane
+   status, overwrites key `clouds.yaml` of `{cp}-admin-app-credential` with the
+   application-credential document, and stamps `c5c3.io/push-content-hash` on
+   the PushSecret, because ESO does not watch the source Secret. Steps 4 and 5
+   run a second time. The operator force-syncs the ExternalSecret and sets
+   `AdminCredentialReady=True` once the id and the secret in
+   `k-orc-clouds-yaml` match.
+9. K-ORC authenticates with the application credential and reconciles the
+   catalog `Service` and `Endpoint` resources (`reconcileCatalog`).
 
 **Re-mint trigger.** A rotation is signalled by comparing
 `SHA-256(admin password)` against the `cobaltcore.c5c3.io/admin-password-hash`
@@ -3680,7 +3780,9 @@ they differ; the CredentialRotation reconciler forces the same path by clearing
 the annotation (which guarantees a mismatch). The admin-password Secret watch
 (see [Secret Field Indexer](#secret-field-indexer)) wakes the ControlPlane the
 moment the password rotates so the chain converges without waiting for the next
-periodic requeue.
+periodic requeue. A change of `restricted` or `accessRules` re-mints as well,
+because K-ORC's `spec.resource` is immutable (`adminACResourceDrifted` in
+`reconcileKORC`).
 
 ---
 
@@ -3769,6 +3871,10 @@ the owning CR across operators, so a Keystone and a ControlPlane projecting into
 one target namespace each select only their own. Nothing on that cluster collects
 them, and no cascade crosses the boundary, so a second finalizer holds the
 ControlPlane in etcd until they are swept.
+
+The figure shows the three cases side by side.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../../diagrams/controlplane-children-placement.svg)
 
 ### Deletion ordering — the `c5c3.io/orc-teardown` finalizer
 
@@ -3863,10 +3969,11 @@ projected. On deletion it:
    so its residue (backing
    services, credential material, tenant-store trio last) is swept by name, each
    object ownership-checked so a same-named object belonging to somebody else in
-   that shared namespace is left alone. On a placed namespace both of those run
-   against that cluster's client, and the
-   [label-selected sweep](#placed-namespaces-remote-children)
-   follows them. While children remain the condition
+   that shared namespace is left alone. On a placed namespace both run against
+   that cluster's client. The
+   [label-selected sweep](#placed-namespaces-remote-children) runs after the
+   `External` residue sweep and before a `Managed` namespace is deleted. While
+   children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
    `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
@@ -3885,11 +3992,34 @@ projected. On deletion it:
    `authDelegatorBinding` — leaves the binding standing with a **Warning**
    `AuthDelegatorBindingNotReclaimed` naming it, rather than holding the
    ControlPlane in `Terminating` for a grant the target withdrew.
-6. **Deletes the managed message bus by hand, then releases the finalizers once
-   the ORC CRs, PushSecrets, cross-namespace children and the bus are gone**,
-   letting GC cascade-delete the same-namespace Keystone, the infrastructure,
-   and the remaining children. The `RabbitmqCluster` is the one same-namespace
-   child the cascade is not trusted with: GC deletes with background
+6. **Deletes the co-located Keystone and the managed message bus by hand, then
+   releases the finalizers once the ORC CRs, PushSecrets, cross-namespace
+   children, the Keystone and the bus are gone**, letting GC cascade-delete the
+   infrastructure and the remaining children. Both deletes run in the same pass,
+   so the Keystone wait cannot spend the bus's deadline.
+
+   A Keystone in the ControlPlane's own namespace owns two backup PushSecrets
+   with `deletionPolicy: Delete`, `<keystone>-fernet-keys-backup` and
+   `<keystone>-credential-keys-backup`. Its `openbao-finalizer` holds it until
+   ESO has purged their OpenBao paths, and that purge authenticates through the
+   per-tenant `SecretStore` and its `eso-tenant-auth` ServiceAccount. The cascade
+   deletes all of them at once and in no order. `deleteColocatedKeystoneBeforeRelease`
+   therefore deletes the Keystone itself, with background propagation, and holds
+   the finalizer until it has left etcd, reported as
+   `KeystoneReady=False/FinalizingKeystone` with a 15-second requeue. The delete
+   waits for the K-ORC CRs to go first, because K-ORC revokes and deletes through
+   the Keystone API. Only a Keystone this ControlPlane owns is deleted. External
+   mode projects none, and a cluster without the Keystone CRD has none, so
+   neither waits; a Keystone in a dedicated namespace belongs to step 4. Past
+   `orcTeardownDeadline` (7 minutes from the deletion timestamp, the deadline the
+   steps before it share) a **Warning** `KeystoneTeardownStalled` names the
+   Keystone and its paths `openstack/keystone/<namespace>/<keystone>/fernet-keys`
+   and `openstack/keystone/<namespace>/<keystone>/credential-keys`, and the
+   release proceeds on the cascade. Those paths may then keep their data and have
+   to be deleted by hand.
+
+   The `RabbitmqCluster` is the other same-namespace child the cascade is not
+   trusted with: GC deletes with background
    propagation, so the CR vanishes the instant the RabbitMQ Cluster Operator
    removes its finalizer, and that operator's deletion path (v2.13.0 and later,
    rabbitmq/cluster-operator#1864) removes the finalizer through
@@ -3909,7 +4039,7 @@ projected. On deletion it:
    `messagingTeardownDeadline` (3 minutes from the deletion timestamp) a
    **Warning** `MessagingTeardownStalled` names the broker and the release
    proceeds on the cascade, so a wedged cluster-operator cannot make the
-   ControlPlane undeletable. The escape paths below release without this wait.
+   ControlPlane undeletable. The escape paths below release without either wait.
    The remote-children finalizer goes in the same update, because by then every
    placed namespace has been swept or its cluster abandoned.
 7. **Releases a CR-only remainder immediately.** K-ORC re-fetches the
@@ -3958,8 +4088,9 @@ its namespace.
 This mirrors the Keystone reconciler's sequenced-finalizer discipline (MariaDB
 then OpenBao cleanup); see
 [Keystone reconciler — finalizer](../keystone/keystone-reconciler.md#finalizer).
-The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
-`DeletionPolicy: None` so its OpenBao path is not purged on teardown.
+The `{name}-admin-app-credential-backup` PushSecret carries
+`DeletionPolicy: Delete` like the others, so its OpenBao path is purged on
+teardown.
 
 #### The placed namespaces — `openstack.c5c3.io/remote-children` {#placed-namespaces-remote-children}
 
@@ -3975,7 +4106,7 @@ cluster resolves, nothing has been written to any of them for it to reclaim, and
 stays for the CR's life: a cluster that stops resolving later still holds
 children.
 
-What it holds the ControlPlane open for is the label-selected sweep in step 3.
+What it holds the ControlPlane open for is the label-selected sweep in step 4.
 Per placed namespace, `controlPlaneRemoteChildKinds` names the fourteen kinds the
 ControlPlane writes there: `MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
 `ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
@@ -3985,7 +4116,7 @@ object of them the ControlPlane owns is deleted through that cluster's client,
 listed through its uncached reader and paged so a shared namespace cannot arrive
 in one response. The list holds namespaced kinds only. The auth-delegator
 `ClusterRoleBinding` and the namespace itself are cluster-scoped and deleted by
-name (steps 3 and 4), while the service CRs and the K-ORC CRs never leave the
+name (steps 5 and 4), while the service CRs and the K-ORC CRs never leave the
 management cluster.
 
 The sweep runs through the credentials of the registered cluster's kubeconfig,
@@ -4003,7 +4134,7 @@ process and the deletion timestamp) the cluster is abandoned: a **Warning**
 `RemoteChildrenAbandoned` names the cluster and the namespace whose objects stay
 behind, and the teardown continues without it — the `Managed` namespace's copy on
 the management cluster is still deleted, since abandoning the unreachable half
-does not license leaking the reachable one. The ORC stall escape (step 7)
+does not license leaking the reachable one. The ORC stall escape (step 8)
 releases `c5c3.io/orc-teardown` alone. It never reaches this sweep, so the
 remote-children finalizer stays on and a later pass runs the sweep and releases
 it.
@@ -4030,8 +4161,8 @@ it.
 | `ExternalSecret` (admin password) | `{name}-keystone-admin-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | managed mode only |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | both modes; carries `cobaltcore.c5c3.io/admin-password-hash` |
-| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; data written by K-ORC, not the operator |
-| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: None` |
+| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; `value` generated and `clouds.yaml` assembled by the operator, read by K-ORC |
+| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: Delete` |
 | `User` (K-ORC) | `{name}-user-admin` | ControlPlane CR | both modes; unmanaged import |
 | `Domain` (K-ORC) | `{name}-domain-default` | ControlPlane CR | both modes; unmanaged import |
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | both modes; managed catalog entry in Managed mode, unmanaged import in External mode |
@@ -4230,10 +4361,9 @@ the finalizer that would have done the revoke or the `DELETE`, so each `Managed`
 it releases orphans its OpenStack resource. Those are the CRs the
 `ORCResourcesOrphaned` Warning names.
 
-The OpenBao-backed Secrets are torn down by owner-reference GC, **except** the
-path behind the `{name}-admin-app-credential-backup` PushSecret: its
-`DeletionPolicy` is deliberately `None`, so the last-pushed credential survives
-at its OpenBao path. Nothing else is touched — a K-ORC CR the ControlPlane does
+The OpenBao-backed Secrets are torn down by owner-reference GC, and the path
+behind the `{name}-admin-app-credential-backup` PushSecret is purged with it
+(`DeletionPolicy: Delete`). Nothing else is touched — a K-ORC CR the ControlPlane does
 not own is never swept.
 
 ### Security invariant
@@ -4251,12 +4381,11 @@ invariants are enforced by the `credential_invariant_test.go` checks
 `TestCredentialInvariant_AppCredentialSecretReferencedOnlyByPushSecretAndAC`,
 `TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret`).
 
-The `PushSecret`'s `DeletionPolicy: None` is the one deliberate exception to the
-GC cascade: tearing down a ControlPlane removes the PushSecret CR but leaves the
-last-pushed credential in OpenBao at this ControlPlane's own per-CR path
-(`openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`), so a
-re-created control plane in the same namespace re-adopts that per-ControlPlane
-bootstrap secret rather than being locked out mid-rotation.
+The `PushSecret` carries `DeletionPolicy: Delete`. The credential leaves
+OpenBao with the ControlPlane. The teardown revokes it in Keystone, so a value
+kept at the path would be dead, and the next ControlPlane of the same name would
+authenticate K-ORC with it and fail. A re-created control plane mints a new
+credential.
 
 ---
 
@@ -4317,6 +4446,8 @@ The `condition_type` label is resolved from the package-private
 | `Glance` | `GlanceReady` |
 | `Placement` | `PlacementReady` |
 | `Barbican` | `BarbicanReady` |
+| `OVN` | `OVNReady` |
+| `Neutron` | `NeutronReady` |
 | `Cinder` | `CinderReady` |
 | `Nova` | `NovaReady` |
 | `KORC` | `KORCReady` |
@@ -4324,6 +4455,7 @@ The `condition_type` label is resolved from the package-private
 | `AdminPassword` | `AdminPasswordReady` |
 | `Catalog` | `CatalogReady` |
 | `ServiceAccounts` | `ServiceAccountsReady` |
+| `KORCCatalogRefresh` | `KORCReady` |
 | `RegistrationTenantStores` | `RegistrationTenantStoresReady` |
 
 The map carries two further entries, `KeystoneServiceCatalog` and
@@ -4332,6 +4464,10 @@ than to this one; see the
 [KeystoneService Reconciler](./keystoneservice-reconciler.md). The
 `RegistrationTenantStores` series is kept apart from `ESOTenantStore`'s because
 the two carry different blast radii and one alert should not read as the other.
+`KORCCatalogRefresh` drives no condition of its own. Its errors carry
+`KORCReady`, because a failed rollout leaves K-ORC on a stale service catalog,
+and a member without a condition needs only this map entry, no
+`subConditionTypes` member.
 
 If `instrumenter.Instrument` is ever called with a name absent from the map, the
 helper emits the sentinel `condition_type=UNKNOWN`
@@ -4412,6 +4548,7 @@ cross-namespace teardown assertions.
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
+| `reconcile_korc_catalog_refresh_test.go` | The catalog epoch (nothing to record, unsettled, the pinned byte stream, order independence, each input that changes it, Terminating registrations, registrations from namespaces the plane does not admit), the annotation key, and the rollout: the gate, the registrations of this plane only, the uncached read, the merge patch and its field manager, the other annotations kept, the skip on a missing or forbidden Deployment or a denied patch, the wrapped errors, a nil recorder |
 | `reconcile_projected_children_test.go` | Prune and sweep of projected satellite children: ownership, name prefix, the `Keep` set, an absent CRD, the wrapped errors |
 | `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
 | `reconcile_cinder_test.go` | Cinder projection, the Keystone and registration gates, the satellite projection and prune, the derived Glance/Barbican/internal-tenant fields, the replica pins, the orphan teardown |
@@ -4521,6 +4658,8 @@ operators/c5c3/
     │   │                                        identity imports, opt-in entries, stall detection)
     │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (folds the built-in
     │   │                                        registrations into ServiceAccountsReady)
+    │   ├── reconcile_korc_catalog_refresh.go   reconcileKORCCatalogRefresh (records the catalog
+    │   │                                        epoch on the K-ORC pod template)
     │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron/Cinder/
     │   │                                        Nova share: project the KeystoneService child,
     │   │                                        gate, mirror, reclaim; plus the account-only
@@ -4567,6 +4706,7 @@ operators/c5c3/
     │   ├── reconcile_nova_hypervisor_operator_test.go Hypervisor-operator account tests
     │   ├── reconcile_nova_metadata_agent_test.go Metadata-agent shared-secret copy tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
+    │   ├── reconcile_korc_catalog_refresh_test.go K-ORC catalog refresh tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests
     │   ├── reconcile_catalog_external_test.go  External-catalog tests

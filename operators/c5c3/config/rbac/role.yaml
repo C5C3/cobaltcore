@@ -41,6 +41,21 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+- apiGroups:
+  - apps
+  resourceNames:
+  - orc-controller-manager
+  resources:
+  - deployments
+  verbs:
+  - get
+  - patch
+- apiGroups:
   - barbican.openstack.c5c3.io
   resources:
   - barbicans

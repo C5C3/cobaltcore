@@ -181,6 +181,9 @@ var MetadataAgentOwnedConfigKeys = []config.OwnedKey{
 	// Secret every agent pod mounts.
 	{Section: "DEFAULT", Key: "metadata_proxy_shared_secret", Rejected: true, OwnedBy: "spec.novaMetadata.sharedSecretRef", Impact: "the shared secret is env-injected from the referenced Secret; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
+	// [agent]
+	{Section: "agent", Key: "root_helper", OwnedBy: "operator-computed", Impact: "the agent starts privsep-helper through this command; sudo drops /var/lib/openstack/bin from PATH, so the oslo default of sudo finds no privsep-helper and the agent provisions no network"},
+
 	// [ovs] / [ovn] — the two databases the agent reads.
 	{Section: "ovs", Key: "ovsdb_connection", Rejected: true, OwnedBy: "spec.chassisRef", Impact: "the agent reads the local OVS database over the socket the chassis pods share; another address points it at a node whose ports it is not answering for"},
 	{Section: "ovn", Key: "ovn_sb_connection", Rejected: true, OwnedBy: "spec.chassisRef", Impact: "the connection string is resolved from the OVNCentral the referenced chassis registers with; another address points the agent at a logical model it does not serve"},

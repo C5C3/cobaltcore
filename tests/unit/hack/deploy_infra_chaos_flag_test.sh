@@ -15,8 +15,9 @@
 # Strategy: hybrid — source the script (the `BASH_SOURCE[0] == ${0}` guard
 # at the bottom of deploy-infra.sh keeps main() from auto-running) to assert
 # the runtime default of WITH_CHAOS_MESH for each env scenario, and grep the
-# script source to lock in the three gate locations (kernel-modules,
-# kustomize apply, helm-releases array). Full main()-stubbing requires
+# script source to lock in the four gate locations (kernel-modules, the
+# external preflight's chaos-mesh/ check, kustomize apply, helm-releases
+# array). Full main()-stubbing requires
 # shimming ~10 wait_for_* helpers, which would obscure the contract under
 # test.
 #
@@ -94,7 +95,7 @@ test_explicit_false() {
 # Test 4: defensive non-true value
 # A typo like WITH_CHAOS_MESH=yes should NOT enable chaos-mesh because every
 # gate site uses the strict `== "true"` comparison. We assert the value
-# passes through verbatim AND that the three gate sites use exact-match.
+# passes through verbatim AND that the four gate sites use exact-match.
 # ---------------------------------------------------------------------------
 test_non_true_value_does_not_trigger_install() {
   echo "Test: WITH_CHAOS_MESH=yes passes through but does not trigger install"
@@ -104,30 +105,45 @@ test_non_true_value_does_not_trigger_install() {
   assert_eq "WITH_CHAOS_MESH=yes is preserved verbatim" "yes" "$resolved"
 
   # Every gate compares with the exact string "true"; "yes" therefore takes
-  # the skip branch at all three sites. Lock that in by counting matches.
+  # the skip branch at all four sites. Lock that in by counting matches.
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_CHAOS_MESH\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
-  assert_eq "deploy-infra.sh has exactly 3 strict WITH_CHAOS_MESH==true gates" "3" "$gate_count"
+  assert_eq "deploy-infra.sh has exactly 4 strict WITH_CHAOS_MESH==true gates" "4" "$gate_count"
 }
 
 # ---------------------------------------------------------------------------
 # Test 5: chaos-mesh overlay apply is conditional
-# The kustomize apply for deploy/kind/chaos-mesh must live inside the
-# WITH_CHAOS_MESH gate so the default Quick Start does not install it.
+# The kustomize apply of the overlay root's chaos-mesh/ must live inside the
+# WITH_CHAOS_MESH gate so the default Quick Start does not install it. In kind
+# mode that directory is deploy/kind/chaos-mesh.
 # ---------------------------------------------------------------------------
 test_chaos_mesh_kustomize_is_gated() {
   echo "Test: chaos-mesh kustomize apply is gated by WITH_CHAOS_MESH"
 
-  # The apply line itself exists.
-  assert_file_contains \
-    "deploy-infra.sh references the deploy/kind/chaos-mesh overlay" \
+  # The apply line itself exists, and no line applies the kind overlay by its
+  # own path, which the external mode would then apply as well.
+  assert_file_contains_fixed \
+    "deploy-infra.sh applies the overlay root's chaos-mesh/" \
     "$DEPLOY_INFRA_SH" \
-    'deploy/kind/chaos-mesh'
+    'kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"'
+  assert_file_not_contains \
+    "no line applies deploy/kind/chaos-mesh by its own path" \
+    "$DEPLOY_INFRA_SH" \
+    'kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"'
+  local kind_root
+  kind_root="$(
+    unset EXTERNAL_CLUSTER
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    printf '%s' "${OVERLAY_ROOT}"
+  )"
+  assert_eq "in kind mode the overlay root's chaos-mesh/ is deploy/kind/chaos-mesh" \
+    "$PROJECT_ROOT/deploy/kind/chaos-mesh/kustomization.yaml" "$kind_root/chaos-mesh/kustomization.yaml"
 
   # The line must be preceded by a WITH_CHAOS_MESH gate. Use awk to confirm
   # the most recent if-line above the apply tests WITH_CHAOS_MESH.
   local apply_line gate_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '"${WITH_CHAOS_MESH}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${apply_line:-0}" '$1 < target { last = $1 } END { print last }')"
 
   assert_not_empty "kustomize apply line for chaos-mesh is found" "$apply_line"
@@ -198,7 +214,10 @@ test_chaos_mesh_not_in_default_helm_releases() {
 #       `kubectl apply -f -`); and
 #   (b) deploy/kind/chaos-mesh/kustomization.yaml has zero `../../` parent-
 #       directory resource entries, so the default LoadRestrictionsRootOnly
-#       check is satisfied and the apply succeeds without any flag.
+#       check is satisfied and the apply succeeds without any flag. The lab
+#       overlay the external mode applies references it as a directory, which
+#       that check allows; tests/unit/deploy/metal_stack_chaos_mesh_test.sh
+#       renders it without the flag.
 #
 # Either half changing must update the other. If a future change re-introduces
 # parent-dir references, this test fails until the caller is updated to a
@@ -210,7 +229,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw
-  raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/kind/chaos-mesh"' "$DEPLOY_INFRA_SH" | head -1)"
+  raw="$(grep -E 'kubectl apply -k "\$\{OVERLAY_ROOT\}/chaos-mesh"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the chaos-mesh kubectl apply line" "$raw"
 
   if grep -q -- '--load-restrictor' <<<"$raw"; then

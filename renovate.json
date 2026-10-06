@@ -13,6 +13,12 @@
       "schedule": ["before 6am on monday"]
     }
   },
+  "flux": {
+    "managerFilePatterns": [
+      "/^deploy/flux-system/(releases|sources)/.+\\.yaml$/",
+      "/^deploy/kind/.+\\.yaml$/"
+    ]
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -178,33 +184,6 @@
       "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "npm"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/deploy/kind/base/envoy-gateway\\.yaml$/"
-      ],
-      "matchStrings": [
-        "version:\\s*\">=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+<\\d+\\.\\d+\\.\\d+\""
-      ],
-      "depNameTemplate": "envoyproxy/gateway",
-      "datasourceTemplate": "github-releases",
-      "packageNameTemplate": "envoyproxy/gateway",
-      "extractVersionTemplate": "^v(?<version>.+)$",
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/deploy/kind/base/headlamp\\.yaml$/"
-      ],
-      "matchStrings": [
-        "version:\\s*\">=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+<\\d+\\.\\d+\\.\\d+\""
-      ],
-      "depNameTemplate": "headlamp",
-      "datasourceTemplate": "helm",
-      "registryUrlTemplate": "https://kubernetes-sigs.github.io/headlamp/",
-      "versioningTemplate": "helm"
     },
     {
       "customType": "regex",
@@ -423,34 +402,36 @@
         "/tests/e2e/infrastructure/nfs-health/chainsaw-test\\.yaml$/"
       ],
       "matchStrings": [
-        "image: (?<depName>docker\\.io/itsthenetwork/nfs-server-alpine):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+        "image: (?<depName>ghcr\\.io/kubernetes-sigs/nfs-ganesha):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker",
-      "versioningTemplate": "docker"
+      "versioningTemplate": "regex:^V(?<major>\\d+)\\.(?<minor>\\d+)(\\.(?<patch>\\d+))?$"
     },
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/kind/nfs/release\\.yaml$/"
-      ],
-      "matchStrings": [
-        "\\n      version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
-      ],
-      "depNameTemplate": "csi-driver-nfs",
-      "datasourceTemplate": "helm",
-      "registryUrlTemplate": "https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts",
-      "versioningTemplate": "helm"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/deploy/lab/metal-stack/probe/node-probe\\.yaml$/"
+        "/deploy/lab/metal-stack/probe/node-probe\\.yaml$/",
+        "/deploy/lab/metal-stack/migration-ports/reservation-daemonset\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>docker\\.io/library/debian):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
+        "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
+        "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
+        "/deploy/lab/metal-stack/chaos-mesh/modules-daemonset\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>ghcr\\.io/c5c3/libvirt):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "deb"
     },
     {
       "customType": "regex",
@@ -477,6 +458,34 @@
       "datasourceTemplate": "github-tags",
       "packageNameTemplate": "ovn-org/ovn",
       "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "openstack-hypervisor-operator image: a commit of upstream main, tracked as a digest of the branch",
+      "managerFilePatterns": [
+        "/images/openstack-hypervisor-operator/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG HVO_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+      ],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "https://github.com/cobaltcore-dev/openstack-hypervisor-operator",
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/cobaltcore-dev/openstack-hypervisor-operator"
+    },
+    {
+      "customType": "regex",
+      "description": "kvm-node-agent image: a commit of upstream main, tracked as a digest of the branch",
+      "managerFilePatterns": [
+        "/images/kvm-node-agent/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG KNA_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+      ],
+      "currentValueTemplate": "main",
+      "depNameTemplate": "https://github.com/cobaltcore-dev/kvm-node-agent",
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/cobaltcore-dev/kvm-node-agent"
     },
     {
       "customType": "regex",
@@ -605,35 +614,19 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml", "hack/deploy-infra.sh"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
       "matchPackageNames": ["envoyproxy/gateway"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml", "hack/deploy-infra.sh"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
       "matchPackageNames": ["envoyproxy/gateway"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "envoy-gateway"
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
-      "matchPackageNames": ["headlamp"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
-      "matchPackageNames": ["headlamp"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true,
-      "minimumReleaseAge": "3 days",
-      "groupName": "headlamp"
     },
     {
       "matchManagers": ["custom.regex"],
@@ -864,7 +857,7 @@
         "deploy/kind/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
-      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
@@ -874,7 +867,7 @@
         "deploy/kind/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
-      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -882,35 +875,61 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
-      "matchPackageNames": ["csi-driver-nfs"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
-      "matchPackageNames": ["csi-driver-nfs"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": false,
-      "minimumReleaseAge": "3 days",
-      "groupName": "csi-driver-nfs chart"
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/probe/node-probe.yaml"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/probe/node-probe.yaml",
+        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+      ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/probe/node-probe.yaml"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/probe/node-probe.yaml",
+        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+      ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "metal-stack node probe image"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "allowedVersions": "/^[0-9]+(\\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\\.[0-9]+)*-r[0-9]+$/"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+      ],
+      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "groupName": "metal-stack lab libvirt image"
     },
     {
       "matchDatasources": ["docker", "go"],
@@ -961,6 +980,26 @@
     },
     {
       "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/openstack-hypervisor-operator/Dockerfile"],
+      "matchPackageNames": ["https://github.com/cobaltcore-dev/openstack-hypervisor-operator"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "schedule": ["before 6am on monday"],
+      "groupName": "openstack-hypervisor-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/kvm-node-agent/Dockerfile"],
+      "matchPackageNames": ["https://github.com/cobaltcore-dev/kvm-node-agent"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "schedule": ["before 6am on monday"],
+      "groupName": "kvm-node-agent"
+    },
+    {
+      "matchManagers": ["custom.regex"],
       "matchFileNames": ["images/nova/Dockerfile"],
       "matchPackageNames": ["novnc/noVNC"],
       "matchUpdateTypes": ["major"],
@@ -981,6 +1020,97 @@
       "matchPackageNames": ["novnc/noVNC"],
       "matchUpdateTypes": ["digest"],
       "enabled": false
+    },
+    {
+      "description": "Flux HelmRelease chart versions: a release inside the range changes nothing, a release past the ceiling opens a reviewed PR that raises the ceiling and keeps the floor. timestamp-optional because the OCI chart registries on ghcr.io publish no release timestamp and the default, timestamp-required, would hold their updates as pending forever",
+      "matchManagers": ["flux"],
+      "rangeStrategy": "widen",
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "A chart from a type: oci HelmRepository resolves through the docker datasource, whose docker versioning cannot read a range and skips it as invalid-value",
+      "matchManagers": ["flux"],
+      "matchDatasources": ["docker"],
+      "matchCurrentValue": "/^>=/",
+      "versioning": "helm"
+    },
+    {
+      "description": "Charts this repository publishes: their ranges are deliberate",
+      "matchManagers": ["flux"],
+      "matchPackageNames": ["ghcr.io/c5c3/charts/**"],
+      "enabled": false
+    },
+    {
+      "description": "Files a customManager reads, plus the K-ORC image that stays untracked on purpose: one owner per pin",
+      "matchManagers": ["flux"],
+      "matchFileNames": [
+        "deploy/flux-system/sources/k-orc.yaml",
+        "deploy/flux-system/sources/openbao-operator.yaml",
+        "deploy/flux-system/sources/rabbitmq-cluster-operator.yaml",
+        "deploy/flux-system/releases/k-orc.yaml",
+        "deploy/flux-system/releases/rabbitmq-cluster-operator.yaml",
+        "deploy/kind/base/flux-web.yaml",
+        "deploy/kind/infrastructure/openbao-instance.yaml",
+        "deploy/kind/nfs/nfs-server.yaml"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "The operator chart and its CRD chart are one upstream release",
+      "matchManagers": ["flux"],
+      "matchPackageNames": ["mariadb-operator", "mariadb-operator-crds"],
+      "groupName": "mariadb-operator chart"
+    },
+    {
+      "description": "kube-prometheus-stack runs against the CRDs prometheus-operator-crds installs (crds.enabled=false), so their ceilings move in one PR",
+      "matchManagers": ["flux"],
+      "matchPackageNames": [
+        "ghcr.io/prometheus-community/charts/kube-prometheus-stack",
+        "ghcr.io/prometheus-community/charts/prometheus-operator-crds"
+      ],
+      "groupName": "prometheus-operator charts"
+    },
+    {
+      "description": "The two charts whose floor follows every release: an in-range release rewrites the floor, a major rewrites both bounds",
+      "matchManagers": ["flux"],
+      "matchPackageNames": ["docker.io/envoyproxy/gateway-helm", "headlamp"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml"],
+      "matchPackageNames": ["docker.io/envoyproxy/gateway-helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "envoy-gateway"
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
+      "matchPackageNames": ["headlamp"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "headlamp"
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchPackageNames": ["csi-driver-nfs"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchPackageNames": ["csi-driver-nfs"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "csi-driver-nfs chart"
     }
   ]
 }

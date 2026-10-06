@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.imagePullPolicy outside Always, IfNotPresent and Never violates the Enum
+# marker. The rule is schema-only: a CRD older than the operator prunes the
+# field before a webhook sees it, so no webhook twin exists.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-image-pull-policy-unsupported
+spec:
+  openStackRelease: "2025.2"
+  imagePullPolicy: Sometimes
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

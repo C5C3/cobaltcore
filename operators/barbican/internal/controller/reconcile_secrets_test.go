@@ -18,6 +18,7 @@ import (
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 )
 
 // TestReconcileSecrets_StoreGate covers both shapes of an unusable secret store:
@@ -200,4 +201,31 @@ func TestReconcileSecrets_ReadErrorPropagatesWrapped(t *testing.T) {
 	g.Expect(err).To(MatchError(ContainSubstring("reading service-user password value:")))
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(digest).To(BeEmpty())
+}
+
+// TestReconcileSecrets_NamespaceScopedRefusesClusterStore pins the refusal a
+// namespace-scoped operator gives a Barbican that omits spec.secretStoreRef: its
+// effective store is the cluster-scoped default, which a Role cannot grant, so
+// the gate sets SecretsReady=False/ClusterSecretStoreUnsupported and requeues
+// without reading the ClusterSecretStore at all.
+func TestReconcileSecrets_NamespaceScopedRefusesClusterStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+	barbican.Spec.SecretStoreRef = nil
+	barbican.Generation = 3
+	c := barbicanFakeClientBuilder(barbican).
+		WithInterceptorFuncs(testutil.ForbidClusterSecretStoreGet(t)).
+		Build()
+	r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10), NamespaceScoped: true}
+
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(digest).To(BeEmpty())
+	cond := barbicanCondition(barbican, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ClusterSecretStoreUnsupported"))
+	g.Expect(cond.ObservedGeneration).To(Equal(barbican.Generation))
 }

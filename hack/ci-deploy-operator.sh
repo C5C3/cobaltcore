@@ -63,6 +63,17 @@
 #                        default of 2. The e2e-controlplane job sets 1, so the
 #                        node budget of its full-chain suite counts one replica
 #                        per operator, as the kind devstack runs them.
+#   DEFAULT_IMAGE_PULL_POLICY
+#                      — The operator's default image pull policy (Always,
+#                        IfNotPresent or Never), passed as --set
+#                        controller.defaultImagePullPolicy=<value> (default:
+#                        IfNotPresent). CI loads the pull request's service
+#                        images into kind under the published tag, which a
+#                        tag's own rule (Always) would pull over. A chart whose
+#                        values.schema.json has no such key (a released
+#                        CHART_DIR baseline older than the value) gets no
+#                        --set, because its additionalProperties:false values
+#                        schema rejects the unknown key.
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -92,6 +103,14 @@ if [[ -n "${OPERATOR_REPLICAS}" ]] && [[ ! "${OPERATOR_REPLICAS}" =~ ^[1-9][0-9]
   echo "::error::OPERATOR_REPLICAS='${OPERATOR_REPLICAS}' is not a positive integer"
   exit 1
 fi
+DEFAULT_IMAGE_PULL_POLICY="${DEFAULT_IMAGE_PULL_POLICY:-IfNotPresent}"
+case "${DEFAULT_IMAGE_PULL_POLICY}" in
+  Always | IfNotPresent | Never) ;;
+  *)
+    echo "::error::DEFAULT_IMAGE_PULL_POLICY='${DEFAULT_IMAGE_PULL_POLICY}' is not one of Always, IfNotPresent, Never"
+    exit 1
+    ;;
+esac
 # dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
@@ -151,6 +170,13 @@ fi
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
 echo "Metadata allow CIDRs: ${FEDERATION_METADATA_ALLOW_CIDRS:-<none>} (set FEDERATION_METADATA_ALLOW_CIDRS to allow in-cluster IdP discovery)"
 echo "Operator replicas   : ${OPERATOR_REPLICAS:-<chart default>} (set OPERATOR_REPLICAS to override the chart's replicas)"
+# A released chart that predates controller.defaultImagePullPolicy rejects the
+# key, so the value is passed only where the chart's schema names it.
+chart_pull_policy=""
+if grep -qs defaultImagePullPolicy "${CHART_PATH}/values.schema.json"; then
+  chart_pull_policy="${DEFAULT_IMAGE_PULL_POLICY}"
+fi
+echo "Image pull policy   : ${chart_pull_policy:-<chart has no such value>} (set DEFAULT_IMAGE_PULL_POLICY to override the operator default)"
 helm_args=(
   --set "image.repository=${IMAGE_REPO}"
   --set "image.tag=${IMAGE_TAG}"
@@ -161,6 +187,9 @@ if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
 fi
 if [[ -n "${OPERATOR_REPLICAS}" ]]; then
   helm_args+=(--set "replicas=${OPERATOR_REPLICAS}")
+fi
+if [[ -n "${chart_pull_policy}" ]]; then
+  helm_args+=(--set "controller.defaultImagePullPolicy=${chart_pull_policy}")
 fi
 # When set, allowlist those CIDRs on the operator's federation-metadata SSRF
 # dial guard (chart value federation.metadataAllowCidrs) so it may fetch an

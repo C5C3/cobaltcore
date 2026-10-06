@@ -8,8 +8,10 @@
 Retention is decided per package version from its *whole tag set*, not from a
 "keep the newest N" counter:
 
-  keep    the version carries at least one keeper tag -- `latest`, or a bare
-          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`
+  keep    the version carries at least one keeper tag -- `latest`, a bare
+          version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`,
+          `upstream-<sha40>`, a pinned upstream commit, or the libvirt keeper
+          `<libvirt-package-version>-r<N>` such as `10.0.0-2ubuntu8.19-r1`
   delete  every other version older than --min-age-hours, including untagged
           ones: `<sha7>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`,
           `e2e-<run_id>-*`, `dev`, and composite tags
@@ -73,11 +75,24 @@ DEFAULT_KEEP_PATTERNS = (
     r"^[0-9]+(\.[0-9]+)+$",
     # 1.2.0-rc1 -- semver prerelease from a v* tag push
     r"^[0-9]+(\.[0-9]+)+-(alpha|beta|rc)[0-9.]*$",
+    # upstream-<sha40> -- a pinned upstream commit that a chart of that commit
+    # names (openstack-hypervisor-operator and kvm-node-agent: the chart renders
+    # sha-<sha40>, which sits on the same manifest)
+    r"^upstream-[0-9a-f]{40}$",
+    # 10.0.0-2ubuntu8.19-r1 -- the libvirt image's <libvirt-package-version>-r<N>,
+    # minted once by hack/ci-tag-libvirt-keeper.sh; the lab manifests under
+    # deploy/lab/metal-stack/ pin that build by digest. The shape is copied in
+    # that script's version check and in allowedVersions in renovate.json.
+    r"^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*-r[0-9]+$",
 )
 
 # Commit-SHA tag shapes across the four publishing paths in this repo:
 # service images (short SHA), base images (long SHA), operator images
 # (docker/metadata-action type=sha,format=long), tempest (<release>-<long SHA>).
+# The sha-<upstream commit> tag of openstack-hypervisor-operator and
+# kvm-node-agent matches the sha- shape too, and the image's upstream- keeper
+# protects it; the composite sha-<upstream commit>-<sha> matches none, so only
+# the full sweep removes those images' branch builds.
 SHA_TAG_PATTERNS = (
     r"^[0-9a-f]{7}$",
     r"^[0-9a-f]{40}$",
@@ -198,7 +213,12 @@ def retry_delay(headers, attempt):
 
 
 def list_versions(org, package, token):
-    """Return every container version of the package, newest first."""
+    """Return every container version of the package, newest first.
+
+    Returns None when the package does not exist, so the caller decides whether
+    that is fatal. A 404 after the first page is always fatal: the package was
+    there a request ago.
+    """
     versions = []
     page = 1
     quoted = urllib.parse.quote(package, safe="")
@@ -206,6 +226,8 @@ def list_versions(org, package, token):
         url = f"{API_ROOT}/orgs/{org}/packages/container/{quoted}/versions?per_page=100&page={page}"
         status, _, body = request(url, token=token)
         if status == 404:
+            if page == 1:
+                return None
             raise SystemExit(f"package not found: {org}/{package}")
         batch = json.loads(body)
         if not batch:
@@ -261,17 +283,14 @@ class Registry:
         """Digests referenced by this manifest, empty for a plain manifest.
 
         A digest that no longer resolves yields an empty list plus a warning --
-        a ghost version cannot be keeping anything alive.
+        a ghost version cannot be keeping anything alive. Any other failed read
+        raises: a kept index read as childless would put the per-platform
+        manifests it still points at into the delete set.
         """
         if digest in self._cache:
             return self._cache[digest]
         url = f"{REGISTRY_ROOT}/v2/{self.repo}/manifests/{digest}"
-        try:
-            status, _, body = request(url, token=self.token, accept=MANIFEST_ACCEPT)
-        except urllib.error.HTTPError as exc:
-            warn(f"manifest {digest} unreadable ({exc.code}); treating it as childless")
-            self._cache[digest] = []
-            return []
+        status, _, body = request(url, token=self.token, accept=MANIFEST_ACCEPT)
         if status == 404:
             warn(f"manifest {digest} not found in the registry; treating it as childless")
             self._cache[digest] = []
@@ -481,6 +500,16 @@ def main(argv=None):
     else:
         package = args.package
         versions = list_versions(args.org, package, args.token)
+        if versions is None:
+            # GHCR creates a package on its first push. A new image directory is
+            # in the cleanup matrix from the pull request that adds it, before
+            # anything was published, and a package that does not exist holds no
+            # tag a narrowed run could be after. A full sweep names a package
+            # that is expected to exist, so there a 404 stays fatal.
+            if not args.only_tag_pattern:
+                raise SystemExit(f"package not found: {args.org}/{package}")
+            warn(f"[{package}] package not found: {args.org}/{package}; nothing to prune")
+            return 0
         children_of = Registry(args.org, package, args.token).children
         now = datetime.now(timezone.utc)
 

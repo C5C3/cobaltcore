@@ -45,18 +45,31 @@ Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv
 to install the service, then stage 2 extends `python-base` and copies only the virtualenv
 from stage 1. This ensures the final image contains no build tools.
 
-Three images sit outside that lineage. They carry no OpenStack code and build
-straight on `ubuntu:noble`:
+The release-independent images sit outside that lineage. They carry no
+OpenStack code, and all but two build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
 ├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
 ├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
 ├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
-└── backup-shifter             Single stage: distro rclone
+├── backup-shifter             Single stage: distro rclone
+└── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
 
-All three are described under [Release-independent images](#release-independent-images).
+`openstack-hypervisor-operator` and `kvm-node-agent` compile Go programs and
+build on the two images the CobaltCore operator images use:
+
+```text
+golang:1.27
+├── openstack-hypervisor-operator  Stage 1 (build): fetch the pinned upstream commit, apply the patches, go test + go build
+└── kvm-node-agent                 Stage 1 (build): fetch the pinned upstream commit, apply the patches, two test runs + go build
+gcr.io/distroless/static:nonroot
+├── openstack-hypervisor-operator  Stage 2 (runtime): copy the manager binary
+└── kvm-node-agent                 Stage 2 (runtime): copy the manager binary, run as 0:0
+```
+
+Each is described under [Release-independent images](#release-independent-images).
 
 ## Base Images
 
@@ -692,6 +705,23 @@ The patch moves the fakes inline into the test method. It changes nothing at
 runtime and has no 2026.1 twin. Upstream status: merged on master, backported
 to stable/2025.2 as `7faebca9b5`.
 
+`patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
+and its twin
+`patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
+are test-only. `BackupTestCase.test_default_tpool_size` and `test_tpool_size`
+assert that eventlet's native thread pool is empty before and after they build
+a `BackupManager`. The Ceph backup driver tests leave os-brick
+`RBDVolumeIOWrapper` objects to the garbage collector, and a collected wrapper
+closes itself: `close()` flushes, the flush reaches the image through a
+`tpool.Proxy`, and that starts the pool's 20 threads. A collection between the
+two assertions fails the test with "Second list contains 20 additional
+elements", as it did once in `test-service-images (cinder, 2025.2)` on
+2026-10-01. Both tests now start with `gc.collect()` and `tpool.killall()`, so
+every such finalizer has run before the first assertion; the assertions are
+unchanged. The patch changes nothing at runtime. Upstream status: not yet
+proposed; master replaced both tests when the backup service moved to native
+threads (`c07c49c586`).
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
@@ -1026,8 +1056,9 @@ four tags as `ghcr.io/c5c3/nova` (see
 and `nova:2025.2` therefore carry the same nova. On top of nova the image
 carries the libvirt binding and client libraries, `qemu-img`, the host tools
 for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
-with) runs, `cryptsetup` and `genisoimage`, and a rootwrap and sudo posture
-that lets the unprivileged `openstack` user start nova's privileged helpers.
+with) runs, `mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`
+and `genisoimage`, and a rootwrap and sudo posture that lets the unprivileged
+`openstack` user start nova's privileged helpers.
 The [nova](#nova) control-plane image carries none of it (decision D14 of
 issue #1014). Its consumer is the [NovaCompute](../nova/novacompute-crd.md)
 node pool, which runs it under the tag of the Nova's installed release.
@@ -1082,13 +1113,18 @@ releases):
 | `nvme-cli` | `nvme` (`os_brick/initiator/connectors/nvmeof.py`, `os_brick/privileged/nvmeof.py`) |
 | `lsscsi` | `lsscsi` (`os_brick/initiator/linuxscsi.py`) |
 | `udev` | `/lib/udev/scsi_id` (`get_scsi_wwn` in `os_brick/initiator/linuxscsi.py`) |
+| `nfs-common` | `mount.nfs`, the helper `mount -t nfs` runs. nova mounts a Cinder NFS export itself, without os-brick: `LibvirtNFSVolumeDriver` (`nova/virt/libvirt/volume/nfs.py`) goes through `nova/virt/libvirt/volume/mount.py` to `mount` in `nova/privsep/fs.py`, below `[libvirt] nfs_mount_point_base` (default `$state_path/mnt`) |
 | `cryptsetup-bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
 | `genisoimage` | The default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
 
 `open-iscsi` and `multipath-tools` pull `systemd`, `initramfs-tools` and
 `sg3-utils` as hard dependencies. The 2025.2 image is about 170 MB larger than
-the nova image. There is no `libpython3.12t64`, because nothing in this image
-runs uWSGI, and `sudo` comes from `python-base`.
+the nova image. `nfs-common` pulls `rpcbind`, `keyutils`, `libnfsidmap1`,
+`libevent-core-2.1-7t64`, `libwrap0` and `ucf`, about 3 MB together. No
+process in the pod starts `rpcbind` or `rpc.statd`; an NFSv4 mount needs
+neither, and the in-cluster server of `deploy/kind/nfs/nfs-server.yaml` speaks
+NFSv4 only. There is no `libpython3.12t64`, because nothing in this image runs
+uWSGI, and `sudo` comes from `python-base`.
 
 **Node identities:** the postinst scripts of `open-iscsi` and `nvme-cli`
 write `/etc/iscsi/initiatorname.iscsi`, `/etc/nvme/hostnqn` and
@@ -1098,7 +1134,10 @@ initiator name and the host NQN to Cinder as the node's identity, so baked
 files would give every compute node the same IQN and NQN. A baked multipath
 configuration can also disagree with the host's `multipathd`. The image removes
 all four files, and `iscsiadm --version` and `nvme version` still run without
-them.
+them. `nfs-common` and `rpcbind` bake none: their postinst scripts create the
+`statd` and `_rpc` users and install `/etc/idmapd.conf`,
+`/etc/default/nfs-common` and `/etc/nfs.conf`, and none of these names the
+node.
 
 **Rootwrap and sudo posture:** nova's root helper is
 `sudo nova-rootwrap <[DEFAULT] rootwrap_config>`, and `rootwrap_config`
@@ -1165,8 +1204,11 @@ spec that meets it):
   `/var/lib/nova`, `/var/lib/nova/instances` and `/var/lib/nova/tmp` on the
   host owned by 42424:42424 before nova-compute starts. The NovaCompute pod
   runs nova-compute as root, because a stock host's libvirt socket is
-  `root:libvirt` 0660 with a host-specific group ID, so it needs none of this;
-  a non-root consumer does. The mount hides the
+  `root:libvirt` 0660 with a host-specific group ID, so it needs no ownership
+  change. It creates `instances` itself, `root:root` 0755, in its
+  `create-instances-dir` init container (see the
+  [node contract](../nova/novacompute-crd.md#node-contract)). A non-root
+  consumer needs the owner change. The mount hides the
   image's own directories, the kubelet creates a missing `hostPath` directory
   as `root:root` 0755, and `fsGroup` does not apply to a `hostPath`. On a
   directory nova-compute cannot write, the first start fails to write
@@ -1205,7 +1247,7 @@ tests:
    pin each fail with a message naming the value.
 3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
    LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
-4. The eight host tools run, one assertion per tool, so a missing package
+4. The nine host tools run, one assertion per tool, so a missing package
    names itself.
 5. The four identity files are absent.
 6. The posture holds: the two `rootwrap.conf` lines, `compute.filters`, six
@@ -1221,7 +1263,7 @@ tests:
 8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
 9. The state directories match `verify_nova.sh` test 13.
 
-Both release images pass all 47 assertions. Pointed at the nova control-plane
+Both release images pass all 48 assertions. Pointed at the nova control-plane
 image, the script exits 1: test 2 reports
 `ModuleNotFoundError: No module named 'libvirt'` and test 4 fails once per
 tool. A build without any `--build-arg` succeeds and fails the same two tests,
@@ -1386,6 +1428,403 @@ bash tests/container-images/verify_backup_shifter.sh c5c3/backup-shifter:latest
 
 Its build, verification and tag scheme are described in
 [build-backup-shifter / merge-backup-shifter-image](./build-images-workflow.md#build-backup-shifter-merge-backup-shifter-image).
+
+### libvirt
+
+**Location:** `images/libvirt/Dockerfile`
+
+The libvirt daemon and QEMU for hypervisor nodes whose host image has neither:
+a single stage on `ubuntu:noble` with every package taken from the Ubuntu
+archive, so the image has no version pin of its own and follows the `noble`
+package set. The hypervisor package of issue #1142 runs it privileged as a
+DaemonSet beside `nova-compute`. The `libvirt-e2e` DaemonSet of the
+`e2e-nova-libvirt` CI job is its second consumer: it runs the image on a kind
+node, where QEMU emulates the guest without KVM.
+
+| Package | Why it is installed |
+| --- | --- |
+| `dmidecode` | libvirt reads the host's SMBIOS (firmware system information) data with it |
+| `iproute2` | `ip`; a Recommends of `libvirt-daemon-system`, which `--no-install-recommends` skips |
+| `kmod` | `modprobe`, for loading the `vhost_net` kernel module from the host's module tree |
+| `libvirt-clients` | `virsh`, and `virt-admin` for reloading the daemon's TLS certificates |
+| `libvirt-daemon-system` | `libvirtd`, `virtlogd` and the QEMU driver for `qemu:///system`, through its dependency `libvirt-daemon`; the configuration under `/etc/libvirt`, the `libvirt` and `kvm` groups and the `libvirt-qemu` user. It pulls in `systemd`, which brings `systemd-run` |
+| `ovmf` | UEFI firmware for guests: `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` |
+| `qemu-system-x86` | `qemu-system-x86_64`, the emulator for x86 guests; `libvirt-daemon` only recommends a QEMU |
+| `qemu-utils` | `qemu-img`, for disk images |
+
+**Why noble:** `images/nova-compute/` builds `libvirt-python` against noble's
+libvirt 10.0.0 and installs `libvirt0` at runtime. Building this image on noble
+makes the client in `nova-compute` and the daemon here one libvirt.
+`tests/container-images/verify_libvirt.sh` pins the major version and fails
+unless `libvirtd --version` reports 10. The apt packages carry no version pin
+(see `.hadolint.yaml`), so a rebuild can move the libvirt point release; only a
+major move fails the check.
+
+**What the image does not carry:** the image has no configuration of its own
+and no `ENTRYPOINT` or `CMD`. The consumer renders `libvirtd.conf`, `qemu.conf`
+and the start command. `libvirt-daemon-system` depends on
+`libvirt-daemon-config-network`, which defines the `default` NAT network and
+links it into `/etc/libvirt/qemu/networks/autostart/`. The consumer runs
+libvirtd in the host's network namespace, where that network would create
+`virbr0` and NAT rules on the node, so the Dockerfile removes the autostart
+link and keeps the definition. `dnsmasq-base`, which the network would serve
+DHCP and DNS with, is a Recommends and is not installed.
+
+**Runs as root:** libvirtd has to run as root, so the image has no `USER`
+instruction and creates no `openstack` user (see
+[Design Deviations](#design-deviations)). The packages create the
+`libvirt-qemu` user (UID 64055) and the `libvirt` and `kvm` groups, and QEMU
+runs guests as `libvirt-qemu` with the group `kvm`. The package scripts assign
+the two group IDs at build time, and they are not part of the image's
+contract: the consumer sets the socket's ownership in its own configuration.
+
+The same applies to `/dev/kvm`. A privileged container gets its own device
+node with the host's group ID and mode. Debian and Ubuntu hosts create it as
+`root:kvm` with mode `0660`, and their `kvm` group ID usually differs from the
+image's, so QEMU cannot open the device and a guest with `virt_type=kvm` does
+not start. Before it starts libvirtd, the consumer runs
+`chown root:kvm /dev/kvm && chmod 0660 /dev/kvm` on the container's own device
+node. On a hostPath mount of the host's `/dev` the same command would change
+the host's device.
+
+**Tags:** CI publishes `ghcr.io/c5c3/libvirt` as `latest` and `<sha>`, and on
+`main` as `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1` (see
+the [tag table](./build-images-workflow.md#release-independent-images)). Every
+run of `build-images.yaml` that is not a pull request rebuilds the image and
+moves `latest` to the new manifest: a push that touches any image, a change
+under `images/libvirt/` included, and the dispatch a base image refresh starts.
+The keeper tag is minted once per value and never moved, so it stays on the
+first build that had it, and
+[Retention](./build-images-workflow.md#retention) keeps every manifest that
+carries one. A manifest left with its `<sha>` tag alone is deleted once it is
+older than 24 hours. A consumer therefore pins the keeper tag by digest, as the
+lab does with `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`.
+
+```bash
+docker build -t c5c3/libvirt:latest images/libvirt/
+
+# Run the full image contract check
+bash tests/container-images/verify_libvirt.sh c5c3/libvirt:latest
+```
+
+The contract check runs without `--privileged`. Its last test starts `libvirtd`
+in the container, waits at most 30 seconds for `/run/libvirt/libvirt-sock` and
+asks the QEMU driver for its version and its x86_64 domain capabilities.
+
+Its build, verification and tag scheme are described in
+[build-libvirt / merge-libvirt-image](./build-images-workflow.md#build-libvirt-merge-libvirt-image).
+
+### openstack-hypervisor-operator
+
+**Location:** `images/openstack-hypervisor-operator/Dockerfile`
+
+openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled from a
+pinned commit of its upstream `main` branch with the patches under
+`images/openstack-hypervisor-operator/patches/` applied. The hypervisor package
+of issue #1142 deploys it with the upstream Helm chart of the same commit:
+`deploy/lab/metal-stack/hypervisor/hvo-release.yaml` runs it on the
+metal-stack lab (see
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
+| Property | Value |
+| --- | --- |
+| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
+| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
+| Version pin | `ARG HVO_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-hvo-commit.sh` prints it) |
+| User | `65532:65532`, the `nonroot` user of the distroless base |
+| Entrypoint | `/usr/bin/manager` |
+| Label | `io.c5c3.upstream-commit`, set to the pinned commit |
+
+**Build stage:**
+
+- Fetches `$HVO_COMMIT` from
+  `https://github.com/cobaltcore-dev/openstack-hypervisor-operator.git` by its
+  SHA, so no branch or tag decides what is compiled. The workflow token reaches
+  the fetch as the optional `github_token` secret, as for [ovn](#ovn)
+- Downloads the Go modules in a layer of their own before the patches, so CI's
+  layer cache keeps them when only a patch or a later step changes
+- Refreshes the git index, then applies every `*.patch` under `patches/` with
+  `git apply --index`. A patch that does not apply fails the build with
+  `patch does not apply: /patches/<file>`. The refresh is for a checkout layer
+  that CI restores from the build cache: its files have new inodes and change
+  times, and `git apply --index` would reject each one with
+  `does not match index`
+- Fails when Go code outside the tests still names gophercloud's
+  `servers.LiveMigrateOpts`, whose `BlockMigration` cannot carry `"auto"`.
+  The grep matches the bare type name, so a literal, a `var`, `new()`, a
+  pointer and an aliased import all fail. Only a `//` outside a double-quoted
+  string before the name lets the line pass, so a comment passes while a `/`
+  in a string or a division does not. That catches a live migration a pin
+  move adds or reshapes, and a re-cut patch that lost its `controller.go` hunk
+- Runs `TestLiveMigrateAutoBody`, the test patch 0001 brings, and fails unless
+  the log shows `--- PASS: TestLiveMigrateAutoBody`. `go test -run` exits 0
+  with `[no tests to run]` when the test is missing, so the grep is what
+  catches a patch that lost its test hunk
+- Runs `TestHypervisorCreatedWithDefaultHighAvailability` and
+  `TestTraitsInSyncSetsTraitsUpdated`, the tests of patches 0002 and 0003, in
+  one `go test` of `./internal/controller/`, and fails unless the log shows the
+  top-level `--- PASS:` line of each. The `-run` expression does not match the
+  package's Ginkgo entry point, `TestControllers` in `suite_test.go`, so the
+  run needs no envtest binary. The space after each test name in the grep
+  keeps a subtest's PASS line from matching
+- Runs `TestServiceClientInterface`, the test of patch 0004, in a `go test` of
+  `./internal/openstack/`, and fails unless the log shows
+  `--- PASS: TestServiceClientInterface ` with the same trailing space. The
+  `-run` expression does not match that package's Ginkgo entry point,
+  `TestOpenstack` in `suite_test.go`, so the suite does not run
+- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
+  ldflags, with the version set to `sha-<commit>`, the tag the image is
+  published under. `manager --version` therefore prints
+  `manager sha-<commit> (linux/<arch>) <commit>`. Upstream's `generate` step
+  is skipped: the generated files are committed
+
+**Why `main`:** `main` has the required `--agent-namespaces` flag, the
+offboarding taint and parallel migrations in an Eviction
+(`--eviction-concurrency`). The latest tag, v1.2.3, has none of them. Upstream
+publishes a chart for every `main` commit, version `1.2.3+sha-<short>` with
+`appVersion` `sha-<full commit>`, and that chart renders the image as
+`<repository>:<appVersion>`. Upstream pushes no image under that tag for a
+`main` commit, only a moving `latest`. This image is published as
+`sha-<commit>`, so the chart of the pinned commit runs it with only the
+repository overridden.
+
+**Source patches:** four files under
+`images/openstack-hypervisor-operator/patches/`, applied in order. Each brings a
+plain Go test outside upstream's Ginkgo suite, which the build step runs.
+
+`0001-eviction-let-nova-choose-block-migration.patch`. Upstream's `liveMigrate` (`internal/controller/eviction/controller.go`) asks
+Nova for a live migration with `block_migration: false`. Nova refuses that for
+a server on the hypervisor's local disks with `InvalidSharedStorage`. Every
+server on the metal-stack lab boots from a local disk, so the Eviction cannot
+move it. From compute microversion 2.25 on, Nova accepts the string `"auto"`
+and chooses block migration per server. gophercloud types
+`LiveMigrateOpts.BlockMigration` as `*bool`, so the patch adds a
+`LiveMigrateOptsBuilder` of its own that sends
+`{"os-migrateLive": {"block_migration": "auto", "host": null}}`, plus the plain
+Go test `TestLiveMigrateAutoBody` that pins the body; no upstream test pins
+it.
+
+`0002-hypervisor-make-the-high-availability-default-configurable.patch`.
+Upstream's `HypervisorController.Reconcile`
+(`internal/controller/hypervisor_controller.go`) creates every `Hypervisor`
+with `spec.highAvailability: true`, and onboarding then waits for the
+`HaEnabled` condition, which only SAP's kvm-ha-service sets. The patch adds the
+flag `--default-high-availability` (default `true`, upstream's behaviour) and
+writes its value on create; an existing `Hypervisor` keeps its value.
+`TestHypervisorCreatedWithDefaultHighAvailability` reconciles a Node with the
+fake client and asserts `true` for the default and `false` once the flag's
+variable is `false`. The lab release sets the flag to `false`.
+
+`0003-traits-report-traitsupdated-when-nothing-differs.patch`. Upstream's
+`TraitsController.Reconcile` (`internal/controller/traits_controller.go`) sets
+`TraitsUpdated` only on the path that calls Placement, so only when a custom
+trait differs, while onboarding and the aggregates controller wait for
+`TraitsUpdated=True`. The patch sets the condition, reason `Succeeded` and the
+message `Custom traits are in sync`, when nothing differs, without calling
+Placement and without writing `status.traits`. `TestTraitsInSyncSetsTraitsUpdated`
+runs the controller with no Placement client: the condition in `Handover`, no
+second write on a repeat, and no condition in `Testing`.
+
+`0004-openstack-select-the-catalog-interface-with-os-interface.patch`.
+Upstream's `ServiceClientFromProvider` (`internal/openstack/service_client.go`)
+builds every OpenStack client of the operator from an empty
+`gophercloud.EndpointOpts`, so hvo reads the catalog's `public` endpoints and
+no other. The patch reads the environment variable `OS_INTERFACE`: `public`,
+`internal` or `admin` selects that interface, and unset or empty keeps
+`public`, upstream's behaviour. Any other value, `Internal` included, is an
+error before the catalog is read, and hvo exits at start. An error of the
+catalog lookup, gophercloud's `ErrEndpointNotFound` when the catalog has no
+endpoint of that interface, is returned unchanged.
+`TestServiceClientInterface` builds a compute client on a provider whose
+endpoint locator records the options it gets: for each of the three values,
+for unset and empty, for `Internal`, `internalURL` and `internal` with a
+leading space or a trailing newline (no lookup happens) and for a locator
+error. The lab release sets `internal`, whose endpoints are the in-cluster
+Service URLs.
+
+Each patch header records `Upstream status: not submitted`. Their author
+submits them upstream, and issue #1066 tracks them until `main` carries them.
+
+**Tags:** CI publishes `ghcr.io/c5c3/openstack-hypervisor-operator` as
+`sha-<hvo-commit>-<sha>` on every push, and on `main` also as
+`sha-<hvo-commit>`, `upstream-<hvo-commit>` and `latest` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). The
+upstream chart resolves `sha-<hvo-commit>`. That shape is a build artifact to
+[Retention](./build-images-workflow.md#retention), which would delete it once a
+newer pin holds `latest`, while a chart of the older pin still names it.
+`upstream-<hvo-commit>` sits on the same manifest and is a keeper tag, so every
+pin that reached `main` stays pullable under both tags.
+
+**Pin moves:** Renovate tracks the `ARG HVO_COMMIT` line as a git-refs digest
+of upstream `main`, weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)).
+`hack/ci-resolve-hvo-commit.sh` is the only parser of the line. A new commit
+on which a patch no longer applies fails the build at the `git apply` step;
+that patch is then re-cut against the new commit. Once upstream carries a
+patch's change, the patch is dropped together with its checks in the build
+step: for 0001 the `servers.LiveMigrateOpts` grep and the
+`TestLiveMigrateAutoBody` run, for 0002 and 0003 the test's name in the
+controller `go test` run and the `grep` for its `--- PASS:` line, and that run
+itself once neither test is left; for 0004 the `TestServiceClientInterface` run
+and its `grep`. With the last patch gone, the
+`COPY patches/` and `git apply` steps go too, because both fail without a
+patch. A pin move also checks what
+[Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md),
+[Drain a Compute Node](../../guides/nova/drain-a-compute-node.md) and the
+table [Namespaces on a compute cluster](../target-clusters.md#namespaces-on-a-compute-cluster)
+say about hvo against the new commit, and updates the commit the two guides
+name.
+
+**Image contract check:** `tests/container-images/verify_hvo.sh` runs four
+tests against a built image. `manager --version` names `sha-<pin>` and ends
+with the pin. `manager --help` lists `-agent-namespaces` and
+`-eviction-concurrency`, which v1.2.3 does not have, and
+`-default-high-availability`, which only patch 0002 brings. The image runs
+`/usr/bin/manager` as `65532:65532`, and its `io.c5c3.upstream-commit` label
+equals the pin. The script reads the usage text instead of starting the binary
+without flags: upstream logs its `--agent-namespaces is required` error before
+it installs a logger, so that message never reaches the output.
+
+Its build, verification and tag scheme are described in
+[build-hvo / merge-hvo-image / verify-hvo-image](./build-images-workflow.md#build-hvo-merge-hvo-image-verify-hvo-image).
+
+### kvm-node-agent
+
+**Location:** `images/kvm-node-agent/Dockerfile`
+
+kvm-node-agent (kna) from `cobaltcore-dev`, compiled from a pinned commit of
+its upstream `main` branch with the patches under
+`images/kvm-node-agent/patches/` applied. The agent runs on every hypervisor
+node: it reports libvirt's state into the node's `Hypervisor` and installs the
+node's libvirt TLS files under the host's `/etc/pki`.
+`deploy/lab/metal-stack/hypervisor/kna-release.yaml` runs it with the upstream
+Helm chart of the same commit (see
+[Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
+| Property | Value |
+| --- | --- |
+| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
+| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
+| Version pin | `ARG KNA_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-kna-commit.sh` prints it) |
+| User | `0:0` (see [Design Deviations](#design-deviations)) |
+| Entrypoint | `/usr/bin/manager` |
+| Label | `io.c5c3.upstream-commit`, set to the pinned commit |
+
+**Build stage:**
+
+- Fetches `$KNA_COMMIT` from
+  `https://github.com/cobaltcore-dev/kvm-node-agent.git` by its SHA, with the
+  optional `github_token` secret, as for
+  [openstack-hypervisor-operator](#openstack-hypervisor-operator)
+- Downloads the Go modules in a layer of their own, then refreshes the git
+  index and applies every `*.patch` under `patches/` with `git apply --index`,
+  as for [openstack-hypervisor-operator](#openstack-hypervisor-operator). A
+  patch that does not apply fails the build with
+  `patch does not apply: /patches/<file>`
+- Compiles the test binary of `internal/certificates` once, with `-trimpath`
+  as in the build below, so that the build reuses the packages compiled for
+  the test, and runs the two tests patch 0001 brings from it:
+  `TestUpdateTLSCertificateKeyMode` as root, then
+  `TestUpdateTLSCertificateKeyGroupNotPermitted` as uid 65534 through
+  `setpriv --reuid=65534 --regid=65534 --clear-groups`. The build fails unless
+  each log shows the test's `--- PASS:` line followed by a space, which a
+  subtest's line does not match. A test binary exits 0 with
+  `testing: warning: no tests to run` when a test is missing, so the greps are
+  what catch a patch that lost its test file. The second test skips as root
+  and prints `--- SKIP`, so its grep also fails when that run is not
+  unprivileged. `tests/unit/images/kna_patch_test_guard_test.sh` runs both
+  greps against such logs
+- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
+  ldflags without the build date, with the version set to `sha-<commit>`, the
+  tag the image is published under. `manager --version` therefore prints
+  `manager version sha-<commit> ()`; the parentheses hold the unset build
+  date. Upstream's `generate` step is skipped: the generated files are
+  committed
+
+**Why `main`:** upstream publishes a chart for every `main` commit, version
+`0.2.0+sha-<short>` with `appVersion` `sha-<full commit>`, and that chart
+renders the image as `<repository>:<appVersion>`. Upstream pushes no image
+under that tag: `ghcr.io/cobaltcore-dev/kvm-node-agent:sha-<commit>` answers
+404. A fix the agent needs on hosts outside SAP ships here as a patch while it
+is proposed upstream. This image is published as `sha-<commit>`, so the chart
+of the pinned commit runs it with only the repository overridden.
+
+**Source patch:**
+`images/kvm-node-agent/patches/0001-certificates-restrict-private-key-file-modes.patch`.
+Upstream's `UpdateTLSCertificate` (`internal/certificates/manage_libvirt.go`)
+writes every file of the node's TLS Secret with mode 0644, the private key
+included (#1175). Every local user of the node can then read the key that
+authenticates it to every libvirtd of its migration domain. With the patch:
+
+- `libvirt/private/serverkey.pem`, `qemu/server-key.pem` and
+  `ch/server-key.pem` get mode 0600, and the six certificate files keep 0644.
+  A key target that a later upstream commit adds gets 0600 too.
+- When the environment variable `PKI_KEY_GROUP` holds a numeric group ID,
+  `qemu/server-key.pem` and `ch/server-key.pem` get that group and mode 0640.
+  With native TLS migration, QEMU opens its key itself, as the user it runs
+  as, and Cloud Hypervisor reads its own the same way.
+  `libvirt/private/serverkey.pem` keeps mode 0600, but it holds the same key,
+  and libvirt's client key links to it: the group can read the key the node
+  authenticates with to the libvirtd of its peers as well. Only a number is
+  accepted, because the distroless image has no group database, and an
+  invalid value fails the update before any file is written. The agent has to
+  belong to the group or hold `CAP_CHOWN`; otherwise the update fails with
+  `operation not permitted` and replaces no file. Unset or empty, the variable
+  changes no group.
+  The upstream chart has no value for it, so a host that needs it sets it
+  with a post-renderer.
+- Every file is written to a temporary file in its own directory, and the
+  temporary files are renamed over their targets only once all of them are
+  written. `os.WriteFile` keeps the mode of a file that already exists, so the
+  rename is what tightens a key an earlier version left at 0644. It needs
+  write permission on the directory and no `CAP_FOWNER`, and no reader sees a
+  partly written key. A write that fails leaves the files of the previous
+  Secret in place instead of a new certificate beside an old key.
+
+The agent writes the files only when the Secret's `resourceVersion` changes,
+so a node keeps the keys it has until its certificate is reissued.
+`TestUpdateTLSCertificateKeyMode` walks the PKI directory in eight subtests and
+fails for any file with the key's content that is not a key target, for a key
+file with another mode or group, and for any other file whose mode is not
+0644. `TestUpdateTLSCertificateKeyGroupNotPermitted` sets a group the process
+does not belong to and expects a failed update that leaves every file of the
+previous Secret in place and no temporary file behind. A root process may give
+a file any group, so that test skips as root, and the build runs it a second
+time as uid 65534.
+The patch header records `Upstream status: not submitted`. Its author submits
+it upstream; #1175 stays open until upstream `main` carries the change, and
+issue #1066 tracks it.
+
+**Tags:** CI publishes `ghcr.io/c5c3/kvm-node-agent` as
+`sha-<kna-commit>-<sha>` on every push, and on `main` also as
+`sha-<kna-commit>`, `upstream-<kna-commit>` and `latest` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). The
+upstream chart resolves `sha-<kna-commit>`, and `upstream-<kna-commit>` keeps
+that manifest through [Retention](./build-images-workflow.md#retention), as
+for openstack-hypervisor-operator.
+
+**Pin moves:** Renovate tracks the `ARG KNA_COMMIT` line as a git-refs digest
+of upstream `main`, weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)).
+`hack/ci-resolve-kna-commit.sh` is the only parser of the line. The lab's chart
+ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` moves with the pin by
+hand, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the
+chart's short SHA differs from it. A new commit on which the patch no longer
+applies fails the build at the `git apply` step; the patch is then re-cut
+against the new commit. Once upstream carries the change, the patch goes
+together with its two test runs in the build step, and with the last patch
+the `COPY patches/` and `git apply` steps go too.
+
+**Image contract check:** `tests/container-images/verify_kna.sh` runs four
+tests against a built image. The first line of `manager --version` is
+`manager version sha-<pin> ()`. `manager --help` exits 0 and lists
+`-health-probe-bind-address`, the flag the chart passes; a binary that needed
+a C library would not start on the static base at all. The image runs
+`/usr/bin/manager` as `0:0`, and its `io.c5c3.upstream-commit` label equals
+the pin.
+
+Its build, verification and tag scheme are described in
+[build-kna / merge-kna-image / verify-kna-image](./build-images-workflow.md#build-kna-merge-kna-image-verify-kna-image).
 
 ## Named Build Contexts
 
@@ -1722,9 +2161,60 @@ Both projects are compiled from source, so the first build takes a while. The
 Dockerfile's BuildKit cache mounts keep the apt steps of a rebuild short, but
 the two `make -j"$(nproc)"` runs dominate either way.
 
+### Building openstack-hypervisor-operator locally
+
+The build needs no source checkout and no build args: the Dockerfile fetches
+the pinned commit, applies the patches and runs their tests itself. Pass
+`GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the build
+fails; CI always does.
+
+```bash
+docker build images/openstack-hypervisor-operator -t openstack-hypervisor-operator
+
+# The same build with an authenticated fetch
+docker build --secret id=github_token,env=GITHUB_TOKEN \
+  images/openstack-hypervisor-operator -t openstack-hypervisor-operator
+
+# Print the pinned upstream commit
+hack/ci-resolve-hvo-commit.sh
+
+# Run the full image contract check against openstack-hypervisor-operator
+bash tests/container-images/verify_hvo.sh
+```
+
+`--progress=plain` keeps the `--- PASS:` lines of `TestLiveMigrateAutoBody`,
+`TestHypervisorCreatedWithDefaultHighAvailability`,
+`TestTraitsInSyncSetsTraitsUpdated` and `TestServiceClientInterface` in the
+build output.
+
+### Building kvm-node-agent locally
+
+The build needs no source checkout and no build args: the Dockerfile fetches
+the pinned commit, applies the patches and runs the patch's two tests itself.
+Pass `GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the
+build fails; CI always does.
+
+```bash
+docker build images/kvm-node-agent -t kvm-node-agent
+
+# The same build with an authenticated fetch
+docker build --secret id=github_token,env=GITHUB_TOKEN \
+  images/kvm-node-agent -t kvm-node-agent
+
+# Print the pinned upstream commit
+hack/ci-resolve-kna-commit.sh
+
+# Run the full image contract check against kvm-node-agent
+bash tests/container-images/verify_kna.sh
+```
+
+`--progress=plain` keeps the `--- PASS: TestUpdateTLSCertificateKeyMode` and
+`--- PASS: TestUpdateTLSCertificateKeyGroupNotPermitted` lines in the build
+output.
+
 ## Design Deviations
 
-The implementation deviates from the original design document in one area,
+The implementation deviates from the original design document in four areas,
 documented with `# DEVIATION` comments in the affected Dockerfiles:
 
 **Generic `openstack` user instead of per-service users:**
@@ -1748,7 +2238,39 @@ for the other half of the same decision. Neither derives from `python-base`, so
 each creates the `openstack` user and group itself. For `ovn` the distro
 packages would install separate `openvswitch` and `ovn` users, and the source
 build carries no such packaging. The `rclone` package that `backup-shifter`
-installs brings no service account at all. One identity across all images keeps
-the pod security contexts uniform, and in the `OVNCentral` backup CronJob it
-lets the `backup` init container and the `shifter` container share a single pod
-security context.
+installs brings no service account at all. One identity across all non-root
+images keeps the pod security contexts uniform, and in the `OVNCentral` backup
+CronJob it lets the `backup` init container and the `shifter` container share a
+single pod security context.
+
+**Root instead of the `openstack` user (libvirt):**
+
+`images/libvirt/Dockerfile` keeps root and creates no `openstack` user, and
+carries a `# DEVIATION` comment saying so. libvirtd has to run as root to
+manage domains, devices and cgroups on the node, and the libvirt packages
+create the `libvirt-qemu` user that QEMU runs guests as.
+
+**Distroless and UID 65532 instead of `python-base` (openstack-hypervisor-operator):**
+
+`images/openstack-hypervisor-operator/Dockerfile` does not derive from
+`python-base` and creates no `openstack` user, and carries a `# DEVIATION`
+comment saying so. The operator is a static Go binary, so it runs on the
+`gcr.io/distroless/static:nonroot` base the CobaltCore operator images use
+(`operators/Dockerfile`), as that base's `nonroot` user, UID 65532. Upstream's
+own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
+no command, which any non-root user and the image's `ENTRYPOINT` satisfy.
+
+**Distroless and UID 0 instead of `python-base` (kvm-node-agent):**
+
+`images/kvm-node-agent/Dockerfile` does not derive from `python-base` and
+creates no `openstack` user, and carries a `# DEVIATION` comment saying so.
+The agent is a static Go binary on the same `gcr.io/distroless/static:nonroot`
+base, but it runs as root (`USER 0:0`) instead of that base's `nonroot` user.
+kna authenticates to the host's system bus and starts units there, and a
+Debian host's dbus-daemon drops the connection of a UID it cannot resolve
+(#1167). Upstream's own image is Alpine with `USER 42438:42438`, a user that
+exists on SAP's hosts only. Every consumer of the image therefore runs the
+agent as root unless its pod sets `runAsUser`: the upstream chart sets none
+for the manager, and `runAsNonRoot: true` rejects the image. hadolint reports
+`DL3002` for a root `USER`, so the line above it carries
+`# hadolint ignore=DL3002`.

@@ -43,9 +43,11 @@ spec:
   values:
     grafana.ini:
       auth.anonymous:
-        # Anonymous Viewer access — kind-only localhost posture: the stack
-        # is reachable solely via the host's :443 bridge, so a login form
-        # would only get in the way of the local demo.
+        # Anonymous Viewer access: on kind the stack is reachable only via
+        # the host's :443 bridge, so a login form would only get in the way
+        # of the local demo. The metal-stack lab installs this release
+        # unchanged behind its Gateway port-forward (see the POSTURE note of
+        # deploy/lab/metal-stack/dizzy/kustomization.yaml).
         enabled: true
         org_role: Viewer
       auth:

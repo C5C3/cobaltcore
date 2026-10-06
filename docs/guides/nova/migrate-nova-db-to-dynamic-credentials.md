@@ -53,6 +53,11 @@ on the ControlPlane, or the shared `spec.infrastructure.database.credentialsMode
 when that is empty. The Nova CRD rejects a child whose `apiDatabase` and
 `database` carry different modes, so the two chains always switch together.
 
+The figure shows one chain. Nova has two, and the tables above name the
+objects of each.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
+
 ## Prerequisites
 
 ::: info Devstack
@@ -62,15 +67,15 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through the `nova` block of Step 3, the onboarding of
-Step 4 and the **Boot a first server** catalog check in Step 6, so the projected
+Follow that tutorial through the `nova` block of Step 4, the onboarding of
+Step 5 and the **Boot a first server** catalog check in Step 7, so the projected
 `controlplane-nova` child is `Ready` in `openstack`. Every resource name in the
 examples below is one that devstack produces.
 :::
 
-On that devstack Nova already runs on dynamic credentials, because Step 4
-onboarded both engine roles. To walk the migration there, stage the static mode
-first with step 3 below, then cut over with step 4.
+On that devstack Nova already runs on dynamic credentials, because the
+tutorial's Step 5 onboarded both engine roles. To walk the migration there,
+stage the static mode first with step 3 below, then cut over with step 4.
 
 ::: warning Set the credential mode on the ControlPlane, never on the projected child
 The `controlplane-nova` Nova CR is **projected** by the c5c3-operator, so a

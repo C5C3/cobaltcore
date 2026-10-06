@@ -63,7 +63,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
 | `PlacementAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
@@ -257,4 +257,5 @@ Beyond the owned set it watches:
   soon as ESO flips the store's Ready condition. A Placement that omits
   `spec.secretStoreRef` resolves to the shared cluster store, so the default
   fan-out is preserved while a Placement pinned to a namespaced store is woken
-  only by its own.
+  only by its own. The `ClusterSecretStore` leg is not registered when the
+  operator runs with `--namespace`.

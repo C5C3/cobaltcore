@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The ControlPlane of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
+# Step 4): the data of the first `# controlplane.yaml` block, plus the
+# spec.services.cinder of the page's optional `# block-storage.yaml` fragment,
+# plus two keys the lab adds: spec.services.neutron.extraConfig and
+# spec.services.nova.hypervisorOperator. The comments above those two keys and
+# above spec.sizing give the reasons.
+# tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file,
+# minus cinder and the two keys, and the first block drift apart, and when
+# cinder and the fragment do.
+#
+# The file is not named controlplane.yaml: .gitignore ignores that basename in
+# every directory.
+#
+# Every endpoint below is a *.127-0-0-1.nip.io hostname on the openstack-gw
+# Gateway, reached from a workstation through
+# `kubectl -n envoy-gateway-system port-forward <envoy service> 8443:443`,
+# hence the :8443 on every publicEndpoint.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    # The shared message bus. The webhook fills clusterRef.name with
+    # openstack-rabbitmq, the RabbitmqCluster this ControlPlane then owns.
+    messaging: {}
+  services:
+    keystone:
+      # The port-forward's local port. Without it the operator derives
+      # https://keystone.127-0-0-1.nip.io/v3 (port 443) from the gateway
+      # hostname.
+      publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+    horizon:
+      # The openstack-gw listener for horizon.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: horizon.127-0-0-1.nip.io
+    glance:
+      publicEndpoint: https://glance.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: glance.127-0-0-1.nip.io
+      # One S3 image store on the in-cluster Garage object store; the lab's
+      # infrastructure overlay ships the Garage cluster and the glance-images
+      # bucket.
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement:
+      publicEndpoint: https://placement.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: placement.127-0-0-1.nip.io
+    barbican:
+      # An OpenBao instance this ControlPlane provisions and owns; its name, its
+      # KV mount, and its AppRole are derived by convention, so the block is empty.
+      secretStore:
+        dedicated: {}
+      publicEndpoint: https://barbican.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: barbican.127-0-0-1.nip.io
+    neutron:
+      publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: neutron.127-0-0-1.nip.io
+      # The standalone OVNCentral of ovncentral.yaml. Its namespace defaults to
+      # this ControlPlane's own, so naming the CR is the whole reference.
+      ovn:
+        centralRef:
+          name: controlplane-ovn
+      # Lab setting. Tenant networks are Geneve, and Neutron 27.0.3 computes
+      # their MTU as global_physnet_mtu minus 20 (the IPv4 header, get_mtu in
+      # neutron/plugins/ml2/drivers/type_tunnel.py) minus [ml2_type_geneve]
+      # max_header_size, which the Neutron operator owns at 38
+      # (operators/neutron/internal/controller/reconcile_config.go). Every
+      # tenant network therefore gets MTU 1402.
+      # 1460 is the MTU of the pod network (the cali* lines of
+      # deploy/lab/metal-stack/probe/node-probe.yaml). The chassis tunnels over
+      # the node network (its encapsulation address is the pod's status.hostIP),
+      # whose uplinks lan0 and lan1 carry 9000. 1460 is a bound that holds
+      # without a path-MTU measurement between the two racks, and nothing has
+      # measured it yet. The value is a string: extraConfig is
+      # map[string]map[string]string.
+      extraConfig:
+        DEFAULT:
+          global_physnet_mtu: "1460"
+    cinder:
+      publicEndpoint: https://cinder.127-0-0-1.nip.io:8443
+      # The openstack-gw listener for cinder.127-0-0-1.nip.io, which the lab's
+      # infrastructure overlay takes over from the kind overlay.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: cinder.127-0-0-1.nip.io
+      # The two shares of the NFS server in deploy/lab/metal-stack/nfs/, which
+      # WITH_NFS=true deploys: /volumes holds the volumes, /backups the
+      # backups. The paths are NFSv4 share strings below the server's /exports
+      # pseudo-root, so /volumes, never /exports/volumes.
+      backends:
+        - name: nfs1
+          type: NFS
+          nfs:
+            server: nfs-server.openstack.svc.cluster.local
+            path: /volumes
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
+    nova:
+      # Both compute catalog rows append /v2.1 to this endpoint.
+      publicEndpoint: https://nova.127-0-0-1.nip.io:8443
+      # The metadata API, the scheduler, the conductor and the console proxy
+      # run one replica each and stay in-cluster.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: nova.127-0-0-1.nip.io
+      # Lab setting. Provisions the Keystone user hypervisor-operator (project
+      # service-hypervisor-operator, role admin) and writes the Secret
+      # controlplane-nova-hypervisor-operator-auth into openstack
+      # (ServiceNovaHypervisorOperatorSpec in
+      # docs/reference/c5c3/controlplane-crd.md), which #1142 feeds into the
+      # hypervisor operator's chart.
+      hypervisorOperator: {}
+  # Lab setting, identical to the quick start. Minimal is one replica per
+  # component and a 512Mi database volume
+  # (operators/c5c3/api/v1alpha1/sizing_profiles.go); each worker offers 16
+  # CPUs and 128 GiB. The Lightbits CSI driver rounds a request up to its
+  # 1 GiB granularity (getReqCapacity in pkg/driver/controller.go of
+  # LightBitsLabs/los-csi), so the 512Mi claim binds as a 1 GiB volume. A lab
+  # that needs a value between Minimal and Standard declares a cluster-scoped
+  # SizingProfile with spec.base: Minimal and selects it with
+  # spec.sizing.profileRef.name, which excludes spec.sizing.profile.
+  sizing:
+    profile: Minimal

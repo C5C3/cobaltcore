@@ -28,15 +28,19 @@ regex managers and package rules. The high-level split is:
 | What Renovate does on its own                                                    | What needs a human                                            |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | Opens PRs for every dependency it understands (Go, Docker, GitHub Actions, npm). | **Merging** native-manager PRs — Go/Docker/Actions/npm bumps are opened but not auto-merged. |
-| Auto-merges only the custom-regex–managed pins (patch/minor) after a 3-day cooldown — see below. | Reviewing major-version bumps.                |
+| Auto-merges the custom-regex–managed pins and the `gateway-helm` and `headlamp` chart floors (patch/minor) after a 3-day cooldown, see below. | Reviewing major-version bumps.                |
 | Maintains Docker image digests (`@sha256:…`) alongside floating tags.            | Reviewing anything touching coupled stacks (k8s).             |
 | Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Updating the Go workspace / `go.mod` directives; triaging CVEs. |
 
 Renovate combines the `config:recommended` native managers (Go modules, Dockerfiles,
-GitHub Actions, npm) with **fifteen** custom regex managers that track pins those
-native managers cannot see. Auto-merge (patch/minor, 3-day cooldown) is wired **only**
-onto the custom-regex managers; native-manager PRs always wait for a human merge
-(`config:recommended` does not auto-merge, and no top-level `automerge` is set).
+GitHub Actions, npm), the native `flux` manager over the Flux manifests, and the
+custom regex managers (`jq '.customManagers | length' renovate.json` counts them) that
+track pins those native managers cannot see. Auto-merge (patch/minor, 3-day cooldown)
+is wired onto the custom-regex managers and, among the native managers, **only** onto
+the two floor-tracked Flux charts,
+`gateway-helm` and `headlamp` (see [Flux HelmRelease chart versions](#flux-helmrelease-chart-versions)).
+Every other native-manager PR waits for a human merge (`config:recommended` does not
+auto-merge, and no top-level `automerge` is set).
 
 Renovate performs the merge itself: `platformAutomerge` is set to `false` at the top
 level, so an automergeable PR never goes to GitHub's own auto-merge. Renovate merges
@@ -48,13 +52,16 @@ repository-settings change and cannot be made from files in this repository.
 The custom managers cover:
 
 - **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
-- **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh`.
-- **kind deploy components** — `flux-web.yaml`, `envoy-gateway.yaml`, and `headlamp.yaml` under `deploy/kind/base/`.
+- **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
+- **kind deploy components** — `flux-web.yaml` under `deploy/kind/base/`.
 - **K-ORC Flux source** — the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
+- **openstack-hypervisor-operator image pin** — the `ARG HVO_COMMIT` line in `images/openstack-hypervisor-operator/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source). The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed `git apply` step in `build-hvo` (`patch does not apply: /patches/<file>`) means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
+- **kvm-node-agent image pin** — the `ARG KNA_COMMIT` line in `images/kvm-node-agent/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed `git apply` step in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
+- **Lab libvirt image** — the seven `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is the keeper tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, that `hack/ci-tag-libvirt-keeper.sh` mints once on `main`. `deb` compares the Ubuntu revision and the `-r<N>` suffix numerically; `docker` versioning would read `-2ubuntu8.19-r1` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `10.x`, so `allowedVersions` admits the keeper shape alone. Majors are disabled, because `tests/container-images/verify_libvirt.sh` pins libvirt 10, the `libvirt0` that `images/nova-compute/Dockerfile` links. Minor, patch and digest updates move all seven lines in one PR (`metal-stack lab libvirt image`) without a cooldown, since this repository's own `main` builds the image from a reviewed commit. They are **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump is what the pin is for.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
@@ -90,6 +97,143 @@ the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
 bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
 
+### Flux HelmRelease chart versions
+
+Renovate's native `flux` manager reads the Flux manifests through the two
+`flux.managerFilePatterns` entries in `renovate.json`:
+
+- `/^deploy/flux-system/(releases|sources)/.+\.yaml$/`
+- `/^deploy/kind/.+\.yaml$/`
+
+The manager resolves the `sourceRef` of a HelmRelease against the HelmRepository
+manifests it has parsed, so the sources directory has to match as well:
+`deploy/kind/prometheus/release.yaml` references the `prometheus-community`
+HelmRepository in `deploy/flux-system/sources/`. Nothing under `deploy/lab/` or
+`deploy/examples/` matches. The patterns use no regex lookahead, because the hosted bot
+compiles them with RE2, which has none.
+
+It tracks sixteen third-party charts and one image:
+
+| Chart | File | Strategy | Automerge |
+| --- | --- | --- | --- |
+| `cert-manager` | `deploy/flux-system/releases/cert-manager.yaml` | `widen` | no |
+| `external-secrets` | `deploy/flux-system/releases/external-secrets.yaml` | `widen` | no |
+| `garage-operator` | `deploy/flux-system/releases/garage-operator.yaml` | `widen` | no |
+| `mariadb-operator` | `deploy/flux-system/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `mariadb-operator-crds` | `deploy/flux-system/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `openbao` | `deploy/flux-system/releases/openbao.yaml` | `widen` | no |
+| `prometheus-operator-crds` | `deploy/flux-system/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
+| `chaos-mesh` | `deploy/kind/chaos-mesh/release.yaml` | `widen` | no |
+| `grafana` | `deploy/kind/dizzy/release-grafana.yaml` | `widen` | no |
+| `victoria-metrics-single` | `deploy/kind/dizzy/release-victoria-metrics.yaml` | `widen` | no |
+| `metrics-server` | `deploy/kind/metrics-server/release.yaml` | `widen` | no |
+| `kube-prometheus-stack` | `deploy/kind/prometheus/release.yaml` | `widen`, group `prometheus-operator charts` | no |
+| `vertical-pod-autoscaler` | `deploy/kind/vpa/release.yaml` | `widen` | no |
+| `gateway-helm` | `deploy/kind/base/envoy-gateway.yaml` | `bump`, group `envoy-gateway` | minor/patch after 3 days |
+| `headlamp` | `deploy/kind/base/headlamp.yaml` | `bump`, group `headlamp` | minor/patch after 3 days |
+| `csi-driver-nfs` | `deploy/kind/nfs/release.yaml` | exact pin, majors disabled, group `csi-driver-nfs chart` | no |
+| image `ghcr.io/headlamp-k8s/headlamp-plugin-flux` | `deploy/kind/base/headlamp.yaml` (HelmRelease values) | tag | no |
+
+`widen` is the `rangeStrategy` of the base rule. A release inside the range changes
+nothing in Git: Flux installs it on its next reconcile and Renovate stays silent. A
+release past the ceiling opens a PR that raises the ceiling and keeps the floor, so
+`>=0.10.0 <1.0.0` becomes `>=0.10.0 <3.0.0` for `external-secrets` 2.x. Renovate's
+default strategy resolves to `replace` here, which writes a bare `<3.0.0` and drops the
+floor. `widen` never moves the floor. `gateway-helm` and `headlamp` use `bump` for that:
+an in-range release rewrites the floor (`>=1.9.0 <2.0.0` becomes `>=1.9.2 <2.0.0`), and
+a major rewrites both bounds (`>=2.0.0 <3.0.0`).
+
+Two more rules make the manager work on the sources of this repository:
+
+- A chart from a `type: oci` HelmRepository (`c5c3-charts`, `prometheus-community`,
+  `garage-operator`, `envoy-gateway-charts`) resolves through the `docker` datasource,
+  whose `docker` versioning cannot read a range. Renovate then skips the chart with
+  `skipReason: invalid-value`. A packageRule sets `versioning: helm` for a `docker`
+  dependency of the flux manager whose current value starts with `>=`. The rule names
+  no chart, so it covers a new OCI chart as long as its range is spelled `>=X <Y`; a
+  `^X` or `~X` range is still skipped.
+- The base rule sets `minimumReleaseAgeBehaviour: timestamp-optional`. `ghcr.io`
+  publishes no release timestamp, and under the default, `timestamp-required`, the
+  3-day cooldown holds every `ghcr.io` update as pending forever. Docker Hub and the
+  HTTP chart indexes publish timestamps, so their cooldown still holds. None of the
+  `ghcr.io` dependencies automerges.
+
+Two rules switch the manager off. The `c5c3-charts` releases match
+`ghcr.io/c5c3/charts/**`, the `url` of `deploy/flux-system/sources/c5c3-charts.yaml`
+without `oci://`: this repository publishes those charts and sets their ranges itself.
+The other rule lists every file a customManager reads, plus the K-ORC release, whose
+image stays untracked and moves with the `bump-korc-pin` skill:
+
+- `deploy/flux-system/sources/k-orc.yaml`
+- `deploy/flux-system/sources/openbao-operator.yaml`
+- `deploy/flux-system/sources/rabbitmq-cluster-operator.yaml`
+- `deploy/flux-system/releases/k-orc.yaml`
+- `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
+- `deploy/kind/base/flux-web.yaml`
+- `deploy/kind/infrastructure/openbao-instance.yaml`
+- `deploy/kind/nfs/nfs-server.yaml`
+
+Every pin has one owner. A customManager moves a tag together with its digest or commit
+in one match, which the flux manager does not do for these pairs, so a file that gets a
+customManager joins this list. `tests/unit/renovate/flux_helmrelease_manager_test.sh`
+fails for a file both managers read, and R8 of the `check-renovate-coverage` audit
+reports it as claimed twice.
+
+A `gateway-helm` or `headlamp` major opens a PR that is not automerged. The
+`ENVOY_GATEWAY_VERSION` CRD pin shares the `envoy-gateway` group with the chart, but its
+majors stay disabled like every custom-regex major. The chart comes from Docker Hub and
+the pin from GitHub releases, so the group holds both only once both releases are
+visible and past the cooldown. The pin can automerge alone while it stays inside the
+chart range. A chart PR whose new range leaves the pin behind (a floor bump that
+arrives first, or a major) fails `tests/unit/renovate/envoy_gateway_manager_test.sh`
+until the pin is inside the range.
+
+A PR that raises a ceiling lets Flux install every release up to the new one. Before
+merging, the reviewer handles the coupling the e2e legs do not see:
+
+- `victoria-metrics-single` (`deploy/kind/dizzy/release-victoria-metrics.yaml`) and
+  `vertical-pod-autoscaler` (`deploy/kind/vpa/release.yaml`) hold a one-minor window on
+  purpose. `widen` keeps the old floor, so lift the floor by hand on the PR branch and
+  keep the window one minor wide.
+- A `gateway-helm` major needs `ENVOY_GATEWAY_VERSION` in `hack/deploy-infra.sh` moved by
+  hand on the same branch; the test above stays red until it is.
+- A `mariadb-operator` major moves the `github.com/mariadb-operator/mariadb-operator` Go
+  module (pinned in `internal/common/go.mod` and the operator modules) along with the
+  CRDs the chart installs.
+- `prometheus-operator-crds` owns the CRDs `kube-prometheus-stack` runs against
+  (`deploy/kind/prometheus/release.yaml` sets `crds.enabled=false`), so the two share the
+  `prometheus-operator charts` group. A PR that raises only the `kube-prometheus-stack`
+  ceiling needs a check that the CRDs below the `prometheus-operator-crds` ceiling carry
+  what the new operator expects.
+
+To see what the manager proposes, run Renovate against a copy of `deploy/`. The npx
+install of Renovate lacks the optional `re2` module and then rejects every
+`matchStrings` entry that uses `(?m)`. The flux manager needs no customManager, so the
+copy drops them:
+
+```bash
+tmp=$(mktemp -d) && cp -R deploy "$tmp/deploy"
+jq 'del(.customManagers) | .enabledManagers = ["flux"]' renovate.json > "$tmp/renovate.json"
+git -C "$tmp" init -q && git -C "$tmp" add -A && git -C "$tmp" -c user.name=x -c user.email=x@x commit -qm x
+ver=$(sed -nE 's/^RENOVATE_VALIDATOR_VERSION="([^"]+)"/\1/p' tests/unit/renovate/fluxoperator_custommanager_test.sh)
+(cd "$tmp" && npx --yes --package node@24 --package "renovate@${ver}" -- \
+  renovate --platform=local --report-type=file --report-path="$tmp/report.json")
+jq -r '.repositories[].packageFiles.flux[] | .packageFile as $f | .deps[]
+  | [$f, .depName, (.currentValue // .currentDigest), (.skipReason // "tracked"),
+     ((.updates // []) | map(.updateType + " " + (.newValue // .newDigest)) | join(" | "))] | @tsv' "$tmp/report.json"
+```
+
+`$ver` is the `RENOVATE_VALIDATOR_VERSION` that
+`tests/unit/renovate/fluxoperator_custommanager_test.sh` pins; that release refuses
+Node 25, hence `--package node@24`. Each row names the file, the dependency, its
+current value, `tracked` or the skip reason, and any proposed update. The run has two limits.
+`--platform=local` stops after the lookup and builds no branches, so the rules scoped
+by `matchUpdateTypes` (the `csi-driver-nfs` major, the two automerge rules) do not show
+in the report; `flux_helmrelease_manager_test.sh` covers them. And `bump` proposes
+nothing while a floor equals the newest release: lower the floor in the copy, for
+example to `>=1.9.0 <2.0.0` in `deploy/kind/base/envoy-gateway.yaml`, to see
+`>=1.9.2 <2.0.0` proposed for the `renovate/envoy-gateway` branch.
+
 ### Pins with no datasource: the OVN image content pins
 
 `images/ovn/Dockerfile` carries two pins Renovate deliberately does **not** track:
@@ -115,6 +259,85 @@ someone noticed OVN security patches had stopped landing.
 Renovate tracks it as the `currentDigest` of the noVNC manager: a plain tag
 has no second gitlink to carry across, and the github-tags datasource resolves
 the tag to the commit it names.
+
+### Re-cutting the openstack-hypervisor-operator patch
+
+The four patches under `images/openstack-hypervisor-operator/patches/` are cut
+against the pinned upstream commit, each as one commit on top of the ones before:
+
+| Patch | Subject | Test command |
+| --- | --- | --- |
+| `0001-eviction-let-nova-choose-block-migration.patch` | `Eviction: let Nova choose block migration` | `go test -count=1 -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/` |
+| `0002-hypervisor-make-the-high-availability-default-configurable.patch` | `Hypervisor: make the default of spec.highAvailability configurable` | `go test -count=1 -run '^TestHypervisorCreatedWithDefaultHighAvailability$' ./internal/controller/` |
+| `0003-traits-report-traitsupdated-when-nothing-differs.patch` | `Traits: report TraitsUpdated when no custom trait differs` | `go test -count=1 -run '^TestTraitsInSyncSetsTraitsUpdated$' ./internal/controller/` |
+| `0004-openstack-select-the-catalog-interface-with-os-interface.patch` | `openstack: select the catalog interface with OS_INTERFACE` | `go test -count=1 -run '^TestServiceClientInterface$' ./internal/openstack/` |
+
+When a Renovate PR moves `ARG HVO_COMMIT` to a commit on which one of them no
+longer applies, `build-hvo` fails at the `git apply` step and nothing is
+published. If upstream now carries a patch's change, delete that patch on the
+Renovate branch together with its checks in the Dockerfile's build step: for 0001
+the `servers.LiveMigrateOpts` grep and the `TestLiveMigrateAutoBody` run, for
+0002 and 0003 the test's name in the controller `go test` run and the `grep` for
+its `--- PASS:` line, for 0004 the `TestServiceClientInterface` run and its
+`grep`. Each test passes only while upstream ships it. With no patch
+left, the `COPY patches/` and `git apply` steps fail as well, so drop them in the
+same change. Otherwise re-cut the patches in order in a scratch clone that holds
+both the old and the new commit, so a three-way apply finds the blobs each patch
+was cut from:
+
+```bash
+old=<commit before the move>; new=<commit the Renovate PR pins>
+git init /tmp/hvo && cd /tmp/hvo
+git remote add origin https://github.com/cobaltcore-dev/openstack-hypervisor-operator.git
+git fetch --depth 1 origin "$old" "$new" && git checkout --detach "$new"
+git apply --3way <repo>/images/openstack-hypervisor-operator/patches/0001-*.patch
+# resolve the conflicts, then prove the test still passes
+go test -count=1 -run '^TestLiveMigrateAutoBody$' ./internal/controller/eviction/
+git commit -am "Eviction: let Nova choose block migration"
+# the same for 0002, 0003 and 0004, each with its test command and subject from the table
+git format-patch -4 --no-signature -o /tmp/hvo-patches
+```
+
+`git am -3` does not take the checked-in files: each carries the house header instead
+of a mail envelope, and `git am` stops at the missing author. Turn each
+`git format-patch` output back into the house header (the SPDX pair, the bare subject,
+the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
+diffstat; see `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
+for the form), commit the files onto the Renovate branch and let `build-hvo` prove
+them.
+
+### Re-cutting the kvm-node-agent patch
+
+`images/kvm-node-agent/patches/0001-certificates-restrict-private-key-file-modes.patch`
+is cut against the pinned upstream commit, and the recipe is the one above with the
+kna names. When a Renovate PR moves `ARG KNA_COMMIT` to a commit on which the patch
+no longer applies, `build-kna` fails at the `git apply` step and nothing is
+published. If upstream now carries the change, delete the patch on the Renovate
+branch together with its two test runs in the Dockerfile's build step, and with the
+last patch the `COPY patches/` and `git apply` steps. Otherwise re-cut it in a
+scratch clone that holds both commits:
+
+```bash
+old=<commit before the move>; new=<commit the Renovate PR pins>
+git init /tmp/kna && cd /tmp/kna
+git remote add origin https://github.com/cobaltcore-dev/kvm-node-agent.git
+git fetch --depth 1 origin "$old" "$new" && git checkout --detach "$new"
+git apply --3way <repo>/images/kvm-node-agent/patches/0001-*.patch
+# resolve the conflicts, then prove both tests still pass
+go test -count=1 -run '^TestUpdateTLSCertificateKeyMode$' ./internal/certificates/
+go test -count=1 -run '^TestUpdateTLSCertificateKeyGroupNotPermitted$' ./internal/certificates/
+git commit -am "Certificates: restrict the mode of private key files"
+git format-patch -1 --no-signature --stdout > /tmp/0001.patch
+```
+
+Run the second test as a user other than root: it skips as root, because a root
+process may give a file any group. The image build runs the first test as root and
+the second as uid 65534, and fails unless both print their `--- PASS:` line. Turn
+the `git format-patch` output into the house header as for the hvo patch (the SPDX
+pair, the bare subject, the rationale, `Applies-to:` naming the new commit,
+`Upstream status:`, and no diffstat), move the chart ref in
+`deploy/lab/metal-stack/hypervisor/sources.yaml` to the chart of the new commit,
+commit both onto the Renovate branch and let `build-kna` prove the patch.
 
 ---
 
@@ -254,10 +477,12 @@ production:
 | Minor | Grouped into a PR; **not** auto-merged.                  | Confirm the CHANGELOG mentions no behavior change in modules we depend on, then merge. |
 | Major | Always opened, never auto-merged.                       | Read full upstream release notes; check for migrations; run e2e locally.  |
 
-This is the behaviour for the **native** managers (Go modules, Docker, Actions, npm).
-The **custom-regex** managers (OpenStack tags, the `hack/` test tooling, kind deploy
-components, Go build tooling) are the only ones that *do* auto-merge: patch/minor
-auto-merge after the 3-day cooldown, major disabled.
+This is the behaviour for the **native** managers (Go modules, Docker, Actions, npm,
+Flux). The **custom-regex** managers (OpenStack tags, the `hack/` test tooling, kind
+deploy components, Go build tooling) and the two floor-tracked Flux charts,
+`gateway-helm` and `headlamp`, are the only ones that *do* auto-merge: patch/minor
+auto-merge after the 3-day cooldown. Majors are disabled for the custom-regex
+managers; a `gateway-helm` or `headlamp` major opens a PR that a human merges.
 
 ### Coupled stacks (k8s)
 

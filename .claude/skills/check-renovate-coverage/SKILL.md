@@ -36,9 +36,9 @@ which Renovate has to understand:
 | OpenStack release tags | `releases/<release>/source-refs.yaml` (one line per component: `keystone: "29.0.0"`) | customManager — `^(?<depName>[\w.-]+):\s*"(?<currentValue>\d+\.\d+\.\d+)"` over `releases/.*/source-refs.yaml`, git-tags on opendev |
 | Release test and constraint pins | `releases/<release>/test-refs.yaml`, `overrides/<release>/constraints.txt` | customManager each (pypi) |
 | Shell script constants | `hack/deploy-infra.sh` + `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"`, deliberately duplicated, one customManager over both files; `GATEWAY_API_VERSION`, `ENVOY_GATEWAY_VERSION`, `REGISTRY_CACHE_IMAGE`), `hack/install-test-deps.sh` (chainsaw, flux, kind, kubectl), `hack/dizzy.sh` | customManager, one regex per constant |
-| kind manifests | `deploy/kind/base/{flux-web,envoy-gateway,headlamp}.yaml`, `deploy/kind/infrastructure/openbao-instance.yaml`, `deploy/kind/nfs/{nfs-server,release}.yaml` | customManager, one regex per file shape |
+| kind manifests | `deploy/kind/base/flux-web.yaml`, `deploy/kind/infrastructure/openbao-instance.yaml`, `deploy/kind/nfs/nfs-server.yaml` | customManager, one regex per file shape |
 | Flux sources and images pinned by tag/commit/digest | `deploy/flux-system/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/flux-system/releases/k-orc.yaml` is **not** tracked (pattern 7) |
-| FluxCD HelmRelease chart versions | `deploy/flux-system/releases/*.yaml` (`spec.chart.spec.version: ">=0.1.0 <1.0.0"`) | **not Renovate-tracked**: floating semver ranges Flux resolves at reconcile time. The native `flux` manager's default file pattern is `gotk-components.yaml` only and `renovate.json` sets no `flux.managerFilePatterns`, so raising a `<1.0.0` ceiling is a manual edit |
+| FluxCD HelmRelease chart versions | third-party charts under `deploy/flux-system/releases/` and `deploy/kind/` (`spec.chart.spec.version: ">=0.10.0 <1.0.0"`) | native `flux` manager over `flux.managerFilePatterns`. `widen` stays silent inside the range and, on a release past the ceiling, raises the ceiling and keeps the floor; `bump` for `gateway-helm` and `headlamp` (minor/patch automerged); an exact pin for `csi-driver-nfs` (majors disabled). The `c5c3-charts` releases are switched off by design, and so is every file a customManager reads |
 | Pins in Go source | `operators/c5c3/internal/controller/reconcile_barbican_openbao.go` (`defaultOpenBaoVersion`), `operators/ovn/internal/controller/image.go` (`defaultOVNVersion`) | customManager each, paired with the matching manifest/Dockerfile pin |
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
 | GitHub Actions versions | `.github/workflows/*.yaml` (`uses: org/action@v…`) | native `github-actions` manager |
@@ -58,8 +58,9 @@ on disk claimed by some manager, and does a packageRule triage it?"
 
 A coverage finding is any version literal that no Renovate manager
 matches, a customManager whose file patterns match nothing, a
-customManager no packageRule applies to, or a customManager no
-regression test exercises.
+customManager no packageRule applies to, a customManager no
+regression test exercises, or a HelmRelease chart version with no
+owner or two.
 
 ## Procedure
 
@@ -86,9 +87,13 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   and `${VAR:?}` required-env passthroughs — are exempt; they are not
   pins Renovate could bump.
 - **R3** — every `version: "…"` literal in `deploy/kind/base/*.yaml`
-  is matched by a customManager pattern. The existing managers cover
-  `flux-web.yaml`, `envoy-gateway.yaml` and `headlamp.yaml`; any other
-  file in the same dir is flagged.
+  is claimed by a customManager pattern or by the native `flux`
+  manager. The flux manager claims a file only when it carries a
+  HelmRelease, since it reads chart versions from nothing else.
+  `flux-web.yaml` (a ResourceSet) belongs to a customManager,
+  `envoy-gateway.yaml` and `headlamp.yaml` to the flux manager, and
+  the `[PASS]` line names the owner. A file with neither owner is
+  flagged.
 - **R4** — per customManager, two findings. First, its
   `managerFilePatterns` must match at least one `git ls-files` path; a
   manager matching nothing is a **dead manager**, and one pattern
@@ -126,7 +131,21 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   Pins present on only one side are `[INFO]`: either single-sourced
   (ci.yaml derives `ENVTEST_K8S_VERSION` from the Makefile via `awk`)
   or PATH-resolved locally (`controller-gen`, `golangci-lint`).
-- R4 and R6 need `jq` and report `[INFO]` skipped without it.
+- **R8** — every HelmRelease chart version (the first indented
+  `version:` of each `kind: HelmRelease` document, in any quoting)
+  under `deploy/flux-system/releases/` and `deploy/kind/` has one
+  owner. A HelmRelease with neither a version nor a `chartRef` fails.
+  A release from the `c5c3-charts` source is checked first and
+  reported as `[INFO] … excluded by design (c5c3-charts)`. Otherwise
+  the release fails when no manager claims its file (unowned), when a
+  customManager and the flux manager both claim it (claimed twice: add
+  the file to the flux rule with `enabled: false`), or when the value
+  is neither `x.y.z` nor starts with `>=` (Renovate skips it as
+  `invalid-value` on an OCI source). The `[PASS]` line names the
+  owner. A release on a `chartRef` (`releases/openbao-operator.yaml`)
+  carries no chart version and is skipped; a tree with no chart
+  version prints `[INFO] R8: no HelmRelease chart versions found`.
+- R4, R6 and R8 need `jq` and report `[INFO]` skipped without it.
 - The **inventory** is a review aid: every `<NAME>_VERSION` pin in the
   `Makefile` and in workflow `env:` blocks, each marked as tracked by
   a customManager (named), bumped by hand (no customManager claims it —
@@ -223,9 +242,13 @@ These recurring shapes are worth grepping for first:
    to extend coverage but the `packageRules` block was not extended
    to triage its PRs. Renovate raises untriaged PRs (major bumps not
    gated, no minimumReleaseAge), so reviewers waste time closing them.
-4. **New kind base manifest, no customManager.** A new YAML under
-   `deploy/kind/base/` with a `version: "…"` line. The existing
-   managers are file-name-anchored; a sibling needs its own manager.
+4. **New HelmRelease, range spelled for Renovate.** A new HelmRelease
+   under `deploy/flux-system/releases/` or `deploy/kind/` needs no
+   manager: the native `flux` manager reads it. Spell its range
+   `>=X <Y`. A `^X` or `~X` range is skipped as `invalid-value` on an
+   OCI source, and R8 fails it. A file that gets a customManager must
+   join the `matchFileNames` of the flux rule with `enabled: false`,
+   or R8 reports it claimed twice.
 5. **Tool pin in Makefile.** No native Renovate manager reads Makefile
    constants. `GOFUMPT_VERSION` got a customManager over `/Makefile$/`
    plus the workflows (`GOFUMPT_VERSION\s*[?=:]+\s*"?(?<currentValue>v…)`,

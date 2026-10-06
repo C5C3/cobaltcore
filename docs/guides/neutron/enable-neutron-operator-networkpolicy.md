@@ -37,7 +37,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the neutron-operator is running (namespace `neutron-system`)
+Step 7, so the neutron-operator is running (namespace `neutron-system`)
 alongside the `controlplane-neutron` child it reconciles.
 :::
 

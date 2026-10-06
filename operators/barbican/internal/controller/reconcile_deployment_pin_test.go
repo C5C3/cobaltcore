@@ -84,6 +84,7 @@ spec:
               key: secret-id
               name: primary-approle
         image: ghcr.io/c5c3/barbican:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -225,6 +226,7 @@ spec:
               key: secret-id
               name: primary-approle
         image: ghcr.io/c5c3/barbican:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -376,6 +378,7 @@ spec:
               key: secret-id
               name: primary-approle
         image: ghcr.io/c5c3/barbican:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -535,6 +538,7 @@ spec:
               key: secret-id
               name: primary-approle
         image: ghcr.io/c5c3/barbican:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -680,6 +684,7 @@ spec:
               key: secret-id
               name: primary-approle
         image: ghcr.io/c5c3/barbican:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

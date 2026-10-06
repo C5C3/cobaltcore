@@ -285,6 +285,41 @@ spec:
             done
             echo "OK: ${res}/${name} in ${ns} is gone"
           }
+          # A stall event marks a teardown that finished through a breaker
+          # instead of the ordering under test. Captured, then tested, so a
+          # failed call cannot read as "no such event".
+          assert_no_event() { # <reason> <namespace>
+            local reason="$1" ns="$2" out
+            if ! out="$(kubectl get events -n "${ns}" --field-selector "reason=${reason}" --no-headers 2>/dev/null)"; then
+              echo "ERROR: kubectl get events in ${ns} failed; refusing to report no ${reason} event"
+              exit 1
+            fi
+            if [ -n "${out}" ]; then
+              echo "ERROR: ${ns} holds ${reason} event(s):"
+              echo "${out}"
+              exit 1
+            fi
+            echo "OK: no ${reason} event in ${ns}"
+          }
+          # One read rather than a wait: the object has to be gone already. Only
+          # a NotFound counts as absent; any other read error is retried twice,
+          # then fails the check.
+          assert_absent() { # <resource> <name> <namespace>
+            local res="$1" name="$2" ns="$3" err
+            for _ in 1 2 3; do
+              if err="$(kubectl get "${res}" "${name}" -n "${ns}" 2>&1 >/dev/null)"; then
+                echo "ERROR: ${res}/${name} in ${ns} is still present"
+                exit 1
+              elif grep -qi 'not found' <<<"${err}"; then
+                echo "OK: ${res}/${name} in ${ns} is gone"
+                return 0
+              fi
+              echo "WARN: kubectl get ${res}/${name} failed (${err}); retrying"
+              sleep 5
+            done
+            echo "ERROR: ${res}/${name} in ${ns} could not be read"
+            exit 1
+          }
 
           # ── The two namespaces the plane does not own ─────────────────────
           kubectl create namespace "${TENANT_NS}"
@@ -494,25 +529,17 @@ spec:
           wait_cp_reason RegistrationTenantStoresReady NoRegistrationNamespaces 300
           echo "OK: the registration's teardown reached Keystone, the Secret and the tenant store."
 
-          # The plane goes down in three ordered moves, because its residues
-          # cannot be sequenced by anyone else once the CR is gone:
-          #
-          #   1. Delete the ControlPlane (async). Its finalizer revokes the
-          #      admin application credential and takes the plane's own K-ORC
-          #      children back out of a Keystone that is still serving.
-          #   2. Once those children have drained, delete the projected
-          #      Keystone EXPLICITLY, while the ControlPlane finalizer still
-          #      holds the per-tenant SecretStore trio: the Keystone's
-          #      openbao-finalizer waits for ESO to purge the fernet- and
-          #      credential-keys backup paths, and ESO can only do that
-          #      against a store that still authenticates. Left to the
-          #      post-release GC cascade or the namespace deletion, the store
-          #      dies unsequenced and the purge holds the namespace until the
-          #      operator's bounded stall breaker (OpenBaoCleanupStallTimeout)
-          #      cuts it loose minutes later. This order keeps the teardown
-          #      prompt and orphans no kv-v2 path.
-          #   3. Only then wait the ControlPlane out, so chainsaw's namespace
-          #      cleanup meets finalizer-free residue.
+          # The plane goes down through its own finalizer, and the suite only
+          # watches the order it keeps. The finalizer revokes the admin
+          # application credential and takes the plane's K-ORC children out of
+          # a Keystone that is still serving. Then it deletes the projected
+          # Keystone and holds the per-tenant SecretStore trio until that
+          # Keystone is gone, so the Keystone's openbao-finalizer can have ESO
+          # purge the fernet- and credential-keys backup paths against a store
+          # that still authenticates. A teardown that loses this order finishes
+          # through a stall breaker instead (OpenBaoCleanupStalled on the
+          # Keystone, KeystoneTeardownStalled on the plane), which the checks
+          # after the wait look for.
           CP_KORC_RESIDUE="${KORC_KINDS},domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
           DRAIN_DEADLINE=$(( $(date +%s) + 300 ))
@@ -525,13 +552,10 @@ spec:
             sleep 5
           done
           echo "OK: the plane's own K-ORC children drained against a live Keystone."
-          kubectl delete keystone "${CP_NAME}-keystone" -n "${CP_NS}" --ignore-not-found --wait=false
-          # Covers the operator's 5m stall window too: if the ControlPlane
-          # released between the drain check and the delete above, GC may
-          # already have reaped the tenant store, and the Keystone then leaves
-          # via the stall breaker rather than a completed purge.
-          wait_gone keystone "${CP_NAME}-keystone" "${CP_NS}" 420
           kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
+          assert_absent keystone "${CP_NAME}-keystone" "${CP_NS}"
+          assert_no_event OpenBaoCleanupStalled "${CP_NS}"
+          assert_no_event KeystoneTeardownStalled "${CP_NS}"
           kubectl delete namespace "${TENANT_NS}" "${OUTSIDER_NS}" --wait=false || true
           echo "OK: foreign-namespace registration proven end to end."
     catch:
@@ -637,12 +661,13 @@ spec:
           # the registrations above needed in order to leave.
           kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
 
-          # Mirror the try teardown's ordering as far as a net can: drain the
-          # plane's K-ORC children (bounded), then take the projected Keystone
-          # down explicitly while its OpenBao backup purge can still find the
-          # per-tenant store, then wait the plane out. When this ordering loses
-          # a race, the operators' bounded stall breakers still converge the
-          # namespace — inside chainsaw's cleanup budget instead of past it.
+          # Drain the plane's K-ORC children (bounded), then take the projected
+          # Keystone down explicitly, then wait the plane out. The plane's
+          # finalizer deletes the Keystone itself before it releases; the
+          # explicit delete is for a run that failed before the finalizer got
+          # that far. When this ordering loses a race, the operators' bounded
+          # stall breakers still converge the namespace, inside chainsaw's
+          # cleanup budget instead of past it.
           CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do

@@ -190,6 +190,12 @@ child, not the production Secret's contents immediately after the Job finishes.
 Creating a Job from the CronJob is not a CR edit, so it is valid against the
 operator-owned child.
 
+A Job you create from the CronJob enters the figure at step 1. The
+[reconciler reference](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
+lists the steps.
+
+![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../diagrams/secrets-rotation-keys.svg)
+
 ```bash
 # Trigger an on-demand rotation by creating a Job from the CronJob
 kubectl -n openstack create job \

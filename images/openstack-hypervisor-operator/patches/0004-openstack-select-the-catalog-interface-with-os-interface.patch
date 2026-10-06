@@ -1,0 +1,201 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+openstack: select the catalog interface with OS_INTERFACE
+
+ServiceClientFromProvider in internal/openstack/service_client.go
+builds every OpenStack client of the operator (compute, placement,
+image and network, through GetServiceClient) from an empty
+gophercloud.EndpointOpts, and ApplyDefaults sets its Availability to
+public. hvo therefore reads the catalog's public endpoints alone. In a
+cluster whose public URLs do not resolve from a pod, such as a gateway
+name that resolves to the loopback address, the operator reaches no
+service, while the catalog's internal endpoints, the in-cluster
+Service URLs, would serve it.
+
+OS_INTERFACE, the variable the OpenStack clients read for the same
+choice, now selects the interface: public, internal or admin. Unset or
+empty keeps public, upstream's behaviour. The value is matched as
+given, with no trimming and no case folding. Any other value is an
+error before the endpoint locator runs, so every controller's
+SetupWithManager returns it and the operator exits at start instead of
+falling back to public unnoticed. An error of the locator,
+ErrEndpointNotFound when the catalog has no endpoint of that interface,
+is returned unchanged.
+
+No upstream test covers the endpoint selection. The patch adds
+TestServiceClientInterface, a plain Go test outside the Ginkgo suite
+with an endpoint locator that records the options it gets, so it runs
+without envtest; the CobaltCore image build runs it and fails when it
+does not pass.
+
+Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
+
+Upstream status: not submitted
+
+diff --git a/internal/openstack/service_client.go b/internal/openstack/service_client.go
+index 58d4cca..3a11348 100644
+--- a/internal/openstack/service_client.go
++++ b/internal/openstack/service_client.go
+@@ -19,6 +19,7 @@ package openstack
+ 
+ import (
+ 	"context"
++	"fmt"
+ 	"os"
+ 	"os/exec"
+ 	"strings"
+@@ -119,10 +120,29 @@ func NewProviderClient(ctx context.Context, authInfo *clientconfig.AuthInfo) (*g
+ 	return clientconfig.AuthenticatedClient(ctx, &clientOpts)
+ }
+ 
++// endpointAvailability maps OS_INTERFACE onto the catalog interface the
++// service clients take their endpoints from. Unset or empty keeps public.
++func endpointAvailability() (gophercloud.Availability, error) {
++	switch v := os.Getenv("OS_INTERFACE"); v {
++	case "", "public":
++		return gophercloud.AvailabilityPublic, nil
++	case "internal":
++		return gophercloud.AvailabilityInternal, nil
++	case "admin":
++		return gophercloud.AvailabilityAdmin, nil
++	default:
++		return "", fmt.Errorf("OS_INTERFACE: unknown interface %q (want public, internal or admin)", v)
++	}
++}
++
+ // ServiceClientFromProvider returns a ServiceClient for the given serviceType
+ // using an already-authenticated ProviderClient.
+ func ServiceClientFromProvider(provider *gophercloud.ProviderClient, serviceType string) (*gophercloud.ServiceClient, error) {
+-	eo := gophercloud.EndpointOpts{}
++	availability, err := endpointAvailability()
++	if err != nil {
++		return nil, err
++	}
++	eo := gophercloud.EndpointOpts{Availability: availability}
+ 	eo.ApplyDefaults(serviceType)
+ 	url, err := provider.EndpointLocator(eo)
+ 	if err != nil {
+diff --git a/internal/openstack/service_client_test.go b/internal/openstack/service_client_test.go
+new file mode 100644
+index 0000000..d70367b
+--- /dev/null
++++ b/internal/openstack/service_client_test.go
+@@ -0,0 +1,117 @@
++/*
++SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package openstack
++
++import (
++	"errors"
++	"os"
++	"strconv"
++	"strings"
++	"testing"
++
++	"github.com/gophercloud/gophercloud/v2"
++)
++
++// TestServiceClientInterface builds a compute client on a provider whose
++// endpoint locator records the options it gets, and reads the catalog
++// interface OS_INTERFACE selected off them. The subtests share the process
++// environment, so they do not run in parallel.
++func TestServiceClientInterface(t *testing.T) {
++	const endpoint = "http://controlplane-nova.openstack.svc:8774/v2.1/"
++
++	// serviceClient returns the client, the options of every locator call and
++	// the error. A nil locErr makes the locator return endpoint.
++	serviceClient := func(t *testing.T, locErr error) (*gophercloud.ServiceClient, []gophercloud.EndpointOpts, error) {
++		t.Helper()
++		var seen []gophercloud.EndpointOpts
++		provider := &gophercloud.ProviderClient{
++			EndpointLocator: func(eo gophercloud.EndpointOpts) (string, error) {
++				seen = append(seen, eo)
++				if locErr != nil {
++					return "", locErr
++				}
++				return endpoint, nil
++			},
++		}
++		client, err := ServiceClientFromProvider(provider, "compute")
++		return client, seen, err
++	}
++
++	for _, tc := range []struct {
++		name  string
++		value string
++		unset bool
++		want  gophercloud.Availability
++	}{
++		{name: "unset keeps public", unset: true, want: gophercloud.AvailabilityPublic},
++		{name: "empty keeps public", value: "", want: gophercloud.AvailabilityPublic},
++		{name: "public", value: "public", want: gophercloud.AvailabilityPublic},
++		{name: "internal", value: "internal", want: gophercloud.AvailabilityInternal},
++		{name: "admin", value: "admin", want: gophercloud.AvailabilityAdmin},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			// t.Setenv restores an ambient value after the test, so the
++			// unset case removes it only for this subtest.
++			t.Setenv("OS_INTERFACE", tc.value)
++			if tc.unset {
++				if err := os.Unsetenv("OS_INTERFACE"); err != nil {
++					t.Fatalf("unsetting OS_INTERFACE: %v", err)
++				}
++			}
++			client, seen, err := serviceClient(t, nil)
++			if err != nil {
++				t.Fatalf("ServiceClientFromProvider: %v", err)
++			}
++			if len(seen) != 1 {
++				t.Fatalf("endpoint locator called %d times, want 1", len(seen))
++			}
++			if seen[0].Availability != tc.want {
++				t.Errorf("Availability = %q, want %q", seen[0].Availability, tc.want)
++			}
++			if client.Endpoint != endpoint {
++				t.Errorf("Endpoint = %q, want %q", client.Endpoint, endpoint)
++			}
++		})
++	}
++
++	// The value is matched as given: another case, surrounding whitespace and
++	// the internalURL spelling of the Keystone v2 catalog are unknown values.
++	for _, value := range []string{"Internal", " internal", "internal\n", "internalURL"} {
++		t.Run("unknown value "+strconv.Quote(value)+" is an error before the locator runs", func(t *testing.T) {
++			t.Setenv("OS_INTERFACE", value)
++			_, seen, err := serviceClient(t, nil)
++			want := "OS_INTERFACE: unknown interface " + strconv.Quote(value)
++			if err == nil || !strings.Contains(err.Error(), want) {
++				t.Errorf("error = %v, want one containing %s", err, want)
++			}
++			if len(seen) != 0 {
++				t.Errorf("endpoint locator called %d times, want 0", len(seen))
++			}
++		})
++	}
++
++	t.Run("locator error is returned unchanged", func(t *testing.T) {
++		t.Setenv("OS_INTERFACE", "internal")
++		notFound := &gophercloud.ErrEndpointNotFound{}
++		_, _, err := serviceClient(t, notFound)
++		// A wrapper keeps errors.Is true but changes the text.
++		if !errors.Is(err, notFound) || err.Error() != notFound.Error() {
++			t.Errorf("error = %v, want the locator's %T unchanged", err, notFound)
++		}
++	})
++}

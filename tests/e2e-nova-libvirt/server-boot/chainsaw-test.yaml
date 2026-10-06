@@ -1,0 +1,402 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a NovaCompute pool on Nova's libvirt driver (2025.2
+# release). libvirtd runs on the one kind node from ghcr.io/c5c3/libvirt:latest,
+# the pool runs nova-compute beside it with virtType: qemu, and a server boots
+# there under QEMU's TCG emulation:
+#   - libvirtd answers on the node's /run/libvirt and offers the qemu domain
+#     type for x86_64
+#   - the pool reaches Ready=True/AllReady, its node is Active with the compute
+#     service enabled and up, and its rendered compute-pool.conf names the
+#     libvirt driver and virt_type = qemu
+#   - the server s1 boots from the 1 MiB zero image of the stack and goes
+#     ACTIVE on the node; libvirt runs exactly one domain, of type qemu, whose
+#     disk nova-compute built as a qcow2 overlay on a base file under
+#     /var/lib/nova/instances/_base/
+#   - deleting s1 removes the domain and the instance directory
+#
+# The guest has no operating system and no NIC, so the suite proves the libvirt
+# path of nova-compute (socket, driver, disk tooling, domain XML) and nothing
+# behind it. The guest boot, KVM, networking and live migration between two
+# libvirt nodes are proven by the lab run of docs/quick-start-metal-stack.md.
+#
+# The stack is the one of ../../e2e/nova/compute-node-pool under the nova-pool
+# prefix, and the suite applies its fixtures 00 to 11, 15 and 16 from there. No
+# other suite runs on the job's cluster, so the names cannot collide.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# libvirtd, the chassis and the nova-compute pod run with hostNetwork and own
+# /run/libvirt, /run/openvswitch and /var/lib/nova on the one kind node, so no
+# other chassis or compute suite may run beside this one.
+#
+# ── The teardown is step cleanups, not finally ───────────────────────
+# A per-step `finally:` runs as soon as its own step ends and would take the
+# pool, libvirtd or the stack down under the next step. A step `cleanup:` is
+# deferred to the end of the test, and the cleanups run in reverse step order:
+# the pool goes before the Nova whose API its drain needs, and the node labels
+# go last.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-libvirt-server-boot
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The stack takes about 8 minutes to Ready (see
+    # ../../e2e/nova/basic-deployment), and the pool's first status needs the
+    # nova-compute pod up against libvirtd.
+    assert: 10m
+    exec: 12m
+  steps:
+  # ── Step 1: Label the node ─────────────────────────────────────────────
+  # The chassis label, the zone the pool reports, and the pool label that both
+  # pool-libvirt and the libvirt-e2e DaemonSet select. The node's name goes into
+  # the ConfigMap the boot Job reads it from.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true \
+            topology.kubernetes.io/zone=nova-pool-az1 \
+            openstack.c5c3.io/nova-compute-pool=libvirt --overwrite
+          kubectl create configmap nova-pool-verify -n "$NAMESPACE" \
+            --from-literal=node="$NODE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: labelled node $NODE"
+    cleanup:
+    - script:
+        shell: bash
+        content: |
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" \
+            -o jsonpath='{.data.node}' 2>/dev/null || true)"
+          if [ -n "$NODE" ]; then
+            kubectl label node "$NODE" openstack.c5c3.io/chassis- \
+              topology.kubernetes.io/zone- openstack.c5c3.io/nova-compute-pool- || true
+            echo "OK: removed the suite's labels from node $NODE"
+          fi
+          kubectl delete configmap nova-pool-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 2: Bring up the stack and the chassis ─────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+          FIXTURES=../../e2e/nova/compute-node-pool
+
+          # run_job <name> <fixture> <timeout>: the Job is deleted first because
+          # a Job's pod template is immutable. On the deadline the log and the
+          # pod list of the run say why.
+          run_job() {
+            kubectl delete job "$1" -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f "$2"
+            kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$3" || {
+              kubectl logs -n "$NAMESPACE" "job/$1" 2>&1 || true
+              kubectl get pods -n "$NAMESPACE" -l job-name="$1" -o wide
+              exit 1
+            }
+          }
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR. See ../../e2e/cinder/broker-vhost.sh.
+          ../../e2e/cinder/broker-vhost.sh create nova-pool nova-pool-messaging openstack
+
+          kubectl apply -f "$FIXTURES/00-keystone-cr.yaml"
+          kubectl wait --for=condition=Ready --timeout=8m \
+            keystone/keystone-nova-pool -n "$NAMESPACE"
+          echo "OK: Keystone/keystone-nova-pool is Ready"
+
+          run_job nova-pool-catalog-setup "$FIXTURES/01-catalog-setup-job.yaml" 5m
+          echo "OK: the compute, placement, image and network rows are registered"
+
+          for fixture in 02-messaging-secret.yaml 03-ovncentral-cr.yaml \
+                         04-neutron-cr.yaml 05-placement-cr.yaml \
+                         06-glance-cr.yaml 07-glancebackend-cr.yaml; do
+            kubectl apply -f "$FIXTURES/$fixture"
+          done
+          for target in ovncentral/nova-pool-ovn neutron/neutron-nova-pool \
+                        placement/placement-nova-pool glance/glance-nova-pool \
+                        glancebackend/glance-nova-pool-s3; do
+            kubectl wait --for=condition=Ready --timeout=8m "$target" -n "$NAMESPACE"
+            echo "OK: $target is Ready"
+          done
+
+          run_job nova-pool-image-seed "$FIXTURES/08-image-seed-job.yaml" 5m
+          echo "OK: the seed image is registered"
+
+          kubectl apply -f "$FIXTURES/09-metadata-secret.yaml"
+          kubectl apply -f "$FIXTURES/10-nova-cr.yaml"
+          kubectl wait --for=condition=Ready --timeout=10m nova/nova-pool -n "$NAMESPACE"
+          echo "OK: Nova/nova-pool is Ready"
+
+          # The chassis the nova-compute pod waits for.
+          kubectl apply -f "$FIXTURES/11-ovnchassis-cr.yaml"
+          kubectl wait --for=condition=Ready --timeout=5m \
+            ovnchassis/nova-pool-chassis -n "$NAMESPACE"
+          echo "OK: OVNChassis/nova-pool-chassis is Ready"
+    catch: &libvirt-dump
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: NovaCompute
+        namespace: openstack
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-pool
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNChassis
+        name: nova-pool-chassis
+        namespace: openstack
+    # Every command ends in `|| true`: a diagnostic that fails must not take
+    # the place of the step's own failure.
+    - script:
+        content: |
+          echo "=== libvirt-e2e pods ==="
+          kubectl get ds,pods -n "$NAMESPACE" -l app.kubernetes.io/name=libvirt-e2e -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=libvirt-e2e -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n "$NAMESPACE" "$pod" 2>&1 | tail -40 || true
+            kubectl logs -n "$NAMESPACE" "$pod" -c libvirtd --tail=200 2>&1 || true
+            echo "--- $pod: virsh list --all ---"
+            kubectl exec -n "$NAMESPACE" "$pod" -c libvirtd -- \
+              virsh -c qemu:///system list --all 2>&1 || true
+            # QEMU writes why a domain did not start into these files.
+            echo "--- $pod: /var/log/libvirt/qemu/ ---"
+            kubectl exec -n "$NAMESPACE" "$pod" -c libvirtd -- sh -c \
+              'for f in /var/log/libvirt/qemu/*; do [ -f "$f" ] || continue; echo "--- $f ---"; tail -n 50 "$f"; done' 2>&1 || true
+          done
+          echo "=== nova-compute DaemonSets and pods ==="
+          kubectl get ds,pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n "$NAMESPACE" "$pod" 2>&1 | tail -40 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=100 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Job logs ==="
+          # nova-pool-discover-hosts is the nova-operator's own host discovery
+          # Job (hostDiscoveryJobName), whose failure keeps the pool from Ready.
+          for job in nova-pool-catalog-setup nova-pool-image-seed nova-pool-discover-hosts \
+                     nova-pool-boot-server nova-pool-delete-server; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 300
+    - events:
+        namespace: openstack
+    cleanup:
+    # Best-effort. The Nova goes first and is waited for, because its finalizer
+    # drives the MariaDB teardown and needs the credentials that come down with
+    # the rest. The pool and libvirtd are already gone: their own cleanups run
+    # before this one.
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          kubectl delete nova nova-pool -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete ovnchassis nova-pool-chassis -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=180s || true
+          kubectl delete job nova-pool-catalog-setup nova-pool-image-seed \
+            nova-pool-boot-server nova-pool-delete-server \
+            -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glancebackend glance-nova-pool-s3 -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glance glance-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete placement placement-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete neutron neutron-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete ovncentral nova-pool-ovn -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-pool-messaging neutron-nova-pool-messaging \
+            nova-pool-metadata-secret -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete keystone keystone-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete memcached keystone-nova-pool-cache -n "$NAMESPACE" --ignore-not-found || true
+          ../../e2e/cinder/broker-vhost.sh delete nova-pool || true
+  # ── Step 3: Start libvirtd ─────────────────────────────────────────────
+  # The DaemonSet selects the pool label of step 1. rollout status succeeds on
+  # a DaemonSet that schedules no pod, hence the check that one exists.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          kubectl apply -f 00-libvirt.yaml
+          kubectl rollout status daemonset/libvirt-e2e -n "$NAMESPACE" --timeout=10m
+          POD="$(kubectl get pod -n "$NAMESPACE" -o name -l app.kubernetes.io/name=libvirt-e2e)"
+          test -n "$POD" || {
+            echo "ERROR: no libvirt-e2e pod was scheduled; no node carries the pool label"
+            exit 1
+          }
+          kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- virsh -c qemu:///system version
+          kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- \
+            virsh -c qemu:///system domcapabilities --virttype qemu --arch x86_64
+    catch: *libvirt-dump
+    cleanup:
+    - script:
+        content: |
+          kubectl delete -f 00-libvirt.yaml --ignore-not-found || true
+  # ── Step 4: Apply the pool ─────────────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl apply -f 01-novacompute-libvirt.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-libvirt
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # The `|| `[]`` guard keeps the filter from aborting on the first
+            # poll, while status.nodes is still absent.
+            ((nodes || `[]`)[0]):
+              phase: Active
+              zone: nova-pool-az1
+              serviceStatus: enabled
+              serviceState: up
+            installedImage: ghcr.io/c5c3/nova-compute:2025.2
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD="$(kubectl get pod -n "$NAMESPACE" -o name \
+            -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt)"
+          CONF="$(kubectl exec -n "$NAMESPACE" "$POD" -c nova-compute -- \
+            cat /etc/nova/compute-pool.conf.d/compute-pool.conf)"
+          echo "$CONF"
+          grep -Eq '^virt_type *= *qemu$' <<<"$CONF"
+          grep -Eq '^compute_driver *= *libvirt\.LibvirtDriver$' <<<"$CONF"
+          echo "OK: the pool runs the libvirt driver with virt_type = qemu"
+    catch: *libvirt-dump
+    cleanup:
+    # Runs before the cleanups of libvirtd and the stack. A pool that is still
+    # draining would hold its finalizer for as long as Nova reports an
+    # instance, so after a failed run the suite strips the finalizer, the
+    # documented escape, rather than wedging the shared namespace.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          kubectl delete novacompute pool-libvirt -n "$NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl wait --for=delete novacompute/pool-libvirt \
+            -n "$NAMESPACE" --timeout=180s 2>/dev/null || true
+          if kubectl get novacompute pool-libvirt -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl patch novacompute pool-libvirt -n "$NAMESPACE" --type=merge \
+              -p '{"metadata":{"finalizers":null}}' || true
+          fi
+  # ── Step 5: Boot a server onto the node ────────────────────────────────
+  # The pool turned Ready in step 4 only once Nova listed the host as mapped,
+  # so the server is scheduled without a host discovery here. On the deadline
+  # the boot Job's log carries the server's status and Nova's fault message.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          FIXTURES=../../e2e/nova/compute-node-pool
+          kubectl delete job nova-pool-boot-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f "$FIXTURES/15-boot-server-job.yaml"
+          kubectl wait --for=condition=complete job/nova-pool-boot-server \
+            -n "$NAMESPACE" --timeout=8m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-boot-server 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-boot-server)"
+          echo "$LOGS"
+          grep -q 'NOVA-POOL-BOOT-OK' <<<"$LOGS"
+
+          LPOD="$(kubectl get pod -n "$NAMESPACE" -o name -l app.kubernetes.io/name=libvirt-e2e)"
+          CPOD="$(kubectl get pod -n "$NAMESPACE" -o name \
+            -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt)"
+
+          # The domain's UUID is the server's.
+          UUID="$(kubectl exec -n "$NAMESPACE" "$LPOD" -c libvirtd -- \
+            virsh -c qemu:///system list --state-running --uuid | sed '/^[[:space:]]*$/d')"
+          echo "running domains: ${UUID:-<none>}"
+          test "$(grep -c . <<<"$UUID")" = "1" || {
+            echo "ERROR: libvirt runs $(grep -c . <<<"$UUID") domains, want exactly one"
+            exit 1
+          }
+
+          XML="$(kubectl exec -n "$NAMESPACE" "$LPOD" -c libvirtd -- \
+            virsh -c qemu:///system dumpxml "$UUID")"
+          grep "<domain type='qemu'" <<<"$XML"
+          # The domain runs from the disk inspected below, opened as qcow2.
+          grep -q "<driver name='qemu' type='qcow2'" <<<"$XML"
+          grep -q "<source file='/var/lib/nova/instances/$UUID/disk'" <<<"$XML"
+
+          # --force-share, because the running QEMU holds the image's write lock.
+          INFO="$(kubectl exec -n "$NAMESPACE" "$CPOD" -c nova-compute -- \
+            qemu-img info --force-share "/var/lib/nova/instances/$UUID/disk")"
+          echo "$INFO"
+          grep -q '^file format: qcow2$' <<<"$INFO"
+          grep -q '^backing file: /var/lib/nova/instances/_base/' <<<"$INFO"
+
+          # Step 6 checks that the delete removes this domain and its directory.
+          kubectl patch configmap nova-pool-verify -n "$NAMESPACE" --type=merge \
+            -p "{\"data\":{\"uuid\":\"$UUID\"}}"
+          echo "OK: server s1 runs as qemu domain $UUID on a qcow2 overlay"
+    catch: *libvirt-dump
+  # ── Step 6: Delete the server ──────────────────────────────────────────
+  # nova-compute undefines the domain and removes the instance directory
+  # before Nova reports the server gone, so the domain list is polled only to
+  # absorb libvirt's own bookkeeping.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          FIXTURES=../../e2e/nova/compute-node-pool
+          kubectl delete job nova-pool-delete-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f "$FIXTURES/16-delete-server-job.yaml"
+          kubectl wait --for=condition=complete job/nova-pool-delete-server \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-delete-server 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-delete-server)"
+          echo "$LOGS"
+          grep -q 'NOVA-POOL-DELETE-OK' <<<"$LOGS"
+
+          UUID="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.uuid}')"
+          test -n "$UUID"
+          LPOD="$(kubectl get pod -n "$NAMESPACE" -o name -l app.kubernetes.io/name=libvirt-e2e)"
+          CPOD="$(kubectl get pod -n "$NAMESPACE" -o name \
+            -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt)"
+
+          DOMAINS=""
+          for _ in $(seq 1 12); do
+            DOMAINS="$(kubectl exec -n "$NAMESPACE" "$LPOD" -c libvirtd -- \
+              virsh -c qemu:///system list --all --uuid | sed '/^[[:space:]]*$/d')"
+            if [ -z "$DOMAINS" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -n "$DOMAINS" ]; then
+            echo "ERROR: libvirt still lists domains 60s after the delete: $DOMAINS"
+            exit 1
+          fi
+          echo "OK: virsh list --all --uuid is empty"
+
+          kubectl exec -n "$NAMESPACE" "$CPOD" -c nova-compute -- \
+            test ! -e "/var/lib/nova/instances/$UUID"
+          echo "OK: /var/lib/nova/instances/$UUID is gone"
+    catch: *libvirt-dump

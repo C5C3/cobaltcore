@@ -93,6 +93,14 @@ The exact condition names vary by operator. The main pattern is consistent:
 The first `status=False` condition from the top is usually the bottleneck. Work from the top of the list toward the bottom until the failure is explained.
 :::
 
+### Conditions of a ControlPlane
+
+A `ControlPlane` reports an aggregate `Ready` over twenty sub-conditions, and the sub-conditions do not form one list. Seven belong to a blocking prefix, where the first `False` one is the bottleneck. The others belong to steps that all run on every pass, so several can be `False` at once, and each waits only for the conditions the figure draws an arrow from.
+
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../diagrams/controlplane-gate-graph.svg)
+
+[Reconciliation Flow](../reference/c5c3/controlplane-reconciler.md#reconciliation-flow) lists every step with its gate, and [Status Conditions](../reference/c5c3/controlplane-crd.md#status-conditions) has the reasons of each condition.
+
 ---
 
 ## Upgrade status fields

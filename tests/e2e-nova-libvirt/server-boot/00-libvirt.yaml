@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# libvirtd and QEMU on the one kind node, for the nova-compute of
+# 01-novacompute-libvirt.yaml. The image is the one the lab runs
+# (images/libvirt/Dockerfile), but the lab's manifests under
+# deploy/lab/metal-stack/hypervisor/ are not reused: they fail the pod on a
+# node without /dev/kvm, wait for the TLS files kvm-node-agent writes, and move
+# libvirtd into a host systemd scope. None of that holds on kind.
+#
+# libvirtd.conf opens the local socket only, without authentication: the one
+# client is nova-compute, which runs as root and reaches the socket through the
+# node's /run/libvirt.
+#
+# qemu.conf is the lab's file without its two TLS lines. QEMU runs as root
+# because nova-compute creates the instance disk as uid 0, and
+# dynamic_ownership = 0 keeps libvirt from changing the owner of that disk.
+# stdio_handler = "file" makes libvirtd write QEMU's log files itself, because
+# the pod runs no virtlogd.
+#
+# The pod runs in the node's network namespace for two reasons. libvirt reports
+# the pod's hostname as the hypervisor hostname, which has to be the node's
+# name, and QEMU binds the VNC socket on the node address the pool renders as
+# server_listen = $my_ip. It runs privileged as root because libvirtd manages
+# the node's devices and the domain's cgroups.
+#
+# shareProcessNamespace makes the pod's pause container PID 1, and it reaps the
+# QEMU processes libvirtd daemonizes. With libvirtd as PID 1 they are
+# reparented to libvirtd, which never reaps them: they stay zombies, every
+# kill libvirtd sends them ends in "Failed to terminate process ... with
+# SIGKILL: Device or resource busy", and its QEMU capability probe never
+# completes.
+#
+# The privileged pod sees the node's cgroup tree, and libvirt moves the
+# guest's QEMU into a cgroup of its own below the node's /machine, so the
+# pod's resources bound libvirtd and not the 128 MiB guest of the m1.nano
+# flavor. QEMU still runs in the pod's PID namespace, and deleting the pod
+# kills it. The suite needs no domain to outlive the pod, so there is no host
+# scope, no hostPID and no init container. There is no liveness probe: a
+# restart on a slow answer under TCG would drop nova-compute's connection in
+# the middle of a boot. The readiness probe asks libvirtd for its version
+# over the local socket.
+#
+# The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
+# that does not name a commit of this repository: the job tests the image main
+# published, and the kind node pulls it from the registry.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: libvirt-e2e
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: libvirt-e2e
+data:
+  libvirtd.conf: |
+    listen_tls = 0
+    listen_tcp = 0
+    auth_unix_rw = "none"
+    unix_sock_rw_perms = "0770"
+  qemu.conf: |
+    user = "root"
+    group = "root"
+    dynamic_ownership = 0
+    security_driver = "none"
+    stdio_handler = "file"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: libvirt-e2e
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: libvirt-e2e
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: libvirt-e2e
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: libvirt-e2e
+    spec:
+      nodeSelector:
+        openstack.c5c3.io/nova-compute-pool: libvirt
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      shareProcessNamespace: true
+      automountServiceAccountToken: false
+      containers:
+        - name: libvirtd
+          image: ghcr.io/c5c3/libvirt:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - cp /etc/libvirt-e2e/libvirtd.conf /etc/libvirt/libvirtd.conf && cp /etc/libvirt-e2e/qemu.conf /etc/libvirt/qemu.conf && exec libvirtd
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          readinessProbe:
+            exec:
+              command: ["virsh", "-c", "qemu:///system", "version"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/libvirt-e2e
+              readOnly: true
+            - name: run-libvirt
+              mountPath: /run/libvirt
+            - name: var-lib-libvirt
+              mountPath: /var/lib/libvirt
+            - name: var-lib-nova
+              mountPath: /var/lib/nova
+            - name: dev
+              mountPath: /dev
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+      volumes:
+        - name: config
+          configMap:
+            name: libvirt-e2e
+        - name: run-libvirt
+          hostPath:
+            path: /run/libvirt
+            type: DirectoryOrCreate
+        - name: var-lib-libvirt
+          hostPath:
+            path: /var/lib/libvirt
+            type: DirectoryOrCreate
+        - name: var-lib-nova
+          hostPath:
+            path: /var/lib/nova
+            type: DirectoryOrCreate
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup

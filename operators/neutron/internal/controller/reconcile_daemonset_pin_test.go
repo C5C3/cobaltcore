@@ -48,9 +48,9 @@ func pinAgentChassis() resolvedChassis {
 }
 
 // pinMessagingAndNovaAgent sets both optional blocks, the only configuration in
-// which the pod carries environment at all: one env var per block, plus the
-// pod-template annotation that rolls the pods when the broker credential
-// rotates.
+// which the agent container carries environment at all: one env var per block,
+// plus the pod-template annotation that rolls the pods when the broker
+// credential rotates.
 func pinMessagingAndNovaAgent() *neutronv1alpha1.NeutronMetadataAgent {
 	cr := validAgent()
 	cr.Spec.Messaging = &commonv1.MessagingSpec{
@@ -67,7 +67,7 @@ func pinMessagingAndNovaAgent() *neutronv1alpha1.NeutronMetadataAgent {
 
 // pinCustomResourcesAgent pins an image by digest and names both resource
 // blocks, so the golden shows the CR's own requests and limits rather than the
-// shared container defaults.
+// agent's defaults.
 func pinCustomResourcesAgent() *neutronv1alpha1.NeutronMetadataAgent {
 	cr := validAgent()
 	cr.Spec.Image = commonv1.ImageSpec{
@@ -88,8 +88,8 @@ func pinCustomResourcesAgent() *neutronv1alpha1.NeutronMetadataAgent {
 }
 
 // pinAgentDaemonSetGolden is the defaulted agent: no bus, no Nova metadata
-// API, so the container carries no environment and the pod template no
-// annotation, and both containers run on the shared resource defaults.
+// API, so the agent container carries no environment and the pod template no
+// annotation, and both containers run on the agent's resource defaults.
 const pinAgentDaemonSetGolden = `metadata:
   labels:
     app.kubernetes.io/component: metadata-agent
@@ -118,6 +118,7 @@ spec:
         - --config-file
         - /etc/neutron/neutron_ovn_metadata_agent.ini
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: metadata-agent
         readinessProbe:
           exec:
@@ -130,10 +131,10 @@ spec:
           timeoutSeconds: 5
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
-            cpu: 70m
-            memory: 368Mi
+            cpu: 230m
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -162,16 +163,42 @@ spec:
       - command:
         - /bin/sh
         - -c
-        - until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock '["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
-          2>/dev/null | grep -q system-id; do sleep 2; done
+        - |
+          if [ -z "${OVN_SB_CONNECTION:-}" ]; then
+            echo "OVN_SB_CONNECTION is not set" >&2
+            exit 1
+          fi
+          ovs_query='["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
+          last=
+          say() { if [ "$1" != "$last" ]; then echo "$1"; last=$1; fi; }
+          while :; do
+            id=$(ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock "$ovs_query" 2>/dev/null |
+              sed -n 's/.*\["system-id", *"\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)"\].*/\1/p')
+            if [ -z "$id" ]; then
+              say "waiting for the chassis to write its system-id into the local Open vSwitch database"
+            elif ovsdb-client --timeout=5 --no-leader-only -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+              transact "$OVN_SB_CONNECTION" \
+              '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"$id"'"]],"columns":["name"]}]' \
+              2>/dev/null | grep -q "\"name\": *\"$id\""; then
+              echo "chassis $id is registered in the Southbound database"
+              exit 0
+            else
+              say "waiting for chassis $id to register in the Southbound database"
+            fi
+            sleep 2
+          done
+        env:
+        - name: OVN_SB_CONNECTION
+          value: ssl:10.96.0.21:6642
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
-            cpu: 70m
-            memory: 368Mi
+            cpu: 230m
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -186,6 +213,9 @@ spec:
         volumeMounts:
         - mountPath: /run/openvswitch
           name: run-ovs
+        - mountPath: /etc/ovn/tls
+          name: ovn-tls
+          readOnly: true
       nodeSelector:
         openstack.c5c3.io/chassis: "true"
       securityContext:
@@ -270,6 +300,7 @@ spec:
               key: shared_secret
               name: nova-metadata-secret
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: metadata-agent
         readinessProbe:
           exec:
@@ -282,10 +313,10 @@ spec:
           timeoutSeconds: 5
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
-            cpu: 70m
-            memory: 368Mi
+            cpu: 230m
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -314,16 +345,42 @@ spec:
       - command:
         - /bin/sh
         - -c
-        - until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock '["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
-          2>/dev/null | grep -q system-id; do sleep 2; done
+        - |
+          if [ -z "${OVN_SB_CONNECTION:-}" ]; then
+            echo "OVN_SB_CONNECTION is not set" >&2
+            exit 1
+          fi
+          ovs_query='["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
+          last=
+          say() { if [ "$1" != "$last" ]; then echo "$1"; last=$1; fi; }
+          while :; do
+            id=$(ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock "$ovs_query" 2>/dev/null |
+              sed -n 's/.*\["system-id", *"\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)"\].*/\1/p')
+            if [ -z "$id" ]; then
+              say "waiting for the chassis to write its system-id into the local Open vSwitch database"
+            elif ovsdb-client --timeout=5 --no-leader-only -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+              transact "$OVN_SB_CONNECTION" \
+              '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"$id"'"]],"columns":["name"]}]' \
+              2>/dev/null | grep -q "\"name\": *\"$id\""; then
+              echo "chassis $id is registered in the Southbound database"
+              exit 0
+            else
+              say "waiting for chassis $id to register in the Southbound database"
+            fi
+            sleep 2
+          done
+        env:
+        - name: OVN_SB_CONNECTION
+          value: ssl:10.96.0.21:6642
         image: ghcr.io/c5c3/neutron:2026.1
+        imagePullPolicy: Always
         name: wait-for-chassis
         resources:
           limits:
-            memory: 368Mi
+            memory: 2Gi
           requests:
-            cpu: 70m
-            memory: 368Mi
+            cpu: 230m
+            memory: 2Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -338,6 +395,9 @@ spec:
         volumeMounts:
         - mountPath: /run/openvswitch
           name: run-ovs
+        - mountPath: /etc/ovn/tls
+          name: ovn-tls
+          readOnly: true
       nodeSelector:
         openstack.c5c3.io/chassis: "true"
       securityContext:
@@ -408,6 +468,7 @@ spec:
         - --config-file
         - /etc/neutron/neutron_ovn_metadata_agent.ini
         image: registry.example.com/neutron@sha256:2222222222222222222222222222222222222222222222222222222222222222
+        imagePullPolicy: IfNotPresent
         name: metadata-agent
         readinessProbe:
           exec:
@@ -453,9 +514,35 @@ spec:
       - command:
         - /bin/sh
         - -c
-        - until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock '["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
-          2>/dev/null | grep -q system-id; do sleep 2; done
+        - |
+          if [ -z "${OVN_SB_CONNECTION:-}" ]; then
+            echo "OVN_SB_CONNECTION is not set" >&2
+            exit 1
+          fi
+          ovs_query='["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]'
+          last=
+          say() { if [ "$1" != "$last" ]; then echo "$1"; last=$1; fi; }
+          while :; do
+            id=$(ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock "$ovs_query" 2>/dev/null |
+              sed -n 's/.*\["system-id", *"\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)"\].*/\1/p')
+            if [ -z "$id" ]; then
+              say "waiting for the chassis to write its system-id into the local Open vSwitch database"
+            elif ovsdb-client --timeout=5 --no-leader-only -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+              transact "$OVN_SB_CONNECTION" \
+              '["OVN_Southbound",{"op":"select","table":"Chassis_Private","where":[["name","==","'"$id"'"]],"columns":["name"]}]' \
+              2>/dev/null | grep -q "\"name\": *\"$id\""; then
+              echo "chassis $id is registered in the Southbound database"
+              exit 0
+            else
+              say "waiting for chassis $id to register in the Southbound database"
+            fi
+            sleep 2
+          done
+        env:
+        - name: OVN_SB_CONNECTION
+          value: ssl:10.96.0.21:6642
         image: registry.example.com/neutron@sha256:2222222222222222222222222222222222222222222222222222222222222222
+        imagePullPolicy: IfNotPresent
         name: wait-for-chassis
         resources:
           limits:
@@ -478,6 +565,9 @@ spec:
         volumeMounts:
         - mountPath: /run/openvswitch
           name: run-ovs
+        - mountPath: /etc/ovn/tls
+          name: ovn-tls
+          readOnly: true
       nodeSelector:
         openstack.c5c3.io/chassis: "true"
       securityContext:

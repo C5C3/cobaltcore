@@ -29,7 +29,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_OVN_KERNEL_MODULES=true make dep
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the `ControlPlane` `controlplane` serves the network API and the
+Step 7, so the `ControlPlane` `controlplane` serves the network API and the
 `OVNCentral` `controlplane-ovn` is Ready in the `openstack` namespace.
 :::
 
@@ -38,7 +38,7 @@ Step 6, so the `ControlPlane` `controlplane` serves the network API and the
    leaves it: the node carries `openstack.c5c3.io/chassis=true` and the
    `OVNChassis` `controlplane-chassis` reports `Ready` with one entry in
    `status.nodes`.
-2. The `OS_*` variables the quick start exports in its Step 6, still in the
+2. The `OS_*` variables the quick start exports in its Step 7, still in the
    shell you run the `openstack` commands from. Every call below carries
    `--insecure`, because the gateway listener presents a self-signed
    certificate.

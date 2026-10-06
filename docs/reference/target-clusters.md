@@ -23,6 +23,12 @@ Omitting the field selects the local cluster, the one the operator runs on. The
 children are created there and the deployment behaves like a single-cluster one,
 so an existing CR keeps its behavior without an edit.
 
+In the figure of the implemented topology, target clusters are the dashed box
+on the right: optional, registered through kubeconfig Secrets, and the place
+where projected workloads land.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
+
 The [ControlPlane](./c5c3/controlplane-crd.md) carries the ref per service
 instead of once per CR: `services.keystone`, `services.horizon`,
 `services.glance`, `services.placement`, `services.barbican`,
@@ -56,6 +62,11 @@ service between clusters means deleting the CR and creating it anew.
 
 A target cluster is registered by a kubeconfig Secret on the management cluster.
 The Secret's name is the cluster name a CR references.
+
+The figure shows where the Secret sits, what the target cluster grants in
+return, and what crosses between the two clusters.
+
+![A workload CR that names a target cluster. On the management cluster, the Secret {cluster} in the namespace c5c3-clusters registers the target: it carries the label sigs.k8s.io/multicluster-runtime-kubeconfig and a kubeconfig. The Keystone CR {name} sets spec.targetClusterRef to that name and stays on the management cluster with its status, its finalizers and its webhooks. On the target cluster, the chart target-cluster-access provides the ServiceAccount, the token and the Roles the kubeconfig uses, and the namespace of the CR receives every child: Deployment, Service, HTTPRoute, ConfigMaps, Secrets, Jobs, CronJobs and the database CRs, each marked with the labels openstack.c5c3.io/owner-kind, owner-name and owner-namespace and without an owner reference. Four routes cross the cluster boundary. The operator writes and watches the children through the target's API server, probes the service API through services/proxy, and reaches the OpenBao of a placed BarbicanSecretStore through pods/portforward. Clients and services on other clusters reach the workload by its public URL, through a Gateway or load balancer on the target.](../diagrams/controlplane-target-cluster.svg)
 
 ```yaml
 apiVersion: v1
@@ -191,15 +202,19 @@ it, surfaces on the CR's first gate condition:
 | --- | --- | --- | --- | --- |
 | Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder, Nova | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
 | BarbicanSecretStore, GlanceBackend, CinderBackend, CinderBackupBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
-| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
+| ControlPlane | `NamespacesReady` usually, since it is the first sub-reconciler that reaches a cluster; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
 The pass ends there. The CR requeues after 15 seconds, on a flat poll rather than
-a backoff, and nothing is created on any cluster. Resolution runs before any
-finalizer is installed, so a CR naming an unresolvable cluster carries none:
-nothing was created for it, and a finalizer would only block its deletion. A
-ControlPlane ends the pass in the sub-reconciler that reached the cluster and
-requeues on that one's own interval, 15 seconds on the namespace and
-backing-service legs and 10 on the credential ones.
+a backoff, and nothing is created on any cluster. Resolution runs before the
+operator installs a finalizer for the target, so a workload CR naming an
+unresolvable cluster carries none: nothing was created for it, and a finalizer
+would only block its deletion. A ControlPlane carries `c5c3.io/orc-teardown`
+either way and takes `openstack.c5c3.io/remote-children` only once one cluster
+it names resolves. A ControlPlane ends the pass when the sub-reconciler that
+reached the cluster belongs to the blocking prefix. A member of the tail group
+reports the reason on its own condition while the other members still run.
+Either way the CR requeues on that sub-reconciler's interval, 15 seconds on the
+namespace and backing-service legs and 10 on the credential ones.
 
 A cluster that is deregistered under a running CR flips the same condition, and
 the children already written to it stay where they are. The reconciler never
@@ -208,9 +223,10 @@ reaches its sub-reconcilers without a client, so nothing deletes them.
 Deleting such a CR still works, after a grace period. The deletion path resolves
 ahead of everything else and tolerates a target that is gone, but not right
 away: while the grace period runs, an unresolvable target only requeues the
-pass, every 15 seconds, the finalizers stay on, and the CR reports
-`SecretsReady=False` with reason `TargetClusterUnavailable` and a message naming
-the cluster it is waiting for, so the hold is not just a log line.
+pass, every 15 seconds, the finalizers stay on, and a workload CR reports
+`SecretsReady=False`, and a ControlPlane `NamespacesReady=False`, with reason
+`TargetClusterUnavailable` and a message naming the cluster it is waiting for,
+so the hold is not just a log line.
 
 Two five-minute windows have to run out before the operator gives up: five
 minutes since the CR was marked for deletion, and five minutes since that
@@ -338,27 +354,10 @@ bidirectional `/run/netns` mount, which is why the kind is projected into the
 namespace of the `OVNChassis` it attaches to: one entry covers both node-level
 workloads, and the `Neutron` API needs none.
 
-On a compute cluster that namespace also receives the Secret the agent signs
-instance requests with. For an agent that names
-`{controlplane.Name}-nova-metadata-agent-secret`, the ControlPlane writes that
-Secret there with the single key `shared_secret` and the label
-`neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"`, and the
-teardown of the last agent there that names it deletes it (see
-[On a compute cluster](./neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)).
-The c5c3 operator's credentials for that cluster therefore have to write
-Secrets in the namespace. A registration scoped by `namespaces` with
-namespace-scoped RBAC has to cover it; a refused write reports
-`NovaMetadataAgentSecretError` on the ControlPlane's `NovaReady`. The CA bundle the agent verifies the metadata
-Gateway with is not delivered; place it in the namespace yourself.
-
-A `NovaCompute`'s namespace needs it too. Its `nova-compute` DaemonSet runs
-privileged as root on the host network, with a bidirectional `/var/lib/nova`
-mount and the node's libvirt and Open vSwitch sockets (see the
-[node contract](./nova/novacompute-crd.md#node-contract)). On a compute cluster
-openstack-hypervisor-operator runs beside it: list the namespace in its
-`--agent-namespaces` as well, because that is where it looks for the agent pods
-it waits on before it deletes an offboarded node's compute service, and give no
-pod of the pool an indefinite toleration of `kvm.cloud.sap/offboarding`.
+A compute cluster holds all three node-level workloads, the chassis, the
+metadata agent and a `NovaCompute` pool, and
+[Namespaces on a compute cluster](#namespaces-on-a-compute-cluster) lists what
+its namespaces receive and need.
 
 A placed `Cinder` mounts every backend export and the backup share as an inline
 CSI volume in the pod spec, so the target cluster needs an NFS CSI mounter of
@@ -592,6 +591,41 @@ NeutronMetadataAgent, and `NovaReady` on a NovaCompute. Nothing is created on th
 nothing it could not first read. Neither retrying nor waiting changes a cache's
 scope, so the condition holds until the registration or the CR moves.
 
+### Namespaces on a compute cluster
+
+A compute cluster runs `nova-compute` on its hypervisor nodes, beside the OVN
+chassis, the metadata agent, openstack-hypervisor-operator (hvo) and
+kvm-node-agent. The pool's `nova-compute` DaemonSet runs privileged as root on
+the host network, with a bidirectional `/var/lib/nova` mount and the node's
+libvirt and Open vSwitch sockets (see the
+[node contract](./nova/novacompute-crd.md#node-contract)), so its namespace
+needs the same `privilegedNamespaces` entry as the chassis.
+[Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) walks
+the attachment.
+
+| Namespace | What runs there | What the operators write there | What it needs |
+| --- | --- | --- | --- |
+| The Nova namespace: `services.nova.namespace.name`, else the ControlPlane's. `novaRef` is namespace-local, so every pool of the Nova runs there | The `NovaCompute` pods | The c5c3 operator writes the compute contract `<nova>-compute-config` and hvo's credentials `<cp>-nova-hypervisor-operator-auth`, both labelled `nova.openstack.c5c3.io/compute-config-mirror: "true"` | An entry in `values.namespaces` and in the registration's `namespaces`; an entry in `privilegedNamespaces`; an entry in hvo's `--agent-namespaces` (chart value `controllerManager.manager.env.agentNamespaces`, comma-separated, default `monsoon3`); no pod of the pool that tolerates `kvm.cloud.sap/offboarding:NoExecute` indefinitely |
+| The OVN central namespace: `services.neutron.ovn.centralRef.namespace`, else the ControlPlane's | The `OVNChassis` and `NeutronMetadataAgent` pods | The c5c3 operator writes `<cp>-nova-metadata-agent-secret` for the agents that name it, with the single key `shared_secret` and the label `neutron.openstack.c5c3.io/metadata-shared-secret-mirror: "true"` (see [On a compute cluster](./neutron/neutron-metadata-agent-crd.md#on-a-compute-cluster)). While the central runs on another cluster, the ovn-operator writes the chassis's copy of the central's client identity, `<chassis>-ovn-client` | Entries in `values.namespaces` and `privilegedNamespaces`, and the CA bundle the agent verifies the metadata Gateway with, which is not delivered and which the owner places. An entry in `--agent-namespaces` too, so hvo waits for the metadata agent |
+| hvo's `--certificate-namespace` | The `libvirt-<node>` Certificates and their `tls-libvirt-<node>` Secrets | Nothing | No entry in `values.namespaces`: the access chart grants Secret reads in every entry, and reading one of these Secrets opens every libvirtd of the migration domain (see [Live migration](./nova/novacompute-crd.md#live-migration)) |
+
+Both of the first two rows default to the ControlPlane's namespace, so one
+namespace usually holds all three node-level workloads. hvo then waits for the
+chassis and agent pods at offboarding too, and the offboarding taint evicts
+them unless the `OVNChassis` tolerates it. The agent takes its chassis's
+tolerations.
+
+The c5c3 operator writes these Secrets with the registration's credentials. A
+registration scoped by `namespaces` whose Role cannot write Secrets in one of
+the namespaces reports the refused write on the ControlPlane's `NovaReady`:
+`NovaComputeConfigError` for the contract mirror, `HypervisorOperatorError` for
+the auth copy, and `NovaMetadataAgentSecretError` for the metadata copy.
+
+The last pool of the Nova on the cluster deletes the two Secrets of the Nova
+namespace, the teardown of the last agent that names the metadata copy deletes
+that one, and the namespaces themselves stay, annotated
+`helm.sh/resource-policy: keep`.
+
 ## Prerequisites on the management cluster
 
 Target clusters need a cluster-scoped operator install. The registration Secrets
@@ -684,8 +718,9 @@ its own target cluster.
 :::
 
 Deleting a CR that names a target cluster tears its children down explicitly.
-The finalizer `openstack.c5c3.io/remote-children` goes on whenever
-`targetClusterRef` is set, and holds the CR in etcd until the sweep has run. The
+The finalizer `openstack.c5c3.io/remote-children` goes on once
+`targetClusterRef` is set and the cluster it names resolves, and holds the CR in
+etcd until the sweep has run. The
 sweep deletes every object of that operator's projected kinds the CR owns, in the
 CR's namespace on the target — by the three labels, or by a controller owner
 reference an older operator left on it. It runs after the cleanup
@@ -724,7 +759,8 @@ A placed `NovaCompute` comes down before the `Nova` it joins and before the
 `OVNChassis` on its nodes. Its teardown drains every node it holds through the
 Nova API, so the Nova has to still answer, and its pods wait on the chassis's
 `/run/openvswitch` socket. The drain holds the deletion until Nova reports each
-host empty (see [The drain](./nova/novacompute-crd.md#the-drain)).
+host empty (see [The drain](./nova/novacompute-crd.md#the-drain) and
+[Drain a Compute Node](../guides/nova/drain-a-compute-node.md)).
 
 The four CRs of a placed network service come down in one order, because each of
 the first three reads something a later one owns. Delete the
@@ -763,7 +799,7 @@ its target cluster; everything it writes afterwards carries the labels alone.
 
 ## ControlPlane placement
 
-A ControlPlane names a cluster per service. Each of the seven service blocks takes
+A ControlPlane names a cluster per service. Each of the eight service blocks takes
 its own ref, and a block without one keeps its service on the management cluster:
 
 ```yaml
@@ -777,7 +813,7 @@ spec:
         name: edge-1
 ```
 
-Five rules apply at admission on top of the name-only shape. A placed service
+Six rules apply at admission on top of the name-only shape. A placed service
 needs a `namespace` block of its own, because a namespace exists on exactly one
 cluster and the ControlPlane's own namespace stays where the ControlPlane is. A
 placed catalog service (keystone, glance, placement, barbican, neutron, cinder,
@@ -835,6 +871,11 @@ Whether the named cluster is registered is not checked at admission. An unknown
 name surfaces per CR as a condition instead, with reason
 `TargetClusterUnavailable` and the resolver's `cluster not found`.
 
+The figure shows the three places a child of a ControlPlane can live and how
+each is tied to it. The table after it lists every object.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../diagrams/controlplane-children-placement.svg)
+
 What a placed service takes with it, and what stays behind:
 
 | Object | Created on |
@@ -873,15 +914,22 @@ namespaces therefore takes the `External` lifecycle, against namespaces the
 target's owner created and granted. ControlPlane placement also reaches past the
 access chart in one place: Barbican's dedicated OpenBao ensemble reads the
 `kubernetes` EndpointSlices in the target's `default` namespace to compute the
-API server endpoint IPs the instance is configured with, and `default` is not a
-namespace a service is placed in.
+API server endpoint IPs the instance is configured with, and the `kubernetes`
+Service there for the address its Kubernetes auth method reviews tokens
+against, and `default` is not a namespace a service is placed in. Both reads
+are `get` on the object named `kubernetes` and run on every pass of a dedicated
+store, so a target that grants the EndpointSlice read alone, as operators
+before the Service read required, fails every pass with
+`BarbicanReady=False/BarbicanOpenBaoError` until the Service read is granted
+too.
 
 Every remote child carries the three ownership labels above, with `owner-kind:
 ControlPlane`, plus the `c5c3.io/controlplane-name` and
 `c5c3.io/controlplane-namespace` pair the operator's own watches map a child back
-by, and no owner reference. A namespace created on a target cluster carries one
-mark more: the annotation `c5c3.io/controlplane-uid`, holding the owning CR's
-UID. The labels name a ControlPlane by name and namespace, and a target cluster
+by, and no owner reference. A `Managed` namespace carries one mark more, on both
+clusters: the annotation `c5c3.io/controlplane-uid`, holding the owning CR's
+UID. Adoption requires it on a target cluster. The labels name a ControlPlane by
+name and namespace, and a target cluster
 is registerable from any number of management clusters — each able to run an
 `openstack` ControlPlane in an `openstack` namespace, the quickstart defaults.
 The UID is what tells those apart, and it is also the only part of the claim a
@@ -935,8 +983,9 @@ Deleting a ControlPlane that placed a service runs the same
 once at least one service is placed and at least one cluster the spec names
 resolves — the namespaces on a resolvable cluster are created on that very pass,
 whatever a sibling ref does.
-The teardown that releases it keeps a fixed order. The K-ORC CRs go first, then
-the owned PushSecrets, on each placed cluster as well as at home, while the
+The teardown that releases it keeps a fixed order. The projected
+`KeystoneService` registrations go first and are waited for, then the K-ORC CRs
+and the owned PushSecrets, on each placed cluster as well as at home, while the
 tenant store their OpenBao purge authenticates through is still alive. Then, per
 placed namespace: the service CRs, deleted on the management cluster and waited
 for, which is also what waits out each service operator's own remote sweep; then
@@ -966,8 +1015,8 @@ The operators that act on the kinds a placed service takes with it have to run o
 that service's cluster: mariadb-operator, memcached-operator, external-secrets,
 cert-manager, and, for a dedicated Barbican secret store, openbao-operator. The
 service operators are not among them. The `Keystone`, `Horizon`, `Glance`,
-`Placement`, `Barbican`, `Neutron`, and `Cinder` CRs stay on the management
-cluster, and their operators project onto the target from there. The
+`Placement`, `Barbican`, `Neutron`, `Cinder`, and `Nova` CRs stay on the
+management cluster, and their operators project onto the target from there. The
 `OVNCentral` a placed network service references is placed the same way: the
 ovn-operator reconciles it on the management cluster and projects its children
 onto the target its own `targetClusterRef` names. When the central and the

@@ -83,6 +83,12 @@ value_matches_shape() {
     if [[ "$value" =~ [[:space:]] ]]; then return 1; fi
     return 0
     ;;
+  deb)
+    # A Debian version starts with a digit and holds only the characters
+    # dpkg allows: an upstream part, an optional epoch and a revision.
+    if [[ "$value" =~ ^[0-9][0-9A-Za-z.+~:-]*$ ]]; then return 0; fi
+    return 1
+    ;;
   regex:*)
     # Regex versioning parses the values its declared pattern matches,
     # so the shape is the pattern itself. bash ERE cannot parse the
@@ -122,6 +128,9 @@ test_shape_table_self_check() {
     "pep440|>=1.0|1"
     "docker|3.20|0"
     "docker||1"
+    "deb|10.0.0-2ubuntu8.19-r1|0"
+    "deb|latest|1"
+    "deb||1"
     "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|v26.03.2|0"
     "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|26.03.2|1"
     "loose|1.0.0|2"
@@ -282,13 +291,16 @@ test_every_current_value_parses() {
   # Exact counts, not a lower bound: the only path that reaches `continue`
   # without a FAIL is the digest-only classifier, so a misfiring probe
   # would otherwise move entries from replayed to skipped in bulk while a
-  # single survivor kept the sweep green.
+  # single survivor kept the sweep green. The three digest-only entries are
+  # the K-ORC GitRepository commit, the openstack-hypervisor-operator
+  # ARG HVO_COMMIT pin and the kvm-node-agent ARG KNA_COMMIT pin, each a
+  # commit of an upstream main branch.
   local entry_count
   entry_count="$(jq '.customManagers | length' "$RENOVATE_FILE")"
-  assert_eq "exactly one digest-only customManagers entry is skipped" \
-    "1" "$digest_only"
+  assert_eq "exactly three digest-only customManagers entries are skipped" \
+    "3" "$digest_only"
   assert_eq "every other customManagers entry was replayed" \
-    "$((entry_count - 1))" "$replayed"
+    "$((entry_count - 3))" "$replayed"
 }
 
 # --- Run ---

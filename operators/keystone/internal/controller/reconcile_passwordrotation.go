@@ -351,6 +351,7 @@ func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context
 func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptConfigMapName string) *batchv1.CronJob {
 	pr := keystone.Spec.PasswordRotation
 	image := keystone.Spec.Image.Reference()
+	pullPolicy := keystone.Spec.Image.EffectivePullPolicy()
 
 	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
@@ -373,6 +374,7 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 							Containers: []corev1.Container{{
 								Name:            "admin-password-rotate",
 								Image:           image,
+								ImagePullPolicy: pullPolicy,
 								Command:         []string{"/scripts/admin_password_rotate.sh"},
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								Env: []corev1.EnvVar{

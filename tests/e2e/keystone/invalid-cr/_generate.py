@@ -183,6 +183,14 @@ IMAGE_TAG_AND_DIGEST = """\
     digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
 """
 
+# Image whose pullPolicy is outside the corev1.PullPolicy values — rejected by
+# the ImageSpec.PullPolicy Enum marker.
+IMAGE_PULL_POLICY_UNSUPPORTED = """\
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+    pullPolicy: Sometimes
+"""
+
 # Database whose name uses a character outside the MySQL identifier set
 # (the hyphen) — rejected by the DatabaseSpec.Database Pattern marker.
 DATABASE_INVALID_NAME = """\
@@ -900,8 +908,9 @@ FIXTURES: list[Fixture] = [
       updateMode: Sometimes
 """,
         comment="""\
-# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial, Recreate
-# and Auto violates the Enum marker; the webhook mirrors it.""",
+# spec.deployment.verticalAutoscaling.updateMode outside Off, Initial,
+# Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook
+# mirrors it.""",
     ),
     Fixture(
         filename="37-vertical-autoscaling-min-replicas-zero.yaml",
@@ -914,6 +923,16 @@ FIXTURES: list[Fixture] = [
         comment="""\
 # spec.deployment.verticalAutoscaling.minReplicas of zero violates the Minimum=1
 # marker; the webhook mirrors it.""",
+    ),
+    Fixture(
+        filename="38-image-pull-policy-unsupported.yaml",
+        name="invalid-image-pull-policy",
+        image=IMAGE_PULL_POLICY_UNSUPPORTED,
+        comment="""\
+# spec.image.pullPolicy outside Always, IfNotPresent and Never violates the
+# ImageSpec.PullPolicy Enum marker. The rule is schema-only: a CRD older than
+# the operator prunes the field before a webhook sees it, so no webhook twin
+# exists. Admission must reject this CR with "Unsupported value".""",
     ),
 ]
 

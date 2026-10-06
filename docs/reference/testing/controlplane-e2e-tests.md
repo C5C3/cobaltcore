@@ -356,11 +356,15 @@ paths any other chassis or metadata agent would share.
    instead. The auth Secret `controlplane-keystone-nova-hypervisor-operator-auth`
    has to carry exactly the seven keys of the hypervisor operator's chart values;
    the script reads and prints the key names only, never the values, because
-   the Secret carries a cloud-admin password. It then restarts K-ORC: the client
-   K-ORC cached for the plane's `clouds.yaml` still holds the service catalog of
-   a token issued before the `compute`, `network` and `block-storage` rows
-   existed, and keeps it for up to 30 minutes. With a fresh cache it applies
-   `fixtures.yaml` of the example overlay
+   the Secret carries a cloud-admin password. It then asserts the catalog epoch
+   annotation the c5c3-operator wrote on the pod template of
+   `orc-controller-manager` for `openstack/controlplane-keystone` (see
+   [reconcileKORCCatalogRefresh](../c5c3/controlplane-reconciler.md#reconcilekorccatalogrefresh)),
+   waits for the K-ORC rollout, and checks that the running K-ORC pod is no
+   older than the last `CatalogReady=True` transition among the plane's catalog
+   registrations. That pins the restart after the `compute`, `network` and
+   `block-storage` rows exist. The script then applies `fixtures.yaml` of the
+   example overlay
    `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
    downloads no cirros image) and waits up to 10 minutes for every K-ORC
    resource in that file to report `Available`.
@@ -837,7 +841,11 @@ cluster-scoped.
 The teardown is part of the contract rather than cleanup: deleting the
 registration has to reach Keystone through K-ORC, drop the consumer Secret with
 its ExternalSecret, and let the plane collect the tenant store once the namespace
-holds no registration.
+holds no registration. Deleting the plane itself has to finish with the projected
+Keystone gone and no `OpenBaoCleanupStalled` or `KeystoneTeardownStalled` event
+in the namespace. The suite leaves the Keystone to the ControlPlane's finalizer,
+which deletes it and waits for its OpenBao cleanup before it releases (see
+[Owner-ref / GC model](../c5c3/controlplane-reconciler.md#owner-ref-gc-model)).
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it after
@@ -923,6 +931,17 @@ lands in the Job object.
 drive the same CLI as the cloud admin, for the rows only an admin can see or
 create. Both print a `SERVICE_ID=` and a `USER_ID=` line the test script parses
 out of the Job log, with `ABSENT` for a row that is gone.
+
+The teardown proves the order the ControlPlane's finalizer keeps for its
+Keystone and leaves the Keystone to that finalizer. Before the plane is deleted the
+suite requires a live value at the Keystone's fernet-keys backup path, so the
+purge check that follows cannot pass on a path that was never written. Once the
+plane is gone, the Keystone `cp-keystone` must be absent, the namespace must hold
+no `OpenBaoCleanupStalled` or `KeystoneTeardownStalled` event, and neither
+`openstack/keystone/{namespace}/cp-keystone/fernet-keys` nor
+`.../credential-keys` may hold a live value. A teardown that let the cascade
+reap the tenant store together with the Keystone would end through one of those
+stall breakers and leave the keys in OpenBao.
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it third,
@@ -1092,11 +1111,12 @@ changes that make the caps testable and a third that makes the VPAs testable:
   controller enforces before it reads any metric, so each is checked at its
   maximum without a load of its own.
 - `verticalAutoscaling` on three components no HPA scales:
-  `neutron.workers` (`updateMode: "Off"`), `cinder.scheduler` (`Auto`,
-  `minReplicas: 1`, `maxAllowed.cpu: "1"`) and `nova.conductor` (`Initial`,
-  `minAllowed.memory: 256Mi`). The OVNCentral opts its Northbound and
-  Southbound databases and northd in on its own spec, all with `"Off"`, so six
-  blocks give seven VPAs: the Neutron block covers both worker Deployments.
+  `neutron.workers` (`InPlaceOrRecreate`, `maxAllowed.cpu: "1"`),
+  `cinder.scheduler` (`Auto`, `minReplicas: 1`, `maxAllowed.cpu: "1"`) and
+  `nova.conductor` (`Initial`, `minAllowed.memory: 256Mi`). The OVNCentral
+  opts its Northbound and Southbound databases and northd in on its own spec,
+  all with `"Off"`, so six blocks give seven VPAs: the Neutron block covers
+  both worker Deployments.
 
 | Step | Behaviour Validated |
 | --- | --- |
@@ -1104,9 +1124,9 @@ changes that make the caps testable and a third that makes the VPAs testable:
 | 2. `seed-and-apply` (5m) | The eight Static KV paths are seeded with a password generated inside the OpenBao pod, the suite's broker vhost and messaging Secret are created, and the OVNCentral and the ControlPlane are applied |
 | 3. `controlplane-ready` (45m) | The ControlPlane reaches `Ready` |
 | 4. `projection-and-shape` (5m) | The Keystone child and its HPA carry the `scaleDown` behavior; all seven HPAs target 150% CPU; Keystone runs one ready pod and every pinned API two; Keystone's PDB carries `maxUnavailable: 1` and every pinned PDB `minAvailable: 1` without `maxUnavailable`; User `cp-autoscaling-keystone` carries `maxUserConnections: 18`, `(3+1)×2×(1+1)+2` |
-| 5. `vertical-autoscaling` (15m) | The three sizing blocks reach the Neutron, Cinder and Nova children; each of the seven opted-in workloads has a VPA named like it, labelled with its CR, targeting its Deployment or StatefulSet, with the one `*` container policy (`RequestsOnly`, `cpu` and `memory`); the Cinder and Nova VPAs carry their update policy and bounds, and the two Raft VPAs the `minAllowed` floor of `70m` and `256Mi`; Keystone has no VPA and no workload has both a VPA and an HPA; `VPAReady` is `True/VPAReady` on the four opted-in children and `True/VPANotRequired` on the other four; the recommender provides a memory recommendation for the Northbound database's `ovsdb` container within 600 s and marks no VPA `ConfigUnsupported`; removing the Neutron block removes its two VPAs, turns its `VPAReady` to `VPANotRequired`, and leaves the other five |
-| 6. `start-load` (3m) | The load Job's pod runs |
-| 7. `scale-out` (8m) | The Keystone HPA reaches `desiredReplicas: 3` and the Deployment three ready pods; the peak `averageUtilization` seen is above 150 |
+| 5. `vertical-autoscaling` (15m) | The three sizing blocks reach the Neutron, Cinder and Nova children; each of the seven opted-in workloads has a VPA named like it, labelled with its CR, targeting its Deployment or StatefulSet, with the one `*` container policy (`RequestsOnly`, `cpu` and `memory`); the Cinder and Nova VPAs carry their update policy and bounds, and both Neutron worker VPAs `InPlaceOrRecreate`, and the two Raft VPAs the `minAllowed` floor of `70m` and `256Mi`; Keystone has no VPA and no workload has both a VPA and an HPA; `VPAReady` is `True/VPAReady` on the four opted-in children and `True/VPANotRequired` on the other four; the recommender provides a memory recommendation for the Northbound database's `ovsdb` container within 600 s and marks no VPA `ConfigUnsupported`; removing the Neutron block removes its two VPAs, turns its `VPAReady` to `VPANotRequired`, and leaves the other five |
+| 6. `start-load` (7m) | Keystone is at one pod (HPA `desiredReplicas: 1`, one ready replica) within 240 s, whatever the plane's own traffic scaled it to after step 4, and only then the load Job is applied and its pod runs |
+| 7. `scale-out` (8m) | The Keystone HPA reaches `desiredReplicas: 3` and the Deployment three ready pods; the peak `averageUtilization` seen is above 150. The step polls until it has seen both |
 | 8. `keystone-at-maximum` (5m) | `check-connection-cap.sh` for Keystone at three pods, retried for up to 240 s while the load reaches the pods the HPA just added |
 | 9. `service-burst` (8m) | The burst Job completes with six `RESULT` lines at `fail=0` |
 | 10. `pinned-at-maximum` (10m) | `check-connection-cap.sh` for the six pinned APIs (Nova with its API and cell users), and the server-wide connection count stays below `@@max_connections` |
@@ -1118,7 +1138,7 @@ A test-level `catch` (5m) dumps the HPAs, the VPAs, `kubectl top pods`, pods,
 events, both Jobs' logs and the live MariaDB connections per user. The
 `cleanup` of step 2 (15m) runs when the test ends, whichever step it ends in,
 and deletes both Jobs, the ControlPlane, the OVNCentral, the broker vhost and
-the eight KV paths. The worst-case ceiling is the sum of these timeouts, 160 minutes.
+the eight KV paths. The worst-case ceiling is the sum of these timeouts, 164 minutes.
 
 **Completed CronJob pods.** The HPA reads every pod its scale target's
 selector matches. The Keystone API Deployment selects on the
@@ -1126,9 +1146,11 @@ selector matches. The Keystone API Deployment selects on the
 pods of the hourly trust-flush CronJob and of the key rotations carry both. A
 Completed one reports no metrics, and on a scale-down the HPA counts a pod
 without metrics at the full target, which holds Keystone one pod above its
-minimum. Steps 4 and 11 therefore delete the Succeeded Job pods of the Keystone
-child while they poll (`keystone-hpa.sh drop-job-pods`), so the scale-in they
-measure depends on the behavior alone.
+minimum. Steps 4, 6 and 11 therefore delete the Succeeded Job pods of the
+Keystone child while they poll (`keystone-hpa.sh drop-job-pods`), so the
+scale-in they wait for depends on the behavior alone. Steps 8 and 10 do not
+delete them: `check-connection-cap.sh` leaves every pod with a `job-name`
+label out of its checks 3 and 4.
 
 **Load and burst Jobs.** Both run the tempest image with the per-CR
 `k-orc-clouds-yaml` Secret mounted, and exit 2 when its `admin` cloud is not a

@@ -1482,6 +1482,36 @@ func TestIntegration_VPA_CreatedWhenOptedInAndDeletedWhenRemoved(t *testing.T) {
 		eventuallyTimeout, pollInterval).Should(Equal("VPANotRequired"))
 }
 
+// An opt-in with InPlaceOrRecreate reaches the VPA. The fake VPA CRD is
+// upstream's 1.8.0 schema, so the apply proves that schema admits what the
+// operator renders for the mode.
+func TestIntegration_VPA_InPlaceOrRecreateReachesTheVPA(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-vpa-inplace-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Deployment.VerticalAutoscaling = &keystonev1alpha1.VerticalAutoscalingSpec{UpdateMode: "InPlaceOrRecreate"}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	vpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
+	vpa := &vpav1.VerticalPodAutoscaler{}
+	g.Expect(c.Get(ctx, vpaKey, vpa)).To(Succeed(), "VerticalPodAutoscaler test-keystone should exist")
+	g.Expect(vpa.Spec.TargetRef.Name).To(Equal("test-keystone"))
+	g.Expect(vpa.Spec.UpdatePolicy.UpdateMode).To(HaveValue(Equal(vpav1.UpdateModeInPlaceOrRecreate)))
+	g.Expect(vpa.Spec.UpdatePolicy.MinReplicas).To(BeNil())
+	g.Eventually(func() string { return vpaReadyReason(t, ctx, c, key) },
+		eventuallyTimeout, pollInterval).Should(Equal("VPAReady"))
+}
+
 // The recommender rewrites status.recommendation about once a minute, so a
 // status write to the owned VPA must not wake the Keystone, while a spec drift
 // must, and the next pass reverts it.

@@ -78,7 +78,7 @@ created.
 | `cert-manager` | cert-manager operator and its resources |
 | `mariadb-system` | MariaDB Operator |
 | `external-secrets` | External Secrets Operator |
-| `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack kind overlay) |
+| `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack of the kind overlay and of the [Lab Prometheus stack](#lab-prometheus-stack), which declares no Namespace of its own) |
 | `memcached-system` | Memcached Operator |
 | `garage-system` | Garage Operator (S3 object store for the CI/e2e stack) |
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
@@ -108,8 +108,11 @@ Secret-reading `Role` here without treating it as a security review.
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
-`WITH_CHAOS_MESH=true make deploy-infra` is used. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
+`WITH_CHAOS_MESH=true make deploy-infra` is used, and by the lab overlay
+`deploy/lab/metal-stack/chaos-mesh/`, which takes that overlay as its base, under
+`EXTERNAL_CLUSTER=true`. See
+[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) and
+[Lab Chaos Mesh](#lab-chaos-mesh) below.
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
 helm-controller to create namespaces when installing charts. However, this does not help
@@ -227,9 +230,16 @@ particular chart.
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
-— pinned by `ref.commit` to an upstream `main` commit and scoped to `/config` via
-`spec.ignore`. No released K-ORC ships the `RoleAssignment` and `Region` kinds the
-c5c3-operator owns, so the pin returns to a release tag once one does.
+— pinned by `ref.commit` to an upstream `main` commit. No released K-ORC ships the
+`RoleAssignment` and `Region` kinds the c5c3-operator owns, so the pin returns to a
+release tag once one does. `spec.sparseCheckout` limits the checkout to `config`, and
+`spec.ignore` scopes the artifact to the same directory. The sparse checkout is what
+keeps the source working while upstream moves: for a `ref.commit` the source-controller
+clones the tip of `main` and hard-resets to the pin, and that reset fails when the tip
+carries a symlink to a non-empty directory that the pin lacks. A sparse checkout starts
+from an empty worktree, so paths outside `config` are never removed.
+`tests/unit/deploy/korc_flux_source_test.sh` checks that the list covers the path the
+Kustomization builds.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
@@ -365,7 +375,33 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 | --- | --- | --- |
 | `crds.enabled` | `true` | Install CRDs via the Helm chart |
 | `prometheus.enabled` | `false` | Prometheus metrics disabled |
-| `startupapicheck.enabled` | `false` | Disable startup API check job |
+| `startupapicheck.enabled` | `true` | Run the startup API check Job, so the release is Ready only once the webhook admits a request |
+
+The production release sets `startupapicheck.enabled`, and the kind and the
+metal-stack lab base renders inherit it. Every release that depends on
+cert-manager creates an `Issuer` or a `Certificate`. Without the check the
+release turns `Ready` before the webhook admits, and a dependent release can
+use up its install retries and stay `Stalled`.
+
+The chart renders the check as Job `cert-manager-startupapicheck`, a
+`post-install` hook. It runs on install, and helm-controller waits for it, so
+`dependsOn: cert-manager` holds the dependent releases until the webhook
+answers. An upgrade of an existing installation starts no Job.
+
+A fresh install pulls `quay.io/jetstack/cert-manager-startupapicheck` at the
+chart's app version. It is a fourth image beside the controller, cainjector
+and webhook, from the same registry, and a cluster that mirrors or allowlists
+images has to provide it.
+
+The Job runs `check api --wait=1m` and restarts up to `backoffLimit: 4`. The
+release sets no `spec.timeout`, so helm-controller's default release timeout
+of 5 minutes bounds the wait. When the check does not pass in that time, the
+install fails. The release has no install remediation, so it stays failed and
+not `Ready`, the terminal state the install comment in
+`deploy/flux-system/releases/external-secrets.yaml` describes. Every dependent
+release waits at `dependsOn`, so the release that reports the failure is
+cert-manager itself. `tests/unit/deploy/cert_manager_release_test.sh` pins the
+value in the three renders.
 
 ### Prometheus Operator CRDs
 
@@ -438,14 +474,22 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | `webhook.port` | `9443` | Webhook server listen port |
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
-The production ESO kustomization renders the shared cluster-scoped
-`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`), which remains the
-**default** store every ControlPlane and its children use. Per-tenant namespaced
-`SecretStore`s are **not** created here — they are provisioned per ControlPlane
-by `deploy/openbao/bootstrap/setup-eso-tenant.sh` when a tenant opts in via
-`spec.secretStoreRef` (see the
+The production ESO kustomization renders one store,
+`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`). It serves the
+namespaces `openstack` and `shared-services`: standalone service CRs that set
+no `spec.secretStoreRef`, and the static ExternalSecrets of the kind overlay.
+A ControlPlane does not use it by default. The c5c3-operator provisions a
+namespaced `SecretStore/openbao-tenant-store` in every ControlPlane namespace
+(`reconcileESOTenantStore`) and routes the ControlPlane and its children
+through it. `spec.secretStoreRef` on the ControlPlane is the opt-out for a
+store you manage yourself, and `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+provisions the same store by hand for a standalone namespace (see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenant-sh) and the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
+
+The figure shows both stores and the paths that run through them.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../../diagrams/secrets-flow.svg)
 
 ### Memcached Operator
 
@@ -581,12 +625,11 @@ with different bytes would upgrade the release on its own — no Git change, no 
 Pinning `spec.ref.digest` on the OCIRepository is what makes every change to what runs
 here a reviewed commit.
 
-Renovate keeps that pin from becoming a freeze. Its native Flux manager does not cover
-this repository — the default file pattern matches only `gotk-components.yaml`, which the
-flux-operator setup never produces — so the pin is tracked by an explicit
-`customManagers` entry in `renovate.json` that rewrites the tag and the digest in the same
-pull request. The entry never automerges: every bump of this operator is a human
-decision.
+Renovate keeps that pin from becoming a freeze. Its native Flux manager reads
+`deploy/flux-system/`, but a packageRule switches it off for
+`sources/openbao-operator.yaml`: the pin is tracked by an explicit `customManagers` entry
+in `renovate.json` that rewrites the tag and the digest in the same pull request. The
+entry never automerges: every bump of this operator is a human decision.
 
 ### OpenBao
 
@@ -723,6 +766,15 @@ source commit, the image tag and digest, and the Go pseudo-version in
 namespaces every resource into it, so no `spec.targetNamespace` is set.
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.
+
+The c5c3-operator patches one pod-template annotation per ControlPlane,
+`c5c3.io/korc-catalog-epoch-<hash>`, onto `Deployment orc-controller-manager` under
+the field manager `cobaltcore-operator` whenever the service catalog registered
+through that ControlPlane settles on a new value. Each change rolls the K-ORC pod,
+and the new process logs in against the current catalog
+([`reconcileKORCCatalogRefresh`](../c5c3/controlplane-reconciler.md#reconcilekorccatalogrefresh)).
+The `k-orc` Kustomization sets no such annotation, and kustomize-controller reverts
+only the fields a `kubectl` manager owns, so it leaves the key alone.
 
 The upstream installer has no global-cloud-config knob (the previous HelmRelease set
 `globalCloudConfig.secretName`). That is not on the credential critical path: K-ORC
@@ -891,9 +943,17 @@ after the corresponding operator HelmReleases install their Helm charts.
 | Name | `selfsigned-cluster-issuer` |
 | Scope | Cluster-scoped (no namespace) |
 
-The self-signed ClusterIssuer provides a default certificate issuer for development
-environments. It requires cert-manager CRDs (`cert-manager.io/v1`) which are installed
-by the cert-manager HelmRelease.
+The self-signed ClusterIssuer signs the CA certificates of the trust domains:
+`openstack-db-ca`, `openstack-ovn-ca` and `openbao-ca`, and `libvirt-migration-ca`
+on the metal-stack lab. Each CA signs the leaves of its own domain through a CA
+issuer. The kind overlay also uses the self-signed issuer directly for the
+Gateway listener certificates. It requires cert-manager CRDs (`cert-manager.io/v1`)
+which are installed by the cert-manager HelmRelease.
+
+The figure shows the four CAs with their leaves. The CAs are separate because
+each server accepts every client certificate of its own CA.
+
+![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
 
 ### OpenStack DB CA Issuer
 
@@ -948,8 +1008,10 @@ The bootstrap path matches the DB CA above. `selfsigned-cluster-issuer` mints a
 self-signed CA `Certificate` (`isCA: true`, ECDSA P-256, 3-year lifetime, 30-day
 `renewBefore`) into the `openstack-ovn-ca` Secret in the `cert-manager` namespace, and
 `openstack-ovn-ca-issuer` signs the leaves from it: the Northbound and Southbound
-ovsdb-server certificates, plus the client certificates ovn-northd, the relays, and the
-chassis agents present to those databases.
+ovsdb-server certificates, plus one shared client certificate, `{central}-client`,
+which ovn-northd, the backup Job and Neutron present and of which every chassis holds
+a copy (`{chassis}-ovn-client`), and the relay's own certificate, `{central}-sb-relay`,
+when `spec.relay` is set.
 
 OVN keeps a CA of its own instead of sharing `openstack-db-ca-issuer`. OVS/OVN
 authenticates a peer with a single check: the peer certificate must chain to the
@@ -1333,7 +1395,13 @@ The c5c3-operator mints a single restricted admin Application Credential per clu
 mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
 `clouds.yaml` Secret that K-ORC authenticates with. The chain materialises the
 Kubernetes Secret `k-orc-clouds-yaml` via a single `ExternalSecret`, created per
-ControlPlane by the operator:
+ControlPlane by the operator.
+
+The figure numbers the steps of the chain.
+[K-ORC admin credential chain](../c5c3/controlplane-reconciler.md#k-orc-admin-credential-chain)
+lists them.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
 
 | Namespace | Source | Purpose |
 | --- | --- | --- |
@@ -1347,8 +1415,9 @@ the CR for GC and created in the ControlPlane's child namespace. It is named aft
 `spec.korc.adminCredential.cloudCredentialsRef.secretName` (default
 `k-orc-clouds-yaml`) and reads the per-CR OpenBao key
 `openstack/keystone/{namespace}/{name}/admin/app-credential` (property
-`clouds.yaml`, store-relative to the KV-v2 mount) via the `openbao-cluster-store`
-`ClusterSecretStore`, with `creationPolicy: Owner` and `refreshInterval: 1h`.
+`clouds.yaml`, store-relative to the KV-v2 mount) through the ControlPlane's
+store, by default the namespaced `SecretStore` `openbao-tenant-store`, with
+`creationPolicy: Owner` and `refreshInterval: 1h`.
 Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
 arbitrarily named ControlPlane resolves to the correct key with **no manifest
 edit** — the operator now resolves what was previously deferred for this ExternalSecret.
@@ -1362,9 +1431,10 @@ trust anchor next to `clouds.yaml`. No extra push plumbing is needed: the
 PushSecret mirrors the source Secret **whole** (it declares no `match.secretKey`),
 so the `cacert` key the operator projects into the app-credential Secret already
 reaches OpenBao alongside `clouds.yaml`. Clearing the ref drops the read-back
-entry on the next reconcile; the now-orphaned `cacert` property lingers at the
-OpenBao key because the PushSecret's `deletionPolicy` is `None`, but nothing reads
-it.
+entry and removes the `cacert` key from the source Secret on the next
+reconcile. The operator then forces a re-push (`c5c3.io/push-cacert-hash`), so
+the Secret in OpenBao no longer carries the key. The PushSecret's
+`deletionPolicy` is `Delete`: the OpenBao key leaves with the ControlPlane.
 
 **No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
 manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
@@ -1619,7 +1689,7 @@ One row per entry of `deploy/flux-system/kustomization.yaml` and
 | Entry | Kind | Field to patch | Sizing keys |
 | --- | --- | --- | --- |
 | `fluxinstance.yaml` | FluxInstance | `spec.kustomize.patches`, one entry per controller Deployment (`source-controller`, `kustomize-controller`, `helm-controller`, `notification-controller`) | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
-| `releases/cert-manager.yaml` | HelmRelease | `spec.values` | Checked against chart v1.21.2: `resources`, `nodeSelector` and `tolerations` for the controller, the same keys under `webhook` and `cainjector` for the other two Deployments, and `global.priorityClassName` for all three |
+| `releases/cert-manager.yaml` | HelmRelease | `spec.values` | Checked against chart v1.21.2: `resources`, `nodeSelector` and `tolerations` for the controller, the same keys under `webhook` and `cainjector` for the other two Deployments and under `startupapicheck` for the Job the release runs once at install, and `global.priorityClassName` for all four pods |
 | `releases/mariadb-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://mariadb-operator.github.io/mariadb-operator` (`sources/mariadb-operator.yaml`) |
 | `releases/external-secrets.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://charts.external-secrets.io` (`sources/external-secrets.yaml`) |
 | `releases/memcached-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/c5c3/charts` (`sources/c5c3-charts.yaml`) |
@@ -1702,9 +1772,12 @@ The [garage-operator](#garage-operator) is the worked example of an **OCI-type
 third-party** operator following this recipe: step 1 adds an OCI HelmRepository
 (`sources/garage-operator.yaml`, `spec.type: oci`, the registry namespace as `url`); the
 release (`releases/garage-operator.yaml`) references it by `sourceRef.name` and carries
-the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe
-— Renovate's native Flux handling resolves the HelmRelease version range with no custom
-rule, exactly as for the HTTPS sources.
+the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe.
+Renovate's native Flux manager reads the range of an OCI chart through the docker
+datasource, and a generic packageRule sets `versioning: helm` for every such range that
+starts with `>=`, so a new OCI chart needs no rule of its own as long as its range is
+spelled `>=X <Y` (see
+[Flux HelmRelease chart versions](../../contributing/dependency-management.md#flux-helmrelease-chart-versions)).
 
 **An operator with no chart** takes the Git-sourced variant of the recipe, which
 [K-ORC](#k-orc-openstack-resource-controller) and the
@@ -1712,10 +1785,12 @@ rule, exactly as for the HTTPS sources.
 `GitRepository` scoped to the installer path with `spec.ignore`, and step 2 adds a
 Flux `Kustomization` over that path instead of a HelmRelease, with the image
 pinned through `spec.images` (`newTag` plus `digest`) because a kustomize base
-carries no values file. Renovate's native Flux handling does not reach either
-half, so each needs a customManager anchored on the literal YAML shape, a
+carries no values file. Renovate's native Flux manager is switched off for both
+files, since a customManager moves a tag together with its commit or digest in one
+match. Each half needs a customManager anchored on the literal YAML shape, a
 packageRule sharing one `groupName` so the pair moves in one PR, and one test per
-manager under `tests/unit/renovate/`. Two more places have to learn the name: the
+manager under `tests/unit/renovate/`, and both files join the `matchFileNames` of
+the flux rule with `enabled: false` in `renovate.json`. Two more places have to learn the name: the
 `FLUX_KUSTOMIZATIONS` array in `hack/deploy-mgmt-cluster.sh`, which applies and
 waits for such a Kustomization after the HelmReleases, and the Phase 3b wait in
 `hack/deploy-infra.sh`, since a Kustomization is invisible to
@@ -1899,7 +1974,10 @@ WITH_CHAOS_MESH=true make deploy-infra
 ```
 
 This is the prerequisite for `make e2e-chaos`. See
-[Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow.
+[Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow. The
+metal-stack lab deploys Chaos Mesh from its own overlay on top of this one,
+with a namespace filter and a pod that loads the kernel modules; see
+[Lab Chaos Mesh](#lab-chaos-mesh).
 
 ### kube-prometheus-stack (kind-only opt-in)
 
@@ -2017,6 +2095,10 @@ untouched. The
 [`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
 review pattern catalogues the full surface area.
 
+The metal-stack lab runs the same stack with its metrics on a volume, the
+scrape jobs a Gardener shoot can feed, and a dashboard for the hypervisor
+operator; see [Lab Prometheus stack](#lab-prometheus-stack).
+
 ### metrics-server (kind-only opt-in)
 
 **File:** `deploy/kind/metrics-server/kustomization.yaml`
@@ -2100,9 +2182,9 @@ that the ControlPlane's and the OVNCentral's `verticalAutoscaling` blocks opt
 into, and the
 [e2e-autoscaling suite](../testing/controlplane-e2e-tests.md#e2e-autoscaling)
 waits for the recommender to serve one of them. Without the updater and the
-admission controller, an opt-in with `updateMode` `Initial`, `Recreate` or
-`Auto` changes no pod on this overlay either, so the suite asserts the VPA
-objects and a recommendation, not rewritten requests.
+admission controller, an opt-in with `updateMode` `Initial`, `Recreate`,
+`InPlaceOrRecreate` or `Auto` changes no pod on this overlay either, so the
+suite asserts the VPA objects and a recommendation, not rewritten requests.
 
 Recommendation-only mode changes no pod, so the release installs the VPA CRDs
 and the recommender alone: the updater and the admission controller are
@@ -2143,6 +2225,10 @@ subresource has no pod selector, so without the removal the database
 StatefulSet cannot be measured. The mariadb-operator-crds HelmRelease has no
 drift detection, so the change lasts until the next chart upgrade, and
 nothing in the kind stack scales a MariaDB through the subresource.
+
+On an external cluster, which refuses `WITH_VPA=true`,
+`hack/ci-vpa-recommendations.sh prepare` removes the subresource for the
+[lab measurement](../testing/sizing-calibration.md#lab-measurement).
 
 **Opt-in usage:**
 
@@ -2211,14 +2297,16 @@ WITH_DIZZY=true make deploy-infra
 ```
 
 To drive the chaos soak against the ControlPlane, see
-[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md).
+[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md). The metal-stack lab
+runs the same stack with its metrics on a volume; see
+[Lab dizzy stack](#lab-dizzy-stack).
 
 **Posture summary.** Same shape as the entries above: the production omission is
 explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
 kind overlay is self-contained under `deploy/kind/dizzy/` so the production
 kustomization root ships none of it.
 
-### NFS storage stack (kind-only opt-in)
+### NFS storage stack (opt-in)
 
 **File:** `deploy/kind/nfs/kustomization.yaml`
 
@@ -2226,19 +2314,19 @@ The NFS storage stack, an in-cluster NFSv4 server plus the
 [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) mounter,
 ships as a separate **opt-in** kind overlay for the Cinder e2e suites of
 [#979](https://github.com/c5c3/cobaltcore/issues/979). The default
-`make deploy-infra` flow does **not** install it. Production omits it for two
+`make deploy-infra` flow does **not** install it. Unlike the other opt-ins of
+this section it is not kind-only: the metal-stack lab builds its
+[Lab NFS stack](#lab-nfs-stack) on this overlay. Production omits it for two
 reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
 and a `path` per backend), and the mounter is a prerequisite of the target
 cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
 put a privileged `hostNetwork` DaemonSet into every production deployment for
 a service no production cluster runs yet.
 
-One more reason keeps it opt-in on kind. The server image
-`itsthenetwork/nfs-server-alpine:12` is amd64-only (a single-architecture
-manifest, last pushed 2019-05-08) and drives the host kernel's `rpc.nfsd`. An
-always-on manifest would put a privileged pod into the default Quick Start
-that CrashLoops on every arm64 laptop and every host without a loadable
-`nfsd`.
+One more reason keeps it opt-in on kind. The server, NFS-Ganesha, runs in a
+privileged container, and on a Linux host the deploy script loads `nfs` and
+`nfsv4` for the mounter through sudo. An always-on manifest would put a
+privileged pod into the default Quick Start and ask every run for sudo.
 
 The overlay is self-contained: `source.yaml`, `release.yaml` and
 `nfs-server.yaml` are all local to `deploy/kind/nfs/`. It ships **no**
@@ -2254,27 +2342,102 @@ its one accepted co-tenant.
 | --- | --- |
 | Target namespaces | `kube-system` for the chart, `openstack` for the server (both pre-existing; no inline Namespace) |
 | Chart | `csi-driver-nfs` |
-| Chart version | `4.13.4`, an exact pin tracked by a Renovate `customManager` (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
-| Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for a kind-only overlay; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
-| Server image | `docker.io/itsthenetwork/nfs-server-alpine:12`, digest-pinned, tracked by a Renovate `customManager` |
+| Chart version | `4.13.4`, an exact pin tracked by Renovate's flux manager (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
+| Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for the kind overlay and for the lab, which takes the release unchanged; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
+| Server image | `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5`, NFS-Ganesha 6.5 on Fedora 41 with amd64 and arm64 manifests, from [nfs-ganesha-server-and-external-provisioner](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner). Digest-pinned and tracked by a Renovate `customManager` whose regex versioning reads the `V`-prefixed tags (majors disabled, no automerge) |
 | Dependencies | none |
 
-**Export layout.** The server exports `/exports` with `fsid=0`, which makes it
-the NFSv4 pseudo-root. The init container `prepare-exports` creates
-`/exports/volumes` and `/exports/backups` as `42424:42424` with mode `0770`. A
-client therefore mounts the two shares as:
+**Export layout.** The server exports `/exports` with `Pseudo = /`, which makes
+it the NFSv4 pseudo-root. In the pod, `/exports` is the directory `exports/` of
+the claim. The init container `prepare-exports` creates `exports/volumes` and
+`exports/backups` there as `42424:42424` with mode `0770`. A client therefore
+mounts the two shares as:
 
 ```text
 nfs-server.openstack.svc.cluster.local:/volumes
 nfs-server.openstack.svc.cluster.local:/backups
 ```
 
-A path of `:/exports/volumes` resolves to `/exports/exports/volumes` on the
-server and fails. Those two share strings are what the `CinderBackend` and
-`CinderBackupBackend` of #979 carry. The server speaks NFSv4 only
-(`rpc.nfsd --no-udp --no-nfs-version 2 --no-nfs-version 3`), so `2049/TCP` is
-the whole client surface and the Service exposes neither 111 nor a mountd
-port.
+A path of `:/exports/volumes` does not exist on the server and fails. Those two
+share strings are what the `CinderBackend` and `CinderBackupBackend` of #979
+carry. The server speaks NFSv4.1 and 4.2 over TCP alone (`Protocols = 4`,
+`Minor_Versions = 1, 2`, `Transports = TCP`), so `2049/TCP` is the whole client
+surface and the Service exposes neither 111 nor a mountd port. Every mount in
+the tree asks for 4.1 or 4.2. A 4.0 client sends no `RECLAIM_COMPLETE`, so it
+would hold every restart of the server in its grace period for the full 90
+seconds. `Attr_Expiration_Time = 0` turns Ganesha's attribute cache off: a
+`chown` made with `kubectl exec` inside the server pod reached a client after 4
+seconds, where the default of 60 took 94. `Dir_Chunk = 0` turns its cache of
+directory entries off. The `cinder-nfs-outage` and `multi-backend` suites and
+the [NFS backend guide](../../guides/cinder/attach-an-nfs-backend.md) remove a
+file or a directory of the export inside the server pod, behind Ganesha. With
+the cache on, every later listing of that directory failed with
+`Stale file handle` for every client, also on a fresh mount, and so did a
+mount of a directory that was removed and created again.
+
+**Client records.** After a server restart an NFSv4 client reclaims its opens
+and locks, and the server admits a reclaim only from a client it recorded
+before. QEMU holds a lock on the file of every attached volume, so a refused
+reclaim leaves the guest's disk failing every request until its Nova server is
+hard-rebooted ([#1245](https://github.com/c5c3/cobaltcore/issues/1245)). The
+kernel's `nfsd` in a pod keeps no records. Ganesha writes them with
+`RecoveryBackend = fs` below `RecoveryRoot = /var/lib/nfs/ganesha`, a directory
+of the export claim, so they outlive the pod, also when it moves to another
+node. It announces the fixed server scope `Server_Scope = "nfs-server.openstack"`.
+A server announces its hostname by default, a Deployment pod gets a new one at
+every restart, and the Linux client does not reclaim from a server whose scope
+changed. The pod spec sets no `hostname`.
+
+The claim holds `exports/` and `ganesha/`. The server container mounts it
+twice by `subPath`, `exports` at `/exports` and `ganesha` at
+`/var/lib/nfs/ganesha`, so a client that mounts the export does not see the
+records, and `/exports` stays the path a `kubectl exec` into the pod names. A
+forged file handle does reach the records, as the posture summary below
+states. `prepare-exports` mounts the claim root at `/claim`, creates both
+directories, and moves every other entry of the root but `lost+found` into
+`exports/`, printing `prepare-exports: moved <name> into exports/` for each. A
+claim the kernel server wrote, with `volumes/` and `backups/` at its root,
+keeps its volume files that way. A name present on both levels stops the
+container with exit 1 and
+`prepare-exports: /claim/<name> and /claim/exports/<name> both exist; move one of them away`,
+unless it is an empty directory, which the container removes, and a second
+start moves nothing. The move keeps the files. A client that mounted the
+kernel server still holds file handles Ganesha does not know, so a stack that
+ran the kernel server switches only when it is redeployed from a bare cluster,
+or after every Nova server with a volume attached has had it detached and the
+`cinder-volume` and `cinder-backup` pods are deleted once Ganesha has rolled
+out: they mount both shares for as long as they run.
+
+A deploy from a tree older than
+[#1245](https://github.com/c5c3/cobaltcore/issues/1245), a revert or a branch
+that predates it, runs the kernel server against the claim root. It serves an
+empty `volumes/` and `backups/` there and leaves its writes at the root, while
+every existing volume and backup file stays unseen in `exports/`. The next
+Ganesha start removes the two directories while they are empty and stops on
+the conflict line once they hold a file. Delete the claim or rebase the branch
+before such a deploy.
+
+The server's log is `kubectl logs -n openstack deployment/nfs-server -c nfs-server`.
+At start Ganesha logs `CRIT` lines about D-Bus and
+`Cannot acquire credentials for principal nfs`, and
+`Cannot register NFS V4 on UDP`. They are expected: the pod runs no D-Bus, no
+Kerberos and no rpcbind. With `FSAL = INFO` it logs
+`Added filesystem ... /exports ... fsid=<id>`, the id every file handle of the
+export carries, and `Root fs for export /exports is /exports`, which the
+`nfs-health` suite requires. A restart logs `NFS Server Now IN GRACE` and, once
+every recorded client has reclaimed or the 90 seconds are over,
+`NFS Server Now NOT IN GRACE`.
+
+The server container requests 640Mi and is limited to 1Gi. Ganesha does the
+I/O in its own process. On the metal-stack lab it idled at 49 MiB, and its
+working set peaked at 547 MiB while four guests rewrote a volume of 2 GiB each
+for 300 seconds; the request is that peak plus 15 %, rounded up to a multiple
+of 64Mi ([Lab NFS stack](#lab-nfs-stack) has the readings). Under writes the
+container's usage stays at the limit, because the page cache of the files
+Ganesha writes is charged to it. The kernel reclaims that cache at the limit,
+and no reading shows an OOM kill. In a local run before the lab reading,
+Ganesha peaked at 397 MiB resident under a 3 GiB write and four parallel 1 GiB
+writers, and a 256Mi limit got it OOM-killed.
 
 **Value overrides:**
 
@@ -2288,10 +2451,14 @@ Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
 `attachRequired: false`, `fsGroupPolicy: File` and
 `kubeletDir: /var/lib/kubelet`.
 
-When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. It loads
-`nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
-best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
-root or passwordless sudo, otherwise a warning). On a cluster whose
+When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. In kind mode it
+loads `nfs` and `nfsv4`, the modules the `csi-driver-nfs` node plugin mounts
+with, on the host before the cluster is created, best-effort through the same
+loader as `WITH_OVN_KERNEL_MODULES` (Linux only, root or passwordless sudo,
+otherwise a warning). The server needs no module. Under `EXTERNAL_CLUSTER=true`
+it loads nothing on the host and applies the overlay's `nfs/` in place of
+`deploy/kind/nfs`, whose pods load the modules on the nodes; see
+[Lab NFS stack](#lab-nfs-stack). On a cluster whose
 `CSIDriver/nfs.csi.k8s.io` lists no `Ephemeral` lifecycle mode it deletes that
 object, because the field is immutable and the chart's patch would otherwise
 be rejected for the lifetime of the cluster: a reused cluster (a second run,
@@ -2312,12 +2479,12 @@ forced reconcile. The wait is on the recreated object's
 `spec.volumeLifecycleModes`, not only on its existence: a remediation rollback
 racing the delete puts the pre-`Ephemeral` object back, which an
 existence-only check would accept.
-It applies `deploy/kind/nfs` in Step 3 and waits for the `nfs-server`
-Deployment to roll out; a failed rollout is an error that stops the run and
-names the `nfsd` module, because a CrashLooping server on a host without
-`nfsd` must not end in a green summary. It appends `csi-driver-nfs` to the
-Phase 3 HelmRelease wait list. All four actions are gated strictly on the
-flag; the default run is unchanged.
+In kind mode it applies `deploy/kind/nfs` in Step 3 and waits for the
+`nfs-server` Deployment to roll out; a failed rollout is an error that stops
+the run and names the logs of `prepare-exports` and `nfs-server`, because a
+server that does not come up must not end in a green summary. It appends `csi-driver-nfs`
+to the Phase 3 HelmRelease wait list. All four actions are gated strictly on
+the flag; the default run is unchanged.
 
 **Opt-in usage:**
 
@@ -2331,17 +2498,24 @@ shares mount under `restricted` PodSecurity.
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
-the kind overlay is self-contained under `deploy/kind/nfs/`. The CI-only
-posture is recorded in the header of `nfs-server.yaml`: a privileged server,
-`sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
-image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
-runner kernel lacks `nfsd`. The `Ephemeral` lifecycle mode widens that posture
-by one step, which is another reason it stays kind-only: reaching the export
-no longer needs a cluster-scoped `PersistentVolume`, so anyone who can create
-a Pod in a namespace that is not PodSecurity `restricted` mounts both shares
-as root from the pod spec alone. This cluster has no untrusted tenant; a
-non-kind deployment brings its own CSI mounter against an export that
-squashes root.
+the kind overlay is self-contained under `deploy/kind/nfs/`. The
+non-production posture is recorded in the header of `nfs-server.yaml`: a
+privileged server, because Ganesha reads the filesystem UUID behind its file
+handles from the device node, `sec=sys` with `No_Root_Squash` and no client
+list, and a third-party image pinned by digest. A client that dials 2049
+reaches more than both shares: Ganesha checks a file handle against the
+filesystem alone, not against the export path, so a forged handle reaches
+every file of the filesystem that holds the claim, as root. On the lab that is
+the claim's volume with the client records in `ganesha/`, on kind the host
+disk behind the kind node's `/var`. The kernel server's `no_subtree_check`
+export reached as far. The `Ephemeral` lifecycle mode widens that posture
+by one step: reaching the export no longer needs a cluster-scoped
+`PersistentVolume`, so anyone who can create a Pod mounts both shares from the
+pod spec alone. PodSecurity does not bound that. In a namespace that is not
+`restricted` the pod mounts them as root. A `restricted` namespace admits a
+`csi` volume and the UID 42424, the owner of both exports, which is how the
+`nfs-health` probe mounts them. The metal-stack lab carries the same posture,
+as [Lab NFS stack](#lab-nfs-stack) states.
 
 ### Message bus (kind-only opt-in)
 
@@ -2442,18 +2616,32 @@ metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
-`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)); the probe is applied
-by hand.
+`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
+well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
+`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
+[Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
+is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
+`WITH_PROMETHEUS=true` is set (see
+[Lab Prometheus stack](#lab-prometheus-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
+finished (see [Lab ControlPlane](#lab-controlplane)), and after it
+`hypervisor-fixtures/` and `hypervisor/` (see
+[Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
+autoscaling blocks use the VPA and the metrics-server of the platform (see
+[Lab autoscaling](#lab-autoscaling)). The
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
+walkthrough that runs them in order, from a bare cluster to a migrated server
+and back.
 
 ### Node probe
 
 **File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
 
-The node probe is the prerequisite check of the lab. The lab's quick start
-([#1143](https://github.com/c5c3/cobaltcore/issues/1143)) has a reader run it
-first, against any metal-stack cluster, before anything else is deployed. It
+The node probe is the prerequisite check of the lab. The
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-probe) has a
+reader run it first, against any metal-stack cluster, before anything else is
+deployed. It
 is one Job, `node-probe`, that prints the node facts the lab depends on under
-ten fixed headers. It exits 0 whatever it finds: a node that lacks something
+twelve fixed headers. It exits 0 whatever it finds: a node that lacks something
 prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
 `kubectl wait --for=condition=complete` returns.
 
@@ -2498,21 +2686,92 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 | --- | --- |
 | `== kvm device` | Whether the node has `/dev/kvm`. With `== cpu` it decides `virtType: kvm` |
 | `== cpu` | CPU model, count and topology, the virtualization extension, and how many CPUs carry the `vmx` or `svm` flag |
-| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS server (`nfsd`) modules are loaded |
-| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. A module compiled into the kernel prints `builtin` |
+| `== loaded modules` | Which KVM, vhost, Open vSwitch, Geneve, VXLAN, bridge, NBD, multipath, NVMe/TCP and NFS modules are loaded: the NFS server (`nfsd`), the NFS client (`nfs`, `nfsv4`) and `sunrpc`. It also lists the modules Chaos Mesh NetworkChaos uses: `ip_set` with every `ip_set_*` type module, which shows the ipset types `calico-node` has loaded, `xt_set`, `sch_netem` and `sch_tbf` |
+| `== module files for <kernel>` | Whether the running kernel ships `kvm`, `vhost_net`, `openvswitch`, `geneve` and the other module files, so the OVN chassis and the libvirt DaemonSet can load what they need. The five NFS files, `nfsd`, `nfs`, `nfsv4`, `lockd` and `sunrpc`, decide whether the NFS server and clients of [#1193](https://github.com/c5c3/cobaltcore/issues/1193) can use the node's kernel. The six Chaos Mesh files, `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`, decide D3 of [#1219](https://github.com/c5c3/cobaltcore/issues/1219): whether a pod can load the modules NetworkChaos needs, and which ones it has to load. A module compiled into the kernel prints `builtin` |
+| `== filesystems` | Whether the kernel has registered `nfs4`, the filesystem type of an NFSv4 mount, and `nfsd`, the NFS server's control filesystem. Each prints `registered` or `not registered`, whether the code is a loaded module or compiled into the kernel. The `nfs` module registers `nfs4`, not `nfsv4`: only the `nfsv4` module file, or the load test's `nfsv4:` line, shows that the NFSv4 client code is there |
 | `== nested / iommu` | The `nested` parameter of `kvm_intel` or `kvm_amd`, and the number of IOMMU groups |
 | `== memory` | `MemTotal` and the hugepage reservations |
 | `== disks` | The block devices, where `/var/lib` lives and how much it holds |
 | `== cgroup` | The cgroup filesystem type, `cgroup2fs` on cgroup v2 |
 | `== host os / binaries` | The host OS, and that no `libvirtd`, `qemu-system-x86_64`, `ovs-vswitchd` or `rpc.nfsd` is installed on the host |
-| `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` has to match the MTU of the network the Geneve tunnels run on |
+| `== containerd socket` | Where the containerd socket the Chaos Mesh daemon mounts lives. Two lines test containerd's default path, `run/containerd/containerd.sock`, and the k3s one, `run/k3s/containerd/containerd.sock`, under the host's `/run`; each prints `socket`, `present, not a socket` or `absent`. The third line prints the `address` of the `[grpc]` table in the host's `/etc/containerd/config.toml`, quotes included and a trailing comment dropped. `not set` means the probe read no `address` in a `[grpc]` table: the file is missing, is an absolute symlink, which resolves inside the pod, or sets no such key. An `imports` file or containerd's `--address` flag can still move the socket, so the two socket lines are the evidence |
+| `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` must not exceed the MTU of the network the Geneve tunnels run on (see [Lab ControlPlane](#lab-controlplane)) |
 
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
 `deploy/lab/metal-stack/probe/node-probe.yaml` lists them in the probe's own
-output format, from a run on the survey's node the same day. The survey's NIC
-lines show the pod's own `eth0`; the probe reads the host's sysfs and lists the
-host's interfaces instead.
+output format, from a run on the survey's node on 2026-10-04 that includes the
+NFS lines, the Chaos Mesh module lines and the containerd socket lines. The
+survey's NIC lines show the pod's own `eth0`; the probe reads the host's sysfs
+and lists the host's interfaces instead.
+
+On the lab, the probe found the six Chaos Mesh module files on both workers
+on 2026-10-04, each with a path under `/lib/modules/6.1.0-49-amd64`. So D3
+of #1219 stands: the DaemonSet `chaos-mesh-modules` of the
+[Lab Chaos Mesh](#lab-chaos-mesh) loads `ip_set`, `ip_set_hash_ip`,
+`ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` on every node.
+Loaded at the time of the run were `xt_set`, `ip_set_hash_ip`,
+`ip_set_hash_net` and `ip_set`. This does not shorten the list: a reboot or a
+replaced node starts without them. Both workers printed
+`run/containerd/containerd.sock: socket`, so the lab's `chaos-daemon` mounts
+`/run/containerd/containerd.sock`, the kind overlay's value. The
+[comment on #1219](https://github.com/c5c3/cobaltcore/issues/1219#issuecomment-5981396257)
+holds the output of both workers.
+
+**File:** `deploy/lab/metal-stack/probe/nfs-module-load.yaml`
+
+The NFS module load test answers the one question of #1193 the probe cannot:
+whether a pod can load the NFS modules on a lab worker. It is one Job,
+`nfs-module-load` in `default`, that loads `nfsd`, `nfs` and `nfsv4` with
+`modprobe`, prints each result and the `nfs4` and `nfsd` filesystem lines, and
+removes what it loaded. A failed load prints `<module>: FAILED:` with
+`modprobe`'s message. The Job exits 0 whatever it finds, so the result is read
+from the log.
+
+Unlike the probe, the load test is not read-only. It loads up to three modules
+and their dependencies into the node's kernel and removes them again with
+`rmmod`. It removes the modules its own load added: those that are new since a
+`/proc/modules` snapshot taken before the load and are one of `nfsd`, `nfs`
+and `nfsv4` it tried to load or one of their dependencies, as
+`modprobe --show-depends` lists them. A module that prints `already loaded` is
+not tried: one loaded before the run stays, and so does one another pod loaded
+since the snapshot. A module outside that list, such as `vhost_net`, is
+neither counted nor removed. Any other NFS module that another pod loads in
+the seconds between the snapshot and the unload can be taken for the run's
+own, so run the test on a node where nothing else loads NFS modules. A module
+it cannot remove stays loaded until the node reboots and is named on the last
+line, `still loaded: ...`; otherwise the last line is `module list as before`. The container mirrors the init
+container `host-prepare` of the [lab hypervisors](#lab-hypervisors), which
+loads `vhost_net` the same way: the DaemonSet's pinned
+`ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, pulled `IfNotPresent`,
+privileged, as root, with the node's `/lib/modules` mounted read-only as its
+one volume. Renovate moves the reference in the pull request that moves the
+DaemonSet's.
+
+The probe's `kustomization.yaml` leaves the file out of `resources`, so
+`kubectl apply -k deploy/lab/metal-stack/probe` stays read-only. The load test
+is applied by file, pinned to one node:
+
+```bash
+kubectl delete job -n default nfs-module-load --ignore-not-found
+yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/nfs-module-load.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/nfs-module-load -n default --timeout=5m
+kubectl logs -n default job/nfs-module-load
+kubectl delete job -n default nfs-module-load
+```
+
+On the lab, the probe found the five NFS module files on both workers on
+2026-10-03, and the load test on `shoot--df33f0b4c1--forge-group-0-666b6-qmhrg`
+loaded all three modules, registered `nfs4` and `nfsd`, and removed the eleven
+modules the load added. That settled the two open decisions of #1193: the NFS
+server is the kernel's `nfsd` in a privileged pod, as on kind (D1), and a
+privileged init container loads the modules from the node's `/lib/modules`
+(D2). The
+[comment on #1193](https://github.com/c5c3/cobaltcore/issues/1193#issuecomment-5969676743)
+holds the output of both runs; the header comment of `nfs-module-load.yaml`
+carries the load test's. [#1245](https://github.com/c5c3/cobaltcore/issues/1245)
+replaced the kernel's `nfsd` with NFS-Ganesha, a userspace server, so the server
+needs no module, and the probe's `nfsd` lines describe the node alone.
 
 ### Lab overlay
 
@@ -2532,11 +2791,36 @@ overlay patches:
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
 
-The patches move the OpenBao, MariaDB and Garage volumes from `standard` to
-`premium`. The lab has a `standard` class too, so the kind pin would otherwise
-bind to it by coincidence. The proving `OpenBaoCluster` names no class and
-binds to the default, `premium`. No metrics-server or VPA release is rendered,
-because the platform runs both.
+The patches remove the kind pin `standard` from the OpenBao, MariaDB and
+Garage volumes. The lab has a `standard` class too, so the pin would bind to it
+by coincidence. These volumes and the proving `OpenBaoCluster` name no class
+and bind to the cluster's default class, `premium` on `forge`. No
+metrics-server or VPA release is rendered, because the platform runs both.
+
+The base overlay also labels every namespace it renders with
+`apiserver-proxy.networking.gardener.cloud/inject: disable`. The lab is a
+Gardener shoot, and Gardener's `kubernetes-service-host` webhook sets
+`KUBERNETES_SERVICE_HOST` in every new pod to the API server's DNS name, so
+that pods bypass the node-local apiserver-proxy. The stack's NetworkPolicies
+expect the address instead. openbao-operator 0.4.2 reads the variable as an IP
+address when it derives the API-server egress of the policy it renders over an
+`OpenBaoCluster`; a name makes the read fail, the fallback (`get` on Service
+`default/kubernetes`) is outside the operator's RBAC, and the instance stays at
+`APIServerNetworkReady=False` with reason `APIServerNetworkConfigurationInvalid`.
+The memcached-operator's chart policy allows DNS on port 53 alone, and the
+shoot's CoreDNS answers behind its Service on 8053, so that pod cannot resolve
+the name and every API request times out. The label is Gardener's opt-out: the
+webhook skips namespaces that carry it, so the pods keep the kubelet's value,
+the `kubernetes` Service's ClusterIP, and reach the API server through the
+apiserver-proxy, the same path as on kind. It is set on every namespace rather
+than on the ones known to break, so the stack's network posture is one thing on
+the lab.
+
+The same patch annotates every namespace it renders with
+`chaos-mesh.org/inject: enabled`, the scope of the
+[Lab Chaos Mesh](#lab-chaos-mesh). Its release selects pods only in a
+namespace that carries the annotation; without Chaos Mesh the annotation does
+nothing.
 
 ```bash
 EXTERNAL_CLUSTER=true make deploy-infra
@@ -2547,20 +2831,2382 @@ EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses the kind-only opt-ins, checks the cluster for a default
-StorageClass, for the absence of a `node-local-dns` DaemonSet (the instance's
-NetworkPolicy would need `spec.network.dnsEndpointIPs` for a host-networked
-resolver) and for a Ready node, and prints the port-forward command when it
-completes. The teardown removes the stack in finalizer order and leaves the
+It refuses the kind-only opt-ins (`WITH_NFS`, `WITH_CHAOS_MESH` and
+`WITH_DIZZY` aside, which apply `nfs/`, `chaos-mesh/` and `dizzy/`),
+checks the cluster for a default StorageClass, for the absence of a
+`node-local-dns` DaemonSet (the instance's NetworkPolicy would need
+`spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
+node, and prints the port-forward command when it
+completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
+`deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
+The teardown removes the stack in finalizer order and leaves the
 platform's namespaces and CRDs alone. Both are described in
 [E2E Deployment](e2e-deployment.md#make-teardown-infra), with every variable.
 
 | Property | Value |
 | --- | --- |
-| Storage class | `premium` (OpenBao, MariaDB, Garage; the proving `OpenBaoCluster` through the default class) |
+| Storage class | the cluster's default class; no manifest names one |
 | Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
-| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry |
+| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry; the opt-in `autoscaling` and `verticalAutoscaling` blocks use the platform's metrics-server and VPA (see [Lab autoscaling](#lab-autoscaling)) |
+| Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
+| Chaos Mesh scope | `chaos-mesh.org/inject: enabled` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
+
+### Lab NFS stack
+
+**Files:** `deploy/lab/metal-stack/nfs/kustomization.yaml`,
+`deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml`,
+`deploy/lab/metal-stack/nfs/client-policy.yaml`
+
+The NFS server and the `csi-driver-nfs` mounter of
+[NFS storage stack](#nfs-storage-stack-opt-in), for the metal-stack
+lab ([#1196](https://github.com/c5c3/cobaltcore/issues/1196)). Cinder's volume
+and backup backends are NFS shares, so the lab runs Cinder only with this
+stack. `hack/deploy-infra.sh` applies the directory in Step 3 when
+`WITH_NFS=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
+`deploy/kind/nfs`:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_NFS=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/nfs` as its base, the way the
+[Lab overlay](#lab-overlay) takes the kind base, and adds the DaemonSet
+`nfs-client-modules`. Its render holds six objects and no Namespace. The two
+differences from kind follow the decisions D2 and D3 of
+[#1193](https://github.com/c5c3/cobaltcore/issues/1193); the load test of the
+[Node probe](#node-probe) settled D2. D1 chose the kernel's `nfsd` as the
+server, and [#1245](https://github.com/c5c3/cobaltcore/issues/1245) superseded
+it with NFS-Ganesha, so the server pod is the kind one. A third difference sits
+outside the kustomization: the deploy script applies the NetworkPolicy of
+`client-policy.yaml`.
+
+| Property | Value |
+| --- | --- |
+| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every Cinder volume and backup of the lab together. The kind claim asks for 5Gi on `standard` |
+| Server and shares | as on kind: the server pod with `prepare-exports` and NFS-Ganesha on `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5` by digest, its client records on the export claim, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The server loads no module |
+| Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
+| `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does (D2). A privileged init container `load` loads both, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. Both run `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`; Renovate moves the reference in the pull request that moves the DaemonSet's. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
+| Client policy | the NetworkPolicy `nfs-server-clients` in `openstack`, from the template `client-policy.yaml`. It selects the server's pods and admits one `ipBlock`, the cluster's node network, to TCP 2049. `csi-nfs-node` and `nova-compute` are host-network pods, so the node network names every client. The template carries the placeholder `NODE_NETWORK`; the deploy script replaces it with `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, which Gardener writes into every shoot, `10.128.44.0/22` on `forge` |
+| Namespaces | `openstack` for the server and `nfs-client-modules`, `kube-system` for the chart, `flux-system` for the HelmRepository |
+| Gardener label | none added. The server and `nfs-client-modules` pods run in `openstack`, which the [Lab overlay](#lab-overlay) labels, and mount no ServiceAccount token. The chart's pods are host-network pods in `kube-system`, the platform's namespace, so the lab's `gardener.cloud--deny-all` NetworkPolicy there does not apply to them, and they reach the API server as the platform's own host-network pods do |
+| Pinned by | `tests/unit/deploy/metal_stack_nfs_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_NFS=true` only for an
+overlay with `nfs/kustomization.yaml` and refuses any other before it contacts
+the cluster. Step 1 then refuses a cluster whose `CSIDriver/nfs.csi.k8s.io`
+the HelmRelease `kube-system/csi-driver-nfs` did not install, read from its
+`helm.toolkit.fluxcd.io` labels: that cluster runs its own NFS CSI driver,
+which Step 3 would replace and the HelmRelease would adopt, and the teardown
+would uninstall. Step 1 also reads the node network for the client policy and
+logs it as `NFS client network  : <cidr>`. It refuses a cluster whose
+ConfigMap `kube-system/shoot-info` is missing or names no IPv4 CIDR, and one
+where a node has no IPv4 `InternalIP` inside that network, because the policy
+would drop that node's mounts. The script loads no module on the machine it
+runs on; it logs
+`Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; ...)`
+instead. Step 3 runs the `CSIDriver` lifecycle-mode guard of the kind mode,
+applies the client policy and then `<overlay>/nfs`, so the server never
+listens without the policy, and waits up to `POD_TIMEOUT` seconds for the
+`nfs-server` Deployment and then for the `nfs-client-modules` DaemonSet. A
+failed wait exits 1 and names the log to read. Phase 3 waits for the
+`csi-driver-nfs` HelmRelease, as on kind. The server's two containers and the
+loader log with:
+
+```bash
+kubectl logs -n openstack deployment/nfs-server -c prepare-exports
+kubectl logs -n openstack deployment/nfs-server -c nfs-server
+kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1
+```
+
+`prepare-exports` prints a `prepare-exports: moved <name> into exports/` line
+for each entry it moved and then
+`prepare-exports: exports/volumes and exports/backups are 42424:42424 0770`.
+The server's lines are those of [NFS storage stack](#nfs-storage-stack-opt-in).
+A loader pod prints `nfs-client-modules: nfs and nfsv4 are loaded`. When
+`modprobe` fails, it prints
+`nfs-client-modules: cannot load <module> from /lib/modules/<kernel>` and exits
+1, and its pod stays in `Init`.
+
+**Posture.** The lab carries the kind posture, narrowed in one place by the
+client policy. The server container is privileged, the export is `sec=sys`
+with `No_Root_Squash` and no client list, and with the
+`Ephemeral` lifecycle mode every principal that can create a pod mounts both
+shares from the pod spec. PodSecurity does not bound that: in a namespace that
+is not `restricted` the pod mounts them as root, and a `restricted` namespace
+admits a `csi` volume and the UID 42424, the owner of both exports.
+`kube-system` enforces no PodSecurity level on the lab and already runs
+privileged host-network pods (`calico-node`, `lb-csi-node`), so it admits the
+privileged `csi-nfs-node`. The lab is one tenant's cluster, and the Service is
+a ClusterIP.
+
+The client policy narrows one path. On kind every pod that dials 2049 reads
+and writes both shares as root. On the lab only the node network reaches the
+port, so a pod gets to the shares only through a volume the node mounts for
+it. The policy does not narrow who can ask for such a volume. Calico routes
+the lab's pod network without encapsulation, so the server sees a node's own
+address, also through the Service's ClusterIP. A probe on `forge` on
+2026-10-04 confirmed it: host-network clients on both workers appeared as
+`10.128.44.1` and `10.128.44.3`, and under a policy with the `ipBlock`
+`10.128.44.0/22` they connected while pods on either worker timed out.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack at
+the end of its step 2, once the ControlPlane and its Cinder are gone and while
+the helm-controller still runs (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). While the HelmRelease
+`csi-driver-nfs` exists, it waits until no pod mounts an inline
+`nfs.csi.k8s.io` volume and no PersistentVolume of that driver is `Bound`,
+because the kubelet unmounts one through `csi-nfs-node`; a driver the platform
+runs has its pods and claims left alone. Then it
+deletes the overlay, whose HelmRelease finalizer has the helm-controller
+uninstall the chart, and the `CSIDriver` the release created, selected by the
+two labels the helm-controller sets on every object of a release. The client
+policy is deleted after the overlay, once the server it guarded is gone. The
+claim goes with the overlay. Where the default class has the reclaim policy
+`Delete`, as `premium` on `forge` has, its volume and every Cinder volume and
+backup on it go too.
+
+**What the pods change on a node.**
+
+- `nfs-client-modules` loads `nfs`, `nfsv4` and their dependencies on every
+  node, and the server loads none. Nothing unloads them; they stay until the
+  node reboots, also after a teardown.
+- The server pod runs NFS-Ganesha as a process of the pod, which listens on
+  port 2049 in the pod's network namespace and keeps its client records on the
+  export claim.
+- `csi-nfs-node` registers its socket under
+  `/var/lib/kubelet/plugins/csi-nfsplugin` and
+  `/var/lib/kubelet/plugins_registry` and mounts the shares below
+  `/var/lib/kubelet/pods`; these go with the pods.
+- While a server on a node has a volume attached, `nova-compute` holds the
+  share `/volumes` mounted below `/var/lib/nova/mnt/<md5>` in the host's mount
+  namespace, and unmounts it with the node's last detach.
+- The deploy script itself runs no `modprobe` and writes no file on a node.
+
+The stack ran on the lab on 2026-10-04 with the quick start's volume steps in
+Part 1, Step 7 and Part 2, Steps 7 and 10; its two outages under
+[Lab fault runs](#lab-fault-runs) left an attached volume failing until the
+Nova server it was attached to was hard-rebooted
+([#1245](https://github.com/c5c3/cobaltcore/issues/1245)).
+
+A session on 2026-10-05 read the memory of the `nfs-server` container under
+load, on shoot `newforge` from commit `d1f114f7`, where the container requested
+128Mi. The working set is `memory.current` less `inactive_file`, the figure the
+kubelet reports and evicts by. It was read from the kubelet every 10 seconds
+and from the container's cgroup every 30:
+
+| Load | Length | Largest working set | Largest anonymous memory |
+| --- | --- | --- | --- |
+| None | 300 s | 49 MiB | 39 MiB |
+| Four guests write 1 GiB each to an attached volume | 43 s | 276 MiB | 229 MiB |
+| Four volumes of 2 GiB are backed up at once while two guests write 1 GiB each | 135 s | 346 MiB | 286 MiB |
+| Four guests rewrite an attached volume of 2 GiB each for 300 seconds, 113 passes in all | 356 s | 547 MiB | 460 MiB |
+
+The request follows from the last row: 1.15 × 547 is 629, which rounds up to
+`640Mi`. The 15 % is the margin a VPA recommender adds to a memory peak, and
+the shoot's recommender gave the container a memory target of `641Mi` over the
+same session. The limit stays at 1Gi. From the first write on, the container's
+usage stood at the limit with page cache, and `memory.events` counted 36,926
+`max` events and no `oom_kill` by the end. Without the page cache the usage
+peaked at 545 MiB, and 1.25 times that is 681 MiB. The lab's volume was fast
+enough for each guest to write its first 1 GiB in about 5 seconds, so the
+300-second row is the one the request rests on. The files of the session are
+in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issuecomment-6001688841).
+
+### Lab Chaos Mesh
+
+**Files:** `deploy/lab/metal-stack/chaos-mesh/kustomization.yaml`,
+`deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml`
+
+The fault injection of
+[#1219](https://github.com/c5c3/cobaltcore/issues/1219) for the metal-stack
+lab ([#1221](https://github.com/c5c3/cobaltcore/issues/1221)): the
+[Chaos Mesh](#chaos-mesh-kind-only-opt-in) of the kind overlay, scoped to the
+namespaces the lab declares. `hack/deploy-infra.sh` applies the directory in
+Step 3 when `WITH_CHAOS_MESH=true` is set beside `EXTERNAL_CLUSTER=true`, in
+place of `deploy/kind/chaos-mesh`. The flag composes onto the deploy command
+of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which
+does not need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/chaos-mesh` as its base and adds the
+DaemonSet `chaos-mesh-modules`. Its render holds four objects: the Namespace
+`chaos-mesh`, the HelmRepository, the HelmRelease and the DaemonSet. The first
+three rows below are its differences from kind; the namespace filter and the
+loader follow the decisions D2 and D3 of #1219.
+
+| Property | Value |
+| --- | --- |
+| Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `chaos-mesh`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)), beside the privileged PodSecurity level of the kind overlay |
+| Namespace filter | `controllerManager.enableFilterNamespace: true`: the controller selects a pod only when its Namespace carries the annotation `chaos-mesh.org/inject: enabled`. On kind the filter is off |
+| NetworkChaos modules | the DaemonSet `chaos-mesh-modules` in `chaos-mesh`, on every node, tolerating every taint. A privileged init container `load` on the image of `host-prepare` in [Lab hypervisors](#lab-hypervisors) loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` from the node's `/lib/modules`, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. The chart renders `chaos-daemon`, so it cannot carry an init container from this repository (D3) |
+| Inherited from kind | the HelmRepository; the HelmRelease in `chaos-mesh` with the chart range `>=2.6.0 <3.0.0` and its dependency on `cert-manager`; `chaosDaemon.runtime: containerd` with the socket `/run/containerd/containerd.sock`, which the [Node probe](#node-probe) found on both workers; no dashboard; the reduced requests |
+| Namespaces | `chaos-mesh` for the release and the loader, `flux-system` for the HelmRepository |
+| Pinned by | `tests/unit/deploy/metal_stack_chaos_mesh_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_CHAOS_MESH=true` only
+for an overlay with `chaos-mesh/kustomization.yaml` and refuses any other
+before it contacts the cluster. The script loads no module on the machine it
+runs on; it logs
+`Skipping the host-side chaos-mesh kernel modules (EXTERNAL_CLUSTER=true; ...)`
+instead. Step 3 applies `<overlay>/chaos-mesh` and waits up to `POD_TIMEOUT`
+seconds for the `chaos-mesh-modules` DaemonSet. A failed wait exits 1 and
+names the log to read. Phase 3 waits for the `chaos-mesh` HelmRelease, as on
+kind. The loader logs one line per pod:
+
+```bash
+kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1
+```
+
+A pod prints
+`chaos-mesh-modules: ip_set, ip_set_hash_ip, ip_set_hash_net, xt_set, sch_netem and sch_tbf are loaded`.
+When `modprobe` fails, it prints
+`chaos-mesh-modules: cannot load <module> from /lib/modules/<kernel>` and
+exits 1, and its pod stays in `Init`.
+
+**Scope.** The [Lab overlay](#lab-overlay) annotates every Namespace of its
+base render with `chaos-mesh.org/inject: enabled`, and
+`deploy/lab/metal-stack/migration-ports/namespace.yaml` annotates
+`hypervisor-system`, which Part 2 of the quick start applies, whether Chaos
+Mesh is deployed or not (D2 of #1219). Three groups carry no annotation, so no
+experiment selects their pods:
+
+- `chaos-mesh` itself;
+- `flux-system`, which the flux-operator install creates and no lab manifest
+  declares;
+- the platform's namespaces `kube-system`, `firewall`, `metallb-system` and
+  `default`. An experiment that hit `calico-node`, `vpn-shoot` or
+  `apiserver-proxy` would cut the shoot off from its control plane in the
+  seed.
+
+A selector that names only such namespaces matches nothing, and the
+experiment fails with `no pod is selected`. To take a lab namespace out of the
+scope, remove its annotation; the next deploy sets it again:
+
+```bash
+kubectl annotate namespace <name> chaos-mesh.org/inject-
+```
+
+**NetworkChaos and `hostNetwork`.** No NetworkChaos selects a pod that runs in
+the host's network namespace. On the lab these are libvirt, `nova-compute`,
+the pods of the `OVNChassis` and of the metadata agent, and
+`migration-port-reservation`. A delay or a loss there would act on the
+network of the node, and the shoot is shared. The chart's
+`controllerManager.allowHostNetworkTesting` defaults to `false`, and the
+controller then refuses such an experiment with the event
+``It's dangerous to inject network chaos on a pod(<ns>/<name>) with `hostNetwork` ``.
+The overlay sets neither that value nor `clusterScoped`, and its test fails
+when the render names either.
+
+**Posture.** `chaos-daemon` runs privileged with `hostPID` and the containerd
+socket on every untainted node. Whoever may create a `chaos-mesh.org` object
+in an annotated namespace therefore acts as root on every node, which the lab
+accepts as one tenant's cluster. The namespace filter bounds the pods an
+experiment selects; RBAC on the `chaos-mesh.org` kinds bounds who may write
+one. The chart's webhooks match `chaos-mesh.org` resources only, none matches
+pods.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes Chaos Mesh
+first, before its step 0, while `chaos-controller-manager`, `chaos-daemon`
+and the helm-controller still run (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the
+schedules and workflows, which create experiments, then every experiment, so
+the controller releases each fault before it clears the experiment's
+finalizer. The per-pod records `podnetworkchaos`, `podiochaos` and
+`podhttpchaos` carry no finalizer and go with their CRDs. An experiment that
+keeps its finalizer past `TEARDOWN_TIMEOUT` stops the teardown with exit 1
+and a hint to read `kubectl logs -n chaos-mesh deployment/chaos-controller-manager`.
+Do not remove the finalizer by hand: the fault would stay injected. Then the
+teardown deletes the overlay without its Namespace, so the helm-controller
+uninstalls the chart while Helm's release Secret is still there. Its step 7
+deletes the namespace `chaos-mesh` and the chart's cluster-scoped leftovers,
+its step 8 the `chaos-mesh.org` CRDs the chart installs from its `crds/` (23
+in chart 2.8.4), which Helm never deletes.
+
+**What the pods change on a node.**
+
+- `chaos-mesh-modules` loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`,
+  `xt_set`, `sch_netem`, `sch_tbf` and their dependencies on every node.
+  Nothing unloads them; they stay until the node reboots, also after a
+  teardown. `calico-node` uses the ipset family as well.
+- `chaos-daemon` mounts `/run/containerd`, `/sys` and `/lib/modules` from the
+  node and goes with the release.
+- The deploy script itself runs no `modprobe` and writes no file on a node.
+
+`make e2e-chaos` is not run against the lab (D6 of #1219): the suites under
+`tests/e2e-chaos/` are written for the kind stack. The lab's own faults, two
+NFS outages and killed hypervisor pods, are under
+[Lab fault runs](#lab-fault-runs).
+
+#### Proving run
+
+The run starts from a bare `forge`, deploys with the command above, and runs
+Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+through Step 6, with the port-forward open. Then, from the root of the clone:
+
+```bash
+# 1. State: the chart version, chaos-daemon on both workers, one loader line
+#    per node
+kubectl get helmrelease chaos-mesh -n chaos-mesh -o jsonpath='{.status.history[0].chartVersion}'; echo
+kubectl rollout status daemonset/chaos-daemon -n chaos-mesh --timeout=120s
+kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1
+
+# 2. Baseline: five requests through the port-forward
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+
+# The two experiments on the Keystone API pods, kept for steps 4 and 6
+run="$(mktemp -d)"
+cat >"$run/kill.yaml" <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-keystone-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/component: api
+EOF
+cat >"$run/delay.yaml" <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: lab-keystone-delay
+  namespace: openstack
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/component: api
+  delay:
+    latency: 300ms
+  # The fault ends by itself when the run is abandoned.
+  duration: 10m
+EOF
+
+# 3. PodChaos: a Keystone API pod is killed and replaced
+export sel='app.kubernetes.io/name=keystone,app.kubernetes.io/component=api'
+export before="$(kubectl get pods -n openstack -l "$sel" -o jsonpath='{.items[*].metadata.uid}')"
+kubectl apply -f "$run/kill.yaml"
+kubectl wait podchaos/lab-keystone-kill -n openstack --for=condition=AllInjected --timeout=60s
+timeout 300 bash -c 'until [ "$(kubectl get pods -n openstack -l "$sel" -o jsonpath={.items[*].metadata.uid})" != "$before" ]; do sleep 2; done'
+kubectl wait pod -n openstack -l "$sel" --for=condition=Ready --timeout=300s
+kubectl delete podchaos lab-keystone-kill -n openstack --wait --timeout=60s
+
+# 4. NetworkChaos: 300 ms on every Keystone API pod, then released
+kubectl apply -f "$run/delay.yaml"
+kubectl wait networkchaos/lab-keystone-delay -n openstack --for=condition=AllInjected --timeout=60s
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+kubectl delete networkchaos lab-keystone-delay -n openstack --wait --timeout=120s
+for i in 1 2 3 4 5; do
+  curl -sk -o /dev/null -w '%{time_total}\n' https://keystone.127-0-0-1.nip.io:8443/v3
+done
+
+# 5. Scope: a pod in a namespace without the annotation is not selected
+K="$(yq -r '.spec.template.spec.containers[0].image' deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml)"
+kubectl create namespace chaos-scope-probe
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: scope-probe
+  namespace: chaos-scope-probe
+  labels:
+    app: scope-probe
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: hold
+      image: ${K}
+      command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 1m, memory: 8Mi}
+        limits: {memory: 32Mi}
+EOF
+kubectl wait pod/scope-probe -n chaos-scope-probe --for=condition=Ready --timeout=120s
+kubectl get pod scope-probe -n chaos-scope-probe -o jsonpath='{.metadata.uid}{"\n"}'
+kubectl apply -f - <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-scope-probe
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [chaos-scope-probe]
+    labelSelectors:
+      app: scope-probe
+EOF
+sleep 60
+kubectl get pod scope-probe -n chaos-scope-probe \
+  -o jsonpath='{.metadata.uid} restarts={.status.containerStatuses[0].restartCount}{"\n"}'
+kubectl get podchaos lab-scope-probe -n openstack \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+kubectl get events -n openstack --field-selector involvedObject.name=lab-scope-probe
+kubectl delete podchaos lab-scope-probe -n openstack --wait --timeout=60s
+kubectl delete namespace chaos-scope-probe --wait --timeout=120s
+
+# 6. A fault left active, then the teardown and what it leaves
+kubectl apply -f "$run/delay.yaml"
+kubectl wait networkchaos/lab-keystone-delay -n openstack --for=condition=AllInjected --timeout=60s
+EXTERNAL_CLUSTER=true make teardown-infra
+kubectl get crd -o name | grep -c 'chaos-mesh\.org'
+kubectl get namespace chaos-mesh
+kubectl get clusterrole,clusterrolebinding,mutatingwebhookconfiguration,validatingwebhookconfiguration -o name | grep -c chaos-mesh
+rm -r "$run"
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | the resolved chart version; `chaos-daemon` rolled out on both workers; one `are loaded` line per node |
+| 2 | five times, the run's baseline; step 4 compares against the largest of them |
+| 3 | `AllInjected`, a Keystone API pod with a new UID that becomes Ready, and the PodChaos deleted within 60 seconds |
+| 4 | `AllInjected` and five times, each at least 0.2 s above the largest time of step 2; the delete returns within 120 seconds, then five times, each less than 0.1 s above the largest time of step 2 |
+| 5 | the pod's UID unchanged and `restarts=0`; the PodChaos reports that no pod is selected |
+| 6 | the teardown exits 0, logs `Deleting the Chaos Mesh experiments...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `0`, `NotFound` and `0` |
+
+Steps 2 and 4 name no absolute time, because a request's time includes the
+round trip from the workstation to the shoot, and that differs from one
+workstation to the next. Take the largest of the five times of step 2. The
+delay of 300 ms counts as injected when each time of step 4's first loop is at
+least 0.2 s above it, and as released when each time of the second loop is
+less than 0.1 s above it. 0.2 s is 0.1 s below the delay, and 0.1 s is 0.1 s
+above no delay, which is the room for jitter of a request as slow as the
+largest time of step 2. Both limits count from that time, so for a request as
+fast as the fastest time of step 2 the room is 0.1 s less the spread of step
+2's times under the delay, and 0.1 s plus that spread after the release. With
+a largest baseline time of 0.306 s the two limits are 0.506 s and 0.406 s.
+
+The run of 2026-10-04 started from a bare `newforge`, the lab's shoot of three
+Xeon D-2141I workers on Kubernetes v1.35.6, and ran from commit `647736c1`. It
+was made in the session of [Lab fault runs](#lab-fault-runs): steps 1 to 5 ran
+after Part 1, Step 7 of the quick start, and step 6 an hour and a half later,
+after the fault runs and the quick start's deletes. Step 1 printed the chart
+version 2.8.4, rolled `chaos-daemon` out on all three workers and printed one
+`are loaded` line per node. Step 2 took 0.252, 0.261, 0.278, 0.303 and 0.306
+seconds, so the largest baseline time is 0.306 s. Step 3 matched its row. In
+step 4 the five requests under the delay took 0.812, 0.779, 0.984, 1.084 and
+0.905 seconds, each at least 0.473 s above 0.306 s; the delete returned within
+its 120 seconds, and the five requests after it took 0.325, 0.299, 0.317,
+0.328 and 0.307 seconds, at most 0.022 s above it. Steps 2 and 4 match their
+rows. The table of commit `647736c1` expected a fixed 0.3 s in both steps, and
+six of the run's ten requests without the delay did not stay below it, because
+from that workstation the round trip to the shoot is itself near 0.3 seconds
+([#1246](https://github.com/c5c3/cobaltcore/issues/1246)). Step 5 matched: the
+probe pod kept its UID with `restarts=0`, and the PodChaos reported
+`Failed to select targets: no pod is selected`. Step 6 matched: the teardown
+exited 0 after 5 minutes 10 seconds, logged
+`Deleting the Chaos Mesh experiments...` and ended with
+`Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`,
+and the three checks printed `0`, `NotFound` and `0`. No step needed a hand
+action. The outputs are on
+[#1222](https://github.com/c5c3/cobaltcore/issues/1222).
+
+#### Lab fault runs
+
+The block below runs five faults that kind cannot show, each under the running
+server `lab-0` of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+([#1222](https://github.com/c5c3/cobaltcore/issues/1222)). F1 to F3 are a
+PodChaos `pod-kill` of the libvirt pod, of the `nova-compute` pod and of the
+`ovn-controller` pod on `lab-0`'s node. F4 is a `pod-kill` of the NFS server
+pod while `lab-0` has a Cinder volume attached, and stands for a reschedule of
+that pod. F5 scales the NFS server to 0 for 300 seconds and back, and stands
+for a node replacement. Every fault is a pod fault: the three hypervisor pods
+run in the host's network namespace (see NetworkChaos and `hostNetwork`
+above), and D2 of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)
+rules out a network fault on them. A PodChaos kills with its default
+`gracePeriod: 0`. The graceful delete in
+[Checks outside the quick start](#checks-outside-the-quick-start) gives
+libvirt's start script its `TERM` handler and `ovn-controller` its preStop
+`exit --restart`; a kill cuts both short. The faults run on the node of
+`lab-0`, and `lab-1` on another node is the peer of the guest's network probe.
+
+The block starts on a lab where
+[Part 1](../../quick-start-metal-stack.md#cp-deploy) ran with
+`WITH_CHAOS_MESH=true` added to the deploy command of its Step 3, as above,
+and Part 2 ran through
+[Step 7](../../quick-start-metal-stack.md#hv-volume), so `lab-vol` is attached
+to `lab-0`. It runs in bash, in the shell of Part 2, Step 7, which holds
+`volume` and the `OS_*` variables, with the port-forward of Part 1, Step 6
+open in a second terminal.
+
+Two probes in `lab-0` show what the guest sees. Open `lab-0`'s console as in
+[Part 2, Step 6](../../quick-start-metal-stack.md#hv-console), log in, and type
+these two lines, with `<lab-1>` replaced by the address Step 6 printed for
+`lab-1`:
+
+```sh
+sudo sh -c 'while :; do if ping -c 1 -W 1 <lab-1> >/dev/null 2>&1; then r=ok; else r=lost; fi; echo "lab-probe net $(date -u +%T) $r"; sleep 2; done >/dev/ttyS0 2>&1 &'
+sudo sh -c 'i=0; while :; do i=$((i+1)); if echo "probe-$i" | dd of=/dev/vdb bs=512 seek=8 2>/dev/null && sync; then r=ok; else r=error; fi; echo "lab-probe disk $(date -u +%T) $r $i"; sleep 2; done >/dev/ttyS0 2>&1 &'
+```
+
+Each loop writes one line to the serial console about every two seconds, and
+Nova keeps that console as the server's console log, so
+`openstack console log show` reads the lines from outside. The network loop
+pings `lab-1` through the Geneve tunnel to the other node. The disk loop
+writes its counter at byte 4096 of the volume, so the marker of Step 7 at
+byte 0 stays, and syncs it. A loop that blocks in `sync` writes no line, and
+the gap in the log is the stall the guest saw. Leave the console with
+`Ctrl+]`. Before F1, `openstack console log show --lines 20 lab-0` shows both
+kinds of line with `ok`.
+
+The block defines the helpers and reads the baseline, then runs F1 to F5 and a
+Cinder check, one section each. Paste it a section at a time, and read the
+output of each before the next. The baseline shows `server=ACTIVE`, a
+`domain=running_` reason, `compute=up`, `agents=` with one or more `True` and
+nothing else, `volume=in-use`, `cinder-volume=up`, every kind with `:True` and
+`hypervisor=True`, and `baseline.pids` holds two PIDs. Otherwise the lab is
+not at the state the faults are measured against, and no fault runs. In each
+fault section, the `kubectl get podchaos` line prints the node the API kept
+and the pod Chaos Mesh selected: `${host}` and the pod saved in
+`<f>.before`, and for F4 no node. Otherwise the selector did not hold, and the
+session ends. It ends as well when a PodChaos does not reach `AllInjected`
+within 60 seconds; `kubectl describe` then prints the experiment's state.
+
+```bash
+# bash; KUBECONFIG and the OS_* variables of Part 1, Step 7 set, the port-forward
+# of Part 1, Step 6 running, lab-vol attached to lab-0, both guest probes running
+faults="$(mktemp -d)"
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)
+echo "lab-0 runs as ${domain} on ${host}"
+
+# the libvirt pod of lab-0's node
+node_libvirt_pod() {
+  kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+    --field-selector "spec.nodeName=${host}" -o name
+}
+# the host PIDs of lab-0's QEMU and of libvirtd (the libvirt pod shares the host's
+# PID namespace); [t] keeps pgrep from matching the sh that runs it
+pids() {
+  kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- \
+    sh -c "echo qemu=\$(pgrep -f 'gues[t]=${domain},') libvirtd=\$(pgrep -x libvirtd)"
+}
+# one field: the output of "$@", and its error output only when it fails, so a
+# warning the CLI prints on stderr stays out of the field
+field() {
+  local err
+  { err=$("$@" 2>&1 1>&3 3>&-) || echo "${err}"; } 3>&1 | tr -s ' \n\r' '_'
+}
+# one line: what the APIs, the operators and libvirt report for lab-0 and its node
+state() {
+  echo "server=$(field openstack server show lab-0 -c status -f value)" \
+    "domain=$(field timeout 10 kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh domstate --reason "${domain}")" \
+    "compute=$(field openstack compute service list --service nova-compute --host "${host}" -c State -f value)" \
+    "agents=$(field openstack network agent list --host "${host}" -c Alive -f value)" \
+    "volume=$(field openstack volume show lab-vol -c status -f value)" \
+    "cinder-volume=$(field openstack volume service list --service cinder-volume -c State -f value)" \
+    "ready=$(field kubectl get novacompute,ovnchassis,neutronmetadataagent,cinder,cinderbackend -n openstack -o jsonpath='{range .items[*]}{.kind}:{.status.conditions[?(@.type=="Ready")].status},{end}')" \
+    "hypervisor=$(field kubectl get hypervisor "${host}" -o jsonpath='{.status.conditions[?(@.type=="LibVirtConnection")].status}')" \
+    "nfs-server=$(field kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o jsonpath='{range .items[*]}{.spec.nodeName}/{.status.phase}/{.status.containerStatuses[0].ready},{end}')"
+}
+# appends "<UTC time> <state>" to $1 whenever the state changes; runs until killed
+watch_state() {
+  local previous="" current
+  while :; do
+    current=$(state)
+    if [ "${current}" != "${previous}" ]; then
+      echo "$(date -u +%T) ${current}" >>"$1"
+      previous=${current}
+    fi
+    sleep 5
+  done
+}
+# the last 120 lines of lab-0's console log, or a failure when the call fails or
+# prints nothing; the serial console ends lines in \r\n
+console_log() {
+  local log
+  log=$(openstack console log show --lines 120 lab-0 2>/dev/null) && [ -n "${log}" ] || return 1
+  tr -d '\r' <<<"${log}"
+}
+# the newest line of the guest probe $1 (net or disk) in the console log on stdin
+last_probe() {
+  grep "lab-probe $1 " | tail -n 1
+}
+# true when both probes wrote a new "ok" line in the next 20 seconds
+probes_ok() {
+  local before after
+  before=$(console_log) || return 1
+  sleep 20
+  after=$(console_log) || return 1
+  [ "$(last_probe net <<<"${after}")" != "$(last_probe net <<<"${before}")" ] &&
+    last_probe net <<<"${after}" | grep -q ' ok$' &&
+    [ "$(last_probe disk <<<"${after}")" != "$(last_probe disk <<<"${before}")" ] &&
+    last_probe disk <<<"${after}" | grep -q ' ok [0-9]*$'
+}
+# waits up to 300 s for pods of selector $1 without the UID(s) $2, on lab-0's node
+# when $3 is "node", then up to 600 s for every pod of $1 to be Ready
+wait_replaced() {
+  local end=$((SECONDS + 300)) uids
+  while [ "${SECONDS}" -lt "${end}" ]; do
+    if [ "$3" = node ]; then
+      uids=$(kubectl get pod -n openstack -l "$1" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+    else
+      uids=$(kubectl get pod -n openstack -l "$1" -o jsonpath='{.items[*].metadata.uid}')
+    fi
+    if [ -n "${uids}" ] && ! echo " ${uids} " | grep -q " $2 "; then
+      kubectl wait pod -n openstack -l "$1" --for=condition=Ready --timeout=600s && return 0
+      break
+    fi
+    sleep 2
+  done
+  echo "GATE FAILED: no Ready replacement for $1"; return 1
+}
+# the gate before the next fault: within $1 seconds lab-0 is ACTIVE, nova-compute
+# on its node is up, Neutron lists network agents of its node and every one is alive,
+# and both probes write "ok"
+recovered() {
+  local end=$((SECONDS + $1)) agents
+  while [ "${SECONDS}" -lt "${end}" ]; do
+    if [ "$(openstack server show lab-0 -c status -f value)" = ACTIVE ] &&
+      [ "$(openstack compute service list --service nova-compute --host "${host}" -c State -f value)" = up ] &&
+      agents=$(openstack network agent list --host "${host}" -c Alive -f value) &&
+      [ -n "${agents}" ] && ! grep -qv True <<<"${agents}" &&
+      probes_ok; then
+      echo "recovered at $(date -u +%T)"; return 0
+    fi
+    sleep 5
+  done
+  echo "GATE FAILED: lab-0, nova-compute, the agents of ${host} or the guest probes did not recover in $1 s"; return 1
+}
+state | tee "$faults/baseline.state"
+pids | tee "$faults/baseline.pids"
+
+# F1: the libvirt pod of lab-0's node
+sel=app.kubernetes.io/name=libvirt
+pids >"$faults/libvirt.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/libvirt.before"
+watch_state "$faults/libvirt.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/libvirt.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-libvirt-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: libvirt
+EOF
+kubectl wait podchaos/lab-libvirt-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-libvirt-kill -n openstack
+kubectl get podchaos lab-libvirt-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/libvirt.after"
+state >"$faults/libvirt.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/libvirt.console"
+kubectl logs -n openstack "$(node_libvirt_pod)" -c libvirtd | head -n 20 >"$faults/libvirt.pod-log"
+# typed on its own: press Enter, note whether a prompt answers, leave with Ctrl+]
+kubectl exec -it -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh console "${domain}"
+kubectl delete podchaos lab-libvirt-kill -n openstack --wait --timeout=60s
+
+# F2: the nova-compute pod of lab-0's node, and the share it mounted
+sel=app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
+pids >"$faults/nova-compute.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/nova-compute.before"
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nova-compute.mount.before"
+watch_state "$faults/nova-compute.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/nova-compute.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-nova-compute-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: novacompute
+      app.kubernetes.io/instance: lab
+      app.kubernetes.io/component: nova-compute
+EOF
+kubectl wait podchaos/lab-nova-compute-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-nova-compute-kill -n openstack
+kubectl get podchaos lab-nova-compute-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/nova-compute.after"
+state >"$faults/nova-compute.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nova-compute.console"
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nova-compute.mount.after"
+kubectl logs -n openstack "$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name)" -c nova-compute |
+  grep -E 'ERROR|Traceback' | head -n 40 >"$faults/nova-compute.errors"
+kubectl delete podchaos lab-nova-compute-kill -n openstack --wait --timeout=60s
+
+# F3: the ovn-controller pod of lab-0's node
+sel=app.kubernetes.io/name=ovnchassis,app.kubernetes.io/instance=lab-chassis,app.kubernetes.io/component=ovn-controller
+pids >"$faults/ovn-controller.before"
+before=$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name >>"$faults/ovn-controller.before"
+openstack network agent list --host "${host}" -c 'Agent Type' -c Alive -f value >"$faults/ovn-controller.agents.before"
+watch_state "$faults/ovn-controller.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/ovn-controller.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-ovn-controller-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    nodes: [${host}]
+    labelSelectors:
+      app.kubernetes.io/name: ovnchassis
+      app.kubernetes.io/instance: lab-chassis
+      app.kubernetes.io/component: ovn-controller
+EOF
+kubectl wait podchaos/lab-ovn-controller-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-ovn-controller-kill -n openstack
+kubectl get podchaos lab-ovn-controller-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" node
+recovered 600
+kill "${watcher}"
+pids >"$faults/ovn-controller.after"
+state >"$faults/ovn-controller.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/ovn-controller.console"
+openstack network agent list --host "${host}" -c 'Agent Type' -c Alive -f value >"$faults/ovn-controller.agents.after"
+kubectl logs -n openstack "$(kubectl get pod -n openstack -l "${sel}" --field-selector "spec.nodeName=${host}" -o name)" -c ovn-controller |
+  head -n 40 >"$faults/ovn-controller.pod-log"
+kubectl delete podchaos lab-ovn-controller-kill -n openstack --wait --timeout=60s
+
+# Before F4: the mount nova-compute holds, with its options, and the NFS server's pod
+kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- grep ' /var/lib/nova/mnt/' /proc/mounts >"$faults/nfs.mount"
+kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o wide >"$faults/nfs.before"
+
+# F4: the NFS server pod, wherever it runs (a reschedule)
+sel=app.kubernetes.io/name=nfs-server
+pids >"$faults/nfs-server-kill.before"
+before=$(kubectl get pod -n openstack -l "${sel}" -o jsonpath='{.items[*].metadata.uid}')
+kubectl get pod -n openstack -l "${sel}" -o name >>"$faults/nfs-server-kill.before"
+watch_state "$faults/nfs-server-kill.log" & watcher=$!
+echo "applied at $(date -u +%T)" | tee -a "$faults/nfs-server-kill.log"
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lab-nfs-server-kill
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [openstack]
+    labelSelectors:
+      app.kubernetes.io/name: nfs-server
+EOF
+kubectl wait podchaos/lab-nfs-server-kill -n openstack --for=condition=AllInjected --timeout=60s ||
+  kubectl describe podchaos lab-nfs-server-kill -n openstack
+kubectl get podchaos lab-nfs-server-kill -n openstack -o jsonpath='{.spec.selector.nodes}{" "}{.status.experiment.containerRecords[*].id}{"\n"}'
+wait_replaced "${sel}" "${before}" any
+recovered 900
+kill "${watcher}"
+pids >"$faults/nfs-server-kill.after"
+state >"$faults/nfs-server-kill.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-server-kill.console"
+kubectl get pod -n openstack -l "${sel}" -o wide | tee "$faults/nfs-server-kill.pod"
+kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-kill.events"
+kubectl logs -n openstack deployment/nfs-server -c nfs-server | grep -E 'IN GRACE|check grace|Added filesystem' >"$faults/nfs-server-kill.pod-log"
+kubectl delete podchaos lab-nfs-server-kill -n openstack --wait --timeout=60s
+
+# F5: the NFS server scaled to 0 for 300 seconds (a node replacement)
+pids >"$faults/nfs-server-scale.before"
+watch_state "$faults/nfs-server-scale.log" & watcher=$!
+echo "scaled to 0 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+kubectl scale deployment/nfs-server -n openstack --replicas=0
+kubectl wait pod -n openstack -l app.kubernetes.io/name=nfs-server --for=delete --timeout=120s
+sleep 300
+echo "scaled to 1 at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+kubectl scale deployment/nfs-server -n openstack --replicas=1
+kubectl rollout status deployment/nfs-server -n openstack --timeout=600s
+echo "rolled out at $(date -u +%T)" | tee -a "$faults/nfs-server-scale.log"
+recovered 900
+kill "${watcher}"
+pids >"$faults/nfs-server-scale.after"
+state >"$faults/nfs-server-scale.state"
+openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-server-scale.console"
+kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-scale.events"
+
+# After F5: a new volume on the backend whose server came back, deleted whatever its status
+openstack volume create --size 1 lab-vol-after
+timeout 300 bash -c 'until [ "$(openstack volume show lab-vol-after -c status -f value)" = available ]; do sleep 5; done'
+openstack volume show lab-vol-after -c status -f value
+openstack volume delete lab-vol-after
+timeout 120 bash -c 'until ! openstack volume show lab-vol-after >/dev/null 2>&1; do sleep 5; done'
+```
+
+Every wait has a bound. A replacement pod with a new UID gets 300 seconds, and
+its Ready 600. The gate `recovered` gets 600 seconds after F1 to F3 and 900
+after F4 and F5, because the restarted server starts in its NFSv4 grace period
+of up to 90 seconds and the client retries on its own back-off (see
+`tests/e2e-chaos/cinder-nfs-outage/chainsaw-test.yaml`). F5 holds the
+scale-down for 300 seconds, gives the server's pod 120 seconds to go and 600
+to roll out, and the new volume gets 300. When a helper prints
+`GATE FAILED`:
+
+1. Run `openstack token issue -f value -c id >/dev/null`. When it cannot
+   connect to `keystone.127-0-0-1.nip.io:8443`, the port-forward has ended:
+   start it as in
+   [Part 1, Step 6](../../quick-start-metal-stack.md#cp-access) and repeat the
+   wait.
+2. Otherwise repeat the wait once, with the same bound.
+3. When it fails again, run `openstack server reboot --hard --wait lab-0`,
+   open `lab-0`'s console with the `virsh console` line of F1, because the
+   `libvirt_pod` of Part 2, Step 6 names the pod F1 killed, start both guest
+   probes again and run `recovered 600`.
+4. When that holds, go on with the next fault. Otherwise the remaining faults
+   do not run, and the session goes to its end.
+
+A fault shows a defect when a gate fails, when the `qemu=` PID differs between
+`<f>.before` and `<f>.after` (the guest restarted), or when a field of
+`<f>.state` differs from `baseline.state`. `domain=` is compared by its
+`running_` prefix, `agents=` by holding one or more `True` and nothing else,
+`nfs-server=` by its phase and ready flag, as its node may change, and every
+other field as text.
+An F1 console that does not answer, a `lab-vol-after` that ends in `error` or
+not `available` in time, and a failed check at the session's end are defects
+as well. Each gets its own issue. A status that does not move during a fault
+is a finding, and so is a guest stall that ends by itself within the bound.
+
+At the session's end, open `lab-0`'s console with the `virsh console` line of
+F1 and stop the disk probe. cirros has no `pkill`, so the line finds the
+loop's PID with `ps`, and `[l]` keeps `awk` from matching itself:
+
+```sh
+sudo kill $(ps | awk '/[l]ab-probe disk/ {print $1}')
+```
+
+Read its last line at once, because the network probe pushes it out of the
+120 lines `console_log` reads within minutes. Then run
+[Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup) and read the
+counter the disk probe wrote last from the volume file:
+
+```bash
+# after the disk probe stopped on lab-0's console
+console_log | last_probe disk
+# after Part 2, Step 10
+kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-${volume}); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16; echo"
+```
+
+It prints `probe-<n>`. `<n>` is the counter of the last `ok` disk line or the
+one after it, because the kill can stop a write whose `sync` had not returned.
+Step 10's `head -c 17` still prints `lab-volume-marker`. Then run the
+[Teardown](../../quick-start-metal-stack.md#teardown) block without its last
+line, and step 6 of the [Proving run](#proving-run) in its place, which runs
+`EXTERNAL_CLUSTER=true make teardown-infra` with a fault active. Stop the
+port-forward, delete `gateway-ca.pem`, and check that
+`kubectl get namespaces -o name` lists the platform's namespaces alone:
+`default`, `firewall`, `kube-node-lease`, `kube-public`, `kube-system` and
+`metallb-system`.
+
+The run of 2026-10-04 ran the block from commit `647736c1` on shoot
+`newforge`, three Xeon D-2141I workers on Kubernetes v1.35.6, with Chaos Mesh
+chart 2.8.4, in one session with the [Proving run](#proving-run). `lab-0` ran
+on `shoot--df33f0b4c1--newforge-group-0-85bcf-7znw9` and `lab-1` on
+`shoot--df33f0b4c1--newforge-group-0-85bcf-hmw67`, and the NFS server started
+on the third worker, `shoot--df33f0b4c1--newforge-group-0-85bcf-rt6kn`. Nova
+mounted the share as `nfs4` with `vers=4.2`, `hard`, `proto=tcp`,
+`timeo=600` and `retrans=2`. The guest's clock was within 2 seconds of the
+workstation's. A script typed the console input and fed the page's blocks to
+one bash shell, a section at a time, and the port-forward ran without a
+restart. The block ran with two changes, both on this page since. `field`
+took the place of `flat` in `state`, because the workstation's OpenStack CLI
+(Homebrew `openstackclient` 8.2.0) prints a readline warning on stderr with
+every call, which `2>&1 | flat` put into every field. The disk probe was
+stopped with `kill` and `ps`, because cirros 0.6.3 has no `pkill`. Since the
+run, F5 waits for the server's pod to go with `kubectl wait --for=delete` in
+place of a polling loop, with the same 120-second bound. Also since the run,
+`recovered` fails on an empty agent list, a failed agent call, or a console
+read that fails or prints nothing, which it passed before, and `probes_ok`
+reads the console log twice per check, where it read it up to six times. F4
+and F5 each failed their gate twice, and `lab-0` was hard-rebooted as the
+failed-gate steps order. The other hand actions only read: the empty and
+absent paths of the helpers after F1, whose pod gap fell between two samples
+of `watch_state`; `sudo head -c 17 /dev/vdb` on the console after F4's
+reboot; the guest's process tools before the kill; and the nodes' kernel
+logs, QEMU's block errors and the volume file, through the libvirt pods
+during F4 and F5. After each reboot the console was opened with
+`$(node_libvirt_pod)`, as F1 does, because Step 6's `libvirt_pod` named the
+pod F1 killed. The times count from the `applied at` line or the scale-down,
+the pod times come from each new pod's Ready condition, and the API states
+from `<f>.log`, sampled about every 14 seconds. The outputs are on
+[#1222](https://github.com/c5c3/cobaltcore/issues/1222).
+
+| Fault | Pod back Ready after | lab-0 and its QEMU | Guest network | Guest disk | Console | What the APIs and operators reported | Issue |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F1 libvirt | 5 s | `ACTIVE`; QEMU PID 202830 kept, libvirtd 196513 replaced by 214332 | no gap, no `lost` line | no gap, no `error` line | the log kept growing; `virsh console` from the new pod answered with a prompt | no field moved; the gate held at 68 s | none |
+| F2 `nova-compute` | 4 s | `ACTIVE`; QEMU and libvirtd PIDs kept | no gap, no `lost` line | no gap, no `error` line | the log kept growing | no field moved, `compute=up` throughout; the share stayed mounted with the same options; the new pod logged no `ERROR` or `Traceback`; the gate held at 58 s | none |
+| F3 `ovn-controller` | 9 s | `ACTIVE`; QEMU and libvirtd PIDs kept | no gap, no `lost` line | no gap, no `error` line | the log kept growing | `OVNChassis` not Ready in the sample at 10 s and Ready again at 24 s; both agents of the node `True` before and after; the gate held at 52 s | none |
+| F4 NFS server killed | 24 s, moved from `rt6kn` to `hmw67` after one `Multi-Attach error` | `ACTIVE`, domain `running`; QEMU PID 202830 kept until the hard reboot at 1867 s, after two failed gates | no `lost` line; the reboot cut it for 91 s | last `ok` 1 s before the kill; no line for 107 s, then `error` every 2 s from 106 s on, 875 lines, until the reboot; next `ok` at 1957 s | the log kept growing; the guest kernel logged `I/O error, dev vdb` | nothing moved: `volume=in-use`, `cinder-volume=up`, every kind Ready; the node's kernel logged `lost 1 locks` at 108 s | [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
+| F5 NFS server scaled to 0 | gone after 9 s; Ready 7 s after the scale-up at 303 s, on `hmw67` | `ACTIVE`, domain `running`; QEMU PID 317898 kept until the hard reboot at 2200 s, after two failed gates | no `lost` line; the reboot cut it for 69 s | last `ok` 1 s before the scale-down; no line for 414 s, with `dd` blocked past 120 and 241 s, then `error` every 2 s from 413 s on, 889 lines, until the reboot; next `ok` at 2269 s | the log kept growing; the guest kernel logged the blocked task and `I/O error, dev vdb` | `nfs-server=` empty during the hold, nothing else moved; the node's kernel logged `not responding` at 183 s, `OK` at 312 s and `lost 1 locks` at 415 s | [#1245](https://github.com/c5c3/cobaltcore/issues/1245) |
+
+A killed libvirt pod goes unnoticed by the servers on its node: QEMU keeps
+running, the console log keeps growing, and the console answers through the
+new pod within seconds. A killed `nova-compute` pod is back long before Nova
+misses its heartbeat, and the share it mounted stays mounted. A killed
+`ovn-controller` pod leaves the datapath in place: the guest lost no ping
+across the tunnel, and only the `OVNChassis` condition showed the restart.
+On the kernel's `nfsd`, the lab's NFS server in that run, a reschedule of the
+server pod stalled the attached volume for about two minutes, and then every
+request to it failed until the Nova server it was attached to was
+hard-rebooted, while every API reported the volume `in-use` and healthy: the
+restarted `nfsd` logged `Unable to initialize client recovery tracking! (-22)`
+and refused the reclaim of QEMU's lock. The longer outage stalled the guest's
+disk for as long as the server was away, with hung-task warnings in the guest,
+and then failed the same way once the server was back.
+[#1245](https://github.com/c5c3/cobaltcore/issues/1245) replaced that server
+with NFS-Ganesha, which keeps its client records on the export claim (see
+[NFS storage stack](#nfs-storage-stack-opt-in)); F4 and F5 have not run on it
+yet. After F5, `lab-vol-after`
+was `available` within seconds and was deleted, so the backend served new
+volumes while the attached one failed. At the session's end `last_probe disk`
+printed `ok 82`, the volume file held `probe-82`, Step 10 read
+`lab-volume-marker` and backed the volume up, and the deletes, proving step 6
+and the namespace check left only the six platform namespaces.
+
+### Lab dizzy stack
+
+**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`
+
+The metrics stack of a dizzy soak for the metal-stack lab
+([#1225](https://github.com/c5c3/cobaltcore/issues/1225), from the dizzy
+findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
+VictoriaMetrics and Grafana of the
+[dizzy load/chaos stack](#dizzy-load-chaos-stack-kind-only-opt-in), with the
+metrics on a volume. `hack/deploy-infra.sh` applies the directory in Step 3
+when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
+`deploy/kind/dizzy`. The flag composes onto the deploy command of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/dizzy` as its one resource, so its render
+holds the seven objects of the kind overlay: the Namespace `dizzy`, the
+HelmRepositories `victoria-metrics` and `grafana`, the HelmReleases
+`dizzy-victoria-metrics` and `dizzy-grafana`, the HTTPRoute `dizzy-grafana`
+and the ConfigMap `grafana-dashboards`. The first two rows below are its
+differences from kind; the storage follows the decision D7 of #1219.
+
+| Property | Value |
+| --- | --- |
+| Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `dizzy`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)). The namespace carries no `chaos-mesh.org/inject` annotation: the stack measures a soak under faults, so no experiment of the [Lab Chaos Mesh](#lab-chaos-mesh) selects its pods |
+| VictoriaMetrics | the StatefulSet `dizzy-victoria-metrics-server` keeps its metrics on the claim `server-volume-dizzy-victoria-metrics-server-0`, 10Gi on the cluster's default class, behind the headless ClusterIP Service `dizzy-victoria-metrics-server` on port 8428. On kind it keeps them in an emptyDir and publishes NodePort 30428 |
+| Inherited from kind | both HelmRepositories and both chart ranges; `retentionPeriod: 30d` and the two `opentelemetry.*` arguments of VictoriaMetrics; the Grafana release with anonymous Viewer access, the provisioned `victoriametrics` datasource and the three dashboards, without a volume; the HTTPRoute on the listener `https-dizzy`; the dashboard ConfigMap |
+| Namespaces | `dizzy` for the two releases, the HTTPRoute and the ConfigMap, `flux-system` for the HelmRepositories |
+| Pinned by | `tests/unit/deploy/metal_stack_dizzy_test.sh` |
+
+In this mode the deploy script's preflight accepts `WITH_DIZZY=true` only for
+an overlay with `dizzy/kustomization.yaml` and refuses any other before it
+contacts the cluster. Step 3 stages the three dashboards into
+`deploy/kind/dizzy/dashboards/` with `hack/dizzy.sh stage-dashboards`, which
+the lab overlay reads as well, and applies `<overlay>/dizzy`. It calls no
+`docker port`. Phase 3 waits for both HelmReleases, as on kind; the
+VictoriaMetrics release is Ready once its claim is bound. The completion
+banner prints two `dizzy:` lines below its `Access:` lines.
+
+**Access.** Nothing outside the cluster reaches the stack. A soak runs
+through two port-forwards from the workstation, each in a terminal of its
+own: the Gateway's on local port 8443, which serves Grafana at
+`https://dizzy.127-0-0-1.nip.io:8443` beside Keystone, and one to
+VictoriaMetrics on local port 8428, which takes dizzy's OTLP export.
+
+```bash
+kubectl -n envoy-gateway-system port-forward \
+  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
+kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
+EXTERNAL_CLUSTER=true make dizzy-keystone
+```
+
+With `EXTERNAL_CLUSTER=true`, `hack/dizzy.sh` takes the Keystone URL of the
+first port-forward, `https://keystone.127-0-0-1.nip.io:8443/v3`, and calls no
+`docker`. dizzy verifies Keystone against the Gateway's certificates, which
+the script collects from the Secrets `openstack/*-nip-io-tls` into
+`_output/dizzy/gateway-ca.pem`. When nothing answers on `localhost:8428` it warns and names the
+second port-forward. Neither script opens a port-forward, so one that has
+ended is restarted by hand. [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md)
+describes the soak and its dashboards.
+
+**Storage.** The claim names no storage class and binds to the default class,
+which Step 1 of the deploy checks exists. A restarted pod mounts the same
+claim, so the metrics of a soak survive it. 10Gi holds the 30 days of
+retention many times over: a soak exports five metric families every 15
+seconds. Grafana holds nothing a redeploy does not restore, so it has no
+volume.
+
+**Posture.** Grafana answers anonymous Viewers, and VictoriaMetrics accepts
+writes and reads without authentication. Both sit behind ClusterIP Services
+that every pod of the cluster reaches and nothing outside it. The lab is one
+tenant's cluster.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack at
+the end of its step 3, while the helm-controller still runs (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the two
+HelmReleases, so the helm-controller uninstalls both charts, then the two
+HelmRepositories, then the claims in `dizzy`, which Helm leaves behind. Where
+the default class has the reclaim policy `Delete`, the volume and the metrics
+on it go with the claim. Its step 7 deletes the namespace `dizzy` with the
+HTTPRoute and the ConfigMap. A HelmRelease delete that outlives
+`TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim is
+deleted.
+
+#### Lab dizzy run
+
+The run starts from a bare lab, where
+`kubectl get namespace openstack dizzy flux-system` answers `NotFound` for
+all three; a cluster that carries a stack is not deployed onto. It deploys
+with the command above, then runs
+[Step 4](../../quick-start-metal-stack.md#cp-apply),
+[Step 5](../../quick-start-metal-stack.md#cp-tenant) and
+[Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md). The Gateway
+port-forward of Step 6 stays open, and step 3 below opens the
+VictoriaMetrics port-forward in another terminal. Steps 6 and 7 run within an
+hour of the soak's end, because their queries read the last hour. From the
+root of the clone:
+
+```bash
+# 1. A bare lab, then the deploy (then Part 1, Steps 4 to 6 of the quick start)
+kubectl get namespace openstack dizzy flux-system
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+
+# 2. State: both releases with their chart versions, the label, the Service,
+#    the claim and the default class
+kubectl get helmrelease -n dizzy
+kubectl get helmrelease -n dizzy \
+  -o jsonpath='{range .items[*]}{.metadata.name} {.status.history[0].chartVersion}{"\n"}{end}'
+kubectl get namespace dizzy -o jsonpath='{.metadata.labels}{"\n"}'
+kubectl get svc dizzy-victoria-metrics-server -n dizzy -o jsonpath='{.spec.type} {.spec.ports[0].nodePort}{"\n"}'
+kubectl get pvc -n dizzy
+kubectl get storageclass
+
+# 3. In another terminal:
+#      kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
+curl -fsS http://localhost:8428/health; echo
+
+# 4. The Keystone soak, the scenario's five minutes
+EXTERNAL_CLUSTER=true make dizzy-keystone; echo "exit $?"
+
+# 5. The dizzy_ metric names in VictoriaMetrics
+curl -fsS http://localhost:8428/api/v1/label/__name__/values | jq -r '.data[]' | grep '^dizzy_'
+
+# 6. Through Grafana on the Gateway port-forward: the dashboards, then the
+#    expression each dashboard's panels read
+curl -sk 'https://dizzy.127-0-0-1.nip.io:8443/api/search?type=dash-db' | jq -r '.[].uid' | sort
+queries() {
+  for metric in dizzy_iterations_total dizzy_operation_duration_seconds_count dizzy_resource_time_to_ready_seconds_count; do
+    curl -sk -H 'Content-Type: application/json' https://dizzy.127-0-0-1.nip.io:8443/api/ds/query \
+      -d "{\"queries\":[{\"refId\":\"A\",\"datasource\":{\"type\":\"prometheus\",\"uid\":\"victoriametrics\"},\"expr\":\"sum(last_over_time(${metric}[1h]))\",\"instant\":true}],\"from\":\"now-1h\",\"to\":\"now\"}" |
+      jq -c --arg m "$metric" '{metric: $m, values: .results.A.frames[0].data.values}'
+  done
+}
+queries
+
+# 7. Storage: a new pod on the same claim, then the same queries
+kubectl delete pod dizzy-victoria-metrics-server-0 -n dizzy
+kubectl rollout status statefulset/dizzy-victoria-metrics-server -n dizzy --timeout=300s
+queries
+
+# 8. Stop both port-forwards, tear down, and wait up to 600 seconds for the
+#    volume of the claim to go
+EXTERNAL_CLUSTER=true make teardown-infra
+kubectl get namespace dizzy
+dizzy_pvs() {
+  kubectl get pv -o json | jq '[.items[] | select(.spec.claimRef.namespace == "dizzy")] | length'
+}
+SECONDS=0
+until [ "$(dizzy_pvs)" = 0 ] || [ "$SECONDS" -ge 600 ]; do sleep 5; done
+echo "PersistentVolumes of dizzy: $(dizzy_pvs) after ${SECONDS}s"
+rm _output/dizzy/clouds.yaml
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | three `NotFound` lines; the deploy exits 0, prints the two `dizzy:` lines and no `predates the dizzy metrics port mapping` warning |
+| 2 | both HelmReleases `Ready` with their chart versions; the label `apiserver-proxy.networking.gardener.cloud/inject: disable`; `ClusterIP` and no node port; the claim `server-volume-dizzy-victoria-metrics-server-0` `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)` |
+| 3 | `OK` |
+| 4 | `exit 0`; the log holds `Keystone auth URL: https://keystone.127-0-0-1.nip.io:8443/v3`, and neither a `docker port` line nor a `WARNING` |
+| 5 | names of the five families of [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md#metric-families): `dizzy_operation_duration_seconds`, `dizzy_resource_time_to_ready_seconds`, `dizzy_iteration_duration_seconds`, `dizzy_iteration_operations_total` and `dizzy_iterations_total` |
+| 6 | `dizzy-api-operations`, `dizzy-overview` and `dizzy-time-to-ready`; three lines whose `values` is `[[<ms>],[<number>]]`, none `[]` |
+| 7 | the rollout completes; the three lines hold the numbers of step 6 |
+| 8 | the teardown exits 0, logs `Deleting the dizzy HelmReleases...` and `Deleting the PVCs in dizzy...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; then `NotFound`, and `0` PersistentVolumes |
+
+No lab run of this stack is recorded yet.
+
+### Lab Prometheus stack
+
+**Files:** `deploy/lab/metal-stack/prometheus/kustomization.yaml`,
+`deploy/lab/metal-stack/prometheus/hypervisor-operator.json`
+
+The kube-prometheus-stack of the metal-stack lab
+([#1226](https://github.com/c5c3/cobaltcore/issues/1226), from the Prometheus
+findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
+Prometheus and Grafana of the
+[kube-prometheus-stack (kind-only opt-in)](#kube-prometheus-stack-kind-only-opt-in),
+with the metrics on a volume, the scrape jobs a Gardener shoot can feed, and a
+dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
+applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
+`EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus`. The flag
+composes onto the deploy command of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+need it:
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+```
+
+The kustomization takes `deploy/kind/prometheus` as its one resource, deletes
+its Namespace and patches its HelmRelease. Its render holds three objects in
+`monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
+`keystone-operator-dashboard` and `hypervisor-operator-dashboard`. The
+storage follows the decision D7 of #1219.
+
+| Property | Kind | Lab |
+| --- | --- | --- |
+| Namespace `monitoring` | declared by the overlay, without labels | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
+| Scrape jobs | the chart's defaults | `kubeEtcd`, `kubeScheduler`, `kubeControllerManager` and `kubeProxy` off. Gardener runs etcd, the scheduler and the controller manager in the seed. The chart's kube-proxy Service selects `k8s-app: kube-proxy`, while the shoot's kube-proxy pods carry `app: kubernetes` and `role: proxy`. Each of the four Services in `kube-system` would select nothing. `apiserver`, `coredns` and `kubelet` stay on |
+| Retention | `6h` | `7d`, bounded by `retentionSize: 8GB` |
+| Storage | emptyDir | a volume claim template of 10Gi, `ReadWriteOnce`, without a `storageClassName` |
+| Rule selector | the chart's default, the label `release: kube-prometheus-stack` | `ruleSelectorNilUsesHelmValues: false`, which renders `ruleSelector: {}`: Prometheus loads every PrometheusRule, hvo's included, the posture the kind overlay takes for ServiceMonitors |
+| Prometheus memory | request `256Mi`, limit `512Mi`, sized for one kind node | request `1Gi`, limit `2Gi`: the lab scrapes three kubelets with cAdvisor, and the request follows that working set |
+| Dashboards | `keystone-operator` | `keystone-operator` and `hypervisor-operator` |
+
+Everything else is the kind overlay's: the chart range `>=65.0.0 <70.0.0`,
+the dependency on `cert-manager`, `crds.enabled: false`, Alertmanager,
+node-exporter and kube-state-metrics off, the open ServiceMonitor selectors,
+Prometheus's CPU request, Grafana's resources, and Grafana without a volume,
+since a redeploy restores everything it holds. With these values the chart
+renders one namespaced object outside `monitoring`, the Service
+`kube-system/kube-prometheus-stack-coredns`, which the uninstall removes. The
+Prometheus Operator writes a second Service there,
+`kube-prometheus-stack-kubelet`, with its Endpoints, for the `kubelet`
+job; no uninstall removes those two. `tests/unit/deploy/metal_stack_prometheus_test.sh`
+pins the render.
+
+`hypervisor-operator.json` is a Grafana dashboard with the uid
+`hypervisor-operator` and four `timeseries` panels: reconciliation rate,
+reconciliation errors, reconciliation duration (p99) and workqueue depth. Their
+expressions are those of the controller-runtime panels of hvo's chart
+dashboard, each on `job=~".*hypervisor-operator.*"`; the job of hvo's target is
+its Service name, `hypervisor-operator-controller-manager-metrics-service`.
+The chart's own dashboard is a Perses dashboard, which Grafana cannot load, and
+in chart `1.2.3_sha-a2baf3f` 12 of its 16 queries read `kube_customresource_*`
+series, which only a kube-state-metrics with the chart's custom-resource config
+exports. The file
+sits in the overlay directory, so the generator reads it without a staging
+step. The panels stay empty until [Lab hypervisors](#lab-hypervisors) are
+applied; hvo's release turns on its ServiceMonitor and its PrometheusRules on
+every lab.
+
+In this mode the deploy script's preflight accepts `WITH_PROMETHEUS=true` only
+for an overlay with `prometheus/kustomization.yaml` and refuses any other
+before it contacts the cluster. Step 3 stages the Keystone dashboard into
+`deploy/kind/prometheus/keystone-operator.json`, which the lab overlay reads
+through its resource, applies `<overlay>/prometheus`, and logs
+`Prometheus overlay <overlay>/prometheus applied (WITH_PROMETHEUS=true).`.
+Without the staged file the render fails, as on kind. Phase 3 waits for the
+HelmRelease with a timeout of at least 1200 seconds, as on kind. The deploy
+then turns on the ServiceMonitors of the nine service operators; under
+`WITH_CONTROLPLANE=true` their releases run by then, and it waits for each.
+
+**Access.** Nothing outside the cluster reaches the stack. Prometheus and
+Grafana each take a port-forward from the workstation, in a terminal of its
+own:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Prometheus then answers on `http://localhost:9090` and Grafana on
+`http://localhost:3000`, where it signs in `admin` with the chart's default
+password `prom-operator`, as on kind (see
+[Extended Quick Start, Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)).
+A port-forward ends with the pod it reached and is restarted by hand.
+
+**Storage.** The claim names no storage class and binds to the default class,
+which Step 1 of the deploy checks exists. A restarted Prometheus pod mounts the
+same claim, so the metrics survive it, up to 7 days or 8GB. A lab that already
+runs the release of the kind overlay gets a volume claim template added to a
+live Prometheus: the Prometheus Operator replaces the StatefulSet, and the
+metrics in the old emptyDir are lost.
+
+**Posture.** Grafana keeps the chart's default admin password, and Prometheus
+answers without authentication. Both sit behind ClusterIP Services that every
+pod of the cluster reaches and nothing outside it, and the lab is one tenant's
+cluster. Prometheus sends its ServiceAccount token to hvo's metrics Service
+with `insecureSkipVerify`, the TLS setting of the chart's ServiceMonitor, so it
+does not check whom it hands the token to. The token reads nodes, Services,
+Endpoints, EndpointSlices, pods and Ingresses cluster-wide, as the ClusterRole
+`kube-prometheus-stack-prometheus` grants.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the stack in
+its step 3, after the base overlay and while the helm-controller still runs
+(see [E2E Deployment](e2e-deployment.md#make-teardown-infra)). It deletes the
+HelmRelease by the file `deploy/kind/prometheus/release.yaml`, so the
+helm-controller uninstalls the chart, then the claims in `monitoring`, which
+Helm and the Prometheus Operator leave behind, then the Service and the
+Endpoints `kube-prometheus-stack-kubelet` in `kube-system`. Where the default
+class has the reclaim policy `Delete`, the metrics go with the claim. Its step 7
+deletes the namespace `monitoring` with the two ConfigMaps. A release delete
+that outlives `TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim
+is deleted. On a cluster deployed without the flag the three deletes find
+nothing.
+
+#### Lab Prometheus run
+
+The run starts from a bare lab, where
+`kubectl get namespace openstack monitoring flux-system` answers `NotFound` for
+all three; a cluster that carries a stack is not deployed onto. It saves the
+Services, Endpoints and EndpointSlices of `kube-system`, deploys with the
+command above, then runs
+[Step 4](../../quick-start-metal-stack.md#cp-apply),
+[Step 5](../../quick-start-metal-stack.md#cp-tenant) and
+[Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 and
+[Step 1](../../quick-start-metal-stack.md#hv-nodes) to
+[Step 4](../../quick-start-metal-stack.md#hv-onboarding) of Part 2 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md). Step 3 below
+runs at least ten minutes after the deploy and opens the Prometheus
+port-forward in another terminal; step 5 opens the Grafana one. From the root
+of the clone:
+
+```bash
+# 1. A bare lab, the objects of kube-system, then the deploy (then Part 1,
+#    Steps 4 to 6 and Part 2, Steps 1 to 4 of the quick start)
+kubectl get namespace openstack monitoring flux-system
+kube_system_objects() {
+  kubectl get service,endpoints,endpointslices -n kube-system -o name | sort
+}
+mkdir -p _output
+kube_system_objects >_output/kube-system-before.txt
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+
+# 2. State: the release with its chart version, the label and the annotation,
+#    the claim and the default class, the chart's Services in kube-system, and
+#    hvo's ServiceMonitor and PrometheusRules
+kubectl get helmrelease kube-prometheus-stack -n monitoring
+kubectl get helmrelease kube-prometheus-stack -n monitoring -o jsonpath='{.status.history[0].chartVersion}{"\n"}'
+kubectl get namespace monitoring -o jsonpath='{.metadata.labels}{"\n"}{.metadata.annotations}{"\n"}'
+kubectl get pvc -n monitoring
+kubectl get storageclass
+kubectl get service -n kube-system -o name | grep '^service/kube-prometheus-stack'
+kubectl get servicemonitor,prometheusrule -n openstack
+
+# 3. In another terminal, ten minutes after the deploy:
+#      kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+#    Every active target: job, namespace, health, last error
+targets() {
+  curl -fsS 'http://localhost:9090/api/v1/targets?state=active' |
+    jq -r '.data.activeTargets[] | [.labels.job, .labels.namespace, .health, .lastError] | @tsv' | sort
+}
+targets
+
+# 4. The dashboard's four expressions as instant queries (the number of series
+#    each returns), then hvo's alerts with their health
+query() {
+  curl -fsS http://localhost:9090/api/v1/query --data-urlencode "query=$1" --data-urlencode "time=${2:-$(date +%s)}" |
+    jq '.data.result | length'
+}
+jq -r '.panels[].targets[].expr' deploy/lab/metal-stack/prometheus/hypervisor-operator.json |
+  while IFS= read -r expr; do echo "$(query "$expr") ${expr}"; done
+curl -fsS http://localhost:9090/api/v1/rules |
+  jq -r '.data.groups[] | select(.file | test("openstack-hypervisor-operator-(operator|eviction)-alerts")) | .rules[] | [.name, .health] | @tsv'
+
+# 5. In another terminal:
+#      kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+curl -fsS -u admin:prom-operator 'http://localhost:3000/api/search?type=dash-db' | jq -r '.[].uid' | sort
+
+# 6. Storage: note the time, replace the pod, restart the Prometheus
+#    port-forward of step 3 once the rollout is done, then query `up` at the
+#    noted time and read the new pod's restarts and memory
+before="$(date +%s)"
+kubectl delete pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring
+kubectl rollout status statefulset/prometheus-kube-prometheus-stack-prometheus -n monitoring --timeout=300s
+query up "$before"
+kubectl get pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring \
+  -o jsonpath='{range .status.containerStatuses[*]}{.name} {.restartCount}{"\n"}{end}'
+kubectl top pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring --containers
+
+# 7. Stop both port-forwards, tear down, compare kube-system with step 1, and
+#    wait up to 600 seconds for the volume of the claim to go
+EXTERNAL_CLUSTER=true make teardown-infra
+kube_system_objects | diff _output/kube-system-before.txt - && echo "kube-system unchanged"
+kubectl get namespace monitoring
+monitoring_pvs() {
+  kubectl get pv -o json | jq '[.items[] | select(.spec.claimRef.namespace == "monitoring")] | length'
+}
+SECONDS=0
+until [ "$(monitoring_pvs)" = 0 ] || [ "$SECONDS" -ge 600 ]; do sleep 5; done
+echo "PersistentVolumes of monitoring: $(monitoring_pvs) after ${SECONDS}s"
+rm _output/kube-system-before.txt
+```
+
+What a run shows:
+
+| Step | Expected |
+| --- | --- |
+| 1 | three `NotFound` lines; the deploy exits 0 and logs `Prometheus overlay <clone>/deploy/lab/metal-stack/prometheus applied (WITH_PROMETHEUS=true).` |
+| 2 | the HelmRelease `Ready` and its chart version; the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled`; one claim `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)`; at most `service/kube-prometheus-stack-coredns` and `service/kube-prometheus-stack-kubelet`; the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` and `openstack-hypervisor-operator-eviction-alerts` |
+| 3 | a target `up` in each of `keystone-system`, `horizon-system`, `glance-system`, `placement-system`, `barbican-system`, `ovn-system`, `neutron-system`, `cinder-system` and `nova-system`; the target of the job `hypervisor-operator-controller-manager-metrics-service` `up` without a last error; no target `down` |
+| 4 | a count above 0 for the reconciliation rate and the workqueue depth; the 10 alerts of the two rules, each `ok` |
+| 5 | `hypervisor-operator` and `keystone-operator` |
+| 6 | the rollout completes; a count above 0 for `up` at the noted time; `0` restarts for every container; the memory of the `prometheus` container |
+| 7 | the teardown exits 0, logs `Deleting the PVCs in monitoring...` and `Deleting the kubelet Service and Endpoints the Prometheus Operator left in kube-system...` and ends with `Stack CRDs left: 0; stack namespaces left: 0; cluster-scoped chart objects left: 0`; `kube-system unchanged`; then `NotFound`, and `0` PersistentVolumes |
+
+Three scrape jobs of the chart can only be judged on the lab: `apiserver`,
+whose target is the address of the shoot's `kubernetes` Endpoints, the
+apiserver-proxy address; `coredns`; and `kubelet`. A job with at least one
+target `up` ten minutes after the deploy stays. A job whose targets are all
+`down` is switched off in the overlay (`kubeApiServer.enabled`,
+`coreDns.enabled`, or `kubelet.enabled` together with
+`prometheusOperator.kubeletService.enabled`), the deploy runs a second time
+from the commit that switches it off, and the record names the job and its
+last error. A Prometheus container
+that was `OOMKilled` gets its memory limit doubled, and a memory in step 6
+above the request becomes the request, rounded up to the next 256Mi; the
+record names the old and the new values. The overlay, its test and the
+table of the section above carry the values the run ends on.
+
+No lab run of this stack is recorded yet.
+
+### Lab ControlPlane
+
+**Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
+`deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
+`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
+
+The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
+Step 4 of the
+[Quick Start (ControlPlane)](../../quick-start-controlplane.md), and the CR
+carries the `cinder` block of that page's optional `# block-storage.yaml`
+fragment. The data is unchanged except for two keys the lab adds to the
+ControlPlane.
+`hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
+completion hint and never applies it. Its preflight renders the directory and
+refuses it unless it holds exactly one ControlPlane,
+`openstack/<CONTROLPLANE_NAME>`, because Step 7 seeds the admin-password paths
+of that namespace and name only. The lab CR is `openstack/controlplane`, which
+the default name matches. Without `WITH_NFS=true` the preflight refuses the
+directory as well, because the CR's Cinder backends `nfs1` and `nfsbk` sit on
+the [Lab NFS stack](#lab-nfs-stack), which only `WITH_NFS=true` deploys.
+`tests/unit/deploy/metal_stack_controlplane_test.sh` compares both files with
+three blocks of the page, the first `# controlplane.yaml` block, the
+`# block-storage.yaml` fragment and the `# controlplane-ovn.yaml` block, and
+fails when they drift apart. The CR file is not named
+`controlplane.yaml`, because `.gitignore` ignores that basename in every
+directory.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `spec.sizing.profile` | `Minimal` | The quick start's profile: one replica per component and a 512Mi database volume (`operators/c5c3/api/v1alpha1/sizing_profiles.go`), which fits a worker with 16 CPUs and 128 GiB. The Lightbits CSI driver rounds a request up to its 1 GiB granularity (`getReqCapacity` in `pkg/driver/controller.go` of [LightBitsLabs/los-csi](https://github.com/LightBitsLabs/los-csi)), so the 512Mi claim binds as a 1 GiB volume. A lab that needs a value between `Minimal` and `Standard` declares a cluster-scoped `SizingProfile` with `spec.base: Minimal` and selects it with `spec.sizing.profileRef.name`, which excludes `spec.sizing.profile` |
+| `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
+| `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [Lab hypervisors](#lab-hypervisors) feeds into the hypervisor operator's chart |
+
+Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-deploy)
+applies the directory and checks the ControlPlane, from the deploy in its
+Step 3 to the [checks](../../quick-start-metal-stack.md#cp-verify) of its Step 7.
+
+For the hypervisor package
+([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) the ControlPlane
+publishes the OVN central `controlplane-ovn` and three Secrets in `openstack`:
+the compute contract `controlplane-nova-compute-config`, the metadata proxy
+secret `controlplane-nova-metadata-secret`, and the hypervisor operator's
+credentials `controlplane-nova-hypervisor-operator-auth`. The auth Secret's
+`auth_url` is `https://keystone.127-0-0-1.nip.io:8443/v3`, the loopback URL the
+public catalog carries, and from inside a pod it resolves to the pod itself. The
+hypervisor operator of [Lab hypervisors](#lab-hypervisors) therefore takes the
+in-cluster URL `http://controlplane-keystone.openstack.svc:5000/v3` for Keystone.
+With `OS_INTERFACE=internal` it takes the internal compute, placement, image and
+network endpoints of the catalog, which are the in-cluster Service URLs.
+
+| Property | Value |
+| --- | --- |
+| Namespace | `openstack` |
+| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra` |
+| Storage | through the cluster's default class; neither CR names a `storageClassName` |
+| Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
+| Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack); `CinderReady` reports `True` with reason `CinderReady` |
+| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
+| Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
+
+### Lab autoscaling
+
+The Gardener shoot under the lab runs a VerticalPodAutoscaler of its own, with
+the recommender, the updater and the admission controller, and a
+metrics-server, and the operators' opt-in blocks use both
+([#1223](https://github.com/c5c3/cobaltcore/issues/1223)). These commands read
+what the platform provides; the comment above each gives what it printed on
+shoot `newforge` on 2026-10-05:
+
+```bash
+# the API server's version: v1.35.6; an in-place resize needs 1.33 or newer
+kubectl version -o json | jq -r .serverVersion.gitVersion
+# the update modes the VPA CRD admits: ["Off","Initial","Recreate","InPlaceOrRecreate","Auto"], no InPlace
+kubectl get crd verticalpodautoscalers.autoscaling.k8s.io -o json |
+  jq -c '.spec.versions[] | select(.name=="v1") | .schema.openAPIV3Schema.properties.spec.properties.updatePolicy.properties.updateMode.enum'
+# the platform's own VPAs: six in kube-system, each in mode InPlaceOrRecreate
+kubectl get vpa -A
+# the resource metrics API: True under AVAILABLE, served by kube-system/metrics-server
+kubectl get apiservice v1beta1.metrics.k8s.io
+# the subresource an in-place resize writes: pods/resize
+kubectl get --raw /api/v1 | jq -r '.resources[].name' | grep -x pods/resize
+```
+
+On kind, `WITH_VPA=true` installs the VPA CRDs with a recommender and
+`WITH_METRICS_SERVER=true` a metrics-server. On the shoot either would put a
+second copy beside the platform's, so `make deploy-infra` refuses both under
+`EXTERNAL_CLUSTER=true`, installs nothing, and names in its message the field
+that uses what the platform runs. The operators find the platform's
+VerticalPodAutoscaler CRD at startup, and a workload opts in on the
+ControlPlane:
+
+- `spec.sizing.<component>.<workload>.verticalAutoscaling` renders a VPA for
+  that workload (see
+  [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)),
+  which the platform's updater and admission controller act on.
+- `spec.sizing.<component>.api.autoscaling` renders an HPA for that API (see
+  [AutoscalingSpec](../keystone/keystone-crd.md#autoscalingspec)), which reads
+  the pods' CPU from the platform's metrics-server.
+
+The sizing measurement uses the platform's recommender as well, with VPAs in
+mode `Off` and neither block (see
+[Lab measurement](../testing/sizing-calibration.md#lab-measurement)).
+
+The [Lab ControlPlane](#lab-controlplane) sets neither block. The block below
+patches the live ControlPlane, records what the platform did, and removes the
+patch again. It starts on a lab where Part 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#control-plane)
+ran through [Step 7](../../quick-start-metal-stack.md#cp-verify), and runs in
+bash, in the shell of that step in the root of the clone, with the
+port-forward of Part 1, Step 6 open in a second terminal. Part 2 is not needed.
+
+The VPA cases run on the Placement API, `deployment/controlplane-placement`
+with its one container `placement-api`. The Minimal profile gives it one
+replica and a CPU request of `15m`, and an outage of Placement stops no
+reconcile of another operator, where an outage of Keystone would. Each case
+sets a `minAllowed.cpu` of its own, above the request the pod has. The
+recommender raises its target to `minAllowed`, so the pod is outside the
+recommendation at once, and the CPU request a pod ends up with names the case
+that set it. Each case also sets `maxAllowed.cpu: 200m`, the bound
+[VPA Resource Mapping](../keystone/keystone-crd.md#vpa-resource-mapping) asks
+for whenever a mode lets the VPA change pods. A JSON merge patch merges
+objects, so every block names `minReplicas`, `null` where the case has none.
+
+| Case | Mode, applied through | `minReplicas` | `minAllowed.cpu` | Upstream's documented behaviour |
+| --- | --- | --- | --- | --- |
+| V1 | `Off`, the ControlPlane | unset | `50m` | the pod is unchanged, and its successor after a hand delete requests `15m` |
+| V2 | `Initial`, the ControlPlane | unset | `60m` | the running pod is unchanged, and its successor requests `60m` |
+| V3 | `Recreate`, the ControlPlane | unset | `70m` | no eviction: the updater's default floor is two replicas |
+| V4 | `Recreate`, the ControlPlane | 1 | `80m` | the pod is evicted, and its successor has a new UID and requests `80m` |
+| V5 | `InPlaceOrRecreate`, a VPA applied by hand | unset | `90m` | no resize: the floor of two replicas holds for an in-place resize too |
+| V6 | `InPlaceOrRecreate`, the same VPA, patched | 1 | `100m` | the same UID and restart count, and `100m` as the spec's and the running request |
+
+V5 and V6 apply the VPA by hand. The lab installs the operators from the
+charts published from `main` (`deploy/flux-system/releases/c5c3-operator.yaml`),
+and a release older than the mode refuses it in a ControlPlane block, so the
+two cases do not depend on the release the lab runs. The VPA
+`lab-placement-inplace` is the one `BuildVPA` renders for the mode, under a
+name of its own and without the CR's labels, so the operator's prune leaves it
+alone. On operators that offer the mode, a ControlPlane block with
+`updateMode: InPlaceOrRecreate` renders the same VPA under the name
+`controlplane-placement`.
+
+`watch_state` writes a line to `vpa.log` every five seconds: the time, each
+Placement API pod that is not terminating (name, UID, restart count, the CPU
+request in its spec and the one the kubelet reports as running, and the memory
+request), the Deployment's ready replicas, the VPA's target for
+`placement-api`, and the reason of the Placement CR's `VPAReady`. Every wait
+is bounded. A target gets 600 seconds, a hold lasts 300 (five passes of an
+updater at upstream's default interval of one minute), `VPAReady` gets 120,
+and the ControlPlane's `Ready` 600. When `await_target` prints `GATE FAILED`,
+save `kubectl describe vpa "$vpa" -n openstack` and skip the case; when V1's
+gate fails, skip V2 to V6 as well. When `kubectl patch` or `kubectl apply` is
+refused, keep the API server's message and skip the case. When the
+ControlPlane is not `Ready` 600 seconds after a case, remove the block or the
+hand VPA and go on with the HPA part. A skipped case is recorded as not run,
+with its reason.
+
+The HPA part runs on the Keystone API, `deployment/controlplane-keystone`, the
+API the [e2e-autoscaling suite](../testing/controlplane-e2e-tests.md#e2e-autoscaling)
+scales on kind. H1 sets the suite's `autoscaling` block without its
+`processes` and `threads`, and waits until the HPA reads a CPU utilization
+from the platform's metrics-server. H2 waits for one desired and one ready
+replica, because Keystone can scale out on its bring-up CPU, and applies the
+suite's load Job `autoscaling-keystone-loadgen`. It posts tokens from four
+threads for 900 seconds with the application credential of the Secret
+`k-orc-clouds-yaml`, whose `auth_url` is Keystone's in-cluster Service. H3
+waits for three ready replicas and H4 for the Job's end. H5 waits for the
+scale-in to one replica, and before each poll deletes the Succeeded pods of
+Keystone's CronJobs: they carry the labels the Deployment selects on, and the
+HPA counts a pod without metrics at the full target. H6 removes the Job and
+the block.
+
+Paste the block a section at a time, and read the output of each before the
+next.
+
+```bash
+auto="$(mktemp -d)"; echo "outputs in $auto"
+ns=openstack
+dep=controlplane-placement
+sel='app.kubernetes.io/name=placement,app.kubernetes.io/instance=controlplane-placement,pod-template-hash'
+flat() { tr '\n' ' ' | sed 's/ *$//'; }
+millis() { jq -Rr 'if endswith("m") then (rtrimstr("m") | tonumber) else (tonumber * 1000 | floor) end'; }
+pod() { # name uid restarts cpu(spec) cpu(running) memory(spec) of each Placement API pod that is not terminating
+  kubectl get pod -n "$ns" -l "$sel" -o json 2>&1 | jq -r '.items[] | select(.metadata.deletionTimestamp == null)
+    | [.metadata.name, .metadata.uid, (.status.containerStatuses[0].restartCount // "-"),
+       (.spec.containers[0].resources.requests.cpu // "-"),
+       (.status.containerStatuses[0].resources.requests.cpu // "-"),
+       (.spec.containers[0].resources.requests.memory // "-")] | join(" ")' 2>&1 | flat
+}
+target() { # <vpa>: its capped CPU target for placement-api, nothing while there is none
+  kubectl get vpa "$1" -n "$ns" -o json 2>/dev/null |
+    jq -r '(.status.recommendation.containerRecommendations // [])[] | select(.containerName == "placement-api") | .target.cpu // empty'
+}
+state() { # the API omits readyReplicas at 0
+  local ready
+  ready="$(kubectl get deployment "$dep" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>&1 | flat)"
+  printf '%s pod=[%s] ready=%s target=%s vpaready=%s\n' "$(date -u +%T)" "$(pod)" "${ready:-0}" "$(target "$vpa")" \
+    "$(kubectl get placement "$dep" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}' 2>&1 | flat)"
+}
+watch_state() { while :; do state >>"$1"; sleep 5; done; }
+vpa_block() { # <case> <verticalAutoscaling as JSON, or null>
+  echo "$1 applied at $(date -u +%FT%TZ)" | tee -a "$auto/$1.log"
+  kubectl patch controlplane controlplane -n "$ns" --type merge \
+    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"verticalAutoscaling\":$2}}}}}"
+}
+await_target() { # <case> <floor in millicores>
+  local t i secs=600
+  for i in $(seq $((secs / 5))); do
+    t="$(target "$vpa")"
+    if [[ -n "$t" && "$(millis <<<"$t")" -ge "$2" ]]; then
+      echo "$1 target $t at $(date -u +%FT%TZ)" | tee -a "$auto/$1.log"; return 0
+    fi
+    sleep 5
+  done
+  echo "GATE FAILED: $1 no target of ${2}m within ${secs} s" | tee -a "$auto/$1.log"; return 1
+}
+hold() { # <case> <seconds>
+  local before after
+  before="$(pod)"; sleep "$2"; after="$(pod)"
+  echo "$1 before: $before" | tee -a "$auto/$1.log"
+  echo "$1 after:  $after" | tee -a "$auto/$1.log"
+  kubectl get vpa "$vpa" -n "$ns" -o yaml >"$auto/$1.vpa.yaml" 2>&1
+  kubectl get pod -n "$ns" -l "$sel" -o yaml >"$auto/$1.pod.yaml" 2>&1
+  kubectl get events -n "$ns" --sort-by=.lastTimestamp 2>&1 | grep -iE 'vpa|evict|resiz|placement' | tail -n 40 >"$auto/$1.events" || true
+}
+recreate() { # <case>: delete the pod by hand and read its successor
+  kubectl delete pod -n "$ns" -l "$sel" --wait --timeout=120s
+  kubectl wait pod -n "$ns" -l "$sel" --for=condition=Ready --timeout=300s
+  echo "$1 recreated: $(pod)" | tee -a "$auto/$1.log"
+}
+
+# Baseline: one pod that requests 15m, and the timeline of every case
+pod | tee "$auto/baseline"
+vpa=controlplane-placement; watch_state "$auto/vpa.log" & watcher=$!
+
+# V1: Off
+vpa_block V1 '{"updateMode":"Off","minReplicas":null,"minAllowed":{"cpu":"50m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V1 50
+hold V1 300
+recreate V1
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V2: Initial
+vpa_block V2 '{"updateMode":"Initial","minReplicas":null,"minAllowed":{"cpu":"60m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V2 60
+hold V2 300
+recreate V2
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V3: Recreate at the updater's own replica floor
+vpa_block V3 '{"updateMode":"Recreate","minReplicas":null,"minAllowed":{"cpu":"70m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V3 70
+hold V3 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V4: Recreate with minReplicas 1
+vpa_block V4 '{"updateMode":"Recreate","minReplicas":1,"minAllowed":{"cpu":"80m"},"maxAllowed":{"cpu":"200m"}}'
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPAReady --timeout=120s
+await_target V4 80
+hold V4 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V5: the block goes, and InPlaceOrRecreate comes as a VPA applied by hand
+vpa_block V5 null
+kubectl wait --for=delete vpa/controlplane-placement -n openstack --timeout=120s
+kubectl wait placement/controlplane-placement -n openstack --for=jsonpath='{.status.conditions[?(@.type=="VPAReady")].reason}'=VPANotRequired --timeout=120s
+kill "$watcher"; vpa=lab-placement-inplace; watch_state "$auto/vpa.log" & watcher=$!
+echo "V5 lab-placement-inplace applied at $(date -u +%FT%TZ)" | tee -a "$auto/V5.log"
+kubectl apply -f - <<'EOF'
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: lab-placement-inplace
+  namespace: openstack
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: controlplane-placement
+  updatePolicy:
+    updateMode: InPlaceOrRecreate
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        controlledResources: [cpu, memory]
+        minAllowed:
+          cpu: 90m
+        maxAllowed:
+          cpu: 200m
+EOF
+await_target V5 90
+hold V5 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# V6: InPlaceOrRecreate with minReplicas 1
+echo "V6 applied at $(date -u +%FT%TZ)" | tee -a "$auto/V6.log"
+kubectl patch vpa lab-placement-inplace -n openstack --type merge -p '{"spec":{"updatePolicy":{"minReplicas":1},"resourcePolicy":{"containerPolicies":[{"containerName":"*","controlledValues":"RequestsOnly","controlledResources":["cpu","memory"],"minAllowed":{"cpu":"100m"},"maxAllowed":{"cpu":"200m"}}]}}}'
+await_target V6 100
+hold V6 300
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+
+# The VPA part's end: without a VPA, the next pod requests 15m again
+kubectl delete vpa lab-placement-inplace -n openstack --wait --timeout=60s
+kill "$watcher"
+recreate end
+pod
+
+# The HPA part, on the Keystone API
+ks=controlplane-keystone
+hpa_line() {
+  kubectl get hpa -n "$ns" -l "app.kubernetes.io/instance=$ks" -o json 2>&1 |
+    jq -r '.items[0] | "hpa=\(.metadata.name) target=\(.spec.scaleTargetRef.name) desired=\(.status.desiredReplicas) current=\(.status.currentReplicas) cpu=\(.status.currentMetrics[0].resource.current.averageUtilization)"' 2>&1 | flat
+}
+hpa_state() { printf '%s %s ready=%s\n' "$(date -u +%T)" "$(hpa_line)" "$(kubectl get deployment "$ks" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>&1 | flat)"; }
+drop_job_pods() { # the HPA counts a pod without metrics at the full target (tests/e2e-autoscaling/keystone-hpa.sh)
+  kubectl delete pods -n "$ns" --ignore-not-found --field-selector=status.phase==Succeeded \
+    -l "app.kubernetes.io/name=keystone,app.kubernetes.io/instance=$ks,job-name" >/dev/null
+}
+await_hpa() { # <label> <seconds> <extended regex the hpa_state line must match> [command to run before each poll]
+  local i
+  for i in $(seq $(($2 / 10))); do
+    if [[ -n "${4:-}" ]]; then "$4"; fi
+    if hpa_state | tee -a "$auto/hpa.log" | grep -Eq "$3"; then echo "$1 at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"; return 0; fi
+    sleep 10
+  done
+  echo "GATE FAILED: $1 not within $2 s" | tee -a "$auto/hpa.log"; return 1
+}
+
+# H1: an HPA on the Keystone API, reading the platform's metrics-server
+echo "H1 applied at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"
+kubectl patch controlplane controlplane -n "$ns" --type merge \
+  -p '{"spec":{"sizing":{"keystone":{"api":{"autoscaling":{"minReplicas":1,"maxReplicas":3,"targetCPUUtilization":150,"behavior":{"scaleDown":{"stabilizationWindowSeconds":15,"policies":[{"type":"Percent","value":100,"periodSeconds":15}]}}}}}}}}'
+await_hpa metric 300 'cpu=[0-9]+ '
+kubectl top pods -n openstack -l "app.kubernetes.io/instance=$ks"
+
+# H2: one replica, then the token load
+await_hpa idle 300 'desired=1 .* ready=1$'
+kubectl apply -f tests/e2e-autoscaling/02-keystone-loadgen-job.yaml
+echo "loadgen applied at $(date -u +%FT%TZ)" | tee -a "$auto/hpa.log"
+
+# H3: the scale-out to three ready replicas
+await_hpa scale-out 600 'desired=3 .* ready=3$'
+
+# H4: the Job's end and its RESULT line
+for i in $(seq 130); do
+  done_count="$(kubectl get job autoscaling-keystone-loadgen -n openstack -o jsonpath='{.status.succeeded}{.status.failed}' 2>&1)"
+  if [[ "$done_count" =~ ^[0-9]+$ ]]; then break; fi
+  hpa_state >>"$auto/hpa.log"
+  sleep 10
+done
+echo "loadgen ended at $(date -u +%FT%TZ): ${done_count}" | tee -a "$auto/hpa.log"
+kubectl logs job/autoscaling-keystone-loadgen -n openstack --tail=60 >"$auto/loadgen.log" 2>&1
+grep RESULT "$auto/loadgen.log"
+
+# H5: the scale-in to one replica
+await_hpa scale-in 600 'desired=1 .* ready=1$' drop_job_pods
+
+# H6: the Job and the block go, and one ready replica stays
+hpa="$(kubectl get hpa -n "$ns" -l "app.kubernetes.io/instance=$ks" -o jsonpath='{.items[0].metadata.name}')"; echo "hpa ${hpa}"
+kubectl delete job autoscaling-keystone-loadgen -n openstack
+kubectl patch controlplane controlplane -n "$ns" --type merge -p '{"spec":{"sizing":{"keystone":{"api":{"autoscaling":null}}}}}'
+kubectl wait --for=delete "hpa/${hpa}" -n openstack --timeout=120s
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=600s
+hpa_state | tee -a "$auto/hpa.log"
+```
+
+The last line prints `ready=1` and no HPA. Then run the last line of the
+quick start's [Teardown](../../quick-start-metal-stack.md#teardown),
+`EXTERNAL_CLUSTER=true make teardown-infra`; its other lines delete objects of
+Part 2, which this run does not create. Stop the port-forward, delete
+`gateway-ca.pem`, and check that `kubectl get namespaces -o name` lists the
+platform's namespaces alone (`default`, `firewall`, `kube-node-lease`,
+`kube-public`, `kube-system` and `metallb-system`) and that
+`kubectl get vpa -A` lists no VPA outside `kube-system`.
+
+A result that differs from the last column of the case table is a finding:
+the platform's updater runs in the seed, whose flags cannot be read from the
+shoot, so the record states what it did. Each of these is a defect and gets
+its own issue: more than one new pod UID within one hold; a successor in V2 or
+V4, or a resized pod in V6, whose CPU request is below the case's floor; a
+`vpaready=` other than `VPAReady` while a block is set, or other than
+`VPANotRequired` after it is removed; a Placement or ControlPlane CR that does
+not return to `Ready`; a pod that requests other than `15m` after the VPA
+part's end; `GATE FAILED: metric`; an HPA or Deployment left after H6;
+anything the teardown leaves; and a hand action neither the block nor the
+quick start names. A failed load Job with a scale-out that held is a finding.
+
+The run of 2026-10-05 ran the block unchanged on shoot `newforge`, on
+Kubernetes v1.35.6, from commit `d34fde24`
+(`d34fde24334c2809ba2225654c206af9f217eee9`), in the session of
+[#1224](https://github.com/C5C3/cobaltcore/issues/1224). The VPA CRD admitted
+`["Off","Initial","Recreate","InPlaceOrRecreate","Auto"]`. The block started
+from Part 2 of the Quick Start (metal-stack) with its servers, volume, backup
+and network deleted by the first five lines of the
+[Teardown](../../quick-start-metal-stack.md#teardown), and it was pasted a
+section at a time, each case in two parts split at its `hold` line. The
+baseline pod, `4890bf21`, requested `15m`. No gate failed, and nothing was done
+by hand. The outputs are in two comments on #1223,
+[the VPA cases](https://github.com/C5C3/cobaltcore/issues/1223#issuecomment-5999186474)
+and [the HPA part](https://github.com/C5C3/cobaltcore/issues/1223#issuecomment-5999186980).
+In the table a pod is named by the first eight characters of its UID, and the
+seconds with `ready=0` count from the first `vpa.log` line with `ready=0` to the
+next one with `ready=1`; the lines are about five seconds apart.
+
+| Case | Mode and `minReplicas` | Pod over the hold (UID, restarts, CPU request in the spec and running) | Successor after a hand delete | Seconds with `ready=0` | Finding or issue |
+| --- | --- | --- | --- | --- | --- |
+| V1 | `Off`, unset | `4890bf21`, 0, `15m` and `15m`, before and after | `fa529e0c`, `15m` | 22, after the hand delete | none; as documented |
+| V2 | `Initial`, unset | `fa529e0c`, 0, `15m` and `15m`, before and after | `1271bf3e`, `60m`, memory request `109814751` | 34, after the hand delete | finding: the successor's memory request is the target, 105 MiB in place of `368Mi` |
+| V3 | `Recreate`, unset | `5c28ca0b`, 0, `70m` and `70m`, before and after; the updater had evicted `1271bf3e` between 16:10:03 and 16:10:08, within 11 seconds of the patch | not run, no hand delete in V3 | 12, after the eviction | finding: an eviction at one replica, because Gardener's updater runs with `--min-replicas=1` (`computeUpdaterArgs`, `pkg/component/autoscaling/vpa/updater.go` at `gardener/gardener@92a252c0`) |
+| V4 | `Recreate`, 1 | before `5c28ca0b`, 0, `70m` and `70m`; after `3653d9dd`, 0, `93m` and `93m` | not run, no hand delete in V4 | 11, after the eviction | none; the successor requests the recommender's own target, `93m`, above the floor of `80m` |
+| V5 | `InPlaceOrRecreate`, unset | `3653d9dd`, 0, `93m` and `93m`, before and after | not run, no hand delete in V5 | 0 | finding: `93m` lay inside the VPA's range (lower bound `90m`, upper bound `200m`), so the case shows nothing about a replica floor |
+| V6 | `InPlaceOrRecreate`, 1 | `3653d9dd`, 0, `100m` and `100m`, before and after; resized in place between 16:28:05 and 16:28:11, before the hold | not run, no hand delete in V6 | 0 | none; as documented |
+
+The `applied at` and `target` lines of the cases: V1 at 15:57:46Z with `50m`
+at 15:58:13Z, V2 at 16:03:58Z with `60m` at 16:04:09Z, V3 at 16:09:57Z with
+`70m` at 16:10:13Z, V4 at 16:15:44Z with `93m` at the same second, V5 at
+16:21:05Z, its hand VPA at 16:21:06Z, with `90m` at 16:22:09Z, and V6 at
+16:27:28Z with `100m` at 16:28:10Z.
+
+`vpaready=` read `VPAReady` from V1's patch to V5's, and `VPANotRequired` from
+`vpa_block V5 null` on; the operator's VPA `controlplane-placement` was gone
+before V5's hand VPA was applied. The pod after the VPA part's end,
+`0627f3e1`, requests `15m` again. What a deployer on a single-replica profile
+gets, case by case:
+
+- V1: with `Off` the pod keeps its request, and a successor starts with the
+  rendered request as well.
+- V2: with `Initial` the running pod keeps its request, and the next pod starts
+  with the recommendation for both resources, here `60m` and 105 MiB, under the
+  unchanged memory limit of `368Mi`.
+- V3: with `Recreate` and no `minReplicas`, the platform's updater evicts the
+  only pod as soon as its request lies outside the recommendation, and the
+  component has no ready pod until the successor is ready, 12 seconds here.
+- V4: with `minReplicas: 1` the same happens, 11 seconds here.
+- V5: with `InPlaceOrRecreate` nothing happens while the request lies inside
+  the recommended range.
+- V6: once the request lies outside the range, the pod is resized in place,
+  with the same UID, no restart and no time without a ready pod.
+
+The HPA part read a CPU utilization at 16:34:32Z (`metric`), 31 seconds after
+H1's patch, and one ready replica at 16:34:39Z (`idle`), when the load Job was
+applied. The first line above one replica came 26 seconds after the apply and
+read `desired=3`; no line with `desired=2` exists, so the HPA went from one to
+three in one step. Three pods were ready at 16:35:46Z (`scale-out`), 67
+seconds after the apply. The peak reading was `cpu=5693`, in percent of the
+`15m` request. The Job ended at 16:49:50Z with
+`RESULT total=6289 ok=6289 fail=0`, and the Deployment was back at one ready
+replica 133 seconds later, at 16:52:03Z (`scale-in`). After H6, `hpa_state`
+printed no HPA and `ready=1`. `EXTERNAL_CLUSTER=true make teardown-infra` then
+exited 0 and left the platform's namespaces alone and no VPA outside
+`kube-system`. The run found none of the defects listed above.
+
+### Lab hypervisors
+
+**Files:** `deploy/lab/metal-stack/hypervisor-fixtures/kustomization.yaml`,
+`deploy/lab/metal-stack/hypervisor/kustomization.yaml` and the seven manifests
+it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
+two manifests it lists
+
+`hypervisor-fixtures/` and `hypervisor/` turn the lab's two workers into KVM
+hypervisors of the [Lab ControlPlane](#lab-controlplane), planned in
+[#1142](https://github.com/c5c3/cobaltcore/issues/1142). They add libvirt in a
+DaemonSet, the OVN chassis, the metadata agent and a `NovaCompute` pool, and
+run openstack-hypervisor-operator (hvo) and kvm-node-agent (kna) from upstream
+with the settings that carry both on a Debian node under Gardener. Both are
+applied by hand once the ControlPlane is `Ready`. `hypervisor/` pulls in
+`migration-ports/`, which reserves QEMU's migration ports on every node and
+which Part 2, Step 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+on its own before the [node port check](#node-port-check).
+`hack/deploy-infra.sh` applies none of the three.
+`tests/unit/deploy/metal_stack_hypervisor_test.sh` pins the three renders.
+
+| File | Content |
+| --- | --- |
+| `hypervisor-fixtures/kustomization.yaml` | The kind fixtures of `deploy/kind/hypervisor-operator-fixtures/` without `VolumeType/hvo-premium`, `Network/hvo-smoke-test` and `Subnet/hvo-smoke-test`: only hvo's smoke test uses them, and every lab `Hypervisor` skips it through the node label `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests`. The domain `cc3test` and the project `test`, which hvo scopes a token to at start, stay, and so do the flavor ID `1` (1 vCPU, 256 MiB, 1 GiB) and the image `cirros-kvm` the run boots |
+| `migration-ports/namespace.yaml` | Namespace `hypervisor-system`, with the lab's Gardener opt-out label |
+| `migration-ports/reservation-daemonset.yaml` | DaemonSet `migration-port-reservation` in `hypervisor-system`, on every node: it reserves QEMU's migration ports (see [Migration port reservation](#migration-port-reservation)) |
+| `hypervisor/kustomization.yaml` | Takes `../migration-ports` as a resource, so the hypervisor overlay applies the namespace and the reservation too and the teardown removes both with it |
+| `hypervisor/libvirt-ca.yaml` | Certificate `libvirt-migration-ca` (ECDSA 256, three years, bootstrapped from `selfsigned-cluster-issuer`) and Issuer `nova-hypervisor-agents-ca-issuer`, hvo's default issuer name, in `hypervisor-system`. The CA signs nothing else |
+| `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
+| `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
+| `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
+| `hypervisor/sources.yaml` | One digest-pinned `OCIRepository` per chart in `flux-system` |
+| `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
+| `hypervisor/kna-release.yaml` | `HelmRelease/kvm-node-agent` in `hypervisor-system` |
+
+The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` (see
+[libvirt](../ci-cd/container-images.md#libvirt)) on the nodes labelled
+`openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, privileged
+as uid 0 in the host's network, PID and IPC namespaces. `<tag>` is the keeper
+tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
+`hack/ci-tag-libvirt-keeper.sh` mints once on `main` and never moves (see
+[Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
+`imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
+proposes each new keeper tag as one pull request, never automerged, that moves
+all seven lines naming the image: the two containers here, the load test of
+the [Node probe](#node-probe), both containers of `nfs-client-modules` in the
+[Lab NFS stack](#lab-nfs-stack), and both containers of `chaos-mesh-modules`
+in the [Lab Chaos Mesh](#lab-chaos-mesh).
+The update
+strategy is `OnDelete` and the pod has no liveness probe: a rollout, or a
+restart on a slow answer, would interrupt running migrations. A merged bump
+therefore reaches a node when its libvirt pod is deleted. The readiness probe
+runs `virsh -c qemu:///system version`.
+
+| Host path | Why the pod mounts it |
+| --- | --- |
+| `/run/libvirt` | libvirtd's sockets, which `nova-compute` and kna open |
+| `/var/lib/libvirt`, `/var/lib/nova` | The domains' state and the instance disks; `/var/lib/nova` with `Bidirectional` propagation, like the `NovaCompute` pod. The NFS share `nova-compute` mounts below `/var/lib/nova/mnt` for a Cinder volume appears in the libvirt pod through this propagation |
+| `/etc/pki/CA`, `/etc/pki/libvirt`, `/etc/pki/qemu` | The TLS files kna writes, read-only |
+| `/dev`, `/sys/fs/cgroup`, `/lib/modules` | `/dev/kvm` and the guests' devices, their cgroups, and the module tree for `vhost_net`, read-only |
+| `/run/systemd`, `/run/dbus` | The host's systemd (its private socket and `/run/systemd/system`) and its D-Bus socket, the latter read-only |
+
+The init container `host-prepare` loads `vhost_net` and fails the pod with
+`host-prepare: cannot load vhost_net from /lib/modules/<kernel>` or
+`host-prepare: /dev/kvm is missing on this node`. The main container's
+`libvirtd.sh` then:
+
+1. waits, without a timeout, for `/etc/pki/CA/cacert.pem`,
+   `/etc/pki/libvirt/servercert.pem` and
+   `/etc/pki/libvirt/private/serverkey.pem`, and logs
+   `libvirtd: waiting for the TLS files kvm-node-agent installs under /etc/pki`
+   every 10 seconds. A pod that is `Running` but not `Ready` waits here;
+2. copies `libvirtd.conf` and `qemu.conf` to `/etc/libvirt/`, with the node's
+   address in `listen_addr`;
+3. stops `cobaltcore-libvirtd.scope`, which holds a libvirtd an earlier
+   container left behind when it was killed after its grace period, and
+   resets its failed state: a stop that runs out leaves the scope failed, and
+   a failed unit keeps its name. It then starts
+   `systemd-run --collect --scope --slice=system --unit=cobaltcore-libvirtd libvirtd --listen`.
+   The scope moves libvirtd out of the pod's cgroup into the host's
+   `system.slice`, so the QEMU processes it forks survive a restart of the pod.
+   `--collect` lets systemd unload the scope even when it ends failed;
+4. waits up to 60 seconds for `/run/libvirt/libvirt-sock` while libvirtd
+   lives, exits with libvirtd's status when it dies, and exits 1 with
+   `libvirtd: /run/libvirt/libvirt-sock did not appear within 60s` otherwise;
+5. writes two runtime units into the host's `/run/systemd/system`, reloads the
+   host's systemd and starts `libvirtd.service`;
+6. on `TERM` stops that unit, deletes both, reloads, and stops libvirtd. The
+   domains keep running. Every other end of the script, a failed step or
+   libvirtd's own exit included, deletes the units as well and stops the
+   scope.
+
+kna reads libvirt's state from the host's systemd. It reports nothing
+about libvirt while `libvirtd.service` is not active, and it sets
+`TLSCertificateInstalled=True` only once starting
+`virt-admin-server-update-tls.service` succeeds. A Debian host without libvirt
+has neither unit, so the script writes stand-ins. Each starts with the line
+`# Written by the cobaltcore lab libvirt DaemonSet (openstack/libvirt); removed when its pod stops.`
+
+| Unit | Content |
+| --- | --- |
+| `libvirtd.service` | `Type=simple`, `ExecStart=/usr/bin/tail --pid=<libvirtd PID> -f /dev/null`: active as long as the containerized libvirtd lives |
+| `virt-admin-server-update-tls.service` | `Type=oneshot`, `ExecStartPre=/usr/bin/grep -q /cobaltcore-libvirtd.scope /proc/<libvirtd PID>/cgroup`, `ExecStart=/usr/bin/nsenter --target <libvirtd PID> --mount -- /usr/bin/virt-admin server-update-tls libvirtd`: kna starts it after every certificate write. The check fails the start once the PID has left the scope, so a unit left behind never runs as host root in another process's mount namespace |
+
+This bends decision D1 of
+[#1138](https://github.com/c5c3/cobaltcore/issues/1138), that the host is not
+modified, knowingly. `/run` is a tmpfs, so a reboot removes the units, and the
+script removes them whenever it ends. `systemctl` takes a container in the
+host's PID namespace for a chroot and ignores `start` and `daemon-reload`
+there, so the script sets `SYSTEMD_IGNORE_CHROOT=1`.
+
+`libvirtd.conf` listens for TLS on the node's address and port `16514` only
+(`listen_tcp = 0`, `auth_tls = "none"`) and gives the socket the numeric group
+`+108` with mode `0770`, the group kna's chart gives its pod
+(`supplementalGroups: [108]`); the agent runs as root here (below), which opens
+the socket either way. `qemu.conf` runs QEMU as `root:root` without a
+security driver: the host's `/dev/kvm` is `root:103`, and the image's `kvm`
+group has another ID. QEMU's migration TLS reads `/etc/pki/qemu` and verifies
+the peer. The kna image of this repository writes all three private keys,
+`libvirt/private/serverkey.pem`, `qemu/server-key.pem` and
+`ch/server-key.pem`, with mode 0600 (see
+[kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)), and QEMU as
+root reads its key either way. `PKI_KEY_GROUP` therefore stays unset: it gives
+QEMU's key a group and mode 0640, which only a QEMU that runs as another user
+needs.
+
+`qemu.conf` also sets `stdio_handler = "file"`. libvirt's default, `logd`,
+sends QEMU's output, the console log Nova reads included, through a pipe to
+`virtlogd`. A `virtlogd` in the pod dies with the pod while QEMU lives on, and
+`openstack console log show` then stops at the restart
+([#1174](https://github.com/c5c3/cobaltcore/issues/1174)). With `file`,
+libvirtd opens each log file and hands QEMU the descriptor, so the script
+starts no `virtlogd`. This gives up `virtlogd`'s rollover, by default 2 MiB per
+file and three backups: `/var/lib/nova/instances/<uuid>/console.log` grows for
+as long as the guest writes to its console. A domain takes its handler when it
+starts. libvirtd reads `qemu.conf` when it starts too, and the script copies
+the file and starts libvirtd only when the container starts (steps 2 and 3).
+The DaemonSet updates `OnDelete`, so applying the change switches no node. On
+a lab with running servers, delete the libvirt pod of each node and wait until
+it is `Ready`. Only then run `openstack server reboot --hard` on each server of
+that node. A hard reboot before the pod delete starts the domain under the old
+pod's `virtlogd` again, and its console log stops once more at the delete. The
+status XML of a switched domain, `/run/libvirt/qemu/<instance_name>.xml`,
+carries no `<chardevStdioLogd/>`.
+
+`qemu.conf` sets `dynamic_ownership = 0` as well. libvirt adds its DAC driver
+whenever QEMU runs privileged, also under `security_driver = "none"`
+(`qemuSecurityInit` in `src/qemu/qemu_driver.c`). With dynamic ownership on,
+that driver hands every disk of a domain to QEMU's user, `0:0` here
+(`virSecurityDACSetImageLabelInternal` in `src/security/security_dac.c`). Both
+were read at libvirt v9.0.0; the image installs the libvirt of Ubuntu noble.
+Cinder's NFS backends keep each volume file `42424:42424` with mode `660`
+(`nas_secure_file_permissions = true`, see
+[Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
+and the Cinder pods read it as uid 42424. After one attach the file would
+belong to root, and a backup of the volume would fail with
+`Permission denied`. With the setting off, QEMU as root opens every file it
+needs without a `chown`: the instance disks `nova-compute` creates as root, the
+console log libvirtd opens for it, `/dev/kvm` and the TLS keys. The owner
+change is read from libvirt's source, and no lab run has shown it yet.
+libvirtd reads `qemu.conf` when it starts, and the DaemonSet updates
+`OnDelete`, so on a running lab delete the libvirt pod of each node and wait
+until it is `Ready` before the first volume attach. An attach through a pod
+that predates the setting hands the volume file to `0:0` on the share, and no
+later detach or pod restart gives it back. Once every libvirt pod has been
+replaced, repair such a file in the NFS server pod with
+`kubectl exec -n openstack deploy/nfs-server -c nfs-server -- chown 42424:42424 /exports/volumes/volume-<id>`.
+A lab deployed after a teardown has the setting from the start.
+
+The DaemonSet, the three compute CRs and hvo run in `openstack`. hvo sits there
+because its release reads the ControlPlane's auth Secret through `valuesFrom`,
+which reads only Secrets of the release's own namespace. The CA, its
+Issuer, the per-node Certificates `libvirt-<node>` with their Secrets
+`tls-libvirt-<node>`, and kna live in `hypervisor-system`: every CobaltCore
+operator reads Secrets in `openstack`, and a `tls-libvirt-<node>` Secret is
+root on its node's libvirtd (see
+[Live migration](../nova/novacompute-crd.md#live-migration)).
+
+| Release | Setting | Value | Why |
+| --- | --- | --- | --- |
+| hvo | chart | `1.2.3_sha-a2baf3f` | The upstream chart of the pinned hvo commit, the `ARG HVO_COMMIT` line of `images/openstack-hypervisor-operator/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag |
+| hvo | `fullnameOverride` | `hypervisor-operator` | The chart names its metrics Service `<fullname>-controller-manager-metrics-service`, 64 characters with the release name as fullname, and the install fails |
+| hvo | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/openstack-hypervisor-operator` | The image built from that commit with its four patches: the Eviction patch, which leaves block migration to Nova, the two below that let onboarding finish, and patch 0004, which reads the catalog interface from `OS_INTERFACE` (see [openstack-hypervisor-operator](../ci-cd/container-images.md#openstack-hypervisor-operator)) |
+| hvo | `valuesFrom` | six keys of `controlplane-nova-hypervisor-operator-auth` | The account the ControlPlane provisions: `password` into `secret.servicePassword`; `username`, `user_domain_name`, `project_name`, `project_domain_name` and `region_name` into the matching `controllerManager.manager.env.os*` values |
+| hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
+| hvo | `env.certificateNamespace` | `hypervisor-system` | The Issuer's namespace |
+| hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
+| hvo | `serviceMonitor.enabled`, `prometheusRules.create` | `true` | On every lab, with or without Prometheus: chart `1.2.3_sha-a2baf3f` renders the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` (7 alerts) and `openstack-hypervisor-operator-eviction-alerts` (3 alerts) in `openstack`. Without a Prometheus Operator they are inert objects, and the [Lab Prometheus stack](#lab-prometheus-stack) picks them up without a second apply. Two alerts have data, `HypervisorOperatorReconcileErrors` and `HypervisorOperatorDown`. The other 8 read `kube_customresource_*` series, which the lab never has: `HypervisorOnboardingStuck`, `HypervisorEvictionStuck`, `HypervisorEvictedTooLong`, `HypervisorTraitSyncFailed`, `HypervisorAggregateSyncFailed`, `EvictionFailed`, `EvictionMigrationFailing` and `EvictionOutstandingRamHigh` |
+| hvo | `customResourceMetrics.create` | `false` | Its ConfigMaps configure a kube-state-metrics to export the `kube_customresource_*` series of the `Hypervisor` and `Eviction` CRs, and the lab runs no kube-state-metrics |
+| hvo | `dashboards.create` | `false` | The chart's dashboard is a Perses dashboard, which Grafana cannot load. The Lab Prometheus stack loads a Grafana dashboard with its four controller-runtime panels instead |
+| hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the gateway certificates. Without the variable hvo reads the `public` endpoints, the `*.127-0-0-1.nip.io:8443` URLs, which resolve to the pod itself |
+| hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does. An image built before patch 0002 refuses the flag below, and one built before patch 0004 ignores `OS_INTERFACE` |
+| hvo | post-renderer | `--default-high-availability=false` appended to the manager's `args` | The flag of the image's patch 0002: hvo creates each `Hypervisor` with `spec.highAvailability: false`. While the field is `true`, onboarding waits for `HaEnabled=True`, which only SAP's kvm-ha-service sets. The chart has no value for the flag, so a JSON patch appends it to the argument list the chart renders, and `controllerManager.manager.args` stays unset |
+| hvo | post-renderer | `bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token` on the ServiceMonitor's one endpoint | hvo defaults `--metrics-secure` to `true` and serves its metrics behind controller-runtime's authentication and authorization filter, and the chart's ServiceMonitor sends no token, so every scrape would answer 401. With the JSON patch Prometheus presents its own ServiceAccount token, and the chart's ClusterRole `kube-prometheus-stack-prometheus` grants `get` on `/metrics`, which the filter asks the API server about. The ServiceMonitor CRD marks the field deprecated in favour of `authorization`, which would need a token Secret in `openstack`. The endpoint keeps the chart's `insecureSkipVerify` |
+| kna | chart | `0.2.0_sha-1e4e4b8` | The upstream chart of the pinned kna commit, the `ARG KNA_COMMIT` line of `images/kvm-node-agent/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag. Upstream publishes no image under that tag, and the tag `0.2.0` would leave the private keys at 0644 |
+| kna | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/kvm-node-agent` | The image built from that commit with the key mode patch, which writes the private keys with mode 0600 (see [kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)) |
+| kna | `controllerManager.manager.env.libvirtDefaultUri` | `qemu:///system` | The chart's default `ch:///system` is Cloud Hypervisor |
+| kna | `controllerManager.manager.env.nodeLabelFieldPath` | `spec.nodeName` | The chart renders it into the field reference of `NODE_LABEL` and defines no value |
+| kna | `controllerManager.manager.containerSecurityContext` | every capability dropped but `DAC_OVERRIDE`, no `runAsUser` or `runAsGroup` | The image runs as `0:0`: upstream's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
+| kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
+| kna | post-renderer | `imagePullPolicy: Always` on the manager | The chart has no value for the pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build |
+
+`Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
+each node's certificate is hvo's alone.
+
+No manifest can patch a Node, so each node gets four labels by hand:
+
+| Label | Why |
+| --- | --- |
+| `openstack.c5c3.io/chassis=true` | `OVNChassis/lab-chassis` selects it |
+| `openstack.c5c3.io/nova-compute-pool=lab` | `NovaCompute/lab` and the libvirt DaemonSet select it |
+| `nova.openstack.cloud.sap/virt-driver=kvm` | hvo creates a `Hypervisor` and a Certificate for such a node, and kna runs there |
+| `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` | The only way a `Hypervisor` gets `lifecycleEnabled` and `skipTests`. The smoke test boots onto a 64 GiB volume of the type `premium` on the network `hvo-smoke-test`, which the lab fixtures leave out |
+
+Onboarding waits at its `Handover` phase for two more conditions, and the hvo
+image of this repository patches the controller behind each. Upstream hvo sets
+`TraitsUpdated` only when a custom trait differs; patch 0003 sets
+`TraitsUpdated=True` when none differs, so a node without the
+`nova.openstack.cloud.sap/custom-traits` annotation onboards without a custom
+trait in Placement. Onboarding also waits for `HaEnabled=True` while
+`spec.highAvailability` is `true`, and only SAP's kvm-ha-service sets that
+condition. Upstream hvo creates every `Hypervisor` with the field `true`;
+patch 0002's flag, which the release sets to `false`, makes it create the field
+`false`. hvo reads the flag on create only, so a `Hypervisor` that exists keeps
+its value. `EXTERNAL_CLUSTER=true make teardown-infra` still removes the
+annotation, which a lab deployed from an older version of the quick start
+carries.
+
+[Part 2](../../quick-start-metal-stack.md#hypervisors) of the Quick Start
+(metal-stack) runs the sequence, from the node network to an Eviction with a
+Cinder volume attached and the volume's backup.
+
+#### Checks outside the quick start
+
+These checks need a lab on which Part 2 of the quick start has booted a server
+on every node. They confirm that the images the manifests name are published,
+read the value the manifests copy from the ControlPlane,
+show that a server survives a restart of its libvirt pod and that its console
+log keeps growing, and show that a live migration dials libvirt over TLS:
+
+```bash
+# a server runs on every node (Part 2, Step 5 of docs/quick-start-metal-stack.md),
+# lab-0 on the first node, ${nodes[@]:0:1}
+nodes=($(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'))
+
+# the images; the libvirt keeper tag still names the digest the DaemonSet pins
+libvirt_image="$(yq '.spec.template.spec.containers[0].image' deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml)"
+[ "$(docker buildx imagetools inspect "${libvirt_image%@*}" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "${libvirt_image#*@}" ]
+docker manifest inspect "ghcr.io/c5c3/openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)" >/dev/null
+docker manifest inspect "ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)" >/dev/null
+
+# the Keystone URL hvo-release.yaml carries
+kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}{"\n"}'
+
+# a libvirt restart under a running server, whose console log keeps growing
+kubectl delete pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${nodes[@]:0:1}"
+kubectl wait pod -l app.kubernetes.io/name=libvirt -n openstack --for=condition=Ready --timeout=10m
+openstack --insecure server show lab-0 -c status -f value
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name)
+console_log="/var/lib/nova/instances/$(openstack --insecure server show lab-0 -c id -f value)/console.log"
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
+  virsh reset "$(openstack --insecure server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)"
+sleep 30
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- stat -c %s "${console_log}"
+openstack --insecure console log show lab-0 | tail -n 3
+
+# the source libvirtd logs its migration steps
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- \
+  bash -c 'virt-admin daemon-log-filters 1:qemu.qemu_migration && virt-admin daemon-log-outputs 1:stderr'
+```
+
+The restart check prints the size of `lab-0`'s console log before and after a
+reset of the guest, and the second number is larger.
+
+Then run the live migration of
+[Part 2, Step 8](../../quick-start-metal-stack.md#hv-migrate) and read the
+URIs the source libvirtd dialed, in the same shell:
+
+```bash
+kubectl logs -n openstack "${libvirt_pod}" -c libvirtd | grep -o 'qemu+tls://[^ ,]*' | sort -u
+```
+
+A lab that moves to the kna image of this repository in place keeps its 0644
+keys: kna writes the files only when the node's Secret changes. Deleting
+`tls-libvirt-<node>` makes cert-manager reissue the certificate with a new
+key, which kna then writes with mode 0600. That also retires a key every local
+user of the node could read. Delete the Secrets only once every node runs the
+new image. kna records the `resourceVersion` it wrote in the host's
+`/etc/pki/CA/.last_resource_version` and reads it back at start, so a pod of
+the old image that handles the reissued Secret writes the new key with mode
+0644, and the new pod then skips the Secret as unchanged:
+
+```bash
+image="ghcr.io/c5c3/kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)"
+# the chart names the DaemonSet <release>-controller-manager
+kubectl wait daemonset/kvm-node-agent-controller-manager -n hypervisor-system \
+  --for=jsonpath="{.spec.template.spec.containers[?(@.name==\"manager\")].image}=${image}" \
+  --timeout=10m
+kubectl rollout status daemonset/kvm-node-agent-controller-manager \
+  -n hypervisor-system --timeout=15m
+for node in "${nodes[@]}"; do
+  kubectl delete secret "tls-libvirt-${node}" -n hypervisor-system
+done
+kubectl wait certificate --all -n hypervisor-system --for=condition=Ready --timeout=10m
+for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+  kubectl exec -n openstack "${pod}" -c libvirtd -- \
+    stat -c '%a %n' /etc/pki/libvirt/private/serverkey.pem /etc/pki/qemu/server-key.pem
+done
+```
+
+Each key shows `600`. A key that still shows `644` has not been rewritten by a
+pod of the new image; deleting its node's Secret again has that pod write it.
+These commands have not run on the lab. A lab deployed after a teardown gets
+new Secrets, so kna writes new keys anyway.
+
+The block below, run on the lab on 2026-10-02, changes `cpuMode` under a
+running server, once with the rollout awaited and once with a pod that
+predates the change, and prints the pod's CPU keys and the server's `<cpu>`
+element at each point:
+
+```bash
+# after Part 2, Steps 1 to 5 of docs/quick-start-metal-stack.md, without
+# the servers of Step 5; nodes and zone come from the opening block of Part 2
+
+compute_selector=app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute
+# prints the name of the nova-compute pod on the first node
+compute_pod() {
+  kubectl get pod -n openstack -l "${compute_selector}" \
+    --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name
+}
+# waits until the operator has rendered the current spec; kubectl wait skips a
+# condition whose observedGeneration is older than metadata.generation
+wait_seen() {
+  kubectl wait novacompute/lab -n openstack --for=condition=ConfigReady --timeout=5m
+}
+# waits until the nova-compute pod on the first node mounts the ConfigMap of
+# the current spec and its process has reported to Nova; until then a hard
+# reboot keeps the old CPU or is lost. Updated At carries nova-conductor's clock
+# and startedAt the node's, so it waits for Updated At to change twice while one
+# container runs
+wait_compute() {
+  local i gen cfg pod have start updated seen base changes
+  for i in $(seq 60); do
+    gen=$(kubectl get novacompute lab -n openstack -o jsonpath='{.metadata.generation}')
+    cfg=$(kubectl get novacompute lab -n openstack \
+      -o jsonpath='{range .status.conditions[?(@.type=="ConfigReady")]}{.status} {.observedGeneration} {.message}{end}')
+    pod=$(compute_pod)
+    have=$(kubectl get -n openstack "${pod}" \
+      -o jsonpath='{.spec.volumes[?(@.name=="pool-config")].configMap.name}')
+    start=$(kubectl get -n openstack "${pod}" \
+      -o jsonpath='{.status.containerStatuses[?(@.name=="nova-compute")].state.running.startedAt}')
+    updated=$(openstack --insecure compute service list --service nova-compute \
+      --host "${nodes[@]:0:1}" -c 'Updated At' -f value)
+    if [[ "${cfg}" != "True ${gen} "* || "${cfg##* }" != "${have}" || -z "${start}" \
+      || -z "${updated}" ]]; then
+      seen=
+    elif [[ "${seen}" != "${pod}@${start}" ]]; then
+      seen="${pod}@${start}" base="${updated}" changes=0
+    elif [[ "${updated}" != "${base}" ]]; then
+      # the first change can be a report the old process sent before it died,
+      # applied late by nova-conductor; the second is the new process's
+      base="${updated}"
+      (( ++changes >= 2 )) && return 0
+    fi
+    sleep 5
+  done
+  echo "wait_compute: ConfigReady '${cfg}', mounted '${have}', started '${start}'," \
+    "Updated At '${updated}', changes ${changes:-0}" >&2
+  return 1
+}
+# waits until every pod runs the current template (RollingUpdate only)
+wait_pool() {
+  wait_seen &&
+    kubectl rollout status daemonset/lab-nova-compute -n openstack --timeout=15m &&
+    kubectl wait novacompute/lab -n openstack --for=condition=DaemonSetReady --timeout=15m
+}
+# prints the start time and the cpu keys of the nova-compute pod on the first
+# node
+pool_state() {
+  local pod
+  pod=$(compute_pod)
+  kubectl get -n openstack "${pod}" -o jsonpath='{.status.startTime}{"\n"}'
+  kubectl exec -n openstack "${pod}" -c nova-compute -- \
+    grep -E '^cpu_(mode|models)' /etc/nova/compute-pool.conf.d/compute-pool.conf
+}
+# prints the <cpu> element of the live and of the persistent definition of cpu-a
+domain_cpu() {
+  local pod name
+  pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+    --field-selector "spec.nodeName=${nodes[@]:0:1}" -o name)
+  name=$(openstack --insecure server show cpu-a -c OS-EXT-SRV-ATTR:instance_name -f value)
+  kubectl exec -n openstack "${pod}" -c libvirtd -- sh -c \
+    "virsh dumpxml ${name} | sed -n '/<cpu /,/<\/cpu>/p'; echo --inactive; virsh dumpxml --inactive ${name} | sed -n '/<cpu /,/<\/cpu>/p'"
+}
+
+# A. baseline: the pool on host-passthrough, one server
+kubectl patch novacompute lab -n openstack --type merge \
+  -p '{"spec":{"libvirt":{"cpuMode":"host-passthrough","cpuModels":null}}}'
+wait_pool; pool_state
+wait_compute && openstack --insecure server create cpu-a --image cirros-kvm --flavor 1 \
+  --network lab-net --availability-zone "${zone}:${nodes[@]:0:1}" --wait
+domain_cpu
+
+# B. the cpuMode change with the rollout awaited
+date -u +%FT%TZ
+kubectl patch novacompute lab -n openstack --type merge \
+  -p '{"spec":{"libvirt":{"cpuMode":"custom","cpuModels":["Skylake-Server-IBRS"]}}}'
+wait_pool; pool_state
+domain_cpu                                  # before the reboot
+wait_compute && openstack --insecure server reboot --hard --wait cpu-a
+domain_cpu                                  # after the reboot
+pool_state                                  # unchanged
+
+# C. a hard reboot handled by a pod that predates the change
+kubectl patch novacompute lab -n openstack --type merge \
+  -p '{"spec":{"updateStrategy":{"type":"OnDelete"},"libvirt":{"cpuMode":"host-passthrough","cpuModels":null}}}'
+wait_seen; pool_state                       # the pod did not restart
+kubectl get novacompute lab -n openstack \
+  -o jsonpath='{.status.conditions[?(@.type=="DaemonSetReady")].status}{"\n"}'
+openstack --insecure server reboot --hard --wait cpu-a
+domain_cpu
+kubectl delete pod -n openstack -l "${compute_selector}"
+kubectl wait novacompute/lab -n openstack --for=condition=DaemonSetReady --timeout=15m
+if wait_compute; then
+  pool_state                                # a new pod, the new file
+  openstack --insecure server reboot --hard --wait cpu-a
+fi
+domain_cpu
+
+# D. back to the manifests, and away
+openstack --insecure server delete --wait cpu-a
+openstack --insecure server list --all-projects
+kubectl apply -k deploy/lab/metal-stack/hypervisor
+kubectl patch novacompute lab -n openstack --type merge \
+  -p '{"spec":{"updateStrategy":{"type":"RollingUpdate"}}}'
+wait_pool
+EXTERNAL_CLUSTER=true make teardown-infra
+```
+
+The lab ran the block with looser waits. `wait_seen` waited for
+`status.observedGeneration`, which a pass that stops before the ConfigMap step
+sets too. `wait_pool` waited for `Ready`, which also needs every compute service
+of the pool up, and called `wait_compute` itself. `wait_compute` compared
+`Updated At`, from nova-conductor's clock, with the pod's start time, from the
+node's, and it did not check the mounted ConfigMap. Every command ran whether
+the wait before it held or not. The waits as written here have not run on the
+lab.
+
+| Property | Value |
+| --- | --- |
+| Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna, the migration port reservation), `flux-system` (the chart sources) |
+| Applied | by hand: `migration-ports/`, then the node labels, then `hypervisor-fixtures/`, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
+| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays, and so do the reserved ports in `net.ipv4.ip_local_reserved_ports` until a node reboots |
+| Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart tag `hack/ci-resolve-kna-commit.sh` |
+| Dependencies | the Lab ControlPlane with `spec.services.nova.hypervisorOperator`; `/dev/kvm` and `vhost_net` on every node; TCP 16514 and 49152 to 49215 open between the nodes ([Node port check](#node-port-check)) |
+
+The run of 2026-10-01 on the lab ran upstream's kna v0.2.0 image and chart,
+with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
+kernel 6.1. It passed every step of the sequence that is now Part 2 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors) and
+of the checks above, but the kna image check, which came with the image of
+[#1178](https://github.com/c5c3/cobaltcore/issues/1178), and the console-log
+part of the restart check, which came with
+[#1174](https://github.com/c5c3/cobaltcore/issues/1174). Both ran on
+2026-10-02 (below). The run also created `/var/lib/nova/instances` by hand. The
+`NovaCompute` pod creates it since
+[#1171](https://github.com/c5c3/cobaltcore/issues/1171). libvirtd kept its
+domains across a restart
+of its pod: the scope held libvirtd alone, and QEMU ran in the host cgroup
+`/machine/qemu-<n>-<instance>.libvirt-qemu` that libvirt created itself. The
+socket's group was `108`, libvirtd listened on `<node IP>:16514` only, and the
+live migration dialed `qemu+tls://<destination IP>/system`. A teardown with a
+server left stopped at the `NovaCompute` delete with the servers hint; after the
+servers were deleted, two teardowns exited 0 and left no `kvm.cloud.sap` CRD,
+`hypervisor-system` namespace, `maint-<node>` object, node label or host unit.
+
+A run on 2026-10-02 applied `stdio_handler = "file"`
+([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) on the same two
+workers. Once `lab-a` was hard-rebooted, no `virtlogd` ran on its node and its
+status XML carried no `<chardevStdioLogd/>`. After a restart of the libvirt
+pod, a `virsh reset` of the guest left the QEMU PID unchanged, `console.log`
+grew, and `openstack console log show` returned the new boot output.
+
+A second run on 2026-10-02 executed the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) from commit
+`715eafd3`, from a bare cluster through the teardown, on the same two workers.
+Every block of the page exited 0, two of them after repeats: Part 1, Step 4,
+which named a repeat then, and Part 2, Step 3. The kna pods ran
+`ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700`
+with no `runAsUser` in their pod spec and restarted once each; the run did not
+read why. Both `Hypervisor` objects showed `TLSCertificateInstalled` `True`,
+and the key-mode loop above printed `600` for `serverkey.pem` and
+`server-key.pem` on both nodes. The `NovaCompute` pods carried the init
+container `create-instances-dir`, and both servers booted with no directory
+created by hand; the nodes still held `/var/lib/nova` from the earlier runs, so
+the run does not show the directory created on a fresh node. The two
+`lab-metadata-agent` pods had a restart count of 0 after both servers booted
+and after the eviction
+([#1173](https://github.com/c5c3/cobaltcore/issues/1173)). The teardown exited
+0 and left neither `openstack` nor `hypervisor-system`; it waited five minutes
+for the Keystone CR's backup PushSecrets
+([#1186](https://github.com/c5c3/cobaltcore/issues/1186)).
+
+hvo and kna come from SAP's own environment, and several of their defaults
+assume it. [#1066](https://github.com/c5c3/cobaltcore/issues/1066) collects
+what would have to change upstream. Each item with what it did on the lab:
+
+| Item | Upstream | On the lab | Here |
+| --- | --- | --- | --- |
+| `maint-<node>` image | hvo's Gardener lifecycle controller creates Deployment `maint-<node>` in `kube-system` with `keppel.global.cloud.sap/ccloud-dockerhub-mirror/library/busybox:latest` | both Deployments stay `0/1`; their pods are `Pending` in `ImagePullBackOff` | none; the teardown deletes the objects |
+| `kube-system` interlock | the same controller keeps a PodDisruptionBudget `maint-<node>` with `minAvailable: 1` on that Deployment, so a node drain waits until the hypervisor is offboarded | both PDBs allow 0 disruptions, on pods that never start | none |
+| Operating system | kna fills `Hypervisor.status.operatingSystem` from the host's `os-release` and drives updates through `systemd-sysupdate`, both written for Garden Linux, the Gardener project's Debian-based host OS | the status carries the kernel, the firmware and the hardware, and no `version`, `prettyVersion`, `variantID` or Garden Linux field; the `VERSION` column is empty, and no update condition appears | none |
+| `BlockMigration: false` | hvo's Eviction live-migrates without block migration, which Nova refuses for a server on local disks | the patched image's Eviction moved both servers off a node with local qcow2 disks, two `completed` live migrations | patched in the image ([#1163](https://github.com/c5c3/cobaltcore/issues/1163)) |
+| `HaEnabled` gate | onboarding waits for `HaEnabled=True` while `spec.highAvailability` is `true`; only kvm-ha-service sets it | with `highAvailability: false` patched by hand, both Hypervisors reached `Onboarding=False`, reason `Succeeded`. The flag has not run on the lab yet | patched in the image: `--default-high-availability=false` (patch 0002), set by the release, creates each `Hypervisor` with `spec.highAvailability: false` |
+| `TraitsUpdated` gate | onboarding waits for `TraitsUpdated=True`, which hvo sets only when a custom trait differs; it assigns the trait in Placement and does not create it | with the annotation, Placement answered 400 `No such trait CUSTOM_C5C3_LAB` until the trait existed. Patch 0003 has not run on the lab yet | patched in the image: `TraitsUpdated=True` when no custom trait differs (patch 0003), so the nodes carry no annotation |
+| Host units | kna reads `libvirtd.service` and `openvswitch-switch.service` and starts `virt-admin-server-update-tls.service` through the host's systemd | with the stand-ins kna reports `libvirtd.service`, `LibVirtConnection` and `TLSCertificateInstalled` as `True`; `openvswitch-switch.service` stays `False`, because Open vSwitch runs in the chassis pod | runtime stand-ins written by the libvirt DaemonSet |
+| Agent uid | kna's image runs as uid 42438 and authenticates to the system bus with it | the host has no such user, and its dbus-daemon drops the connection; kna exits at start. Run as uid 0 from the release, upstream's image started. The image of #1178 ran on 2026-10-02 with no `runAsUser` in the pod spec | the image of [#1178](https://github.com/c5c3/cobaltcore/issues/1178) runs as uid 0; the release keeps `DAC_OVERRIDE` |
+| Key mode | kna writes every TLS file with mode 0644, the private keys included ([#1175](https://github.com/c5c3/cobaltcore/issues/1175), found in upstream's code) | not checked with upstream's image. With the image of #1178, both keys showed `600` on both nodes on 2026-10-02 | patched in the image ([#1178](https://github.com/c5c3/cobaltcore/issues/1178)): 0600, or 0640 for QEMU's and Cloud Hypervisor's keys with `PKI_KEY_GROUP` |
+| `monsoon3` fallback | kna's namespace without `NAMESPACE`, which its chart does not set | with `NAMESPACE` kna installs the certificates of `hypervisor-system` | `NAMESPACE` set by a post-renderer |
+| Catalog interface | hvo reads only the `public` endpoints and takes no CA | through host aliases onto an Envoy Service and `SSL_CERT_DIR`, hvo ran 35 minutes without a restart and without an `x509` or `connection refused` line. `OS_INTERFACE=internal` has not run on the lab yet | patched in the image: `OS_INTERFACE` (patch 0004), set to `internal` by the release |
+| Chart object names | the chart builds names from the fullname, the release name when it contains the chart name | `openstack-hypervisor-operator` makes the metrics Service name 64 characters, and the install fails | `fullnameOverride: hypervisor-operator` |
+| Hand-set node labels | hvo flags changes made with kubectl | both Hypervisors reported `Tainted=True`, reason `Kubectl`. The taint controller reads `kubectl` from the managers of the `Hypervisor`'s own managed fields (`hypervisor_taint_controller.go`), which the `kubectl patch` of `spec.highAvailability` wrote; the labels sit on the Nodes. No run without that patch has read the condition yet | none |
+| Images per main commit | hvo and kna publish a chart for every main commit but no image under its tag; hvo pushes only `latest` | the chart of `a2baf3f` ran `ghcr.io/c5c3/openstack-hypervisor-operator:sha-a2baf3f…`; the kna chart of `1e4e4b8` ran `ghcr.io/c5c3/kvm-node-agent:sha-1e4e4b8…` on 2026-10-02 | the images of [#1163](https://github.com/c5c3/cobaltcore/issues/1163) and [#1178](https://github.com/c5c3/cobaltcore/issues/1178) |
+
+The run also found what this repository's own pieces owe a real hypervisor.
+The fake driver of the kind suites reaches none of it:
+
+| Item | On the lab | Here |
+| --- | --- | --- |
+| Live-migration CPU check | with `cpuMode: host-passthrough`, and with `host-model`, every live migration ends in `NoValidHost`: Nova's pre-check on the destination fails with `Unacceptable CPU info: CPU doesn't have compatibility`, although `virsh hypervisor-cpu-compare` there accepts the guest CPU | `cpuMode: custom` with `Skylake-Server-IBRS`, the host-model of both workers |
+| Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
+| CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on the first node. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
+| NFS server restart under an attached volume | on 2026-10-04 a PodChaos `pod-kill` of the NFS server (F4) and its scale-down for 300 seconds (F5) restarted `nfsd`, which logged `Unable to initialize client recovery tracking! (-22)`. The compute node logged `lost 1 locks`, and the guest got `I/O error, dev vdb` on every request to the attached volume until a hard reboot, while Nova, Cinder and the CRs reported nothing (see [Lab fault runs](#lab-fault-runs)) | [#1245](https://github.com/c5c3/cobaltcore/issues/1245): the server is NFS-Ganesha, with its client records on the export claim and a fixed server scope, and `cinder-nfs-outage` checks that a lock outlives a restart; F4 and F5 have not run on it yet |
 
 ### Node port check
 
@@ -2599,8 +5245,13 @@ A port is `closed` when the connect fails, `listener bind failed` when the
 destination's listener could not bind it, and `no result` when the client
 produced no line for it before the client wait ran out. The migration range
 sits in Linux's ephemeral port range, so an outgoing connection on the node can
-hold one of its ports; rerun the check or narrow `NODE_PORTS_TCP` when that
-happens.
+hold one of its ports. `deploy/lab/metal-stack/migration-ports` reserves the
+range on every node, which keeps new connections off it. The listener tries a
+port it cannot bind again every second for `NODE_PORTS_BIND_TIMEOUT` seconds
+before it reports it. A port a connection took before the reservation stays
+`listener bind failed` and fails the run, which then prints a `NOTE:` line
+saying the port was not tested; restarting the process that holds the port
+frees it.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -2609,10 +5260,75 @@ happens.
 | `NODE_PORTS_IMAGE` | the `image:` of `deploy/lab/metal-stack/probe/node-probe.yaml` | Image with `bash`, `perl` and `timeout`; the check exits 2 when it is unset and the probe manifest is missing |
 | `NODE_PORTS_NODE_SELECTOR` | empty (every node) | Label selector limiting the nodes |
 | `NODE_PORTS_CONNECT_TIMEOUT` | `5` | Seconds per connect |
+| `NODE_PORTS_BIND_TIMEOUT` | `10` | Seconds the listener keeps retrying a port it cannot bind, once per second. The wait for the listeners' `listening` line adds it to `NODE_PORTS_POD_TIMEOUT` |
 | `NODE_PORTS_POD_TIMEOUT` | `120` | Seconds for the listener waits and for removing an earlier run's Pods. The client wait adds `NODE_PORTS_CONNECT_TIMEOUT` per port, because a client probes its ports one after another and a firewall that drops the packets makes every probe take the full connect timeout |
 
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Every port of every ordered pair is open |
-| `1` | At least one port is closed, has no result, or was not bound by the listener |
+| `1` | At least one port is closed, has no result, or was not bound by the listener within `NODE_PORTS_BIND_TIMEOUT` |
 | `2` | Usage or cluster error: a missing tool or image, an invalid variable, fewer than two nodes, a node without an InternalIP or whose first one is IPv6 (the listeners bind IPv4 only) or not an address, Pods of an earlier run that cannot be deleted, Pods that cannot be created, or listeners that never became Ready |
+
+#### Migration port reservation
+
+**Files:** `deploy/lab/metal-stack/migration-ports/kustomization.yaml`,
+`namespace.yaml` and `reservation-daemonset.yaml` beside it
+
+The kernel picks the local port of an outgoing connection from
+`net.ipv4.ip_local_port_range`, `32768` to `65535` on the lab's nodes, which
+holds the migration range. A host-network process can therefore get a
+migration port for a connection that lasts for days: on shoot `forge`, `calico-node` held
+`49152` for its connection to the API server, and the check answered
+`listener bind failed: 49152` on every run. libvirt skips a migration port it
+cannot bind, so migrations go on; the check cannot test the port.
+
+The DaemonSet `migration-port-reservation` in `hypervisor-system` runs on
+every node. Its init container `reserve` adds `49152-49215` to
+`net.ipv4.ip_local_reserved_ports`, which the kernel leaves out when it picks a
+local port; a bind to a named port, QEMU's and the check's, is not affected. It
+keeps a value the node already carries. The setting belongs to the host's
+network namespace and `/proc/sys` is writable only in a privileged container,
+so the pod uses the host's network and that container is privileged. The second
+container, `hold`, only keeps the pod running, as UID 65534 without a
+capability: the setting is gone after a reboot, and the init container then
+runs again. Both run the node probe's pinned debian image, and Renovate moves
+the pins in one group.
+
+Part 2, Step 1 of the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+the directory in front of the check. The hypervisor overlay takes it as a
+resource, so `EXTERNAL_CLUSTER=true make teardown-infra` removes the DaemonSet
+with that overlay. The reserved ports stay on a node until it reboots.
+
+The reservation closes no connection. One that held a port of the range before
+it keeps the port, and the check then still reports `listener bind failed`.
+The init container names such a socket and the process that owns it, which is
+what the pod's host PID namespace is for:
+
+```bash
+kubectl logs -n hypervisor-system -l app.kubernetes.io/name=migration-port-reservation \
+  -c reserve --prefix --tail=-1
+```
+
+```text
+[pod/migration-port-reservation-5gm99/reserve] reserved: 49152-49215 (before: none)
+[pod/migration-port-reservation-5gm99/reserve] in use: port 49152 by calico-node (pid 3798)
+[pod/migration-port-reservation-bjjzt/reserve] reserved: 49152-49215 (before: none)
+[pod/migration-port-reservation-bjjzt/reserve] in use: none
+```
+
+`--tail=-1` keeps every line: with a label selector, `kubectl logs` prints only
+the last 10 lines of each pod, which can drop a pod's `reserved:` line and its
+first holders. `kubectl get pod -n hypervisor-system -o wide` maps each pod to
+its node. A socket no process holds prints `by an unknown owner`. Restarting
+the named process frees its port, and its next connection gets a port outside
+the range. For a process a DaemonSet runs, delete its pod on that node, as for
+`calico-node` on `forge`:
+
+```bash
+kubectl delete pod -n kube-system -l k8s-app=calico-node --field-selector spec.nodeName=<node>
+```
+
+The lines describe the moment the pod started. Delete the reservation's pod on
+the node to read them anew.
+

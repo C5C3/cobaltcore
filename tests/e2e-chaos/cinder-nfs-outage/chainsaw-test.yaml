@@ -20,6 +20,9 @@
 #     create fails, and a reader of the CR alone cannot see the fault
 #   - after the server is back: a fresh create reaches available with its file
 #     on the share, and every volume the suite asked for deletes
+#   - after the server is back: a process that held a POSIX lock on a file of
+#     the share through the whole outage writes through the locked descriptor
+#     again, with no error
 #
 # The outage is a scale-down of the NFS server, not a NetworkChaos partition.
 # The share is mounted by the csi-nfs-node DaemonSet, which runs with
@@ -30,10 +33,18 @@
 # is what tests/e2e-chaos/deletion-stuck-finalizer does to the mariadb-operator
 # on this same leg.
 #
-# Recovery takes longer than the fault. A fresh nfsd comes up in its NFSv4
-# grace period, up to 90s in which it serves reclaims alone, and the client
-# retries through it without telling the application. The post-recovery create
-# is therefore given 240s where the baseline gets 120s.
+# Recovery takes longer than the fault. The restarted server comes up in its
+# NFSv4 grace period, up to 90s in which it serves reclaims alone, and the
+# client retries through it without telling the application. The post-recovery
+# create is therefore given 240s where the baseline gets 120s.
+#
+# The lock holder of 02-lock-holder-pod.yaml checks the reclaim. It takes its
+# lock in step 2 and writes through it every 2 seconds, and step 5 requires
+# three new writes and no error after the server's return (LOCK-KEPT-OK). A
+# server that restarts without its NFSv4 client records refuses the reclaim,
+# the client marks the lock lost, and every later write fails with EIO. No
+# create and no CR shows that, and a Nova server's attached volume fails the
+# same way.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -155,6 +166,13 @@ spec:
   # `kubectl run -i` only streams from the moment the attach lands, so a probe
   # that finishes first would lose its sentinel. The token is the noauth
   # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  #
+  # The second script starts the lock holder and waits for its third write.
+  # The holder keeps its lock and its writes going through steps 3 and 4, and
+  # step 5 reads its log once the server is back. The step cleanup runs at the
+  # end of the test, after step 3's has brought the server back: it deletes
+  # the holder and removes its file from the export, which the other cinder
+  # suites share.
   - try:
     - script:
         timeout: 8m
@@ -277,7 +295,37 @@ spec:
             stat -c '%u %g %a %s' "${MNT}/volume-${VID}")"
           echo "stat volume-${VID}: ${STAT}"
           echo "OK: the baseline volume reached available and its file is on the share"
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=cinder-nfs-chaos-probe-lock
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+          kubectl apply -f 02-lock-holder-pod.yaml
+
+          # 60 x 2s = 120s for the image, the mount and three writes.
+          for _ in $(seq 1 60); do
+            OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>/dev/null || true)"
+            if grep -qE ' ok 3$' <<<"$OUT"; then
+              printf '%s\n' "$OUT"
+              echo "LOCK-HELD-OK"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: the lock holder wrote no third ok line within 120s"
+          kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true
+          kubectl describe pod "$POD" -n "$NAMESPACE" 2>&1 || true
+          exit 1
     catch: *nfs-chaos-dump
+    cleanup:
+    - script:
+        timeout: 3m
+        content: |
+          kubectl delete pod cinder-nfs-chaos-probe-lock -n "$NAMESPACE" --ignore-not-found --wait=false 2>&1 || true
+          kubectl rollout status deploy/nfs-server -n "$NAMESPACE" --timeout=120s 2>&1 || true
+          kubectl exec -n "$NAMESPACE" deploy/nfs-server -- rm -f /exports/volumes/chaos-lock-holder.img 2>&1 || true
   # ── Step 3: Take the export away ────────────────────────────────────────
   # The pre-outage identity of the cinder-volume pod is stashed on its own
   # Deployment as an annotation: chainsaw hands no values between steps, and
@@ -321,7 +369,7 @@ spec:
 
           # The client dials the Service, so the outage begins when the last
           # address leaves the EndpointSlice. The pod is waited out too: a
-          # terminating nfsd still answers the RPCs it has sockets for.
+          # terminating server still answers the RPCs it has sockets for.
           # 60 x 2s = 120s, well past the 30s termination grace period.
           for _ in $(seq 1 60); do
             ADDRS="$(kubectl get endpointslices -n "$NAMESPACE" \
@@ -540,6 +588,70 @@ spec:
           kubectl scale deploy/nfs-server -n "$NAMESPACE" --replicas=1
           kubectl rollout status deploy/nfs-server -n "$NAMESPACE" --timeout=180s
           echo "OK: the NFS server is back"
+    # The lock holder of step 2 has been blocked in a write since the server
+    # went away. It writes again once its client has reclaimed the lock. A
+    # server that lost its client records refuses the reclaim, and the holder
+    # logs an error for every write from then on.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=cinder-nfs-chaos-probe-lock
+
+          # kubectl's error output stays apart from the log, so a failed read
+          # is reported as one and never counted as a log without an ok line.
+          read_log() {
+            local err
+            err="$(mktemp)"
+            if ! LOG="$(kubectl logs "$POD" -n "$NAMESPACE" 2>"$err")"; then
+              echo "FAIL: cannot read the lock holder's log: $(cat "$err")"
+              rm -f "$err"
+              exit 1
+            fi
+            rm -f "$err"
+          }
+          ok_lines() { grep -cE ' ok [0-9]+$' <<<"$LOG" || true; }
+          first_error() { grep -m1 ' error ' <<<"$LOG" || true; }
+
+          read_log
+          BEFORE="$(ok_lines)"
+          if [ "$BEFORE" -eq 0 ]; then
+            echo "FAIL: the lock holder wrote no ok line before the outage"
+            exit 1
+          fi
+
+          # 90 x 2s = 180s. An error line ends the wait: a lost lock fails
+          # every write from then on, and waiting out the bound would only
+          # delay the verdict.
+          NOW="$BEFORE"
+          ERR=""
+          for _ in $(seq 1 90); do
+            read_log
+            ERR="$(first_error)"
+            NOW="$(ok_lines)"
+            if [ -n "$ERR" ] || [ "$NOW" -ge $((BEFORE + 3)) ]; then
+              break
+            fi
+            sleep 2
+          done
+          echo "ok lines of the lock holder: ${BEFORE} at the server's return, ${NOW} now"
+          printf '%s\n' "$LOG" | tail -n 20
+          if [ -n "$ERR" ]; then
+            echo "FAIL: the lock holder lost its lock: ${ERR}"
+            exit 1
+          fi
+          if [ "$NOW" -lt $((BEFORE + 3)) ]; then
+            echo "FAIL: the lock holder wrote no new ok line within 180s of the server's return"
+            exit 1
+          fi
+          PHASE="$(kubectl get pod "$POD" -n "$NAMESPACE" -o 'jsonpath={.status.phase}')"
+          if [ "$PHASE" != "Running" ]; then
+            echo "FAIL: the lock holder is ${PHASE}, not Running"
+            exit 1
+          fi
+          echo "LOCK-KEPT-OK"
+          kubectl delete pod "$POD" -n "$NAMESPACE" --wait=true --timeout=60s
     - script:
         timeout: 9m
         shell: bash
@@ -556,9 +668,11 @@ spec:
           BASE = sys.argv[1]
           NAME = sys.argv[2]
           ERRORED_NAME = sys.argv[3]
-          # A fresh nfsd opens in its NFSv4 grace period, up to 90s of reclaims
-          # only, and the client retries through it silently. The create is
-          # given more room than the baseline's 120s for that reason.
+          # The restarted server opens in its NFSv4 grace period, up to 90s of
+          # reclaims only, and the client retries through it silently. The
+          # script before this one waited for the lock holder's reclaim; a new
+          # create waits for the period to end. It is given more room than the
+          # baseline's 120s for that reason.
           SETTLE_SECONDS = 240
           HEADERS = {"X-Auth-Token": "admin:admin",
                      "Content-Type": "application/json"}

@@ -42,6 +42,11 @@ CR named `controlplane` is `Ready` in the `openstack` namespace and its projecte
 examples below is one that devstack produces.
 :::
 
+The certificates of this guide belong to the Database trust domain of the
+figure. `{name}` is `controlplane-keystone` here.
+
+![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
+
 1. **cert-manager installed.** The chart from `deploy/flux-system/releases/cert-manager.yaml`
    provides the `cert-manager.io/v1` CRDs (`Certificate`, `Issuer`, `ClusterIssuer`).
    Confirm the controller is healthy:
@@ -82,10 +87,11 @@ examples below is one that devstack produces.
    ::: warning Do not enable `verify-full` against a plaintext MariaDB
    Enabling `verify-full` client TLS against a MariaDB that offers no server TLS
    breaks the connection — the child Keystone reports `DatabaseReady=False`.
-   The [standalone Quick Start](#standalone-keystone-without-a-controlplane)
-   devstack ships its `openstack-db` with `spec.tls.required=true`, so the
-   standalone flow at the end of this guide is fully runnable end-to-end without
-   extra MariaDB hardening.
+   The kind overlay of the Quick Start devstacks turns server TLS off on
+   `openstack-db` (`deploy/kind/infrastructure/kustomization.yaml`); the
+   production manifest `deploy/flux-system/infrastructure/mariadb.yaml` sets
+   `spec.tls.enabled=true` and `required=true`. The standalone flow at the end
+   of this guide needs a TLS-enabled MariaDB as well.
    :::
 
 4. **keystone-operator running.** Either via the Helm release in
@@ -304,10 +310,11 @@ above).
 
 On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it, and the shared `openstack-db` MariaDB ships with
-`spec.tls.enabled=true, required=true` — so this flow is fully runnable
-end-to-end without extra MariaDB hardening. Set the `tls` block on the Keystone
-CR's own `spec.database`:
+projecting it, and the shared `openstack-db` MariaDB of the kind overlay runs
+without server TLS. Enable `spec.tls` on it first, by removing the `tls` patch
+from the kind overlay or by using a MariaDB that enables TLS through
+`openstack-db-ca-issuer`. Then set the `tls` block on the Keystone CR's own
+`spec.database`:
 
 ```bash
 kubectl -n openstack patch keystone keystone --type merge --patch '
@@ -357,8 +364,9 @@ mechanics through this standalone flow.
 
 The canonical check pins all three verifications above — `DatabaseTLSReady=True`,
 the encrypted live connection, and the plaintext rejection — against a standalone
-Keystone CR whose `openstack-db` ships `tls.required=true`. Run it on the CI e2e
-kind cluster:
+Keystone CR on a cluster whose `openstack-db` sets `spec.tls.enabled=true`. Where
+the overlay turns TLS off, as on the kind devstack, the suite prints `SKIP` and
+exits 0.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/database-tls

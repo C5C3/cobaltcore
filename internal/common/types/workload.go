@@ -282,8 +282,13 @@ type AutoscalingSpec struct {
 type VerticalAutoscalingSpec struct {
 	// UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
 	// recommends, Initial sets requests at pod creation, Recreate and Auto
-	// evict pods to apply them.
-	// +kubebuilder:validation:Enum=Off;Initial;Recreate;Auto
+	// evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+	// and evicts it only when the resize fails. InPlaceOrRecreate is generally
+	// available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+	// feature gate InPlacePodVerticalScaling on. A cluster whose
+	// VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+	// applies, and VPAReady turns False with reason VPAError.
+	// +kubebuilder:validation:Enum=Off;Initial;Recreate;InPlaceOrRecreate;Auto
 	UpdateMode string `json:"updateMode"`
 
 	// MinReplicas maps to the VPA's spec.updatePolicy.minReplicas. Unset, the

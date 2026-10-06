@@ -22,9 +22,10 @@
 # STAGED-ASSET SAFETY a developer may have REAL dashboards staged at
 # deploy/kind/dizzy/dashboards/ (hack/dizzy.sh stage-dashboards writes them
 # there). This test moves any pre-existing dir aside up front and restores it
-# via an EXIT trap, so it never destroys staged assets and never fails
-# spuriously; the placeholder JSONs it stages for the render assertions are
-# `{}` and are removed again afterwards.
+# via an EXIT trap, with the guard of tests/lib/dizzy_dashboards.sh, so it
+# never destroys staged assets and never fails spuriously; the placeholder
+# JSONs it stages for the render assertions are `{}` and are removed again
+# afterwards.
 #
 # Usage: bash tests/unit/deploy/dizzy_overlay_test.sh
 
@@ -39,48 +40,10 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/dizzy_dashboards.sh
+source "$PROJECT_ROOT/tests/lib/dizzy_dashboards.sh"
 
 DIZZY_DIR="$PROJECT_ROOT/deploy/kind/dizzy"
-DASHBOARDS_DIR="$DIZZY_DIR/dashboards"
-DASHBOARD_FILES=(overview.json api-operations.json time-to-ready.json)
-
-# Backup location for a developer's pre-existing dashboards/ dir, empty when
-# none existed at start.
-DASHBOARDS_BACKUP=""
-
-# ---------------------------------------------------------------------------
-# Dashboards-dir guard — never destroy developer-staged assets.
-# ---------------------------------------------------------------------------
-# Move any pre-existing dashboards/ dir into a temp backup so the render tests
-# operate on a known-empty slate. Recorded in DASHBOARDS_BACKUP for restore.
-guard_setup_dashboards() {
-  if [[ -e "$DASHBOARDS_DIR" ]]; then
-    DASHBOARDS_BACKUP="$(mktemp -d)"
-    mv "$DASHBOARDS_DIR" "$DASHBOARDS_BACKUP/dashboards"
-  fi
-}
-
-# Remove any test-created dashboards/ dir, then restore the developer's original
-# (moved aside in guard_setup_dashboards) byte-for-byte. Registered on EXIT so a
-# mid-test failure still restores it.
-guard_restore_dashboards() {
-  rm -rf "$DASHBOARDS_DIR"
-  if [[ -n "$DASHBOARDS_BACKUP" && -d "$DASHBOARDS_BACKUP/dashboards" ]]; then
-    mv "$DASHBOARDS_BACKUP/dashboards" "$DASHBOARDS_DIR"
-    rmdir "$DASHBOARDS_BACKUP" 2>/dev/null || true
-  fi
-}
-
-# Stage the three placeholder dashboard JSONs so the configMapGenerator's
-# `files:` resolve. Content is `{}` — the render assertions only care that the
-# files exist and become ConfigMap data keys.
-stage_placeholder_dashboards() {
-  mkdir -p "$DASHBOARDS_DIR"
-  local f
-  for f in "${DASHBOARD_FILES[@]}"; do
-    printf '{}' > "$DASHBOARDS_DIR/$f"
-  done
-}
 
 # Count documents of a given kind in a rendered manifest stream read on stdin.
 count_kind() {

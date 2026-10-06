@@ -6,9 +6,11 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -79,7 +81,8 @@ func TestReconcileNovaComputeNova_Waits(t *testing.T) {
 
 // TestReconcileNovaComputeNova_Resolves pins what a resolved Nova hands the
 // later steps: the default image on the installed release, the contract name,
-// the internal compute URL and the service user's credentials.
+// the internal compute URL, the service user's credentials, and the Nova with
+// the client of its cluster for the host discovery Job.
 func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := readyNovaForCompute()
@@ -96,12 +99,22 @@ func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.IsZero()).To(BeTrue())
 	g.Expect(pass.image.Reference()).To(Equal("ghcr.io/c5c3/nova-compute:2025.2"))
+	// spec.image is nil: the default image names no pullPolicy, so its tag
+	// resolves to Always on every container of the pool's pod.
+	pod := buildNovaComputeDaemonSet(cr, pass.image, pass.secretName, pinNovaComputeConfigMap, pinNovaComputeHash, nil).Spec.Template.Spec
+	g.Expect(novaComputePullPolicies(pod)).To(Equal(map[string]corev1.PullPolicy{
+		"create-instances-dir": corev1.PullAlways,
+		"wait-for-chassis":     corev1.PullAlways,
+		novaComputeComponent:   corev1.PullAlways,
+	}))
 	g.Expect(pass.secretName).To(Equal(testContract))
 	g.Expect(pass.computeURL).To(Equal("http://nova.openstack.svc.cluster.local:8774"))
 	g.Expect(pass.keystoneURL).To(Equal(nova.Spec.KeystoneEndpoint))
 	g.Expect(pass.creds.Password).To(Equal("pw"))
 	g.Expect(pass.creds.Username).To(Equal(nova.Spec.ServiceUser.Username))
 	g.Expect(pass.doer).To(BeIdenticalTo(api))
+	g.Expect(client.ObjectKeyFromObject(pass.nova)).To(Equal(client.ObjectKeyFromObject(nova)))
+	g.Expect(pass.novaChildren).To(BeIdenticalTo(r.Client), "a local Nova's children live on the local cluster")
 
 	cond := novaComputeCondition(cr, conditionTypeNovaReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
@@ -120,6 +133,29 @@ func TestReconcileNovaComputeNova_SpecImageWins(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(pass.image.Reference()).To(Equal("registry.example.com/nova-compute:custom"))
+}
+
+// TestReconcileNovaComputeNova_SpecImageDigestPullPolicy pins that a digest
+// spec.image reaches every container of the pool's pod as IfNotPresent.
+func TestReconcileNovaComputeNova_SpecImageDigestPullPolicy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newNovaComputeTestReconciler(computeapitest.New(), readyNovaForCompute(), novaServiceUserSecret("pw"))
+	cr := validNovaCompute()
+	cr.Spec.Image = &commonv1.ImageSpec{
+		Repository: "registry.example.com/nova-compute",
+		Digest:     "sha256:" + strings.Repeat("b", 64),
+	}
+	pass := &novaComputePass{}
+
+	_, err := r.reconcileNovaComputeNova(context.Background(), cr, pass)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	pod := buildNovaComputeDaemonSet(cr, pass.image, pass.secretName, pinNovaComputeConfigMap, pinNovaComputeHash, nil).Spec.Template.Spec
+	g.Expect(novaComputePullPolicies(pod)).To(Equal(map[string]corev1.PullPolicy{
+		"create-instances-dir": corev1.PullIfNotPresent,
+		"wait-for-chassis":     corev1.PullIfNotPresent,
+		novaComputeComponent:   corev1.PullIfNotPresent,
+	}))
 }
 
 // TestReconcileNovaComputeNova_UnregisteredNovaCluster pins the wait on a Nova

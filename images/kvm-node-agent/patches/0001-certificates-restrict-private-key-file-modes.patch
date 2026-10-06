@@ -1,0 +1,524 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Certificates: restrict the mode of private key files
+
+UpdateTLSCertificate in internal/certificates/manage_libvirt.go writes
+every file of the libvirt TLS Secret with os.WriteFile(target, data,
+0644), the private key included. libvirt/private/serverkey.pem,
+qemu/server-key.pem and ch/server-key.pem are therefore readable by
+every local user of a hypervisor node, and the key authenticates the
+node to every libvirtd of its migration domain (C5C3/cobaltcore#1175).
+os.WriteFile keeps the mode of a file that already exists, so a
+changed mode argument alone would not tighten a key an earlier
+version wrote.
+
+Every private key file now gets mode 0600. Each file is written to a
+temporary file in the target's directory, and the temporary files are
+renamed over their targets only once all of them are written: the
+rename replaces a file whoever owns it and needs no CAP_FOWNER, no
+reader sees a partly written key, and a write that fails leaves the
+files of the previous Secret in place instead of a new certificate
+beside an old key. A temporary file gets its group before its mode, so
+the key is never readable by more users than the result. A key target
+that a later commit adds to secretToFileMap gets mode 0600 too.
+
+The secret controller calls UpdateTLSCertificate only when the
+Secret's resourceVersion differs from the one it saved under
+CA/.last_resource_version, so a node keeps the files an earlier
+version wrote, with their mode, until its certificate is reissued. A
+key every local user could read is better replaced than re-moded.
+
+With native TLS (live_migration_with_native_tls), QEMU opens
+qemu/server-key.pem itself, as the user it runs as, and Cloud
+Hypervisor reads ch/server-key.pem the same way; that user need not be
+root. When the new environment variable PKI_KEY_GROUP holds a numeric
+group ID, these two keys get that group and mode 0640.
+libvirt/private/serverkey.pem keeps mode 0600, but it holds the same
+key, and libvirt's client key links to it, so the group can read the
+key the node presents to libvirtd as well. The agent has to belong to
+the group or hold CAP_CHOWN; otherwise the update fails with
+"operation not permitted" and replaces no file. A group name is not
+accepted, since the agent's image may have no group database, and an
+invalid value fails the update before any file is written. Without
+the variable no group changes. The chart value that sets PKI_KEY_GROUP
+is left to the upstream submission.
+
+The package had no test. TestUpdateTLSCertificateKeyMode walks the PKI
+directory and fails for any file with the key's content that is not a
+key target, for a key file with another mode or group, and for any
+other file whose mode is not 0644. Its subtests cover new files, keys
+an earlier version left at 0644, a second write, the key group,
+invalid key groups, a missing key, an empty Secret and a failed
+rename. TestUpdateTLSCertificateKeyGroupNotPermitted runs as a user
+other than root and proves that a group the process does not belong
+to fails the update and leaves every file of the previous Secret in
+place and no temporary file behind; the CobaltCore image build runs it
+as uid 65534.
+
+Applies-to: cobaltcore-dev/kvm-node-agent main @ 1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700
+
+Upstream status: not submitted
+
+diff --git a/internal/certificates/manage_libvirt.go b/internal/certificates/manage_libvirt.go
+index f9c12e4..c38abf2 100644
+--- a/internal/certificates/manage_libvirt.go
++++ b/internal/certificates/manage_libvirt.go
+@@ -24,6 +24,7 @@ import (
+ 	"net"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"time"
+ 
+ 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+@@ -41,7 +42,8 @@ func GetSecretAndCertName(host string) (secretName, certName string) {
+ }
+ 
+ var (
+-	pki = os.Getenv("PKI_PATH")
++	pki      = os.Getenv("PKI_PATH")
++	keyGroup = os.Getenv("PKI_KEY_GROUP")
+ )
+ 
+ // EnsureCertificate ensures that a certificate exists for the given host and IPs
+@@ -133,13 +135,106 @@ var symLinkMap = map[string][]string{
+ 	"server-key.pem":  {"qemu/client-key.pem", "ch/client-key.pem"},
+ }
+ 
+-func UpdateTLSCertificate(ctx context.Context, data map[string][]byte) error {
++// privateKeySource is the secret key that holds the private key.
++const privateKeySource = "tls.key"
++
++// noGroup leaves the group of a written file unchanged.
++const noGroup = -1
++
++// hypervisorKeyTargets are the private key files that a hypervisor process
++// opens itself: with native TLS, QEMU and Cloud Hypervisor read their key as
++// the user they run as, which need not be root. libvirtd runs as root.
++var hypervisorKeyTargets = map[string]bool{"qemu/server-key.pem": true, "ch/server-key.pem": true}
++
++// parseKeyGroup parses the value of PKI_KEY_GROUP: empty for no group, or a
++// numeric group ID. A group name is not accepted, because the agent's image
++// may have no group database to resolve it.
++func parseKeyGroup(value string) (int, error) {
++	if value == "" {
++		return noGroup, nil
++	}
++	gid, err := strconv.ParseUint(value, 10, 31)
++	if err != nil {
++		return noGroup, fmt.Errorf("invalid PKI_KEY_GROUP %q: not a numeric group ID", value)
++	}
++	return int(gid), nil
++}
++
++// fileModeAndGroup returns the mode and group of the file that the secret key
++// source is written to at target, a path relative to the PKI directory. A
++// private key is readable by its owner only. The keys of hypervisorKeyTargets
++// are also readable by keyGID when one is set. Any other private key target,
++// including one that is added to secretToFileMap later, gets mode 0600.
++func fileModeAndGroup(source, target string, keyGID int) (mode os.FileMode, gid int) {
++	if source != privateKeySource {
++		return 0644, noGroup
++	}
++	if hypervisorKeyTargets[target] && keyGID != noGroup {
++		return 0640, keyGID
++	}
++	return 0600, noGroup
++}
++
++// stagedFile is a temporary file that holds the data of target until it is
++// renamed over target.
++type stagedFile struct {
++	tmp, target string
++}
++
++// stageFile writes data to a temporary file in the target's directory, with
++// the given mode and with the group gid unless it is noGroup, and returns its
++// name for the caller to rename over target. os.WriteFile keeps the mode of a
++// file that already exists, and changing the mode of a file that another user
++// owns needs CAP_FOWNER; the rename replaces the file whoever owns it, and no
++// reader sees a partly written file. The temporary file is created with mode
++// 0600 and gets its group before its mode, so the data is never readable by
++// more users than the result.
++func stageFile(target string, data []byte, mode os.FileMode, gid int) (string, error) {
++	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".*")
++	if err != nil {
++		return "", err
++	}
++	if gid != noGroup {
++		err = tmp.Chown(-1, gid)
++	}
++	if err == nil {
++		err = tmp.Chmod(mode)
++	}
++	if err == nil {
++		_, err = tmp.Write(data)
++	}
++	if closeErr := tmp.Close(); err != nil || closeErr != nil {
++		return "", errors.Join(err, closeErr, os.Remove(tmp.Name()))
++	}
++	return tmp.Name(), nil
++}
++
++func UpdateTLSCertificate(ctx context.Context, data map[string][]byte) (err error) {
+ 	log := logger.FromContext(ctx)
+ 	log.Info("updating TLS certificates for libvirt", "path", pki)
+ 
++	keyGID, err := parseKeyGroup(keyGroup)
++	if err != nil {
++		return err
++	}
++
++	// Every file is staged before any target is replaced, so a write that
++	// fails, one with a key group the agent may not set included, leaves the
++	// files of the previous Secret in place instead of a new certificate
++	// beside an old key. The staged files that are not renamed are removed
++	// on return.
++	var staged []stagedFile
++	defer func() {
++		for _, file := range staged {
++			err = errors.Join(err, os.Remove(file.tmp))
++		}
++	}()
++
+ 	// write files
+ 	for source, targets := range secretToFileMap {
+ 		for _, target := range targets {
++			mode, gid := fileModeAndGroup(source, target, keyGID)
++
+ 			// prepend the pki path for the target
+ 			target = filepath.Join(pki, target)
+ 
+@@ -152,11 +247,21 @@ func UpdateTLSCertificate(ctx context.Context, data map[string][]byte) error {
+ 				return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(target), err)
+ 			}
+ 
+-			// write the file
+-			if err := os.WriteFile(target, data[source], 0644); err != nil {
++			// stage the file
++			tmp, err := stageFile(target, data[source], mode, gid)
++			if err != nil {
+ 				return fmt.Errorf("failed to write targetFile %s: %w", target, err)
+ 			}
++			staged = append(staged, stagedFile{tmp: tmp, target: target})
++		}
++	}
++
++	// replace the targets
++	for len(staged) > 0 {
++		if err := os.Rename(staged[0].tmp, staged[0].target); err != nil {
++			return fmt.Errorf("failed to write targetFile %s: %w", staged[0].target, err)
+ 		}
++		staged = staged[1:]
+ 	}
+ 
+ 	// handle symlinks
+diff --git a/internal/certificates/manage_libvirt_test.go b/internal/certificates/manage_libvirt_test.go
+new file mode 100644
+index 0000000..412f286
+--- /dev/null
++++ b/internal/certificates/manage_libvirt_test.go
+@@ -0,0 +1,302 @@
++/*
++SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package certificates
++
++import (
++	"bytes"
++	"io/fs"
++	"os"
++	"path/filepath"
++	"slices"
++	"strconv"
++	"strings"
++	"syscall"
++	"testing"
++)
++
++var testKey = []byte("private key\n")
++
++func testSecretData() map[string][]byte {
++	return map[string][]byte{
++		"ca.crt":  []byte("ca certificate\n"),
++		"tls.crt": []byte("server certificate\n"),
++		"tls.key": testKey,
++	}
++}
++
++// usePKI points the package at a new PKI directory with PKI_KEY_GROUP set to
++// group, and restores both when the test ends.
++func usePKI(t *testing.T, group string) string {
++	t.Helper()
++	oldPKI, oldKeyGroup := pki, keyGroup
++	t.Cleanup(func() { pki, keyGroup = oldPKI, oldKeyGroup })
++	pki, keyGroup = t.TempDir(), group
++	return pki
++}
++
++// regularFiles returns the sorted paths, relative to dir, of the regular
++// files under dir.
++func regularFiles(t *testing.T, dir string) []string {
++	t.Helper()
++	var files []string
++	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
++		if err != nil || !d.Type().IsRegular() {
++			return err
++		}
++		rel, err := filepath.Rel(dir, path)
++		files = append(files, rel)
++		return err
++	})
++	if err != nil {
++		t.Fatalf("walking %s: %v", dir, err)
++	}
++	slices.Sort(files)
++	return files
++}
++
++// assertNoTemporaryFile fails the test for a regular file under dir whose
++// name starts with a dot, the prefix of stageFile's temporary files.
++func assertNoTemporaryFile(t *testing.T, dir string) {
++	t.Helper()
++	for _, file := range regularFiles(t, dir) {
++		if strings.HasPrefix(filepath.Base(file), ".") {
++			t.Errorf("temporary file %s was left behind", file)
++		}
++	}
++}
++
++// assertKeyModes walks the PKI directory dir. A private key file must have
++// mode 0600 and the group of its directory; with a key group, the keys of
++// QEMU and Cloud Hypervisor must have mode 0640 and that group instead. Any
++// other regular file must have mode 0644, and a regular file that holds the
++// private key but is not a key target of secretToFileMap fails the test.
++func assertKeyModes(t *testing.T, dir string, keyGID int) {
++	t.Helper()
++	keyTargets := secretToFileMap[privateKeySource]
++	keys := 0
++	for _, file := range regularFiles(t, dir) {
++		path := filepath.Join(dir, file)
++		info, err := os.Stat(path)
++		if err != nil {
++			t.Fatalf("stat %s: %v", file, err)
++		}
++		mode := info.Mode().Perm()
++		if !slices.Contains(keyTargets, file) {
++			content, err := os.ReadFile(path)
++			if err != nil {
++				t.Fatalf("reading %s: %v", file, err)
++			}
++			if bytes.Equal(content, testKey) {
++				t.Errorf("%s holds the private key but is not a key target", file)
++			} else if mode != 0644 {
++				t.Errorf("%s has mode %#o, want 0644", file, mode)
++			}
++			continue
++		}
++		keys++
++		dirInfo, err := os.Stat(filepath.Dir(path))
++		if err != nil {
++			t.Fatalf("stat the directory of %s: %v", file, err)
++		}
++		wantMode, wantGID := os.FileMode(0600), int(dirInfo.Sys().(*syscall.Stat_t).Gid)
++		if keyGID != noGroup && (file == "qemu/server-key.pem" || file == "ch/server-key.pem") {
++			wantMode, wantGID = 0640, keyGID
++		}
++		if mode != wantMode {
++			t.Errorf("%s has mode %#o, want %#o", file, mode, wantMode)
++		}
++		if gid := int(info.Sys().(*syscall.Stat_t).Gid); gid != wantGID {
++			t.Errorf("%s has group %d, want %d", file, gid, wantGID)
++		}
++	}
++	if keys != len(keyTargets) {
++		t.Errorf("found %d private key files, want %d", keys, len(keyTargets))
++	}
++}
++
++// permittedGroup returns a group that the process may give its files: 4242
++// as root, otherwise one of its own groups.
++func permittedGroup(t *testing.T) int {
++	t.Helper()
++	if os.Geteuid() == 0 {
++		return 4242
++	}
++	groups, err := os.Getgroups()
++	if err != nil {
++		t.Fatalf("listing the process's groups: %v", err)
++	}
++	for _, gid := range groups {
++		if gid != os.Getegid() {
++			return gid
++		}
++	}
++	return os.Getegid()
++}
++
++func TestUpdateTLSCertificateKeyMode(t *testing.T) {
++	t.Run("new files", func(t *testing.T) {
++		dir := usePKI(t, "")
++		if err := UpdateTLSCertificate(t.Context(), testSecretData()); err != nil {
++			t.Fatalf("UpdateTLSCertificate: %v", err)
++		}
++		assertKeyModes(t, dir, noGroup)
++	})
++
++	t.Run("existing keys with mode 0644", func(t *testing.T) {
++		dir := usePKI(t, "")
++		for _, target := range secretToFileMap[privateKeySource] {
++			path := filepath.Join(dir, target)
++			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.WriteFile(path, []byte("old key\n"), 0644); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.Chmod(path, 0644); err != nil {
++				t.Fatal(err)
++			}
++		}
++		if err := UpdateTLSCertificate(t.Context(), testSecretData()); err != nil {
++			t.Fatalf("UpdateTLSCertificate: %v", err)
++		}
++		assertKeyModes(t, dir, noGroup)
++	})
++
++	t.Run("second write leaves no temporary file", func(t *testing.T) {
++		dir := usePKI(t, "")
++		for range 2 {
++			if err := UpdateTLSCertificate(t.Context(), testSecretData()); err != nil {
++				t.Fatalf("UpdateTLSCertificate: %v", err)
++			}
++		}
++		var want []string
++		for _, targets := range secretToFileMap {
++			want = append(want, targets...)
++		}
++		slices.Sort(want)
++		if got := regularFiles(t, dir); !slices.Equal(got, want) {
++			t.Errorf("regular files are %q, want %q", got, want)
++		}
++		assertKeyModes(t, dir, noGroup)
++	})
++
++	t.Run("key group", func(t *testing.T) {
++		gid := permittedGroup(t)
++		dir := usePKI(t, strconv.Itoa(gid))
++		if err := UpdateTLSCertificate(t.Context(), testSecretData()); err != nil {
++			t.Fatalf("UpdateTLSCertificate: %v", err)
++		}
++		assertKeyModes(t, dir, gid)
++	})
++
++	t.Run("invalid key group", func(t *testing.T) {
++		dir := usePKI(t, "")
++		for _, value := range []string{"libvirt", "-1", " 108", "2147483648"} {
++			keyGroup = value
++			err := UpdateTLSCertificate(t.Context(), testSecretData())
++			want := "invalid PKI_KEY_GROUP " + strconv.Quote(value) + ": not a numeric group ID"
++			if err == nil || err.Error() != want {
++				t.Errorf("PKI_KEY_GROUP=%q: got error %v, want %q", value, err, want)
++			}
++			if files := regularFiles(t, dir); len(files) != 0 {
++				t.Errorf("PKI_KEY_GROUP=%q: wrote %q", value, files)
++			}
++		}
++	})
++
++	t.Run("missing private key", func(t *testing.T) {
++		dir := usePKI(t, "")
++		data := testSecretData()
++		delete(data, privateKeySource)
++		err := UpdateTLSCertificate(t.Context(), data)
++		if want := "missing data for secret key tls.key"; err == nil || err.Error() != want {
++			t.Errorf("got error %v, want %q", err, want)
++		}
++		if files := regularFiles(t, dir); len(files) != 0 {
++			t.Errorf("wrote %q", files)
++		}
++	})
++
++	t.Run("empty secret", func(t *testing.T) {
++		dir := usePKI(t, "")
++		for _, data := range []map[string][]byte{nil, {}} {
++			err := UpdateTLSCertificate(t.Context(), data)
++			if err == nil || !strings.HasPrefix(err.Error(), "missing data for secret key ") {
++				t.Errorf("data %#v: got error %v, want missing data", data, err)
++			}
++			if files := regularFiles(t, dir); len(files) != 0 {
++				t.Errorf("data %#v: wrote %q", data, files)
++			}
++		}
++	})
++
++	t.Run("directory in place of a key", func(t *testing.T) {
++		dir := usePKI(t, "")
++		target := filepath.Join(dir, "libvirt/private/serverkey.pem")
++		if err := os.MkdirAll(target, 0755); err != nil {
++			t.Fatal(err)
++		}
++		err := UpdateTLSCertificate(t.Context(), testSecretData())
++		want := "failed to write targetFile " + target + ": rename "
++		if err == nil || !strings.HasPrefix(err.Error(), want) {
++			t.Errorf("got error %v, want one starting with %q", err, want)
++		}
++		assertNoTemporaryFile(t, dir)
++	})
++}
++
++// TestUpdateTLSCertificateKeyGroupNotPermitted runs only as a user other than
++// root: a root process may give a file any group.
++func TestUpdateTLSCertificateKeyGroupNotPermitted(t *testing.T) {
++	if os.Geteuid() == 0 {
++		t.Skip("root may give a file any group")
++	}
++	groups, err := os.Getgroups()
++	if err != nil {
++		t.Fatalf("listing the process's groups: %v", err)
++	}
++	gid := 4242
++	for gid == os.Getegid() || slices.Contains(groups, gid) {
++		gid++
++	}
++	dir := usePKI(t, "")
++	previous := map[string][]byte{
++		"ca.crt":  []byte("previous ca certificate\n"),
++		"tls.crt": []byte("previous server certificate\n"),
++		"tls.key": []byte("previous private key\n"),
++	}
++	if err := UpdateTLSCertificate(t.Context(), previous); err != nil {
++		t.Fatalf("writing the previous Secret: %v", err)
++	}
++	keyGroup = strconv.Itoa(gid)
++
++	err = UpdateTLSCertificate(t.Context(), testSecretData())
++	if err == nil || !strings.Contains(err.Error(), "failed to write targetFile ") ||
++		!strings.Contains(err.Error(), "operation not permitted") {
++		t.Errorf("got error %v, want a failed write that is not permitted", err)
++	}
++	for source, targets := range secretToFileMap {
++		for _, target := range targets {
++			content, err := os.ReadFile(filepath.Join(dir, target))
++			if err != nil || !bytes.Equal(content, previous[source]) {
++				t.Errorf("%s holds %q (%v), want the previous Secret's %q", target, content, err, previous[source])
++			}
++		}
++	}
++	assertNoTemporaryFile(t, dir)
++}

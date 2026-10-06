@@ -14,32 +14,16 @@ initial credentials required by downstream services.
 
 ## Architecture Overview
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Management Cluster                           │
-│                                                                     │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐             │
-│  │  openbao-0   │   │  openbao-1   │   │  openbao-2   │             │
-│  │  (leader)    │◄──►  (follower)  │◄──►  (follower)  │             │
-│  │  Raft peer   │   │  Raft peer   │   │  Raft peer   │             │
-│  └──────┬───────┘   └──────────────┘   └──────────────┘             │
-│         │                                                           │
-│         │  TLS (openbao-tls Secret from cert-manager)               │
-│         │                                                           │
-│  ┌──────▼────────────────────────────────────────────────────────┐  │
-│  │              ClusterSecretStore: openbao-cluster-store        │  │
-│  │              (kubernetes/management auth, role eso-management)│  │
-│  └──────┬────────────────────────────────────────────────────────┘  │
-│         │                                                           │
-│  ┌──────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐    │
-│  │ ExternalSec │  │ ExternalSec  │  │ ExternalSecret           │    │
-│  │ {cp}-       │  │ {cp}-        │  │ (kind overlay shims:     │    │
-│  │ keystone-   │  │ keystone-db- │  │  keystone-admin,         │    │
-│  │ admin-creds │  │ credentials  │  │  mariadb-root-password)  │    │
-│  └─────────────┘  └──────────────┘  └──────────────────────────┘    │
-│   operator-projected per-ControlPlane          kind-only             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+OpenBao runs as three Raft peers, `openbao-0` to `openbao-2`, in
+`shared-services` and serves TLS from the `openbao-tls` Secret. The figure
+shows how secrets leave and enter it.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../../diagrams/secrets-flow.svg)
+
+| Store | Kind | OpenBao login | Serves |
+| --- | --- | --- | --- |
+| `openbao-cluster-store` | `ClusterSecretStore` (`deploy/eso/clustersecretstore.yaml`) | Mount `kubernetes/management`, role `eso-management`, ServiceAccount `external-secrets`, client certificate `eso-openbao-client-tls` | The namespaces `openstack` and `shared-services`: standalone service CRs and the static ExternalSecrets of the kind overlay (`keystone-admin`, `mariadb-root-password`) |
+| `openbao-tenant-store` | `SecretStore`, one per ControlPlane namespace, created by `reconcileESOTenantStore` | Mount `kubernetes/management`, role `eso-tenant`, ServiceAccount `eso-tenant-auth`, client certificate `eso-tenant-client-tls` | The ExternalSecrets and PushSecrets of one ControlPlane and its children, such as `{cp}-keystone-admin-credentials` and `{cp}-keystone-db-credentials` in Static mode |
 
 The production stack (`deploy/eso/`, included by `deploy/flux-system/`) ships
 **no** ExternalSecret resources — its kustomization renders only
@@ -55,11 +39,13 @@ per-ControlPlane remote path `bootstrap/{ns}/{name}-keystone/admin`. Likewise
 the `{cp}-keystone-db-credentials` ExternalSecret is **not** a static deploy-time
 resource; it is created **per-ControlPlane** by the operator's
 `reconcileDBCredentials` sub-reconciler (default
-`controlplane-keystone-db-credentials`), reading the per-ControlPlane remote path
-`openstack/keystone/{ns}/{name}/db`. Standalone Keystone instances (no
-ControlPlane CR) instead reference a Secret named `keystone-db`; the **kind
-overlay** ships a `keystone-db` ExternalSecret pinned to the default identity's
-path (`deploy/kind/infrastructure/keystone-db-externalsecret.yaml`), while the
+`controlplane-keystone-db-credentials`). In the default Dynamic mode it draws
+engine-issued credentials through a `VaultDynamicSecret` generator. In Static
+mode it reads the KV path `openstack/keystone/{ns}/{name}/db`. Standalone
+Keystone instances (no ControlPlane CR) instead reference a Secret named
+`keystone-db`; the **kind overlay** ships a `keystone-db` ExternalSecret pinned
+to the default identity's path
+(`deploy/kind/infrastructure/keystone-db-externalsecret.yaml`), while the
 production stack ships none.
 
 ## Prerequisites
@@ -406,6 +392,11 @@ Config and role writes are upserts, so re-running is idempotent. OpenBao runs
 existing row reaches only the leases issued after the re-run: force a refresh of
 the service's DB-credential ExternalSecret (a fresh `force-sync` annotation)
 before the operator's db-sync Job needs the new grant.
+
+The figure places the role this script writes in the Dynamic chain and
+compares that chain with the Static one.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
 
 ### setup-eso-tenant.sh
 
@@ -984,6 +975,10 @@ is bootstrapped by `selfsigned-cluster-issuer` in
 cannot sign leaves for a separate trust chain, so the openbao trust domain owns
 its own CA (mirrors the `openstack-db-ca` precedent).
 
+The figure shows the OpenBao trust domain beside the other three.
+
+![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
+
 **Client certificates.** Two additional `cert-manager.io/v1` Certificates
 issue *client*-auth keypairs from the same `openbao-ca-issuer`, both
 declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`:
@@ -1002,14 +997,16 @@ the OpenBao listener does not verify SANs on client auth, only the issuing CA.
 
 | SAN | Type | Cert | Usages | Purpose |
 | --- | --- | --- | --- | --- |
-| `openbao-0.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 0 |
-| `openbao-1.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 1 |
-| `openbao-2.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 2 |
-| `openbao.shared-services.svc` | DNS | `openbao-tls` (server) | `server auth` | Kubernetes Service endpoint |
-| `127.0.0.1` | IP | `openbao-tls` (server) | `server auth` | Pod-local loopback (bootstrap scripts, `bao_exec`) |
-| `::1` | IP | `openbao-tls` (server) | `server auth` | IPv6 loopback |
+| `openbao-0.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 0 |
+| `openbao-1.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 1 |
+| `openbao-2.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 2 |
+| `openbao.shared-services.svc` | DNS | `openbao-tls` (server) | not set | Kubernetes Service endpoint |
+| `127.0.0.1` | IP | `openbao-tls` (server) | not set | Pod-local loopback (bootstrap scripts, `bao_exec`) |
+| `::1` | IP | `openbao-tls` (server) | not set | IPv6 loopback |
 | `openbao-client.shared-services.svc` | DNS | `openbao-client-tls` | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
 | `eso-openbao-client.shared-services.svc` | DNS | `eso-openbao-client-tls` | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
+
+`openbao-tls` sets no `usages` field, so cert-manager's default key usages apply.
 
 ### Resource Limits
 

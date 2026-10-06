@@ -33,6 +33,12 @@
 #     at /openbao/client-tls.
 # openbao.yaml is therefore excluded from the byte-identity check.
 #
+# Issue #1207 enables the cert-manager chart's startup API check by editing
+# deploy/flux-system/releases/cert-manager.yaml in place
+# (startupapicheck.enabled: true). cert-manager.yaml is therefore excluded
+# from the byte-identity check; tests/unit/deploy/cert_manager_release_test.sh
+# pins the value.
+#
 # In addition, any net-new file under deploy/flux-system/sources/ must contain
 # ONLY Flux SOURCE objects — HelmRepository, OCIRepository, GitRepository — so
 # that no HelmRelease / Gateway controller leaks into the sources directory.
@@ -94,11 +100,11 @@ test_production_overlay_unchanged() {
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml/garage-operator.yaml/glance-operator.yaml/placement-operator.yaml/openbao-operator.yaml/barbican-operator.yaml/ovn-operator.yaml/neutron-operator.yaml/cinder-operator.yaml/nova-operator.yaml/rabbitmq-cluster-operator.yaml releases added)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, cert-manager.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml/garage-operator.yaml/glance-operator.yaml/placement-operator.yaml/openbao-operator.yaml/barbican-operator.yaml/ovn-operator.yaml/neutron-operator.yaml/cinder-operator.yaml/nova-operator.yaml/rabbitmq-cluster-operator.yaml releases added)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml :(exclude)deploy/flux-system/releases/openbao-operator.yaml :(exclude)deploy/flux-system/releases/barbican-operator.yaml :(exclude)deploy/flux-system/releases/ovn-operator.yaml :(exclude)deploy/flux-system/releases/neutron-operator.yaml :(exclude)deploy/flux-system/releases/cinder-operator.yaml :(exclude)deploy/flux-system/releases/nova-operator.yaml :(exclude)deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/cert-manager.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml :(exclude)deploy/flux-system/releases/openbao-operator.yaml :(exclude)deploy/flux-system/releases/barbican-operator.yaml :(exclude)deploy/flux-system/releases/ovn-operator.yaml :(exclude)deploy/flux-system/releases/neutron-operator.yaml :(exclude)deploy/flux-system/releases/cinder-operator.yaml :(exclude)deploy/flux-system/releases/nova-operator.yaml :(exclude)deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
   )
 
   local diff_output=""

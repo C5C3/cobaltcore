@@ -498,22 +498,13 @@ func effectiveLogging(spec *novav1alpha1.LoggingSpec) novav1alpha1.LoggingSpec {
 func (r *NovaReconciler) lastGoodArtifacts(ctx context.Context, children client.Client,
 	nova *novav1alpha1.Nova,
 ) (ctrl.Result, configArtifacts, error) {
-	var deploy appsv1.Deployment
-	key := client.ObjectKey{Namespace: nova.Namespace, Name: nova.Name}
-	if err := children.Get(ctx, key, &deploy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, configArtifacts{}, nil
-		}
+	name, _, err := liveAPIDeployment(ctx, children, nova)
+	if err != nil {
+		key := client.ObjectKey{Namespace: nova.Namespace, Name: nova.Name}
 		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("fetching Deployment %s for last-good config: %w", key, err)
 	}
 
-	var art configArtifacts
-	for _, volume := range deploy.Spec.Template.Spec.Volumes {
-		if volume.Name == configVolumeName && volume.ConfigMap != nil {
-			art.configMapName = volume.ConfigMap.Name
-			break
-		}
-	}
+	art := configArtifacts{configMapName: name}
 	if art.configMapName == "" {
 		return ctrl.Result{}, art, nil
 	}
@@ -525,4 +516,33 @@ func (r *NovaReconciler) lastGoodArtifacts(ctx context.Context, children client.
 	}
 	art.dataKeys = slices.Sorted(maps.Keys(cm.Data))
 	return ctrl.Result{}, art, nil
+}
+
+// liveAPIDeployment returns what the running Nova API Deployment runs: the
+// name of the ConfigMap behind its config volume and the image of its nova-api
+// container. Each is "" when the Deployment does not exist yet or has no such
+// volume or container. Any other read failure is returned as the client
+// reports it, and the caller names the read.
+func liveAPIDeployment(ctx context.Context, c client.Reader, nova *novav1alpha1.Nova) (string, string, error) {
+	var deploy appsv1.Deployment
+	if err := c.Get(ctx, client.ObjectKey{Namespace: nova.Namespace, Name: nova.Name}, &deploy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+	configMapName, image := "", ""
+	for _, volume := range deploy.Spec.Template.Spec.Volumes {
+		if volume.Name == configVolumeName && volume.ConfigMap != nil {
+			configMapName = volume.ConfigMap.Name
+			break
+		}
+	}
+	for _, container := range deploy.Spec.Template.Spec.Containers {
+		if container.Name == novaAPIContainerName {
+			image = container.Image
+			break
+		}
+	}
+	return configMapName, image, nil
 }

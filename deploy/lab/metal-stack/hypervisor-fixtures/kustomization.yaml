@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OpenStack objects openstack-hypervisor-operator looks up on the
+# metal-stack lab: the kind fixtures of deploy/kind/hypervisor-operator-fixtures
+# without the volume type, the network and the subnet of the operator's smoke
+# test. Apply it by hand once
+# the lab ControlPlane is Ready and the node labels are set, and before
+# ../hypervisor; Part 2 of docs/quick-start-metal-stack.md runs the sequence,
+# and docs/reference/infrastructure/infrastructure-manifests.md (Lab
+# hypervisors) gives the reason behind each setting. This directory's part is:
+#
+#   kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures
+#
+# The hypervisor operator scopes a token to project "test" in domain
+# "cc3test" at start and exits when that fails, so the domain, the project,
+# the imports and the role assignment stay. The flavor (ID "1", 1 vCPU,
+# 256 MiB, 1 GiB) and the image "cirros-kvm" stay as well: they are what the
+# lab run boots. Three objects go, because only the operator's smoke test
+# uses them, and every lab Hypervisor skips it (the node label
+# cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests):
+#   - VolumeType hvo-premium, the type of the 64 GiB volume the test boots
+#     onto;
+#   - Network and Subnet hvo-smoke-test, the network the test boots on.
+#
+# Delete the fixtures before the ControlPlane, and disable the domain first:
+# Keystone refuses to delete an enabled domain, and K-ORC does not disable it.
+# hack/teardown-infra.sh does this in its step 0 under EXTERNAL_CLUSTER=true;
+# by hand it is:
+#
+#   kubectl patch -n openstack domains.openstack.k-orc.cloud/hvo-cc3test \
+#     --type=merge -p '{"spec":{"resource":{"enabled":false}}}'
+#   kubectl wait -n openstack domains.openstack.k-orc.cloud/hvo-cc3test \
+#     --for=jsonpath='{.status.resource.enabled}'=false
+#   kubectl delete -k deploy/lab/metal-stack/hypervisor-fixtures
+#
+# The kind fixtures sit outside this directory. A directory reference is
+# allowed under kustomize's default LoadRestrictionsRootOnly check, so
+# `kubectl apply -k` works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/hypervisor-operator-fixtures
+
+patches:
+  - patch: |
+      $patch: delete
+      apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: VolumeType
+      metadata:
+        name: hvo-premium
+        namespace: openstack
+  - patch: |
+      $patch: delete
+      apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Network
+      metadata:
+        name: hvo-smoke-test
+        namespace: openstack
+  - patch: |
+      $patch: delete
+      apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Subnet
+      metadata:
+        name: hvo-smoke-test
+        namespace: openstack

@@ -7,6 +7,7 @@ package bootstrap
 import (
 	"flag"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestManagerConfig_validate_validWithSetupFunc(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           runtime.NewScheme(),
 		LeaderElectionID: "test.c5c3.io",
-		SetupFunc: func(_ mcmanager.Manager, _ bool, _ int) error {
+		SetupFunc: func(_ mcmanager.Manager, _ bool, _ int, _ string) error {
 			return nil
 		},
 	}
@@ -116,6 +117,42 @@ func TestParseRunOptions_defaults(t *testing.T) {
 	if opts.maxConcurrentReconciles != DefaultMaxConcurrentReconciles {
 		t.Fatalf("maxConcurrentReconciles = %d, want %d (shared default)",
 			opts.maxConcurrentReconciles, DefaultMaxConcurrentReconciles)
+	}
+	// Without the flag the operator default stays unset, so the rule applies.
+	if opts.defaultImagePullPolicy != "" {
+		t.Fatalf("defaultImagePullPolicy = %q, want the empty string", opts.defaultImagePullPolicy)
+	}
+}
+
+// TestParseRunOptions_defaultImagePullPolicy pins the values the
+// --default-image-pull-policy flag accepts and the error any other value
+// returns before a manager exists.
+func TestParseRunOptions_defaultImagePullPolicy(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	for _, v := range []string{"Always", "IfNotPresent", "Never", ""} {
+		t.Run("accepts "+v, func(t *testing.T) {
+			opts, err := parseRunOptions(cfg, []string{"--default-image-pull-policy=" + v})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if opts.defaultImagePullPolicy != v {
+				t.Fatalf("defaultImagePullPolicy = %q, want %q", opts.defaultImagePullPolicy, v)
+			}
+		})
+	}
+
+	for _, v := range []string{"Sometimes", "always", " Always"} {
+		t.Run("rejects "+v, func(t *testing.T) {
+			_, err := parseRunOptions(cfg, []string{"--default-image-pull-policy=" + v})
+			if err == nil {
+				t.Fatalf("expected an error for %q, got nil", v)
+			}
+			want := `invalid --default-image-pull-policy "` + v + `": must be one of Always, IfNotPresent, Never`
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %q, want it to contain %q", err, want)
+			}
+		})
 	}
 }
 

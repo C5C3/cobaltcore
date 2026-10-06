@@ -335,6 +335,9 @@ func desiredReplicas(deploy *appsv1.Deployment) int32 {
 	return 1
 }
 
+// novaAPIContainerName is the name of the API Deployment's container.
+const novaAPIContainerName = "nova-api"
+
 // buildAPIDeployment constructs the desired Nova API Deployment: the compute API
 // as a WSGI application under uWSGI, reading the rendered config and holding no
 // state of its own beyond the scratch directories every process needs.
@@ -353,10 +356,11 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 		Autoscaling:    nova.Spec.Autoscaling,
 		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), apiProcesses, apiThreads),
 		Container: deployment.ContainerParams{
-			Name:    "nova-api",
-			Image:   nova.Spec.Image.Reference(),
-			Command: novaUWSGICommand(nova.Spec.API.UWSGI, novaAPIPort, novaAPIWSGIModule),
-			Env:     novaWorkloadEnv(nova, roleAPI),
+			Name:            novaAPIContainerName,
+			Image:           nova.Spec.Image.Reference(),
+			ImagePullPolicy: nova.Spec.Image.EffectivePullPolicy(),
+			Command:         novaUWSGICommand(nova.Spec.API.UWSGI, novaAPIPort, novaAPIWSGIModule),
+			Env:             novaWorkloadEnv(nova, roleAPI),
 			Ports: []corev1.ContainerPort{{
 				Name:          "nova-api",
 				ContainerPort: novaAPIPort,

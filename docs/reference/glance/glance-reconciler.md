@@ -58,7 +58,7 @@ nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected` | `WaitingForBackends`, `NoDefaultBackend` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `WaitingForBackends`, `ImageReleaseMismatch`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
@@ -310,6 +310,8 @@ watches:
   requeue.
 - Both the cluster-scoped `ClusterSecretStore` and the namespaced `SecretStore`
   a Glance can select, so a store-backend outage reflects in `SecretsReady`.
+  The `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 
 The Glance reconciler registers **both** controllers' field indexes at setup
 (`spec.glanceRef.name` and the secret-name indexes), so it must be set up before

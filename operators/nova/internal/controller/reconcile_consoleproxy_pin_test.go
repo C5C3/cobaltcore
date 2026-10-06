@@ -96,6 +96,7 @@ spec:
               key: password
               name: nova-service-user
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -266,6 +267,7 @@ spec:
               key: password
               name: nova-service-user
         image: ghcr.io/c5c3/nova:2025.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

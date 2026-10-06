@@ -251,6 +251,35 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --max-concurrent-reconciles=2
 
+  # Operator default image pull policy (--default-image-pull-policy) tests.
+  # The full default args list above already proves that no such argument is
+  # rendered while the key is unset.
+  - it: should render --default-image-pull-policy when controller.defaultImagePullPolicy is set
+    set:
+      controller:
+        defaultImagePullPolicy: IfNotPresent
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --default-image-pull-policy=IfNotPresent
+      # The flag joins the controller block and leaves the concurrency flag in place.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=2
+
+  - it: should render no --default-image-pull-policy argument when the key is unset
+    set:
+      controller:
+        maxConcurrentReconciles: 3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --leader-elect
+            - --max-concurrent-reconciles=3
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+
   # Operator logging (zap) configuration tests.
   - it: should not render zap flags with default logging values
     asserts:

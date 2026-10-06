@@ -20,10 +20,9 @@
 # ref.tag rides alongside it as the human-readable version and as Renovate's
 # lookup handle.
 #
-# Renovate's native flux manager does NOT cover this repo — its default file
-# pattern matches only gotk-components.yaml, which the flux-operator setup here
-# never produces — so every Flux pin is tracked by an explicit customManager.
-# The openbao-operator entry in renovate.json bumps tag and digest together in
+# Renovate's native flux manager reads deploy/flux-system/, but a packageRule
+# switches it off for this file, because the openbao-operator customManager in
+# renovate.json moves the tag and the digest in one match and so bumps both in
 # one reviewed PR; tests/unit/renovate/openbao_operator_chart_custommanager_test.sh
 # guards that pairing.
 ---

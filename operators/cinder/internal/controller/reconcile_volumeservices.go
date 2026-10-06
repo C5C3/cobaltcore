@@ -559,8 +559,9 @@ func buildVolumeDeployment(cinder *cinderv1alpha1.Cinder, backend backendProject
 		// Each cinder-volume runs one single-threaded process.
 		DefaultMemory: commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), 1, 1),
 		Container: deployment.ContainerParams{
-			Name:  componentVolumePrefix + backend.name,
-			Image: cinder.Spec.Image.Reference(),
+			Name:            componentVolumePrefix + backend.name,
+			Image:           cinder.Spec.Image.Reference(),
+			ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
 			Command: []string{
 				"cinder-volume",
 				"--config-dir", cinderConfigDir,
@@ -592,12 +593,13 @@ func buildServiceRemoveJob(cinder *cinderv1alpha1.Cinder, name string, art confi
 	}
 
 	removeJob := job.BuildMigrationJob(job.MigrationJobParams{
-		Name:          serviceRemoveJobName(cinder, name),
-		Namespace:     cinder.Namespace,
-		Labels:        componentLabels(cinder, componentServiceRemove),
-		Image:         cinder.Spec.Image.Reference(),
-		ContainerName: componentServiceRemove,
-		Command:       []string{"/bin/sh", "-eu", "-c", serviceRemoveScript(cinder, name)},
+		Name:            serviceRemoveJobName(cinder, name),
+		Namespace:       cinder.Namespace,
+		Labels:          componentLabels(cinder, componentServiceRemove),
+		Image:           cinder.Spec.Image.Reference(),
+		ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
+		ContainerName:   componentServiceRemove,
+		Command:         []string{"/bin/sh", "-eu", "-c", serviceRemoveScript(cinder, name)},
 		// The whole ConfigMap, as the migration Jobs mount it: cinder-manage reads
 		// no file selection, and the one extra file it sees is scheduler.conf, whose
 		// host identity it never consults, because the command names the host to

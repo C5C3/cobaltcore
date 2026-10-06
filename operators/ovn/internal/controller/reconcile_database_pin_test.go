@@ -239,6 +239,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           postStart:
             exec:
@@ -402,6 +403,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           postStart:
             exec:
@@ -565,6 +567,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           postStart:
             exec:

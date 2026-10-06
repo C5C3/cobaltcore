@@ -126,7 +126,7 @@ aggregates ten, a `NeutronMetadataAgent` three.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
-| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForNovaNotifierCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
+| `SecretsReady` | `Neutron` | `SecretsAvailable` | `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `WaitingForNovaNotifierCredentials`, `WaitingForMessagingCredentials`, `ConfigError`, `TargetClusterUnavailable` |
 | `OVNEndpointsReady` | `Neutron` | `OVNEndpointsResolved` | `OVNCentralNotFound`, `OVNCentralReadError`, `OVNEndpointsPending`, `OVNClientSecretPending`, `OVNClientSecretIncomplete`, `OVNClientSecretReadError`, `OVNClientSecretMirrorFailed`, `TargetClusterUnavailable` |
 | `DatabaseReady` | `Neutron` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `WaitingForConfig`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, `UpgradeTargetChanged`, `ExpandInProgress`, `ExpandFailed`, `MigrateInProgress`, `MigrateFailed`, `ContractInProgress`, `ContractFailed`, `UpgradeRollingUpdate` |
 | `OVNDBSyncReady` | `Neutron` | `OVNDBSyncNotRequired`, `OVNDBSyncScheduled`, `OVNDBSyncSuspended` | `OVNDBSyncJobFailed` |
@@ -217,6 +217,7 @@ pod restart and on nothing else.
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
 | `False` | `SecretStoreNotReady` | "\<kind\> \"\<name\>\" is not ready; upstream secret backend unreachable", naming the selected `ClusterSecretStore` or `SecretStore` | `RequeueSecretPolling` |
+| `False` | `ClusterSecretStoreUnsupported` | "ClusterSecretStore \"\<name\>\" cannot be read by a namespace-scoped operator; set spec.secretStoreRef to a SecretStore in namespace \"\<namespace\>\"". Set only when the operator runs with `--namespace` and the effective store is a `ClusterSecretStore`; the store is not read | `RequeueSecretPolling` |
 | `False` | `WaitingForDBCredentials` | The gate's attribution of the miss: "Database credentials ExternalSecret \<ns\>/\<name\> not found yet", "Waiting for ESO to sync database credentials from OpenBao", or "Database credentials Secret exists but is missing expected keys" | `RequeueSecretPolling` |
 | `False` | `WaitingForServiceUserCredentials` | The same three attributions against the service-user Secret and its configured key | `RequeueSecretPolling` |
 | `True` | `SecretsAvailable` | none | none |
@@ -814,11 +815,15 @@ content-addressed ConfigMap, plus `logging.conf` under
 rendered `[ovs] ovsdb_connection` is the local socket
 `unix:/run/openvswitch/db.sock` the chassis pods create on the node, and the
 `[ovn]` section carries the Southbound address the chassis step resolved together
-with the three files of the mounted client keypair. `[DEFAULT] root_helper` and
-the privsep helper commands stay at their oslo defaults of `sudo` and
-`sudo privsep-helper`, because the image ships `/usr/bin/sudo` and the container
-runs as root. While `spec.novaMetadata.caBundleSecretRef` is set, `[DEFAULT]
-auth_ca_cert` names the mounted bundle, `/etc/nova-metadata-ca/ca.crt`.
+with the three files of the mounted client keypair. `[agent] root_helper` is
+`env`, the command the agent starts `privsep-helper` with, the program that runs
+each of its privsep daemons as root. Its oslo default, `sudo`, replaces `PATH`
+with sudo's `secure_path`, which lacks `/var/lib/openstack/bin`, where the image
+installs `privsep-helper`. The container already runs as uid 0, so sudo has no
+privilege to add. The per-context `helper_command` keys are not rendered,
+because `root_helper` prefixes the helper of every privsep context. While
+`spec.novaMetadata.caBundleSecretRef` is set, `[DEFAULT] auth_ca_cert` names the
+mounted bundle, `/etc/nova-metadata-ca/ca.crt`.
 
 **Condition Contract:**
 
@@ -842,11 +847,12 @@ chassis selects, mirror `desiredNumberScheduled` and `numberReady` into status,
 and stamp `status.installedImage`. The pod runs with `hostNetwork: true` and
 mounts `/run/openvswitch` and `/run/netns` from the host, the second with
 bidirectional mount propagation so the namespaces the agent creates are visible
-to the node. The `wait-for-chassis` init container polls the local Open vSwitch
-database until `external_ids:system-id` exists, which is what the chassis's own
-`apply-node` init container writes: both workloads select the same nodes and
-nothing orders the two DaemonSets, so the gate is per node. Readiness is the
-metadata proxy socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
+to the node. The `wait-for-chassis` init container reads
+`external_ids:system-id` from the local Open vSwitch database and waits until
+the Southbound database holds a `Chassis_Private` row of that name, the row the
+agent registers in: both workloads select the same nodes and nothing orders the
+two DaemonSets, so the gate is per node. Readiness is the metadata proxy
+socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
 While `spec.novaMetadata.caBundleSecretRef` is set, the `nova-metadata-ca`
 Secret volume projects the configured key as `ca.crt`, mode `0444`, read-only at
 `/etc/nova-metadata-ca` on the agent container alone. Neutron reads the file on
@@ -926,7 +932,9 @@ cluster, probed at setup through the RESTMapper. Beyond the owned set it watches
   `Neutron` can select, so a backend outage reflects in `SecretsReady` as soon as
   ESO flips the store's Ready condition. A CR that omits `spec.secretStoreRef`
   resolves to the shared cluster store, so the default fan-out is preserved while
-  a CR pinned to a namespaced store is woken only by its own.
+  a CR pinned to a namespaced store is woken only by its own. The
+  `ClusterSecretStore` leg is not registered when the operator runs with
+  `--namespace`.
 - **OVNCentral**, mapped through the `spec.ovn.centralRef` index to every
   `Neutron` driving it, listed cluster-wide because the ref is not
   namespace-bound. The leg carries no generation predicate: what the Neutrons wait

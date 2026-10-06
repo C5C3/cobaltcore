@@ -82,6 +82,12 @@ finalizer tears them down explicitly. The
 reference covers the full contract, including the `Managed` / `External`
 lifecycles and the tenant-key uniqueness rules.
 
+In the figure, Keystone is the service in the middle namespace and Horizon the
+one on the left: `{ns}` is `openstack` and `{ns-2}` is `openstack-internal`
+here. The target cluster on the right is not part of this guide.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../diagrams/controlplane-children-placement.svg)
+
 A service **without** an assignment stays in the ControlPlane's namespace —
 that is the whole configuration for Horizon in this guide: its spec block
 simply carries no `namespace`.
@@ -150,7 +156,7 @@ seeded by the bring-up, so the dashboard needs nothing here.
 
 ### 3. Create the ControlPlane with the namespace assignment
 
-The CR is the tutorial's Step 3 CR plus two additions on the Keystone block: the
+The CR is the tutorial's Step 4 CR plus two additions on the Keystone block: the
 `namespace` assignment, and an explicit `gateway.parentRef.namespace` — when
 the field is empty the projected child's **own** namespace is assumed, which
 would now point at a Gateway that does not exist in `openstack-internal`.
@@ -230,7 +236,7 @@ Two rules to know before applying:
 
 ### 4. Onboard the OpenBao database-engine tenant
 
-Same one-time onboarding as the tutorial's Step 4, with one difference: the
+Same one-time onboarding as the tutorial's Step 5, with one difference: the
 managed MariaDB now lives in `openstack-internal`, so the readiness wait moves
 there. The script arguments are unchanged — they name the **ControlPlane**,
 and the script resolves the Keystone service namespace from the live spec and
@@ -256,7 +262,8 @@ onboarding script and ESO syncs the credential on its next retry.
 
 ## Verification
 
-The condition chain gains `NamespacesReady` at its head; wait for the
+`NamespacesReady`, the second condition of the chain, now reads
+`True/NamespacesReady` instead of `True/NoDedicatedNamespaces`; wait for the
 aggregate as usual:
 
 ```bash
@@ -434,9 +441,10 @@ cross-namespace teardown — you own the namespace and its contents end to end.
   deletion ordering.
 - [Multi-Tenant Deployment](./multi-tenant-deployment.md) — the other tenancy
   axis: namespace-scoped operator installs and several ControlPlanes side by
-  side. Note that the Helm chart's namespace-scoped RBAC mode does **not**
-  support dedicated service namespaces — the operator needs cluster-scoped
-  namespace and cross-namespace child access.
+  side. Note that the c5c3-operator chart does **not** support
+  namespace-scoped RBAC at all: it refuses `rbac.namespaceScoped=true`,
+  because the operator needs cluster-scoped namespace and cross-namespace child
+  access.
 - [Quick Start (ControlPlane)](../quick-start-controlplane.md) — the devstack
   this guide builds on.
 

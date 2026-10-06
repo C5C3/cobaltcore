@@ -50,9 +50,9 @@ The block is machine-checkable. It must be:
 1. A `## Prerequisites` heading.
 2. Whose first element is a `::: info Devstack` container that holds, in order:
    - exactly **one** link to a Getting-Started tutorial
-     (`../quick-start.md`, `../quick-start-extended.md`, or
-     `../quick-start-controlplane.md` — one `../` deeper from a service
-     subdirectory);
+     (`../quick-start.md`, `../quick-start-extended.md`,
+     `../quick-start-controlplane.md`, or `../quick-start-metal-stack.md` — one
+     `../` deeper from a service subdirectory);
    - exactly **one** fenced ` ```bash ` block with the tutorial's verbatim
      bring-up command, including every `WITH_*` opt-in flag the guide depends
      on (a guide that needs Prometheus names `WITH_PROMETHEUS=true`, a guide
@@ -62,13 +62,14 @@ The block is machine-checkable. It must be:
 3. Followed by any guide-specific prerequisite bullets (an external LDAP server,
    a Keycloak realm, a CNI that enforces NetworkPolicy, ...).
 
-The three devstacks and the names each produces:
+The four devstacks and the names each produces:
 
 | Devstack | Verbatim bring-up | Names the examples may use |
 | --- | --- | --- |
 | [Quick Start](../quick-start.md) | `KIND_HOST_PORT=8443 make deploy-infra` (then the operator, image, and CR steps) | Keystone CR `keystone` in `openstack`; admin Secret `keystone-admin`; DB Secret `keystone-db`; gateway `openstack-gw`; endpoint `https://keystone.127-0-0-1.nip.io:8443/v3` |
 | [Quick Start (Extended)](../quick-start-extended.md) | `kind create cluster --name cobaltcore --config hack/kind-config.yaml` then `make deploy-infra` (then the operator, image, and CR steps) | Same standalone names as the base Quick Start (`keystone`, `keystone-admin`, `keystone-db`) |
 | [Quick Start (ControlPlane)](../quick-start-controlplane.md) | `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra` | ControlPlane CR `controlplane` in `openstack`; projected children `controlplane-keystone` / `controlplane-horizon`; admin Secret and ExternalSecret `controlplane-keystone-admin-credentials`; DB ExternalSecret `controlplane-keystone-db-credentials`; shared `openstack-db` / `openstack-memcached` / `openstack-gw` |
+| [Quick Start (metal-stack)](../quick-start-metal-stack.md) | `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra` (then Part 1, and Part 2 for a guide that needs servers) | ControlPlane CR `controlplane` in `openstack` with the projected children of the ControlPlane devstack; Cinder child `controlplane-cinder` with the backends `nfs1` and `nfsbk`; `OVNCentral` `controlplane-ovn`; `OVNChassis` `lab-chassis`; `NeutronMetadataAgent` `lab-metadata-agent`; `NovaCompute` `lab`; namespace `hypervisor-system`; the `*.127-0-0-1.nip.io:8443` endpoints behind `kubectl port-forward` |
 
 Opt-in flags compose, so a guide that needs both a ControlPlane and Prometheus
 names `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra`.

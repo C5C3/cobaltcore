@@ -17,6 +17,12 @@ persistent storage, provisioned like the hypervisor cluster via IronCore and
 Gardener. It serves RBD block devices to VM disks and volumes, and hands Ceph
 client keys to the control-plane services through OpenBao and ESO.
 
+In the
+[multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture)
+this cluster is the one labelled Ceph Storage.
+
+![Five Kubernetes clusters on Garden Linux nodes: CobaltCore Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, and OpenStack Network. Gardener manages the clusters, IronCore provisions the bare-metal nodes and manages them out of band. API users call the OpenStack API on the control plane; end users reach the VMs through the network cluster.](../diagrams/cobaltcore-architecture.svg)
+
 ## Sketched components
 
 - **Rook Operator** managing the Ceph cluster: MON quorum, OSD provisioning,

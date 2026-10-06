@@ -776,6 +776,33 @@ e2e-ovn-overlay:
 	@[ "$$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name | wc -l | tr -d ' ')" -ge 2 ] || { echo 'the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first' >&2; exit 1; }
 	chainsaw test --config tests/e2e-ovn-overlay/chainsaw-config.yaml tests/e2e-ovn-overlay/
 
+.PHONY: e2e-nova-libvirt
+# e2e-nova-libvirt runs a NovaCompute pool on Nova's libvirt driver against a
+# libvirtd on the one kind node and boots a server there under QEMU's TCG
+# emulation (virtType: qemu), from the stack's 1 MiB zero image. It asserts
+# that libvirt runs the domain and that nova-compute built its disk as a qcow2
+# overlay, and that deleting the server removes both. The suite lives OUTSIDE
+# tests/e2e/ because the blocking nova leg of e2e-operator sweeps every
+# directory under tests/e2e/nova/, while this suite runs in the non-blocking
+# e2e-nova-libvirt CI job of its own.
+#
+# The three preflights are kept separate so each failure names its own cause:
+# no reachable cluster, the operators missing, a cluster that is not one amd64
+# node. The third exists because images/libvirt/Dockerfile installs
+# qemu-system-x86 only: on an arm64 node Nova asks for an aarch64 guest that
+# image cannot run.
+#
+# The suite labels and unlabels the node and starts libvirtd itself. It asks
+# of the cluster the stack's infrastructure (`WITH_OVN_KERNEL_MODULES=true
+# WITH_MESSAGING=true make deploy-infra`) and the six operators the CI job
+# deploys with hack/ci-deploy-operator.sh: keystone, placement, glance, ovn,
+# neutron and nova, each into <op>-system.
+e2e-nova-libvirt:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get crd novacomputes.nova.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the libvirt suite needs the nova-operator and its five siblings (keystone, placement, glance, ovn, neutron); deploy each with hack/ci-deploy-operator.sh first' >&2; exit 1; }
+	@archs="$$(kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}')"; [ "$$archs" = "amd64" ] || { echo "the libvirt suite boots an x86_64 guest on one amd64 node; this cluster's nodes are: $$archs" >&2; exit 1; }
+	chainsaw test --config tests/e2e-nova-libvirt/chainsaw-config.yaml tests/e2e-nova-libvirt/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.
@@ -809,7 +836,10 @@ deploy-infra:
 # dizzy-keystone and dizzy-glance run dizzy's chaos churn soak (a 5-minute
 # small profile by default) against the quick-start ControlPlane, exporting
 # metrics to the dizzy VictoriaMetrics; watch them at
-# https://dizzy.127-0-0-1.nip.io.
+# https://dizzy.127-0-0-1.nip.io. On the metal-stack lab
+# (EXTERNAL_CLUSTER=true), open the Gateway port-forward on 8443 and
+# `kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428`
+# first; Grafana is then at https://dizzy.127-0-0-1.nip.io:8443.
 #
 # Variables:
 #   DIZZY_SCENARIO      alternate scenario file.
@@ -818,6 +848,8 @@ deploy-infra:
 #                       so Renovate has exactly one string to bump.
 #   DIZZY_SECRET        ControlPlane admin Secret name override.
 #   DIZZY_CP_NAMESPACE  ControlPlane admin Secret namespace override.
+#   EXTERNAL_CLUSTER    true: reach Keystone and VictoriaMetrics through those
+#                       two port-forwards, without docker.
 #
 # The three preflights are kept separate so the failure modes stay
 # distinguishable — the kubectl/cluster-reachability failure is not conflated

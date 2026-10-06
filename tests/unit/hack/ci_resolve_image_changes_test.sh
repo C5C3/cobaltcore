@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/ci-resolve-image-changes.sh turns the build-images paths filters
-# into a service list and the four release-independent image flags:
+# into a service list and the release-independent image flags:
 #   - a push, a workflow_dispatch, and a plumbing change all build everything,
 #     so the publish path keeps the behaviour it has today;
 #   - a base or release-config change builds every service and the Tempest
-#     image, but not the three images built FROM ubuntu:noble;
+#     image, but not the images built FROM ubuntu:noble or golang;
 #   - a service filter builds that service alone, in ALL_SERVICES order;
 #   - an image filter builds that image with an empty service list, which is
 #     what has-services exists to gate;
@@ -62,10 +62,10 @@ assert_output() {
 }
 
 # assert_all_flags <description> <expected-value>
-# The four release-independent image flags at once.
+# Every release-independent image flag at once.
 assert_all_flags() {
   local description="$1" expected="$2" flag
-  for flag in build-tempest build-ovn build-proxy build-shifter; do
+  for flag in build-tempest build-ovn build-proxy build-shifter build-libvirt build-hvo build-kna; do
     assert_output "$description ($flag)" "$flag" "$expected"
   done
 }
@@ -116,6 +116,9 @@ test_base_builds_services_and_tempest() {
   assert_output "base does not build OVN" build-ovn "false"
   assert_output "base does not build the federation proxy" build-proxy "false"
   assert_output "base does not build the backup shifter" build-shifter "false"
+  assert_output "base does not build the libvirt image" build-libvirt "false"
+  assert_output "base does not build the hvo image" build-hvo "false"
+  assert_output "base does not build the kna image" build-kna "false"
 }
 
 # ---------------------------------------------------------------------------
@@ -175,6 +178,66 @@ test_image_filter_leaves_services_empty() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7b: the libvirt filter builds the libvirt image and nothing else
+# ---------------------------------------------------------------------------
+test_libvirt_filter_builds_libvirt_alone() {
+  echo "Test: a libvirt change builds the libvirt image alone"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_libvirt=true
+
+  assert_eq "resolver exits 0" "0" "$RC"
+  assert_output "no service is built" services ""
+  assert_output "has-services gates the empty matrix" has-services "false"
+  assert_output "the libvirt image is built" build-libvirt "true"
+  assert_output "OVN is not built" build-ovn "false"
+  assert_output "the federation proxy is not built" build-proxy "false"
+  assert_output "the backup shifter is not built" build-shifter "false"
+  assert_output "the hvo image is not built" build-hvo "false"
+  assert_output "the kna image is not built" build-kna "false"
+  assert_output "Tempest is not built" build-tempest "false"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7c: the hvo filter builds the openstack-hypervisor-operator image alone
+# ---------------------------------------------------------------------------
+test_hvo_filter_builds_hvo_alone() {
+  echo "Test: an openstack-hypervisor-operator change builds that image alone"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_hvo=true
+
+  assert_eq "resolver exits 0" "0" "$RC"
+  assert_output "no service is built" services ""
+  assert_output "has-services gates the empty matrix" has-services "false"
+  assert_output "the hvo image is built" build-hvo "true"
+  assert_output "OVN is not built" build-ovn "false"
+  assert_output "the federation proxy is not built" build-proxy "false"
+  assert_output "the backup shifter is not built" build-shifter "false"
+  assert_output "the libvirt image is not built" build-libvirt "false"
+  assert_output "the kna image is not built" build-kna "false"
+  assert_output "Tempest is not built" build-tempest "false"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7d: the kna filter builds the kvm-node-agent image alone
+# ---------------------------------------------------------------------------
+test_kna_filter_builds_kna_alone() {
+  echo "Test: a kvm-node-agent change builds that image alone"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_kna=true
+
+  assert_eq "resolver exits 0" "0" "$RC"
+  assert_output "no service is built" services ""
+  assert_output "has-services gates the empty matrix" has-services "false"
+  assert_output "the kna image is built" build-kna "true"
+  assert_output "OVN is not built" build-ovn "false"
+  assert_output "the federation proxy is not built" build-proxy "false"
+  assert_output "the backup shifter is not built" build-shifter "false"
+  assert_output "the libvirt image is not built" build-libvirt "false"
+  assert_output "the hvo image is not built" build-hvo "false"
+  assert_output "Tempest is not built" build-tempest "false"
+}
+
+# ---------------------------------------------------------------------------
 # Test 8: no filter at all resolves to nothing, successfully
 # ---------------------------------------------------------------------------
 test_no_filter_resolves_to_nothing() {
@@ -199,6 +262,21 @@ test_empty_filter_counts_as_false() {
   assert_eq "resolver exits 0" "0" "$RC"
   assert_output "an empty filter builds no service" services ""
   assert_output "has-services is false" has-services "false"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_libvirt=
+
+  assert_eq "resolver exits 0 with an empty image filter" "0" "$RC"
+  assert_output "an empty image filter builds no image" build-libvirt "false"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_hvo=
+
+  assert_eq "resolver exits 0 with an empty hvo filter" "0" "$RC"
+  assert_output "an empty hvo filter builds no hvo image" build-hvo "false"
+
+  run_resolver EVENT_NAME=pull_request ALL_SERVICES="$ALL" FILTER_kna=
+
+  assert_eq "resolver exits 0 with an empty kna filter" "0" "$RC"
+  assert_output "an empty kna filter builds no kna image" build-kna "false"
 }
 
 # ---------------------------------------------------------------------------
@@ -219,7 +297,7 @@ test_missing_env_vars_fail() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 11: GITHUB_OUTPUT receives the same six lines stdout does
+# Test 11: GITHUB_OUTPUT receives the same lines stdout does
 # ---------------------------------------------------------------------------
 test_github_output_receives_every_line() {
   echo "Test: every output line is appended to GITHUB_OUTPUT and echoed"
@@ -233,7 +311,7 @@ test_github_output_receives_every_line() {
   RC=$?
 
   assert_eq "resolver exits 0" "0" "$RC"
-  assert_eq "GITHUB_OUTPUT holds the same six lines stdout does" \
+  assert_eq "GITHUB_OUTPUT holds the same lines stdout does" \
     "$OUTPUT" "$(cat "$out")"
   assert_contains "GITHUB_OUTPUT carries the service list" \
     "$(cat "$out")" "services=glance"
@@ -251,6 +329,9 @@ test_base_and_own_filter_union
 test_service_filter_selects_one_service
 test_service_list_keeps_all_services_order
 test_image_filter_leaves_services_empty
+test_libvirt_filter_builds_libvirt_alone
+test_hvo_filter_builds_hvo_alone
+test_kna_filter_builds_kna_alone
 test_no_filter_resolves_to_nothing
 test_empty_filter_counts_as_false
 test_missing_env_vars_fail

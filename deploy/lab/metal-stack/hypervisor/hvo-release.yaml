@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# openstack-hypervisor-operator (hvo) from the upstream chart of the pinned
+# hvo commit (sources.yaml), running the image #1163 builds from that commit
+# with the patches under images/openstack-hypervisor-operator/patches/: the
+# chart renders <repository>:<appVersion>, and only the repository is
+# overridden.
+#
+# The release sits in openstack because its one input does: the auth Secret
+# the lab ControlPlane writes (spec.services.nova.hypervisorOperator), read
+# through valuesFrom, which reads only Secrets of the release's own
+# namespace. Every key of the auth Secret but auth_url feeds the chart value
+# it names; the password goes into the chart's own Secret.
+#
+# The values that differ from the chart's defaults, and why:
+#   - fullnameOverride is hypervisor-operator: the chart names its metrics
+#     Service <fullname>-controller-manager-metrics-service, and with the
+#     release name as fullname that is 64 characters, one over the limit,
+#     so the install fails.
+#   - osAuthUrl is the in-cluster Keystone URL. The auth Secret carries the
+#     public https://keystone.127-0-0-1.nip.io:8443/v3, which resolves to the
+#     pod itself inside the cluster. The URL is
+#     `kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}'`.
+#   - certificateNamespace is hypervisor-system, where libvirt-ca.yaml puts
+#     the Issuer of the default name nova-hypervisor-agents-ca-issuer.
+#   - agentNamespaces is openstack, where the NovaCompute, OVNChassis and
+#     metadata agent pods run: an offboarding waits for them to leave the
+#     node.
+#   - The ServiceMonitor and the PrometheusRules are on, with or without
+#     Prometheus on the cluster. Without a Prometheus Operator they are inert
+#     objects; the Prometheus of ../prometheus (WITH_PROMETHEUS=true) picks
+#     them up without a second apply. This directory is applied by hand after
+#     the deploy, so a switch that followed WITH_PROMETHEUS would need a
+#     second variant of it. The objects the chart renders, its alerts and
+#     which of them have data on the lab: the hvo rows of `### Lab
+#     hypervisors` in docs/reference/infrastructure/infrastructure-manifests.md.
+#   - The dashboards and the custom-resource metrics ConfigMaps stay off. The
+#     chart's dashboard is a Perses dashboard, which Grafana cannot load;
+#     ../prometheus/hypervisor-operator.json carries its four
+#     controller-runtime panels. The custom-resource metrics need a
+#     kube-state-metrics with the chart's config, which the lab does not run,
+#     so the alerts that read kube_customresource_* series never have data.
+#
+# hvo takes the compute, placement, image and network endpoints from the
+# catalog interface OS_INTERFACE names (patch 0004 of the image), and the
+# chart has no value for the variable, so the post-renderer sets internal.
+# The internal endpoints are the in-cluster Service URLs over plain HTTP, so
+# the pod needs neither a host alias nor the gateway certificates. The
+# post-renderer also sets imagePullPolicy Always, which the chart has no
+# value for either: build-images.yaml moves the tag sha-<commit> to every
+# main build, so the tag changes content whenever patches/ changes. A node
+# that cached an image without patch 0002 would start a binary that refuses
+# the flag below, and one without patch 0004 ignores the variable and dials
+# the public URLs.
+#
+# The post-renderer's second patch appends one argument to the list the chart
+# renders from controllerManager.manager.args, which stays untouched:
+#   - --default-high-availability=false, the flag of the image's patch 0002:
+#     hvo creates each Hypervisor with spec.highAvailability false. While
+#     the field is true, onboarding waits for the HaEnabled condition, which
+#     only SAP's kvm-ha-service sets.
+#
+# The third patch adds bearerTokenFile to the ServiceMonitor's endpoint. hvo
+# defaults --metrics-secure to true and serves its metrics behind
+# controller-runtime's authentication and authorization filter, and the
+# chart's ServiceMonitor sends no token, so every scrape would answer 401.
+# With the patch Prometheus presents its own ServiceAccount token; the
+# ClusterRole kube-prometheus-stack-prometheus grants get on the non-resource
+# URL /metrics, which the filter asks the API server about. The ServiceMonitor
+# CRD marks the field deprecated in favour of authorization, which would need
+# a token Secret in openstack. The endpoint keeps the chart's
+# insecureSkipVerify, so Prometheus sends the token to a certificate it does
+# not verify.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openstack-hypervisor-operator
+  namespace: openstack
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: openstack-hypervisor-operator
+    namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  valuesFrom:
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: password
+      targetPath: secret.servicePassword
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: username
+      targetPath: controllerManager.manager.env.osUsername
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: user_domain_name
+      targetPath: controllerManager.manager.env.osUserDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_name
+      targetPath: controllerManager.manager.env.osProjectName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_domain_name
+      targetPath: controllerManager.manager.env.osProjectDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: region_name
+      targetPath: controllerManager.manager.env.osRegionName
+  values:
+    fullnameOverride: hypervisor-operator
+    controllerManager:
+      manager:
+        image:
+          repository: ghcr.io/c5c3/openstack-hypervisor-operator
+        env:
+          osAuthUrl: http://controlplane-keystone.openstack.svc:5000/v3
+          certificateNamespace: hypervisor-system
+          agentNamespaces: openstack
+    serviceMonitor:
+      enabled: true
+    prometheusRules:
+      create: true
+    dashboards:
+      create: false
+    customResourceMetrics:
+      create: false
+  postRenderers:
+    - kustomize:
+        patches:
+          # The chart renders one Deployment; kustomize replaces the patch's
+          # name with its own.
+          - target:
+              kind: Deployment
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        imagePullPolicy: Always
+                        env:
+                          - name: OS_INTERFACE
+                            value: internal
+          # The chart has no value for this flag of patch 0002, so the
+          # argument is appended to the list it renders.
+          - target:
+              kind: Deployment
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --default-high-availability=false
+          # The chart renders one ServiceMonitor with one endpoint and no
+          # token; hvo answers a scrape without one with 401.
+          - target:
+              kind: ServiceMonitor
+            patch: |
+              - op: add
+                path: /spec/endpoints/0/bearerTokenFile
+                value: /var/run/secrets/kubernetes.io/serviceaccount/token

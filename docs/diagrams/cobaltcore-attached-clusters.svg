@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1728" height="724" viewBox="0 0 1728 724" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One control plane, many attached clusters">
+<title>One control plane, many attached clusters</title>
+<rect width="1728" height="724" fill="#F6F5F1"/>
+<rect x="385.5" y="41.5" width="957" height="97" rx="16.5" fill="#E7EDF9" stroke="#2457C5" stroke-width="3"/>
+<rect x="416" y="72" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="454" y="98.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="506" y="101.52" font-size="32" font-weight="700" fill="#1D47A6">OpenStack Control Plane</text>
+<rect x="1096" y="70" width="220" height="40" rx="20" fill="#1D47A6"/>
+<text x="1206" y="98.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OpenStack API</text>
+<rect x="41.5" y="241.5" width="517" height="441" rx="18.5" fill="#E3F1F2" stroke="#0E7D89" stroke-width="3"/>
+<text x="68" y="290.8" font-size="30" font-weight="700" fill="#0B5F69">Ceph Storage</text>
+<rect x="65" y="317" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<rect x="84" y="336" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="122" y="362.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="174" y="364.08" font-size="28" font-weight="700" fill="#0B5F69">Storage 1</text>
+<rect x="85" y="389" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="150" y="414.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="235" y="389" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="300" y="414.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="385" y="389" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="450" y="414.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="65" y="459" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<rect x="84" y="478" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="122" y="504.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="174" y="506.08" font-size="28" font-weight="700" fill="#0B5F69">Storage 2</text>
+<rect x="85" y="531" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="150" y="556.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="235" y="531" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="300" y="556.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="385" y="531" width="130" height="34" rx="17" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="450" y="556.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="65" y="601" width="470" height="54" rx="13" fill="none" stroke="#0E7D89" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="300" y="636.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">+ more</text>
+<rect x="605.5" y="241.5" width="517" height="441" rx="18.5" fill="#F8E8E9" stroke="#C6343C" stroke-width="3"/>
+<text x="632" y="290.8" font-size="30" font-weight="700" fill="#A3262E">OpenStack Compute</text>
+<rect x="629" y="317" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<rect x="648" y="336" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="686" y="362.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="738" y="364.08" font-size="28" font-weight="700" fill="#A3262E">Compute 1</text>
+<rect x="649" y="389" width="130" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="714" y="414.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">KVM</text>
+<rect x="799" y="389" width="130" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="864" y="414.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">KVM</text>
+<rect x="949" y="389" width="130" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="1014" y="414.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">KVM</text>
+<rect x="629" y="459" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<rect x="648" y="478" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="686" y="504.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="738" y="506.08" font-size="28" font-weight="700" fill="#A3262E">Compute 2</text>
+<rect x="649" y="531" width="430" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="864" y="556.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Cloud Hypervisor</text>
+<rect x="629" y="601" width="470" height="54" rx="13" fill="none" stroke="#C6343C" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="864" y="636.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">+ more</text>
+<rect x="1169.5" y="241.5" width="517" height="441" rx="18.5" fill="#FAF3DA" stroke="#B38A00" stroke-width="3"/>
+<text x="1196" y="290.8" font-size="30" font-weight="700" fill="#6F5600">OpenStack Network</text>
+<rect x="1193" y="317" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<rect x="1212" y="336" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="1250" y="362.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1302" y="364.08" font-size="28" font-weight="700" fill="#6F5600">Network 1</text>
+<rect x="1213" y="389" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1278" y="414.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1363" y="389" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1428" y="414.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1513" y="389" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1578" y="414.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1193" y="459" width="470" height="124" rx="13" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<rect x="1212" y="478" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="1250" y="504.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1302" y="506.08" font-size="28" font-weight="700" fill="#6F5600">Network 2</text>
+<rect x="1213" y="531" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1278" y="556.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1363" y="531" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1428" y="556.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1513" y="531" width="130" height="34" rx="17" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1578" y="556.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1193" y="601" width="470" height="54" rx="13" fill="none" stroke="#B38A00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1428" y="636.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">+ more</text>
+<polyline points="864,140 864,227.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="864,238 856.8,223 871.2,223" fill="#2457C5"/>
+<polyline points="300,190 1428,190" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="300,190 300,227.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="300,238 292.8,223 307.2,223" fill="#2457C5"/>
+<polyline points="1428,190 1428,227.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1428,238 1420.8,223 1435.2,223" fill="#2457C5"/>
+</svg>

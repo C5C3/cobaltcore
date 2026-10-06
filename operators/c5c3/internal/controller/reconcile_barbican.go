@@ -383,6 +383,7 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	if override := cp.Spec.Services.Barbican.Image; override != nil {
 		image = *override
 	}
+	image = withControlPlanePullPolicy(cp, image)
 
 	// Place the child in the namespace assigned to the Barbican service (the
 	// ControlPlane's own unless services.barbican.namespace says otherwise). A child

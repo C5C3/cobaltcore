@@ -147,9 +147,17 @@ test_all_jobs_defined() {
   assert_file_contains "merge-keystone-federation-proxy-image job defined" "$WORKFLOW" "merge-keystone-federation-proxy-image:"
   assert_file_contains "build-backup-shifter job defined" "$WORKFLOW" "build-backup-shifter:"
   assert_file_contains "merge-backup-shifter-image job defined" "$WORKFLOW" "merge-backup-shifter-image:"
+  assert_file_contains "build-libvirt job defined" "$WORKFLOW" "build-libvirt:"
+  assert_file_contains "merge-libvirt-image job defined" "$WORKFLOW" "merge-libvirt-image:"
   assert_file_contains "build-ovn job defined" "$WORKFLOW" "build-ovn:"
   assert_file_contains "merge-ovn-image job defined" "$WORKFLOW" "merge-ovn-image:"
   assert_file_contains "verify-ovn-image job defined" "$WORKFLOW" "verify-ovn-image:"
+  assert_file_contains "build-hvo job defined" "$WORKFLOW" "build-hvo:"
+  assert_file_contains "merge-hvo-image job defined" "$WORKFLOW" "merge-hvo-image:"
+  assert_file_contains "verify-hvo-image job defined" "$WORKFLOW" "verify-hvo-image:"
+  assert_file_contains "build-kna job defined" "$WORKFLOW" "build-kna:"
+  assert_file_contains "merge-kna-image job defined" "$WORKFLOW" "merge-kna-image:"
+  assert_file_contains "verify-kna-image job defined" "$WORKFLOW" "verify-kna-image:"
   assert_file_contains "build-nova-compute-image job defined" "$WORKFLOW" "build-nova-compute-image:"
   assert_file_contains "merge-nova-compute-image job defined" "$WORKFLOW" "merge-nova-compute-image:"
   assert_file_contains "verify-nova-compute-image job defined" "$WORKFLOW" "verify-nova-compute-image:"
@@ -212,88 +220,96 @@ test_base_image_digest_outputs() {
   assert_contains "python-base-digest output references merge-python-base digest" "$python_digest_output" "merge-python-base.outputs.digest"
 }
 
-# --- keystone-federation-proxy build/merge job structure ---
-test_keystone_federation_proxy_jobs() {
-  echo "Test: keystone-federation-proxy job structure"
+# --- distro-package image build/merge job structure ---
+# test_distro_image_jobs <image> <verify-script>
+# The release-independent images built from distro packages alone share one
+# job shape: build-<image> and merge-<image>-image, the merge step id
+# merge-<image>.
+test_distro_image_jobs() {
+  local img="$1" script="$2"
+  echo "Test: $img job structure"
 
   local needs
-  needs=$(yq_raw '.jobs["build-keystone-federation-proxy"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "build-keystone-federation-proxy needs lint-dockerfiles" "$needs" "lint-dockerfiles"
-  assert_contains "build-keystone-federation-proxy needs prepare" "$needs" "prepare"
+  needs=$(yq_raw ".jobs[\"build-$img\"][\"needs\"][]" "$WORKFLOW" || true)
+  assert_contains "build-$img needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-$img needs prepare" "$needs" "prepare"
 
   # Release-independent: no release axis, a static multi-arch include matrix.
   local matrix_platforms
-  matrix_platforms=$(yq_raw '.jobs["build-keystone-federation-proxy"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
-  assert_contains "build-keystone-federation-proxy matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
-  assert_contains "build-keystone-federation-proxy matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+  matrix_platforms=$(yq_raw ".jobs[\"build-$img\"][\"strategy\"][\"matrix\"][\"include\"][][\"platform\"]" "$WORKFLOW" || true)
+  assert_contains "build-$img matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-$img matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
 
   # PR-inline verification wiring (the tempest pattern).
   local verify_script
-  verify_script=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["verify-script"]' "$WORKFLOW" || echo "null")
-  assert_eq "build step wires the verify script" \
-    "tests/container-images/verify_keystone_federation_proxy.sh" "$verify_script"
+  verify_script=$(yq_raw ".jobs[\"build-$img\"][\"steps\"][] | select(.id == \"build-$img\") | .with[\"verify-script\"]" "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" "$script" "$verify_script"
 
   # The lint matrix covers the new Dockerfile.
   local lint_matrix
   lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_contains "lint-dockerfiles covers the federation-proxy Dockerfile" \
-    "$lint_matrix" "images/keystone-federation-proxy/Dockerfile"
+  assert_contains "lint-dockerfiles covers the $img Dockerfile" \
+    "$lint_matrix" "images/$img/Dockerfile"
 
   # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
   local merge_if
-  merge_if=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["if"]' "$WORKFLOW" || echo "null")
+  merge_if=$(yq_raw ".jobs[\"merge-$img-image\"][\"if\"]" "$WORKFLOW" || echo "null")
   assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
 
   local merge_needs
-  merge_needs=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "merge job needs the build job" "$merge_needs" "build-keystone-federation-proxy"
+  merge_needs=$(yq_raw ".jobs[\"merge-$img-image\"][\"needs\"][]" "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-$img"
 
   local merge_tags
-  merge_tags=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["steps"][] | select(.id == "merge-keystone-federation-proxy") | .with["tags"]' "$WORKFLOW" || echo "null")
-  assert_contains "merge tags include :latest" "$merge_tags" "keystone-federation-proxy:latest"
-  assert_contains "merge tags include the commit SHA" "$merge_tags" 'keystone-federation-proxy:${{ github.sha }}'
+  merge_tags=$(yq_raw ".jobs[\"merge-$img-image\"][\"steps\"][] | select(.id == \"merge-$img\") | .with[\"tags\"]" "$WORKFLOW" || echo "null")
+  assert_contains "merge tags include :latest" "$merge_tags" "$img:latest"
+  assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
 }
 
-# --- backup-shifter build/merge job structure ---
-test_backup_shifter_jobs() {
-  echo "Test: backup-shifter job structure"
+# --- libvirt keeper tag: minted once on main, from the full history ---
+test_libvirt_keeper_tag() {
+  echo "Test: merge-libvirt-image mints the keeper tag on main from the full history"
 
-  local needs
-  needs=$(yq_raw '.jobs["build-backup-shifter"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "build-backup-shifter needs lint-dockerfiles" "$needs" "lint-dockerfiles"
-  assert_contains "build-backup-shifter needs prepare" "$needs" "prepare"
+  local job='.jobs["merge-libvirt-image"]'
+  local checkout="$job.steps[] | select(.uses == \"actions/checkout@*\")"
+  assert_eq "the checkout of merge-libvirt-image fetches the full history on main" \
+    "\${{ github.ref_name != 'main' && 1 || 0 }}" \
+    "$(yq_raw "$checkout | .with[\"fetch-depth\"]" "$WORKFLOW" || true)"
+  assert_eq "the checkout leaves the blobs outside HEAD on the server" "blob:none" \
+    "$(yq_raw "$checkout | .with.filter" "$WORKFLOW" || true)"
 
-  # Release-independent: no release axis, a static multi-arch include matrix.
-  local matrix_platforms
-  matrix_platforms=$(yq_raw '.jobs["build-backup-shifter"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
-  assert_contains "build-backup-shifter matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
-  assert_contains "build-backup-shifter matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+  local merge_index keeper_index
+  merge_index=$(yq_raw "$job.steps | to_entries | .[] | select(.value.id == \"merge-libvirt\") | .key" "$WORKFLOW" || true)
+  keeper_index=$(yq_raw "$job.steps | to_entries | .[] | select(.value.id == \"keeper-tag\") | .key" "$WORKFLOW" || true)
+  if [[ "$merge_index" =~ ^[0-9]+$ && "$keeper_index" =~ ^[0-9]+$ && "$keeper_index" -gt "$merge_index" ]]; then
+    echo "  PASS: the step keeper-tag follows the step merge-libvirt"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the step keeper-tag (index '$keeper_index') does not follow merge-libvirt (index '$merge_index')"
+    FAIL=$((FAIL + 1))
+  fi
 
-  # PR-inline verification wiring (the tempest pattern).
-  local verify_script
-  verify_script=$(yq_raw '.jobs["build-backup-shifter"]["steps"][] | select(.id == "build-backup-shifter") | .with["verify-script"]' "$WORKFLOW" || echo "null")
-  assert_eq "build step wires the verify script" \
-    "tests/container-images/verify_backup_shifter.sh" "$verify_script"
+  local keeper="$job.steps[] | select(.id == \"keeper-tag\")"
+  assert_eq "the keeper step runs hack/ci-tag-libvirt-keeper.sh" "hack/ci-tag-libvirt-keeper.sh" \
+    "$(yq_raw "$keeper | .run" "$WORKFLOW" || true)"
+  assert_eq "the keeper step runs on main only" "github.ref_name == 'main'" \
+    "$(yq_raw "$keeper | .if" "$WORKFLOW" || true)"
+  assert_eq "the keeper step tags the merged digest" '${{ steps.merge-libvirt.outputs.digest }}' \
+    "$(yq_raw "$keeper | .env.DIGEST" "$WORKFLOW" || true)"
+  assert_eq "the keeper step tags the libvirt image" \
+    'ghcr.io/${{ needs.prepare.outputs.image-owner }}/libvirt' \
+    "$(yq_raw "$keeper | .env.IMAGE" "$WORKFLOW" || true)"
 
-  # The lint matrix covers the new Dockerfile.
-  local lint_matrix
-  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_contains "lint-dockerfiles covers the backup-shifter Dockerfile" \
-    "$lint_matrix" "images/backup-shifter/Dockerfile"
-
-  # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
-  local merge_if
-  merge_if=$(yq_raw '.jobs["merge-backup-shifter-image"]["if"]' "$WORKFLOW" || echo "null")
-  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
-
-  local merge_needs
-  merge_needs=$(yq_raw '.jobs["merge-backup-shifter-image"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "merge job needs the build job" "$merge_needs" "build-backup-shifter"
-
-  local merge_tags
-  merge_tags=$(yq_raw '.jobs["merge-backup-shifter-image"]["steps"][] | select(.id == "merge-backup-shifter") | .with["tags"]' "$WORKFLOW" || echo "null")
-  assert_contains "merge tags include :latest" "$merge_tags" "backup-shifter:latest"
-  assert_contains "merge tags include the commit SHA" "$merge_tags" 'backup-shifter:${{ github.sha }}'
+  # The script is push-only, like hack/ci-merge-manifest.sh; a change to it
+  # still runs the workflow on its pull request and rebuilds every image.
+  local filters plumbing_globs pr_paths
+  filters=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" || true)
+  plumbing_globs=$(yq_raw '.plumbing[]' - <<<"$filters" || true)
+  pr_paths=$(yq_raw '.on.pull_request.paths[]' "$WORKFLOW" || true)
+  assert_eq "the plumbing filter names hack/ci-tag-libvirt-keeper.sh" "1" \
+    "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$plumbing_globs" || true)"
+  assert_eq "the pull-request trigger names hack/ci-tag-libvirt-keeper.sh" "1" \
+    "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$pr_paths" || true)"
 }
 
 # --- ovn build/merge/verify job structure ---
@@ -362,6 +378,186 @@ test_ovn_jobs() {
   verify_runners=$(yq_raw '.jobs["verify-ovn-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
   assert_contains "verify-ovn-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
   assert_contains "verify-ovn-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
+}
+
+# --- openstack-hypervisor-operator build/merge/verify job structure ---
+test_hvo_jobs() {
+  echo "Test: openstack-hypervisor-operator job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-hvo"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-hvo needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-hvo needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-hvo"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-hvo matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-hvo matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-hvo"]["steps"][] | select(.id == "build-hvo") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_hvo.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the openstack-hypervisor-operator Dockerfile" \
+    "$lint_matrix" "images/openstack-hypervisor-operator/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-hvo-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-hvo-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-hvo"
+
+  # Tags: sha-<hvo-commit>-<sha> everywhere; sha-<hvo-commit> (what the
+  # upstream chart of that commit renders), upstream-<hvo-commit> (the
+  # retention keeper) and latest on main only. The first line is the
+  # unconditional one, the line with the main check carries the other three.
+  # The trailing space keeps the plain sha- tag from matching the composite.
+  local hvo_tags_run first_line main_line
+  hvo_tags_run=$(yq_raw '.jobs["merge-hvo-image"]["steps"][] | select(.id == "hvo-tags") | .run' "$WORKFLOW" || echo "null")
+  first_line="${hvo_tags_run%%$'\n'*}"
+  main_line=$(grep -F '"${GITHUB_REF_NAME}" == "main"' <<<"$hvo_tags_run" || true)
+  assert_contains "the first tag line sets the composite tag" \
+    "$first_line" '${IMAGE}:sha-${HVO_COMMIT}-${COMMIT_SHA}'
+  assert_not_contains "the composite tag line is not gated on main" "$first_line" "GITHUB_REF_NAME"
+  assert_not_contains "the composite tag line carries no upstream- tag" "$first_line" "upstream-"
+  assert_contains "the plain sha- tag is main-only" "$main_line" '${IMAGE}:sha-${HVO_COMMIT} '
+  assert_contains "the upstream- tag is main-only" "$main_line" '${IMAGE}:upstream-${HVO_COMMIT}'
+  assert_contains "the latest tag is main-only" "$main_line" '${IMAGE}:latest'
+
+  # The tag lines name the pin only while HVO_COMMIT carries it: both jobs
+  # resolve it through the one parser, and the tag step reads that output. A
+  # renamed step id leaves it empty, which publishes sha- and upstream- and
+  # still passes the merge and the digest-pinned verify job.
+  local job resolve_run hvo_commit_env
+  for job in build-hvo merge-hvo-image; do
+    resolve_run=$(yq_raw ".jobs[\"$job\"][\"steps\"][] | select(.id == \"hvo-commit\") | .run" "$WORKFLOW" || echo "null")
+    assert_contains "$job resolves the pin through the resolver" "$resolve_run" "hack/ci-resolve-hvo-commit.sh"
+  done
+  hvo_commit_env=$(yq_raw '.jobs["merge-hvo-image"]["steps"][] | select(.id == "hvo-tags") | .env.HVO_COMMIT' "$WORKFLOW" || echo "null")
+  assert_eq "the tag step reads the resolved pin" '${{ steps.hvo-commit.outputs.commit }}' "$hvo_commit_env"
+
+  # Post-merge verify job: pulls the merged manifest, read-only permissions.
+  local verify_needs
+  verify_needs=$(yq_raw '.jobs["verify-hvo-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "verify-hvo-image needs merge-hvo-image" "$verify_needs" "merge-hvo-image"
+
+  local verify_pkg_perms
+  verify_pkg_perms=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-hvo-image has packages: read" "read" "$verify_pkg_perms"
+
+  local verify_contents_perms
+  verify_contents_perms=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-hvo-image has contents: read (for checkout)" "read" "$verify_contents_perms"
+
+  # The arm64 image is never compiled on a PR (docker load takes one platform),
+  # so this job is the only place its binary runs. A single ubuntu-latest
+  # runner would pull the amd64 variant and report green for both.
+  local verify_runner verify_runners
+  verify_runner=$(yq_raw '.jobs["verify-hvo-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_contains "verify-hvo-image uses matrix runner expression" "$verify_runner" "matrix.runner"
+
+  verify_runners=$(yq_raw '.jobs["verify-hvo-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
+  assert_contains "verify-hvo-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
+  assert_contains "verify-hvo-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
+}
+
+# --- kvm-node-agent build/merge/verify job structure ---
+test_kna_jobs() {
+  echo "Test: kvm-node-agent job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-kna"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-kna needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-kna needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-kna"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-kna matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-kna matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-kna"]["steps"][] | select(.id == "build-kna") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_kna.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the kvm-node-agent Dockerfile" \
+    "$lint_matrix" "images/kvm-node-agent/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-kna-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-kna-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-kna"
+
+  # Tags: sha-<kna-commit>-<sha> everywhere; sha-<kna-commit> (what the
+  # upstream chart of that commit renders), upstream-<kna-commit> (the
+  # retention keeper) and latest on main only. The first line is the
+  # unconditional one, the line with the main check carries the other three.
+  # The trailing space keeps the plain sha- tag from matching the composite.
+  local kna_tags_run first_line main_line
+  kna_tags_run=$(yq_raw '.jobs["merge-kna-image"]["steps"][] | select(.id == "kna-tags") | .run' "$WORKFLOW" || echo "null")
+  first_line="${kna_tags_run%%$'\n'*}"
+  main_line=$(grep -F '"${GITHUB_REF_NAME}" == "main"' <<<"$kna_tags_run" || true)
+  assert_contains "the first tag line sets the composite tag" \
+    "$first_line" '${IMAGE}:sha-${KNA_COMMIT}-${COMMIT_SHA}'
+  assert_not_contains "the composite tag line is not gated on main" "$first_line" "GITHUB_REF_NAME"
+  assert_not_contains "the composite tag line carries no upstream- tag" "$first_line" "upstream-"
+  assert_contains "the plain sha- tag is main-only" "$main_line" '${IMAGE}:sha-${KNA_COMMIT} '
+  assert_contains "the upstream- tag is main-only" "$main_line" '${IMAGE}:upstream-${KNA_COMMIT}'
+  assert_contains "the latest tag is main-only" "$main_line" '${IMAGE}:latest'
+
+  # The tag lines name the pin only while KNA_COMMIT carries it: both jobs
+  # resolve it through the one parser, and the tag step reads that output. A
+  # renamed step id leaves it empty, which publishes sha- and upstream- and
+  # still passes the merge and the digest-pinned verify job.
+  local job resolve_run kna_commit_env
+  for job in build-kna merge-kna-image; do
+    resolve_run=$(yq_raw ".jobs[\"$job\"][\"steps\"][] | select(.id == \"kna-commit\") | .run" "$WORKFLOW" || echo "null")
+    assert_contains "$job resolves the pin through the resolver" "$resolve_run" "hack/ci-resolve-kna-commit.sh"
+  done
+  kna_commit_env=$(yq_raw '.jobs["merge-kna-image"]["steps"][] | select(.id == "kna-tags") | .env.KNA_COMMIT' "$WORKFLOW" || echo "null")
+  assert_eq "the tag step reads the resolved pin" '${{ steps.kna-commit.outputs.commit }}' "$kna_commit_env"
+
+  # Post-merge verify job: pulls the merged manifest, read-only permissions.
+  local verify_needs
+  verify_needs=$(yq_raw '.jobs["verify-kna-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "verify-kna-image needs merge-kna-image" "$verify_needs" "merge-kna-image"
+
+  local verify_pkg_perms
+  verify_pkg_perms=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-kna-image has packages: read" "read" "$verify_pkg_perms"
+
+  local verify_contents_perms
+  verify_contents_perms=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-kna-image has contents: read (for checkout)" "read" "$verify_contents_perms"
+
+  # The arm64 image is never compiled on a PR (docker load takes one platform),
+  # so this job is the only place its binary runs. A single ubuntu-latest
+  # runner would pull the amd64 variant and report green for both.
+  local verify_runner verify_runners
+  verify_runner=$(yq_raw '.jobs["verify-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_contains "verify-kna-image uses matrix runner expression" "$verify_runner" "matrix.runner"
+
+  verify_runners=$(yq_raw '.jobs["verify-kna-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
+  assert_contains "verify-kna-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
+  assert_contains "verify-kna-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
 }
 
 # --- nova-compute build/merge/verify job structure ---
@@ -516,7 +712,7 @@ test_changes_job_gates_matrix_jobs() {
   local outputs
   outputs=$(yq_raw '.jobs["changes"]["outputs"] | keys | .[]' "$WORKFLOW" || true)
   local key
-  for key in services has-services build-tempest build-ovn build-proxy build-shifter; do
+  for key in services has-services build-tempest build-ovn build-proxy build-shifter build-libvirt build-hvo build-kna; do
     assert_contains "changes exports $key" "$outputs" "$key"
   done
 
@@ -535,6 +731,44 @@ test_changes_job_gates_matrix_jobs() {
     "$resolve_run" "hack/ci-resolve-image-changes.sh"
   assert_contains "the resolve step is handed ALL_SERVICES" "$resolve_env" "ALL_SERVICES"
   assert_contains "the resolve step is handed FILTER_plumbing" "$resolve_env" "FILTER_plumbing"
+  assert_contains "the resolve step is handed FILTER_libvirt" "$resolve_env" "FILTER_libvirt"
+  assert_file_contains_fixed "FILTER_libvirt reads the libvirt filter" "$WORKFLOW" \
+    'FILTER_libvirt: ${{ steps.filter.outputs.libvirt }}'
+  assert_contains "the resolve step is handed FILTER_hvo" "$resolve_env" "FILTER_hvo"
+  assert_file_contains_fixed "FILTER_hvo reads the hvo filter" "$WORKFLOW" \
+    'FILTER_hvo: ${{ steps.filter.outputs.hvo }}'
+  assert_contains "the resolve step is handed FILTER_kna" "$resolve_env" "FILTER_kna"
+  assert_file_contains_fixed "FILTER_kna reads the kna filter" "$WORKFLOW" \
+    'FILTER_kna: ${{ steps.filter.outputs.kna }}'
+
+  # The filters input is a YAML document of its own; parse it a second time so
+  # the globs are read from the libvirt key, not from anywhere in the block.
+  local libvirt_globs
+  libvirt_globs=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" |
+    yq_raw '.libvirt[]' - || true)
+  assert_contains "the libvirt filter covers the image sources" "$libvirt_globs" "images/libvirt/**"
+  assert_contains "the libvirt filter covers its verify script" \
+    "$libvirt_globs" "tests/container-images/verify_libvirt.sh"
+
+  local filters hvo_globs kna_globs plumbing_globs
+  filters=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" || true)
+  hvo_globs=$(yq_raw '.hvo[]' - <<<"$filters" || true)
+  assert_contains "the hvo filter covers the image sources" \
+    "$hvo_globs" "images/openstack-hypervisor-operator/**"
+  assert_contains "the hvo filter covers its verify script" \
+    "$hvo_globs" "tests/container-images/verify_hvo.sh"
+  kna_globs=$(yq_raw '.kna[]' - <<<"$filters" || true)
+  assert_contains "the kna filter covers the image sources" \
+    "$kna_globs" "images/kvm-node-agent/**"
+  assert_contains "the kna filter covers its verify script" \
+    "$kna_globs" "tests/container-images/verify_kna.sh"
+  # The resolver is the only parser of the pin, so a change to it rebuilds
+  # every image like any other script the workflow calls.
+  plumbing_globs=$(yq_raw '.plumbing[]' - <<<"$filters" || true)
+  assert_contains "the plumbing filter covers the hvo commit resolver" \
+    "$plumbing_globs" "hack/ci-resolve-hvo-commit.sh"
+  assert_contains "the plumbing filter covers the kna commit resolver" \
+    "$plumbing_globs" "hack/ci-resolve-kna-commit.sh"
 
   local gen_needs gen_env
   gen_needs=$(yq_raw '.jobs["generate-matrix"]["needs"][]' "$WORKFLOW" || true)
@@ -558,9 +792,18 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "build-backup-shifter gates on its own flag" \
     "$(yq_raw '.jobs["build-backup-shifter"]["if"]' "$WORKFLOW" || true)" \
     "needs.changes.outputs.build-shifter == 'true'"
+  assert_contains "build-libvirt gates on its own flag" \
+    "$(yq_raw '.jobs["build-libvirt"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-libvirt == 'true'"
   assert_contains "build-ovn gates on its own flag" \
     "$(yq_raw '.jobs["build-ovn"]["if"]' "$WORKFLOW" || true)" \
     "needs.changes.outputs.build-ovn == 'true'"
+  assert_contains "build-hvo gates on its own flag" \
+    "$(yq_raw '.jobs["build-hvo"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-hvo == 'true'"
+  assert_contains "build-kna gates on its own flag" \
+    "$(yq_raw '.jobs["build-kna"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-kna == 'true'"
 
   # The pull-request trigger names the inputs this workflow reads; the push
   # trigger keeps the broad list, so the publish path is unchanged.
@@ -569,6 +812,10 @@ test_changes_job_gates_matrix_jobs() {
   push_paths=$(yq_raw '.on.push.paths[]' "$WORKFLOW" || true)
 
   assert_contains "the pull-request trigger names overrides/**" "$pr_paths" "overrides/**"
+  assert_contains "the pull-request trigger names the hvo commit resolver" \
+    "$pr_paths" "hack/ci-resolve-hvo-commit.sh"
+  assert_contains "the pull-request trigger names the kna commit resolver" \
+    "$pr_paths" "hack/ci-resolve-kna-commit.sh"
   assert_contains "the pull-request trigger names one composite action" \
     "$pr_paths" ".github/actions/build-push-image/**"
   assert_not_contains "the pull-request trigger drops the .github/actions/ catch-all" \
@@ -800,121 +1047,14 @@ test_gha_caching_present() {
 test_timeout_minutes_on_all_jobs() {
   echo "Test: all jobs have timeout-minutes"
 
-  local base_timeout verify_base_timeout service_timeout test_service_timeout verify_service_timeout
-  base_timeout=$(yq_raw '.jobs["build-base-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  verify_base_timeout=$(yq_raw '.jobs["verify-base-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  service_timeout=$(yq_raw '.jobs["build-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  test_service_timeout=$(yq_raw '.jobs["test-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  verify_service_timeout=$(yq_raw '.jobs["verify-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-
-  if [ "$base_timeout" != "null" ] && [ -n "$base_timeout" ]; then
-    echo "  PASS: build-base-images has timeout-minutes: $base_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: build-base-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$verify_base_timeout" != "null" ] && [ -n "$verify_base_timeout" ]; then
-    echo "  PASS: verify-base-images has timeout-minutes: $verify_base_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: verify-base-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$service_timeout" != "null" ] && [ -n "$service_timeout" ]; then
-    echo "  PASS: build-service-images has timeout-minutes: $service_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: build-service-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$test_service_timeout" != "null" ] && [ -n "$test_service_timeout" ]; then
-    echo "  PASS: test-service-images has timeout-minutes: $test_service_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: test-service-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$verify_service_timeout" != "null" ] && [ -n "$verify_service_timeout" ]; then
-    echo "  PASS: verify-service-images has timeout-minutes: $verify_service_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: verify-service-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  local fedproxy_timeout fedproxy_merge_timeout
-  fedproxy_timeout=$(yq_raw '.jobs["build-keystone-federation-proxy"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  fedproxy_merge_timeout=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-
-  if [ "$fedproxy_timeout" != "null" ] && [ -n "$fedproxy_timeout" ]; then
-    echo "  PASS: build-keystone-federation-proxy has timeout-minutes: $fedproxy_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: build-keystone-federation-proxy missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$fedproxy_merge_timeout" != "null" ] && [ -n "$fedproxy_merge_timeout" ]; then
-    echo "  PASS: merge-keystone-federation-proxy-image has timeout-minutes: $fedproxy_merge_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: merge-keystone-federation-proxy-image missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  local shifter_timeout shifter_merge_timeout
-  shifter_timeout=$(yq_raw '.jobs["build-backup-shifter"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  shifter_merge_timeout=$(yq_raw '.jobs["merge-backup-shifter-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-
-  if [ "$shifter_timeout" != "null" ] && [ -n "$shifter_timeout" ]; then
-    echo "  PASS: build-backup-shifter has timeout-minutes: $shifter_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: build-backup-shifter missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$shifter_merge_timeout" != "null" ] && [ -n "$shifter_merge_timeout" ]; then
-    echo "  PASS: merge-backup-shifter-image has timeout-minutes: $shifter_merge_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: merge-backup-shifter-image missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  local ovn_timeout ovn_merge_timeout ovn_verify_timeout
-  ovn_timeout=$(yq_raw '.jobs["build-ovn"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  ovn_merge_timeout=$(yq_raw '.jobs["merge-ovn-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  ovn_verify_timeout=$(yq_raw '.jobs["verify-ovn-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-
-  if [ "$ovn_timeout" != "null" ] && [ -n "$ovn_timeout" ]; then
-    echo "  PASS: build-ovn has timeout-minutes: $ovn_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: build-ovn missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$ovn_merge_timeout" != "null" ] && [ -n "$ovn_merge_timeout" ]; then
-    echo "  PASS: merge-ovn-image has timeout-minutes: $ovn_merge_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: merge-ovn-image missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  if [ "$ovn_verify_timeout" != "null" ] && [ -n "$ovn_verify_timeout" ]; then
-    echo "  PASS: verify-ovn-image has timeout-minutes: $ovn_verify_timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: verify-ovn-image missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
+  local jobs job timeout
+  jobs=$(yq_raw '.jobs | keys | .[]' "$WORKFLOW" || true)
+  assert_not_empty "the workflow defines jobs" "$jobs"
+  for job in $jobs; do
+    timeout=$(yq_raw ".jobs[\"$job\"][\"timeout-minutes\"]" "$WORKFLOW" || echo "null")
+    [ "$timeout" = "null" ] && timeout=""
+    assert_not_empty "$job has timeout-minutes" "$timeout"
+  done
 }
 
 # --- All jobs use runs-on: ubuntu-latest ---
@@ -955,6 +1095,13 @@ test_runs_on_ubuntu_latest() {
   assert_contains "build-backup-shifter uses matrix runner expression" "$shifter_runner" "matrix.runner"
   assert_eq "merge-backup-shifter-image uses ubuntu-latest" "ubuntu-latest" "$shifter_merge_runner"
 
+  local libvirt_runner libvirt_merge_runner
+  libvirt_runner=$(yq_raw '.jobs["build-libvirt"]["runs-on"]' "$WORKFLOW" || echo "null")
+  libvirt_merge_runner=$(yq_raw '.jobs["merge-libvirt-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-libvirt uses matrix runner expression" "$libvirt_runner" "matrix.runner"
+  assert_eq "merge-libvirt-image uses ubuntu-latest" "ubuntu-latest" "$libvirt_merge_runner"
+
   local ovn_runner ovn_merge_runner ovn_verify_runner
   ovn_runner=$(yq_raw '.jobs["build-ovn"]["runs-on"]' "$WORKFLOW" || echo "null")
   ovn_merge_runner=$(yq_raw '.jobs["merge-ovn-image"]["runs-on"]' "$WORKFLOW" || echo "null")
@@ -963,6 +1110,24 @@ test_runs_on_ubuntu_latest() {
   assert_contains "build-ovn uses matrix runner expression" "$ovn_runner" "matrix.runner"
   assert_eq "merge-ovn-image uses ubuntu-latest" "ubuntu-latest" "$ovn_merge_runner"
   assert_contains "verify-ovn-image uses matrix runner expression" "$ovn_verify_runner" "matrix.runner"
+
+  local hvo_runner hvo_merge_runner hvo_verify_runner
+  hvo_runner=$(yq_raw '.jobs["build-hvo"]["runs-on"]' "$WORKFLOW" || echo "null")
+  hvo_merge_runner=$(yq_raw '.jobs["merge-hvo-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  hvo_verify_runner=$(yq_raw '.jobs["verify-hvo-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-hvo uses matrix runner expression" "$hvo_runner" "matrix.runner"
+  assert_eq "merge-hvo-image uses ubuntu-latest" "ubuntu-latest" "$hvo_merge_runner"
+  assert_contains "verify-hvo-image uses matrix runner expression" "$hvo_verify_runner" "matrix.runner"
+
+  local kna_runner kna_merge_runner kna_verify_runner
+  kna_runner=$(yq_raw '.jobs["build-kna"]["runs-on"]' "$WORKFLOW" || echo "null")
+  kna_merge_runner=$(yq_raw '.jobs["merge-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  kna_verify_runner=$(yq_raw '.jobs["verify-kna-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-kna uses matrix runner expression" "$kna_runner" "matrix.runner"
+  assert_eq "merge-kna-image uses ubuntu-latest" "ubuntu-latest" "$kna_merge_runner"
+  assert_contains "verify-kna-image uses matrix runner expression" "$kna_verify_runner" "matrix.runner"
 }
 
 # --- Base images always push unconditionally ---
@@ -1403,6 +1568,20 @@ test_verify_jobs_no_sbom_permissions() {
 
   assert_eq "verify-ovn-image has no id-token permission" "null" "$verify_ovn_id_token"
   assert_eq "verify-ovn-image has no attestations permission" "null" "$verify_ovn_attestations"
+
+  local verify_hvo_id_token verify_hvo_attestations
+  verify_hvo_id_token=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  verify_hvo_attestations=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "verify-hvo-image has no id-token permission" "null" "$verify_hvo_id_token"
+  assert_eq "verify-hvo-image has no attestations permission" "null" "$verify_hvo_attestations"
+
+  local verify_kna_id_token verify_kna_attestations
+  verify_kna_id_token=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  verify_kna_attestations=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "verify-kna-image has no id-token permission" "null" "$verify_kna_id_token"
+  assert_eq "verify-kna-image has no attestations permission" "null" "$verify_kna_attestations"
 }
 
 # --- SBOM generation steps exist ---
@@ -2052,11 +2231,11 @@ test_security_events_permission_scoped_to_merge_jobs() {
   # SARIF (the composite skips the upload on pull requests), so they hold no
   # security-events permission. The merge jobs upload on push and keep it.
   local job perm
-  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-ovn build-service-images build-nova-compute-image; do
+  for job in build-tempest build-keystone-federation-proxy build-backup-shifter build-libvirt build-ovn build-hvo build-kna build-service-images build-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has no security-events permission" "null" "$perm"
   done
-  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-ovn-image merge-service-images merge-nova-compute-image; do
+  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-libvirt-image merge-ovn-image merge-hvo-image merge-kna-image merge-service-images merge-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has security-events: write" "write" "$perm"
   done
@@ -2122,6 +2301,14 @@ test_verify_jobs_no_security_events_permission() {
   verify_ovn_perm=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-ovn-image has no security-events permission" "null" "$verify_ovn_perm"
 
+  local verify_hvo_perm
+  verify_hvo_perm=$(yq_raw '.jobs["verify-hvo-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-hvo-image has no security-events permission" "null" "$verify_hvo_perm"
+
+  local verify_kna_perm
+  verify_kna_perm=$(yq_raw '.jobs["verify-kna-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-kna-image has no security-events permission" "null" "$verify_kna_perm"
+
   local verify_nova_compute_perm
   verify_nova_compute_perm=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "verify-nova-compute-image has no security-events permission" "null" "$verify_nova_compute_perm"
@@ -2175,11 +2362,19 @@ test_base_images_multi_arch
 echo ""
 test_base_image_digest_outputs
 echo ""
-test_keystone_federation_proxy_jobs
+test_distro_image_jobs keystone-federation-proxy tests/container-images/verify_keystone_federation_proxy.sh
 echo ""
-test_backup_shifter_jobs
+test_distro_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh
+echo ""
+test_distro_image_jobs libvirt tests/container-images/verify_libvirt.sh
+echo ""
+test_libvirt_keeper_tag
 echo ""
 test_ovn_jobs
+echo ""
+test_hvo_jobs
+echo ""
+test_kna_jobs
 echo ""
 test_nova_compute_jobs
 echo ""

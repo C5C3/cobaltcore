@@ -106,15 +106,19 @@ both database connections, and then reads `cell_v2 list_hosts` for the host
 (`fake-1`). Both repeat 5 seconds apart for up to 150 seconds, since a discovery
 that runs before the compute has registered maps nothing. `db-archive` and
 `console-proxy` call it, and so do the `nova-broker-outage` and
-`nova-placement-outage` chaos suites.
+`nova-placement-outage` chaos suites. `compute-node-pool` does not: its
+NovaCompute pool runs the discovery itself and reports `Ready` only once the
+host is mapped, and the suite turns the scheduler's periodic off so that only
+the pool's discovery Job can map the host.
 
 The two `basic-deployment` suites do not. They wait out the scheduler's own
 periodic instead, which is what says the periodic runs:
 `discover_hosts_in_cells_interval` renders as 300 seconds, the scan runs at
 scheduler start and then once an interval, and the compute registers after that
-first pass. The interval is never overridden, because the key is Reported in
+first pass. They never override the interval, because the key is Reported in
 `operators/nova/api/v1alpha1/config_ownership.go` and a `spec.extraConfig` entry
-for it would flip `ExtraConfigHealthy`.
+for it flips `ExtraConfigHealthy`. Only `compute-node-pool` sets it to `-1`,
+and that suite asserts no `ExtraConfigHealthy`.
 
 ### The CI leg
 
@@ -137,6 +141,52 @@ The leg runs as two shards, each on a kind cluster of its own and under its own
 and `pod-security-restricted`. Shard 1 runs every other suite, so a new suite
 runs there until the `Run E2E tests` step in `.github/workflows/ci.yaml` names
 it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
+
+### The libvirt leg
+
+Every suite under `tests/e2e/nova/` that runs a nova-compute runs it on the
+fake driver. One suite runs it on Nova's libvirt driver: `tests/e2e-nova-libvirt/server-boot/`, under a suite
+root of its own with its own Chainsaw configuration. It lives outside
+`tests/e2e/nova/` because the nova leg sweeps every directory there and is
+blocking, while this suite runs in the non-blocking `e2e-nova-libvirt` job.
+
+The suite brings up the stack of `compute-node-pool` from that suite's own
+fixtures `00` to `11`, which it applies by path, and runs the boot and delete
+Jobs `15` and `16` the same way. Its three files of its own are
+`00-libvirt.yaml`, `01-novacompute-libvirt.yaml` and `chainsaw-test.yaml`.
+libvirtd runs in the DaemonSet `libvirt-e2e` from `ghcr.io/c5c3/libvirt:latest`,
+privileged, in the node's network namespace, with the node's `/run/libvirt`
+and `/var/lib/nova` shared with the pool's pod. The pool `pool-libvirt` sets
+`virtType: qemu` and no `spec.extraConfig`, so nova-compute runs
+`libvirt.LibvirtDriver` under QEMU's TCG emulation, which needs no `/dev/kvm`.
+
+The server `s1` boots from the 1 MiB zero image the stack seeds and carries no
+NIC. With no operating system on the disk the guest never gets past its
+firmware, but the domain runs, and the suite checks three things once Nova
+reports `ACTIVE`:
+
+- `virsh list --state-running --uuid` in the libvirt pod prints exactly one
+  UUID, so libvirtd started the domain nova-compute defined;
+- the domain XML opens with `<domain type='qemu'`, so the pool's `virt_type`
+  reached the driver, and names `/var/lib/nova/instances/<uuid>/disk` as the
+  source of a qcow2 disk, so the domain runs from the file the next check
+  inspects;
+- `qemu-img info --force-share` on the instance disk reports a qcow2 file with
+  a backing file under `/var/lib/nova/instances/_base/`, so nova-compute
+  fetched the image from Glance and built the disk with its own tooling.
+
+Deleting the server leaves `virsh list --all --uuid` empty and removes the
+instance directory.
+
+A local run needs one amd64 node, the stack's infrastructure
+(`WITH_OVN_KERNEL_MODULES=true WITH_MESSAGING=true make deploy-infra`) and the
+six operators the nova leg deploys. `make e2e-nova-libvirt` checks the three
+preconditions and names the one that is missing. The guest operating system,
+KVM, networking and live migration are not part of this suite: the lab run of
+the Quick Start (metal-stack) proves them, in
+[Check metadata and the tunnel from the console](../../quick-start-metal-stack.md#hv-console)
+and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
+[CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt).
 
 ## Prerequisites
 
@@ -224,7 +274,7 @@ a labelled namespace of its own.
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `nova-isolation` | A live db-archive pod is never an address of the API, metadata or console Service, and none of the three is left without backends |
 | [db-archive](#db-archive) | `nova-archive` | The archive CronJob fires on a minute schedule and moves the deleted server into the shadow tables, with no `DBArchiveJobFailed` event on the CR |
 | [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
-| [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
+| [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, the instances directory on the node, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
 | [console-proxy](#console-proxy) | `nova-vnc` | The console URL the API publishes carries the gateway hostname, the token handshake through it reaches the instance console, and an invalid token is turned down |
 | [remote-compute-contract](#remote-compute-contract) | `nova-rc` | The remote compute contract `spec.remoteCompute` publishes: both status refs, the six keys, the external transport URL, a fragment addressed at the public Keystone URL and the public catalog rows, the in-cluster contract unchanged, and the Secret gone once the block is removed |
 | [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields, the console gateway path and the two `spec.remoteCompute` rules. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
@@ -596,17 +646,18 @@ for the gate the pod waits on.
 | --- | --- | --- | --- |
 | 1 | Label the node | `script` | `openstack.c5c3.io/chassis=true`, `topology.kubernetes.io/zone=nova-pool-az1` and `openstack.c5c3.io/nova-compute-pool=a`, and the ConfigMap `nova-pool-verify` naming the node. The step cleanup removes all three labels |
 | 2 | Bring up the stack and the chassis | `script` (25m) | The vhost, `keystone-nova-pool`, the catalog Job, the four sibling CRs, the image seed, `nova-pool` up to `Ready`, and `nova-pool-chassis` up to `Ready`. The step cleanup tears the stack down |
-| 3 | Apply pool-a | `script`, `assert`, `script` | `Ready=True/AllReady`; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2025.2`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools and strips the drain finalizer from a survivor |
+| 3 | Apply pool-a | `script`, `assert`, `script` | `17-state-dir-owner-job.yaml` hands `/var/lib/nova` on the node to `42424:42424` before the pool is applied. `Ready=True/AllReady`; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2025.2`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; `create-instances-dir` exited 0 and `/var/lib/nova/instances` is a `root:root` 0755 directory, which root creates below another user's directory only with `DAC_OVERRIDE`; the Job `nova-pool-discover-hosts` completed and its log shows it created the node's host mapping; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools, strips the drain finalizer from a survivor and hands `/var/lib/nova` back to `root:root` |
 | 4 | A second pool on the same node | `script`, `assert` | `pool-b` selects the chassis label: `NodesReady=False/NodeConflict`, `status.nodes[0]` in `Conflict` with `pool-a`, no pod scheduled, and `pool-a` still Active. `pool-b` is then deleted, so `pool-a` is the last pool of the Nova |
-| 5, 6 | Map the host and boot a server | `script` (10m) | `../discover-hosts.sh nova-pool "$NAMESPACE" "$NODE"`, then `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
+| 5, 6 | Boot a server | `script` (10m) | No helper: the pool's `Ready` in step 3 means Nova mapped the host. `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
 | 7 | Remove the pool label | `script`, `assert` | `status.nodes[0]` goes `Draining` with `instances: 1`, the service `disabled` with the reason `c5c3.io: leaving NovaCompute openstack/pool-a`, `ServicesReady=True/Draining`, and the pod still runs |
 | 8 | Delete the server | `script`, `assert`, `script` | `16-delete-server-job.yaml` stands in for the hypervisor operator's eviction. `status.nodes` empties, and the verify Job (`released`) finds the service and `nova-pool-az1` gone and `tenant_filter_tests` still in place |
 | 9 | Delete pool-a | `script`, `assert` | The pool leaves etcd, the verify Job (`torndown`) finds `tenant_filter_tests` gone, and `nova-pool-compute-config` stays, because it carries no mirror label |
 
 **Fixtures:** `00`–`10` as in `basic-deployment` under the `nova-pool` names,
-`11-ovnchassis-cr.yaml`, `12-novacompute-pool-a.yaml`,
+except that `10-nova-cr.yaml` sets `[scheduler]
+discover_hosts_in_cells_interval` to `-1`, `11-ovnchassis-cr.yaml`, `12-novacompute-pool-a.yaml`,
 `13-novacompute-pool-b.yaml`, `14-verify-job.yaml`, `15-boot-server-job.yaml`,
-`16-delete-server-job.yaml`
+`16-delete-server-job.yaml`, `17-state-dir-owner-job.yaml`
 
 **Design notes:**
 
@@ -1083,6 +1134,13 @@ tests/e2e/nova/
 tests/e2e/nova-operator/
 └── metrics/
     └── chainsaw-test.yaml             nova-operator chart ServiceMonitor
+
+tests/e2e-nova-libvirt/
+├── chainsaw-config.yaml               Chainsaw configuration of the libvirt suite root
+└── server-boot/
+    ├── chainsaw-test.yaml             A server on the libvirt driver under TCG, and its delete
+    ├── 00-libvirt.yaml                ConfigMap and DaemonSet libvirt-e2e
+    └── 01-novacompute-libvirt.yaml    NovaCompute pool-libvirt with virtType: qemu
 ```
 
 ## Related Resources
@@ -1091,5 +1149,6 @@ tests/e2e/nova-operator/
 - [Nova Reconciler Architecture](../nova/nova-reconciler.md): sub-reconciler contracts and unit tests
 - [Chaos E2E Test Suites](./chaos-e2e-tests.md): the three Nova outage suites on the chaos `nova` leg
 - [CI Workflow](../ci-cd/ci-workflow.md): the `e2e-operator` matrix leg that runs these suites
+- [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt): the `e2e-nova-libvirt` job that runs the libvirt suite
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md): infrastructure stack deployment and `WITH_MESSAGING`
 - `tests/e2e/chainsaw-config.yaml`: shared Chainsaw configuration

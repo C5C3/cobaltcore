@@ -41,6 +41,10 @@ var subReconcilerConditionTypes = map[string]string{
 	"AdminPassword":   conditionTypeAdminPasswordReady,
 	"Catalog":         conditionTypeCatalogReady,
 	"ServiceAccounts": conditionTypeServiceAccountsReady,
+	// The K-ORC restart member drives no condition of its own. Its errors are
+	// labelled with the K-ORC condition, because a failed restart leaves K-ORC
+	// on a stale service catalog.
+	"KORCCatalogRefresh": conditionTypeKORCReady,
 	// The per-tenant stores of the allowlisted namespaces standalone registrations
 	// come from, kept apart from ESOTenantStore's own series because the two carry
 	// different blast radii and one alert should not read as the other.

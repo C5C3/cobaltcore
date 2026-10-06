@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.nova.conductor.verticalAutoscaling.updateMode outside Off, Initial,
-# Recreate and Auto violates the Enum marker; the webhook mirrors it.
+# Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook
+# mirrors it.
 apiVersion: c5c3.io/v1alpha1
 kind: SizingProfile
 metadata:

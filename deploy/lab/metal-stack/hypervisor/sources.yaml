@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The upstream charts of openstack-hypervisor-operator (hvo) and
+# kvm-node-agent (kna), each pinned by digest the way
+# deploy/flux-system/sources/openbao-operator.yaml pins its chart: ref.digest
+# takes precedence over ref.tag, so a re-pushed tag changes nothing that runs.
+#
+# Each is the chart of a pinned upstream main commit: hvo's is the ARG
+# HVO_COMMIT line of images/openstack-hypervisor-operator/Dockerfile, kna's
+# the ARG KNA_COMMIT line of images/kvm-node-agent/Dockerfile
+# (hack/ci-resolve-hvo-commit.sh and hack/ci-resolve-kna-commit.sh print
+# them). Upstream publishes a chart for every main commit under
+# <version>_sha-<first seven characters>, with appVersion sha-<commit>, and
+# the chart renders the image as <repository>:<appVersion>: hvo-release.yaml
+# and kna-release.yaml override the repository with the images #1163 and
+# #1178 build from those commits, which carry the same tag. Neither ref has
+# a Renovate manager. Each moves with its pin, and
+# tests/unit/deploy/metal_stack_hypervisor_test.sh fails while its short SHA
+# differs from the pinned commit. A move of hvo's chart re-reads its two
+# PrometheusRules and its dashboard: the hvo rows of `### Lab hypervisors` and
+# the `### Lab Prometheus stack` section of
+# docs/reference/infrastructure/infrastructure-manifests.md name its alerts
+# and query counts beside the chart tag they were read from, and
+# tests/unit/docs/infrastructure_manifests_lab_prometheus_test.sh fails while
+# that tag differs from ref.tag.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: openstack-hypervisor-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/openstack-hypervisor-operator
+  # `copy` hands the chart tarball to helm-controller unaltered, which is what
+  # a HelmRelease chartRef consumes.
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "1.2.3_sha-a2baf3f"
+    digest: "sha256:a2442e53f92dc13bc5ab29ece620766388bb72624de8e922aa660b8e82ff360f"
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kvm-node-agent
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/kvm-node-agent
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "0.2.0_sha-1e4e4b8"
+    digest: "sha256:e9f33187ebb037a1a615e271b4d9bef04bd439182fa5461021ed414d4c70f10f"

@@ -155,10 +155,11 @@ const (
 	registrationTeardownStallTimeout = 2 * time.Minute
 
 	// orcTeardownDeadline is the point, measured from the deletion timestamp, at
-	// which the K-ORC sweep, the owned-PushSecret wait and the cross-namespace
-	// sweep give up (they run after each other, on whatever is left, so they share
-	// one). It is the registration window plus the K-ORC one, so each phase gets
-	// its own budget instead of racing the phase before it for a shared deadline.
+	// which the K-ORC sweep, the owned-PushSecret wait, the cross-namespace sweep
+	// and the co-located Keystone wait give up (they run after each other, on
+	// whatever is left, so they share one). It is the registration window plus the
+	// K-ORC one, so each phase gets its own budget instead of racing the phase
+	// before it for a shared deadline.
 	orcTeardownDeadline = registrationTeardownStallTimeout + orcTeardownStallTimeout
 
 	// messagingTeardownDeadline bounds, measured from the deletion timestamp, the

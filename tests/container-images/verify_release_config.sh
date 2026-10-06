@@ -38,6 +38,24 @@ DERIVED_IMAGES="nova-compute"
 # key, no extra-packages.yaml entry and no build args either. Its contract is
 # tests/container-images/verify_backup_shifter.sh together with the
 # build-backup-shifter job in build-images.yaml.
+#
+# libvirt is a release-independent image absent from the list too. It takes
+# libvirt, QEMU and OVMF from the ubuntu:noble archive, so it has no
+# source-refs.yaml key, no extra-packages.yaml entry and no build args either.
+# Its contract is tests/container-images/verify_libvirt.sh together with the
+# build-libvirt job in build-images.yaml.
+#
+# openstack-hypervisor-operator is release-independent and absent from the list
+# as well. It is compiled from a pinned commit of the upstream operator's main
+# branch, so it has no source-refs.yaml key, no extra-packages.yaml entry and
+# no build args either. Its contract is
+# tests/container-images/verify_hvo.sh together with the build-hvo job in
+# build-images.yaml.
+#
+# kvm-node-agent is release-independent and absent from the list for the same
+# reason: it is compiled from a pinned commit of the upstream agent's main
+# branch. Its contract is tests/container-images/verify_kna.sh together with
+# the build-kna job in build-images.yaml.
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

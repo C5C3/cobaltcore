@@ -16,6 +16,11 @@ materializes this aggregate into the individual per-service CRs — see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
 reconciliation flow.
 
+The figure shows where the `ControlPlane` CR sits on the management cluster and
+what the c5c3-operator creates from it.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
+
 The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
@@ -205,6 +210,7 @@ status:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.[12]$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). Stays required in **both** keystone modes; in **External** mode it is **advisory** — no images are deployed, so the value only needs to match the external installation's release at the phase-3 managed takeover. |
+| `imagePullPolicy` | `corev1.PullPolicy` | No | `""` | Pull policy projected into `spec.image.pullPolicy` of every service CR the ControlPlane creates (Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, Nova) and into Keystone's `spec.federation.proxyImage.pullPolicy`. A `pullPolicy` on a `services.<service>.image` or `services.keystone.federationProxyImage` override wins for that image. Empty leaves the child's field absent, and the child's operator resolves the policy: its `--default-image-pull-policy`, else `IfNotPresent` for a digest and `Always` for a tag (see [ImageSpec](../keystone/keystone-crd.md#pull-policy-resolution)). The reconcilers assign the image on every pass, so clearing the field removes it from every child on the next reconcile. Enum `Always`, `IfNotPresent`, `Never` (schema-only, no webhook twin). Legal in External mode, where it has no effect on Keystone, which has no child. NovaCompute, OVNCentral, OVNChassis and NeutronMetadataAgent CRs are not created by the ControlPlane and keep their own setting. A child CRD older than the c5c3-operator prunes the projected `pullPolicy` without an error, so the setting holds only while the service operator charts come from the same release as the c5c3-operator chart. |
 | `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Bounded by pattern `^[^,]+$` and 255 characters, K-ORC's bounds on `OpenStackName` — the value is also projected into the adopted `Region` CR's `spec.resource.name` and into the `Region` import every service registration places its endpoints in, and since the field is immutable a value the `Region` CR rejects could not be corrected in place. Immutable after create (the projected `bootstrap.region` is itself immutable). |
 | `regionDescription` | `string` | No | `""` | Description pushed into the Keystone region the ControlPlane adopts as a managed K-ORC `Region` (`{controlplane.Name}-region`). Empty keeps Keystone's description empty: K-ORC applies the spec value on every resync, so a description set by hand in Keystone is overwritten either way. A non-empty value is pushed once the region is adopted (the `Region` CR reports `status.id`); edits take effect on the next reconcile. **Mutable.** Bounded at 255 characters, K-ORC's bound on `RegionResourceSpec.Description`. **Forbidden in External mode** (webhook): no `Region` CR is adopted against a pre-existing installation. **Upgrading an existing control plane:** the `Region` CR drives the Keystone description whether or not this field is set, so the first reconcile after the upgrade **clears** a description an admin set by hand (`openstack region set ... --description`). Copy that value into `spec.regionDescription` before rolling out this version if you want to keep it; the reconciler emits a **Warning** `RegionDescriptionCleared` event on the ControlPlane when it adopts the region with this field empty on a control plane whose catalog was already registered — the upgrade case. A fresh install, whose region has no description to lose, stays silent. |
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
@@ -212,7 +218,7 @@ status:
 | `sizing` | [`*ControlPlaneSizingSpec`](#sizingspec) | No | `nil` (the `Standard` profile) | Sizes and places every component the ControlPlane creates: the service API, worker, and Job pods, the Keystone federation proxy, and the managed backing services. A built-in profile (`Minimal` or `Standard`), overlaid by a referenced cluster-scoped [`SizingProfile`](#sizingprofile), overlaid by the values set here. Unset resolves to `Standard`, which projects the same children as before the field existed. **Forbidden in External mode** (webhook). See [SizingSpec](#sizingspec). |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
 | `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, Placement, and Barbican today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
-| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
+| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (the operator-provisioned `SecretStore` `openbao-tenant-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, Neutron, Cinder, Nova and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, the c5c3-operator provisions the namespaced `SecretStore` `openbao-tenant-store` in the ControlPlane namespace and routes the control plane through it. Set the field only to use a store you manage yourself: `{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own namespace; the shared `openbao-cluster-store` lacks the per-ControlPlane grants and is not an option. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
 ### SecretStoreRefSpec
@@ -224,15 +230,20 @@ through. It reuses the shared `commonv1.SecretStoreRefSpec` — a `kind`
 required non-empty `name`; see the canonical two-field table in the
 [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec).
 
-When omitted the field defaults to the shared cluster-scoped `ClusterSecretStore`
-named `openbao-cluster-store`, so existing deployments are unchanged. Set
-`{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity,
-always resolved in the ControlPlane's own namespace (there is no namespace
-field). The field is **mutable** — switching stores is supported, and the
-operator moves the fernet/credential key material in place rather than
-re-creating it. Its value is **projected onto the Keystone, Horizon, Glance, and
-Placement children**, so operators normally set it on the ControlPlane rather
-than on the individual service CRs.
+When omitted, the c5c3-operator provisions the namespaced `SecretStore`
+`openbao-tenant-store` in the ControlPlane namespace and routes the control
+plane through it. Set the field only to use a store you manage yourself:
+`{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own
+namespace (there is no namespace field). The store's OpenBao identity needs the
+grants of the `eso-tenant` policy. The shared `ClusterSecretStore`
+`openbao-cluster-store` is not an option: it admits only the namespaces
+`openstack` and `shared-services`, and its `eso-management` policy reads only
+`bootstrap/*` and `infrastructure/*`, so the ControlPlane's PushSecrets and its
+`openstack/keystone/...` reads fail. The field is **mutable** — switching stores is
+supported, and the operator moves the fernet/credential key material in place
+rather than re-creating it. Its value is **projected onto the Keystone, Horizon,
+Glance, Placement, Neutron, Cinder, Nova and Barbican children**, so operators
+normally set it on the ControlPlane rather than on the individual service CRs.
 
 ---
 
@@ -498,13 +509,13 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | --- | --- | --- | --- | --- |
 | `mode` | `string` (`Managed` \| `External`) | No | `Managed` | Selects whether the Keystone service is **Managed** (the reconciler deploys and owns a full Keystone workload) or **External** (identity is managed against a pre-existing Keystone at `external.authURL` and no workload is deployed). Defaulted to `Managed` by both the `+kubebuilder:default` marker and the defaulting webhook. In External mode the [`external`](#externalkeystonespec) block is required and every managed-only field below is forbidden. |
 | `external` | [`*ExternalKeystoneSpec`](#externalkeystonespec) | Conditional | `nil` | Connection parameters for an externally-operated Keystone. **Required** when `mode` is `External`, **forbidden** otherwise (CEL + webhook enforced). |
-| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim, except that an empty `pullPolicy` takes `spec.imagePullPolicy`. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.globalPolicyOverrides` for the Keystone service. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Keystone service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Keystone child's `spec.extraConfig`. **Forbidden in External mode** (CEL + webhook, message `services.keystone.extraConfig is forbidden when services.keystone.mode is External`): no Keystone workload is deployed, so there is no config to render. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
-| `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
+| `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: it names no `pullPolicy`, so it resolves to `Always` unless `spec.imagePullPolicy` or the keystone-operator's default names another, every node then re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
 | `remoteCompute` | [`*ServiceNovaRemoteComputeSpec`](#servicenovaremotecomputespec) | No | `nil` (compute clusters receive the in-cluster contract) | Makes the compute contract resolvable from a compute cluster. The projected child publishes a second contract whose addresses leave the cluster, and the ControlPlane mirrors that one, instead of the in-cluster one, onto compute clusters. Admitted only beside a brownfield bus with `tls`, a published https Keystone, and published siblings (webhook). |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Keystone on one mode while another service (e.g. Glance) stays on the other. Empty (the default) **inherits** the shared mode — deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when the Keystone service declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only — set `dedicatedBackingServices.database.credentialsMode` instead; see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. **Forbidden in External mode (CEL + webhook)** — no managed database is provisioned there, so there is no credentials mode to override. |
 | `dedicatedBackingServices` | [`*KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts the Keystone service **out** of the shared `spec.infrastructure` instances and gives it backing services of its own. Forbidden in External mode (CEL + webhook): no backing services are provisioned at all there. |
@@ -1385,14 +1396,16 @@ On a cloud that already has a `cc3test` domain or a `premium` volume type,
 the overlay's documented teardown therefore deletes them: `cc3test` with every
 project, user and group in it, and `premium` unless a volume still uses it.
 
-K-ORC caches one client per `clouds.yaml` for half the token lifetime (about
-30 minutes at Keystone defaults), together with the service catalog of the
-token it authenticated with. Within that time of the ControlPlane's bring-up,
-the cached catalog has no `compute`, `network` or `block-storage` row yet, and
-the overlay's flavor, volume type, network and subnet report `No suitable
-endpoint could be found in the service catalog` until the entry expires. Restart
-K-ORC (`kubectl rollout restart deployment/orc-controller-manager -n
-orc-system`) before applying the overlay, as its header describes.
+The c5c3-operator restarts K-ORC once the ControlPlane's registrations are
+settled, so the overlay needs no restart by hand. K-ORC then resolves the
+overlay's flavor, volume type, network and subnet against a service catalog with
+the `compute`, `network` and `block-storage` rows. See
+[reconcileKORCCatalogRefresh](./controlplane-reconciler.md#reconcilekorccatalogrefresh).
+A `Warning` event `KORCRestartSkipped` on the ControlPlane means the operator
+could not restart K-ORC, for example under a c5c3-operator chart older than
+0.15.0, which lacks the Deployment grant. Restart it by hand
+(`kubectl rollout restart deployment/orc-controller-manager -n orc-system`)
+before applying the overlay.
 
 ### NovaDedicatedBackingServicesSpec
 
@@ -2289,6 +2302,12 @@ namespace from the allowlist does and does not do.
 Declares the admin OpenStack credential and the application-credential rotation
 policy for the control plane.
 
+The figure shows where these fields act.
+[K-ORC admin credential chain](./controlplane-reconciler.md#k-orc-admin-credential-chain)
+lists its steps.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |
@@ -2656,6 +2675,7 @@ Keystone discipline:
 | Field | Rule |
 | --- | --- |
 | `spec.openStackRelease` | Pattern `^\d{4}\.[12]$` |
+| `spec.imagePullPolicy` | Enum: `Always`, `IfNotPresent`, `Never` (no webhook twin: a child CRD or a ControlPlane CRD older than the operator prunes the field first) |
 | `spec.region` | Pattern `^[^,]+$`; MaxLength 255 (K-ORC's bounds on `OpenStackName`, the type the adopted `Region` CR's `spec.resource.name` carries); schema default `RegionOne` |
 | `spec.regionDescription` | MaxLength 255 (K-ORC's bound on `RegionResourceSpec.Description`) |
 | `spec.services.keystone.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (the Horizon child's bound on `websso.keystoneURL`, which this value is projected onto) |
@@ -2682,7 +2702,7 @@ Keystone discipline:
 | `spec.sizing.database.storageSize`, `SizingProfile spec.database.storageSize` | Pattern `^[0-9]+(Mi\|Gi\|Ti)$` |
 | `spec.sizing` and `SizingProfile spec`: every `spreadConstraints[]` | `maxSkew` Minimum 1; `topologyKey` MinLength 1; `whenUnsatisfiable` Enum `DoNotSchedule`, `ScheduleAnyway` |
 | `spec.sizing` and `SizingProfile spec`: every `api` and `horizon.api` (CEL) | `!(has(self.autoscaling) && has(self.verticalAutoscaling))` → "autoscaling and verticalAutoscaling cannot both be set on one component" |
-| `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
+| `spec.sizing` and `SizingProfile spec`: every `verticalAutoscaling` | `updateMode` Enum `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `Auto`; `minReplicas` Minimum 1; `minAllowed` and `maxAllowed` at most two keys, CEL: only `cpu` and `memory` (see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec)) |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
 | `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
 | `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |
@@ -3367,30 +3387,38 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by twenty sub-reconcilers, each owning one
-condition type, plus an aggregate `Ready` condition. The condition-type
-constants in `controlplane_controller.go` (`subConditionTypes`) are the single
-source of truth; call sites reference the constants rather than inline literals.
+The ControlPlane status is driven by twenty-one sub-reconcilers. Twenty own one
+condition type each; `reconcileKORCCatalogRefresh` owns none. An aggregate
+`Ready` condition comes on top. The condition-type constants in
+`controlplane_controller.go` (`subConditionTypes`) are the single source of
+truth; call sites reference the constants rather than inline literals.
 
-The sub-reconcilers run in dependency order; a stage that has not converged
-requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Nine stages additionally gate **explicitly** on an
-earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileHorizon` on `KeystoneReady`, `reconcileGlance`, `reconcilePlacement`
-and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
-`KeystoneService` registration each of them projects for itself,
-`reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own registration,
-`reconcileCinder` on `KeystoneReady` plus its own registration,
-`reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
-`AdminCredentialReady`):
+The sub-reconcilers run in two phases. The first seven are a blocking prefix: a
+step that has not converged requeues and ends the pass. The other fourteen run
+as one group on every pass, and none of them stops another. Eleven steps gate
+**explicitly** on an earlier condition being `True` (`reconcileKeystone` on
+`InfrastructureReady`, `reconcileHorizon` on `KeystoneReady`, `reconcileGlance`,
+`reconcilePlacement` and `reconcileBarbican` on `KeystoneReady` and on the
+`AccountReady` of the `KeystoneService` registration each of them projects for
+itself, `reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own
+registration, `reconcileCinder` on `KeystoneReady` plus its own registration,
+`reconcileNova` on `KeystoneReady` and `PlacementReady` plus its own
+registration, `reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
+`AdminCredentialReady`, `reconcileKORCCatalogRefresh` on
+`ServiceAccountsReady`).
 
-```
-SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
-  → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
-  → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady
-  → BarbicanReady → OVNReady → NeutronReady → CinderReady
-  → ServiceAccountsReady → RegistrationTenantStoresReady
-```
+The figure shows which condition waits for which.
+[Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow) lists
+every step with its gate and its requeue interval.
+
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+
+In call order the condition types are `SizingReady`, `NamespacesReady`,
+`InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`,
+`AdminPasswordReady`, `KeystoneReady`, `HorizonReady`, `KORCReady`,
+`AdminCredentialReady`, `CatalogReady`, `GlanceReady`, `PlacementReady`,
+`BarbicanReady`, `OVNReady`, `NeutronReady`, `CinderReady`, `NovaReady`,
+`ServiceAccountsReady` and `RegistrationTenantStoresReady`.
 
 `SizingReady` runs first because every later stage projects its children from
 the resolved sizing: a `SizingProfile` that cannot be read stops the pass before
@@ -3406,11 +3434,12 @@ in External mode.
 
 `ServiceAccountsReady` and `RegistrationTenantStoresReady` run **last** and carry
 no gate of their own. The first only reads the `KeystoneService` registrations
-the Glance, Placement, Barbican and Neutron legs wrote earlier in the same pass,
-so there is no projection it could defer. The second writes into namespaces the
-control plane does not own, which is why it sits at the end of the chain rather
-than beside `ESOTenantStoreReady`: a namespace someone else administers must never
-park this control plane's own credential material behind it.
+the Glance, Placement, Barbican, Neutron, Cinder and Nova legs wrote earlier in
+the same pass, so there is no projection it could defer. The second writes into
+namespaces the control plane does not own, which is why it sits at the end of
+the chain rather than beside `ESOTenantStoreReady`: a namespace someone else
+administers must never park this control plane's own credential material behind
+it.
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
@@ -3469,9 +3498,10 @@ store.
 
 Set by `reconcileDBCredentials`. In managed mode (`database.clusterRef` set) it
 create-or-updates the per-ControlPlane DB-credential `ExternalSecret`
-(`{name}-keystone-db-credentials`, reading OpenBao path
-`openstack/keystone/{namespace}/{name}/db`, hourly refresh) and mirrors its
-Ready status. The OpenBao-backed `ClusterSecretStore` is checked first so an
+(`{name}-keystone-db-credentials`; in the default Dynamic mode fed by a
+`VaultDynamicSecret` generator with a 24h refresh, in Static mode reading OpenBao
+path `openstack/keystone/{namespace}/{name}/db` with an hourly refresh) and
+mirrors its Ready status. The ControlPlane's secret store is checked first so an
 ESO/OpenBao outage surfaces promptly instead of hiding behind the
 ExternalSecret's stale per-object Ready cache.
 
@@ -3519,6 +3549,7 @@ Set by `reconcileKeystone` (gated on `InfrastructureReady`).
 | `False` | `InvalidRotationInterval` | `services.keystone.rotationInterval` could not be converted to a cron schedule. |
 | `False` | `KeystoneProjectionRejected` | The Keystone API server rejected the projected spec (HTTP 422) — almost always a now-immutable db/bootstrap field that diverged from the frozen Keystone child. Reconcile the ControlPlane spec back to the child's values, or recreate the child, to recover. Distinct from `KeystoneError` so the wedge is diagnosable from the condition. |
 | `False` | `KeystoneError` | Error create-or-updating the Keystone CR. |
+| `False` | `FinalizingKeystone` | On deletion, the Keystone child in the ControlPlane's own namespace has been deleted by the teardown, and the ControlPlane finalizer waits for it to leave etcd: its `openbao-finalizer` has ESO purge the fernet- and credential-keys backup paths through the tenant `SecretStore`, which the owner-reference cascade would delete at the same time. Past `orcTeardownDeadline` a **Warning** `KeystoneTeardownStalled` names the Keystone and both paths and the release proceeds; see [Owner-ref / GC model](./controlplane-reconciler.md#owner-ref-gc-model). Message: `waiting for the Keystone child "<name>" to finish its OpenBao cleanup before releasing the ControlPlane`. |
 
 ### HorizonReady
 
@@ -3760,8 +3791,9 @@ Set by `reconcileKORC`.
 
 ### AdminCredentialReady
 
-Set by `reconcileAdminCredential` (gated on `KORCReady`, the OpenBao-backed
-`ClusterSecretStore` being Ready, the K-ORC `clouds.yaml` ExternalSecret being
+Set by `reconcileAdminCredential` (gated on `KORCReady`, the ControlPlane's
+secret store being Ready (by default the `SecretStore` `openbao-tenant-store`),
+the K-ORC `clouds.yaml` ExternalSecret being
 Ready, the admin app-credential `PushSecret` having actually synced to OpenBao,
 **and** the materialised `clouds.yaml` Secret semantically matching (parsed
 application-credential id+secret) the freshly assembled credential).
@@ -3892,9 +3924,11 @@ Set by `setReadyCondition`.
 By default every service a ControlPlane projects lands in the **ControlPlane's
 own namespace**: namespace and ControlPlane are the same boundary, so no
 network-policy, RBAC, or quota line can be drawn between the services of one
-control plane. A `namespace` assignment on `services.keystone`,
-`services.horizon`, `services.glance`, or `services.nova` makes the target
-namespace a **per-service choice** — a
+control plane. A `namespace` assignment on any of the eight service blocks
+(`services.keystone`, `services.horizon`, `services.glance`,
+`services.placement`, `services.barbican`, `services.neutron`,
+`services.cinder`, `services.nova`) makes the target namespace a **per-service
+choice** — a
 service can be placed in a namespace of its own, and the backing services, secret
 store, and credential material that belong to it follow it there. A service
 without an assignment stays in the ControlPlane's namespace exactly as before.
@@ -3913,7 +3947,7 @@ namespace, both when the ControlPlane is created and when it is deleted:
 
 | Lifecycle | On reconcile | On ControlPlane deletion |
 | --- | --- | --- |
-| `Managed` | The operator **creates** the namespace and stamps it with the ownership labels plus `app.kubernetes.io/managed-by: c5c3-operator`. A namespace that already exists **without** those labels is never adopted — the operator fails loud with `NamespacesReady=False/NamespaceNotOwned` rather than taking over a namespace it did not create. | The operator **deletes** the namespace (only if it carries the ownership labels), which cascades everything left in it. |
+| `Managed` | The operator **creates** the namespace and stamps it with the ownership labels, `app.kubernetes.io/managed-by: c5c3-operator` and the annotation `c5c3.io/controlplane-uid`. A namespace that already exists **without** those labels is never adopted — the operator fails loud with `NamespacesReady=False/NamespaceNotOwned` rather than taking over a namespace it did not create. | The operator **deletes** the namespace (only if it carries the ownership labels), which cascades everything left in it. |
 | `External` | The operator only **verifies** the namespace exists; it never creates, labels, or mutates it. A missing one parks on `NamespacesReady=False/NamespaceNotFound` and requeues. | The namespace **survives**. The residue the ControlPlane placed in it — backing services, credential material, tenant store — is swept by name, but the namespace itself is left standing. |
 
 Use `External` for namespaces whose quotas, RBAC, and policies are provisioned
@@ -3943,6 +3977,13 @@ explicitly, because nothing else collects it. The finalizer deletes
 the service children first and waits for them (their own operators run a
 sequenced ESO cleanup through the tenant store in the same namespace), then takes
 the namespace down per its lifecycle.
+
+The figure shows the ControlPlane namespace, a service namespace and a target
+cluster with the ownership model of each.
+[ControlPlane placement](../target-clusters.md#controlplane-placement) covers
+the third.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../../diagrams/controlplane-children-placement.svg)
 
 ### Secret distribution
 
@@ -4040,11 +4081,11 @@ agree on its lifecycle: they share that namespace's backing services and tenant
 store, so one must not have the teardown delete what the other declared
 untouchable.
 
-> **Chart mode:** the Helm chart's namespace-scoped RBAC mode
-> (`rbac.namespaceScoped: true`) does **not** support dedicated service
-> namespaces — the operator needs cluster-scoped `namespaces` (`create`,
-> `delete`) and cross-namespace child access, which only the default ClusterRole
-> mode grants.
+> **Chart mode:** the c5c3-operator chart refuses the namespace-scoped RBAC mode
+> (`rbac.namespaceScoped: true`) as a whole, so dedicated service namespaces
+> always run under the default ClusterRole mode. The operator needs
+> cluster-scoped `namespaces` (`create`, `delete`) and cross-namespace child
+> access, which only that mode grants.
 
 ---
 

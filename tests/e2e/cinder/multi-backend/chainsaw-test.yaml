@@ -15,9 +15,9 @@
 #     the second backend lands on the second export and nowhere else
 #
 # The second export, /volumes-b, is created by step 1 and removed by its
-# cleanup: the kind NFS server pre-creates /volumes and /backups only. fsid=0
-# makes /exports the NFSv4 pseudo-root, so /exports/volumes-b is reachable as
-# nfs-server.openstack.svc.cluster.local:/volumes-b.
+# cleanup: the kind NFS server pre-creates /volumes and /backups only.
+# `Pseudo = /` makes /exports the NFSv4 pseudo-root, so /exports/volumes-b is
+# reachable as nfs-server.openstack.svc.cluster.local:/volumes-b.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

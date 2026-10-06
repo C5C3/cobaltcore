@@ -8,18 +8,24 @@
 #   1. deploy/lab/metal-stack/{base,infrastructure}/kustomization.yaml exist
 #      with SPDX headers, and each lists exactly one resource: the matching
 #      kind overlay (../../../kind/base, ../../../kind/infrastructure).
-#   2. The base render carries the OpenBao HelmRelease on `premium` in
-#      standalone mode, the envoy-gateway HelmRelease, the twelve-listener
-#      openstack-gw Gateway and the nine suspended service-operator releases,
-#      and no metrics-server or vertical-pod-autoscaler release (the platform
-#      runs both).
-#   3. The infrastructure render carries MariaDB and both Garage volumes on
-#      `premium` at one replica, the NodePort EnvoyProxy on 31443, the paused
-#      proving OpenBaoCluster without egress fields (hack/deploy-infra.sh
-#      patches those in) and the openstack OpenBaoTenant.
-#   4. Neither render names local-path, ceph-rbd or the `standard` class.
+#   2. The base render carries the OpenBao HelmRelease in standalone mode
+#      with no storage class, the envoy-gateway HelmRelease, the
+#      twelve-listener openstack-gw Gateway and the nine suspended
+#      service-operator releases, no metrics-server or vertical-pod-autoscaler
+#      release (the platform runs both), and the Gardener apiserver-proxy
+#      opt-out label and the chaos-mesh.org/inject: enabled annotation on
+#      every rendered Namespace, none of which is a platform namespace,
+#      flux-system or chaos-mesh.
+#   3. The infrastructure render carries MariaDB and both Garage volumes at
+#      one replica with no storage class, the NodePort EnvoyProxy on 31443,
+#      the paused proving OpenBaoCluster without egress fields
+#      (hack/deploy-infra.sh patches those in) and the openstack OpenBaoTenant.
+#   4. Neither render names local-path, ceph-rbd or any storage class: no
+#      line sets storageClass or storageClassName, so every volume binds to
+#      the cluster's default class.
 #   5. The kind infrastructure overlay still renders MariaDB on `standard`,
-#      so the lab overlay changed nothing under deploy/kind/.
+#      and the kind base annotates no Namespace for Chaos Mesh, so the lab
+#      overlay changed nothing under deploy/kind/.
 #
 # Checks 2 to 5 are counted as SKIP when kustomize or yq is not on PATH; a
 # failing kustomize build counts them as FAIL and prints the build's error. An
@@ -38,76 +44,18 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/kustomize_render.sh
+source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
 LAB_DIR="$PROJECT_ROOT/deploy/lab/metal-stack"
 BASE_DIR="$LAB_DIR/base"
 INFRA_DIR="$LAB_DIR/infrastructure"
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
 
 SERVICE_OPERATORS="keystone horizon glance placement barbican ovn neutron cinder nova"
 
 RENDERED=""
-
-have() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-# render <dir> <checks>
-# Renders <dir> into RENDERED. When the render cannot be read, counts the
-# caller's checks as SKIP (kustomize or yq missing) or FAIL (the build failed,
-# or it produced no document) and returns 1.
-render() {
-  local dir="$1" checks="$2"
-
-  if ! have kustomize || ! have yq; then
-    echo "  SKIP: kustomize or yq not installed ($checks checks skipped)"
-    SKIP=$((SKIP + checks))
-    return 1
-  fi
-
-  # No --load-restrictor: kubectl apply -k cannot pass one either.
-  if ! RENDERED="$(kustomize build "$dir" 2>&1)"; then
-    echo "  FAIL: kustomize build $dir failed (default LoadRestrictionsRootOnly):"
-    echo "$RENDERED" | head -20
-    FAIL=$((FAIL + checks))
-    return 1
-  fi
-
-  local count
-  count="$(printf '%s\n' "$RENDERED" | yq -N -r 'select(. != null) | .kind' - | grep -c .)"
-  if [[ "$count" -eq 0 ]]; then
-    echo "  FAIL: kustomize build $dir rendered no document"
-    FAIL=$((FAIL + checks))
-    return 1
-  fi
-}
-
-# val <kind> <name> <expression>
-# The value <expression> yields on the rendered object of <kind> named <name>.
-val() {
-  printf '%s\n' "$RENDERED" |
-    yq -N -r "select(.kind == \"$1\" and .metadata.name == \"$2\") | $3" - | head -n 1
-}
-
-# count_named <kind> <name>
-# How many rendered objects of <kind> are named <name>.
-count_named() {
-  printf '%s\n' "$RENDERED" |
-    yq -N -r "select(.kind == \"$1\" and .metadata.name == \"$2\") | .metadata.name" - | grep -c .
-}
-
-# resource_entries <kustomization>
-# The items of the top-level resources key; the range ends at the next
-# top-level key.
-resource_entries() {
-  awk '
-    /^resources:/ { in_list = 1; next }
-    in_list && /^[^[:space:]#-]/ { in_list = 0 }
-    in_list && /^[[:space:]]*-[[:space:]]+/ {
-      sub(/^[[:space:]]*-[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print
-    }
-  ' "$1"
-}
 
 # --- Test 1: both kustomizations exist, carry SPDX and name the kind overlay ---
 test_files_have_spdx_and_one_resource() {
@@ -135,10 +83,10 @@ test_files_have_spdx_and_one_resource() {
 test_base_render() {
   echo "Test: kustomize build deploy/lab/metal-stack/base"
 
-  render "$BASE_DIR" 20 || return
+  render "$BASE_DIR" 23 || return
 
-  assert_eq "HelmRelease openbao stores its data on premium" "premium" \
-    "$(val HelmRelease openbao '.spec.values.server.dataStorage.storageClass')"
+  assert_eq "HelmRelease openbao names no storage class" "false" \
+    "$(val HelmRelease openbao '.spec.values.server.dataStorage | has("storageClass")')"
   assert_eq "HelmRelease openbao keeps HA disabled (inherited)" "false" \
     "$(val HelmRelease openbao '.spec.values.server.ha.enabled')"
   assert_eq "HelmRelease openbao keeps standalone mode (inherited)" "true" \
@@ -158,25 +106,52 @@ test_base_render() {
     "$(count_named HelmRelease metrics-server)"
   assert_eq "no vertical-pod-autoscaler HelmRelease is rendered" "0" \
     "$(count_named HelmRelease vertical-pod-autoscaler)"
-  assert_no_foreign_class "base"
+
+  # The stack's NetworkPolicies expect the API server by its in-cluster
+  # address; Gardener's webhook sets a DNS name in every pod that does not
+  # opt out, and the label is that opt-out. Every namespace, not a list.
+  local namespaces labelled
+  namespaces="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace") | .metadata.name' - | grep -c .)"
+  labelled="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace" and .metadata.labels["apiserver-proxy.networking.gardener.cloud/inject"] == "disable") | .metadata.name' - |
+    grep -c .)"
+  assert_eq "the base renders namespaces" "true" "$([[ "$namespaces" -gt 0 ]] && echo true || echo false)"
+  assert_eq "every rendered Namespace opts out of Gardener's KUBERNETES_SERVICE_HOST injection ($namespaces)" \
+    "$namespaces" "$labelled"
+  # The scope of the lab's Chaos Mesh, whose release filters by namespace
+  # (deploy/lab/metal-stack/chaos-mesh): every namespace the lab declares.
+  local annotated
+  annotated="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "Namespace" and .metadata.annotations["chaos-mesh.org/inject"] == "enabled") | .metadata.name' - |
+    grep -c .)"
+  assert_eq "every rendered Namespace is selectable for Chaos Mesh ($namespaces)" \
+    "$namespaces" "$annotated"
+  # The scope stops at the lab's own namespaces: the platform's, flux-system
+  # and chaos-mesh must never be rendered here, or the patch annotates them.
+  assert_eq "no platform, Flux or Chaos Mesh namespace is in the Chaos Mesh scope" "" \
+    "$(printf '%s\n' "$RENDERED" |
+      yq -N -r 'select(.kind == "Namespace" and .metadata.annotations["chaos-mesh.org/inject"] == "enabled") | .metadata.name' - |
+      grep -xE 'kube-system|kube-public|kube-node-lease|default|firewall|metallb-system|flux-system|chaos-mesh' || true)"
+  assert_no_class "base"
 }
 
 # --- Test 3: the infrastructure render ---
 test_infrastructure_render() {
   echo "Test: kustomize build deploy/lab/metal-stack/infrastructure"
 
-  render "$INFRA_DIR" 16 || return
+  render "$INFRA_DIR" 15 || return
 
-  assert_eq "MariaDB openstack-db stores its data on premium" "premium" \
-    "$(val MariaDB openstack-db '.spec.storage.storageClassName')"
+  assert_eq "MariaDB openstack-db names no storage class" "false" \
+    "$(val MariaDB openstack-db '.spec.storage | has("storageClassName")')"
   assert_eq "MariaDB openstack-db keeps one replica (inherited)" "1" \
     "$(val MariaDB openstack-db '.spec.replicas')"
   assert_eq "MariaDB openstack-db keeps Galera disabled (inherited)" "false" \
     "$(val MariaDB openstack-db '.spec.galera.enabled')"
-  assert_eq "GarageCluster garage keeps its metadata on premium" "premium" \
-    "$(val GarageCluster garage '.spec.storage.metadata.storageClassName')"
-  assert_eq "GarageCluster garage keeps its data on premium" "premium" \
-    "$(val GarageCluster garage '.spec.storage.data.storageClassName')"
+  assert_eq "GarageCluster garage names no storage class for its metadata" "false" \
+    "$(val GarageCluster garage '.spec.storage.metadata | has("storageClassName")')"
+  assert_eq "GarageCluster garage names no storage class for its data" "false" \
+    "$(val GarageCluster garage '.spec.storage.data | has("storageClassName")')"
   assert_eq "GarageCluster garage keeps one storage node (inherited)" "1" \
     "$(val GarageCluster garage '.spec.storage.replicas')"
   assert_eq "EnvoyProxy envoy-nodeport keeps the NodePort Service" "NodePort" \
@@ -193,27 +168,35 @@ test_infrastructure_render() {
     "$(val OpenBaoCluster openbao-instance '.spec.network.egressRules')"
   assert_eq "OpenBaoTenant openstack is rendered" "1" \
     "$(count_named OpenBaoTenant openstack)"
-  assert_no_foreign_class "infrastructure"
+  assert_no_class "infrastructure"
 }
 
-# assert_no_foreign_class <label>
-# Four checks: the render in RENDERED names none of the production classes
-# and not the kind class.
-assert_no_foreign_class() {
+# assert_no_class <label>
+# Three checks: the render in RENDERED names none of the production classes,
+# and no line of it sets a storage class at all. A patch value that kustomize
+# kept as `storageClass: null` fails the last check too.
+assert_no_class() {
   local needle
-  for needle in "local-path" "ceph-rbd" "storageClass: standard" "storageClassName: standard"; do
+  for needle in "local-path" "ceph-rbd"; do
     assert_not_contains "the $1 render names no '$needle'" "$RENDERED" "$needle"
   done
+  assert_eq "no line of the $1 render sets storageClass or storageClassName" "" \
+    "$(printf '%s\n' "$RENDERED" | grep -E '^[[:space:]]*storageClass(Name)?:')"
 }
 
 # --- Test 4: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
   echo "Test: kustomize build deploy/kind/infrastructure still renders MariaDB on standard"
 
-  render "$KIND_INFRA_DIR" 1 || return
+  if render "$KIND_INFRA_DIR" 1; then
+    assert_eq "the kind MariaDB stays on the standard class" "standard" \
+      "$(val MariaDB openstack-db '.spec.storage.storageClassName')"
+  fi
 
-  assert_eq "the kind MariaDB stays on the standard class" "standard" \
-    "$(val MariaDB openstack-db '.spec.storage.storageClassName')"
+  # kind keeps the Chaos Mesh namespace filter off, so it needs no annotation.
+  render "$KIND_BASE_DIR" 1 || return
+  assert_eq "no Namespace of the kind base carries chaos-mesh.org/inject" "0" \
+    "$(grep -c 'chaos-mesh.org/inject' <<<"$RENDERED")"
 }
 
 # --- Run ---

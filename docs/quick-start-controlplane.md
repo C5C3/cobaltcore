@@ -9,8 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-This guide takes a single c5c3 `ControlPlane` CR from `git clone` to an authenticated
-Keystone API call. Compared with the [Quick Start](./quick-start.md), the
+This guide creates the [ControlPlane devstack](./contributing/guide-conventions.md#one-devstack-per-guide),
+a local kind environment that takes a single c5c3 `ControlPlane` CR from `git
+clone` to an authenticated Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `RabbitmqCluster`,
 `Keystone`, `Horizon`, `Glance`, `Placement`, `Barbican`, `Neutron`, and `Nova`
 children against a referenced `OVNCentral`, mints the admin application
@@ -18,16 +19,21 @@ credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
 
+The figure shows the cluster this page builds, from the one `ControlPlane` CR
+to the running services. Target clusters, the dashed box, are not part of this
+page. [Architecture](./architecture/index.md#implemented-topology) describes
+the whole picture.
+
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](./diagrams/cobaltcore-management-cluster.svg)
+
 ## Prerequisites
 
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands. The network commands in that step need no plugin: `openstack network` and `openstack subnet` ship with `python-openstackclient` itself
-- A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
-- A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB; the [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. The optional compute leg of Step 6 (the fake compute, the OVN chassis, and the metadata agent) runs beside that budget
-- `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
-
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 7, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands.
+- A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB; the [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. The optional compute leg of Step 7 (the fake compute, the OVN chassis, and the metadata agent) runs beside that budget
+- [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 Docker Desktop and Podman are both valid kind providers. When using Podman,
 ensure its machine is already running and select it explicitly before running
 Step 2:
@@ -73,7 +79,9 @@ ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator, nova-operator, K-ORC, c5c3-operator) from
 the published charts. It does not create the `ControlPlane` CR itself; you
-create and apply that in Step 3. The RabbitMQ Cluster Operator that serves the managed bus
+create and apply that in Step 4. The command returns once the operator
+releases are Ready and the cluster admits the manifests of Steps 3 and 4.
+The RabbitMQ Cluster Operator that serves the managed bus
 arrives through a Flux Kustomization of its own, on every cluster this script
 provisions, with or without `WITH_CONTROLPLANE=true`. In this mode the
 ControlPlane provisions its own MariaDB/Memcached (managed mode), so
@@ -94,7 +102,7 @@ You do not need to redeploy. The helper prefers `docker buildx`, but falls back
 to `curl` if Docker is unavailable.
 :::
 
-Block storage is an opt-in. If you want the Cinder block of Step 3, run Step 2
+Block storage is an opt-in. If you want the Cinder block of Step 4, run Step 2
 with the NFS overlay instead:
 
 ```bash
@@ -102,16 +110,17 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
 That adds the NFS server to `openstack` and `csi-driver-nfs` to `kube-system`.
-On a Linux host it also loads the `nfsd`, `nfs` and `nfsv4` kernel modules
-through sudo. On macOS the script skips the module step: those modules belong
-to the Linux VM kernel Docker Desktop runs. The
-[NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in)
+On a Linux host it also loads, through sudo, the `nfs` and `nfsv4` kernel
+modules that `csi-driver-nfs` mounts the shares with. On macOS the script
+skips the module step: those modules belong to the Linux VM kernel Docker
+Desktop runs. The
+[NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in)
 reference describes the overlay.
 
-## Step 3 — Create the ControlPlane CR
+## Step 3 — Deploy the OVN control plane
 
-The network service in the CR below programs an OVN control plane the
-ControlPlane only references, so that central goes up first:
+The network service in the CR below programs an OVN control plane that the
+ControlPlane references. Setting up the service first:
 
 ```yaml
 # controlplane-ovn.yaml
@@ -151,6 +160,8 @@ addresses and the client Secret the central publishes, and it projects, updates
 and deletes nothing on it. The CR stays yours: `kubectl delete controlplane`
 leaves the central running, and only the Teardown at the end of this page takes
 it down with the cluster.
+
+## Step 4 — Create the ControlPlane CR
 
 Then apply a `ControlPlane` CR. You only supply `openStackRelease` and the
 `services.keystone` block; the defaulting webhook fills the infrastructure and
@@ -310,7 +321,7 @@ carrying the image catalog entry and the `glance` service account (user
 Keystone tokens it receives. Its database and cache derive from
 `spec.infrastructure` the same way Keystone's do. On the managed shared
 database its DB credential is engine-issued and auto-rotated like Keystone's,
-as short-lived leases from the OpenBao database engine, and the Step 4
+as short-lived leases from the OpenBao database engine, and the Step 5
 onboarding provisions the engine tenant for all database services (keystone,
 glance, placement, barbican, neutron, nova's two schemas, and cinder when the
 block-storage block is present). A `GlanceReady` condition joins the chain,
@@ -325,7 +336,7 @@ carries the placement catalog entry and the `placement` account (user
 each registration creates its project, so two naming one project would collide.
 Database and cache derive from `spec.infrastructure` the same way Glance's do,
 and on the managed shared database the DB credential is engine-issued too, from
-the tenant Step 4 onboards. The `gateway` block puts the API on the sixth HTTPS
+the tenant Step 5 onboards. The `gateway` block puts the API on the sixth HTTPS
 listener the kind overlay adds, `placement.127-0-0-1.nip.io`, and
 `publicEndpoint` carries the `:8443` host port into the public placement
 catalog row. A `PlacementReady`
@@ -339,7 +350,7 @@ CRs: the Barbican child `controlplane-barbican`, the instance
 attaches the two. A `KeystoneService` registration `controlplane-barbican`
 carries the key-manager catalog entry and the `barbican` account (user
 `barbican`, role `service`) with a project of its own, `service-barbican`. Its
-database credential is engine-issued from the tenant Step 4 onboards, like
+database credential is engine-issued from the tenant Step 5 onboards, like
 Glance's and Placement's. The `gateway` block puts the key-manager API on the
 seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and `publicEndpoint`
 carries the `:8443` host port into the public key-manager catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
@@ -358,9 +369,9 @@ URL, and delivers the URL beside the child as a
 `controlplane-neutron` references brownfield. A `KeystoneService` registration
 `controlplane-neutron` carries the network catalog entry and the `neutron`
 account (user `neutron`, role `service`) in its own project, `service-neutron`.
-Its database credential is engine-issued from the tenant Step 4 onboards, like
+Its database credential is engine-issued from the tenant Step 5 onboards, like
 Glance's, Placement's, and Barbican's. `ovn.centralRef` points at the
-`controlplane-ovn` central from the top of this step; the plane reads that
+`controlplane-ovn` central of Step 3; the plane reads that
 central's database addresses and client Secret and mirrors its readiness into an
 `OVNReady` condition, which `NeutronReady` gates on alongside `KeystoneReady`,
 the bus delivery, and the registration. The `gateway` block puts the API on the
@@ -386,7 +397,7 @@ the caller's own context.
 
 Nova keeps its state in two schemas, `nova_api` and `nova` (with `nova_cell0`
 beside it), and each takes an engine-issued credential of its own from the
-tenant Step 4 onboards: `controlplane-nova-api-db-credentials` and
+tenant Step 5 onboards: `controlplane-nova-api-db-credentials` and
 `controlplane-nova-db-credentials`. The bus reaches the child as
 `controlplane-nova-messaging`, like Neutron's. The ControlPlane generates the
 shared secret the metadata API verifies proxied instance requests with into
@@ -452,7 +463,7 @@ a `FailedMount` event that names `nfs.csi.k8s.io` as not registered, and
 :::
 
 Manual work remains after the apply: a hand-applied ControlPlane needs the
-one-time OpenBao onboarding in Step 4 before the chain can progress past its
+one-time OpenBao onboarding in Step 5 before the chain can progress past its
 database credentials.
 
 <details>
@@ -566,7 +577,7 @@ spec:
 
 </details>
 
-## Step 4 — Onboard the OpenBao database-engine tenant
+## Step 5 — Onboard the OpenBao database-engine tenant
 
 In managed mode the ControlPlane defaults to engine-issued (`Dynamic`) Keystone
 DB credentials: ESO draws short-lived MySQL users from the OpenBao
@@ -575,6 +586,11 @@ c5c3-operator only reads from that path. The engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
 `deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
+The right half of the figure is the path this step completes: the script
+writes the role that the "by hand" chip marks.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](./diagrams/secrets-db-credentials.svg)
+
 Here `<namespace>` is the Keystone service namespace: the ControlPlane's own
 namespace (`openstack`) in this quick start, and only different when
 `spec.services.keystone.namespace` places the Keystone service in a namespace of
@@ -582,7 +598,7 @@ its own. The onboarding script resolves it from the live ControlPlane spec, so
 the two arguments below always name the ControlPlane, wherever its Keystone
 lands.
 
-Run it after the `kubectl apply` from Step 3, as soon as the projected MariaDB
+Run it after the `kubectl apply` from Step 4, as soon as the projected MariaDB
 is Ready (the script configures the engine's database connection, so it needs a
 reachable database):
 
@@ -625,43 +641,53 @@ logs `unknown role: keystone-<namespace>`. Nothing is lost: run the onboarding
 script and ESO syncs the credential on its next retry.
 :::
 
-::: tip Optional: a per-tenant OpenBao identity
-By default this ControlPlane reaches OpenBao through the shared cluster store
-`openbao-cluster-store`. To give it its own OpenBao identity (so OpenBao itself
-enforces isolation from other tenants), run
-`deploy/openbao/bootstrap/setup-eso-tenant.sh openstack`, wait for the
-`openbao-tenant-store` SecretStore to be `Ready`, then set
-`spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}` on the
-ControlPlane. See the
+::: tip A per-tenant OpenBao identity is the default
+This ControlPlane reaches OpenBao through a store of its own. The c5c3-operator
+provisions the `SecretStore` `openbao-tenant-store` in the `openstack` namespace
+and routes the ControlPlane and its children through it, so OpenBao itself
+isolates it from other tenants. There is nothing to run. `spec.secretStoreRef`
+is the override for a store you manage yourself. See the
 [multi-tenant deployment guide](./guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities).
 :::
 
-## Step 5 — Watch the chain reconcile
+## Step 6 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 20 sub-conditions are met, in
-dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
-`PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
-`KeystoneService` registration each service projects for itself; `OVNReady`
-gates on nothing and only mirrors the readiness of the referenced
-`controlplane-ovn`, since nothing this chain produces can converge a central it
-does not own; `NeutronReady` carries the two gates its siblings do, plus
-`OVNReady` and the delivery of the message bus into the network service's
-namespace; `CinderReady` gates on `KeystoneReady`, its registration and the bus
-delivery, and reads `True/CinderNotManaged` when the block-storage block is
-absent; `NovaReady` gates on `KeystoneReady`, `PlacementReady`, its
-registration and the bus delivery; `ServiceAccountsReady` then folds the
-registrations of glance, placement, barbican, neutron, neutron-nova, cinder
-when present, and nova, so it comes after them; the K-ORC branch runs
-alongside):
+The aggregate `Ready` flips to `True` once all 20 sub-conditions are met. They
+do not form one line. The first seven are a blocking prefix, and each waits for
+the one before it. The others belong to steps that all run on every pass, so
+several of them can be `False` at once, and each waits only for what the figure
+draws an arrow from.
 
-```
-SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → NovaReady → ServiceAccountsReady → RegistrationTenantStoresReady
-```
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](./diagrams/controlplane-gate-graph.svg)
 
-`RegistrationTenantStoresReady` closes the chain and reads
-`True/NoRegistrationNamespaces` on this devstack: it provisions secret stores for
-namespaces outside this ControlPlane's own that register services against it, and
-the quick start declares none.
+The conditions in call order, with what each waits for on this devstack:
+
+| Condition | Waits for |
+| --- | --- |
+| `SizingReady` | Nothing |
+| `NamespacesReady` | `SizingReady`. Reads `True/NoDedicatedNamespaces` here: no service has a namespace of its own |
+| `InfrastructureReady` | `NamespacesReady`, then the backing services of `spec.infrastructure` |
+| `ESOTenantStoreReady` | `InfrastructureReady`, then the secret store `openbao-tenant-store` |
+| `DBCredentialsReady` | `ESOTenantStoreReady`, then the onboarding of Step 5 |
+| `AdminPasswordReady` | `DBCredentialsReady`, then the admin password from OpenBao |
+| `KeystoneReady` | `AdminPasswordReady`, then the Keystone child `controlplane-keystone` |
+| `HorizonReady` | `KeystoneReady` |
+| `KORCReady` | The prefix. It has no gate of its own |
+| `AdminCredentialReady` | `KORCReady` |
+| `CatalogReady` | `AdminCredentialReady` |
+| `GlanceReady` | `KeystoneReady` and its own `KeystoneService` registration |
+| `PlacementReady` | `KeystoneReady` and its own registration |
+| `BarbicanReady` | `KeystoneReady` and its own registration |
+| `OVNReady` | Nothing in this chain. It mirrors `controlplane-ovn` from Step 3 |
+| `NeutronReady` | `KeystoneReady`, `OVNReady`, its registration and the message bus in its namespace |
+| `CinderReady` | `KeystoneReady`, its registration and the message bus. Reads `True/CinderNotManaged` without the block-storage block |
+| `NovaReady` | `KeystoneReady`, `PlacementReady`, its registration and the message bus |
+| `ServiceAccountsReady` | The registrations of glance, placement, barbican, neutron, neutron-nova, cinder when present, and nova |
+| `RegistrationTenantStoresReady` | Nothing. Reads `True/NoRegistrationNamespaces` here: no other namespace registers a service against this ControlPlane |
+
+Each of the six services registers through a `KeystoneService`, and a
+registration waits for `AdminCredentialReady`, so the six service conditions
+turn `True` only after it.
 
 ```bash
 kubectl get controlplane controlplane -n openstack \
@@ -675,7 +701,7 @@ kubectl wait controlplane/controlplane -n openstack \
   --for=condition=Ready --timeout=15m
 ```
 
-## Step 6 — Verify
+## Step 7 — Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
 at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the per-service
@@ -761,7 +787,7 @@ openstack --insecure token issue
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop all seven `publicEndpoint` lines (keystone, glance, placement,
-> barbican, neutron, nova, and cinder) from the CR in Step 3.
+> barbican, neutron, nova, and cinder) from the CR in Step 4.
 
 ### Upload a first image
 
@@ -774,7 +800,7 @@ openstack --insecure catalog list
 
 An `image` row proves Glance registered its endpoints. The public image catalog
 row now carries the gateway URL (`https://glance.127-0-0-1.nip.io:8443`, the
-`publicEndpoint` from Step 3), and the `openstack` CLI resolves the `public`
+`publicEndpoint` from Step 4), and the `openstack` CLI resolves the `public`
 interface by default, so the upload runs directly from the host through the
 shared Gateway, with no in-cluster pod involved. `--insecure` accepts the listener's
 self-signed certificate, as with the Keystone calls above.
@@ -823,7 +849,7 @@ openstack --insecure catalog list
 A `placement` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-placement.openstack.svc:8778` and the
 public one at `https://placement.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Then ask the API for its resource classes:
+from Step 4. Then ask the API for its resource classes:
 
 ```bash
 openstack --insecure resource class list
@@ -848,7 +874,7 @@ openstack --insecure catalog list
 A `key-manager` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-barbican.openstack.svc:9311` and the
 public one at `https://barbican.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Store a secret through that public endpoint, read the payload back,
+from Step 4. Store a secret through that public endpoint, read the payload back,
 and delete it again:
 
 ```bash
@@ -869,12 +895,12 @@ the prerequisites; without it the CLI rejects `secret store` as an unknown
 command.
 
 ::: warning Do not substitute real key material into `--payload`
-The literal above is a throwaway, and this snippet is written for a devstack. A
+The literal above is a throwaway, and this snippet is written for the ControlPlane devstack. A
 value passed to `--payload` sits in the process argument vector, where any local
 user reads it out of `ps` or `/proc/<pid>/cmdline` for the life of the call, and
 typing it directly rather than through a variable also leaves it in your shell
 history. Feed real material in from a file or from standard input instead.
-`--insecure` belongs to this devstack for the same reason, and it reaches
+`--insecure` belongs to this ControlPlane devstack for the same reason, and it reaches
 further than the payload: the flag disables certificate verification for the
 whole invocation, including the Keystone call that sends `OS_PASSWORD`. Anything
 that answers on the way collects the admin credential. Drop it anywhere the
@@ -893,7 +919,7 @@ openstack --insecure catalog list
 A `network` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-neutron.openstack.svc:9696` and the
 public one at `https://neutron.127-0-0-1.nip.io:8443`, the `publicEndpoint`
-from Step 3. Create a network, put a subnet on it, and read the network's
+from Step 4. Create a network, put a subnet on it, and read the network's
 status back:
 
 ```bash
@@ -919,7 +945,7 @@ openstack --insecure network delete demo-net
 
 ### Create a first volume
 
-This check belongs to the optional block-storage block of Step 3; skip it if you
+This check belongs to the optional block-storage block of Step 4; skip it if you
 left that block out. With the same `OS_*` variables still exported, confirm the
 block-storage service reached the catalog:
 
@@ -930,7 +956,7 @@ openstack --insecure catalog list
 A `block-storage` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-cinder.openstack.svc:8776/v3` and the
 public one at `https://cinder.127-0-0-1.nip.io:8443/v3`, the `publicEndpoint`
-from Step 3 with the `/v3` the registration appends. Create a 1 GiB volume and
+from Step 4 with the `/v3` the registration appends. Create a 1 GiB volume and
 read its status back:
 
 ```bash
@@ -968,7 +994,7 @@ openstack --insecure catalog list
 A `compute` row proves the ControlPlane registered both endpoints: the
 in-cluster one at `http://controlplane-nova.openstack.svc:8774/v2.1` and the
 public one at `https://nova.127-0-0-1.nip.io:8443/v2.1`, the `publicEndpoint`
-from Step 3 with the `/v2.1` the registration appends. Then list the compute
+from Step 4 with the `/v2.1` the registration appends. Then list the compute
 services the control plane runs:
 
 ```bash
@@ -1067,6 +1093,9 @@ explains its settings, resizes a server on it, and removes it again.
 [Expose the Console Proxy](./guides/nova/expose-the-console-proxy.md) starts
 from the `demo-server` this check boots, so keep the server if that guide is
 your next stop.
+
+Servers that run on KVM, with a network, a console and live migration, are the
+subject of the [Quick Start (metal-stack)](./quick-start-metal-stack.md).
 :::
 
 ### Open the Horizon dashboard

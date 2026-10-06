@@ -85,6 +85,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -225,6 +226,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -383,6 +385,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -483,6 +486,7 @@ spec:
             echo "glance-cache-maintenance failed: $failures consecutive, cache at $used_kib KiB of $high_water_kib" >&2
           done
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         name: cache-maintenance
         resources:
           limits:
@@ -608,6 +612,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -787,6 +792,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -945,6 +951,7 @@ spec:
               key: password
               name: glance-service-user
         image: ghcr.io/c5c3/glance:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

@@ -80,6 +80,7 @@ spec:
         - name: MALLOC_ARENA_MAX
           value: "2"
         image: ghcr.io/c5c3/cinder:2026.1
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:

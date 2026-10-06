@@ -4,7 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/dizzy.sh — Fetch the pinned dizzy load/chaos tester and drive it against
-# the kind ControlPlane.
+# the kind ControlPlane or, under EXTERNAL_CLUSTER=true, an external cluster
+# through its two port-forwards.
 #
 # Subcommands:
 #   stage-dashboards   Copy dizzy's three Grafana dashboards into
@@ -15,7 +16,8 @@
 #
 # The dizzy version is pinned once via the DIZZY_VERSION variable. Every other
 # input is an optional environment override: DIZZY_SCENARIO, DIZZY_SECRET,
-# DIZZY_CP_NAMESPACE, DIZZY_AUTH_URL, DIZZY_ARGS, and KIND_CLUSTER.
+# DIZZY_CP_NAMESPACE, DIZZY_AUTH_URL, DIZZY_ARGS, KIND_CLUSTER, and
+# EXTERNAL_CLUSTER.
 
 set -euo pipefail
 
@@ -32,6 +34,18 @@ DIZZY_VERSION="${DIZZY_VERSION:-v0.1.0}"
 # git-ignored _output/ tree.
 DIZZY_CACHE_DIR="${REPO_ROOT}/_output/dizzy/${DIZZY_VERSION}"
 CLOUDS_FILE="${REPO_ROOT}/_output/dizzy/clouds.yaml"
+
+# Selects the external-cluster mode, as in hack/deploy-infra.sh and
+# hack/teardown-infra.sh; only the value true does. The helper then calls no
+# docker: Keystone is reached through the Gateway port-forward on
+# EXTERNAL_PUBLIC_PORT and VictoriaMetrics through a second one on 8428, the two
+# the deploy's completion banner prints.
+EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
+
+# The local port of the Gateway port-forward, PUBLIC_PORT of
+# hack/deploy-infra.sh in external mode. tests/unit/hack/dizzy_sh_test.sh holds
+# the two equal.
+EXTERNAL_PUBLIC_PORT="8443"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -65,6 +79,9 @@ Environment overrides:
   DIZZY_AUTH_URL         Keystone auth URL override.
   DIZZY_ARGS             Extra args appended to the dizzy invocation.
   KIND_CLUSTER           kind cluster name (default cobaltcore).
+  EXTERNAL_CLUSTER       true: reach Keystone through the Gateway port-forward
+                         on ${EXTERNAL_PUBLIC_PORT} and VictoriaMetrics through one on 8428,
+                         without docker (default false).
 EOF
 }
 
@@ -148,7 +165,10 @@ stage_dashboards() {
 
 # ---------------------------------------------------------------------------
 # generate_clouds_yaml — Write ${CLOUDS_FILE} (mode 600) from the ControlPlane
-# admin Secret and the probed Keystone host port.
+# admin Secret and the Keystone auth URL: DIZZY_AUTH_URL when set, the Gateway
+# port-forward under EXTERNAL_CLUSTER=true, the kind node's probed host port
+# otherwise. Under EXTERNAL_CLUSTER=true the file names gateway-ca.pem beside it
+# as cacert; outside it, it says verify: false.
 # ---------------------------------------------------------------------------
 generate_clouds_yaml() {
   local secret="${DIZZY_SECRET:-controlplane-keystone-admin-credentials}"
@@ -177,6 +197,9 @@ generate_clouds_yaml() {
   local auth_url
   if [[ -n "${DIZZY_AUTH_URL:-}" ]]; then
     auth_url="${DIZZY_AUTH_URL}"
+  elif [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    auth_url="https://keystone.127-0-0-1.nip.io:${EXTERNAL_PUBLIC_PORT}/v3"
+    log "Keystone auth URL: ${auth_url} (EXTERNAL_CLUSTER=true, the Gateway port-forward on ${EXTERNAL_PUBLIC_PORT})."
   else
     local hostport="443"
     local port_out
@@ -195,6 +218,27 @@ generate_clouds_yaml() {
   fi
 
   mkdir -p "$(dirname "${CLOUDS_FILE}")"
+
+  # Under EXTERNAL_CLUSTER=true the admin password goes to a name that public
+  # DNS resolves and to a local port any user of the workstation can bind, so
+  # dizzy verifies the Gateway against its certificates, as OS_CACERT does in
+  # Step 7 of docs/quick-start-metal-stack.md. The kind mode keeps verify: false.
+  local tls_line="verify: false"
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    local ca_file
+    ca_file="$(dirname "${CLOUDS_FILE}")/gateway-ca.pem"
+    if ! kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
+        jq -r '.items[] | select(.metadata.name | endswith("-nip-io-tls")) | .data["ca.crt"] | @base64d' \
+          >"${ca_file}" ||
+        ! grep -q 'BEGIN CERTIFICATE' "${ca_file}"; then
+      log "ERROR: found no Gateway certificate in the Secrets openstack/*-nip-io-tls;"
+      log "       dizzy sends the admin password only to a Keystone it can verify."
+      exit 1
+    fi
+    tls_line="cacert: '$(printf '%s' "${ca_file}" | sed "s/'/''/g")'"
+    log "Keystone TLS: dizzy verifies the Gateway against ${ca_file}."
+  fi
+
   (
     umask 077
     cat > "${CLOUDS_FILE}" <<EOF
@@ -208,7 +252,7 @@ clouds:
       user_domain_name: Default
       project_domain_name: Default
     identity_api_version: 3
-    verify: false
+    ${tls_line}
 EOF
   )
   log "Wrote OpenStack credentials to ${CLOUDS_FILE} (mode 600)."
@@ -216,19 +260,27 @@ EOF
 
 # ---------------------------------------------------------------------------
 # probe_ingest — Warn (but never abort) when the OTLP ingest path looks down.
+# The kind node's 30428 mapping is probed in kind mode only; under
+# EXTERNAL_CLUSTER=true localhost:8428 is a port-forward, which the warning
+# names.
 # ---------------------------------------------------------------------------
 probe_ingest() {
-  local metrics_port
-  if ! metrics_port="$(docker port "${KIND_CLUSTER:-cobaltcore}-control-plane" 30428/tcp 2>/dev/null)" \
-      || [[ -z "${metrics_port}" ]]; then
-    log "WARNING: kind cluster '${KIND_CLUSTER:-cobaltcore}' has no 30428 host-port mapping;"
-    log "         OTLP ingest will not reach VictoriaMetrics. Recreate the cluster with"
-    log "         the metrics port: make teardown-infra && WITH_DIZZY=true make deploy-infra"
+  if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+    local metrics_port
+    if ! metrics_port="$(docker port "${KIND_CLUSTER:-cobaltcore}-control-plane" 30428/tcp 2>/dev/null)" \
+        || [[ -z "${metrics_port}" ]]; then
+      log "WARNING: kind cluster '${KIND_CLUSTER:-cobaltcore}' has no 30428 host-port mapping;"
+      log "         OTLP ingest will not reach VictoriaMetrics. Recreate the cluster with"
+      log "         the metrics port: make teardown-infra && WITH_DIZZY=true make deploy-infra"
+    fi
   fi
 
   if ! curl -fsS http://localhost:8428/health >/dev/null 2>&1; then
     log "WARNING: no VictoriaMetrics at http://localhost:8428/health; metrics will be"
     log "         exported into the void (dizzy degrades export failures to warnings)."
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      log "         Open the port-forward first: kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
+    fi
   fi
 }
 
@@ -263,6 +315,10 @@ run_chaos() {
   read -r -a extra_args <<< "${DIZZY_ARGS:-}"
 
   log "Starting dizzy ${service} chaos soak (scenario: ${scenario})..."
+  # gophercloud prefers OS_CACERT to the cacert of clouds.yaml; an export left
+  # over from Step 7 of docs/quick-start-metal-stack.md would replace the CA
+  # file generate_clouds_yaml just wrote. An empty value falls through to it.
+  OS_CACERT='' \
   OS_CLIENT_CONFIG_FILE="${CLOUDS_FILE}" \
   OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://localhost:8428/opentelemetry/v1/metrics" \
   OTEL_METRIC_EXPORT_INTERVAL=15000 \
@@ -293,4 +349,8 @@ main() {
   esac
 }
 
-main "$@"
+# Run main only when executed directly so unit tests (tests/unit/hack/) can
+# source this script and exercise individual functions.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

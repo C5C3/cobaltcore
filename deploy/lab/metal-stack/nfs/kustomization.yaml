@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: the NFS server and the
+# csi-driver-nfs mounter behind Cinder's volume and backup backends (#1196).
+# hack/deploy-infra.sh applies it in Step 3 under EXTERNAL_CLUSTER=true
+# WITH_NFS=true, in place of deploy/kind/nfs:
+#
+#   EXTERNAL_CLUSTER=true WITH_NFS=true make deploy-infra
+#
+# It takes the kind NFS overlay as its base and differs from it in two
+# places:
+#   - The export claim nfs-server-exports asks for 100Gi and names no storage
+#     class (D3 of #1193). On kind, 5Gi on local-path bounds nothing. Here one
+#     RWO volume holds both exports, so 100Gi bounds every Cinder volume and
+#     backup of the lab together. The patch removes the kind pin `standard` (a
+#     null value deletes the key), so the claim binds to the cluster's default
+#     class like the lab's other volumes; ../base/kustomization.yaml gives the
+#     reason. D3 named `premium`, which is the default class of forge.
+#   - The DaemonSet nfs-client-modules (client-modules-daemonset.yaml) loads
+#     nfs and nfsv4 on every node, for csi-nfs-node and nova-compute. D2 of
+#     #1193 chose a privileged init container that loads the modules from the
+#     node's /lib/modules, and the load test of #1194 decided it:
+#     https://github.com/C5C3/cobaltcore/issues/1193#issuecomment-5969676743
+# D1 of #1193 chose the kernel's nfsd in a privileged pod as the server. #1245
+# superseded it with NFS-Ganesha, a userspace server that keeps its NFSv4
+# client records on the export claim, so the server pod is the kind one and
+# loads no module.
+#
+# What stays as on kind: the HelmRepository, the HelmRelease in kube-system
+# with chart 4.13.4 and its three values, the server pod with its
+# digest-pinned image, the Service on 2049, and the two shares
+# nfs-server.openstack.svc.cluster.local:/volumes and :/backups. The chart's
+# kubeletDir, /var/lib/kubelet, is the lab's kubelet root too. The server
+# image has amd64 and arm64 manifests.
+#
+# No Gardener opt-out label is set here. The server pod and the
+# nfs-client-modules pods run in `openstack`, which ../base labels with
+# apiserver-proxy.networking.gardener.cloud/inject: disable, and mount no
+# ServiceAccount token. The chart's pods run in kube-system, the platform's
+# namespace, which this repository does not label. csi-nfs-controller and
+# csi-nfs-node are host-network pods, so the lab's deny-all NetworkPolicy in
+# kube-system does not apply to them, and they reach the API server the way
+# the platform's own host-network pods do. kube-system enforces no PodSecurity
+# level on the lab and runs privileged host-network pods already (calico-node,
+# lb-csi-node), so it admits the privileged csi-nfs-node.
+#
+# POSTURE, as on kind ("NON-PRODUCTION posture" in
+# deploy/kind/nfs/nfs-server.yaml): the server container is privileged, the
+# export is sec=sys with No_Root_Squash and no client list, and with
+# the chart's Ephemeral lifecycle mode every principal that can create a pod
+# mounts both shares from the pod spec. PodSecurity does not bound that: in a
+# namespace that is not `restricted` the pod mounts them as root, and a
+# `restricted` namespace admits a `csi` volume and the UID 42424, the owner
+# of both exports. The lab is one tenant's cluster, and the Service is a
+# ClusterIP.
+#
+# One thing is narrower than on kind. client-policy.yaml admits only the node
+# network to port 2049, so a pod can no longer dial the server itself; it
+# reaches the shares only through a volume the node mounts for it. The file is
+# a template, not a resource of this kustomization: hack/deploy-infra.sh fills
+# in the cluster's node network and applies it before this overlay. Its header
+# has the reasons and the probe that showed which address a node presents.
+#
+# What the pods leave on a node: nfs-client-modules loads nfs, nfsv4 and
+# their dependencies on every node. Nothing unloads them; they stay until the
+# node reboots, also after a teardown. The server is a userspace process and
+# loads no module. The sockets csi-nfs-node registers under
+# /var/lib/kubelet/plugins and the mounts below /var/lib/kubelet/pods go with
+# the pods.
+#
+# The kind overlay sits outside this directory. A directory reference is
+# allowed under kustomize's default LoadRestrictionsRootOnly check, so
+# `kubectl apply -k` works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../kind/nfs
+  - client-modules-daemonset.yaml
+
+patches:
+  - target:
+      version: v1
+      kind: PersistentVolumeClaim
+      name: nfs-server-exports
+      namespace: openstack
+    patch: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: nfs-server-exports
+        namespace: openstack
+      spec:
+        storageClassName: null
+        resources:
+          requests:
+            storage: 100Gi

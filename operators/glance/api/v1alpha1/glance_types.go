@@ -241,8 +241,12 @@ type GlanceSpec struct {
 	// uses the shared cluster-scoped openbao-cluster-store, so existing
 	// deployments keep working unchanged. Set kind to SecretStore with the name of
 	// a namespaced store in THIS Glance's namespace to reach OpenBao as a
-	// per-tenant identity. The ControlPlane operator projects this field onto the
-	// Glance it owns, so operators normally configure it there rather than here.
+	// per-tenant identity. An operator started with --namespace cannot read a
+	// ClusterSecretStore and refuses one, this default included
+	// (SecretsReady=False/ClusterSecretStoreUnsupported), so it needs kind set to
+	// SecretStore explicitly. The ControlPlane operator projects this field onto
+	// the Glance it owns, so operators normally configure it there rather than
+	// here.
 	// +optional
 	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
 

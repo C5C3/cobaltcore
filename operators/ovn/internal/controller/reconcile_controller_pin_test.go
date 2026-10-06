@@ -110,6 +110,7 @@ spec:
         - name: OVN_REMOTE_PROBE_INTERVAL_MS
           value: "60000"
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -177,6 +178,7 @@ spec:
         - name: OVN_REMOTE_PROBE_INTERVAL_MS
           value: "60000"
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         name: apply-node
         resources: {}
         securityContext:
@@ -285,6 +287,7 @@ spec:
         - name: OVN_REMOTE_PROBE_INTERVAL_MS
           value: "30000"
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:
@@ -355,6 +358,7 @@ spec:
         - name: OVN_REMOTE_PROBE_INTERVAL_MS
           value: "30000"
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         name: apply-node
         resources:
           requests:

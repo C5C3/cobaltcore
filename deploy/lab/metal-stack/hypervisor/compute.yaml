@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The node layer the lab ControlPlane publishes a contract for: the OVN
+# chassis, the OVN metadata agent and the NovaCompute pool, on the nodes the
+# hand-set labels of kustomization.yaml select. The same three kinds run on
+# kind with the fake driver (tests/e2e/nova/compute-node-pool); here the pool
+# runs the libvirt driver against the DaemonSet of libvirt-daemonset.yaml.
+---
+# No bridge mappings and no gateway: the lab has no provider network (#899).
+# No image, so the operator runs the OVN image of controlplane-ovn.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: lab-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: controlplane-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+---
+# Serves 169.254.169.254 to the servers of every chassis node. It proxies to
+# the in-cluster Nova metadata API with the shared secret the ControlPlane
+# generates.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: lab-metadata-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: lab-chassis
+  novaMetadata:
+    host: controlplane-nova-metadata.openstack.svc
+    port: 8775
+    protocol: http
+    sharedSecretRef:
+      name: controlplane-nova-metadata-secret
+---
+# KVM with a named CPU model, and qcow2 instance disks on the node's
+# /var/lib/nova. No extraConfig: the libvirt driver is Nova's default.
+#
+# The model is the one both lab workers report (Xeon D-2141I, libvirt's
+# host-model is Skylake-Server-IBRS). With host-passthrough or host-model,
+# Nova's live-migration pre-check compares the source host's raw CPU
+# features with what the destination's QEMU offers and refuses every move
+# ("Unacceptable CPU info: CPU doesn't have compatibility"), although
+# `virsh hypervisor-cpu-compare` on the destination accepts the guest CPU.
+# A custom model is what Nova then compares, and it passes. A worker with an
+# older CPU generation needs a model both can run.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: lab
+  namespace: openstack
+spec:
+  novaRef:
+    name: controlplane-nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: lab
+  libvirt:
+    virtType: kvm
+    cpuMode: custom
+    cpuModels:
+      - Skylake-Server-IBRS
+    imagesType: qcow2

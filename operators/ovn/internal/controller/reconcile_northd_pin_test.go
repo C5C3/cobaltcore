@@ -93,6 +93,7 @@ spec:
         - --pidfile=/var/run/ovn/ovn-northd.pid
         - --unixctl=/var/run/ovn/ovn-northd.ctl
         image: ghcr.io/c5c3/ovn:26.03.2
+        imagePullPolicy: Always
         lifecycle:
           preStop:
             exec:
@@ -214,6 +215,7 @@ spec:
         - --pidfile=/var/run/ovn/ovn-northd.pid
         - --unixctl=/var/run/ovn/ovn-northd.ctl
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:

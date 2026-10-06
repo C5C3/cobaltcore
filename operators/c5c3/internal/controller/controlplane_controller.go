@@ -396,6 +396,13 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Progressing condition. No other status verb is granted.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments;regions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status,verbs=patch
+// reconcileKORCCatalogRefresh restarts K-ORC once a ControlPlane's catalog
+// registrations settle, by patching one annotation onto the pod template of the
+// K-ORC Deployment. No list or watch: it reads that one Deployment by exact name
+// through the uncached reader. RBAC cannot narrow patch to one annotation, so
+// the grant covers the whole object of that name. #1202 removes the rule with
+// the member.
+// +kubebuilder:rbac:groups=apps,resources=deployments,resourceNames=orc-controller-manager,verbs=get;patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
 // and reflect upstream secret-backend outages. A ControlPlane that sets an
@@ -453,6 +460,13 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // against the post-DNAT destination. No list or watch: the name is well known and
 // the read goes through the uncached reader.
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get
+// Read-only on the kubernetes Service beside it, whose ClusterIP and port become
+// the kubernetes_host of the instance's Kubernetes auth method. The ClusterIP
+// rather than the Service's name, because the name needs a DNS lookup the
+// operator-rendered NetworkPolicy admits on port 53 alone, and not every
+// cluster's resolver answers there. Same shape as the slice read: a well-known
+// name, no list or watch, the uncached reader.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Required so reconcileNamespaces can ensure the namespaces a service is placed
 // in via spec.services.<svc>.namespace: create for the Managed lifecycle, delete
@@ -559,14 +573,15 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of nine independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, Glance, Placement, Barbican, ServiceAccounts,
-	// RegistrationTenantStores). Running every member on every pass is safe: every
-	// member runs each pass, its condition always persists, the members' requeues
-	// aggregate to the shortest member interval, and one member's failure no longer
-	// suppresses its peers (member errors are joined). A still-converging Horizon
-	// therefore no longer parks KORC, the AdminCredential/Catalog identity
-	// bootstrap, Glance, Placement, or Barbican.
+	// The tail is a RunSequentialGroup of fourteen members (Horizon, KORC,
+	// AdminCredential, Catalog, Glance, Placement, Barbican, OVN, Neutron, Cinder,
+	// Nova, ServiceAccounts, KORCCatalogRefresh, RegistrationTenantStores).
+	// Running every member on every pass is safe: every member runs each pass, its
+	// condition always persists, the members' requeues aggregate to the shortest
+	// member interval, and one member's failure no longer suppresses its peers
+	// (member errors are joined). A still-converging Horizon therefore no longer
+	// parks KORC, the AdminCredential/Catalog identity bootstrap, Glance,
+	// Placement, or Barbican.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
@@ -579,9 +594,16 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// reads the KeystoneService children the service legs applied earlier in the
 	// same pass, so there is no projection it could defer.
 	//
+	// Two members depend on their position all the same. ServiceAccounts runs
+	// after the service legs, for the reason above. KORCCatalogRefresh runs after
+	// ServiceAccounts, because it reads the ServiceAccountsReady that member wrote
+	// in this same pass. Ahead of it, it would act on the previous pass's
+	// aggregate and could restart K-ORC before a child projected in this pass is
+	// counted, and then once more when that child settles.
+	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
-	// carry its own condition gate, following the six gated members rather than
+	// carry its own condition gate, following the gated members rather than
 	// KORC. RegistrationTenantStores is ungated for the same reason KORC is, not
 	// as an exemption from that rule: it consumes no condition this chain
 	// produces, because the tenant-store trio depends on cert-manager and OpenBao
@@ -728,6 +750,16 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// reads only, so it carries no condition gate.
 				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileServiceAccounts(ctx, &cp)
+				}},
+				// KORCCatalogRefresh restarts K-ORC once the catalog
+				// registered through the plane has settled on a new epoch. It
+				// is gated on the ServiceAccountsReady the member above wrote
+				// in this same pass, which is why it sits after it: the
+				// built-in registrations turn Ready one after another, and the
+				// gate keeps a bring-up to one restart instead of one per
+				// registration. It sets no condition.
+				{Name: "KORCCatalogRefresh", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileKORCCatalogRefresh(ctx, &cp)
 				}},
 				// RegistrationTenantStores provisions the per-tenant store in the
 				// allowlisted namespaces standalone KeystoneService CRs register

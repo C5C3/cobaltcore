@@ -6,8 +6,12 @@
 # nova-compute on the kind node through the fake driver, and the suite walks the
 # pool's whole lifecycle against a real Nova:
 #   - the pool reaches Ready=True/AllReady, its node is Active with the compute
-#     service enabled and up, the pod passed its wait-for-chassis gate and runs
-#     ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
+#     service enabled and up, the pool's host discovery Job mapped the host
+#     into the cell (the Nova runs no discovery periodic, so a Ready pool
+#     proves the Job did), the pod's create-instances-dir init container
+#     created /var/lib/nova/instances on the node, below a /var/lib/nova the
+#     suite gave to another user, the pod passed its wait-for-chassis gate and
+#     runs ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
 #     aggregate nova-pool-az1 and tenant_filter_tests, both marked
 #   - a second pool selecting the same node reports the conflict and schedules
 #     no pod
@@ -163,7 +167,8 @@ spec:
           kubectl get deploy,pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-pool -o wide 2>&1 || true
           echo "=== Job logs ==="
           for job in nova-pool-catalog-setup nova-pool-image-seed nova-pool-verify \
-                     nova-pool-boot-server nova-pool-delete-server; do
+                     nova-pool-discover-hosts nova-pool-boot-server nova-pool-delete-server \
+                     nova-pool-state-dir-owner; do
             echo "--- job/$job ---"
             kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
           done
@@ -191,7 +196,8 @@ spec:
           kubectl delete ovnchassis nova-pool-chassis -n "$NAMESPACE" \
             --ignore-not-found --wait --timeout=180s || true
           kubectl delete job nova-pool-catalog-setup nova-pool-image-seed nova-pool-verify \
-            nova-pool-boot-server nova-pool-delete-server -n "$NAMESPACE" --ignore-not-found || true
+            nova-pool-boot-server nova-pool-delete-server nova-pool-state-dir-owner \
+            -n "$NAMESPACE" --ignore-not-found || true
           kubectl delete glancebackend glance-nova-pool-s3 -n "$NAMESPACE" --ignore-not-found || true
           kubectl delete glance glance-nova-pool -n "$NAMESPACE" --ignore-not-found || true
           kubectl delete placement placement-nova-pool -n "$NAMESPACE" --ignore-not-found || true
@@ -204,6 +210,24 @@ spec:
           ../../cinder/broker-vhost.sh delete nova-pool || true
   # ── Step 3: Apply pool-a and assert the registration ───────────────────
   - try:
+    # /var/lib/nova goes to another user before the pool's first pod starts,
+    # so create-instances-dir has to create the directory through DAC_OVERRIDE
+    # (see 17-state-dir-owner-job.yaml).
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          kubectl patch configmap nova-pool-verify -n "$NAMESPACE" --type=merge \
+            -p '{"data":{"state-dir-owner":"42424:42424"}}'
+          kubectl delete job nova-pool-state-dir-owner -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 17-state-dir-owner-job.yaml
+          kubectl wait --for=condition=complete job/nova-pool-state-dir-owner \
+            -n "$NAMESPACE" --timeout=2m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-state-dir-owner 2>&1 || true
+            exit 1
+          }
+          kubectl logs -n "$NAMESPACE" job/nova-pool-state-dir-owner
     - script:
         content: |
           set -eu
@@ -227,6 +251,24 @@ spec:
               serviceStatus: enabled
               serviceState: up
             installedImage: ghcr.io/c5c3/nova-compute:2025.2
+    # 10-nova-cr.yaml turns the scheduler's discovery periodic off, so only the
+    # pool's discovery Job can have mapped the host. The Job that did is still
+    # there: the pool leaves it alone once the host is mapped, and its TTL is
+    # 300 seconds.
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
+          kubectl wait --for=condition=complete job/nova-pool-discover-hosts \
+            -n "$NAMESPACE" --timeout=2m || {
+            kubectl logs -n "$NAMESPACE" job/nova-pool-discover-hosts 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-pool-discover-hosts)"
+          echo "$LOGS"
+          grep -q "Creating host mapping for compute host '$NODE'" <<<"$LOGS"
     - assert:
         resource:
           apiVersion: v1
@@ -249,6 +291,24 @@ spec:
             - state:
                 terminated:
                   exitCode: 0
+            (initContainerStatuses[?name == 'create-instances-dir'] || `[]`):
+            - state:
+                terminated:
+                  exitCode: 0
+    # The directory comes from create-instances-dir alone: the fake driver
+    # never touches instances_path, and the Job above removed a directory that
+    # predates the pool. /var/lib/nova is 42424:42424 0755 by then, so a root
+    # that had dropped DAC_OVERRIDE could not have created it.
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD="$(kubectl get pod -n "$NAMESPACE" -o name \
+            -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-a)"
+          GOT="$(kubectl exec -n "$NAMESPACE" "$POD" -c nova-compute -- \
+            stat -c '%u:%g %a %F' /var/lib/nova/instances)"
+          echo "$GOT"
+          test "$GOT" = "0:0 755 directory"
     - script:
         shell: bash
         timeout: 5m
@@ -283,6 +343,18 @@ spec:
                 -p '{"metadata":{"finalizers":null}}' || true
             fi
           done
+    # /var/lib/nova goes back to root:root, the owner the kubelet gives it.
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          kubectl patch configmap nova-pool-verify -n "$NAMESPACE" --type=merge \
+            -p '{"data":{"state-dir-owner":"0:0"}}' || true
+          kubectl delete job nova-pool-state-dir-owner -n "$NAMESPACE" --ignore-not-found || true
+          kubectl apply -f 17-state-dir-owner-job.yaml || true
+          kubectl wait --for=condition=complete job/nova-pool-state-dir-owner \
+            -n "$NAMESPACE" --timeout=2m || true
+          kubectl logs -n "$NAMESPACE" job/nova-pool-state-dir-owner 2>&1 || true
   # ── Step 4: A second pool on the same node reports the conflict ────────
   - try:
     - script:
@@ -336,18 +408,15 @@ spec:
           kubectl delete novacompute pool-b -n "$NAMESPACE" --wait --timeout=3m
           echo "OK: pool-b is gone"
     catch: *pool-dump
-  # ── Step 5 and 6: Map the host and boot a server onto it ───────────────
+  # ── Step 5 and 6: Boot a server onto the node ──────────────────────────
+  # The pool turned Ready in step 3 only once Nova listed the host as mapped,
+  # so the server is scheduled without a host discovery here.
   - try:
     - script:
         shell: bash
         timeout: 10m
         content: |
           set -euo pipefail
-          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
-          # The host mapping by hand: the scheduler's periodic would take up to
-          # 300 seconds.
-          ../discover-hosts.sh nova-pool "$NAMESPACE" "$NODE"
-
           kubectl delete job nova-pool-boot-server -n "$NAMESPACE" --ignore-not-found
           kubectl apply -f 15-boot-server-job.yaml
           kubectl wait --for=condition=complete job/nova-pool-boot-server \

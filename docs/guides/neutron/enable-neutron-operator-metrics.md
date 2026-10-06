@@ -51,7 +51,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infr
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the neutron-operator (namespace `neutron-system`) is running with
+Step 7, so the neutron-operator (namespace `neutron-system`) is running with
 kube-prometheus-stack scraping it.
 :::
 

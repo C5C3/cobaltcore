@@ -343,7 +343,7 @@ func newBarbicanTestReconciler(t *testing.T, objs ...client.Object) *ControlPlan
 	s := barbicanTestScheme(t)
 	seeded := withBarbicanTenantStore(withReadyBarbicanRegistration(withBarbicanGatesPassed(objs)))
 	cb := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(seeded)...).
+		WithObjects(seedAPIServerObjects(seeded)...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
@@ -377,6 +377,8 @@ func TestReconcileBarbican_NotManagedWhenUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
 	cp.Spec.Services.Barbican = nil
+	// A set spec.imagePullPolicy has nothing to project without the service.
+	cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	r := newBarbicanTestReconciler(t, cp)
 
 	res, err := r.reconcileBarbican(context.Background(), cp)
@@ -771,7 +773,7 @@ func TestReconcileBarbican_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
 	cp := barbicanControlPlane()
 	s := barbicanTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithObjects(seedAPIServerObjects(withBarbicanGatesPassed([]client.Object{cp}))...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -806,7 +808,7 @@ func TestReconcileBarbican_RegistrationReadFailureSurfaces(t *testing.T) {
 	cp := barbicanControlPlane()
 	s := barbicanTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithObjects(seedAPIServerObjects(withBarbicanGatesPassed([]client.Object{cp}))...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -2078,7 +2080,7 @@ func TestReconcileBarbican_PlacedOpenBaoGateIsAnsweredFromTheTarget(t *testing.T
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	res, err := r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2150,7 +2152,7 @@ func TestReconcileBarbican_ProjectsTheTargetClusterRef(t *testing.T) {
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, _ := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, _ := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	_, err := r.reconcileBarbican(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2230,7 +2232,7 @@ func TestReconcileBarbican_MirrorsRegistrationCredentialsToTheTarget(t *testing.
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Labels = remoteChildLabels(cp)
-	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice(), defaultKubernetesService())
 
 	_, err := r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2386,4 +2388,81 @@ func TestReconcileBarbican_SizingProjectsComponents(t *testing.T) {
 		Equal(barbicanv1alpha1.APIPodSelector(b.Name)))
 	g.Expect(b.Spec.APIServer).To(Equal(&barbicanv1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
 	g.Expect(b.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
+}
+
+// TestReconcileBarbican_ProjectsImagePullPolicy pins the projection of
+// spec.imagePullPolicy into the Barbican child's spec.image: it reaches an image
+// that names no pullPolicy, a pullPolicy on the services.barbican.image override
+// wins, an empty field leaves the child's field empty, and clearing the field
+// clears the existing child's on the next reconcile.
+func TestReconcileBarbican_ProjectsImagePullPolicy(t *testing.T) {
+	t.Run("spec.imagePullPolicy reaches the child", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newBarbicanTestReconciler(t, cp)
+
+		_, err := r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("the override's pullPolicy wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Barbican.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/barbican",
+			Tag:        "custom",
+			PullPolicy: corev1.PullNever,
+		}
+		r := newBarbicanTestReconciler(t, cp)
+
+		_, err := r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullNever))
+	})
+
+	t.Run("an override without pullPolicy takes spec.imagePullPolicy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		cp.Spec.Services.Barbican.Image = &commonv1.ImageSpec{
+			Repository: "registry.example.com/mirror/barbican",
+			Tag:        "custom",
+		}
+		r := newBarbicanTestReconciler(t, cp)
+
+		_, err := r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		image := getProjectedBarbican(t, r.Client, cp).Spec.Image
+		g.Expect(image.Repository).To(Equal("registry.example.com/mirror/barbican"))
+		g.Expect(image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+	})
+
+	t.Run("an empty field leaves the child's empty", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		r := newBarbicanTestReconciler(t, cp)
+
+		_, err := r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
+
+	t.Run("clearing the field clears the child's", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.ImagePullPolicy = corev1.PullIfNotPresent
+		r := newBarbicanTestReconciler(t, cp)
+
+		_, err := r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
+
+		cp.Spec.ImagePullPolicy = ""
+		_, err = r.reconcileBarbican(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
+	})
 }

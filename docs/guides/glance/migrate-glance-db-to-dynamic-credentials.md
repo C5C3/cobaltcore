@@ -19,8 +19,8 @@ engine wired for the Glance service DB user.
 
 - **Before:** the Glance DB password is a long-lived value materialised from an
   OpenBao KV path (`openstack/glance/{namespace}/{name}/db`) into the
-  `{name}-glance-db-credentials` Secret. It is only rotated when an operator
-  rotates it.
+  `{name}-glance-db-credentials` Secret. Nothing seeds that path, so on the
+  static branch an operator writes it and rotates it by hand.
 - **After:** the c5c3 operator projects a per-ControlPlane
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
@@ -32,6 +32,11 @@ engine wired for the Glance service DB user.
 
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Glance database and drops it at lease end.
+
+The figure shows both chains. `{svc}` stands for `glance` here, and `{cp}` is
+`controlplane` on the devstack.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
 
 ## Prerequisites
 
@@ -179,7 +184,7 @@ onto an engine-issued login. This is the no-downtime property.
 Once the ControlPlane reports `GlanceReady=True` on the dynamic path:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
-   long-lived `glance` login the engine no longer uses):
+   `<controlplane>-glance` login the engine no longer uses):
 
    ```bash
    kubectl delete user,grant <glance-cr-name> -n <namespace> --ignore-not-found

@@ -31,8 +31,8 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 ```
 
-Follow that tutorial through the block-storage block of Step 3 and the
-**Create a first volume** check in Step 6, so the projected `controlplane-cinder`
+Follow that tutorial through the block-storage block of Step 4 and the
+**Create a first volume** check in Step 7, so the projected `controlplane-cinder`
 child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
@@ -67,7 +67,7 @@ cinder pods run as, which is what lets the NFS driver do its file operations as
 the service user instead of through a root helper the image has no sudoers entry
 for.
 
-The server exports `/exports` with `fsid=0`, which makes it the NFSv4
+The server exports `/exports` with `Pseudo = /`, which makes it the NFSv4
 pseudo-root. A client addresses the two directories as:
 
 ```text
@@ -80,7 +80,7 @@ server and the mount fails.
 
 The stack is kind-only and opt-in. For the chart pin, the server image, and the
 reasons it stays out of the default flow, see
-[NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in).
+[NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in).
 
 ## Step 2 — Read the attached backend
 

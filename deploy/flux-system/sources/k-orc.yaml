@@ -21,8 +21,22 @@
 # an image override (see releases/k-orc.yaml) instead of applying ./dist. REVERT
 # to the tag + ./dist form once the first release shipping both kinds exists.
 #
-# The clone is scoped to /config via spec.ignore so the source artifact stays
-# small (the full upstream repo carries a website/, examples/, tooling, etc.).
+# SPARSE CHECKOUT, not only spec.ignore. For a ref.commit the source-controller
+# clones the tip of upstream main and then hard-resets the worktree to the pinned
+# commit, which removes every path the tip has and the pin lacks. go-git fails on
+# one kind of path: a symlink to a non-empty directory. Upstream added
+# charts/orc-crds/crds -> ../../config/crd/bases after this pin, and the reset
+# then ended in "remove .../config/crd/bases: directory not empty", so the source
+# never became Ready and the c5c3-operator crash-looped for want of the K-ORC
+# CRDs. With spec.sparseCheckout the clone starts from an empty worktree and
+# materialises only the listed directories, so nothing outside them is ever
+# removed, whatever upstream main holds there. The list has to cover the
+# spec.path the Kustomization builds (releases/k-orc.yaml);
+# tests/unit/deploy/korc_flux_source_test.sh guards both.
+#
+# spec.ignore stays next to it and scopes the source ARTIFACT to /config, so it
+# stays small (the full upstream repo carries a website/, examples/, tooling,
+# etc.). It filters after the checkout and cannot prevent the failure above.
 #
 # Renovate: the pinned commit below is tracked by a customManager rule in
 # renovate.json (datasource git-refs, currentValue main), so it cannot silently
@@ -44,6 +58,8 @@ spec:
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
     commit: ae545905edc2966600944e391b4e106ac58cba06
+  sparseCheckout:
+    - config
   ignore: |
     # Vendor only the config/ kustomize base; skip the rest of the repo.
     /*

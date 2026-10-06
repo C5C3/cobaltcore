@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Hands /var/lib/nova on the suite's node to the owner the ConfigMap
+# nova-pool-verify names under state-dir-owner, with mode 0755, and removes an
+# instances directory below it.
+#
+# The suite runs it with 42424:42424 before pool-a's first pod starts. uid 0
+# then has no write bit on the state directory, so the pod's
+# create-instances-dir init container creates instances through DAC_OVERRIDE
+# alone: with every capability dropped the mkdir is refused. The kubelet's own
+# root:root directory proves nothing here, because root creates instances in it
+# through the owner bits. The step cleanup runs the Job again with 0:0, the
+# owner the kubelet gives the directory.
+#
+# rmdir removes an empty directory only. A directory with instance disks in it
+# fails the Job, since the suite's check on the owner and mode of instances
+# holds only for a directory this pool's pod created.
+#
+# The three capabilities are what the script needs once the directory belongs
+# to another user: CHOWN for the owner, FOWNER for the mode, and DAC_OVERRIDE
+# for the rmdir. The nodeSelector is the chassis label step 1 puts on the node,
+# which is still there when the cleanup runs.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-state-dir-owner
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        openstack.c5c3.io/chassis: "true"
+      containers:
+        - name: state-dir-owner
+          image: ghcr.io/c5c3/nova-compute:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OWNER
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-pool-verify
+                  key: state-dir-owner
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              chown "$OWNER" /var/lib/nova
+              chmod 0755 /var/lib/nova
+              if [ -d /var/lib/nova/instances ]; then
+                rmdir /var/lib/nova/instances
+              fi
+              stat -c '/var/lib/nova is %u:%g %a' /var/lib/nova
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - FOWNER
+                - DAC_OVERRIDE
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: var-lib-nova
+              mountPath: /var/lib/nova
+      volumes:
+        - name: var-lib-nova
+          hostPath:
+            path: /var/lib/nova
+            type: DirectoryOrCreate

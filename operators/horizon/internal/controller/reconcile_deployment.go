@@ -182,9 +182,10 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 		Autoscaling:    horizon.Spec.Autoscaling,
 		DefaultMemory:  commonv1.MemoryForProcesses(commonv1.DefaultMemoryPerProcess(), horizonUWSGIProcesses, horizonUWSGIThreads),
 		Container: deployment.ContainerParams{
-			Name:    "horizon",
-			Image:   horizon.Spec.Image.Reference(),
-			Command: uwsgiCommand(),
+			Name:            "horizon",
+			Image:           horizon.Spec.Image.Reference(),
+			ImagePullPolicy: horizon.Spec.Image.EffectivePullPolicy(),
+			Command:         uwsgiCommand(),
 			Env: []corev1.EnvVar{{
 				Name: secretKeyEnvVarName,
 				ValueFrom: &corev1.EnvVarSource{

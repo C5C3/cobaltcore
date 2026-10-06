@@ -8,7 +8,7 @@ require (
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.44.0
-	github.com/openbao/openbao/api/v2 v2.7.0
+	github.com/openbao/openbao/api/v2 v2.7.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	k8s.io/api v0.37.1
@@ -16,7 +16,7 @@ require (
 	k8s.io/autoscaler/vertical-pod-autoscaler v1.8.0
 	k8s.io/client-go v0.37.1
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/gateway-api v1.6.2
 	sigs.k8s.io/multicluster-runtime v0.24.1
 	sigs.k8s.io/yaml v1.6.0

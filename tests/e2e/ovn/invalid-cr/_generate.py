@@ -393,8 +393,9 @@ FIXTURES: tuple[Fixture, ...] = (
     Fixture(
         filename="21-vertical-autoscaling-update-mode.yaml",
         comment=(
-            "spec.northbound.verticalAutoscaling.updateMode outside Off, Initial, Recreate\n"
-            "and Auto violates the Enum marker; the webhook mirrors it."
+            "spec.northbound.verticalAutoscaling.updateMode outside Off, Initial,\n"
+            "Recreate, InPlaceOrRecreate and Auto violates the Enum marker; the webhook\n"
+            "mirrors it."
         ),
         extra=(
             "  northbound:\n"

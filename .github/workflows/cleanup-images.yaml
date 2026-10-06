@@ -5,11 +5,14 @@
 name: Cleanup Images
 
 # Retention is decided from each package version's whole tag set, not from a
-# "keep the newest N" counter: a version survives only while it carries `latest`
-# or a bare version / release tag (`32.0.0`, `2026.1`). Everything else -- SHA
-# tags, run-scoped E2E tags, composite tags whose release tag has since moved to
-# a newer manifest, and untagged leftovers -- is a build artifact with a
-# successor and goes.
+# "keep the newest N" counter: a version survives only while it carries `latest`,
+# a bare version / release tag (`32.0.0`, `2026.1`), an `upstream-<sha40>`
+# pin tag (openstack-hypervisor-operator, kvm-node-agent), or the libvirt
+# keeper `<libvirt-package-version>-r<N>` (`10.0.0-2ubuntu8.19-r1`, minted
+# once by hack/ci-tag-libvirt-keeper.sh). Everything else --
+# SHA tags, run-scoped E2E tags, composite tags whose release tag has since
+# moved to a newer manifest, and untagged leftovers -- is a build artifact
+# with a successor and goes.
 #
 # The three jobs share one implementation (hack/ghcr-prune-stale-versions.py)
 # and differ only in which candidates they consider. The two narrow jobs run

@@ -29,7 +29,7 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through Step 6's **Boot a first server**, including its
+Follow that tutorial through Step 7's **Boot a first server**, including its
 optional block **Optional: boot a server on a fake compute**, and skip that
 block's cleanup, so `demo-server` is `ACTIVE` on the fake compute
 `controlplane-fake-compute` and the `OS_*` variables of the token-issue step are

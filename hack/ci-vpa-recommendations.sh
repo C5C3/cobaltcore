@@ -14,6 +14,8 @@
 # recommendation into a snapshot file together with the workload's current
 # containers. hack/derive-sizing-figures.py turns the report into the sizing
 # figures; docs/reference/testing/sizing-calibration.md describes the run.
+# The lab measurement of that page runs the script by hand against a cluster
+# that brings its own VPA.
 #
 # All arithmetic runs in jq; the self-hosted runners ship jq, not python3,
 # which is why hack/ci-check-node-budget.sh is written the same way.
@@ -39,6 +41,14 @@
 #       both rounded up; a request or limit the container does not set is "-".
 #       Needs no cluster: the recommender image is looked up with kubectl and
 #       reads "-" when that fails.
+#   prepare
+#       Removes the scale subresource from every version of the MariaDB CRD
+#       (mariadbs.k8s.mariadb.com), so the recommender accepts a VPA on the
+#       database StatefulSet. Prints "MariaDB CRD scale subresource removed",
+#       or "MariaDB CRD serves no scale subresource" when no version serves
+#       it. A second run is therefore a no-op, and it shows whether a chart
+#       upgrade restored the subresource. hack/deploy-infra.sh does the same
+#       on kind under WITH_VPA=true.
 #
 # Optional env vars (report; each reads "-" when unset):
 #   GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_SHA, GITHUB_JOB
@@ -51,18 +61,21 @@
 #   nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack \
 #     >_output/sizing/watch.log 2>&1 &
 #   hack/ci-vpa-recommendations.sh report _output/sizing
+#   hack/ci-vpa-recommendations.sh prepare
 #
 # Exit codes:
 #   0 — done
 #   1 — report found no snapshot (no recommendation was recorded)
 #   2 — usage error, the cluster does not serve VerticalPodAutoscaler, a
-#       failing kubectl call, an unparsable snapshot, or jq missing
+#       failing kubectl call, an unparsable snapshot, a failing or unparsable
+#       read of the MariaDB CRD, a failing replace, or jq missing
 
 set -euo pipefail
 
 VPA_RESOURCE="verticalpodautoscalers.autoscaling.k8s.io"
 MANAGED_BY="ci-vpa-recommendations"
 WATCH_INTERVAL_SECONDS=60
+MARIADB_CRD="mariadbs.k8s.mariadb.com"
 
 # ---------------------------------------------------------------------------
 # usage — Print the usage text to stderr and exit 2.
@@ -72,6 +85,7 @@ usage() {
 usage: hack/ci-vpa-recommendations.sh snapshot <out-dir> <namespace>...
        hack/ci-vpa-recommendations.sh watch <out-dir> <namespace>...
        hack/ci-vpa-recommendations.sh report <out-dir>
+       hack/ci-vpa-recommendations.sh prepare
 EOF
   exit 2
 }
@@ -327,6 +341,27 @@ def dash: if . == null then "-" else tostring end;
 }
 
 # ---------------------------------------------------------------------------
+# cmd_prepare — Remove the scale subresource from the MariaDB CRD.
+# ---------------------------------------------------------------------------
+cmd_prepare() {
+  local crd served
+  if ! crd="$(kubectl get crd "${MARIADB_CRD}" -o json 2>"${errfile}")"; then
+    die "reading the MariaDB CRD ${MARIADB_CRD} failed: $(cat "${errfile}")"
+  fi
+  if ! served="$(jq -e '[.spec.versions[]? | select(.subresources.scale != null)] | length' <<<"${crd}" 2>"${errfile}")"; then
+    die "cannot parse the MariaDB CRD ${MARIADB_CRD}: $(cat "${errfile}")"
+  fi
+  if [[ "${served}" -eq 0 ]]; then
+    echo "MariaDB CRD serves no scale subresource"
+    return 0
+  fi
+  if ! jq 'del(.spec.versions[].subresources.scale)' <<<"${crd}" | kubectl replace -f - >/dev/null 2>"${errfile}"; then
+    die "replacing the MariaDB CRD ${MARIADB_CRD} failed: $(cat "${errfile}")"
+  fi
+  echo "MariaDB CRD scale subresource removed"
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 [[ $# -ge 1 ]] || usage
@@ -338,6 +373,9 @@ case "${subcommand}" in
     ;;
   report)
     [[ $# -eq 1 && -n "$1" ]] || usage
+    ;;
+  prepare)
+    [[ $# -eq 0 ]] || usage
     ;;
   *)
     usage
@@ -356,5 +394,8 @@ case "${subcommand}" in
     ;;
   report)
     cmd_report "$1"
+    ;;
+  prepare)
+    cmd_prepare
     ;;
 esac

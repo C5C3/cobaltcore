@@ -75,7 +75,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
-| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store |
+| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store. Not registered when the operator runs with `--namespace`: a `Role` cannot grant the cluster-scoped kind, and the Secrets step refuses a cluster store with `ClusterSecretStoreUnsupported` instead |
 | `SecretStore` | `Watches()` | The namespaced twin of the store watch, scoped to the store's own namespace, so a Keystone CR pinned to a per-tenant `SecretStore` still reacts immediately to its backend health (`storeToKeystoneMapper` for the namespaced kind) |
 | `KeystoneIdentityBackend` | `Watches()` | Maps backend events to the attached Keystone (`identityBackendToKeystoneMapper`), with no generation predicate: `DomainReady` status flips trigger projection and `DeletionTimestamp` flips trigger de-projection |
 | `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring. |
@@ -1534,6 +1534,7 @@ shared cluster store `openbao-cluster-store`), and gated with the store-ref-awar
 | --- | --- | --- | --- |
 | `False` | `TargetClusterUnavailable` | The resolver's error verbatim, `cluster not found` when `spec.targetClusterRef` names a cluster that is not registered or no longer resolves. Set before this sub-reconciler runs: the CR gets no finalizer and nothing is created on any cluster. See [Target Clusters](../target-clusters.md) | 15s |
 | `False` | `SecretStoreNotReady` | `"<kind> \"<name>\" is not ready; upstream secret backend unreachable"` — the message names the selected store's kind and name, e.g. `ClusterSecretStore "openbao-cluster-store"` or `SecretStore "openbao-tenant-store"` | 15s |
+| `False` | `ClusterSecretStoreUnsupported` | `"ClusterSecretStore \"<name>\" cannot be read by a namespace-scoped operator; set spec.secretStoreRef to a SecretStore in namespace \"<namespace>\""`. Set only when the operator runs with `--namespace` and the effective store is a `ClusterSecretStore`, which an omitted `spec.secretStoreRef` resolves to. The store is not read; see [Secret stores in namespace-scoped mode](../../guides/multi-tenant-deployment.md#secret-stores-in-namespace-scoped-mode) | 15s |
 | `False` | `WaitingForDBCredentials` | "Waiting for ESO to sync database credentials from OpenBao" | 15s |
 | `False` | `WaitingForAdminCredentials` | "Waiting for ESO to sync admin credentials from OpenBao" | 15s |
 | `True` | `SecretsAvailable` | — | — |
@@ -1747,6 +1748,28 @@ the rotation CronJob) from the **write** onto the production Secret
 mutate the production `{name}-fernet-keys` Secret — eliminating the
 token-forgery primitive from the CronJob's attack surface.
 
+The figure shows who reads and who writes each Secret. Its numbers are the
+steps below.
+
+![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../../diagrams/secrets-rotation-keys.svg)
+
+1. The kubelet mounts `{name}-fernet-keys` into the Job pod and an init
+   container copies it to an `emptyDir`.
+2. The Job runs `keystone-manage fernet_rotate` on the copy and sends one PATCH
+   with the new `data` and the annotation
+   `cobaltcore.c5c3.io/rotation-completed-at`.
+3. The Secret watch wakes the operator, which checks key count, key format and
+   uniqueness.
+4. A valid payload replaces the `data` of the production Secret in one
+   `Update`, the staging Secret is deleted, and the event `FernetKeysRotated` is
+   emitted. A rejected payload raises the Warning event `RotationRejected`, the
+   operator clears the staging Secret's `data` and annotation, the production
+   Secret is not written, and no condition changes.
+5. The kubelet projects the new `data` into `/etc/keystone/fernet-keys/` of the
+   running pods. No pod restarts.
+6. `{name}-fernet-keys-backup` copies the keys to
+   `kv-v2/openstack/keystone/{ns}/{name}/fernet-keys`.
+
 **Staging Secret naming.** Per `fernetStagingSecretName`, the staging Secret
 is `{keystone.Name}-fernet-keys-rotation`. It is created and owned by the
 operator via `ensureFernetStagingSecret`:
@@ -1773,8 +1796,9 @@ enforces all of:
 - **Uniqueness:** no two values are byte-equal. Violations return `ErrDuplicateKeys`.
 
 On rejection the operator emits a Warning event `RotationRejected` on the
-Keystone CR and **retains the staging Secret** for human inspection. On a
-malformed `rotation-completed-at` value the operator emits
+Keystone CR and clears the staging Secret's `data` and its
+`rotation-completed-at` annotation. The Secret object stays, so the next
+CronJob run starts from an empty payload. On a malformed `rotation-completed-at` value the operator emits
 `RotationAnnotationInvalid` and leaves staging in place, allowing the next
 CronJob run to overwrite with a valid payload.
 
@@ -1920,6 +1944,11 @@ The credential rotation path mirrors the Fernet split exactly: the
 a dedicated staging Secret, and the operator performs the final write onto
 the production `{name}-credential-keys` Secret.
 
+The [figure and its steps](#key-rotation-rbac-split) under
+`reconcileFernetKeys` apply with `credential` in every name. Step 2 runs
+`keystone-manage credential_migrate` against the database after
+`credential_rotate`.
+
 **Staging Secret naming.** Per `credentialStagingSecretName`, the staging
 Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
 owned by the operator via `ensureCredentialStagingSecret`:
@@ -1943,8 +1972,8 @@ difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
 - **Key format:** 44-byte base64url decoding to 32 bytes. `ErrInvalidKeyFormat` on violation.
 - **Uniqueness:** byte-distinct values. `ErrDuplicateKeys` on violation.
 
-Rejection emits `RotationRejected` (Warning, on the CR) and retains the
-staging Secret. A malformed `rotation-completed-at` emits
+Rejection emits `RotationRejected` (Warning, on the CR) and clears the
+staging Secret's data and annotation. A malformed `rotation-completed-at` emits
 `RotationAnnotationInvalid` and leaves staging intact.
 
 **Apply algorithm.** On a valid staging Secret, `applyRotationOutput` GETs
@@ -2240,7 +2269,7 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 **In-Place Key Rotation:**
 
 Fernet and credential key rotation is handled in-place via kubelet Secret
-projection. When the rotation CronJob updates a Secret, the kubelet
+projection. When the operator commits a rotation to a key Secret, the kubelet
 automatically projects the new data into running pods without requiring a
 Deployment rollout. The pod template does not include hash annotations for the
 fernet/credential key Secrets, so those Secret changes do not trigger rolling
@@ -2248,7 +2277,7 @@ restarts. This preserves Keystone availability, PDB budget, and uWSGI/Memcached
 connections during routine key rotation.
 
 ```text
-CronJob rotates keys → Secret data changes → kubelet projects new keys
+CronJob stages keys → operator commits them → kubelet projects new keys
   → running pods see updated key files (no rollout)
 ```
 
@@ -3100,6 +3129,12 @@ push-source Secret; a PushSecret mirrors that to OpenBao at the per-CR path
 Operator (ESO) then syncs it back into the admin Secret and
 [`reconcileBootstrap`](#reconcilebootstrap) re-runs `keystone-manage bootstrap`
 (admin-password-hash gate) to apply it.
+
+The figure shows the path. The
+[scheduled-rotation guide](../../guides/keystone/keystone-admin-password-scheduled-rotation.md#_3-topology-what-the-operator-stands-up)
+lists its steps.
+
+![Rotation of the Keystone admin password in six numbered steps. On a standalone Keystone a CronJob generates a password and patches it onto a staging Secret, the keystone-operator validates it and commits it to a push-source Secret, and a PushSecret writes it to OpenBao. A person can instead write the password to the same OpenBao path by hand. From OpenBao an ExternalSecret updates the admin Secret, the keystone-operator sees the changed password hash and recreates the bootstrap Job, and keystone-manage bootstrap sets the new password in the Keystone database without restarting the API pods. A rejected password raises the event AdminPasswordRotationRejected and is not pushed.](../../diagrams/secrets-rotation-admin-password.svg)
 
 Two lifecycle paths:
 

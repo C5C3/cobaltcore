@@ -199,8 +199,9 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 		// process count, so it gets a fixed figure.
 		DefaultMemory: backupMemory,
 		Container: deployment.ContainerParams{
-			Name:  componentBackup,
-			Image: cinder.Spec.Image.Reference(),
+			Name:            componentBackup,
+			Image:           cinder.Spec.Image.Reference(),
+			ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
 			Command: []string{
 				"cinder-backup",
 				"--config-dir", cinderConfigDir,

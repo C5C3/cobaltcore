@@ -41,13 +41,16 @@ The service images are built for every OpenStack release defined under [`release
 
 ## Getting started
 
-The quick starts run on a local kind cluster and need Docker Desktop or Podman:
+The first three quick starts run on a local kind cluster and need Docker Desktop or Podman; the fourth
+needs a metal-stack cluster:
 
 - [Quick Start](docs/quick-start.md): from `git clone` to an authenticated Keystone API call.
 - [Quick Start (Extended)](docs/quick-start-extended.md): UI tours, the local-build path, the production
   HelmRelease, E2E, and Tempest.
 - [Quick Start (ControlPlane)](docs/quick-start-controlplane.md): a full ControlPlane through the
   c5c3-operator.
+- [Quick Start (metal-stack)](docs/quick-start-metal-stack.md): the ControlPlane on a metal-stack
+  cluster, with servers on two KVM hypervisors.
 
 The short path to the infrastructure stack:
 

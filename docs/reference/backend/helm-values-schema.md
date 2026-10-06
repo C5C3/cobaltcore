@@ -87,6 +87,8 @@ ships, so they are present only where they apply:
 - A key a chart does not carry is rejected there (`additionalProperties: false`).
 - `controller.maxConcurrentReconciles` is accepted by every chart, but only the
   controllers that opt in consume it (see [controller](#controller)).
+- `controller.defaultImagePullPolicy` is accepted by every chart; the
+  c5c3-operator renders no container and does not consume it.
 
 ## Validated Properties
 
@@ -172,6 +174,7 @@ for the privilege-escalation path this closes. The default stays `false` because
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
 | `controller.maxConcurrentReconciles` | `integer` | minimum: `1` | unset |
+| `controller.defaultImagePullPolicy` | `string` | enum: `Always`, `IfNotPresent`, `Never` | unset |
 
 The maximum number of CRs that may reconcile concurrently
 (controller-runtime `MaxConcurrentReconciles`), rendered as
@@ -181,6 +184,16 @@ serialises reconciles across CRs, so one slow or flapping CR delays every
 other). Raise to 5–10 for fleets with many CRs. The key is accepted by every
 chart, but only controllers that opt in consume it — the c5c3-operator accepts
 the flag without acting on it yet.
+
+`controller.defaultImagePullPolicy` is the `imagePullPolicy` of every container
+the operator renders from an image reference that names no `pullPolicy`,
+rendered as `--default-image-pull-policy`. Unset, the operator applies the rule
+of the [`ImageSpec`](../keystone/keystone-crd.md#imagespec): `IfNotPresent` for
+a digest, `Always` for a tag. Set it to `IfNotPresent` where the nodes hold
+preloaded images under the published tag, as CI does. No chart sets it in its
+`values.yaml`; the nine service operator charts carry it as a commented key.
+The c5c3-operator chart accepts it, and the operator does not consume it,
+because it renders no container.
 
 ### webhook
 
@@ -319,7 +332,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Category | Example |
 | --- | --- |
 | Type violations | `replicas: "abc"` (string instead of integer) |
-| Enum violations | `image.pullPolicy: "InvalidPolicy"` |
+| Enum violations | `image.pullPolicy: "InvalidPolicy"`, `controller.defaultImagePullPolicy: "Sometimes"` |
 | Range violations | `replicas: 0`, `metrics.port: 65536` |
 | Unknown properties | `image.digest: "sha256:abc"` |
 | Invalid quantities | `resources.limits.cpu: "not-valid"` |
@@ -339,6 +352,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Exponent-only quantities | `cpu: "1e3"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` |
 | Logging overrides | `development: true`, `level: debug`, `encoder: console` |
+| Operator image pull policy | `controller.defaultImagePullPolicy: Never` |
 | Placement keys | `priorityClassName`, a `nodeSelector` label and two tolerations, one with `tolerationSeconds`; a toleration with `effect: ""`, which matches every effect |
 
 ## Values by Operator
@@ -366,6 +380,7 @@ description, and by carrying no `federation` key (see the
 | `rbac.namespaceScoped` | `false` | `false` |
 | `leaderElection.enabled` | `true` | `true` |
 | `controller.maxConcurrentReconciles` | `2` | unset (accepted, not consumed) |
+| `controller.defaultImagePullPolicy` | unset | unset (accepted, not consumed) |
 | `webhook.enabled` | `true` | `true` |
 | `metrics.port` | `8080` | `8080` |
 | `monitoring.serviceMonitor.enabled` | `false` | `false` |
@@ -429,9 +444,10 @@ networkPolicy:
     ports: [6443]
 ```
 
-**c5c3-operator — single-namespace, hardened.** The ControlPlane operator has no
-`federation` or `networkPolicy` key; namespace-scoped RBAC is the main hardening
-knob (it requires `webhook.enabled: false`):
+**c5c3-operator — resources and monitoring.** The ControlPlane operator has no
+`federation` or `networkPolicy` key, and its chart refuses
+`rbac.namespaceScoped: true`: the ControlPlane controller watches cluster-scoped
+kinds and creates ClusterRoleBindings, which a namespaced Role cannot grant.
 
 ```yaml
 # c5c3-overrides.yaml
@@ -442,18 +458,14 @@ resources:
   limits:
     cpu: "1"
     memory: 256Mi
-rbac:
-  namespaceScoped: true    # bounds the operator to its release namespace
-webhook:
-  enabled: false           # required by namespaceScoped: true
 monitoring:
   serviceMonitor:
     enabled: true
 ```
 
-See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
-for the privilege-escalation path `rbac.namespaceScoped: true` closes and the
-[capabilities that still need cluster scope](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required)
+for the charts that refuse the mode and the other capabilities that still need
+cluster scope.
 
 **Any operator chart: dedicated nodes and a priority class.** Run the operator
 pods on nodes labelled and tainted for the platform, and rank them above tenant

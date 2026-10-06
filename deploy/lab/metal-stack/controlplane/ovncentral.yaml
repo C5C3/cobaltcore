@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN central of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
+# Step 3, the `# controlplane-ovn.yaml` block), data unchanged. The ControlPlane
+# in controlplane-lab.yaml references it by name and does not own it.
+# tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file and
+# the page's block drift apart.
+#
+# No storage class is named, so the two 1Gi database volumes bind to the
+# cluster's default class.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: controlplane-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      # The cluster-scoped CA issuer of deploy/flux-system/infrastructure/
+      # ovn-ca-issuer.yaml, which the lab's infrastructure overlay inherits. OVN
+      # authenticates every connection, so both databases and the client
+      # identity the Neutron pods mount are issued from this one CA.
+      name: openstack-ovn-ca-issuer
+  # Single-member Raft clusters and a single northd, the quick start's sizing.
+  # Omit these and each database comes up as a 3-member cluster.
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1

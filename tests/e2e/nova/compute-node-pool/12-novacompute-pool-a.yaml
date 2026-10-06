@@ -15,6 +15,7 @@
 # webhook's catalog check admits them.
 #
 # The resources are the ones the fake compute of ../basic-deployment runs on.
+# region novacompute-cr
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: NovaCompute
 metadata:
@@ -36,3 +37,4 @@ spec:
       compute_driver: fake.FakeDriverWithoutFakeNodes
       vif_plugging_is_fatal: "false"
       vif_plugging_timeout: "0"
+# endregion novacompute-cr

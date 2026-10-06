@@ -4,9 +4,9 @@
 
 // Package computeapitest is an in-memory Keystone and Nova compute API for the
 // tests of the computeapi client and the NovaCompute reconciler. It keeps
-// compute services, host aggregates and a server count per host, answers the
-// requests the client sends at microversions 2.53 and 2.69, and records every
-// call.
+// compute services, the host mapping of their hosts, host aggregates and a
+// server count per host, answers the requests the client sends at
+// microversions 2.53, 2.69 and 2.88, and records every call.
 //
 // Fake is both an http.Handler and a computeapi.Doer. Used as a Doer it serves
 // the request in process, so any URL reaches it and no listener is needed.
@@ -45,6 +45,10 @@ type Service struct {
 	Status         string
 	State          string
 	DisabledReason string
+
+	// hypervisorID is the id of the service's compute node in the hypervisor
+	// list, distinct from ID as Nova's compute node UUID is.
+	hypervisorID string
 }
 
 // Aggregate is one host aggregate the fake keeps.
@@ -74,6 +78,7 @@ type Fake struct {
 	aggregates []*Aggregate
 	servers    map[string]int
 	downCells  map[string]bool
+	unmapped   map[string]bool
 	failures   []failure
 	calls      []Call
 	nextSvc    int
@@ -82,7 +87,7 @@ type Fake struct {
 
 // New returns an empty fake.
 func New() *Fake {
-	return &Fake{servers: map[string]int{}, downCells: map[string]bool{}}
+	return &Fake{servers: map[string]int{}, downCells: map[string]bool{}, unmapped: map[string]bool{}}
 }
 
 // Do serves req in process.
@@ -93,13 +98,25 @@ func (f *Fake) Do(req *http.Request) (*http.Response, error) {
 }
 
 // AddService registers a nova-compute service for host and returns its id.
+// The host is mapped into its cell unless SetHostMapped says otherwise.
 func (f *Fake) AddService(host, status, state string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextSvc++
 	id := fmt.Sprintf("00000000-0000-0000-0000-%012d", f.nextSvc)
-	f.services = append(f.services, &Service{ID: id, Host: host, Status: status, State: state})
+	f.services = append(f.services, &Service{
+		ID: id, Host: host, Status: status, State: state,
+		hypervisorID: fmt.Sprintf("10000000-0000-0000-0000-%012d", f.nextSvc),
+	})
 	return id
+}
+
+// SetHostMapped sets whether host has a host mapping. The hypervisor list
+// leaves the compute node of an unmapped host out, as Nova does.
+func (f *Fake) SetHostMapped(host string, mapped bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unmapped[host] = !mapped
 }
 
 // SetServers sets how many servers the fake reports on host.
@@ -238,6 +255,9 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveServers(w, r)
 	case len(parts) >= 2 && parts[0] == "v2.1" && parts[1] == "os-aggregates":
 		f.serveAggregates(w, r, parts[2:], body)
+	case len(parts) == 3 && parts[0] == "v2.1" && parts[1] == "os-hypervisors" && parts[2] == "detail" &&
+		r.Method == http.MethodGet:
+		f.serveHypervisors(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such route"})
 	}
@@ -342,6 +362,37 @@ func (f *Fake) serveServers(w http.ResponseWriter, r *http.Request) {
 		servers = append(servers, map[string]string{"id": strconv.Itoa(i + 1)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+}
+
+// serveHypervisors pages over the compute nodes with limit and marker and then
+// drops the nodes of unmapped hosts, in that order, as Nova 32.0.0's
+// _get_hypervisors does: a page can come back shorter than its limit, or
+// empty, while later pages hold entries.
+func (f *Fake) serveHypervisors(w http.ResponseWriter, r *http.Request) {
+	nodes := f.services
+	query := r.URL.Query()
+	if marker := query.Get("marker"); marker != "" {
+		i := slices.IndexFunc(nodes, func(s *Service) bool { return s.hypervisorID == marker })
+		if i < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": fmt.Sprintf("marker [%s] not found", marker)})
+			return
+		}
+		nodes = nodes[i+1:]
+	}
+	if limit, err := strconv.Atoi(query.Get("limit")); err == nil && limit < len(nodes) {
+		nodes = nodes[:limit]
+	}
+	hypervisors := make([]map[string]any, 0, len(nodes))
+	for _, s := range nodes {
+		if f.unmapped[s.Host] {
+			continue
+		}
+		hypervisors = append(hypervisors, map[string]any{
+			"id": s.hypervisorID, "hypervisor_hostname": s.Host, "state": s.State, "status": s.Status,
+			"service": map[string]any{"id": s.ID, "host": s.Host, "disabled_reason": nil},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hypervisors": hypervisors})
 }
 
 func (f *Fake) serveAggregates(w http.ResponseWriter, r *http.Request, rest []string, body []byte) {

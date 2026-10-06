@@ -55,13 +55,19 @@ Earlier the rotation CronJob wrote directly to the production
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
 | Rotation CronJob (ServiceAccount `controlplane-keystone-fernet-rotate`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (via `patch`) | Production Secret `controlplane-keystone-fernet-keys` (via `get`, mounted as volume) |
-| Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `patch`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
+| Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `update`, which replaces the whole `data` map) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
 
 The staging Secret carries one controller-observable marker — the
 `cobaltcore.c5c3.io/rotation-completed-at` annotation — that tells the operator
 "the CronJob finished; please apply". Until that annotation is present
 and parseable as RFC3339 UTC, the operator will not touch the production
 Secret.
+
+The figure shows the same split as a path. The
+[reconciler reference](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
+lists the steps. `{name}` is `controlplane-keystone` here.
+
+![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../../diagrams/secrets-rotation-keys.svg)
 
 ---
 

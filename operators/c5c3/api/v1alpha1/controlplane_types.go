@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -57,6 +58,20 @@ type ControlPlaneSpec struct {
 	// then it is recorded but unused by the External-mode reconciler.
 	// +kubebuilder:validation:Pattern=`^\d{4}\.[12]$`
 	OpenStackRelease string `json:"openStackRelease"`
+
+	// ImagePullPolicy is projected into spec.image.pullPolicy of every service
+	// CR the ControlPlane creates and into Keystone's
+	// spec.federation.proxyImage.pullPolicy. A pullPolicy on a
+	// services.<service>.image or services.keystone.federationProxyImage
+	// override wins for that image. Empty leaves the child's field absent, so
+	// the child's operator resolves it: its --default-image-pull-policy, else
+	// IfNotPresent for a digest and Always for a tag. In External Keystone mode
+	// the field has no effect on Keystone, which has no child. A child CRD older
+	// than the c5c3-operator prunes the projected field without an error. The
+	// Enum is schema-only, for the reason ImageSpec.PullPolicy gives.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
 	// Region is the OpenStack region name applied across the control plane.
 	// DECISION (plan decision #4): defaults to "RegionOne" via both the

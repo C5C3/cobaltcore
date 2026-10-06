@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1424" viewBox="0 0 1808 1424" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Where the children of a ControlPlane live and how they are owned">
+<title>Where the children of a ControlPlane live and how they are owned</title>
+<rect width="1808" height="1424" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1234" height="1264" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<rect x="1290" y="40" width="478" height="1264" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<rect x="1316.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="1354.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1406.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Target cluster {cluster}</text>
+<rect x="58" y="150" width="462" height="1136" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="76" y="167" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="102" y="189.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="142" y="190.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="536" y="150" width="378" height="1136" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="554" y="167" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="580" y="189.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="620" y="190.64" font-size="24" font-weight="700" fill="#2B3440">{ns-2}</text>
+<rect x="930" y="150" width="326" height="1136" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="948" y="167" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="974" y="189.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1014" y="190.64" font-size="24" font-weight="700" fill="#2B3440">{ns-3}</text>
+<rect x="1308" y="150" width="442" height="1136" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="1326" y="167" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1352" y="189.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1392" y="190.64" font-size="24" font-weight="700" fill="#2B3440">{ns-3}</text>
+<text x="76" y="227.2" font-size="20" font-weight="400" fill="#55606E">the ControlPlane namespace</text>
+<text x="76" y="253.2" font-size="20" font-weight="400" fill="#55606E">a service without a namespace block</text>
+<text x="554" y="227.2" font-size="20" font-weight="400" fill="#55606E">a dedicated service namespace</text>
+<text x="554" y="253.2" font-size="20" font-weight="400" fill="#55606E">spec.services.{svc}.namespace</text>
+<text x="554" y="279.2" font-size="20" font-weight="400" fill="#55606E">Managed lifecycle: annotation</text>
+<text x="554" y="305.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/controlplane-uid</text>
+<text x="948" y="227.2" font-size="20" font-weight="400" fill="#55606E">the namespace of</text>
+<text x="948" y="253.2" font-size="20" font-weight="400" fill="#55606E">a placed service</text>
+<text x="948" y="279.2" font-size="20" font-weight="400" fill="#55606E">namespace block and</text>
+<text x="948" y="305.2" font-size="20" font-weight="400" fill="#55606E">targetClusterRef</text>
+<text x="948" y="331.2" font-size="20" font-weight="400" fill="#55606E">Managed lifecycle: annotation</text>
+<text x="948" y="357.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/controlplane-uid</text>
+<text x="1326" y="227.2" font-size="20" font-weight="400" fill="#55606E">the same name on both clusters</text>
+<text x="1326" y="253.2" font-size="20" font-weight="400" fill="#55606E">Managed lifecycle: annotation</text>
+<text x="1326" y="279.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/controlplane-uid</text>
+<rect x="102" y="280" width="266" height="48" rx="20" fill="#1E6B40"/>
+<text x="235" y="312.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane {cp}</text>
+<text x="102" y="355.2" font-size="20" font-weight="400" fill="#55606E">finalizer c5c3.io/orc-teardown</text>
+<text x="102" y="381.2" font-size="20" font-weight="400" fill="#55606E">finalizer openstack.c5c3.io/remote-children,</text>
+<text x="102" y="407.2" font-size="20" font-weight="400" fill="#55606E">once a service is placed on a target cluster</text>
+<rect x="102" y="432" width="266" height="48" rx="20" fill="#1E6B40"/>
+<text x="235" y="464.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K-ORC resources</text>
+<text x="102" y="507.2" font-size="20" font-weight="400" fill="#55606E">stay here for every service</text>
+<rect x="102" y="540" width="266" height="48" rx="20" fill="#1D47A6"/>
+<text x="235" y="572.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">service CR {cp}-{svc}</text>
+<rect x="102" y="640" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="235" y="672.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB, Memcached</text>
+<rect x="102" y="730" width="266" height="48" rx="20" fill="#2B3440"/>
+<text x="235" y="762.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao-tenant-store</text>
+<text x="102" y="805.2" font-size="20" font-weight="400" fill="#55606E">SecretStore</text>
+<path d="M102 830 H352 L368 846 V878 H102 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="352,830 352,846 368,846" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="235" y="862.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">Secrets</text>
+<text x="102" y="905.2" font-size="20" font-weight="400" fill="#55606E">from ESO and the service operator</text>
+<path d="M102 930 H352 L368 946 V978 H102 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="352,930 352,946 368,946" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="235" y="962.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">ConfigMaps</text>
+<rect x="102" y="1000" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="235" y="1032.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">workloads</text>
+<text x="102" y="1075.2" font-size="20" font-weight="400" fill="#55606E">Deployment, Service, HTTPRoute</text>
+<text x="76" y="1131.2" font-size="20" font-weight="400" fill="#55606E">owner reference:</text>
+<text x="76" y="1157.2" font-size="20" font-weight="400" fill="#55606E">the garbage collector reaps the children</text>
+<rect x="580" y="540" width="266" height="48" rx="20" fill="#1D47A6"/>
+<text x="713" y="572.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">service CR {cp}-{svc}</text>
+<rect x="580" y="640" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="713" y="672.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB, Memcached</text>
+<rect x="580" y="730" width="266" height="48" rx="20" fill="#2B3440"/>
+<text x="713" y="762.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao-tenant-store</text>
+<text x="580" y="805.2" font-size="20" font-weight="400" fill="#55606E">SecretStore</text>
+<path d="M580 830 H830 L846 846 V878 H580 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="830,830 830,846 846,846" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="713" y="862.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">Secrets</text>
+<text x="580" y="905.2" font-size="20" font-weight="400" fill="#55606E">from ESO and the service operator</text>
+<path d="M580 930 H830 L846 946 V978 H580 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="830,930 830,946 846,946" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="713" y="962.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">ConfigMaps</text>
+<rect x="580" y="1000" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="713" y="1032.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">workloads</text>
+<text x="580" y="1075.2" font-size="20" font-weight="400" fill="#55606E">Deployment, Service, HTTPRoute</text>
+<text x="554" y="1131.2" font-size="20" font-weight="400" fill="#55606E">labels c5c3.io/controlplane-name,</text>
+<text x="554" y="1157.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/controlplane-namespace</text>
+<text x="554" y="1183.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/orc-teardown</text>
+<text x="554" y="1209.2" font-size="20" font-weight="400" fill="#55606E">deletes the children</text>
+<rect x="948" y="540" width="266" height="48" rx="20" fill="#1D47A6"/>
+<text x="1081" y="572.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">service CR {cp}-{svc}</text>
+<text x="948" y="615.2" font-size="20" font-weight="400" fill="#55606E">the CR, its status and</text>
+<text x="948" y="641.2" font-size="20" font-weight="400" fill="#55606E">its finalizers stay here</text>
+<rect x="1352" y="640" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1485" y="672.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB, Memcached</text>
+<rect x="1352" y="730" width="266" height="48" rx="20" fill="#2B3440"/>
+<text x="1485" y="762.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao-tenant-store</text>
+<text x="1352" y="805.2" font-size="20" font-weight="400" fill="#55606E">SecretStore</text>
+<path d="M1352 830 H1602 L1618 846 V878 H1352 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1602,830 1602,846 1618,846" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1485" y="862.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">Secrets</text>
+<text x="1352" y="905.2" font-size="20" font-weight="400" fill="#55606E">from ESO and the service operator</text>
+<path d="M1352 930 H1602 L1618 946 V978 H1352 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1602,930 1602,946 1618,946" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1485" y="962.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">ConfigMaps</text>
+<rect x="1352" y="1000" width="266" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1485" y="1032.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">workloads</text>
+<text x="1352" y="1075.2" font-size="20" font-weight="400" fill="#55606E">Deployment, Service, HTTPRoute</text>
+<text x="1326" y="1131.2" font-size="20" font-weight="400" fill="#55606E">the two labels plus</text>
+<text x="1326" y="1157.2" font-size="20" font-weight="400" fill="#55606E">openstack.c5c3.io/owner-kind,</text>
+<text x="1326" y="1183.2" font-size="20" font-weight="400" fill="#55606E">owner-name, owner-namespace</text>
+<text x="1326" y="1209.2" font-size="20" font-weight="400" fill="#55606E">no owner reference</text>
+<text x="1326" y="1235.2" font-size="20" font-weight="400" fill="#55606E">openstack.c5c3.io/remote-children</text>
+<text x="1326" y="1261.2" font-size="20" font-weight="400" fill="#55606E">sweeps the children</text>
+<polyline points="84,304 80,304 80,456 102,456" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="100,304 92,299.3 84,304 92,308.7" fill="#7D8794"/>
+<polyline points="84,304 80,304 80,564 102,564" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="100,304 92,299.3 84,304 92,308.7" fill="#7D8794"/>
+<polyline points="84,304 80,304 80,664 102,664" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="100,304 92,299.3 84,304 92,308.7" fill="#7D8794"/>
+<polyline points="386,564 498,564 498,1024 368,1024" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="370,564 378,568.7 386,564 378,559.3" fill="#7D8794"/>
+<polyline points="562,564 558,564 558,1024 580,1024" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="578,564 570,559.3 562,564 570,568.7" fill="#7D8794"/>
+<polyline points="386,304 498,304 498,124 892,124 892,564 846,564" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="370,304 378,308.7 386,304 378,299.3" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="386,304 498,304 498,124 892,124 892,664 846,664" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="370,304 378,308.7 386,304 378,299.3" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="386,304 498,304 498,124 1234,124 1234,564 1214,564" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="370,304 378,308.7 386,304 378,299.3" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="386,304 498,304 498,124 1660,124 1660,664 1618,664" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="370,304 378,308.7 386,304 378,299.3" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1190,606 1190,1024 1352,1024" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="1190,590 1185.3,598 1190,606 1194.7,598" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="1351.2" font-size="20" font-weight="400" fill="#55606E">{cp}: the ControlPlane name. {ns}: its namespace. {ns-2}, {ns-3}: namespaces a service block names. {svc}: one of the eight services. {cluster}: a registered target cluster.</text>
+<text x="40" y="1377.2" font-size="20" font-weight="400" fill="#55606E">MariaDB, Memcached and the secret store exist once per namespace that hosts a service.</text>
+</svg>

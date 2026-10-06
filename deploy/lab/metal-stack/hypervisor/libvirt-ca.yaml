@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The CA of the lab's libvirt migration domain, bootstrapped from
+# selfsigned-cluster-issuer the way deploy/flux-system/infrastructure/
+# ovn-ca-issuer.yaml bootstraps the OVN CA.
+#
+# openstack-hypervisor-operator requests Certificate libvirt-<node> with kind
+# Issuer in its --certificate-namespace (hypervisor-system, hvo-release.yaml)
+# under the name --certificate-issuer-name, whose chart default is
+# nova-hypervisor-agents-ca-issuer. kvm-node-agent installs the resulting
+# Secret tls-libvirt-<node> under the node's /etc/pki.
+#
+# The CA signs nothing else. libvirtd checks no client subject, so every
+# certificate that chains to it gets full access to every lab libvirtd on
+# port 16514 (docs/reference/nova/novacompute-crd.md, Live migration).
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: libvirt-migration-ca
+  namespace: hypervisor-system
+spec:
+  secretName: libvirt-migration-ca
+  isCA: true
+  commonName: libvirt-migration-ca
+  duration: 26280h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: nova-hypervisor-agents-ca-issuer
+  namespace: hypervisor-system
+spec:
+  ca:
+    secretName: libvirt-migration-ca

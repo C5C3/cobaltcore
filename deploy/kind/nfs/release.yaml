@@ -15,19 +15,20 @@
 # `priorityClassName: system-cluster-critical`, which resolves in no other
 # Namespace.
 #
-# Kind-only. Production clusters bring their own CSI mounter, and shipping a
-# privileged hostNetwork DaemonSet from deploy/flux-system/releases/ into
-# every production deployment is rejected.
+# Not for production. Production clusters bring their own CSI mounter, and
+# shipping a privileged hostNetwork DaemonSet from deploy/flux-system/releases/
+# into every production deployment is rejected. Beside kind, the metal-stack
+# lab installs this release unchanged, through deploy/lab/metal-stack/nfs
+# (#1196).
 #
 # The chart version is PINNED, unlike the `>=x <y` ranges of
 # deploy/kind/chaos-mesh/release.yaml, deploy/kind/metrics-server/release.yaml
 # and deploy/kind/dizzy/release-*.yaml. A range would let Flux adopt a new
 # chart on its next reconcile with no repo diff, and what it installs here is
 # a privileged hostNetwork DaemonSet whose chart defaults the stack relies on
-# (listed below) are not overridden and would flip unnoticed. Renovate tracks
-# the pin (customManager on `version:` in this file, packageRules
-# "csi-driver-nfs chart", major disabled, no automerge), so an upgrade is a
-# reviewed diff.
+# (listed below) are not overridden and would flip unnoticed. Renovate's flux
+# manager tracks the pin (packageRules "csi-driver-nfs chart", major disabled,
+# no automerge), so an upgrade is a reviewed diff.
 #
 # The HelmRepository still points at the upstream `master` chart directory
 # (source.yaml), because that is the only place upstream publishes: every
@@ -41,10 +42,11 @@
 # checksum or a signature, so a rewrite of the 4.13.4 tarball on the upstream
 # branch is adopted on the next reconcile (interval 1h) with no repo diff and
 # no PR — and what it would install is the privileged hostNetwork DaemonSet
-# below. That residual risk is accepted for a kind-only CI overlay; a real
-# content pin means mirroring the chart into a registry this project controls
-# and referencing it by digest, or vendoring the rendered manifests here the
-# way the overlay already vendors nfs-server.yaml.
+# below. That residual risk is accepted for the kind CI overlay and for the
+# lab, which has no untrusted tenant; a real content pin means mirroring the
+# chart into a registry this project controls and referencing it by digest,
+# or vendoring the rendered manifests here the way the overlay already
+# vendors nfs-server.yaml.
 #
 # What stays at chart default, and is relied on:
 #   - `driver.name: nfs.csi.k8s.io`, the provisioner string the static
@@ -52,7 +54,8 @@
 #   - `attachRequired: false` on the CSIDriver.
 #   - `fsGroupPolicy: File` (chart `feature.enableFSGroupPolicy: true`), so
 #     the kubelet applies a pod's fsGroup to the mounted share.
-#   - `kubeletDir: /var/lib/kubelet`, which is kind's kubelet root.
+#   - `kubeletDir: /var/lib/kubelet`, which is kind's kubelet root and the
+#     lab's.
 #   - The `csi-nfs-node` DaemonSet with `hostNetwork: true`,
 #     `dnsPolicy: ClusterFirstWithHostNet` and one privileged container
 #     (`nfs`) that mounts /var/lib/kubelet/pods with bidirectional mount
@@ -74,7 +77,7 @@ spec:
   chart:
     spec:
       chart: csi-driver-nfs
-      # Pinned, not a range. Renovate bumps it; see the header.
+      # Pinned, not a range. Renovate's flux manager bumps it; see the header.
       version: "4.13.4"
       sourceRef:
         kind: HelmRepository
@@ -113,18 +116,19 @@ spec:
       # applies this overlay whenever the live one lists no `Ephemeral` mode,
       # and the chart recreates it. A fresh cluster needs nothing.
       #
-      # TRUST CONSEQUENCE, accepted for this kind-only overlay. The export
-      # behind the driver is wildcard-permitted and `no_root_squash`
-      # (nfs-server.yaml, "CI-ONLY posture"). Reaching it used to require a
-      # cluster-scoped PersistentVolume, which namespaced RBAC does not grant;
-      # with the Ephemeral mode the whole mount is expressed in a pod spec, so
-      # anyone who can create a Pod in any namespace that is not PSA
-      # `restricted` mounts both shares as root — including another suite's
-      # volume and backup files. A namespace label does not stop the mount
-      # either: `csi` is on the PSS restricted allow-list, so the label bounds
-      # the UID and not the volume. The mode is accepted anyway — the operator
-      # needs it and this cluster has no untrusted tenant — but it is a reason
-      # not to lift this overlay into a non-kind deployment: production
-      # clusters bring their own CSI mounter against an export that squashes
-      # root.
+      # TRUST CONSEQUENCE, accepted for kind and for the metal-stack lab. The
+      # export behind the driver is wildcard-permitted and `no_root_squash`
+      # (nfs-server.yaml, "NON-PRODUCTION posture"). Reaching it used to
+      # require a cluster-scoped PersistentVolume, which namespaced RBAC does
+      # not grant; with the Ephemeral mode the whole mount is expressed in a
+      # pod spec, so anyone who can create a Pod in any namespace that is not
+      # PSA `restricted` mounts both shares as root — including another
+      # suite's volume and backup files. A namespace label does not stop the
+      # mount either: `csi` is on the PSS restricted allow-list, so the label
+      # bounds the UID and not the volume, and 42424, the owner of both
+      # exports, is a UID `restricted` admits. The mode is accepted anyway —
+      # the operator needs it and neither cluster has an untrusted tenant —
+      # but it is a reason not to lift this overlay into a cluster that has
+      # one: production clusters bring their own CSI mounter against an
+      # export that squashes root.
       enableInlineVolume: true

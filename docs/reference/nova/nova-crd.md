@@ -37,7 +37,7 @@ copy under the name `status.computeConfigSecretRef` gives.
 | `metadata` | [`NovaMetadataSpec`](#novametadataspec) | yes | The metadata Deployment, its uWSGI parameters, the shared secret it verifies proxied requests with, and its own gateway block. Required because the shared secret has no default |
 | `scheduler` | [`NovaSchedulerSpec`](#novaschedulerspec) | no | The scheduler Deployment and its worker count |
 | `conductor` | [`NovaConductorSpec`](#novaconductorspec) | no | The conductor Deployment and its worker count |
-| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job (which also runs the `cell_v2` steps), the db-expand, db-migrate and db-contract upgrade phases, and the db-archive CronJob. A field left unset falls back to `spec.api.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
+| `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job (which also runs the `cell_v2` steps), the db-expand, db-migrate and db-contract upgrade phases, the db-archive CronJob, and the host discovery Job a [NovaCompute](./novacompute-crd.md#reaching-nova) pool runs. A field left unset falls back to `spec.api.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
 | `consoleProxy` | [`NovaConsoleProxySpec`](#novaconsoleproxyspec) | no | The console proxy: the switch that projects it, its Deployment, and its own gateway block |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url` and as the `auth_url` of every client section; `MinLength=1`, pattern `^https?://`, and the webhook also requires a parseable URL with a host. Nova reaches it server-side on every request and before every outgoing call, so it must resolve from inside the cluster. Nova has no Keystone-free posture: an instance boot needs a Placement allocation, a Neutron port and a Glance image, and all three are authenticated calls |
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `www_authenticate_uri`, the address a 401 points unauthenticated clients at. When empty the operator falls back to `keystoneEndpoint` at render time (`EffectiveKeystonePublicEndpoint`), correct only when the internal and public URLs coincide |
@@ -325,7 +325,9 @@ is immutable and an update rule could only reject a CR an earlier operator
 version already admitted, including the finalizer-removal update that completes
 its deletion. Such a grandfathered CR still reconciles: the operator collapses
 the overflowing tail onto a content-stable hash and names the CronJob
-`{truncated}-{hash}-db-archive`.
+`{truncated}-{hash}-db-archive`. The host discovery Job a NovaCompute pool runs
+is collapsed the same way, to `{truncated}-{hash}-discover-hosts`, once
+`{name}-discover-hosts` would pass the 63 characters of a Job name.
 
 `metadata.name` also must not end in `-api`, `-metadata`, `-scheduler`,
 `-conductor`, `-novncproxy` or `-console`, on create only for the same reason. A

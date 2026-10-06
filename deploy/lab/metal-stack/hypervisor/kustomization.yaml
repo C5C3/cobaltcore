@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two workers of the metal-stack lab as KVM hypervisors of the lab
+# ControlPlane (#1142): libvirt in a DaemonSet, the OVN chassis, the metadata
+# agent and the NovaCompute pool, the libvirt migration CA, and
+# openstack-hypervisor-operator and kvm-node-agent with their chart sources.
+# Applied by hand, like ../controlplane; hack/deploy-infra.sh never applies
+# it. It needs the lab ControlPlane Ready, the node labels and
+# ../hypervisor-fixtures before it. Part 2 of
+# docs/quick-start-metal-stack.md runs the sequence;
+# docs/reference/infrastructure/infrastructure-manifests.md (Lab hypervisors)
+# gives the reason behind each setting.
+#
+# EXTERNAL_CLUSTER=true make teardown-infra removes all of it in its step 0,
+# labels included (docs/reference/infrastructure/e2e-deployment.md).
+#
+# The namespace and the migration port reservation come from
+# ../migration-ports, which Part 2, Step 1 applies on its own before the node
+# port check. Every other resource is local to this directory, and a directory
+# is no file reference, so `kubectl apply -k` renders the overlay under
+# kustomize's default LoadRestrictionsRootOnly check.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../migration-ports
+  - libvirt-ca.yaml
+  - libvirt-configmap.yaml
+  - libvirt-daemonset.yaml
+  - compute.yaml
+  - sources.yaml
+  - hvo-release.yaml
+  - kna-release.yaml

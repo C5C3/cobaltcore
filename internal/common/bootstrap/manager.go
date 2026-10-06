@@ -24,6 +24,7 @@ import (
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // ManagerConfig holds per-operator configuration for the shared manager
@@ -55,8 +56,13 @@ type ManagerConfig struct {
 	// out a client for a cluster other than the local one; operators that talk
 	// to the management cluster only take its GetLocalManager. The third
 	// argument is the resolved --max-concurrent-reconciles value; controllers
-	// that do not tune concurrency may ignore it.
-	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error
+	// that do not tune concurrency may ignore it. The fourth argument is the
+	// resolved --namespace value: empty for a cluster-wide operator, the
+	// watched namespace otherwise. It is neither --clusters-namespace nor the
+	// namespace the operator Pod runs in. A controller uses it to leave out
+	// what a namespaced Role cannot grant, such as a watch on a cluster-scoped
+	// kind.
+	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error
 
 	// RegisterFlags is an optional, nil-safe hook for registering
 	// operator-specific flags on the shared flag set. It is invoked after the
@@ -182,6 +188,7 @@ type runOptions struct {
 	namespace               string
 	clustersNamespace       string
 	maxConcurrentReconciles int
+	defaultImagePullPolicy  string
 	zapOpts                 zap.Options
 }
 
@@ -223,6 +230,10 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 			"(controller-runtime MaxConcurrentReconciles). Applied by controllers "+
 			"that opt in; controllers that do not tune concurrency ignore it. "+
 			"Defaults to 2.")
+	fs.StringVar(&o.defaultImagePullPolicy, "default-image-pull-policy", "",
+		"imagePullPolicy of every rendered container whose image reference "+
+			"names no pullPolicy: Always, IfNotPresent or Never. Empty applies "+
+			"the rule: IfNotPresent for a digest, Always for a tag.")
 
 	o.zapOpts = zapOptions()
 	o.zapOpts.BindFlags(fs)
@@ -233,6 +244,15 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return runOptions{}, fmt.Errorf("parsing flags: %w", err)
+	}
+	switch v := corev1.PullPolicy(o.defaultImagePullPolicy); v {
+	case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
+	default:
+		err := fmt.Errorf("invalid --default-image-pull-policy %q: must be one of Always, IfNotPresent, Never", v)
+		// The caller's logger does not exist yet, so print the error the way
+		// the flag package prints its own parse errors.
+		_, _ = fmt.Fprintln(fs.Output(), err)
+		return runOptions{}, err
 	}
 	return o, nil
 }
@@ -261,6 +281,15 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts.zapOpts)))
 	setupLog := ctrl.Log.WithName("setup")
 	ctx := ctrl.SetupSignalHandler()
+
+	// Set before any controller exists: EffectivePullPolicy reads the default
+	// without a lock.
+	commonv1.SetDefaultPullPolicy(corev1.PullPolicy(opts.defaultImagePullPolicy))
+	pullPolicy := opts.defaultImagePullPolicy
+	if pullPolicy == "" {
+		pullPolicy = "unset"
+	}
+	setupLog.Info("default image pull policy", "policy", pullPolicy)
 
 	clustersNamespace := targetClustersNamespace(cfg, opts)
 
@@ -300,7 +329,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles); err != nil {
+		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles, opts.namespace); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}

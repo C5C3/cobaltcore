@@ -10,8 +10,8 @@
 #   R1  every line in releases/*/source-refs.yaml matches the source-refs regex
 #   R2  every <NAME>_VERSION="…" constant in hack/*.sh is matched by a
 #       customManager managerFilePatterns entry
-#   R3  every version: "…" literal in deploy/kind/base/*.yaml is matched by a
-#       customManager managerFilePatterns entry
+#   R3  every version: "…" literal in deploy/kind/base/*.yaml is claimed by a
+#       customManager managerFilePatterns entry or by the native flux manager
 #   R4  every customManager's managerFilePatterns match at least one tracked
 #       file (a manager matching nothing is dead), and some packageRules entry
 #       applies to it: its matchFileNames glob matches one of those files or
@@ -24,8 +24,12 @@
 #   R7  every <NAME>_VERSION pin that appears in BOTH the Makefile and the
 #       .github/workflows/ci.yaml env block carries the same value (the
 #       Makefile comment "Must be kept in sync" is enforced mechanically)
+#   R8  every HelmRelease chart version under deploy/flux-system/releases/ and
+#       deploy/kind/ has one owner, the flux manager or a customManager (the
+#       c5c3-charts releases are excluded by design), and is spelled x.y.z or
+#       >=…
 #
-# R4 and R6 read renovate.json with jq and are skipped without it. Defers
+# R4, R6 and R8 read renovate.json with jq and are skipped without it. Defers
 # JSON-shape validation to `renovate-config-validator`. Exit code 1 on [FAIL].
 
 set -euo pipefail
@@ -84,23 +88,70 @@ if [[ "${have_jq}" -eq 1 ]]; then
 else
   cm_files_raw=$(grep -oE '"/[^"]+/"' "${RENOVATE}" | tr -d '"' | sort -u)
 fi
-# Normalise regex form (/path/to/file\.ext$/ or /path/.*/file\.ext$/) into a bare,
-# anchored ERE we can match against absolute paths with grep -E.
-cm_files=$(echo "${cm_files_raw}" \
-  | sed -E 's|^/||; s|/$||; s|\$$||; s|\\\.|.|g')
+# normalise_patterns turns Renovate /regex/ file patterns (stdin, one per line,
+# /path/to/file\.ext$/ or /path/.*/file\.ext$/) into bare EREs; matches_any
+# re-anchors them with ^…$.
+normalise_patterns() { sed -E 's|^/||; s|/$||; s|^\^||; s|\$$||; s|\\\.|.|g'; }
+
+cm_files=$(echo "${cm_files_raw}" | normalise_patterns)
 info "customManager managerFilePatterns (raw): $(echo "${cm_files_raw}" | tr '\n' ',' | sed 's/,$//')"
 info "customManager managerFilePatterns (normalised): $(echo "${cm_files}" | tr '\n' ',' | sed 's/,$//')"
 
-# matches_cm returns 0 if the given path is claimed by any customManager file pattern.
-matches_cm() {
-  local path="$1" cmf
-  while IFS= read -r cmf; do
-    [[ -z "${cmf}" ]] && continue
-    if grep -qE "^${cmf}$" <<<"${path}"; then
+# matches_any returns 0 if the given path matches any pattern in the
+# newline-separated list of normalised file patterns. It matches with the
+# shell's own ERE engine rather than a grep fork per pattern: R2 and R8 call it
+# per file against every customManager pattern.
+matches_any() {
+  local path="$1" pat re
+  while IFS= read -r pat; do
+    [[ -z "${pat}" ]] && continue
+    re="^${pat}\$"
+    if [[ "${path}" =~ ${re} ]]; then
       return 0
     fi
-  done <<< "${cm_files}"
+  done <<< "$2"
   return 1
+}
+
+# matches_cm returns 0 if the given path is claimed by any customManager file pattern.
+matches_cm() {
+  matches_any "$1" "${cm_files}"
+}
+
+# The native flux manager reads every path its flux.managerFilePatterns match
+# (normalised like cm_files), except the files a flux packageRule with
+# enabled: false and no matchUpdateTypes lists in matchFileNames. Both lists
+# need jq; without it the flux manager claims nothing.
+FLUX_PATS=""
+FLUX_OFF=""
+if [[ "${have_jq}" -eq 1 ]]; then
+  FLUX_PATS=$(jq -r '.flux.managerFilePatterns[]?' "${RENOVATE}" | normalise_patterns)
+  FLUX_OFF=$(jq -r '.packageRules[]?
+    | select((.matchManagers // []) | index("flux"))
+    | select(.enabled == false and (has("matchUpdateTypes") | not))
+    | (.matchFileNames // [])[]' "${RENOVATE}")
+  info "flux managerFilePatterns (normalised): $(echo "${FLUX_PATS}" | tr '\n' ',' | sed 's/,$//')"
+fi
+
+# flux_claims returns 0 if the native flux manager reads the given path and no
+# flux packageRule switches it off.
+flux_claims() {
+  if grep -qxF -- "$1" <<<"${FLUX_OFF}"; then
+    return 1
+  fi
+  matches_any "$1" "${FLUX_PATS}"
+}
+
+# owners_of sets OWNERS to the managers that claim the given path: "a
+# customManager", "the flux manager", both joined by " and ", or "".
+owners_of() {
+  OWNERS=""
+  if matches_cm "$1"; then
+    OWNERS="a customManager"
+  fi
+  if flux_claims "$1"; then
+    OWNERS="${OWNERS:+${OWNERS} and }the flux manager"
+  fi
 }
 
 for f in hack/*.sh; do
@@ -135,10 +186,17 @@ hdr "R3: deploy/kind/base/*.yaml version: \"…\" literals are claimed"
 shopt -s nullglob
 for f in deploy/kind/base/*.yaml; do
   if grep -qE '^\s*-?\s*version:\s*"' "${f}"; then
-    if matches_cm "${f}"; then
-      pass "${f}: version literal claimed by a customManager"
+    owners_of "${f}"
+    # The flux manager reads chart versions from HelmReleases only: a literal
+    # in any other resource (flux-web.yaml's ResourceSet) needs a customManager.
+    if [[ "${OWNERS}" == "the flux manager" ]] \
+      && ! grep -qE '^kind: HelmRelease[[:space:]]*$' "${f}"; then
+      OWNERS=""
+    fi
+    if [[ -n "${OWNERS}" ]]; then
+      pass "${f}: version literal claimed by ${OWNERS}"
     else
-      fail "${f}: version literal not claimed by any customManager"
+      fail "${f}: version literal not claimed by any customManager or the flux manager"
     fi
   fi
 done
@@ -582,6 +640,66 @@ while IFS= read -r ci; do
     info "${name} pinned only in ci.yaml (${ci#*=}) — no Makefile counterpart to drift against"
   fi
 done <<< "${ci_pins}"
+
+# ---------------------------------------------------------------------------
+# R8 — every HelmRelease chart version has one owner
+# ---------------------------------------------------------------------------
+hdr "R8: every HelmRelease chart version has exactly one owner"
+if [[ "${have_jq}" -ne 1 ]]; then
+  info "R8 skipped (needs jq)"
+else
+  XYZ_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
+  r8_seen=0
+  hr_files=$(grep -rlE --include='*.yaml' '^kind: HelmRelease[[:space:]]*$' deploy/flux-system/releases deploy/kind 2>/dev/null | sort || true)
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    # One line per HelmRelease document: the first indented version: value with
+    # its quotes stripped, or <missing>. Any indentation and quoting is read, so
+    # a version Renovate cannot use is reported rather than skipped. A release
+    # on a chartRef (releases/openbao-operator.yaml) prints nothing.
+    vers=$(awk -v sq="'" '
+      function flush() {
+        if (kind == "HelmRelease" && !ref) print (ver == "" ? "<missing>" : ver)
+        kind = ""; ver = ""; ref = 0
+      }
+      /^---/ { flush(); next }
+      /^kind:/ { kind = $2 }
+      /^[[:space:]]+chartRef:/ { ref = 1 }
+      ver == "" && /^[[:space:]]+version:/ {
+        ver = $0
+        sub(/^[[:space:]]+version:[[:space:]]*/, "", ver)
+        sub(/[[:space:]]+#.*$/, "", ver)
+        gsub(/"/, "", ver)
+        gsub(sq, "", ver)
+        sub(/[[:space:]]+$/, "", ver)
+      }
+      END { flush() }
+    ' "${f}")
+    [[ -z "${vers}" ]] && continue
+    r8_seen=$((r8_seen + 1))
+    if grep -qE '^[[:space:]]+name: c5c3-charts[[:space:]]*$' "${f}"; then
+      info "${f}: ${vers} excluded by design (c5c3-charts)"
+      continue
+    fi
+    owners_of "${f}"
+    while IFS= read -r ver; do
+      if [[ "${ver}" == "<missing>" ]]; then
+        fail "${f}: a HelmRelease carries neither a chart version nor a chartRef"
+      elif [[ -z "${OWNERS}" ]]; then
+        fail "${f}: chart version ${ver} is unowned: no customManager reads the file and the flux manager does not claim it"
+      elif [[ "${OWNERS}" == *" and "* ]]; then
+        fail "${f}: chart version ${ver} claimed twice (${OWNERS}); list the file in the matchFileNames of the flux rule with enabled: false"
+      elif [[ ! "${ver}" =~ ${XYZ_RE} && "${ver}" != ">="* ]]; then
+        fail "${f}: chart version \"${ver}\" is neither x.y.z nor >=…; Renovate skips it as invalid-value on an OCI source"
+      else
+        pass "${f}: chart version ${ver} owned by ${OWNERS}"
+      fi
+    done <<< "${vers}"
+  done <<< "${hr_files}"
+  if [[ "${r8_seen}" -eq 0 ]]; then
+    info "R8: no HelmRelease chart versions found"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Inventory — Makefile and workflow tool pins (MEDIUM candidates when untracked)

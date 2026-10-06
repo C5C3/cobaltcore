@@ -64,7 +64,7 @@ func main() {
 					"link-local (cloud IMDS), multicast, and unspecified addresses stay blocked "+
 					"even when covered. Empty (default) keeps all non-public addresses blocked.")
 		},
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -85,6 +85,7 @@ func main() {
 				Scheme:                       mgr.GetScheme(),
 				Recorder:                     mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:            bootstrap.DetectOperatorNamespace(),
+				NamespaceScoped:              namespace != "",
 				MaxConcurrentReconciles:      maxConcurrentReconciles,
 				FederationMetadataAllowCIDRs: allowCIDRs,
 				Resolver:                     mcMgr,

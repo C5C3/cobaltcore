@@ -39,6 +39,12 @@
 # and the mounter is a prerequisite of the target cluster rather than
 # something this repository installs.
 #
+# One overlay outside kind builds on this one. deploy/lab/metal-stack/nfs, the
+# NFS stack of the metal-stack lab (#1196), takes this directory as its base,
+# and hack/deploy-infra.sh applies it under EXTERNAL_CLUSTER=true
+# WITH_NFS=true. A change here reaches the lab, and the risks that
+# nfs-server.yaml and release.yaml accept are accepted for the lab too.
+#
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

@@ -247,8 +247,8 @@ leaves out, so a CPU-only block gains a memory request and limit, and its pods
 roll once on the upgrade. To keep the pod spec unchanged, set that resource in
 the block before you upgrade.
 
-Jobs, CronJobs and the fixed-budget sidecars follow the same per-resource rule
-with their own figures:
+Jobs, CronJobs, the fixed-budget sidecars and the Neutron metadata agent follow
+the same per-resource rule with their own figures:
 
 | Container | Block | CPU request | Memory |
 | --- | --- | --- | --- |
@@ -256,6 +256,7 @@ with their own figures:
 | The OVN backup and Neutron `ovn-db-sync` pods | `spec.jobs.resources` of those CRs | `70m` | `256Mi` request, no limit (the working set grows with the logical model) |
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
+| The Neutron metadata agent and its `wait-for-chassis` init container | [`spec.resources` of the `NeutronMetadataAgent`](../neutron/neutron-metadata-agent-crd.md#memory-sizing) | `230m`, sized for a minute of 31 servers booting on the node | `2Gi` request and limit, sized for 32 networks on the node |
 
 The Job memory does not follow the service formula and stays pinned at
 `368Mi`. The sizing measurement's VPA recommender samples once a minute and
@@ -307,7 +308,7 @@ validating webhook is unavailable.
 | `spec.autoscaling.minReplicas` | Minimum: 1 | — |
 | `spec.autoscaling.targetCPUUtilization` | Minimum: 1 | — |
 | `spec.autoscaling.targetMemoryUtilization` | Minimum: 1 | — |
-| `spec.deployment.verticalAutoscaling.updateMode` | Enum: `Off`, `Initial`, `Recreate`, `Auto` | — |
+| `spec.deployment.verticalAutoscaling.updateMode` | Enum: `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate`, `Auto` | — |
 | `spec.deployment.verticalAutoscaling.minReplicas` | Minimum: 1 | — |
 | `spec.deployment.verticalAutoscaling.minAllowed`, `.maxAllowed` | MaxProperties: 2 | — |
 | `spec.uwsgi.processes` | Minimum: 1 | — |
@@ -438,12 +439,12 @@ CR created before is deleted.
 The operator owns the VPA's lifetime. What the VPA then does depends on the
 VPA components the cluster runs: the recommender computes the recommendation,
 the admission controller writes it into the requests of new pods, and the
-updater evicts running pods to apply it. A cluster that runs the recommender
-alone gets recommendations and no changed pod.
+updater evicts or resizes running pods to apply it. A cluster that runs the
+recommender alone gets recommendations and no changed pod.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `updateMode` | `string` | Yes | — | The VPA's `spec.updatePolicy.updateMode`. `Off` only recommends, `Initial` sets the requests when a pod is created, and `Recreate` and `Auto` also evict running pods to apply them. `Auto` behaves like `Recreate` in VPA 1.8 and is deprecated upstream. `InPlaceOrRecreate` and `InPlace` are not offered: both need feature gates on the VPA and the cluster. YAML reads a bare `Off` as a boolean, so write `updateMode: "Off"`. |
+| `updateMode` | `string` | Yes | — | The VPA's `spec.updatePolicy.updateMode`. `Off` only recommends, `Initial` sets the requests when a pod is created, and `Recreate` and `Auto` also evict running pods to apply them. `Auto` behaves like `Recreate` in VPA 1.8 and is deprecated upstream. `InPlaceOrRecreate` resizes a running pod and evicts it only when the resize fails. It is generally available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the feature gate `InPlacePodVerticalScaling` on. A cluster whose VPA CRD predates the mode refuses the VPA, and `VPAReady` reports `VPAError`. `InPlace` is not offered: it is alpha in VPA 1.8 behind a VPA feature gate. YAML reads a bare `Off` as a boolean, so write `updateMode: "Off"`. |
 | `minReplicas` | `*int32` | No | unset | The VPA's `spec.updatePolicy.minReplicas`: the updater evicts no pod while fewer replicas run. Minimum: 1. Unset, the updater's own default of 2 applies (see [One replica](#one-replica)). |
 | `minAllowed` | `corev1.ResourceList` | No | unset | The lower bound of the recommendation, `minAllowed` of the container policy. Only `cpu` and `memory`. |
 | `maxAllowed` | `corev1.ResourceList` | No | unset | The upper bound of the recommendation, `maxAllowed` of the container policy. Only `cpu` and `memory`, each at least the `minAllowed` of the same resource. |
@@ -491,7 +492,7 @@ VPA belongs on a component no HPA scales.
 | `VPANotRequired` | `True` | No workload opts in. A VPA the CR created before is deleted. |
 | `VPANotInstalled` | `False` | A workload opts in, but the cluster its children land on does not serve `autoscaling.k8s.io/v1` `VerticalPodAutoscaler`. The message names the workloads. Nothing is created or deleted, and every other sub-reconciler keeps running; the aggregate `Ready` stays `False` until the VPA is installed or the opt-in is removed. |
 | `CapabilityProbeFailed` | `False` | The target cluster the CR names could not be asked whether it serves the kind. The pass is retried. |
-| `VPAError` | `False` | Listing, applying or deleting a VPA failed. The message carries the error, and the pass is retried. |
+| `VPAError` | `False` | Listing, applying or deleting a VPA failed, for example on a cluster whose VPA CRD refuses the `updateMode` (`Unsupported value: "InPlaceOrRecreate"`). The message carries the error, and the pass is retried. |
 
 The operator asks the management cluster for the kind once, at startup. A VPA
 CRD installed after the operator started is seen after an operator restart;
@@ -508,7 +509,23 @@ The updater evicts a pod only while at least `minReplicas` replicas run, and
 its own default is 2. On the Minimal sizing profile every component runs one
 replica, so a VPA in `Recreate` or `Auto` mode only recommends until the block
 sets `minReplicas: 1`. With it, the updater evicts the only pod, and the
-component is down until its replacement is ready.
+component is down until its replacement is ready. The updater applies the same
+floor to an in-place resize in `InPlaceOrRecreate` mode unless it runs with
+`--in-place-skip-disruption-budget`, which is off by default
+([VPA 1.8.0 flags](https://github.com/kubernetes/autoscaler/blob/vertical-pod-autoscaler-1.8.0/vertical-pod-autoscaler/docs/flags.md)).
+
+A Gardener shoot runs its updater with `--min-replicas=1`, so there the floor
+does not hold a single replica. On the metal-stack lab the
+[lab autoscaling run](../infrastructure/infrastructure-manifests.md#lab-autoscaling)
+of 2026-10-05 showed this for the one Placement API pod of the Minimal profile.
+In `Off` mode the pod kept its request. In `Initial` mode the running pod kept
+its request, and its successor after a delete started with the recommendation
+as its CPU and memory request. In `Recreate` mode the updater evicted the pod
+within seconds, with and without `minReplicas: 1`, and the API had no ready
+pod for 11 to 12 seconds. In `InPlaceOrRecreate` mode with `minReplicas: 1` the
+updater resized the pod in place, with the same UID and no restart; without
+`minReplicas` the pod's request already lay inside the recommended range, so
+that case showed nothing.
 
 ### Example
 
@@ -1362,6 +1379,59 @@ name.
 | `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
 | `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2025.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
 | `digest` | `string` | No (exactly one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Pinning by digest disables release tracking/upgrades. |
+| `pullPolicy` | `corev1.PullPolicy` | No | `imagePullPolicy` of every container that runs this image. `Enum=Always;IfNotPresent;Never`, schema-only: a CRD older than the operator prunes the field before a webhook sees it, so no webhook twin exists. Empty resolves in the order below, and no webhook writes a default. |
+
+#### Pull policy resolution
+
+The operator resolves the pull policy of each container when it renders the
+workload, and the first match wins:
+
+1. `pullPolicy` on the image reference the container's image came from.
+2. The operator's process-wide default, the flag `--default-image-pull-policy`
+   (Helm value [`controller.defaultImagePullPolicy`](../backend/helm-values-schema.md#controller)),
+   unset by default.
+3. `IfNotPresent` for a digest, `Always` for a tag, `latest` included.
+
+Because the policy resolves at render time, a stored CR does not freeze the
+default of the operator release that admitted it. An image the operator
+resolves itself, such as an unset NovaCompute or OVN image or the OVN
+backup-shifter image, names no `pullPolicy` and takes levels 2 and 3. A
+container that runs another tag of the same repository, an upgrade phase Job
+or Nova's host discovery Job, takes the policy of `spec.image`.
+
+`Always` acts when a pod starts: kubelet asks the registry for the tag's
+manifest and starts the build it names. A running pod keeps its build until it
+restarts. While the registry is unreachable, a pod that starts with `Always`
+waits in `ImagePullBackOff` although the node holds the image, every CronJob
+run included. An installation whose nodes preload images under the published
+tag, or cannot always reach the registry, sets
+`controller.defaultImagePullPolicy: IfNotPresent`, as CI does.
+
+#### Upgrade behavior
+
+The first reconcile of an operator release that sets the pull policy changes
+every rendered pod template, because each container gains an explicit
+`imagePullPolicy`:
+
+- Every Deployment, StatefulSet and DaemonSet that runs a tag other than
+  `latest` rolls once, from `IfNotPresent`, the value the API server had
+  defaulted, to `Always`. A NovaCompute pool with `updateStrategy.type:
+  OnDelete` picks the policy up when its pods are deleted. A container that
+  runs a digest or `latest` causes no rollout, since the explicit value equals
+  the defaulted one.
+- Every Job gated by its pod template hash is deleted and re-run once, the path
+  a changed image takes: the `db-sync` Job of every database-backed service,
+  Keystone's `schema-check` and policy validation Jobs, and an upgrade phase or
+  Cinder volume-service removal Job that exists at that moment. This happens
+  whatever the resolved policy, because the hash covers the template the
+  operator renders. Jobs gated by an explicit key, Keystone's bootstrap Job and
+  OVN's maintenance Jobs, keep their template until their key changes.
+- From then on every pod start that runs a tag asks the registry for its
+  manifest.
+
+Changing `pullPolicy` on a CR later has the same effect on that CR's workloads
+and Jobs; changing the operator default has it on every CR that names no
+`pullPolicy`.
 
 ### DatabaseSpec
 
@@ -1684,7 +1754,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling target over a zero request | `spec.deployment.resources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` when no request is named | `field.Invalid` | A zero or negative request, or a zero or negative limit the API server would copy into the request, for the resource a set `targetCPUUtilization` or `targetMemoryUtilization` measures. The HPA divides the pods' usage by the sum of their containers' requests, so a zero request fails the metric or inflates it. A block that names neither passes, because the render-time default fills a positive request. Webhook-only: a `resource.Quantity` floor has no marker. |
 | Autoscaling target over a zero proxy request | `spec.federation.proxyResources.requests.<cpu\|memory>`, or `limits.<cpu\|memory>` | `field.Invalid` | The same rule for the federation proxy sidecar, which joins the API pod while `spec.federation` is set. |
 | Vertical autoscaling beside autoscaling | `spec.deployment.verticalAutoscaling` | `field.Forbidden` | `spec.autoscaling` and `spec.deployment.verticalAutoscaling` are both set (`cannot be set while spec.autoscaling scales the same Deployment`). Defense-in-depth alongside the CEL XValidation rule on the spec root. |
-| Vertical autoscaling update mode | `spec.deployment.verticalAutoscaling.updateMode` | `field.NotSupported` | A value other than `Off`, `Initial`, `Recreate` or `Auto`. Defense-in-depth alongside the `Enum` marker. |
+| Vertical autoscaling update mode | `spec.deployment.verticalAutoscaling.updateMode` | `field.NotSupported` | A value other than `Off`, `Initial`, `Recreate`, `InPlaceOrRecreate` or `Auto`. Defense-in-depth alongside the `Enum` marker. |
 | Vertical autoscaling minReplicas minimum | `spec.deployment.verticalAutoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set (`must be at least 1`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Vertical autoscaling resources | `spec.deployment.verticalAutoscaling.minAllowed[<key>]`, `.maxAllowed[<key>]` | `field.NotSupported` | A key other than `cpu` and `memory`. Defense-in-depth alongside the two CEL XValidation rules on `VerticalAutoscalingSpec`. |
 | Vertical autoscaling bounds | `spec.deployment.verticalAutoscaling.minAllowed[<key>]` | `field.Invalid` | `minAllowed` of a resource above `maxAllowed` of the same resource (`must not exceed maxAllowed`). Webhook-only: CEL cannot compare quantities across two maps. |
@@ -1885,6 +1955,7 @@ is pinned by a Chainsaw step.
 | `vertical-autoscaling-min-above-max-rejected` | `35-vertical-autoscaling-min-above-max.yaml` | `minAllowed` at most `maxAllowed` (webhook) | Error containing "spec.deployment.verticalAutoscaling.minAllowed[cpu]" and "must not exceed maxAllowed" |
 | `vertical-autoscaling-update-mode-rejected` | `36-vertical-autoscaling-update-mode.yaml` | `updateMode` Enum | Error containing "spec.deployment.verticalAutoscaling.updateMode" and "Unsupported value" |
 | `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
+| `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

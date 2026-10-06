@@ -109,6 +109,23 @@ spec:
                 - message: policy rule value must not be empty
                   rule: '!has(self.rules) || self.rules.all(k, size(self.rules[k])
                     > 0)'
+              imagePullPolicy:
+                description: |-
+                  ImagePullPolicy is projected into spec.image.pullPolicy of every service
+                  CR the ControlPlane creates and into Keystone's
+                  spec.federation.proxyImage.pullPolicy. A pullPolicy on a
+                  services.<service>.image or services.keystone.federationProxyImage
+                  override wins for that image. Empty leaves the child's field absent, so
+                  the child's operator resolves it: its --default-image-pull-policy, else
+                  IfNotPresent for a digest and Always for a tag. In External Keystone mode
+                  the field has no effect on Keystone, which has no child. A child CRD older
+                  than the c5c3-operator prunes the projected field without an error. The
+                  Enum is schema-only, for the reason ImageSpec.PullPolicy gives.
+                enum:
+                - Always
+                - IfNotPresent
+                - Never
+                type: string
               infrastructure:
                 description: |-
                   Infrastructure declares the shared backing services (database, cache)
@@ -1157,6 +1174,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -1952,6 +1981,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -2541,6 +2582,18 @@ spec:
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
                             type: string
                           repository:
                             description: |-
@@ -3220,6 +3273,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -3841,6 +3906,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -3939,6 +4016,18 @@ spec:
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
                             type: string
                           repository:
                             description: |-
@@ -4527,6 +4616,18 @@ spec:
                               set. A pinned digest closes the supply-chain gap where a mutable tag can be
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
                             type: string
                           repository:
                             description: |-
@@ -5212,6 +5313,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -5813,6 +5926,18 @@ spec:
                               re-pushed behind a stable name, at the cost of disabling release tracking.
                             pattern: ^sha256:[a-f0-9]{64}$
                             type: string
+                          pullPolicy:
+                            description: |-
+                              PullPolicy sets imagePullPolicy on every container that runs this image.
+                              Empty leaves the choice to the operator default and then to the rule:
+                              IfNotPresent for a digest, Always for a tag ("latest" included). The Enum
+                              is schema-only and has no webhook twin: a CRD older than the operator
+                              prunes the field before any webhook sees it, so a twin could never answer.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -6347,11 +6472,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -6923,11 +7054,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -7097,11 +7234,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -7373,11 +7516,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -7543,11 +7692,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -8103,11 +8258,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -8600,11 +8761,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -9038,11 +9205,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -9730,11 +9903,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -9978,11 +10157,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -10418,11 +10603,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -10629,11 +10820,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -10841,11 +11038,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -11127,11 +11330,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -11334,11 +11543,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:
@@ -11773,11 +11988,17 @@ spec:
                                 description: |-
                                   UpdateMode maps to the VPA's spec.updatePolicy.updateMode: Off only
                                   recommends, Initial sets requests at pod creation, Recreate and Auto
-                                  evict pods to apply them.
+                                  evict pods to apply them, and InPlaceOrRecreate resizes a running pod
+                                  and evicts it only when the resize fails. InPlaceOrRecreate is generally
+                                  available from VPA 1.6.0 and needs Kubernetes 1.33 or newer with the
+                                  feature gate InPlacePodVerticalScaling on. A cluster whose
+                                  VerticalPodAutoscaler CRD predates the mode refuses the VPA the operator
+                                  applies, and VPAReady turns False with reason VPAError.
                                 enum:
                                 - "Off"
                                 - Initial
                                 - Recreate
+                                - InPlaceOrRecreate
                                 - Auto
                                 type: string
                             required:

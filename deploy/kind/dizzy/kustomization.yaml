@@ -37,6 +37,12 @@
 # them). `WITH_DIZZY=true make deploy-infra` runs the staging
 # automatically; a raw `kustomize build deploy/kind/dizzy` on a fresh
 # checkout FAILS until stage-dashboards has run.
+#
+# One overlay outside kind builds on this one. deploy/lab/metal-stack/dizzy,
+# the dizzy stack of the metal-stack lab (#1225), takes this directory as its
+# base, and hack/deploy-infra.sh applies it under EXTERNAL_CLUSTER=true
+# WITH_DIZZY=true. A change here reaches the lab; only the Namespace label and
+# the VictoriaMetrics volume and Service differ there.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

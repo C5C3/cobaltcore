@@ -39,7 +39,7 @@ see [Target Clusters](../target-clusters.md).
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) pointer | no | `nil` | The RabbitMQ connection. Optional, because the agent opens no RPC and no notification connection of its own. It exists so a deployment can give the agent the same bus configuration the API pods carry: `config.init` calls `n_rpc.init` unconditionally, which parses oslo.messaging's default `rabbit://` URL without dialing it. When set, the agent gets the same `OS_DEFAULT__TRANSPORT_URL` override the API pods get, and the `[oslo_messaging_rabbit]` section is rendered |
 | `novaMetadata` | [`NovaMetadataSpec`](#novametadataspec) pointer | no | `nil` | The Nova metadata API the agent proxies to. A nil block renders none of its four keys and the oslo defaults apply, which is what an agent standing beside a control plane that runs no compute service wants |
 | `metadataWorkers` | `*int32` (Minimum=0) | no | operator-resolved `4` | Rendered as `[DEFAULT] metadata_workers`. In 2026.1 it sizes the thread pool the agent serves metadata requests from, and `0` serves them one at a time in the main process, which is upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread per request. The count does not follow the node's CPU count. The default is resolved when the config is rendered and never written into the CR |
-| `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 70m request and no limit, and a memory it names neither way gets 368Mi as both request and limit (see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
+| `resources` | `corev1.ResourceRequirements` | no | `{}` | Requests and limits for the init container and the agent container, applied to both. The operator never writes defaults into this field; it resolves them per resource when it renders the pod: a CPU the block names neither as request nor as limit gets a 230m request and no limit, and a memory it names neither way gets 2Gi as both request and limit, which fits 32 networks on the node (see [CPU sizing](#cpu-sizing), [Memory sizing](#memory-sizing) and the [resource defaults](../keystone/keystone-crd.md#resource-defaults)). A resource the block names is used as written, and anything else it sets is kept. A CR that names none still lands in the Burstable QoS class instead of BestEffort. Before the per-resource rule, the operator rendered a block that named anything as written, so a block that names only CPU gains a memory request and limit on the upgrade |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the agent DaemonSet (`{name}-metadata-agent`) into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `logging` | [`*LoggingSpec`](../keystone/keystone-crd.md#loggingspec) | no | `text` / `INFO` / `debug: false` | oslo.log derivation: `format` (`text` or `json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet, the config ConfigMaps and the transport-URL Secret are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. It has to name the same cluster the referenced `OVNChassis` names. The chassis's `OVNCentral` may project onto another cluster, which then has to publish its Southbound database with `externallyReachable` |
@@ -113,6 +113,55 @@ The CA bundle is not delivered. The ControlPlane names only the Gateway's
 `parentRef` and hostname and does not manage its certificate, so the deployment
 places the bundle in the agent's namespace, for example with trust-manager.
 
+### Memory sizing
+
+The `metadata-agent` container holds more than the agent process. The agent
+starts its privsep daemons beside itself, and for every network with a port
+bound on its node it starts one haproxy in the same container. Its working set
+grows with the networks on the node, so the figure a single-process service
+gets does not fit it.
+
+A CR that names no memory gets `2Gi` as request and limit, on the agent
+container and on the `wait-for-chassis` init container. The figure covers 32
+networks on the node.
+[Sizing Calibration](../testing/sizing-calibration.md#metadata-agent-memory)
+describes the measurement and the rule behind it. A node that binds more
+networks needs a larger memory value in `spec.resources`, set as request and
+as limit.
+
+An agent at its limit shows `OOMKilled` as the last state of the
+`metadata-agent` container. A restart does not help. The new process provisions
+every network of the node again and is killed at the same point, so the
+instances on that node get no metadata until the limit is raised.
+
+Upgrading the operator changes the pod template of every agent whose CR names
+no memory. The DaemonSet replaces its pods one node at a time, and each new pod
+needs `2Gi` of memory that no other pod on its node has requested. A LimitRange
+whose `max` memory lies below `2Gi` rejects the pods, and the DaemonSet reports
+`FailedCreate` events.
+
+### CPU sizing
+
+A CR that names no CPU gets a request of `230m` and no CPU limit, on the agent
+container and on the `wait-for-chassis` init container. The agent idles at 1 to
+2 millicores, also with 32 networks on its node. It works when a server boots
+there: it provisions the server's network and answers the metadata requests of
+the boot. On the metal-stack lab one boot on a new network took 11 seconds of
+CPU time, and the minute in which 31 servers booted on one node averaged
+`198m`. The request covers that minute with 15 % headroom.
+[Sizing Calibration](../testing/sizing-calibration.md#metadata-agent-cpu)
+describes the session and the rule behind the figure.
+
+The request is the share the agent gets while every CPU of its node is busy.
+Without a CPU limit a burst above it is not throttled; on a busy node it takes
+longer. The minute in which 32 servers of one node were hard-rebooted together
+averaged `357m`. A node on which that many servers start at once, as
+after a reboot of the host, can name a larger CPU request in `spec.resources`.
+
+Upgrading the operator changes the pod template of every agent whose CR names
+no CPU, so the DaemonSet replaces its pods one node at a time. A CR that names
+a CPU request or limit keeps it.
+
 ## Defaulting and validation
 
 The mutating webhook does three things. It materializes `spec.logging` and its
@@ -124,7 +173,9 @@ an empty `protocol` with `http`, an empty `sharedSecretRef.key` with
 keys.
 
 Three defaults are resolved at reconcile time and never written into the stored
-CR: the container resources fall back to the shared `DeploymentSpec` values, a
+CR: of the container resources, the CPU request and the memory fall back to the
+agent's own figures (see [CPU sizing](#cpu-sizing) and
+[Memory sizing](#memory-sizing)), a
 `spec.messaging.secretRef` without a `key` reads `transport_url`, and an unset
 `spec.metadataWorkers` renders `metadata_workers = 4` (`DefaultMetadataWorkers`).
 
@@ -249,12 +300,12 @@ metadata keys the API never writes. Six of its entries are refused in
 
 Every other entry in the registry is honored and reported: `[DEFAULT]`
 `state_path`, `debug`, `nova_metadata_host`, `nova_metadata_port`,
-`nova_metadata_protocol`, `auth_ca_cert` and `metadata_workers`, the
-`[oslo_messaging_notifications] driver`, the five `[oslo_messaging_rabbit]`
-keys, and `[oslo_concurrency] lock_path`. The broker keys are registered
-unconditionally although they render only while `spec.messaging` is set: the
-registry records that a key is not the user's to set, not that it is currently
-rendered.
+`nova_metadata_protocol`, `auth_ca_cert` and `metadata_workers`,
+`[agent] root_helper`, the `[oslo_messaging_notifications] driver`, the five
+`[oslo_messaging_rabbit]` keys, and `[oslo_concurrency] lock_path`. The broker
+keys are registered unconditionally although they render only while
+`spec.messaging` is set: the registry records that a key is not the user's to
+set, not that it is currently rendered.
 
 `nova_metadata_protocol` joined the registry with `spec.novaMetadata.protocol`.
 Before that `spec.extraConfig` was the only way to set it, so an agent that sets
@@ -278,6 +329,21 @@ value, because `extraConfig` is merged last, and reports
 `ExtraConfigHealthy=False` naming `[DEFAULT] metadata_workers`. Move the value to
 `spec.metadataWorkers` and drop the entry from `spec.extraConfig` to clear the
 condition.
+
+`[agent] root_helper` joined the registry with the operator default `env` and
+has no typed field. An agent whose `spec.extraConfig` sets no `root_helper` in
+`[agent]` gets a new config ConfigMap at the operator upgrade, and its
+DaemonSet rolls once on every node. An agent that carries `root_helper: env`
+there renders the same bytes and does not roll. It reports
+`ExtraConfigHealthy=False` with an `ExtraConfigOwnedKeyOverride` Warning event
+until the entry is removed from `spec.extraConfig`, and removing it does not
+roll the DaemonSet either. Any other value, for a custom image that needs
+another helper, is honored and reported the same way.
+
+Keep the `root_helper: env` entry until a rollback to an operator release
+without this default is ruled out. That release renders no `root_helper`, so
+the agent falls back to `sudo`, finds no `privsep-helper` and provisions no
+network. While the entry is set, a rollback still renders `root_helper = env`.
 
 ## Status
 
@@ -369,36 +435,64 @@ arriving on the node's own interfaces. Two host paths are mounted, both
 
 With `spec.novaMetadata.caBundleSecretRef` set, the agent container mounts the
 named Secret read-only at `/etc/nova-metadata-ca`, mode `0444`, projecting the
-configured key as `ca.crt`; the init container makes no https request and gets
-no mount. The path lies outside the read-only `/etc/neutron` config mount.
-Neutron opens the file on every proxied request and the volume has no
-`subPath`, so a rotated bundle reaches the running pods without a rollout.
+configured key as `ca.crt`. The init container sends no request to the Nova
+metadata API and does not get this mount. The path lies outside the read-only
+`/etc/neutron` config mount. Neutron opens the file on every proxied request
+and the volume has no `subPath`, so a rotated bundle reaches the running pods
+without a rollout.
 
 The agent container runs privileged and pinned to uid 0, with
 `runAsNonRoot: false`. It creates network namespaces, moves interfaces into them
 and starts a haproxy per network through privsep, which the Restricted profile
-denies and no named capability covers; privsep-helper is invoked through `sudo`,
-so the image's own unprivileged user does not work either. The pod-level security
-context carries the seccomp profile and nothing else: no `fsGroup`, because it
-would be applied to the host directories the pod mounts, where the ownership is
-the node's business. The `wait-for-chassis` init container runs under the
-Restricted profile.
+denies and no named capability covers. The operator renders
+`[agent] root_helper = env`, so the agent starts privsep-helper as the
+container's own user, and privsep-helper needs uid 0 for the capabilities it
+keeps. The image's own unprivileged user does not work either. The pod-level
+security context carries the seccomp profile and nothing else: no `fsGroup`,
+because it would be applied to the host directories the pod mounts, where the
+ownership is the node's business. The `wait-for-chassis` init container runs
+under the Restricted profile.
 
-That init container is the same-node gate. It polls the local database until the
-chassis has registered itself:
+That init container is the same-node gate. The agent reads
+`external_ids:system-id` from the local Open vSwitch database once, at start,
+and takes it as its chassis name. It then writes its registration into the
+`Chassis_Private` row of that name in the Southbound database and retries for
+as long as the row is missing, with its proxy socket open and the pod `Ready`.
+The chassis's `host-prepare` init container creates `/run/openvswitch/conf.db`
+only when the file is missing, so on a node whose database outlived an earlier
+OVNChassis the `system-id` is that chassis's old id until the new chassis's
+`apply-node` init container writes the new one. An agent started in between
+never registers, and the servers on its node get no metadata.
 
-```text
-until ovsdb-client --timeout=5 transact unix:/run/openvswitch/db.sock \
-  '["Open_vSwitch",{"op":"select","table":"Open_vSwitch","where":[],"columns":["external_ids"]}]' \
-  2>/dev/null | grep -q system-id; do sleep 2; done
-```
+The gate waits for the registration the agent depends on. Every 2 seconds it
+reads the local `system-id` again and decides:
 
-`external_ids:system-id` is what the chassis's own `apply-node` init container
-writes, and until that row exists the agent has no chassis to read port bindings
-for. Both workloads select the same nodes and nothing orders the two DaemonSets,
-so the gate is per node rather than per cluster. The query goes through
-`ovsdb-client` because the neutron image ships the OVS Python client without the
-`ovs-vsctl` binary.
+| State | Log line | Outcome |
+| --- | --- | --- |
+| No UUID-shaped `system-id` in the local database (socket missing, query failed, key absent, value not a UUID) | `waiting for the chassis to write its system-id into the local Open vSwitch database` | wait |
+| A `system-id` without a `Chassis_Private` row of that name (the id is stale, ovn-controller has not registered it yet, or the Southbound query failed) | `waiting for chassis <id> to register in the Southbound database` | wait |
+| A `system-id` and its `Chassis_Private` row | `chassis <id> is registered in the Southbound database` | exit 0 |
+
+On a reused database the gate waits in the second state on the old id and
+passes on the new one. It prints a message only when the message changes, so a
+pod held in `Init:0/1` logs the id it waits for without a line every 2 seconds.
+While a pod is held there, the DaemonSet step reports `DaemonSetReady=False`
+with reason `DaemonSetProgressing`. A Southbound fault that persists (a wrong
+address, an unreadable key, a rejected certificate) logs the same second line,
+because the gate discards the errors of its queries.
+
+The init container carries `OVN_SB_CONNECTION`, the Southbound address the
+agent's `[ovn] ovn_sb_connection` gets, and mounts the `ovn-tls` client Secret
+read-only at `/etc/ovn/tls` beside `/run/openvswitch`. It queries the
+Southbound database with `--no-leader-only`, as the agent's own connection
+does, so a leader election does not hold it. An empty `OVN_SB_CONNECTION` is a
+rendering fault no wait repairs: the gate prints `OVN_SB_CONNECTION is not set`
+on stderr and exits 1.
+
+Both workloads select the same nodes and nothing orders the two DaemonSets, so
+the gate is per node rather than per cluster. The queries go through
+`ovsdb-client` because the neutron image ships the OVS Python client without
+the `ovs-vsctl` binary.
 
 Readiness is the metadata proxy socket, tested with
 `test -S /var/lib/neutron/metadata_proxy` after a 5 s initial delay, every 5 s,

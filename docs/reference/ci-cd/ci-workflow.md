@@ -226,8 +226,10 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-autoscaling == 'true'
   e2e-ovn-overlay > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-ovn-overlay == 'true'
+  e2e-nova-libvirt > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-nova-libvirt == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]
+  cleanup-e2e-tags > needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
 
 Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
   build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
@@ -659,7 +661,7 @@ a new operator chart in that layout is validated without editing the job.
 | 2 — webhook disabled | `webhook.enabled=false` | Validates conditional exclusion of webhook resources |
 | 3 — external service account | `serviceAccount.create=false`, `serviceAccount.name=existing-sa` | Validates ServiceAccount conditional logic |
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
-| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
+| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator, c5c3-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
 | 6 — node placement | `priorityClassName=cobaltcore-platform`, `nodeSelector.role=platform`, one `tolerations` entry | Validates that the generated schema admits the placement keys and that they render |
 
 **Unit test suites (step 9):** the shared templates are tested once, in the
@@ -838,8 +840,12 @@ turns the `e2e-operators` output into `e2e-operator-legs`: one leg per
 operator, except `nova`, which becomes two legs with `shard: "1"` and
 `shard: "2"`. The publish jobs keep reading `e2e-operators`, so they still see
 `nova` once. The `imagePullPolicy: Never` Helm value ensures the
-kind-loaded image is used instead of attempting a registry pull. Timeout: 68
-minutes, 150 for each `nova` shard.
+kind-loaded image is used instead of attempting a registry pull. The service
+images the operator renders are loaded into kind under their published tag, so
+`hack/ci-deploy-operator.sh` also sets the operator's default image pull
+policy to `IfNotPresent` (`DEFAULT_IMAGE_PULL_POLICY`); without it a tag would
+resolve to `Always` and kubelet would pull the published image over the pull
+request's build. Timeout: 68 minutes, 150 for each `nova` shard.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
@@ -1158,6 +1164,56 @@ finishes.
 `hack/**`, `deploy/**`, `.github/actions/**`, `.github/workflows/ci.yaml`. Any Go
 code change and any E2E test-definition change also force the job on, through
 `go_changed` and `any_e2e_tests` in `ci-resolve-changes.sh`.
+
+### e2e-nova-libvirt
+
+Runs the `tests/e2e-nova-libvirt/server-boot/` Chainsaw suite, which boots a
+server through Nova's libvirt driver on the one node of a
+`hack/kind-config.yaml` cluster. The suite brings up the 2025.2 stack of
+`tests/e2e/nova/compute-node-pool/` from that suite's own fixtures, starts
+libvirtd in the DaemonSet `libvirt-e2e` and applies a `NovaCompute` pool with
+`virtType: qemu`. The server boots from the stack's 1 MiB zero image under
+QEMU's TCG emulation, which needs no `/dev/kvm` on the runner. The suite
+asserts that the pool is `Ready` with its node `Active` and the compute service
+up, that the rendered `compute-pool.conf` names `libvirt.LibvirtDriver` and
+`virt_type = qemu`, and that the server goes `ACTIVE` with exactly one running
+domain of type `qemu`. The domain's disk is a qcow2 overlay on a base file
+under `/var/lib/nova/instances/_base/`. Deleting the server removes the domain
+and the instance directory. The guest has no operating system and no NIC: the
+guest boot, KVM, networking and live migration are proven by the lab run of
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md).
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-nova-libvirt == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+The job runs on `self-hosted` with `continue-on-error: true` under the
+kernel-module rule above: the pool's chassis gate needs an `OVNChassis` on the
+node, and that needs `openvswitch` on the runner host. It runs alone on its
+runner, since `hack/kind-config.yaml` binds host ports 443 and 8428, and its
+wall is 90 minutes. The cluster comes from `config: hack/kind-config.yaml`, and
+`setup-e2e-infra` receives `WITH_OVN_KERNEL_MODULES: "true"` and
+`WITH_MESSAGING: "true"`. `hack/ci-deploy-operator.sh` then installs the
+keystone, placement, glance, ovn, neutron and nova operators in that order,
+each into `<op>-system`, and the suite runs through `make e2e-nova-libvirt`,
+the target a developer calls locally.
+
+The job loads 14 images: the six operators at `:dev`, `keystone`, `placement`,
+`glance`, `neutron`, `nova` and `nova-compute` at `2025.2`, the OVN daemon image
+at the tag `hack/ci-resolve-ovn-version.sh` reads, and `tempest:2025.2`, whose
+`openstack` client the suite's Jobs run. It loads no libvirt image: the image
+is not in the E2E image map, and the kind node pulls the public
+`ghcr.io/c5c3/libvirt:latest` that `main` published. Diagnostics run with
+`OPERATOR: nova` and then once per sibling with `OPERATOR_ONLY=1`, and
+`_output/reports/` is uploaded as the `e2e-nova-libvirt-junit-report` artifact
+(14-day retention). `cleanup-e2e-tags` lists the job in its `needs`.
+
+**Path filter:** `tests/e2e-nova-libvirt/**`,
+`tests/e2e/nova/compute-node-pool/**` and `tests/e2e/cinder/broker-vhost.sh`
+(the `tests_nova_libvirt` class), `operators/nova/**` (`nova`), and
+`images/nova/**`, `images/nova-compute/**` and `patches/nova/**`
+(`image_nova`). A shared Go change does not schedule the job, and `ci:full`
+forces it on.
 
 ### e2e-prometheus
 
@@ -1562,14 +1618,19 @@ matrix over the E2E target packages after every consumer that might still pull
 the images has finished. The `always() && needs.build-e2e-images.result ==
 'success'` condition means the cleanup runs on success, failure, cancelled, or
 skipped consumer outcomes — but only when `build-e2e-images` actually pushed
-something.
+something. A job that uses the `load-e2e-images` action and is missing from
+`needs` races the deletion, and on a run that skips every listed consumer its
+pull fails with `manifest unknown`. `tests/unit/ci/cleanup_e2e_tags_needs_test.sh`
+fails for every such job.
 
 The package list is the `cleanup-e2e-packages` output of the `changes` job,
 derived by `hack/ci-generate-cleanup-matrix.sh` from `images/` and `operators/`.
 It was a hardcoded list until `keystone-federation-proxy` was left out of it and
 accumulated 352 stale tags. A package whose image this run reused rather than built
 carries no run-scoped tag, so the narrowed plan finds no candidate there and deletes
-nothing.
+nothing. A package GHCR does not know yet, the case for a new `images/<name>/`
+directory until its first publish from `main`, is reported as a warning and the
+leg exits 0. A full sweep still fails on an unknown package.
 
 Deletion runs through `hack/ghcr-prune-stale-versions.py` in
 `--only-tag-pattern` mode, scoped to `^e2e-${run_id}-`. That mode only considers
@@ -1579,7 +1640,9 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane,
+e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster,
+e2e-ovn-overlay, e2e-nova-libvirt, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
@@ -1799,10 +1862,17 @@ deploying the operator via Helm with the specified container image.
 | `OPERATOR` | Yes | - | Operator name (e.g. `keystone`) |
 | `IMAGE_REPO` | Yes | - | Full image repository (e.g. `ghcr.io/c5c3/keystone-operator`) |
 | `IMAGE_TAG` | No | `dev` | Image tag |
+| `DEFAULT_IMAGE_PULL_POLICY` | No | `IfNotPresent` | The operator's default image pull policy (`Always`, `IfNotPresent` or `Never`), passed as `--set controller.defaultImagePullPolicy=<value>`. Any other value exits 1 with an `::error::` line before anything is applied. |
 
 The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
 CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
-kind-loaded images). Server-side apply keeps the CRD out of the 262,144-byte
+kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
+workloads run the service images CI loaded into kind under the published tag.
+The script passes `controller.defaultImagePullPolicy` only when the chart's
+`values.schema.json` names it: a released chart installed through `CHART_DIR`
+that predates the value rejects the unknown key, and its operator sets no pull
+policy anyway. The banner line `Image pull policy` shows the value, or
+`<chart has no such value>`. Server-side apply keeps the CRD out of the 262,144-byte
 `last-applied-configuration` annotation that client-side apply writes, which the Nova and
 Cinder CRDs exceed.
 
@@ -2378,7 +2448,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest`, `e2e-controlplane` jobs | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
-| `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing` | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement) |
+| `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing`, and by hand in the [lab measurement](../testing/sizing-calibration.md#lab-measurement) | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement); its `prepare` subcommand removes the MariaDB scale subresource on the lab, which refuses `WITH_VPA=true` |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |

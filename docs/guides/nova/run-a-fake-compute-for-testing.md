@@ -27,8 +27,8 @@ This guide is written against the **[Quick Start (ControlPlane)](../../quick-sta
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through the `nova` block of Step 3 and the
-**Boot a first server** catalog and service checks in Step 6, so the projected
+Follow that tutorial through the `nova` block of Step 4 and the
+**Boot a first server** catalog and service checks in Step 7, so the projected
 `controlplane-nova` child is `Ready` in `openstack` and the `OS_*` variables of
 the token-issue step are exported. Every resource name in the examples below is
 one that devstack produces.

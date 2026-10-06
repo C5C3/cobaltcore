@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the kind-only NFS stack (deploy/kind/nfs/), installed
-# by `WITH_NFS=true make deploy-infra`.
+# Chainsaw E2E test for the NFS stack (deploy/kind/nfs/), installed by
+# `WITH_NFS=true make deploy-infra`. The metal-stack lab's overlay
+# (deploy/lab/metal-stack/nfs/) applies the same Deployment under
+# EXTERNAL_CLUSTER=true, and the suite runs against the lab by hand; it names
+# no storage class, no node and nothing that only kind has.
 #
 # What it proves (the cluster-side half of #979 D3): both exports of the
 # in-cluster NFS server mount through csi-driver-nfs into a Pod that runs
@@ -95,7 +98,8 @@ spec:
           # ── Presence gate ────────────────────────────────────────────────
           # deploy/kind/nfs/nfs-server.yaml is the only producer of this
           # Deployment, and it is applied inside the WITH_NFS=true gate of
-          # hack/deploy-infra.sh.
+          # hack/deploy-infra.sh, on kind directly and on the lab through
+          # deploy/lab/metal-stack/nfs/.
           #
           # `kubectl get ... >/dev/null 2>&1` must NOT stand in for this gate:
           # kubectl exits 1 both for NotFound and for a lookup that never
@@ -144,6 +148,27 @@ spec:
             exit 1
           fi
           echo "OK: Deployment/nfs-server is rolled out"
+
+          # Ganesha takes the first mount of a device it finds in the pod's
+          # mount table as that device's filesystem, and the export's file
+          # handles carry its id. On kind the claim sits on the node's own
+          # disk, the device behind /etc/hosts in the pod as well, and the
+          # runtime mounts shorter paths first. This line is what shows that
+          # the export got /exports. A failure here means that assumption is
+          # wrong, which is a decision on the claim layout, not a retry.
+          LOG_ERR="$(mktemp)"
+          if ! SERVER_LOG="$(kubectl logs -n openstack deployment/nfs-server -c nfs-server 2>"${LOG_ERR}")"; then
+            echo "FAIL: cannot read the nfs-server log: $(cat "${LOG_ERR}")"
+            rm -f "${LOG_ERR}"
+            exit 1
+          fi
+          rm -f "${LOG_ERR}"
+          if ! grep -qF 'Root fs for export /exports is /exports' <<<"${SERVER_LOG}"; then
+            echo "FAIL: ganesha did not take /exports as the filesystem of its export"
+            grep -F 'FSAL' <<<"${SERVER_LOG}" || true
+            exit 1
+          fi
+          echo "OK: ganesha took /exports as the filesystem of its export"
 
           # A Service with no EndpointSlice address answers nothing on 2049,
           # and the mount below would fail with a timeout that names no cause.
@@ -312,9 +337,9 @@ spec:
               - name: probe
                 # The pinned reference deploy/kind/nfs/nfs-server.yaml already
                 # uses, so this suite adds no second image and the node has it
-                # cached from the server rollout. Alpine, so busybox provides
-                # sh, grep, stat and umask.
-                image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+                # cached from the server rollout. Fedora, so its coreutils and
+                # grep provide sh, grep, stat and umask.
+                image: ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5@sha256:9ac92d14019a82be4355bf7956fdc557db1219e95976d1174ef23a5f544c11e6
                 securityContext:
                   allowPrivilegeEscalation: false
                   capabilities:

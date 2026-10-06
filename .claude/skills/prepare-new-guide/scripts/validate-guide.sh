@@ -11,7 +11,9 @@
 #       "example names no tutorial produces" judgment is prose-level and
 #       belongs to the SKILL.md checklist
 #   V2  devstack link and WITH_CONTROLPLANE=true flag agree inside the
-#       '::: info Devstack' container
+#       '::: info Devstack' container (the ControlPlane and metal-stack
+#       devstacks both bring up a ControlPlane), and a metal-stack link and
+#       EXTERNAL_CLUSTER=true imply each other
 #   V3  a bash fence running 'helm upgrade'/'helm install' against the
 #       published operator chart (oci://ghcr.io/c5c3/charts/) requires the
 #       guide to frame Flux ownership (a 'HelmRelease' mention)
@@ -113,21 +115,29 @@ check_guide() {
   fi
 
   # V2 — devstack link and bring-up flag agree (guide-conventions.md "One
-  # devstack per guide"): the ControlPlane devstack link and the
-  # WITH_CONTROLPLANE=true flag imply each other.
-  local container links_cp=0 has_flag=0
+  # devstack per guide"): a ControlPlane or metal-stack devstack link and the
+  # WITH_CONTROLPLANE=true flag imply each other; a metal-stack link and
+  # EXTERNAL_CLUSTER=true do too, since that flag alone decides between a new
+  # kind cluster and the current kubeconfig context.
+  local container links_cp=0 links_ms=0 has_flag=0 has_ext=0
   container="$(devstack_container "${file}")"
   if [[ -z "${container}" ]]; then
     info "V2 ${file}: no '::: info Devstack' container — structure is owned by ${GATE} (run --full)"
   else
-    grep -qE '\]\((\.\./)+quick-start-controlplane\.md' <<<"${container}" && links_cp=1
+    grep -qE '\]\((\.\./)+quick-start-(controlplane|metal-stack)\.md' <<<"${container}" && links_cp=1
+    grep -qE '\]\((\.\./)+quick-start-metal-stack\.md' <<<"${container}" && links_ms=1
     grep -qF 'WITH_CONTROLPLANE=true' <<<"${container}" && has_flag=1
+    grep -qF 'EXTERNAL_CLUSTER=true' <<<"${container}" && has_ext=1
     if [[ "${links_cp}" -eq 1 && "${has_flag}" -eq 0 ]]; then
-      fail "V2 ${file}: devstack links quick-start-controlplane.md but the bring-up command lacks WITH_CONTROLPLANE=true"
+      fail "V2 ${file}: devstack links quick-start-controlplane.md or quick-start-metal-stack.md but the bring-up command lacks WITH_CONTROLPLANE=true"
     elif [[ "${links_cp}" -eq 0 && "${has_flag}" -eq 1 ]]; then
-      fail "V2 ${file}: bring-up command names WITH_CONTROLPLANE=true but the devstack link is not quick-start-controlplane.md"
+      fail "V2 ${file}: bring-up command names WITH_CONTROLPLANE=true but the devstack link is neither quick-start-controlplane.md nor quick-start-metal-stack.md"
+    elif [[ "${links_ms}" -eq 1 && "${has_ext}" -eq 0 ]]; then
+      fail "V2 ${file}: devstack links quick-start-metal-stack.md but the bring-up command lacks EXTERNAL_CLUSTER=true"
+    elif [[ "${links_ms}" -eq 0 && "${has_ext}" -eq 1 ]]; then
+      fail "V2 ${file}: bring-up command names EXTERNAL_CLUSTER=true but the devstack link is not quick-start-metal-stack.md"
     else
-      pass "V2 ${file}: devstack link and WITH_CONTROLPLANE flag agree"
+      pass "V2 ${file}: devstack link and the WITH_CONTROLPLANE and EXTERNAL_CLUSTER flags agree"
     fi
   fi
 

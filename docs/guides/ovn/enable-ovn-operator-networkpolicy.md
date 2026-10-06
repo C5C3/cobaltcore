@@ -35,7 +35,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to the **Create a first network** check in its
-Step 6, so the ovn-operator is running (namespace `ovn-system`) alongside the
+Step 7, so the ovn-operator is running (namespace `ovn-system`) alongside the
 `controlplane-ovn` central it reconciles.
 :::
 

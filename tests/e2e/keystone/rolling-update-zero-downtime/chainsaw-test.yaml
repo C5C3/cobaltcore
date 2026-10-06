@@ -198,10 +198,12 @@ spec:
           EOF
           # Wait for the load-generator pod to reach Running before kicking off
           # the rollout, so the full 60 s window spans the rollout (and not a
-          # pod-pull delay).
-          kubectl -n openstack wait --for=condition=Ready pod \
-            -l app.kubernetes.io/name=keystone-rolling-update-loadgen \
-            --timeout=45s
+          # pod-pull delay). Wait on the Job's ready count, not on the pod by
+          # label: right after the apply the Job controller may not have
+          # created the pod yet, and `kubectl wait` on a selector that matches
+          # nothing exits at once with "no matching resources found".
+          kubectl -n openstack wait --for=jsonpath='{.status.ready}'=1 \
+            job/keystone-rolling-update-loadgen --timeout=45s
   # ── Step 4: Patch image tag to trigger the rolling update ────────────────
   - name: patch-image-tag
     try:

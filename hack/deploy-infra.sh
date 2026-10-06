@@ -123,9 +123,12 @@ NODE_NOFILE_LIMIT="${NODE_NOFILE_LIMIT-1048576}"
 # it — delete the old stack once the new one serves.
 ALLOW_PRE_RELOCATION="${ALLOW_PRE_RELOCATION:-false}"
 
-# Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
-# host-side kernel-module load. Defaults to false so the kind Quick Start
-# stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
+# Gates the opt-in Chaos Mesh overlay, the chaos-mesh/ of OVERLAY_ROOT: in kind
+# mode deploy/kind/chaos-mesh and the host-side kernel-module load, under
+# EXTERNAL_CLUSTER=true the overlay's chaos-mesh/, whose DaemonSet
+# chaos-mesh-modules loads the modules on the nodes. Defaults to false so the
+# kind Quick Start stays minimal; set WITH_CHAOS_MESH=true to enable
+# chaos-engineering tests
 WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 
 # Gates the host-side load of the kernel modules the OVN chassis suites need
@@ -135,10 +138,13 @@ WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 # sudo; set WITH_OVN_KERNEL_MODULES=true on a host that runs those suites.
 WITH_OVN_KERNEL_MODULES="${WITH_OVN_KERNEL_MODULES:-false}"
 
-# Gates the opt-in kube-prometheus-stack kind overlay (deploy/kind/prometheus)
-# which installs Prometheus + Grafana for visualising keystone-operator
-# metrics. Defaults to false so the kind Quick Start stays minimal; set
-# WITH_PROMETHEUS=true to install the monitoring stack.
+# Gates the opt-in kube-prometheus-stack overlay, the prometheus/ of
+# OVERLAY_ROOT, which installs Prometheus + Grafana for visualising the
+# operators' metrics: in kind mode deploy/kind/prometheus, under
+# EXTERNAL_CLUSTER=true the overlay's prometheus/, which keeps the metrics on a
+# volume and leaves the Namespace monitoring to the base. Defaults to false so
+# the kind Quick Start stays minimal; set WITH_PROMETHEUS=true to install the
+# monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
 # Gates the opt-in metrics-server kind overlay (deploy/kind/metrics-server)
@@ -157,18 +163,23 @@ WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 WITH_VPA="${WITH_VPA:-false}"
 if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
 
-# Gates the opt-in dizzy kind overlay (deploy/kind/dizzy) which installs
-# VictoriaMetrics + Grafana for dizzy load/chaos runs. Defaults to false so the
-# kind Quick Start stays minimal; set WITH_DIZZY=true to install.
+# Gates the opt-in dizzy overlay, the dizzy/ of OVERLAY_ROOT, which installs
+# VictoriaMetrics + Grafana for dizzy load/chaos runs: in kind mode
+# deploy/kind/dizzy, under EXTERNAL_CLUSTER=true the overlay's dizzy/, which
+# keeps the metrics on a volume behind a ClusterIP Service. Defaults to false so
+# the kind Quick Start stays minimal; set WITH_DIZZY=true to install.
 WITH_DIZZY="${WITH_DIZZY:-false}"
 
-# Gates the opt-in NFS kind overlay (deploy/kind/nfs): the NFS server in
-# `openstack` plus the csi-driver-nfs mounter in `kube-system`. It also gates
-# the host-side load of the modules that stack needs, `nfsd` for the
-# in-cluster server and `nfs` plus `nfsv4` for the csi-driver-nfs node plugin.
-# Defaults to false so the kind Quick Start stays minimal and needs no sudo;
-# set WITH_NFS=true to install it. The server image is amd64 only and runs
-# privileged, so the stack stays opt-in.
+# Gates the opt-in NFS storage stack: the NFS server in `openstack` plus the
+# csi-driver-nfs mounter in `kube-system`. In kind mode it applies
+# deploy/kind/nfs and gates the host-side load of the modules that stack needs,
+# `nfs` plus `nfsv4` for the csi-driver-nfs node plugin; the server,
+# NFS-Ganesha, runs in userspace and needs none. Under EXTERNAL_CLUSTER=true it
+# applies the overlay's nfs/ instead, whose pods load those modules on the
+# nodes, and loads nothing on the machine that runs this script. Defaults to
+# false so the kind Quick Start stays minimal and needs no sudo; set
+# WITH_NFS=true to install it. The server runs privileged, so the stack stays
+# opt-in.
 WITH_NFS="${WITH_NFS:-false}"
 
 # Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
@@ -264,7 +275,8 @@ WITH_CONTROLPLANE="${WITH_CONTROLPLANE:-false}"
 # the bundled ControlPlane CR (deploy/kind/controlplane) automatically — the old
 # all-in-one behaviour, kept for demos and automation. Defaults to false so the
 # Quick Start's manual `kubectl apply` step is the norm. Ignored unless
-# WITH_CONTROLPLANE=true.
+# WITH_CONTROLPLANE=true. Refused in preflight_checks under INFRA_ONLY=true,
+# whose cluster runs no operator to admit the CR.
 WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
 
 # Name of the ControlPlane CR brought up under WITH_CONTROLPLANE=true. The
@@ -330,20 +342,53 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # Selects the external-cluster mode: deploy onto whatever cluster the current
 # kubeconfig context points at (KUBECONFIG or ~/.kube/config, as kubectl
 # resolves it) instead of a kind cluster this script creates. The script never
-# switches contexts. Docker and kind are not needed; the kind-bound opt-ins
-# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_CHAOS_MESH,
-# WITH_OVN_KERNEL_MODULES, WITH_NFS, WITH_DIZZY) are refused in preflight_checks,
-# the cluster is checked for a default StorageClass, no node-local-dns and a
-# Ready node before anything is applied (check_external_cluster), and the
-# Gateway is reached with `kubectl port-forward` on 8443. Defaults to false; any
-# value other than `true` keeps the kind mode.
+# switches contexts. Docker and kind are not needed; the four kind-bound opt-ins
+# (WITH_VPA, WITH_METRICS_SERVER, WITH_REGISTRY_CACHE, WITH_OVN_KERNEL_MODULES)
+# are refused in preflight_checks, WITH_NFS=true is accepted only for an overlay
+# with an nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
+# chaos-mesh/ kustomization, WITH_DIZZY=true only for one with a dizzy/
+# kustomization and WITH_PROMETHEUS=true only for one with a prometheus/
+# kustomization; the cluster is checked for a default
+# StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
+# foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
+# the Cinder backends of the overlay's ControlPlane mount, before anything is
+# applied (check_external_cluster), and the Gateway is reached with `kubectl
+# port-forward` on 8443. Defaults to false; any value other than `true` keeps
+# the kind mode.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The overlay root the external-cluster mode applies: its base/ in Step 3 and its
 # infrastructure/ in Step 5, in place of deploy/kind/base and
 # deploy/kind/infrastructure. A relative path resolves against REPO_ROOT. The
 # default is the metal-stack lab overlay; a later lab adds a sibling directory
-# and sets this. Read only under EXTERNAL_CLUSTER=true.
+# and sets this. An overlay may also carry a controlplane/ kustomization, which
+# this script never applies and the WITH_CONTROLPLANE=true completion hint
+# names. Preflight renders it to check that its one ControlPlane is
+# openstack/CONTROLPLANE_NAME and, unless WITH_NFS=true, puts no Cinder backend
+# on the in-cluster NFS server nfs-server.openstack; without WITH_NFS=true
+# Step 1 also checks the cluster for the NFS CSI driver the other NFS backends
+# mount. An overlay may carry an nfs/ kustomization too, which Step 3 applies
+# under WITH_NFS=true in place of deploy/kind/nfs. It has to render the
+# Deployment nfs-server and the DaemonSet nfs-client-modules in openstack and
+# the HelmRelease csi-driver-nfs in kube-system, the three names this script
+# waits for. Beside it nfs/ may ship client-policy.yaml, a NetworkPolicy
+# template outside the kustomization: Step 3 applies it before nfs/, with the
+# node network Step 1 read from Gardener's ConfigMap kube-system/shoot-info in
+# place of its placeholder NODE_NETWORK. An overlay may carry a chaos-mesh/
+# kustomization as well, which Step 3 applies under WITH_CHAOS_MESH=true in
+# place of deploy/kind/chaos-mesh. It has to render the DaemonSet
+# chaos-mesh-modules and the HelmRelease chaos-mesh in chaos-mesh, the two
+# names this script waits for. An overlay may carry a dizzy/ kustomization too,
+# which Step 3 applies under WITH_DIZZY=true in place of deploy/kind/dizzy. It
+# has to render the HelmReleases dizzy-victoria-metrics and dizzy-grafana in
+# dizzy, the two names this script waits for and make teardown-infra deletes,
+# and it takes its dashboards from deploy/kind/dizzy/dashboards/, which Step 3
+# stages. An overlay may carry a prometheus/ kustomization as well, which Step 3
+# applies under WITH_PROMETHEUS=true in place of deploy/kind/prometheus. It has
+# to render the HelmRelease kube-prometheus-stack in monitoring, the name this
+# script waits for and make teardown-infra deletes, and it takes the Keystone
+# dashboard from deploy/kind/prometheus/keystone-operator.json, which Step 3
+# stages. Read only under EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -387,13 +432,13 @@ GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs
 # through the release's plain CRD asset — see the CRD-ownership decision in
 # deploy/kind/base/envoy-gateway.yaml. Keep the pin inside the chart's SemVer
 # range there; Renovate bumps both through the same envoy-gateway group.
-ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.1}"
+ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.2}"
 ENVOY_GATEWAY_CRDS_URL="${ENVOY_GATEWAY_CRDS_URL:-https://github.com/envoyproxy/gateway/releases/download/${ENVOY_GATEWAY_VERSION}/envoy-gateway-crds.yaml}"
 
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
 # Kept as a script-local constant so Renovate can bump it
 # via renovate.json custom managers.
-FLUX_OPERATOR_VERSION="v0.60.0"
+FLUX_OPERATOR_VERSION="v0.61.0"
 
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
@@ -419,6 +464,28 @@ SECRET_NAME="openbao-init-keys"
 # ---------------------------------------------------------------------------
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"
+}
+
+# ---------------------------------------------------------------------------
+# require_mikefarah_yq — Exit 1 unless the yq on PATH is mikefarah/yq v4.40.1
+# or newer.
+#
+# The probe uses what this script needs of it: strenv, the -r shorthand
+# (v4.25.3) and tonumber (v4.40.1). An older v4 lacks the latter two, and Debian
+# and PyPI ship a jq wrapper under the same name that knows neither strenv nor
+# `yq -i`. Either would fail at the first expression that uses one, after the
+# cluster and part of the stack already exist. Call it once `yq` is known to be
+# on PATH.
+# ---------------------------------------------------------------------------
+require_mikefarah_yq() {
+  if [[ "$(YQ_PROBE=1 yq -n -r 'strenv(YQ_PROBE) | tonumber' 2>/dev/null)" == "1" ]]; then
+    return 0
+  fi
+  local yq_version
+  yq_version="$(yq --version 2>&1)" || true
+  log "ERROR: 'yq' on PATH is not mikefarah/yq v4.40.1 or newer (yq --version: ${yq_version%%$'\n'*})."
+  log "       Install a current release from https://github.com/mikefarah/yq; the yq package of Debian and PyPI is a jq wrapper with another expression language."
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -474,16 +541,16 @@ wait_for_helmreleases() {
         continue
       fi
 
-      local ready_status
-      ready_status=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-        | jq -r '.status.conditions[]? | select(.type == "Ready") | .status' 2>/dev/null) || true
+      # One GET per release and poll: the status, reason and message below are
+      # read from the same object.
+      local hr_json ready_status
+      hr_json=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null) || true
+      ready_status=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .status' <<<"${hr_json}" 2>/dev/null) || true
 
       if [[ "${ready_status}" != "True" ]]; then
         local reason message
-        reason=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-          | jq -r '.status.conditions[]? | select(.type == "Ready") | .reason // "Pending"' 2>/dev/null) || true
-        message=$(kubectl get helmrelease "${release}" -n "${ns}" -o json 2>/dev/null \
-          | jq -r '.status.conditions[]? | select(.type == "Ready") | .message // ""' 2>/dev/null) || true
+        reason=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .reason // "Pending"' <<<"${hr_json}" 2>/dev/null) || true
+        message=$(jq -r '.status.conditions[]? | select(.type == "Ready") | .message // ""' <<<"${hr_json}" 2>/dev/null) || true
         log "  HelmRelease '${release}' in namespace '${ns}' is not Ready yet (reason: ${reason:-Pending})."
         if [[ -n "${message}" ]]; then
           log "    ${message}"
@@ -509,21 +576,49 @@ wait_for_helmreleases() {
 }
 
 # ---------------------------------------------------------------------------
+# dump_pod_logs — Print the logs of every pod in a namespace, for the
+# diagnostics of a wait that timed out.
+#
+# `--since=10m` keeps the dump focused on the most recent failure window. On
+# long-running timeouts the default --tail=200 may already have rolled past
+# the relevant crash frame; the time filter bounds the output to a
+# meaningful post-mortem window.
+#
+# Arguments:
+#   $1 — namespace
+# ---------------------------------------------------------------------------
+dump_pod_logs() {
+  local ns="$1" pods pod
+  log "${ns} pod logs (last 10m, tail 200):"
+  pods=$(kubectl get pods -n "${ns}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+  for pod in ${pods}; do
+    log "--- logs for pod ${pod} ---"
+    kubectl logs "${pod}" -n "${ns}" --all-containers=true --since=10m --tail=200 2>/dev/null || true
+  done
+}
+
+# ---------------------------------------------------------------------------
 # wait_for_cert_manager_webhook — Wait until the cert-manager webhook admits
 # a request.
 #
-# HelmRelease/cert-manager Ready means helm-controller saw the chart's
-# Deployments roll out. It says nothing about the admission path that the
-# first ClusterIssuer create takes: the webhook pod opens its TLS listener
-# after the readiness probe passes, and cainjector copies the serving CA
-# into the cert-manager-webhook Validating/MutatingWebhookConfigurations on
-# its own reconcile pass. Until both have happened the apiserver answers
+# On an install, HelmRelease/cert-manager Ready includes the chart's
+# startup API check, which deploy/flux-system/releases/cert-manager.yaml
+# enables: its post-install Job waits for the admission path that the
+# first ClusterIssuer create takes, and helm-controller waits for the Job.
+# An upgrade runs no post-install hook, so there, and with the check off,
+# Ready means only that the chart's Deployments rolled out: the webhook
+# pod opens its TLS listener after the readiness probe passes, and
+# cainjector copies the serving CA into the cert-manager-webhook
+# Validating/MutatingWebhookConfigurations on its own reconcile pass.
+# Until both have happened the apiserver answers
 #   failed calling webhook "webhook.cert-manager.io": ... connection refused
 #   failed calling webhook "webhook.cert-manager.io": ... x509: certificate
 #     signed by unknown authority
 # and a plain `kubectl apply` aborts a deploy that would have succeeded a
 # few seconds later (e2e-operator/neutron in run 33166067165 hit the x509
-# variant in the same second the HelmRelease turned Ready).
+# variant in the same second the HelmRelease turned Ready). The probe stays
+# as this script's own gate in front of the Phase 2 applies for those two
+# cases.
 #
 # Polls every 5s up to the supplied timeout with a server-side dry-run of
 # the supplied manifest: the apiserver runs the full admission chain for a
@@ -567,12 +662,102 @@ wait_for_cert_manager_webhook() {
       done
       log "cert-manager pods:"
       kubectl get pods -n cert-manager -o wide 2>/dev/null || true
-      log "cert-manager pod logs (last 10m, tail 200):"
-      local cm_pods
-      cm_pods=$(kubectl get pods -n cert-manager -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-      for pod in ${cm_pods}; do
-        log "--- logs for pod ${pod} ---"
-        kubectl logs "${pod}" -n cert-manager --all-containers=true --since=10m --tail=200 2>/dev/null || true
+      dump_pod_logs cert-manager
+      exit 1
+    fi
+
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_controlplane_admission — Wait until the API server admits a
+# server-side dry-run of the ControlPlane manifests.
+#
+# The operator HelmReleases turn Ready while their charts' CRDs register and
+# their webhook listeners start. The c5c3-operator and the ovn-operator
+# register their webhooks with failurePolicy: Fail, so until both answer, the
+# first apply of an OVNCentral or a ControlPlane fails with
+#   no matches for kind "OVNCentral" in version "ovn.openstack.c5c3.io/v1alpha1"
+#   failed calling webhook "mcontrolplane.kb.io": ... connection refused
+# The apiserver runs the full admission chain for a dry-run without creating
+# anything, so an admitted dry-run proves the CRDs are registered and both
+# webhooks answer.
+#
+# A denial proves the same and ends the wait too. The ControlPlane webhook
+# denies a second ControlPlane in a namespace and an update to an immutable
+# field, so on a re-run against a cluster whose live CR differs from the
+# manifest, a denial is the permanent answer. kubectl's stderr is read as
+# records: a record opens at a line that begins with "Error", "error" or
+# "The ", and the Warning: lines before the first record belong to none. A
+# record is a denial when it holds "denied the request" or has reason
+# Invalid, which kubectl prints as "The <kind> "<name>" is invalid" when it
+# is the only error and as "Error from server (Invalid): ..." beside
+# another. The CRD's schema and CEL validation print the same two shapes;
+# they run after the mutating webhook, so they prove an answer as well.
+# The wait ends only when every record is a denial; any other record (a
+# missing kind, an unreachable webhook, a refused connection) is retried.
+#
+# Polls every 5s up to the supplied timeout. On timeout, prints the
+# c5c3-operator and ovn-operator HelmReleases, their pods and pod logs, then
+# exits 1.
+#
+# Arguments:
+#   $1 — timeout in seconds
+#   $2..N — manifest files to dry-run (at least one)
+# ---------------------------------------------------------------------------
+wait_for_controlplane_admission() {
+  local timeout="$1"
+  shift
+  if [[ $# -eq 0 ]]; then
+    log "ERROR: wait_for_controlplane_admission needs at least one manifest."
+    exit 1
+  fi
+  local manifests=("$@")
+  local file_args=()
+  local manifest
+  for manifest in "${manifests[@]}"; do
+    file_args+=(-f "${manifest}")
+  done
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for the API server to admit a server-side dry-run of the ControlPlane manifests: ${manifests[*]}"
+
+  while true; do
+    local err line
+    if err=$(kubectl apply --dry-run=server "${file_args[@]}" 2>&1 >/dev/null); then
+      log "The cluster admits the ControlPlane manifests."
+      return 0
+    fi
+    if awk '
+      /^(Error|error|The )/ {
+        if (open) { records++; if (denied) denials++ }
+        open = 1
+        denied = ($0 ~ /^The .+ is invalid/ || $0 ~ /^Error from server \(Invalid\)/)
+      }
+      open && index($0, "denied the request") { denied = 1 }
+      END {
+        if (open) { records++; if (denied) denials++ }
+        exit !(records > 0 && denials == records)
+      }
+    ' <<<"${err}"; then
+      log "The admission webhooks answer; the dry-run was denied:"
+      while IFS= read -r line; do log "  ${line}"; done <<<"${err}"
+      return 0
+    fi
+    log "  The cluster is not admitting the ControlPlane manifests yet."
+    while IFS= read -r line; do log "    ${line}"; done <<<"${err}"
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out after ${timeout}s waiting for the cluster to admit the ControlPlane manifests."
+      log "Operator HelmReleases:"
+      kubectl get helmrelease -n c5c3-system c5c3-operator 2>/dev/null || true
+      kubectl get helmrelease -n ovn-system ovn-operator 2>/dev/null || true
+      local ns
+      for ns in c5c3-system ovn-system; do
+        log "Pods in ${ns}:"
+        kubectl get pods -n "${ns}" -o wide 2>/dev/null || true
+        dump_pod_logs "${ns}"
       done
       exit 1
     fi
@@ -702,17 +887,7 @@ wait_for_gateway_programmed() {
       log "ERROR: Timed out waiting for Gateway/${name} after ${timeout}s."
       log "Gateway description:"
       kubectl describe gateway/"${name}" -n "${namespace}" 2>/dev/null || true
-      log "envoy-gateway-system pod logs (last 10m, tail 200):"
-      local gw_pods
-      gw_pods=$(kubectl get pods -n envoy-gateway-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-      # `--since=10m` keeps the dump focused on the most recent failure
-      # window. On long-running timeouts the default --tail=200 may already
-      # have rolled past the relevant crash frame; the time filter bounds
-      # the output to a meaningful post-mortem window.
-      for pod in ${gw_pods}; do
-        log "--- logs for pod ${pod} ---"
-        kubectl logs "${pod}" -n envoy-gateway-system --all-containers=true --since=10m --tail=200 2>/dev/null || true
-      done
+      dump_pod_logs envoy-gateway-system
       exit 1
     fi
 
@@ -1234,6 +1409,16 @@ install_envoy_gateway_crds() {
 preflight_checks() {
   log "Running pre-flight checks..."
 
+  # INFRA_ONLY=true scales every CobaltCore operator to zero, so nothing would
+  # admit or reconcile the bundled ControlPlane CR: its admission probe could
+  # only time out, after the whole stack is applied. INFRA_ONLY is read by
+  # indirect expansion for the reason preflight_external_cluster gives.
+  local infra_only=INFRA_ONLY
+  if [[ "${!infra_only}" == "true" && "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
+    log "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore operator to admit or reconcile the ControlPlane CR."
+    exit 1
+  fi
+
   # Check that required CLI tools are available.
   # Flux CLI is intentionally omitted: bootstrap now installs flux-operator and
   # applies a FluxInstance via kubectl, and source reconciles use kubectl
@@ -1256,9 +1441,12 @@ preflight_checks() {
   # CRs (the ControlPlane provisions those in managed mode). Check it up front so
   # the run fails here instead of deep in Step 5 after a kind cluster already
   # exists. The default Quick Start stays yq-free.
-  if [[ "${WITH_CONTROLPLANE}" == "true" ]] && ! command -v yq &>/dev/null; then
-    log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
-    exit 1
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    if ! command -v yq &>/dev/null; then
+      log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
+      exit 1
+    fi
+    require_mikefarah_yq
   fi
 
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
@@ -1278,14 +1466,25 @@ preflight_checks() {
 # preflight_external_cluster — The EXTERNAL_CLUSTER=true half of preflight_checks.
 #
 # Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
-# the two kustomizations Steps 3 and 5 apply, then a kubeconfig context whose API
+# the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
+# without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs,
+# then WITH_CHAOS_MESH=true for one without the chaos-mesh/ kustomization Step 3
+# applies in place of deploy/kind/chaos-mesh, then WITH_DIZZY=true for one
+# without the dizzy/ kustomization Step 3 applies in place of deploy/kind/dizzy,
+# then WITH_PROMETHEUS=true for one without the prometheus/ kustomization Step 3
+# applies in place of deploy/kind/prometheus, then an overlay whose by-hand
+# controlplane/ does not render exactly one ControlPlane,
+# openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
+# backend on the in-cluster NFS server, then a kubeconfig context whose API
 # server does not answer, cheapest first and each before anything is applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
 # rather than as literal `"${WITH_X}" == "true"` tests, because each
 # tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
-# second gate here would change the count.
+# second gate here would change the count. The overlay checks of WITH_NFS,
+# WITH_CHAOS_MESH, WITH_DIZZY and WITH_PROMETHEUS below are literal gates, and
+# those four tests count them.
 #
 # Logs the context and the API server URL, so the transcript records which
 # cluster the run went to.
@@ -1293,13 +1492,10 @@ preflight_checks() {
 preflight_external_cluster() {
   local entry flag
   for entry in \
-    "WITH_VPA|the platform runs Gardener's VPA" \
-    "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io" \
+    "WITH_VPA|the platform runs Gardener's VPA, so nothing is installed; opt a workload in with its verticalAutoscaling block (spec.sizing.<component>.<workload>.verticalAutoscaling on the ControlPlane)" \
+    "WITH_METRICS_SERVER|the platform serves v1beta1.metrics.k8s.io, so nothing is installed; scale an API with its autoscaling block (spec.sizing.<component>.api.autoscaling on the ControlPlane)" \
     "WITH_REGISTRY_CACHE|the pull-through cache needs the kind Docker network" \
-    "WITH_CHAOS_MESH|it loads kernel modules on the host and tunes the kind nodes" \
-    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host" \
-    "WITH_NFS|it loads kernel modules on the host and runs a privileged kind NFS server" \
-    "WITH_DIZZY|it reads the kind node's published ports with docker port"; do
+    "WITH_OVN_KERNEL_MODULES|it loads kernel modules on the host"; do
     flag="${entry%%|*}"
     if [[ "${!flag}" == "true" ]]; then
       log "ERROR: EXTERNAL_CLUSTER=true does not support ${flag}=true: ${entry#*|}"
@@ -1311,6 +1507,84 @@ preflight_external_cluster() {
     ! -f "${OVERLAY_ROOT}/infrastructure/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no base/ and infrastructure/ kustomization (resolved to ${OVERLAY_ROOT})."
     exit 1
+  fi
+
+  # The clients of the kind NFS overlay need nfs and nfsv4, which this mode does
+  # not load on the host, so WITH_NFS=true takes the overlay's own nfs/. The
+  # file is tested, so an nfs/ directory without a kustomization is refused as
+  # well.
+  if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
+    exit 1
+  fi
+
+  # The kind Chaos Mesh overlay selects pods in every namespace and needs the
+  # NetworkChaos modules this mode does not load on the host, so
+  # WITH_CHAOS_MESH=true takes the overlay's own chaos-mesh/, tested by file.
+  if [[ "${WITH_CHAOS_MESH}" == "true" && ! -f "${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace and relies on kernel modules that this mode does not load on the host."
+    exit 1
+  fi
+
+  # The kind dizzy overlay publishes VictoriaMetrics on a NodePort that only a
+  # kind node maps to a host port and keeps the metrics in an emptyDir, so
+  # WITH_DIZZY=true takes the overlay's own dizzy/, tested by file.
+  if [[ "${WITH_DIZZY}" == "true" && ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_DIZZY=true needs ${OVERLAY_ROOT}/dizzy/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
+    exit 1
+  fi
+
+  # The kind Prometheus overlay applies the Namespace monitoring without what
+  # the overlay's base/ sets on it and keeps the metrics in an emptyDir, so
+  # WITH_PROMETHEUS=true takes the overlay's own prometheus/, tested by file.
+  if [[ "${WITH_PROMETHEUS}" == "true" && ! -f "${OVERLAY_ROOT}/prometheus/kustomization.yaml" ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs ${OVERLAY_ROOT}/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
+    exit 1
+  fi
+
+  # The reader applies the overlay's controlplane/ by hand after this run, while
+  # Step 7 seeds the admin-password paths of openstack/${CONTROLPLANE_NAME} alone:
+  # a ControlPlane under another namespace or name, a second one, or one without a
+  # namespace (applied to the context's namespace) would read paths nothing
+  # seeded. The identity is read from the render, which contacts no cluster. The
+  # bundled CR of WITH_CONTROLPLANE_CR=true is renamed to match instead.
+  if [[ "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" != "true" &&
+    -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+    local overlay_cp
+    if ! overlay_cp="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+      yq -N -r 'select(.kind == "ControlPlane") | (.metadata.namespace // "") + "/" + .metadata.name')"; then
+      log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+      exit 1
+    fi
+    if [[ -z "${overlay_cp}" || "${overlay_cp}" == *$'\n'* ]]; then
+      overlay_cp="${overlay_cp//$'\n'/, }"
+      log "ERROR: ${OVERLAY_ROOT}/controlplane must render exactly one ControlPlane (got: ${overlay_cp:-none}); Step 7 seeds only openstack/${CONTROLPLANE_NAME}."
+      exit 1
+    fi
+    if [[ "${overlay_cp}" != "openstack/${CONTROLPLANE_NAME}" ]]; then
+      log "ERROR: ${OVERLAY_ROOT}/controlplane renders ControlPlane '${overlay_cp}', but Step 7 seeds openstack/${CONTROLPLANE_NAME}; keep the CR in the openstack namespace and set CONTROLPLANE_NAME to its name."
+      exit 1
+    fi
+    # A Cinder backend on the in-cluster NFS server, the Service nfs-server in
+    # openstack, mounts a server only WITH_NFS=true deploys. Without it the
+    # backend's pod never starts and the ControlPlane never becomes Ready, which
+    # the reader would see only in the wait after the apply. The names are the
+    # ones that resolve from csi-nfs-node in kube-system, which mounts the share,
+    # in any case and the full name with the root's trailing dot as well; a
+    # backend on any other server, a filer, needs no WITH_NFS=true, and Step 1
+    # checks that the cluster can mount it (check_external_cluster).
+    if [[ "${WITH_NFS}" != "true" ]]; then
+      local nfs_backends
+      if ! nfs_backends="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+        yq -N -r 'select(.kind == "ControlPlane") | .spec.services.cinder | (.backends // []) + [.backupBackend] | map(select(.nfs.server // "" | test("(?i)^nfs-server[.]openstack([.]svc([.]cluster[.]local[.]?)?)?$")) | .name) | join(" ")')"; then
+        log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+        exit 1
+      fi
+      if [[ -n "${nfs_backends}" ]]; then
+        log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${nfs_backends} on the in-cluster NFS server nfs-server.openstack, which only WITH_NFS=true deploys; rerun with WITH_NFS=true."
+        exit 1
+      fi
+    fi
   fi
 
   # Every later step is a kubectl apply against this context, so an unreachable
@@ -1451,17 +1725,35 @@ check_relocated_infrastructure() {
 # of relocated_object_exists, on any other kubectl failure too: an unreadable
 # cluster is not one that passed.
 #
-#   1. A default StorageClass. The proving OpenBaoCluster (storage.size 1Gi, no
-#      class) and every volume the ControlPlane provisions bind to it; without
-#      one they pend forever behind a green Step 5.
+#   1. A default StorageClass. The lab overlay's OpenBao, MariaDB and Garage
+#      volumes, its NFS export claim under WITH_NFS=true, its Prometheus claim
+#      under WITH_PROMETHEUS=true, the proving OpenBaoCluster (storage.size
+#      1Gi) and every volume the ControlPlane provisions name no class and
+#      bind to it; without one the claims stay Pending and the first wait on
+#      them times out.
 #   2. No DaemonSet node-local-dns in kube-system. The openbao-operator's
 #      NetworkPolicy allows DNS to the pods of spec.network.dnsNamespace; a
 #      host-networked resolver needs spec.network.dnsEndpointIPs, which nothing
 #      in this repository sets.
 #   3. At least one Ready node.
+#   4. Under WITH_NFS=true, no CSIDriver nfs.csi.k8s.io that the HelmRelease
+#      kube-system/csi-driver-nfs did not install, read from the two labels
+#      the helm-controller sets on every object of a release. Step 3 would
+#      delete a platform driver's CSIDriver that lacks the Ephemeral mode, and
+#      the HelmRelease would adopt the platform's Helm release of the same
+#      name, which the teardown then uninstalls.
+#   5. Under WITH_NFS=true, when the overlay ships nfs/client-policy.yaml: a
+#      node network that holds every node (resolve_nfs_node_network).
+#   6. Otherwise, when preflight read the overlay's by-hand controlplane/ and
+#      its ControlPlane puts a Cinder backend on NFS, a filer since preflight
+#      refused the in-cluster server: a CSIDriver nfs.csi.k8s.io that lists the
+#      Ephemeral lifecycle mode. The cinder pods mount every export as an
+#      inline volume of that driver, which the kubelet mounts only for that
+#      mode, and without WITH_NFS=true nothing installs it; the pods would hang
+#      in ContainerCreating and the ControlPlane would never become Ready.
 #
-# The class and the node names are logged, so the transcript records what the
-# cluster had.
+# The class, the node names, the node network and the NFS driver's modes are
+# logged, so the transcript records what the cluster had.
 # ---------------------------------------------------------------------------
 check_external_cluster() {
   local out rc
@@ -1477,10 +1769,10 @@ check_external_cluster() {
   local default_class
   default_class="$(jq -r '[.items[] | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name] | first // empty' <<<"${out}")"
   if [[ -z "${default_class}" ]]; then
-    log "ERROR: the cluster has no default StorageClass. The proving OpenBaoCluster"
-    log "       (storage.size 1Gi, no class) and every volume the ControlPlane"
-    log "       provisions bind to the default class, and would pend forever behind"
-    log "       a green Step 5. Annotate one class with"
+    log "ERROR: the cluster has no default StorageClass. The lab overlay, the proving"
+    log "       OpenBaoCluster and the ControlPlane name no class, so every volume of"
+    log "       the stack binds to the default one; without it the claims stay Pending"
+    log "       and the first wait on them times out. Annotate one class with"
     log "       storageclass.kubernetes.io/is-default-class=true and rerun."
     exit 1
   fi
@@ -1508,6 +1800,7 @@ check_external_cluster() {
     log "ERROR: cannot list the cluster's nodes (kubectl's error is above)."
     exit 1
   fi
+  local nodes_json="${out}"
   local ready_nodes
   ready_nodes="$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | join(" ")' <<<"${out}")"
   if [[ -z "${ready_nodes}" ]]; then
@@ -1515,6 +1808,131 @@ check_external_cluster() {
     exit 1
   fi
   log "Ready nodes         : ${ready_nodes}"
+
+  if [[ "${WITH_NFS}" == "true" ]]; then
+    # An absent CSIDriver prints nothing under --ignore-not-found, and stderr
+    # stays out of the capture, so a kubectl warning cannot pass for a label.
+    rc=0
+    out="$(kubectl get csidriver nfs.csi.k8s.io --ignore-not-found \
+      -o 'jsonpath={.metadata.labels.helm\.toolkit\.fluxcd\.io/namespace}/{.metadata.labels.helm\.toolkit\.fluxcd\.io/name}')" || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+      log "ERROR: cannot determine whether CSIDriver/nfs.csi.k8s.io exists (kubectl's error is above)."
+      exit 1
+    fi
+    if [[ -n "${out}" && "${out}" != "kube-system/csi-driver-nfs" ]]; then
+      log "ERROR: CSIDriver/nfs.csi.k8s.io exists and was not installed by the HelmRelease"
+      log "       kube-system/csi-driver-nfs (helm.toolkit.fluxcd.io namespace/name labels: '${out}')."
+      log "       The cluster runs its own NFS CSI driver; WITH_NFS=true would replace or"
+      log "       adopt it. Deploy without WITH_NFS=true."
+      exit 1
+    fi
+
+    if [[ -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
+      resolve_nfs_node_network "${nodes_json}"
+    fi
+  elif [[ "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" != "true" &&
+    -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+    local nfs_backends
+    if ! nfs_backends="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+      yq -N -r 'select(.kind == "ControlPlane") | .spec.services.cinder | (.backends // []) + [.backupBackend] | map(select(.nfs != null) | .name) | join(" ")')"; then
+      log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+      exit 1
+    fi
+    if [[ -n "${nfs_backends}" ]]; then
+      # An absent CSIDriver prints nothing under --ignore-not-found, and stderr
+      # stays out of the capture, as in the read of check 4.
+      rc=0
+      out="$(kubectl get csidriver nfs.csi.k8s.io --ignore-not-found \
+        -o 'jsonpath={.spec.volumeLifecycleModes}')" || rc=$?
+      if [[ ${rc} -ne 0 ]]; then
+        log "ERROR: cannot read CSIDriver/nfs.csi.k8s.io (kubectl's error is above)."
+        exit 1
+      fi
+      if [[ "${out}" != *Ephemeral* ]]; then
+        log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${nfs_backends} on NFS,"
+        log "       which the cinder pods mount as inline nfs.csi.k8s.io volumes, but the cluster"
+        log "       has no CSIDriver/nfs.csi.k8s.io with the Ephemeral lifecycle mode"
+        log "       (volumeLifecycleModes: '${out}'). Install that driver with the mode, or,"
+        log "       on a cluster without one, rerun with WITH_NFS=true, which installs it."
+        exit 1
+      fi
+      log "NFS CSI driver      : nfs.csi.k8s.io ${out}"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# resolve_nfs_node_network NODES_JSON — Set NFS_NODE_NETWORK, the CIDR the
+# overlay's nfs/client-policy.yaml admits to the NFS server's port 2049.
+#
+# Check 5 of check_external_cluster. The NFS clients, csi-nfs-node and
+# nova-compute, are host-network pods, so the policy names the node network.
+# No overlay value carries it: it is read from data.nodeNetwork of the
+# ConfigMap kube-system/shoot-info, which Gardener writes into every shoot. An
+# overlay for a cluster without that ConfigMap ships no client-policy.yaml.
+#
+# Aborts when the ConfigMap cannot be read or names no IPv4 CIDR, and when a
+# node of NODES_JSON (`kubectl get nodes -o json`) has no IPv4 InternalIP
+# inside the network: the policy would drop that node's mounts, which shows
+# only later, as a pod that hangs in ContainerCreating.
+# ---------------------------------------------------------------------------
+resolve_nfs_node_network() {
+  local nodes_json="$1" rc=0
+
+  # An absent ConfigMap prints nothing under --ignore-not-found, and stderr
+  # stays out of the capture, as in the CSIDriver read above.
+  NFS_NODE_NETWORK="$(kubectl get configmap shoot-info -n kube-system --ignore-not-found \
+    -o 'jsonpath={.data.nodeNetwork}')" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot read ConfigMap kube-system/shoot-info (kubectl's error is above)."
+    exit 1
+  fi
+  if [[ ! "${NFS_NODE_NETWORK}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+    log "ERROR: ConfigMap kube-system/shoot-info names no IPv4 node network"
+    log "       (data.nodeNetwork: '${NFS_NODE_NETWORK}'). ${OVERLAY_ROOT}/nfs/client-policy.yaml"
+    log "       admits that network to the NFS server, and nothing else names it."
+    exit 1
+  fi
+
+  local outside
+  outside="$(jq -r --arg cidr "${NFS_NODE_NETWORK}" '
+    def ipnum: split(".") | map(tonumber) | .[0] * 16777216 + .[1] * 65536 + .[2] * 256 + .[3];
+    ($cidr | split("/")) as [$network, $length]
+    | pow(2; 32 - ($length | tonumber)) as $size
+    | [.items[]
+       | .metadata.name as $name
+       | [.status.addresses[]? | select(.type == "InternalIP") | .address
+          | select(test("^[0-9]+(\\.[0-9]+){3}$"))] as $ips
+       | select(($ips | length) == 0
+                or any($ips[]; ((ipnum / $size) | floor) != ((($network | ipnum) / $size) | floor)))
+       | "\($name) (\(if ($ips | length) == 0 then "no IPv4 InternalIP" else ($ips | join(",")) end))"]
+    | join(" ")' <<<"${nodes_json}")" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot read the nodes' InternalIPs (jq's error is above)."
+    exit 1
+  fi
+  if [[ -n "${outside}" ]]; then
+    log "ERROR: not every node lies in the node network ${NFS_NODE_NETWORK} of ConfigMap"
+    log "       kube-system/shoot-info: ${outside}."
+    log "       ${OVERLAY_ROOT}/nfs/client-policy.yaml admits only that network to the NFS"
+    log "       server, so these nodes could not mount a share."
+    exit 1
+  fi
+  log "NFS client network  : ${NFS_NODE_NETWORK}"
+}
+
+# ---------------------------------------------------------------------------
+# apply_nfs_client_policy — Apply the overlay's nfs/client-policy.yaml, the
+# NetworkPolicy that admits only the nodes to the NFS server, with
+# NFS_NODE_NETWORK in place of the template's placeholder NODE_NETWORK.
+#
+# Runs in Step 3 under EXTERNAL_CLUSTER=true WITH_NFS=true, before the overlay's
+# nfs/ is applied; resolve_nfs_node_network set the value in Step 1.
+# ---------------------------------------------------------------------------
+apply_nfs_client_policy() {
+  sed "s|cidr: NODE_NETWORK\$|cidr: ${NFS_NODE_NETWORK}|" "${OVERLAY_ROOT}/nfs/client-policy.yaml" |
+    kubectl apply -f -
+  log "NFS client policy ${OVERLAY_ROOT}/nfs/client-policy.yaml applied for ${NFS_NODE_NETWORK}."
 }
 
 # ---------------------------------------------------------------------------
@@ -1611,10 +2029,14 @@ load_host_kernel_modules() {
 # ---------------------------------------------------------------------------
 # load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
 #
-# chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
-# network namespace via nsenter. The underlying kernel modules must be loaded
-# on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
-# "unable to flush ip sets for pod …" and AllInjected stays False.
+# The kind mode's module load. chaos-mesh's NetworkChaos uses ipset/iptables/tc
+# inside the target pod's network namespace via nsenter. The underlying kernel
+# modules must be loaded on the host kernel (Kind nodes share it), otherwise
+# chaos-daemon fails with "unable to flush ip sets for pod …" and AllInjected
+# stays False. Under EXTERNAL_CLUSTER=true main() does not call it: the
+# DaemonSet chaos-mesh-modules of the overlay's chaos-mesh/ loads the same
+# list on the nodes (deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml);
+# change both together.
 #
 # Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
 # modprobe is unavailable or fails — PodChaos-only flows still work.
@@ -1639,18 +2061,20 @@ load_ovn_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
-# load_nfs_kernel_modules — Ensure the NFS server and client prerequisites on the host.
+# load_nfs_kernel_modules — Ensure the NFS client prerequisites on the host.
 #
-# The in-cluster NFS server drives the host kernel's nfsd instead of a
-# userspace server, so nfsd has to be loadable on the node. The csi-driver-nfs
-# node plugin mounts the exports through the host kernel's NFS client, which
-# needs nfs and nfsv4.
+# The kind mode's module load. The csi-driver-nfs node plugin mounts the
+# exports through the host kernel's NFS client, which needs nfs and nfsv4. The
+# in-cluster server is NFS-Ganesha, a userspace server, and needs no module.
+# Under EXTERNAL_CLUSTER=true main() does not call it: this script then runs on
+# a workstation, and the pods of the overlay's nfs/ load the modules on the
+# nodes.
 #
 # Best-effort, like every caller of load_host_kernel_modules. The Step 3
 # rollout wait on the server is the hard gate.
 # ---------------------------------------------------------------------------
 load_nfs_kernel_modules() {
-  load_host_kernel_modules "NFS server and client (kernel nfsd for the in-cluster server, nfs and nfsv4 for the csi-driver-nfs node plugin)" nfsd nfs nfsv4
+  load_host_kernel_modules "NFS client (nfs and nfsv4 for the csi-driver-nfs node plugin)" nfs nfsv4
 }
 
 # ---------------------------------------------------------------------------
@@ -2115,7 +2539,8 @@ warn_unused_kind_config() {
 # Errors:
 #   - exits 1 if KIND_CONFIG does not exist or is not readable
 #   - exits 1 if KIND_HOST_PORT is not a positive integer in [1, 65535]
-#   - exits 1 if `yq` is required (either transform) but not on PATH
+#   - exits 1 if `yq` is required (either transform) but not on PATH, or is
+#     not mikefarah/yq v4.40.1 or newer
 # ---------------------------------------------------------------------------
 render_kind_config() {
   local out_path="$1"
@@ -2145,6 +2570,7 @@ render_kind_config() {
     log "ERROR: rendering the kind config requires 'yq' on PATH (KIND_HOST_PORT override and/or WITH_REGISTRY_CACHE=true)."
     exit 1
   fi
+  require_mikefarah_yq
 
   cp "${src}" "${out_path}"
 
@@ -2539,7 +2965,7 @@ main() {
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
-  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the kind NFS server + csi-driver-nfs, and to modprobe nfsd/nfs/nfsv4 on the host)"
+  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
@@ -2556,9 +2982,15 @@ main() {
   # Load chaos-mesh kernel modules on the host before creating the cluster.
   # Kind nodes share the host kernel; NetworkChaos needs ipset/tc modules.
   # Gated on WITH_CHAOS_MESH so the default Quick Start does not require
-  # passwordless sudo or modprobe access.
+  # passwordless sudo or modprobe access. In external mode this machine is not
+  # a node of the cluster; the DaemonSet of the overlay's chaos-mesh/ loads
+  # the modules on the nodes instead.
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
-    load_chaos_mesh_kernel_modules
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      log "Skipping the host-side chaos-mesh kernel modules (EXTERNAL_CLUSTER=true; DaemonSet chaos-mesh-modules of ${OVERLAY_ROOT}/chaos-mesh loads them on the nodes)."
+    else
+      load_chaos_mesh_kernel_modules
+    fi
   else
     log "Skipping chaos-mesh kernel modules (WITH_CHAOS_MESH=false)."
   fi
@@ -2572,10 +3004,16 @@ main() {
     log "Skipping OVN kernel modules (WITH_OVN_KERNEL_MODULES=false)."
   fi
 
-  # Load the NFS server and client modules the same way, gated on WITH_NFS so
-  # the default Quick Start needs neither sudo nor modprobe access.
+  # Load the NFS client modules the same way, gated on WITH_NFS so the default
+  # Quick Start needs neither sudo nor modprobe access. In external mode this
+  # machine is not a node of the cluster; the pods of the overlay's nfs/ load
+  # the modules on the nodes instead.
   if [[ "${WITH_NFS}" == "true" ]]; then
-    load_nfs_kernel_modules
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      log "Skipping the host-side NFS kernel modules (EXTERNAL_CLUSTER=true; the pods of ${OVERLAY_ROOT}/nfs load them on the nodes)."
+    else
+      load_nfs_kernel_modules
+    fi
   else
     log "Skipping NFS kernel modules (WITH_NFS=false)."
   fi
@@ -2680,26 +3118,42 @@ main() {
 
   # Opt-in chaos-mesh overlay. Layered on top of the base so the
   # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.
-  # The overlay is self-contained (no `../../` parent-dir references), so
-  # kubectl's embedded kustomize renders it under the default
+  # The kind mode applies deploy/kind/chaos-mesh, which is self-contained (no
+  # `../../` parent-dir references); the external mode applies the overlay's
+  # chaos-mesh/, which references deploy/kind/chaos-mesh as a directory.
+  # kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — no `--load-restrictor` flag
   # required (kubectl's embedded kustomize does not expose one,
   # kubernetes/kubectl#948).
+  #
+  # In external mode the DaemonSet chaos-mesh-modules loads the NetworkChaos
+  # modules on every node; a node that cannot load one keeps its pod in Init,
+  # and the rollout wait fails the run before Phase 3 waits for the release.
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"
-    log "Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"
+    log "Chaos Mesh overlay ${OVERLAY_ROOT}/chaos-mesh applied (WITH_CHAOS_MESH=true)."
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      if ! kubectl rollout status daemonset/chaos-mesh-modules -n chaos-mesh --timeout="${POD_TIMEOUT}s"; then
+        log "ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, so not every node has the NetworkChaos kernel modules. Read 'kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1'."
+        exit 1
+      fi
+      log "Chaos Mesh kernel modules loaded on every node."
+    fi
   fi
 
   # Opt-in kube-prometheus-stack overlay. Layered on top of
   # the base so the default Quick Start stays minimal; enable with
-  # WITH_PROMETHEUS=true. The overlay is self-contained (no `../../` parent-dir
-  # references), so kubectl's embedded kustomize renders it under the default
+  # WITH_PROMETHEUS=true. The kind mode applies deploy/kind/prometheus, which is
+  # self-contained (no `../../` parent-dir references); the external mode
+  # applies the overlay's prometheus/, which references deploy/kind/prometheus
+  # as a directory. kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — same contract as the chaos-mesh
   # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   #
   # The dashboard JSON copy step stages the Grafana
-  # dashboard from operators/keystone/dashboards/ into the overlay root so
-  # configMapGenerator can reference it without a parent-dir traversal. The
+  # dashboard from operators/keystone/dashboards/ into deploy/kind/prometheus/
+  # so configMapGenerator can reference it without a parent-dir traversal; the
+  # lab overlay reads the same file through its resource. The
   # single source of truth lives at operators/keystone/dashboards/; the
   # destination is git-ignored as a build artifact, and the copy is idempotent
   # so `git status` after `make deploy-infra` shows no unexpected modifications.
@@ -2708,8 +3162,8 @@ main() {
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
     log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"
-    log "Prometheus kind overlay applied (WITH_PROMETHEUS=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/prometheus"
+    log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."
   fi
 
   # Opt-in metrics-server overlay. Layered on top of the base so the default
@@ -2734,48 +3188,56 @@ main() {
 
   # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
   # so the default Quick Start stays minimal; enable with WITH_DIZZY=true. The
-  # overlay is self-contained (no `../../` parent-dir references), so kubectl's
-  # embedded kustomize renders it under the default LoadRestrictionsRootOnly
-  # security check — same contract as the chaos-mesh, prometheus, and
-  # metrics-server overlays (no `--load-restrictor` flag required,
-  # kubernetes/kubectl#948).
+  # kind mode applies deploy/kind/dizzy, which is self-contained (no `../../`
+  # parent-dir references); the external mode applies the overlay's dizzy/,
+  # which references deploy/kind/dizzy as a directory. kubectl's embedded
+  # kustomize renders both under the default LoadRestrictionsRootOnly security
+  # check — same contract as the chaos-mesh, prometheus, and metrics-server
+  # overlays (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     # Stage the three Grafana dashboard JSONs from the pinned dizzy release into
     # the git-ignored deploy/kind/dizzy/dashboards/ so the overlay's
     # configMapGenerator can reference them without a parent-dir traversal (same
     # LoadRestrictionsRootOnly contract as the prometheus overlay's staged JSON).
     # This MUST run immediately before `kubectl apply -k` so the files exist when
-    # kustomize renders the ConfigMap.
+    # kustomize renders the ConfigMap. The lab overlay reads the same directory.
     "${SCRIPT_DIR}/dizzy.sh" stage-dashboards
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"
-    log "dizzy kind overlay applied (WITH_DIZZY=true)."
+    kubectl apply -k "${OVERLAY_ROOT}/dizzy"
+    log "dizzy overlay ${OVERLAY_ROOT}/dizzy applied (WITH_DIZZY=true)."
     # VictoriaMetrics OTLP ingest is exposed on host 8428 → NodePort 30428 via
     # the kind extraPortMapping in hack/kind-config.yaml. A cluster created
     # before that mapping was added lacks the port, so host→VictoriaMetrics OTLP
     # ingest will not work. Probe the control-plane node's published port and
-    # warn (but continue) so the operator knows to recreate the cluster.
-    local dizzy_metrics_port
-    dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp 2>/dev/null || true)"
-    if [[ -z "${dizzy_metrics_port}" ]]; then
-      log "  WARNING: cluster '${CLUSTER_NAME}' predates the dizzy metrics port mapping"
-      log "           (host 8428 → NodePort 30428) in hack/kind-config.yaml. Host→"
-      log "           VictoriaMetrics OTLP ingest will NOT work. To activate it, recreate"
-      log "           the cluster with WITH_DIZZY=true (e.g."
-      log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
+    # warn (but continue) so the operator knows to recreate the cluster. The
+    # external mode has no kind node; its ingest is a port-forward.
+    if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+      local dizzy_metrics_port
+      dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp 2>/dev/null || true)"
+      if [[ -z "${dizzy_metrics_port}" ]]; then
+        log "  WARNING: cluster '${CLUSTER_NAME}' predates the dizzy metrics port mapping"
+        log "           (host 8428 → NodePort 30428) in hack/kind-config.yaml. Host→"
+        log "           VictoriaMetrics OTLP ingest will NOT work. To activate it, recreate"
+        log "           the cluster with WITH_DIZZY=true (e.g."
+        log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
+      fi
     fi
   fi
 
   # Opt-in NFS overlay: the in-cluster NFS server plus the csi-driver-nfs
   # mounter. Layered on top of the base so the default Quick Start stays
-  # minimal; enable with WITH_NFS=true. The overlay is self-contained (no
-  # `../../` parent-dir references), so kubectl's embedded kustomize renders
-  # it under the default LoadRestrictionsRootOnly security check (no
-  # `--load-restrictor` flag required, kubernetes/kubectl#948), same contract
-  # as the chaos-mesh, prometheus, metrics-server and dizzy overlays.
+  # minimal; enable with WITH_NFS=true. The kind mode applies deploy/kind/nfs,
+  # which is self-contained (no `../../` parent-dir references); the external
+  # mode applies the overlay's nfs/, which references deploy/kind/nfs as a
+  # directory. kubectl's embedded kustomize renders both under the default
+  # LoadRestrictionsRootOnly security check (no `--load-restrictor` flag
+  # required, kubernetes/kubectl#948), same contract as the chaos-mesh,
+  # prometheus, metrics-server and dizzy overlays.
   #
-  # The rollout wait is a hard gate. The module load above only warns when the
-  # host has no nfsd, so asking for WITH_NFS=true and getting a CrashLooping
-  # server is an error, not a warning.
+  # The rollout waits are hard gates. Asking for WITH_NFS=true and getting a
+  # server whose prepare-exports or Ganesha exits is an error, not a warning.
+  # In external mode the DaemonSet nfs-client-modules loads nfs and nfsv4 on
+  # every node; a node that cannot load them keeps its pod in Init, and the
+  # wait on it fails the run.
   if [[ "${WITH_NFS}" == "true" ]]; then
     # `CSIDriver.spec.volumeLifecycleModes` is immutable, so a cluster whose
     # nfs.csi.k8s.io predates `feature.enableInlineVolume` cannot be upgraded
@@ -2833,8 +3295,12 @@ main() {
       log "CSIDriver/nfs.csi.k8s.io is absent while the csi-driver-nfs HelmRelease exists; an earlier run dropped it without getting it back. Forcing the release to recreate it."
       nfs_csidriver_absent=true
     fi
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"
-    log "NFS kind overlay applied (WITH_NFS=true)."
+    # The policy goes first, so the server never listens without it.
+    if [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/nfs/client-policy.yaml" ]]; then
+      apply_nfs_client_policy
+    fi
+    kubectl apply -k "${OVERLAY_ROOT}/nfs"
+    log "NFS overlay ${OVERLAY_ROOT}/nfs applied (WITH_NFS=true)."
     if [[ "${nfs_csidriver_absent}" == "true" ]]; then
       # The apply above is a no-op on the cluster that needs it most: one that
       # already ran this overlay, had its upgrade rejected on the immutable
@@ -2885,10 +3351,19 @@ main() {
       log "CSIDriver/nfs.csi.k8s.io recreated by csi-driver-nfs with the Ephemeral lifecycle mode."
     fi
     if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then
-      log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
+      log "ERROR: the NFS server did not roll out. Read 'kubectl logs -n openstack deployment/nfs-server -c prepare-exports' and 'kubectl logs -n openstack deployment/nfs-server -c nfs-server'."
       exit 1
     fi
     log "NFS server rolled out."
+    # The clients, csi-nfs-node and nova-compute, mount through the kernel of
+    # whatever node they run on, so every node needs nfs and nfsv4.
+    if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+      if ! kubectl rollout status daemonset/nfs-client-modules -n openstack --timeout="${POD_TIMEOUT}s"; then
+        log "ERROR: DaemonSet openstack/nfs-client-modules did not roll out, so not every node has the nfs and nfsv4 modules. Read 'kubectl logs -n openstack -l app.kubernetes.io/name=nfs-client-modules -c load --prefix --tail=-1'."
+        exit 1
+      fi
+      log "NFS client modules loaded on every node."
+    fi
   fi
 
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
@@ -3004,9 +3479,10 @@ main() {
   # Phase 1: cert-manager must be Ready before we can create TLS resources.
   log "Phase 1: Waiting for cert-manager..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" cert-manager
-  # Ready covers the rollout, not the admission path the Phase 2 applies
-  # take: the webhook's listener and its injected caBundle trail it by
-  # seconds. Probe with the manifest Phase 2 applies first.
+  # On an install, Ready includes the chart's startup API check, which
+  # waits for the admission path the Phase 2 applies take. An upgrade runs
+  # no hook, so the probe stays as the script's own gate and uses the
+  # manifest Phase 2 applies first.
   wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
 
   # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
@@ -3086,8 +3562,9 @@ main() {
 
   # Phase 3b: the RabbitMQ Cluster Operator arrives through a Flux Kustomization
   # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml), which
-  # wait_for_helmreleases cannot see. It hard-fails, unlike the optional k-orc
-  # wait further down: the c5c3 ControlPlane projects a RabbitmqCluster for
+  # wait_for_helmreleases cannot see. It hard-fails on every run, where the
+  # k-orc wait further down does so only on the CONTROLPLANE_OPERATORS=flux
+  # path: the c5c3 ControlPlane projects a RabbitmqCluster for
   # spec.infrastructure.messaging, so the CRD and the operator have to be on
   # every cluster this script provisions. Its Issuer/Certificate apply needs
   # cert-manager, which Phase 1 already waited for.
@@ -3132,8 +3609,8 @@ main() {
 
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"
-    if [[ "${KIND_HOST_PORT}" != "443" ]]; then
-      dizzy_grafana_url="${dizzy_grafana_url}:${KIND_HOST_PORT}"
+    if [[ "${PUBLIC_PORT}" != "443" ]]; then
+      dizzy_grafana_url="${dizzy_grafana_url}:${PUBLIC_PORT}"
     fi
     log "dizzy Grafana: ${dizzy_grafana_url} (anonymous read-only; dashboards land once a dizzy soak exports metrics)"
   fi
@@ -3481,26 +3958,60 @@ main() {
     # ControlPlane provisions them. Bring up the operator stack so a ControlPlane
     # CR can reconcile; whether that CR is applied here or by hand depends on
     # WITH_CONTROLPLANE_CR (default: by hand — see the ControlPlane Quick Start).
+    # operators_awaited turns true once the operator waits below have run; the
+    # by-hand endings probe the cluster's admission only then.
+    local operators_awaited=false
     log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
     if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
       # Remove suspension from Flux HelmReleases and Kustomizations
       kubectl patch helmrelease/keystone-operator -n keystone-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait helmrelease/keystone-operator -n keystone-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
 
       kubectl patch kustomization/k-orc -n flux-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait kustomization/k-orc -n flux-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  k-orc Kustomization not Ready yet (continuing)."
+      # This wait hard-fails: the c5c3-operator watches the K-ORC kinds
+      # unconditionally and cannot start without their CRDs, so continuing
+      # would end a "successful" run with a crash-looping operator. The source
+      # is printed too, because the Kustomization cannot apply while its
+      # GitRepository has no artifact.
+      if ! kubectl wait kustomization/k-orc -n flux-system \
+        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
+        log "ERROR: kustomization/k-orc did not become Ready within ${HELMRELEASE_TIMEOUT}s; the c5c3-operator cannot start without the K-ORC CRDs."
+        kubectl get gitrepository/k-orc kustomization/k-orc -n flux-system 2>/dev/null || true
+        exit 1
+      fi
 
       kubectl patch helmrelease/c5c3-operator -n c5c3-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
-      kubectl wait helmrelease/c5c3-operator -n c5c3-system \
-        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-        || log "  c5c3-operator not Ready yet (continuing)."
+
+      # The nine service operators and the c5c3-operator must be Ready, and one
+      # CRD per operator registered, before a ControlPlane or an OVNCentral can
+      # be admitted. The CRD list is fixed instead of read from the chart
+      # directories: Flux installs the published charts, which can lag this
+      # checkout. INFRA_ONLY=true keeps every operator suspended, so nothing
+      # here could become Ready in that mode.
+      if [[ "${INFRA_ONLY}" != "true" ]]; then
+        wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" \
+          keystone-system/keystone-operator horizon-system/horizon-operator \
+          glance-system/glance-operator placement-system/placement-operator \
+          barbican-system/barbican-operator ovn-system/ovn-operator \
+          neutron-system/neutron-operator cinder-system/cinder-operator \
+          nova-system/nova-operator c5c3-system/c5c3-operator
+        wait_for_crds "${POD_TIMEOUT}" \
+          controlplanes.c5c3.io \
+          keystones.keystone.openstack.c5c3.io \
+          horizons.horizon.openstack.c5c3.io \
+          glances.glance.openstack.c5c3.io \
+          placements.placement.openstack.c5c3.io \
+          barbicans.barbican.openstack.c5c3.io \
+          ovncentrals.ovn.openstack.c5c3.io \
+          neutrons.neutron.openstack.c5c3.io \
+          cinders.cinder.openstack.c5c3.io \
+          novas.nova.openstack.c5c3.io
+        operators_awaited=true
+      else
+        log "  Skipping the operator waits and the admission probe (INFRA_ONLY=true; this cluster runs no CobaltCore operator)."
+      fi
 
       # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
       # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
@@ -3562,16 +4073,15 @@ main() {
       render_controlplane_replicas "${cp_manifest}"
       log "  Set ControlPlane backing-service footprint: MariaDB replicas=${CONTROLPLANE_DB_REPLICAS:-<profile>} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE:-<profile>}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS:-<profile>}."
 
-      # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
-      # may need a moment after the chart install before it accepts the CR.
-      local cp_attempt
-      for cp_attempt in 1 2 3 4 5; do
-        if kubectl apply -f "${cp_manifest}" 2>/dev/null; then
-          break
-        fi
-        log "  ControlPlane CR apply attempt ${cp_attempt} failed (webhook warming up?); retrying..."
-        sleep 10
-      done
+      # Apply the ControlPlane CR once: the admission probe returns only once
+      # the API server answers a server-side dry-run of this file, so a
+      # failing apply is a real error and ends the run.
+      wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${cp_manifest}"
+      if ! kubectl apply -f "${cp_manifest}"; then
+        rm -f "${cp_manifest}"
+        log "ERROR: applying the ControlPlane CR failed (the error is above)."
+        exit 1
+      fi
       rm -f "${cp_manifest}"
       log "  ControlPlane CR applied (WITH_CONTROLPLANE_CR=true). Watch the chain with:"
       log "    kubectl get controlplane -n openstack -w"
@@ -3586,7 +4096,37 @@ main() {
       # onboards. The e2e-controlplane CI job uses WITH_CONTROLPLANE_CR=false and
       # runs setup-database-tenant.sh from its own chainsaw suite instead.
       openbao_onboard_database_tenant "openstack" "${CONTROLPLANE_NAME}"
+    # An external overlay that ships its own OVNCentral and ControlPlane is
+    # named instead of the kind CR; the reader applies it by hand.
+    elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then
+      if [[ "${operators_awaited}" == "true" ]]; then
+        # Probe the manifests the hint below names, so the run ends only once
+        # the cluster admits them. Preflight rendered the same directory, so a
+        # render failure here means the tree changed during the run.
+        local overlay_probe
+        overlay_probe="$(mktemp)"
+        if ! kubectl kustomize "${OVERLAY_ROOT}/controlplane" >"${overlay_probe}"; then
+          rm -f "${overlay_probe}"
+          log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+          exit 1
+        fi
+        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${overlay_probe}"
+        rm -f "${overlay_probe}"
+      fi
+      log "  Operator stack is up. The ControlPlane CR is NOT applied automatically."
+      log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}'):"
+      log "    kubectl apply -k ${OVERLAY_ROOT}/controlplane"
+      log "  Then onboard the OpenBao database-engine tenant once MariaDB is Ready"
+      log "  (docs/quick-start-controlplane.md, Step 5):"
+      log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
     else
+      if [[ "${operators_awaited}" == "true" ]]; then
+        # Probe the bundled CR the hint below names together with the
+        # OVNCentral of docs/quick-start-controlplane.md, Step 3. The lab's
+        # ovncentral.yaml is the only tracked copy of that manifest, and
+        # tests/unit/deploy/metal_stack_controlplane_test.sh keeps the two equal.
+        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${REPO_ROOT}/deploy/kind/controlplane/controlplane.yaml" "${REPO_ROOT}/deploy/lab/metal-stack/controlplane/ovncentral.yaml"
+      fi
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
       log "    kubectl apply -f deploy/kind/controlplane/controlplane.yaml"
@@ -3621,6 +4161,12 @@ main() {
     fi
     log "Access: kubectl -n envoy-gateway-system port-forward ${envoy_target} ${PUBLIC_PORT}:443"
     log "        then https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 and the other *.127-0-0-1.nip.io:${PUBLIC_PORT} hostnames"
+    # VictoriaMetrics has no route on the Gateway; dizzy's OTLP export takes a
+    # second port-forward, which hack/dizzy.sh expects on localhost:8428.
+    if [[ "${WITH_DIZZY}" == "true" ]]; then
+      log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
+      log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"
+    fi
     log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"
   else
     log "Cluster: ${CLUSTER_NAME}"

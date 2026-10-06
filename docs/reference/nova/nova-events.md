@@ -171,6 +171,8 @@ Emitted on a NovaCompute CR while it runs a node pool. For the pipeline see
 | `AggregateKept` | Warning | A marked aggregate no pool of the Nova needs held no host but carried metadata the operator did not set, so it was kept | `Kept empty host aggregate az1: it carries metadata the operator did not set (filter_tenant_id)` |
 | `ComputeConfigMirrorReaped` | Normal | The last pool of a Nova on a cluster deleted one of the ControlPlane's mirrors there, the compute contract or the hypervisor operator's auth Secret; one event per deleted Secret | `Deleted the compute-contract mirror nova-compute-config: no other NovaCompute of Nova nova uses it on this cluster`, `Deleted the hypervisor-operator auth mirror nova-hypervisor-operator-auth: no other NovaCompute of Nova nova uses it on this cluster` |
 | `NodeConflict` | Warning | A selected node is held by another NovaCompute of the same Nova; fires once per new conflict | `Node node-1 is held by NovaCompute pool-a; this pool runs no pod on it` |
+| `HostDiscoveryStarted` | Normal | A node's service is registered but its host is not mapped, and the pool created the Nova's host discovery Job | `Started Job openstack/nova-discover-hosts to map node-1 into the cell` |
+| `HostDiscoveryFailed` | Warning | The host discovery Job failed and the pool replaces it, 30 seconds after the failure; the message carries the Job's failed condition | `Job openstack/nova-discover-hosts failed: Job has reached the specified backoff limit` |
 | `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides a reported `[libvirt]` key | `spec.extraConfig overrides operator-owned keys: [libvirt] virt_type` |
 
 **Source:** `reconcileNovaComputeServices` in
@@ -180,7 +182,9 @@ Emitted on a NovaCompute CR while it runs a node pool. For the pipeline see
 `AggregateKept`);
 `reapComputeClusterMirrors` in `novacompute_controller.go`
 (`ComputeConfigMirrorReaped`); `reconcileNovaComputeNodes` in
-`reconcile_novacompute_nodes.go` (`NodeConflict`);
+`reconcile_novacompute_nodes.go` (`NodeConflict`); `ensureHostDiscovery` in
+`reconcile_novacompute_hostdiscovery.go` (`HostDiscoveryStarted`,
+`HostDiscoveryFailed`);
 `config.RecordExtraConfigHealth`, called from `reconcileNovaComputeConfig`
 (`ExtraConfigOwnedKeyOverride`)
 

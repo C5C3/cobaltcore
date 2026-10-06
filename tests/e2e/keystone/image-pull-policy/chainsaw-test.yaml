@@ -1,0 +1,230 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.image.pullPolicy and the operator default.
+# Validates that:
+#   - A Keystone CR without pullPolicy renders imagePullPolicy: IfNotPresent on
+#     every container of its Deployment and of its db-sync Job. That value is
+#     the operator default hack/ci-deploy-operator.sh sets
+#     (--default-image-pull-policy, DEFAULT_IMAGE_PULL_POLICY); an operator that
+#     ignored the flag would render Always for the tag. On a cluster whose
+#     keystone-operator runs without the flag, step 2 fails by design.
+#   - Patching spec.image.pullPolicy to Never sets Never on every container and
+#     init container of the Deployment and of every CronJob of the instance,
+#     re-runs the pod-template-gated db-sync Job (new UID, Never), keeps the
+#     key-gated bootstrap Job (same UID), and the Keystone returns to Ready.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-image-pull-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR without pullPolicy ─────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and IfNotPresent from the operator default ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ipp
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-ipp
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers)): 1
+                (length(containers[?imagePullPolicy != 'IfNotPresent'])): 0
+                (length((initContainers || `[]`)[?imagePullPolicy != 'IfNotPresent'])): 0
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-ipp-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers)): 1
+                (length(containers[?imagePullPolicy != 'IfNotPresent'])): 0
+    # Stash the UIDs of the db-sync and bootstrap Jobs in a ConfigMap for the
+    # comparison after the patch (durable across steps, as in
+    # tests/e2e-operator-upgrade/keystone-helm-upgrade).
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          SYNC_UID=$(kubectl get job keystone-ipp-db-sync -n openstack -o jsonpath='{.metadata.uid}')
+          BOOT_UID=$(kubectl get job keystone-ipp-bootstrap -n openstack -o jsonpath='{.metadata.uid}')
+          if [ -z "${SYNC_UID}" ] || [ -z "${BOOT_UID}" ]; then
+            echo "FAIL: could not read the Job UIDs (db-sync='${SYNC_UID}', bootstrap='${BOOT_UID}')"
+            exit 1
+          fi
+          echo "db-sync UID ${SYNC_UID}, bootstrap UID ${BOOT_UID}"
+          kubectl create configmap keystone-ipp-job-uids -n openstack \
+            --from-literal=db-sync="${SYNC_UID}" \
+            --from-literal=bootstrap="${BOOT_UID}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - keystone/keystone-ipp
+        - deployment/keystone-ipp
+        - jobs
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack
+  # ── Step 3: Patch spec.image.pullPolicy to Never ─────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-pull-policy-never.yaml
+  # ── Step 4: Assert Never everywhere, a re-run db-sync and Ready again ────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-ipp
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?imagePullPolicy != 'Never'])): 0
+                (length((initContainers || `[]`)[?imagePullPolicy != 'Never'])): 0
+    # The db-sync Job is gated by its pod template hash, so the changed policy
+    # deletes and re-runs it once, the path a changed image takes.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-ipp-db-sync
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?imagePullPolicy != 'Never'])): 0
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-ipp-fernet-rotate
+            namespace: openstack
+          spec:
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    (length(containers[?imagePullPolicy != 'Never'])): 0
+                    (length((initContainers || `[]`)[?imagePullPolicy != 'Never'])): 0
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-ipp-credential-rotate
+            namespace: openstack
+          spec:
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    (length(containers[?imagePullPolicy != 'Never'])): 0
+                    (length((initContainers || `[]`)[?imagePullPolicy != 'Never'])): 0
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ipp
+            namespace: openstack
+            generation: 2
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+              observedGeneration: 2
+    # The asserts above have waited for the reconcile, so a one-shot script
+    # stays inside the 30s exec timeout. It covers every CronJob of the
+    # instance (trust-flush included) and compares the Job UIDs.
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          OFFENDERS=$(kubectl get cronjobs -n openstack \
+            -l app.kubernetes.io/instance=keystone-ipp,app.kubernetes.io/name=keystone -o json \
+            | jq -r '.items[] | .metadata.name as $cj
+                | .spec.jobTemplate.spec.template.spec
+                | ((.initContainers // []) + .containers)[]
+                | select(.imagePullPolicy != "Never")
+                | "\($cj)/\(.name)=\(.imagePullPolicy // "unset")"')
+          COUNT=$(kubectl get cronjobs -n openstack \
+            -l app.kubernetes.io/instance=keystone-ipp,app.kubernetes.io/name=keystone -o name | wc -l)
+          if [ "${COUNT}" -lt 3 ]; then
+            echo "FAIL: expected the fernet, credential and trust-flush CronJobs, found ${COUNT}"
+            exit 1
+          fi
+          if [ -n "${OFFENDERS}" ]; then
+            echo "FAIL: CronJob containers without imagePullPolicy Never: ${OFFENDERS}"
+            exit 1
+          fi
+          echo "OK: every container of the ${COUNT} CronJobs carries Never"
+          BASE_SYNC=$(kubectl get configmap keystone-ipp-job-uids -n openstack -o jsonpath='{.data.db-sync}')
+          BASE_BOOT=$(kubectl get configmap keystone-ipp-job-uids -n openstack -o jsonpath='{.data.bootstrap}')
+          SYNC_UID=$(kubectl get job keystone-ipp-db-sync -n openstack -o jsonpath='{.metadata.uid}')
+          BOOT_UID=$(kubectl get job keystone-ipp-bootstrap -n openstack -o jsonpath='{.metadata.uid}')
+          echo "db-sync UID ${BASE_SYNC} -> ${SYNC_UID}, bootstrap UID ${BASE_BOOT} -> ${BOOT_UID}"
+          if [ -z "${BASE_SYNC}" ] || [ "${BASE_SYNC}" = "${SYNC_UID}" ]; then
+            echo "FAIL: the db-sync Job was not re-run for the changed pull policy"
+            exit 1
+          fi
+          if [ -z "${BASE_BOOT}" ] || [ "${BASE_BOOT}" != "${BOOT_UID}" ]; then
+            echo "FAIL: the bootstrap Job was re-run; its rerun key did not change"
+            exit 1
+          fi
+          echo "OK: db-sync re-ran, bootstrap kept its Job"
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - keystone/keystone-ipp
+        - deployment/keystone-ipp
+        - jobs
+        - cronjobs
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - podLogs:
+        selector: app.kubernetes.io/instance=keystone-ipp
+        namespace: openstack
+        tail: 50
+    - events:
+        namespace: openstack

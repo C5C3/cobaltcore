@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="848" viewBox="0 0 1808 848" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One ControlPlane resource, many OpenStack services">
+<title>One ControlPlane resource, many OpenStack services</title>
+<rect width="1808" height="848" fill="#F6F5F1"/>
+<rect x="41.5" y="41.5" width="1325" height="765" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="68" y="62" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="106" y="88.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="158" y="90.8" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<rect x="69" y="121" width="382" height="110" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="88" y="160.36" font-size="26" font-weight="700" fill="#2B3440">GitOps</text>
+<rect x="89" y="181" width="168" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="173" y="206.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">flux-operator</text>
+<rect x="271" y="181" width="160" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="351" y="206.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">FluxInstance</text>
+<rect x="513" y="121" width="826" height="110" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="532" y="160.36" font-size="26" font-weight="700" fill="#2B3440">Secrets &amp; PKI</text>
+<rect x="533" y="181" width="184" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="625" y="206.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">cert-manager</text>
+<rect x="735" y="181" width="134" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="802" y="206.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">OpenBao</text>
+<rect x="887" y="181" width="322" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1048" y="206.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">External Secrets Operator</text>
+<rect x="69.5" y="265.5" width="381" height="347" rx="14.5" fill="#E6F1EA" stroke="#2F8A57" stroke-width="3"/>
+<text x="88" y="312.08" font-size="28" font-weight="700" fill="#1E6B40">c5c3-operator</text>
+<rect x="88" y="336" width="214" height="40" rx="20" fill="#1E6B40"/>
+<text x="195" y="364.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane CR</text>
+<text x="88" y="416.24" font-size="24" font-weight="400" fill="#2B3440">Creates infrastructure CRs,</text>
+<text x="88" y="447.44" font-size="24" font-weight="400" fill="#2B3440">service CRs and K-ORC</text>
+<text x="88" y="478.64" font-size="24" font-weight="400" fill="#2B3440">resources, and reports</text>
+<text x="88" y="509.84" font-size="24" font-weight="400" fill="#2B3440">readiness in the ControlPlane</text>
+<text x="88" y="541.04" font-size="24" font-weight="400" fill="#2B3440">status</text>
+<rect x="513.5" y="265.5" width="381" height="347" rx="14.5" fill="#E7EDF9" stroke="#2457C5" stroke-width="3"/>
+<text x="532" y="312.08" font-size="28" font-weight="700" fill="#1D47A6">Service operators</text>
+<rect x="533" y="337" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="614" y="362.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">keystone</text>
+<rect x="713" y="337" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="794" y="362.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">horizon</text>
+<rect x="533" y="381" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="614" y="406.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">glance</text>
+<rect x="713" y="381" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="794" y="406.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">placement</text>
+<rect x="533" y="425" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="614" y="450.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">barbican</text>
+<rect x="713" y="425" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="794" y="450.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">neutron</text>
+<rect x="533" y="469" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="614" y="494.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">cinder</text>
+<rect x="713" y="469" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="794" y="494.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">nova</text>
+<rect x="533" y="513" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="614" y="538.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovn</text>
+<text x="532" y="586.64" font-size="24" font-weight="400" fill="#55606E">One operator per service</text>
+<rect x="957.5" y="265.5" width="381" height="347" rx="14.5" fill="#E7EDF9" stroke="#2457C5" stroke-width="3"/>
+<text x="976" y="312.08" font-size="28" font-weight="700" fill="#1D47A6">OpenStack services</text>
+<rect x="977" y="337" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1058" y="362.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Keystone</text>
+<rect x="1157" y="337" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1238" y="362.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Horizon</text>
+<rect x="977" y="381" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1058" y="406.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Glance</text>
+<rect x="1157" y="381" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1238" y="406.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Placement</text>
+<rect x="977" y="425" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1058" y="450.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Barbican</text>
+<rect x="1157" y="425" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1238" y="450.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Neutron</text>
+<rect x="977" y="469" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1058" y="494.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Cinder</text>
+<rect x="1157" y="469" width="162" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1238" y="494.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Nova</text>
+<rect x="977" y="513" width="342" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1148" y="538.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">OVN central + chassis</text>
+<rect x="976" y="560" width="344" height="36" rx="18" fill="#1D47A6"/>
+<text x="1148" y="586.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Exposed via Gateway API</text>
+<rect x="69.5" y="651.5" width="381" height="131" rx="14.5" fill="#E6F1EA" stroke="#2F8A57" stroke-width="3"/>
+<text x="88" y="694.08" font-size="28" font-weight="700" fill="#1E6B40">K-ORC</text>
+<text x="88" y="732.24" font-size="24" font-weight="400" fill="#2B3440">Declarative OpenStack</text>
+<text x="88" y="763.44" font-size="24" font-weight="400" fill="#2B3440">resource management</text>
+<rect x="513" y="651" width="826" height="132" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="532" y="694.08" font-size="28" font-weight="700" fill="#2B3440">Infrastructure</text>
+<text x="740" y="692.64" font-size="24" font-weight="400" fill="#55606E">managed by their own operators</text>
+<rect x="533" y="723" width="211" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="638.5" y="748.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB (Galera)</text>
+<rect x="760" y="723" width="153" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="836.5" y="748.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Memcached</text>
+<rect x="929" y="723" width="219" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1038.5" y="748.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">RabbitMQ (opt-in)</text>
+<rect x="1164" y="723" width="150" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1239" y="748.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garage (S3)</text>
+<rect x="1439" y="327" width="328" height="288" rx="15" fill="#EEF0F3" stroke="#B9C2CC" stroke-width="2"/>
+<rect x="1425.5" y="313.5" width="327" height="287" rx="14.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<text x="1448" y="358.64" font-size="24" font-weight="700" fill="#55606E" letter-spacing="2">OPTIONAL</text>
+<text x="1448" y="402.8" font-size="30" font-weight="700" fill="#17202B">Target clusters</text>
+<text x="1448" y="448.24" font-size="24" font-weight="400" fill="#2B3440">Receive projected service</text>
+<text x="1448" y="479.44" font-size="24" font-weight="400" fill="#2B3440">workloads, registered via</text>
+<text x="1448" y="510.64" font-size="24" font-weight="400" fill="#2B3440">kubeconfig Secrets</text>
+<polyline points="452,444 499.5,444" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="510,444 495,451.2 495,436.8" fill="#2F8A57"/>
+<polyline points="896,444 943.5,444" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="954,444 939,451.2 939,436.8" fill="#2457C5"/>
+<polyline points="260,614 260,637.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="260,648 252.8,633 267.2,633" fill="#2F8A57"/>
+<polyline points="452,584 482,584" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polyline points="482,584 482,717 499.5,717" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="510,717 495,724.2 495,709.8" fill="#2F8A57"/>
+<polyline points="1340,444 1411.5,444" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1422,444 1407,451.2 1407,436.8" fill="#3A4452"/>
+</svg>

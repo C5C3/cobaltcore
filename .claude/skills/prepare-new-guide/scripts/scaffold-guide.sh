@@ -21,7 +21,8 @@
 # Usage: scaffold-guide.sh <slug> --devstack <devstack> [options]
 #   <slug>                guide file slug ([a-z0-9-]+, becomes docs/guides/<slug>.md,
 #                         or docs/guides/<service>/<slug>.md with --service)
-#   --devstack <name>     quick-start | quick-start-extended | quick-start-controlplane
+#   --devstack <name>     quick-start | quick-start-extended | quick-start-controlplane |
+#                         quick-start-metal-stack
 #   --service <name>      the guide is service-specific and lives one level deeper
 #                         (docs/guides/<service>/) — deepens the devstack link
 #                         and makes that service the subject of the ControlPlane
@@ -36,7 +37,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <slug> --devstack <quick-start|quick-start-extended|quick-start-controlplane> [--service <name>] [--title <title>] [--opt-in WITH_X=true]... [--suite tests/e2e/...]" >&2
+  echo "usage: $0 <slug> --devstack <quick-start|quick-start-extended|quick-start-controlplane|quick-start-metal-stack> [--service <name>] [--title <title>] [--opt-in WITH_X=true]... [--suite tests/e2e/...]" >&2
   exit 2
 }
 
@@ -107,9 +108,27 @@ if [[ ! "${SLUG}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
   exit 2
 fi
 case "${DEVSTACK}" in
-  quick-start | quick-start-extended | quick-start-controlplane) ;;
+  quick-start | quick-start-extended | quick-start-controlplane | quick-start-metal-stack) ;;
   *) usage ;;
 esac
+
+# The metal-stack bring-up sets WITH_NFS=true itself, and
+# preflight_external_cluster in hack/deploy-infra.sh refuses the kind-only
+# opt-ins under EXTERNAL_CLUSTER=true. WITH_CHAOS_MESH=true and WITH_DIZZY=true
+# are accepted: the lab overlay carries chaos-mesh/ and dizzy/.
+if [[ "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
+  if [[ " ${OPT_INS} " == *" WITH_NFS=true "* ]]; then
+    echo "error: WITH_NFS=true is already part of the metal-stack bring-up" >&2
+    exit 2
+  fi
+  for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
+    WITH_OVN_KERNEL_MODULES; do
+    if [[ " ${OPT_INS} " == *" ${flag}=true "* ]]; then
+      echo "error: ${flag}=true is kind-only; hack/deploy-infra.sh refuses it under EXTERNAL_CLUSTER=true" >&2
+      exit 2
+    fi
+  done
+fi
 
 if [[ -z "${TITLE}" ]]; then
   TITLE="$(printf '%s' "${SLUG}" | awk -F- '{
@@ -157,6 +176,10 @@ ${OPT_SUFFIX}make deploy-infra"
     DEVSTACK_LABEL="Quick Start (ControlPlane)"
     BRING_UP="KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true ${OPT_SUFFIX}make deploy-infra"
     ;;
+  quick-start-metal-stack)
+    DEVSTACK_LABEL="Quick Start (metal-stack)"
+    BRING_UP="EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true ${OPT_SUFFIX}make deploy-infra"
+    ;;
 esac
 
 # --- Skeleton ---------------------------------------------------------------
@@ -189,9 +212,12 @@ ${BRING_UP}
 EOF
 
 case "${DEVSTACK}" in
-  quick-start-controlplane)
+  quick-start-controlplane | quick-start-metal-stack)
+    THROUGH="through to its final **Verify** step,"
+    [[ "${DEVSTACK}" == "quick-start-metal-stack" ]] &&
+      THROUGH="through Part 1, and Part 2 when this guide needs servers,"
     cat <<EOF
-Follow that tutorial through to its final **Verify** step, so a \`ControlPlane\`
+Follow that tutorial ${THROUGH} so a \`ControlPlane\`
 CR named \`controlplane\` is \`Ready\` in the \`openstack\` namespace and its projected
 \`controlplane-${SUBJECT}\` ${SUBJECT_KIND} child is running. Every resource name in the
 examples below is one that devstack produces.
@@ -246,7 +272,7 @@ produces (see the devstack table in docs/contributing/guide-conventions.md).
 TODO: how the reader confirms the change took effect.
 EOF
 
-if [[ "${DEVSTACK}" == "quick-start-controlplane" ]]; then
+if [[ "${DEVSTACK}" == "quick-start-controlplane" || "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
   cat <<EOF
 
 ## Standalone ${SUBJECT_KIND}, without a ControlPlane

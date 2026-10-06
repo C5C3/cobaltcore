@@ -422,6 +422,7 @@ func dbCleanCronJob(barbican *barbicanv1alpha1.Barbican, configSecretName string
 							Containers: []corev1.Container{{
 								Name:            dbCleanComponent,
 								Image:           barbican.Spec.Image.Reference(),
+								ImagePullPolicy: barbican.Spec.Image.EffectivePullPolicy(),
 								Command:         dbCleanCommand(clean),
 								SecurityContext: deployment.RestrictedSecurityContext(),
 								// Override [database] connection via the oslo.config env-var so

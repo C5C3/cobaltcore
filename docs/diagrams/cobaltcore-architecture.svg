@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1820" height="932" viewBox="0 0 1820 932" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One cloud, five Kubernetes clusters">
+<title>One cloud, five Kubernetes clusters</title>
+<rect width="1820" height="932" fill="#F6F5F1"/>
+<rect x="41.5" y="41.5" width="285" height="133" rx="16.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
+<text x="60" y="86.96" font-size="36" font-weight="700" fill="#4B3592">Gardener</text>
+<text x="60" y="123.64" font-size="24" font-weight="400" fill="#4B3592">IronCore provider</text>
+<text x="60" y="153.64" font-size="24" font-weight="400" fill="#4B3592">extension</text>
+<text x="40" y="214.24" font-size="24" font-weight="600" fill="#4B3592">Creates and manages all</text>
+<text x="40" y="245.44" font-size="24" font-weight="600" fill="#4B3592">K8s clusters</text>
+<rect x="41.5" y="663.5" width="285" height="227" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
+<text x="60" y="704.64" font-size="24" font-weight="700" fill="#A44E07" letter-spacing="2">BARE METAL</text>
+<text x="60" y="752.96" font-size="36" font-weight="700" fill="#A44E07">IronCore</text>
+<rect x="232" y="722" width="76" height="36" rx="18" fill="#A44E07"/>
+<text x="270" y="748.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="60" y="798.24" font-size="24" font-weight="400" fill="#2B3440">Provisions every node</text>
+<text x="60" y="829.44" font-size="24" font-weight="400" fill="#2B3440">(orange) and manages</text>
+<text x="60" y="860.64" font-size="24" font-weight="400" fill="#2B3440">it out-of-band</text>
+<rect x="461.5" y="41.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="785.5" y="41.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1109.5" y="41.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="473.5" y="51.5" width="917" height="57" rx="12.5" fill="#E6F1EA" stroke="#2F8A57" stroke-width="3"/>
+<rect x="496" y="62" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="534" y="88.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="586" y="90.8" font-size="30" font-weight="700" fill="#1E6B40">CobaltCore Operation and Monitoring</text>
+<rect x="477" y="121" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="608" y="146.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="801" y="121" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="932" y="146.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="1125" y="121" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1256" y="146.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="461.5" y="181.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="785.5" y="181.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1109.5" y="181.5" width="293" height="121" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="473.5" y="191.5" width="917" height="57" rx="12.5" fill="#E7EDF9" stroke="#2457C5" stroke-width="3"/>
+<rect x="496" y="202" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="534" y="228.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="586" y="230.8" font-size="30" font-weight="700" fill="#1D47A6">OpenStack Control Plane</text>
+<rect x="1156" y="202" width="220" height="36" rx="18" fill="#1D47A6"/>
+<text x="1266" y="228.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OpenStack API</text>
+<rect x="477" y="261" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="608" y="286.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="801" y="261" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="932" y="286.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="1125" y="261" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1256" y="286.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="461.5" y="321.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="785.5" y="321.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1109.5" y="321.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="473.5" y="331.5" width="917" height="99" rx="12.5" fill="#E3F1F2" stroke="#0E7D89" stroke-width="3"/>
+<rect x="496" y="342" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="534" y="368.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="586" y="370.8" font-size="30" font-weight="700" fill="#0B5F69">Ceph Storage</text>
+<rect x="477" y="387" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<text x="608" y="412.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="801" y="387" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<text x="932" y="412.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="1125" y="387" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<text x="1256" y="412.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="477" y="441" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="608" y="466.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="801" y="441" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="932" y="466.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="1125" y="441" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1256" y="466.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="461.5" y="503.5" width="293" height="205" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="785.5" y="503.5" width="293" height="205" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1109.5" y="503.5" width="293" height="205" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1197.5" y="513.5" width="117" height="31" rx="8.5" fill="#E7EDF9" stroke="#2457C5" stroke-width="3"/>
+<text x="1256" y="537.64" font-size="24" font-weight="700" fill="#1D47A6" text-anchor="middle">VM</text>
+<rect x="473.5" y="555.5" width="917" height="99" rx="12.5" fill="#F8E8E9" stroke="#C6343C" stroke-width="3"/>
+<rect x="496" y="566" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="534" y="592.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="586" y="594.8" font-size="30" font-weight="700" fill="#A3262E">OpenStack Compute</text>
+<text x="912" y="592.64" font-size="24" font-weight="400" fill="#A3262E">KVM or Cloud Hypervisor</text>
+<rect x="477" y="611" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="608" y="636.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Hypervisor</text>
+<rect x="801" y="611" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="932" y="636.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Hypervisor</text>
+<rect x="1125" y="611" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1256" y="636.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Hypervisor</text>
+<rect x="477" y="665" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="608" y="690.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="801" y="665" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="932" y="690.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="1125" y="665" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1256" y="690.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="461.5" y="727.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="785.5" y="727.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="1109.5" y="727.5" width="293" height="163" rx="8.5" fill="#FFF8F1" stroke="#C9620F" stroke-width="3"/>
+<rect x="473.5" y="737.5" width="917" height="99" rx="12.5" fill="#FAF3DA" stroke="#B38A00" stroke-width="3"/>
+<rect x="496" y="748" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="534" y="774.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="586" y="776.8" font-size="30" font-weight="700" fill="#6F5600">OpenStack Network</text>
+<text x="912" y="774.64" font-size="24" font-weight="400" fill="#6F5600">Outbound: load balancer, router, BGP</text>
+<rect x="477" y="793" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="608" y="818.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="801" y="793" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="932" y="818.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="1125" y="793" width="262" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1256" y="818.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN</text>
+<rect x="477" y="847" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="608" y="872.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="801" y="847" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="932" y="872.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<rect x="1125" y="847" width="262" height="34" rx="17" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1256" y="872.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Garden Linux</text>
+<g transform="translate(1494,42)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="3.5"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1564" y="64.96" font-size="26" font-weight="700" fill="#17202B">API user</text>
+<text x="1564" y="100.24" font-size="24" font-weight="400" fill="#55606E">Uses the</text>
+<text x="1564" y="131.44" font-size="24" font-weight="400" fill="#55606E">OpenStack API, e.g.</text>
+<text x="1564" y="162.64" font-size="24" font-weight="400" fill="#55606E">to launch VMs</text>
+<g transform="translate(1494,680)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="3.5"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1564" y="702.96" font-size="26" font-weight="700" fill="#17202B">End user</text>
+<text x="1564" y="738.24" font-size="24" font-weight="400" fill="#55606E">Reaches the VMs</text>
+<text x="1564" y="769.44" font-size="24" font-weight="400" fill="#55606E">from outside</text>
+<polyline points="328,864 444.7,864" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polygon points="458,864 439,873.6 439,854.4" fill="#C9620F"/>
+<polyline points="410,864 410,138" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polyline points="410,138 444.7,138" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polygon points="458,138 439,147.6 439,128.4" fill="#C9620F"/>
+<polyline points="410,278 444.7,278" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polygon points="458,278 439,287.6 439,268.4" fill="#C9620F"/>
+<polyline points="410,458 444.7,458" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polygon points="458,458 439,467.6 439,448.4" fill="#C9620F"/>
+<polyline points="410,682 444.7,682" fill="none" stroke="#C9620F" stroke-width="4"/>
+<polygon points="458,682 439,691.6 439,672.4" fill="#C9620F"/>
+<rect x="402" y="211" width="16" height="18" fill="#F6F5F1"/>
+<rect x="402" y="351" width="16" height="18" fill="#F6F5F1"/>
+<rect x="402" y="575" width="16" height="18" fill="#F6F5F1"/>
+<rect x="402" y="757" width="16" height="18" fill="#F6F5F1"/>
+<polyline points="328,80 461.5,80" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polygon points="472,80 457,87.2 457,72.8" fill="#5E43A8"/>
+<polyline points="360,80 360,766" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polyline points="360,220 461.5,220" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polygon points="472,220 457,227.2 457,212.8" fill="#5E43A8"/>
+<polyline points="360,360 461.5,360" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polygon points="472,360 457,367.2 457,352.8" fill="#5E43A8"/>
+<polyline points="360,584 461.5,584" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polygon points="472,584 457,591.2 457,576.8" fill="#5E43A8"/>
+<polyline points="360,766 461.5,766" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polygon points="472,766 457,773.2 457,758.8" fill="#5E43A8"/>
+<polyline points="1522,122 1522,220 1388.5,220" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1378,220 1393,212.8 1393,227.2" fill="#2457C5"/>
+<polyline points="1392,242 1454,242" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1454,242 1454,360 1404.5,360" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1394,360 1409,352.8 1409,367.2" fill="#2457C5"/>
+<polyline points="1454,242 1454,584 1404.5,584" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1394,584 1409,576.8 1409,591.2" fill="#2457C5"/>
+<polyline points="1454,242 1454,766 1404.5,766" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1394,766 1409,758.8 1409,773.2" fill="#2457C5"/>
+<polyline points="1256,548 1256,597.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1256,608 1248.8,593 1263.2,593" fill="#2457C5"/>
+<text x="1070" y="537.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="end">Storage for VMs</text>
+<polyline points="1094,436 1094,529 1183.5,529" fill="none" stroke="#0E7D89" stroke-width="3"/>
+<polygon points="1194,529 1179,536.2 1179,521.8" fill="#0E7D89"/>
+<polyline points="770,734 770,670.5" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="770,660 777.2,675 762.8,675" fill="#B38A00"/>
+<polyline points="1094,734 1094,670.5" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="1094,660 1101.2,675 1086.8,675" fill="#B38A00"/>
+<polyline points="1522,758 1522,810 1404.5,810" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="1394,810 1409,802.8 1409,817.2" fill="#B38A00"/>
+</svg>

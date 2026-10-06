@@ -1073,7 +1073,15 @@ func keystoneServiceControlPlaneRefExtractor(obj client.Object) []string {
 	if !ok || ks.Spec.ControlPlaneRef.Name == "" {
 		return nil
 	}
-	return []string{cmp.Or(ks.Spec.ControlPlaneRef.Namespace, ks.Namespace) + "/" + ks.Spec.ControlPlaneRef.Name}
+	return []string{keystoneServiceControlPlaneRefIndexValue(
+		cmp.Or(ks.Spec.ControlPlaneRef.Namespace, ks.Namespace), ks.Spec.ControlPlaneRef.Name)}
+}
+
+// keystoneServiceControlPlaneRefIndexValue returns the
+// KeystoneServiceControlPlaneRefIndexKey value of the ControlPlane namespace/name:
+// the one encoding the extractor writes and every MatchingFields lookup matches.
+func keystoneServiceControlPlaneRefIndexValue(namespace, name string) string {
+	return namespace + "/" + name
 }
 
 // registerKeystoneServiceControlPlaneRefIndex registers the field indexer
@@ -1096,7 +1104,7 @@ func controlPlaneToKeystoneServicesMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var registrations c5c3v1alpha1.KeystoneServiceList
 		if err := c.List(ctx, &registrations, client.MatchingFields{
-			KeystoneServiceControlPlaneRefIndexKey: obj.GetNamespace() + "/" + obj.GetName(),
+			KeystoneServiceControlPlaneRefIndexKey: keystoneServiceControlPlaneRefIndexValue(obj.GetNamespace(), obj.GetName()),
 		}); err != nil {
 			log.FromContext(ctx).Error(err, "listing KeystoneServices for ControlPlane watch")
 			return nil

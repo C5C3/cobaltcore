@@ -22,16 +22,26 @@
 # ClusterRole/ClusterRoleBinding). It also requires the same Namespace as the shared
 # infra (MariaDB, Memcached, Secrets) because a namespace-scoped operator can only
 # watch its own release Namespace.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# The namespace-scoped operator reconciles every Keystone in "openstack" beside
+# the cluster-wide one, and every other keystone suite puts its Keystone there.
+# Two operators would drive another suite's upgrade or rotation at once, so this
+# suite runs alone, before the concurrent suites start.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: keystone-namespace-scoped-rbac
 spec:
   namespace: openstack
+  concurrent: false
   timeouts:
     assert: 5m
   steps:
   # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
+  # Step 5 uninstalls the release before chainsaw deletes the Keystone. The
+  # step cleanup runs at the end of the test and removes a release that a
+  # failed step left installed, so it cannot outlive this suite.
   - try:
     - script:
         timeout: 120s
@@ -44,6 +54,7 @@ spec:
             --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator \
             --set image.tag=dev \
             --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
             --wait --timeout 90s
     catch:
     - script:
@@ -54,6 +65,10 @@ spec:
           kubectl get pods -n openstack -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        content: |
+          helm uninstall keystone-operator-ns-scoped -n openstack 2>&1 || true
   # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
   - try:
     - assert:
