@@ -62,6 +62,12 @@ it has to provide in return, is written down in
 dedicated bare-metal cluster of the original document, provisioned by IronCore
 and managed by Gardener, stays a sketch.
 
+The figure shows the node layer as the Quick Start (metal-stack) builds it
+today: on the workers of the control-plane cluster, without a dedicated compute
+cluster.
+
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, an NFS server for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the NFS server inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../diagrams/compute-metal-stack-lab.svg)
+
 ## Source
 
 - [Hypervisor components](https://c5c3.github.io/C5C3/03-components/02-hypervisor)
