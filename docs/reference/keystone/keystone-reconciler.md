@@ -1748,6 +1748,28 @@ the rotation CronJob) from the **write** onto the production Secret
 mutate the production `{name}-fernet-keys` Secret — eliminating the
 token-forgery primitive from the CronJob's attack surface.
 
+The figure shows who reads and who writes each Secret. Its numbers are the
+steps below.
+
+![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../../diagrams/secrets-rotation-keys.svg)
+
+1. The kubelet mounts `{name}-fernet-keys` into the Job pod and an init
+   container copies it to an `emptyDir`.
+2. The Job runs `keystone-manage fernet_rotate` on the copy and sends one PATCH
+   with the new `data` and the annotation
+   `cobaltcore.c5c3.io/rotation-completed-at`.
+3. The Secret watch wakes the operator, which checks key count, key format and
+   uniqueness.
+4. A valid payload replaces the `data` of the production Secret in one
+   `Update`, the staging Secret is deleted, and the event `FernetKeysRotated` is
+   emitted. A rejected payload raises the Warning event `RotationRejected`, the
+   operator clears the staging Secret's `data` and annotation, the production
+   Secret is not written, and no condition changes.
+5. The kubelet projects the new `data` into `/etc/keystone/fernet-keys/` of the
+   running pods. No pod restarts.
+6. `{name}-fernet-keys-backup` copies the keys to
+   `kv-v2/openstack/keystone/{ns}/{name}/fernet-keys`.
+
 **Staging Secret naming.** Per `fernetStagingSecretName`, the staging Secret
 is `{keystone.Name}-fernet-keys-rotation`. It is created and owned by the
 operator via `ensureFernetStagingSecret`:
@@ -1920,6 +1942,11 @@ The credential rotation path mirrors the Fernet split exactly: the
 `{name}-credential-rotate` CronJob computes rotated keys, PATCHes them into
 a dedicated staging Secret, and the operator performs the final write onto
 the production `{name}-credential-keys` Secret.
+
+The [figure and its steps](#key-rotation-rbac-split) under
+`reconcileFernetKeys` apply with `credential` in every name. Step 2 runs
+`keystone-manage credential_migrate` against the database after
+`credential_rotate`.
 
 **Staging Secret naming.** Per `credentialStagingSecretName`, the staging
 Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
