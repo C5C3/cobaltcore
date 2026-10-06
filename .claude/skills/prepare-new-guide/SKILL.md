@@ -50,7 +50,7 @@ sit flat under `docs/guides/`. The skeleton carries the `::: info Devstack`
 container with the devstack's verbatim bring-up command, the section
 structure (`## Steps`, `## Verification`, `## See also`), and the terminal
 `## Tested by` fence; the ControlPlane variant additionally carries the
-operator-owned `::: warning` block and a
+operator-ownership explanation in the single allowed prerequisite paragraph and a
 `## Standalone <Service>, without a ControlPlane` stub — `--service` also
 selects the subject of that prose (projected child `controlplane-<service>`;
 default subject is keystone). Until the

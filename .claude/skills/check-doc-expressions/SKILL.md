@@ -32,7 +32,8 @@ prose is muddy or inconsistent.
 |---|---|---|
 | Sentence clarity | short, direct sentences; one idea per sentence; no dangling references | the intended reader outcome |
 | Voice and tone | active voice, concrete verbs, minimal hedging; no marketing or aspirational phrasing ("the shortest path to…", "seamlessly") in operational docs | `STYLE_GUIDE.md` and the doc family style used elsewhere in the repo |
-| Rhetorical-device budget | em-dashes and italic emphasis stay within their per-1,000-word limits, antithesis ("not X, but Y"), aphoristic one-liner closers, and `:::` callouts within their per-page limits; filler vocabulary, quality self-labels, and meta-signposting are cut | `STYLE_GUIDE.md`'s budget table and Do/Don't list |
+| Rhetorical-device budget | em-dashes and italic emphasis stay within their per-1,000-word limits, antithesis ("not X, but Y"), aphoristic one-liner closers, and `:::` callouts within their per-page limits; filler vocabulary, house slang, quality self-labels, and meta-signposting are cut; bold and list-shape candidates are surfaced | `STYLE_GUIDE.md`'s budget table and Do/Don't list |
+| Agency | names the component that actually performs an action; metadata and lifecycle hooks are not credited with work performed by a controller | the owning code path |
 | Terminology | one term per concept, no accidental synonyms | established usage across `docs/`, anchored on the CRD field, condition, and resource names the `docs/reference/` pages define |
 | Command examples | commands are complete, ordered, and copyable | the real workflow the docs describe |
 | Explanatory text | definitions appear before specialized terms are used | the implementation or process being documented |
@@ -75,6 +76,18 @@ Check whether each paragraph does the following:
   this page never defines (checking the page itself, not whether some
   other page defines it)
 - makes examples match the surrounding text
+- introduces an example before using its resource, service, or field names
+  in a general statement; flag general prose that says "so here" or
+  "(or services.horizon)" before the example has introduced that name
+- names the component that actually acts. Verify agency against the owning
+  code: "The finalizer deletes" and "labels connect" can credit the wrong
+  actor, so identify the controller, API operation, selector, or other
+  component that performs the behavior
+- keeps platform-internal side remarks only when the reader can use them to
+  make a decision or take an action
+- states failure modes directly; flag a happy-path sentence that tucks a
+  failure condition into parentheses
+- opens every optional section by saying when the reader needs that section
 - keeps warnings and exceptions easy to spot
 - gives each step of a multi-step walkthrough comparable depth — flag a
   step that is a bare command next to siblings with full explanations
@@ -84,8 +97,9 @@ Check whether each paragraph does the following:
 `STYLE_GUIDE.md` sets checkable limits: at most 2 em-dashes and 4
 italic spans per ~1,000 words, and per page at most 1 antithesis
 ("not X, but Y" / "rather than"), 1 aphoristic one-liner close, and
-1–2 `:::` callout boxes. Filler vocabulary and quality self-labels are
-retired outright. Count first, then judge:
+1–2 `:::` callout boxes. Filler vocabulary, house slang, and quality
+self-labels are scored at zero. Bold spans are counted; bold lead-ins and
+one-item numbered lists are advisory candidates. Count first, then judge:
 
 ```bash
 bash .claude/skills/check-doc-expressions/scripts/count-style-budget.sh [<page.md|dir>...]
@@ -97,8 +111,9 @@ Without arguments it reads every `docs/**/*.md` outside
 HTML comments and tags, inline code, link and image URLs, code imports,
 container markers, and dash-only table cells, then prints one line per
 page: `[OVER]` or `[PASS]`, the word count, each device's count (em and
-ital also per 1,000 words), and a `!` on every device over its
-allowance. A top-10 summary by excess follows (`--top N` changes it).
+ital also per 1,000 words), and a `!` on each budgeted device over its
+allowance. Bold, bold-lead, and one-list counts are informational and do not
+affect the budget. A top-10 summary by excess follows (`--top N` changes it).
 `--page` lists every hit as `file:line: device: snippet`, the form
 [[fix-docs]] edits from. The exit code is 0 unless `--strict` is given
 and a page is over budget. The helper `count_style_budget.py` beside
@@ -117,16 +132,24 @@ Then judge each hit:
   report only real slogans ("Idempotency is the whole point."). A slogan
   that a `:::` box then repeats is not counted; read for it.
 - **call**: a guide's `::: info Devstack` container is required by
-  `docs/contributing/guide-conventions.md`, and the operator-owned
-  `::: warning` of a ControlPlane guide comes with the
-  [[prepare-new-guide]] skeleton (its V4 check wants one beside any edit
-  of a projected child). Both count toward the budget but are not
-  findings. `::: details` and `::: v-pre` are not counted.
+  `docs/contributing/guide-conventions.md`. A `::: warning` required by
+  [[prepare-new-guide]] for an explicit projected-child mutation is
+  safety-critical; count it, but do not report it as a style finding. The
+  scaffold states projected-child ownership in prerequisite prose rather than
+  adding a second callout. `::: details` and `::: v-pre` are not counted.
 - **filler** (`load-bearing`, `by construction`, `structural rather than
   aspirational`, `first-class`, `precisely`, `exactly`, `deliberately`):
   `precisely` and `exactly` are cut outright rather than replaced;
   "exactly" before a number ("exactly one of clusterRef or host") states
   a quantity and is not counted.
+- **slang** (`knob`, `materialize`/`materialise`, `re-key`, `park`/`parks`,
+  `stamp`, `mint`, `land`, `leg`, `as it stands`, `survives`, `unsplit`,
+  `wiring`): candidates scored like filler; use the plain action or name.
+- **bold**, **bold-lead**, **one-list**: bold is an informational span count;
+  bold lead-ins that function as headings and one-item numbered lists are
+  review candidates, not automatic budget violations. Inspect `--page` hits
+  and remove formatting or numbering that implies structure the text does not
+  have.
 - **label** ("robust", "clean", "battle-tested", "seamless"): a
   self-label with nothing concrete backing it. The fix replaces the
   label with the fact it was standing in for (a linked test, a
@@ -159,6 +182,8 @@ For commands, YAML, shell snippets, and API examples:
   times out, or needs a retry, and whether failure-prone environment
   assumptions (network access, resource limits) are stated up front as
   prerequisites rather than discovered by trial and error
+- check that optional sections begin by naming when a reader needs them, and
+  that parenthetical failure modes have been made visible as direct guidance
 
 ### 5. Report
 

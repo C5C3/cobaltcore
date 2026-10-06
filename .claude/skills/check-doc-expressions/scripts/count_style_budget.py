@@ -24,7 +24,11 @@ table separator rows) while keeping line numbers, then counts:
            that ends on a declarative sentence of at
            most 7 words, without digits or code        <= 1 per page
   filler   retired filler vocabulary                   0
+    slang    house slang                                  0
   label    quality self-labels                         0
+    bold     bold spans                                  informational
+    bold-lead bold lead-in candidates acting as headings informational
+    one-list one-item numbered-list candidates            informational
 
 A table cell holding only a dash (the empty-cell convention) is not counted
 as an em-dash. "exactly" before a number ("exactly one of clusterRef or host")
@@ -56,8 +60,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 RATE_BUDGET = {"em": 2, "ital": 4}
-PAGE_BUDGET = {"anti": 1, "call": 2, "aph": 1, "filler": 0, "label": 0}
-DEVICES = ("em", "ital", "anti", "call", "aph", "filler", "label")
+PAGE_BUDGET = {"anti": 1, "call": 2, "aph": 1, "filler": 0, "slang": 0, "label": 0}
+BUDGET_DEVICES = (*RATE_BUDGET, *PAGE_BUDGET)
+ADVISORY_DEVICES = ("bold", "bold-lead", "one-list")
+DEVICES = (*BUDGET_DEVICES, *ADVISORY_DEVICES)
 
 CALLOUT_TYPES = {"info", "tip", "warning", "danger", "note", "caution", "important"}
 
@@ -70,6 +76,21 @@ FILLER = (
     "precisely",
     r"exactly(?![\s-]+(?:\*\*)?(?:one|two|three|four|five|once|twice|\d))",
     "deliberately",
+)
+# House slang scored like retired filler vocabulary (STYLE_GUIDE.md, Do/Don't 8).
+SLANG = (
+    r"\bknob\b",
+    r"\bmateriali[sz](?:e|es|ed|ing)\b",
+    r"\bre-key(?:s|ed|ing)?\b",
+    r"\bparks?\b",
+    r"\bstamp\b",
+    r"\bmint\b",
+    r"\bland\b",
+    r"\bleg\b",
+    r"\bas\s+it\s+stands\b",
+    r"\bsurvives?\b",
+    r"\bunsplit\b",
+    r"\bwiring\b",
 )
 # Quality self-labels (STYLE_GUIDE.md, Do/Don't 5 and the pre-commit check).
 # "clean up" / "clean-up" is a verb, not a label.
@@ -93,11 +114,18 @@ ANTITHESIS = re.compile(
 FILLER_RE = re.compile(
     r"\b(?:" + "|".join(p.replace(" ", r"\s+") for p in FILLER) + r")\b", re.IGNORECASE
 )
+SLANG_RE = re.compile("|".join(SLANG), re.IGNORECASE)
 LABEL_RE = re.compile(r"(?<![\w-])(?:" + "|".join(LABELS) + r")(?![\w-])", re.IGNORECASE)
 
 ITALIC_STAR = re.compile(r"(?<![\w*\\])\*(?=[^\s*])(.+?)(?<=[^\s*\\])\*(?![\w*])")
 ITALIC_UNDERSCORE = re.compile(r"(?<![\w\\])_(?=[^\s_])(.+?)(?<=[^\s_\\])_(?!\w)")
 BOLD = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
+BOLD_LEAD_IN = re.compile(
+    r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?"
+    r"(?:\*\*[^*\n]+[:—]\*\*|\*\*[^*\n]+\*\*[:—]|"
+    r"__[^_\n]+[:—]__|__[^_\n]+__[:—])"
+)
+NUMBERED_LIST_ITEM = re.compile(r"^[ \t]*\d+[.)][ \t]+")
 
 FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -152,7 +180,7 @@ class Page:
         return self.count(device) > self.allowance(device)
 
     def excess(self) -> float:
-        return sum(max(0.0, self.count(d) - self.allowance(d)) for d in DEVICES)
+        return sum(max(0.0, self.count(d) - self.allowance(d)) for d in BUDGET_DEVICES)
 
 
 def clean(raw: str) -> tuple[list[str], list[str], list[Hit]]:
@@ -278,6 +306,26 @@ def aphorism_candidates(lines: list[str], kinds: list[str]) -> list[Hit]:
     return hits
 
 
+def one_item_numbered_lists(lines: list[str]) -> list[Hit]:
+    """Report numbered-list blocks with only one item as review candidates."""
+    starts = [i for i, line in enumerate(lines) if NUMBERED_LIST_ITEM.match(line)]
+    groups: list[list[int]] = []
+    for start in starts:
+        if groups:
+            previous = groups[-1][-1]
+            between = lines[previous + 1 : start]
+            if all(not line.strip() or line[:1].isspace() for line in between):
+                groups[-1].append(start)
+                continue
+        groups.append([start])
+    return [
+        Hit(start + 1, "one-list", lines[start].strip())
+        for group in groups
+        if len(group) == 1
+        for start in group
+    ]
+
+
 def analyse(path: Path) -> Page:
     raw = path.read_text(encoding="utf-8")
     lines, kinds, callouts = clean(raw)
@@ -291,6 +339,8 @@ def analyse(path: Path) -> Page:
         for m in re.finditer("—", line):
             page.hits.append(Hit(no, "em", snippet(line, m.start(), m.end())))
         unbolded = BOLD.sub(r"\2", line)
+        for m in BOLD.finditer(line):
+            page.hits.append(Hit(no, "bold", snippet(line, m.start(), m.end())))
         for rx in (ITALIC_STAR, ITALIC_UNDERSCORE):
             for m in rx.finditer(unbolded):
                 page.hits.append(Hit(no, "ital", m.group(0)))
@@ -300,9 +350,15 @@ def analyse(path: Path) -> Page:
         page.hits.append(Hit(line_of(text, m.start()), "anti", snippet(text, m.start(), m.end())))
     for m in FILLER_RE.finditer(text):
         page.hits.append(Hit(line_of(text, m.start()), "filler", snippet(text, m.start(), m.end(), 20)))
+    for m in SLANG_RE.finditer(text):
+        page.hits.append(Hit(line_of(text, m.start()), "slang", snippet(text, m.start(), m.end(), 20)))
     for m in LABEL_RE.finditer(text):
         page.hits.append(Hit(line_of(text, m.start()), "label", snippet(text, m.start(), m.end(), 20)))
     page.hits.extend(aphorism_candidates(lines, kinds))
+    for no, line in enumerate(lines, start=1):
+        if BOLD_LEAD_IN.match(line):
+            page.hits.append(Hit(no, "bold-lead", line.strip()))
+    page.hits.extend(one_item_numbered_lists(lines))
     page.hits.sort(key=lambda h: (h.line, DEVICES.index(h.device)))
     return page
 
@@ -315,7 +371,7 @@ def summary_line(page: Page) -> str:
         if d in RATE_BUDGET:
             rate = c * 1000.0 / page.words if page.words else 0.0
             cell += f"({rate:.1f}/k)"
-        if page.over(d):
+        if d in BUDGET_DEVICES and page.over(d):
             cell += "!"
         parts.append(cell)
     tag = "[OVER]" if page.excess() > 0 else "[PASS]"
@@ -384,11 +440,11 @@ def main() -> int:
     over = [p for p in pages if p.excess() > 0]
     print()
     print(f"[INFO] {len(pages)} page(s), {len(over)} over budget; "
-          f"'!' marks the device over its allowance; anti and aph are candidates to judge")
+          f"'!' marks a budget overage; anti and aph are candidates, bold-lead and one-list are advisory")
     if over:
         print(f"[INFO] top {min(args.top, len(over))} by excess:")
         for p in sorted(over, key=lambda x: (-x.excess(), x.path))[: args.top]:
-            devs = ", ".join(f"{d} {p.count(d)}/{p.allowance(d):.3g}" for d in DEVICES if p.over(d))
+            devs = ", ".join(f"{d} {p.count(d)}/{p.allowance(d):.3g}" for d in BUDGET_DEVICES if p.over(d))
             print(f"[INFO]   {p.excess():5.1f}  {p.path}  ({devs})")
     if args.strict and over:
         print(f"[FAIL] {len(over)} page(s) over the STYLE_GUIDE.md budget")

@@ -13,7 +13,9 @@
 #   call    ::: info/tip/warning/danger boxes  <= 2 per page
 #   aph     aphoristic one-liner candidates    <= 1 per page
 #   filler  retired filler vocabulary          0
+#   slang   house slang                       0
 #   label   quality self-labels                0
+#   bold    bold-span count (informational); bold-lead and one-list are advisory
 # One line per page ([OVER] or [PASS], '!' on each device over its
 # allowance), then the top pages by excess. Antithesis and aphorism are
 # heuristics: judge each candidate before reporting it.

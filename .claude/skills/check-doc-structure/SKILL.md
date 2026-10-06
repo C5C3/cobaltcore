@@ -108,6 +108,9 @@ Verify the page has the expected metadata and outline:
 - required headings appear in the expected order
 - no empty or duplicated sections remain after edits
 - code blocks and admonitions are not breaking the flow
+- guide `## Prerequisites` sections contain the `::: info Devstack` box and
+  at most one prose paragraph after it; do not add a second callout or a
+  one-item numbered list when the prerequisite can be stated in that paragraph
 
 ### 3. Check discoverability
 

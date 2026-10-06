@@ -33,6 +33,7 @@ style.
 | Repeated examples | duplicated command snippets and YAML blocks do not drift | the canonical workflow or config |
 | Cross-page claims | overview, guide, and reference pages tell the same story | the underlying code or process |
 | Code-grounded statements | docs that describe behavior match the implementation | the relevant code, config, or generated artifact |
+| External API claims | names, fields, scopes, and behavior match the upstream API contract | the upstream OpenAPI document, CRD, or specification for the stated version |
 | Environment/tooling claims | stated CLI/tool version requirements (or the absence of one) match what scripts actually enforce or require | `Makefile`, `hack/`, `scripts/`, CI workflow tool-version pins |
 | Terms defined once, used elsewhere | a term, daemon, or API named on one page is only meaningfully explained on a *different* page, with no link between them | the page the term actually appears on, checked against its own content |
 
@@ -90,6 +91,9 @@ Check the places where the same fact is likely repeated:
 - user docs versus reference docs
 - examples versus prose descriptions
 - repo docs versus deployment or release files
+- claims about an external API versus its upstream specification; verify the
+  relevant operation, schema, or version instead of inferring the contract
+  from CobaltCore's integration code
 
 ### 3. Check for contradictions and stale copies
 
@@ -105,6 +109,18 @@ Look for:
 - a term or reference a page uses that is only explained on a sibling
   page — the writer knew the definition existed somewhere, but the
   reader on this page doesn't have it
+- an external API claim that conflicts with the upstream spec, including
+  unsupported claims that a resource, field, or permission is required or
+  unnecessary
+- wording rejected in a review that remains in another guide; search the
+  guide corpus for the rejected phrase and equivalent wording before
+  reporting it fixed or consistent
+
+For external APIs, consult the upstream specification that matches the
+documented version and cite its operation or schema in the finding. If the
+version or authoritative spec is unclear, mark the claim needs research. When
+a review rejects wording, search `docs/guides/` for both that wording and
+nearby paraphrases; compare remaining uses with the accepted replacement.
 
 ### 4. Report
 
