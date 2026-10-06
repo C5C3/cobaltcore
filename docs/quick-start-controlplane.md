@@ -586,6 +586,11 @@ c5c3-operator only reads from that path. The engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
 `deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
+The right half of the figure is the path this step completes: the script
+writes the role that the "by hand" chip marks.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](./diagrams/secrets-db-credentials.svg)
+
 Here `<namespace>` is the Keystone service namespace: the ControlPlane's own
 namespace (`openstack`) in this quick start, and only different when
 `spec.services.keystone.namespace` places the Keystone service in a namespace of

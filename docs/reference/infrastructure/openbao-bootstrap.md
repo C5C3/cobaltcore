@@ -391,6 +391,11 @@ existing row reaches only the leases issued after the re-run: force a refresh of
 the service's DB-credential ExternalSecret (a fresh `force-sync` annotation)
 before the operator's db-sync Job needs the new grant.
 
+The figure places the role this script writes in the Dynamic chain and
+compares that chain with the Static one.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
+
 ### setup-eso-tenant.sh
 
 **Purpose:** Provision the in-cluster half of a **standalone** (non-ControlPlane)

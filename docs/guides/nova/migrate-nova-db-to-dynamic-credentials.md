@@ -53,6 +53,11 @@ on the ControlPlane, or the shared `spec.infrastructure.database.credentialsMode
 when that is empty. The Nova CRD rejects a child whose `apiDatabase` and
 `database` carry different modes, so the two chains always switch together.
 
+The figure shows one chain. Nova has two, and the tables above name the
+objects of each.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
+
 ## Prerequisites
 
 ::: info Devstack

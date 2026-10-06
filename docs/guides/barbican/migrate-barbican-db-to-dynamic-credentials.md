@@ -38,6 +38,11 @@ store, which is a separate concern and is untouched here.
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Barbican database and drops it at lease end.
 
+The figure shows both chains. `{svc}` stands for `barbican` here, and `{cp}` is
+`controlplane` on the devstack.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](../../diagrams/secrets-db-credentials.svg)
+
 ## Prerequisites
 
 ::: info Devstack
