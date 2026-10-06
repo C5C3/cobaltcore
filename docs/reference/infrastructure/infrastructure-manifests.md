@@ -1008,8 +1008,10 @@ The bootstrap path matches the DB CA above. `selfsigned-cluster-issuer` mints a
 self-signed CA `Certificate` (`isCA: true`, ECDSA P-256, 3-year lifetime, 30-day
 `renewBefore`) into the `openstack-ovn-ca` Secret in the `cert-manager` namespace, and
 `openstack-ovn-ca-issuer` signs the leaves from it: the Northbound and Southbound
-ovsdb-server certificates, plus the client certificates ovn-northd, the relays, and the
-chassis agents present to those databases.
+ovsdb-server certificates, plus one shared client certificate, `{central}-client`,
+which ovn-northd, the backup Job and Neutron present and of which every chassis holds
+a copy (`{chassis}-ovn-client`), and the relay's own certificate, `{central}-sb-relay`,
+when `spec.relay` is set.
 
 OVN keeps a CA of its own instead of sharing `openstack-db-ca-issuer`. OVS/OVN
 authenticates a peer with a single check: the peer certificate must chain to the

@@ -536,8 +536,8 @@ one never reaches the login screen: the TLS handshake is reset, which the toolin
 mTLS posture here.
 
 Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is signed by the same
-`selfsigned-cluster-issuer` CA as the server cert, and the listener verifies only chain-to-CA
-(not SANs) on client auth, so this certificate is accepted:
+CA as the server cert, `openbao-ca` (ClusterIssuer `openbao-ca-issuer`), and the listener
+verifies only chain-to-CA (not SANs) on client auth, so this certificate is accepted:
 
 ```bash
 kubectl get secret openbao-client-tls -n shared-services \
