@@ -166,6 +166,14 @@ licenses, and vendor are embedded in the Dockerfile for local build visibility.
 
 ## Service Images
 
+CI builds, verifies and publishes these images through the
+[Build Images Workflow](build-images-workflow.md). The figure shows that
+workflow on a pull request and on a push.
+[PR vs Push Behavior](build-images-workflow.md#pr-vs-push-behavior) lists the
+differences aspect by aspect.
+
+![The image build workflow on its two paths. On every run, build-base-images builds python-base and venv-builder for amd64 and arm64 and pushes them by digest, merge-base-images joins each pair into one manifest and pushes it to ghcr.io, verify-base-images checks both, and generate-matrix works out the services, releases and platforms to build. On a pull request, build-service-images builds each service image for linux/amd64 only and loads it into the local Docker daemon, scans it with Grype, runs its verify script and checks the option catalog. test-service-images runs the upstream unit tests. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, pushes by digest and exports the digest. merge-service-images creates and pushes the manifest with its tags, generates an SBOM, scans the SBOM with Grype and uploads the report, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check, once merge-service-images and test-service-images have passed.](../../diagrams/ci-image-publish.svg)
+
 ### keystone
 
 **Location:** `images/keystone/Dockerfile`
