@@ -239,10 +239,11 @@ again disables the plugin on the next rollout.
 ## Tested by
 
 The rendered plugin list in the operator's fixed order, the non-default output
-format, the `qemu-img` and `lhafile` binaries the plugins call at import time,
-and the revert above (clearing the block, then watching the config converge back
-to an empty list with neither per-plugin section left behind) are asserted
-end-to-end on the CI e2e kind cluster by this chainsaw suite:
+format, the `qemu-img` binary and the `lhafile` Python module the plugins need
+at import time, and the revert above (clearing the block, then watching the
+config converge back to an empty list with neither per-plugin section left
+behind) are asserted end-to-end on the CI e2e kind cluster by this chainsaw
+suite:
 
 ```bash
 chainsaw test --test-dir tests/e2e/glance/import-plugins

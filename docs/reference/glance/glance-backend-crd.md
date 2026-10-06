@@ -219,8 +219,8 @@ callers that bypass it.
 
 ## Chainsaw E2E Tests
 
-The end-to-end multi-store flow — a two-backend Glance against an in-suite
-Garage S3, credential resolution, and store projection — lives in
+The end-to-end multi-store flow — a two-backend Glance against the Garage S3 of
+the infrastructure stack, credential resolution, and store projection — lives in
 `tests/e2e/glance/s3-multistore`. The default-store switch (flipping `isDefault`
 between siblings and re-rendering `default_backend`) lives in
 `tests/e2e/glance/default-backend-switch`. The detach path (deleting a backend
