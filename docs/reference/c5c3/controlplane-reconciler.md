@@ -2811,7 +2811,8 @@ ControlPlane's ownership labels and
 bus URL and service password never reach the agent's privileged namespace, and
 a rotated value is rewritten on the next pass. A target that fails holds back
 none sorted after it: each of those still receives its copy, and `NovaReady`
-reports the first failed write, or else the first cluster that did not resolve.
+lists every failed target: `NovaMetadataAgentSecretError` when a write failed,
+`TargetClusterUnavailable` when clusters only did not resolve.
 A `NeutronMetadataAgent` watch wakes the plane, narrowed to agents arriving,
 leaving or re-pointing their shared secret.
 

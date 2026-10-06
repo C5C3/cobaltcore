@@ -354,7 +354,7 @@ script. It waits for its own key in the `{name}-nodes` ConfigMap, then sets thes
 | `hostname` | The node name, from the downward API |
 | `ovn-encap-type` | `spec.encapType` |
 | `ovn-encap-ip` | The node's own address, from the downward API |
-| `ovn-remote` | The Southbound relay when the central runs one, the Southbound database itself otherwise |
+| `ovn-remote` | The Southbound relay when the central runs one the chassis can reach: on another cluster, only a relay published with `spec.relay.externallyReachable`. The Southbound database itself otherwise |
 | `ovn-remote-probe-interval` | `spec.remoteProbeIntervalMs` |
 | `ovn-bridge-mappings` | The `physnet:bridge` list rendered from `spec.bridgeMappings`, in spec order. Removed when there are no mappings, never set to the empty string: `ovs-vsctl` refuses a value-less assignment and would fail the init container under `set -eu` |
 | `ovn-cms-options` | `enable-chassis-as-gw` on a gateway node, removed on every other one |

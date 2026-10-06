@@ -320,7 +320,7 @@ checks and the priority-class lookup.
 | `northbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Northbound database |
 | `southbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Southbound database |
 | `relayAddress` | `string` | The Southbound relay Service, `ssl:<clusterIP>:6642`. Set while `spec.relay` is set and cleared when the relay is removed |
-| `relayDbAddress` | `string` | The relay for clients outside the cluster, `ssl:<node InternalIP>:<nodePort>` per node a relay pod runs on, comma-separated. Empty unless `spec.relay.externallyReachable` is set. An `OVNChassis` on another cluster dials it (see [Address computation](#address-computation)) |
+| `relayDbAddress` | `string` | The relay for clients outside the cluster, `ssl:<hostIP>:<nodePort>` per node a relay pod runs on, from the pod's `status.hostIP`, comma-separated. Empty unless `spec.relay.externallyReachable` is set. An `OVNChassis` on another cluster dials it (see [Address computation](#address-computation)) |
 | `clientSecretName` | `string` | The Secret holding the client certificate every OVN client authenticates with (`tls.crt`, `tls.key`, `ca.crt`). An `OVNChassis` mounts it, so this is the field that connects the two kinds |
 | `installedImage` | `string` | The image reference the running control plane was projected from, recorded once northd runs on it. It tells a rollout that has not reached the pods from one that has |
 
