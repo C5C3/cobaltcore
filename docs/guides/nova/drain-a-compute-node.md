@@ -47,7 +47,8 @@ describes.
    names.
 2. The `OVNChassis` `controlplane-chassis` `Ready` on the node, as that guide
    leaves it. The pool's `wait-for-chassis` init container waits until the
-   node's chassis has registered, so a pool on a node without one never starts.
+   chassis has written its `system-id` into the node's Open vSwitch database,
+   so a pool on a node without one never starts.
 
 ## Set up a pool to drain
 

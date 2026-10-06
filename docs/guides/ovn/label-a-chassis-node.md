@@ -102,7 +102,7 @@ nodes; `spec.gateway.nodeSelector` narrows that same set, and it matches no node
 until Step 3 puts the second label on one. The manifest carries no
 `spec.bridgeMappings`, because a kind node has no provider network to map.
 
-`Ready` aggregates five sub-conditions. Read them when the wait times out:
+`Ready` aggregates six sub-conditions. Read them when the wait times out:
 
 ```bash
 kubectl get ovnchassis controlplane-chassis -n openstack \
