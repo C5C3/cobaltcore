@@ -44,7 +44,8 @@ separate compute cluster is the follow-on
 - **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
   full ControlPlane through the c5c3-operator.
 - **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
-  ControlPlane on a metal-stack cluster, with servers on two KVM hypervisors.
+  ControlPlane on a metal-stack cluster, where every worker is a KVM hypervisor
+  and runs a server.
 
 The map shows what each quick start deploys, what it ends with, and how the
 four relate. Each one begins at `git clone` and is complete in itself.
