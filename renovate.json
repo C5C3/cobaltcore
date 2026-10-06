@@ -422,6 +422,17 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/lab/metal-stack/dizzy-soak/job\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>docker\\.io/alpine/k8s):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
         "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
         "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
@@ -894,6 +905,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "metal-stack node probe image"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/lab/metal-stack/dizzy-soak/job.yaml"],
+      "matchPackageNames": ["docker.io/alpine/k8s"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/lab/metal-stack/dizzy-soak/job.yaml"],
+      "matchPackageNames": ["docker.io/alpine/k8s"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "dizzy soak runner image"
     },
     {
       "matchManagers": ["custom.regex"],
