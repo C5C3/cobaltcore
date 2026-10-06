@@ -212,7 +212,7 @@ deduplicates what the two produce.
 What keeps a registered cluster from reaching a ControlPlane that never named it
 is `RemoteRequestsAmong`. For every request a mapper produces it reads that
 ControlPlane on the management cluster and compares the cluster the event arrived
-from against `TargetClusterNames()`, the deduplicated set of the five per-service
+from against `TargetClusterNames()`, the deduplicated set of the eight per-service
 refs; a cluster outside the set drops the event. The set comes from the CR, never
 from the object that raised the event, so an object planted in a shared namespace
 on any registered cluster cannot name a ControlPlane it does not belong to. A CR
@@ -711,9 +711,11 @@ to the same cluster (`sameTargetCluster` compares the two
 [`targetClusterRef`](../target-clusters.md)s, with "no ref" meaning the
 management cluster), the public URL as soon as they do not.
 
-- **The four dependents of Keystone.** `horizonKeystoneEndpoint`,
-  `glanceKeystoneEndpoint`, `placementKeystoneEndpoint` and
-  `barbicanKeystoneEndpoint` compare their own service's ref against Keystone's.
+- **The seven dependents of Keystone.** `horizonKeystoneEndpoint`,
+  `glanceKeystoneEndpoint`, `placementKeystoneEndpoint`,
+  `barbicanKeystoneEndpoint`, `neutronKeystoneEndpoint`,
+  `cinderKeystoneEndpoint` and `novaKeystoneEndpoint` compare their own
+  service's ref against Keystone's.
   A service that shares Keystone's cluster keeps the conventional
   `http://{controlplane.Name}-keystone.<keystone-namespace>.svc:5000/v3`; one on
   another cluster gets `keystonePublicEndpoint` — `services.keystone.publicEndpoint`
@@ -723,9 +725,10 @@ management cluster), the public URL as soon as they do not.
   are read by K-ORC, which always runs on the management cluster wherever the
   ControlPlane places its services, so they render the public URL as soon as
   Keystone names a cluster — a placed Keystone's Service DNS name is an address
-  K-ORC cannot dial. A service account's `clouds.yaml` is read on the cluster its
-  delivery namespace lives on, so that namespace's ref is what it resolves
-  against. External mode is untouched, and a co-located Keystone renders the
+  K-ORC cannot dial. A registration's `clouds.yaml` is rendered with no
+  target-cluster ref, because a registration is delivered on the management
+  cluster. It resolves like a document read there. External mode is untouched,
+  and a co-located Keystone renders the
   in-cluster URL byte for byte as before.
 - **The catalog.** A placed service registers its public URL on its `internal`
   interface as well as its `public` one (`internalCatalogURL`), because that
@@ -733,7 +736,8 @@ management cluster), the public URL as soon as they do not.
   The identity row is unaffected: it registers a public interface only.
 
 Admission is what keeps those public URLs from being empty. A placed catalog
-service (keystone, glance, placement, barbican) must declare a `publicEndpoint`
+service (keystone, glance, placement, barbican, neutron, cinder, nova) must
+declare a `publicEndpoint`
 or a `gateway`, and Keystone must declare one as soon as ANY other service is
 placed away from it — the per-service rule only reaches a service carrying a ref
 of its own, so an unplaced Keystone would otherwise leave every dependent child
@@ -3962,10 +3966,11 @@ projected. On deletion it:
    so its residue (backing
    services, credential material, tenant-store trio last) is swept by name, each
    object ownership-checked so a same-named object belonging to somebody else in
-   that shared namespace is left alone. On a placed namespace both of those run
-   against that cluster's client, and the
-   [label-selected sweep](#placed-namespaces-remote-children)
-   follows them. While children remain the condition
+   that shared namespace is left alone. On a placed namespace both run against
+   that cluster's client. The
+   [label-selected sweep](#placed-namespaces-remote-children) runs after the
+   `External` residue sweep and before a `Managed` namespace is deleted. While
+   children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
    `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
@@ -4098,7 +4103,7 @@ cluster resolves, nothing has been written to any of them for it to reclaim, and
 stays for the CR's life: a cluster that stops resolving later still holds
 children.
 
-What it holds the ControlPlane open for is the label-selected sweep in step 3.
+What it holds the ControlPlane open for is the label-selected sweep in step 4.
 Per placed namespace, `controlPlaneRemoteChildKinds` names the fourteen kinds the
 ControlPlane writes there: `MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
 `ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
@@ -4108,7 +4113,7 @@ object of them the ControlPlane owns is deleted through that cluster's client,
 listed through its uncached reader and paged so a shared namespace cannot arrive
 in one response. The list holds namespaced kinds only. The auth-delegator
 `ClusterRoleBinding` and the namespace itself are cluster-scoped and deleted by
-name (steps 3 and 4), while the service CRs and the K-ORC CRs never leave the
+name (steps 5 and 4), while the service CRs and the K-ORC CRs never leave the
 management cluster.
 
 The sweep runs through the credentials of the registered cluster's kubeconfig,
@@ -4126,7 +4131,7 @@ process and the deletion timestamp) the cluster is abandoned: a **Warning**
 `RemoteChildrenAbandoned` names the cluster and the namespace whose objects stay
 behind, and the teardown continues without it — the `Managed` namespace's copy on
 the management cluster is still deleted, since abandoning the unreachable half
-does not license leaking the reachable one. The ORC stall escape (step 7)
+does not license leaking the reachable one. The ORC stall escape (step 8)
 releases `c5c3.io/orc-teardown` alone. It never reaches this sweep, so the
 remote-children finalizer stays on and a later pass runs the sweep and releases
 it.

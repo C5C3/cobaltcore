@@ -202,15 +202,19 @@ it, surfaces on the CR's first gate condition:
 | --- | --- | --- | --- | --- |
 | Keystone, Barbican, Horizon, Glance, Placement, Neutron, Cinder, Nova | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
 | BarbicanSecretStore, GlanceBackend, CinderBackend, CinderBackupBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
-| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
+| ControlPlane | `NamespacesReady` usually, since it is the first sub-reconciler that reaches a cluster; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `NeutronReady`, `CinderReady`, `NovaReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
 The pass ends there. The CR requeues after 15 seconds, on a flat poll rather than
-a backoff, and nothing is created on any cluster. Resolution runs before any
-finalizer is installed, so a CR naming an unresolvable cluster carries none:
-nothing was created for it, and a finalizer would only block its deletion. A
-ControlPlane ends the pass in the sub-reconciler that reached the cluster and
-requeues on that one's own interval, 15 seconds on the namespace and
-backing-service legs and 10 on the credential ones.
+a backoff, and nothing is created on any cluster. Resolution runs before the
+operator installs a finalizer for the target, so a workload CR naming an
+unresolvable cluster carries none: nothing was created for it, and a finalizer
+would only block its deletion. A ControlPlane carries `c5c3.io/orc-teardown`
+either way and takes `openstack.c5c3.io/remote-children` only once one cluster
+it names resolves. A ControlPlane ends the pass when the sub-reconciler that
+reached the cluster belongs to the blocking prefix. A member of the tail group
+reports the reason on its own condition while the other members still run.
+Either way the CR requeues on that sub-reconciler's interval, 15 seconds on the
+namespace and backing-service legs and 10 on the credential ones.
 
 A cluster that is deregistered under a running CR flips the same condition, and
 the children already written to it stay where they are. The reconciler never
@@ -219,9 +223,10 @@ reaches its sub-reconcilers without a client, so nothing deletes them.
 Deleting such a CR still works, after a grace period. The deletion path resolves
 ahead of everything else and tolerates a target that is gone, but not right
 away: while the grace period runs, an unresolvable target only requeues the
-pass, every 15 seconds, the finalizers stay on, and the CR reports
-`SecretsReady=False` with reason `TargetClusterUnavailable` and a message naming
-the cluster it is waiting for, so the hold is not just a log line.
+pass, every 15 seconds, the finalizers stay on, and a workload CR reports
+`SecretsReady=False`, and a ControlPlane `NamespacesReady=False`, with reason
+`TargetClusterUnavailable` and a message naming the cluster it is waiting for,
+so the hold is not just a log line.
 
 Two five-minute windows have to run out before the operator gives up: five
 minutes since the CR was marked for deletion, and five minutes since that
@@ -713,8 +718,9 @@ its own target cluster.
 :::
 
 Deleting a CR that names a target cluster tears its children down explicitly.
-The finalizer `openstack.c5c3.io/remote-children` goes on whenever
-`targetClusterRef` is set, and holds the CR in etcd until the sweep has run. The
+The finalizer `openstack.c5c3.io/remote-children` goes on once
+`targetClusterRef` is set and the cluster it names resolves, and holds the CR in
+etcd until the sweep has run. The
 sweep deletes every object of that operator's projected kinds the CR owns, in the
 CR's namespace on the target — by the three labels, or by a controller owner
 reference an older operator left on it. It runs after the cleanup
@@ -793,7 +799,7 @@ its target cluster; everything it writes afterwards carries the labels alone.
 
 ## ControlPlane placement
 
-A ControlPlane names a cluster per service. Each of the seven service blocks takes
+A ControlPlane names a cluster per service. Each of the eight service blocks takes
 its own ref, and a block without one keeps its service on the management cluster:
 
 ```yaml
@@ -807,7 +813,7 @@ spec:
         name: edge-1
 ```
 
-Five rules apply at admission on top of the name-only shape. A placed service
+Six rules apply at admission on top of the name-only shape. A placed service
 needs a `namespace` block of its own, because a namespace exists on exactly one
 cluster and the ControlPlane's own namespace stays where the ControlPlane is. A
 placed catalog service (keystone, glance, placement, barbican, neutron, cinder,
@@ -920,9 +926,10 @@ too.
 Every remote child carries the three ownership labels above, with `owner-kind:
 ControlPlane`, plus the `c5c3.io/controlplane-name` and
 `c5c3.io/controlplane-namespace` pair the operator's own watches map a child back
-by, and no owner reference. A namespace created on a target cluster carries one
-mark more: the annotation `c5c3.io/controlplane-uid`, holding the owning CR's
-UID. The labels name a ControlPlane by name and namespace, and a target cluster
+by, and no owner reference. A `Managed` namespace carries one mark more, on both
+clusters: the annotation `c5c3.io/controlplane-uid`, holding the owning CR's
+UID. Adoption requires it on a target cluster. The labels name a ControlPlane by
+name and namespace, and a target cluster
 is registerable from any number of management clusters — each able to run an
 `openstack` ControlPlane in an `openstack` namespace, the quickstart defaults.
 The UID is what tells those apart, and it is also the only part of the claim a
@@ -976,8 +983,9 @@ Deleting a ControlPlane that placed a service runs the same
 once at least one service is placed and at least one cluster the spec names
 resolves — the namespaces on a resolvable cluster are created on that very pass,
 whatever a sibling ref does.
-The teardown that releases it keeps a fixed order. The K-ORC CRs go first, then
-the owned PushSecrets, on each placed cluster as well as at home, while the
+The teardown that releases it keeps a fixed order. The projected
+`KeystoneService` registrations go first and are waited for, then the K-ORC CRs
+and the owned PushSecrets, on each placed cluster as well as at home, while the
 tenant store their OpenBao purge authenticates through is still alive. Then, per
 placed namespace: the service CRs, deleted on the management cluster and waited
 for, which is also what waits out each service operator's own remote sweep; then
@@ -1007,8 +1015,8 @@ The operators that act on the kinds a placed service takes with it have to run o
 that service's cluster: mariadb-operator, memcached-operator, external-secrets,
 cert-manager, and, for a dedicated Barbican secret store, openbao-operator. The
 service operators are not among them. The `Keystone`, `Horizon`, `Glance`,
-`Placement`, `Barbican`, `Neutron`, and `Cinder` CRs stay on the management
-cluster, and their operators project onto the target from there. The
+`Placement`, `Barbican`, `Neutron`, `Cinder`, and `Nova` CRs stay on the
+management cluster, and their operators project onto the target from there. The
 `OVNCentral` a placed network service references is placed the same way: the
 ovn-operator reconciles it on the management cluster and projects its children
 onto the target its own `targetClusterRef` names. When the central and the

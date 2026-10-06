@@ -262,7 +262,8 @@ onboarding script and ESO syncs the credential on its next retry.
 
 ## Verification
 
-The condition chain gains `NamespacesReady` at its head; wait for the
+`NamespacesReady`, the second condition of the chain, now reads
+`True/NamespacesReady` instead of `True/NoDedicatedNamespaces`; wait for the
 aggregate as usual:
 
 ```bash

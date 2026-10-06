@@ -3924,9 +3924,11 @@ Set by `setReadyCondition`.
 By default every service a ControlPlane projects lands in the **ControlPlane's
 own namespace**: namespace and ControlPlane are the same boundary, so no
 network-policy, RBAC, or quota line can be drawn between the services of one
-control plane. A `namespace` assignment on `services.keystone`,
-`services.horizon`, `services.glance`, or `services.nova` makes the target
-namespace a **per-service choice** — a
+control plane. A `namespace` assignment on any of the eight service blocks
+(`services.keystone`, `services.horizon`, `services.glance`,
+`services.placement`, `services.barbican`, `services.neutron`,
+`services.cinder`, `services.nova`) makes the target namespace a **per-service
+choice** — a
 service can be placed in a namespace of its own, and the backing services, secret
 store, and credential material that belong to it follow it there. A service
 without an assignment stays in the ControlPlane's namespace exactly as before.
@@ -3945,7 +3947,7 @@ namespace, both when the ControlPlane is created and when it is deleted:
 
 | Lifecycle | On reconcile | On ControlPlane deletion |
 | --- | --- | --- |
-| `Managed` | The operator **creates** the namespace and stamps it with the ownership labels plus `app.kubernetes.io/managed-by: c5c3-operator`. A namespace that already exists **without** those labels is never adopted — the operator fails loud with `NamespacesReady=False/NamespaceNotOwned` rather than taking over a namespace it did not create. | The operator **deletes** the namespace (only if it carries the ownership labels), which cascades everything left in it. |
+| `Managed` | The operator **creates** the namespace and stamps it with the ownership labels, `app.kubernetes.io/managed-by: c5c3-operator` and the annotation `c5c3.io/controlplane-uid`. A namespace that already exists **without** those labels is never adopted — the operator fails loud with `NamespacesReady=False/NamespaceNotOwned` rather than taking over a namespace it did not create. | The operator **deletes** the namespace (only if it carries the ownership labels), which cascades everything left in it. |
 | `External` | The operator only **verifies** the namespace exists; it never creates, labels, or mutates it. A missing one parks on `NamespacesReady=False/NamespaceNotFound` and requeues. | The namespace **survives**. The residue the ControlPlane placed in it — backing services, credential material, tenant store — is swept by name, but the namespace itself is left standing. |
 
 Use `External` for namespaces whose quotas, RBAC, and policies are provisioned
