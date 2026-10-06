@@ -773,6 +773,13 @@ digest. Depends on `merge-base-images` for image references and on
 On pull requests, ARM64 is excluded (only `linux/amd64` is built) and the image is loaded
 locally for inline verification instead of being pushed to GHCR.
 
+The figure shows what steps 2 and 3 of the table below read from the repository
+and where the build takes it in.
+[Dockerfile Hierarchy](container-images.md#dockerfile-hierarchy) names both
+stages of every image.
+
+![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
+
 | Property | Value |
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
