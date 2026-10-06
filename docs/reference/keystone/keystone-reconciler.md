@@ -1796,8 +1796,9 @@ enforces all of:
 - **Uniqueness:** no two values are byte-equal. Violations return `ErrDuplicateKeys`.
 
 On rejection the operator emits a Warning event `RotationRejected` on the
-Keystone CR and **retains the staging Secret** for human inspection. On a
-malformed `rotation-completed-at` value the operator emits
+Keystone CR and clears the staging Secret's `data` and its
+`rotation-completed-at` annotation. The Secret object stays, so the next
+CronJob run starts from an empty payload. On a malformed `rotation-completed-at` value the operator emits
 `RotationAnnotationInvalid` and leaves staging in place, allowing the next
 CronJob run to overwrite with a valid payload.
 
@@ -1971,8 +1972,8 @@ difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
 - **Key format:** 44-byte base64url decoding to 32 bytes. `ErrInvalidKeyFormat` on violation.
 - **Uniqueness:** byte-distinct values. `ErrDuplicateKeys` on violation.
 
-Rejection emits `RotationRejected` (Warning, on the CR) and retains the
-staging Secret. A malformed `rotation-completed-at` emits
+Rejection emits `RotationRejected` (Warning, on the CR) and clears the
+staging Secret's data and annotation. A malformed `rotation-completed-at` emits
 `RotationAnnotationInvalid` and leaves staging intact.
 
 **Apply algorithm.** On a valid staging Secret, `applyRotationOutput` GETs
@@ -2268,7 +2269,7 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 **In-Place Key Rotation:**
 
 Fernet and credential key rotation is handled in-place via kubelet Secret
-projection. When the rotation CronJob updates a Secret, the kubelet
+projection. When the operator commits a rotation to a key Secret, the kubelet
 automatically projects the new data into running pods without requiring a
 Deployment rollout. The pod template does not include hash annotations for the
 fernet/credential key Secrets, so those Secret changes do not trigger rolling
@@ -2276,7 +2277,7 @@ restarts. This preserves Keystone availability, PDB budget, and uWSGI/Memcached
 connections during routine key rotation.
 
 ```text
-CronJob rotates keys → Secret data changes → kubelet projects new keys
+CronJob stages keys → operator commits them → kubelet projects new keys
   → running pods see updated key files (no rollout)
 ```
 

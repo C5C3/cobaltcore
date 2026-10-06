@@ -55,7 +55,7 @@ Earlier the rotation CronJob wrote directly to the production
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
 | Rotation CronJob (ServiceAccount `controlplane-keystone-fernet-rotate`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (via `patch`) | Production Secret `controlplane-keystone-fernet-keys` (via `get`, mounted as volume) |
-| Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `patch`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
+| Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `update`, which replaces the whole `data` map) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
 
 The staging Secret carries one controller-observable marker — the
 `cobaltcore.c5c3.io/rotation-completed-at` annotation — that tells the operator
