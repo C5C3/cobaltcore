@@ -68,6 +68,41 @@ shared secret both sides carry.
 | `sharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `shared_secret` | The Secret holding the value the agent signs forwarded requests with. Nova rejects an unsigned request when it carries a secret of its own, so the two values have to match. The value reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and never enters the rendered ConfigMap; its digest rides the pod template as `neutron.c5c3.io/metadata-secret-hash`, so a changed value rolls the pods. The Secret a ControlPlane generates for its compute service (`{controlplane.Name}-nova-metadata-secret`) carries the value under `shared_secret`, so naming that Secret alone is enough. An agent on a compute cluster names the copy the ControlPlane delivers there instead, `{controlplane.Name}-nova-metadata-agent-secret` (see [On a compute cluster](#on-a-compute-cluster)) |
 | `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `ca.crt` | A Secret in the agent's namespace, on the cluster its pods run on, holding the PEM bundle that signs the Nova metadata API's certificate: for an agent on a compute cluster, the issuer of the metadata Gateway listener's certificate. The operator mounts it into the agent container and renders its path as `[DEFAULT] auth_ca_cert = /etc/nova-metadata-ca/ca.crt`. Requires `protocol: https`. Without it, an `https` agent verifies the certificate against the image's default CA bundle |
 
+#### The path of a request {#metadata-path}
+
+The figure follows a request from an instance to the Nova metadata API. Its
+numbers are the hops below.
+
+![The path of a metadata request in six numbered hops. Hop 1: an instance calls http://169.254.169.254, an address OVN answers on the chassis of its node. Hop 2: Open vSwitch hands the request to a haproxy in the network namespace of the instance's network; the metadata agent creates one such namespace per network under /run/netns and starts one haproxy in each. Hop 3: haproxy passes the request to the metadata agent over the socket metadata_proxy. Hop 4: the agent finds the port that is asking in the Southbound database. Hop 5: the agent forwards the request to the Nova metadata API {nova}-metadata on port 8775 and signs it with the shared secret, as the header X-Instance-ID-Signature. Hop 6: the metadata API checks the signature with the same secret and resolves the instance from the mappings in the API database. One Secret, {cp}-nova-metadata-secret, carries the shared secret to both ends, as an environment variable on each. For an agent on a compute cluster two things change: it reads a copy of the secret that the c5c3-operator writes there, and it reaches the metadata API over https through the metadata Gateway.](../../diagrams/compute-metadata-path.svg)
+
+1. The instance calls `http://169.254.169.254`. Neutron runs with
+   `[ovn] ovn_metadata_enabled = true`, so OVN answers that address on the
+   chassis of the instance's node.
+2. Open vSwitch hands the request to a haproxy in a network namespace of its
+   own. The agent creates one namespace per network under `/run/netns` and
+   starts one haproxy in each, which is why its container is privileged and
+   mounts `/run/netns` with bidirectional propagation.
+3. haproxy passes the request to the agent over the socket
+   `/var/lib/neutron/metadata_proxy`. The readiness probe of the agent tests
+   for that socket.
+4. The agent finds the port that is asking. It reads the local Open vSwitch
+   database (`[ovs] ovsdb_connection`) and the Southbound database
+   (`[ovn] ovn_sb_connection`).
+5. The agent forwards the request to `nova_metadata_host` on
+   `nova_metadata_port` and signs it with the shared secret. Nova checks the
+   header `X-Instance-ID-Signature` against an HMAC keyed with the same value.
+6. The metadata API runs with `[neutron] service_metadata_proxy = true`. It
+   verifies the signature and resolves the instance from the mappings in the
+   API database, which is why one metadata front end serves every cell.
+
+The shared secret reaches both ends as an environment variable and never
+enters a ConfigMap: `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` on the agent,
+`OS_NEUTRON__METADATA_PROXY_SHARED_SECRET` on the metadata pods. Under a
+ControlPlane both read `{controlplane.Name}-nova-metadata-secret`, which an
+External Secrets `Password` generator fills once. The dashed parts of the
+figure are the two differences of an agent on a compute cluster, which the
+next section covers.
+
 ### On a compute cluster
 
 An agent whose pods run on a compute cluster reaches the Nova metadata API of

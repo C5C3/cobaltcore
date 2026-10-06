@@ -468,6 +468,14 @@ of ICMP and IPv4 headers fill the network's MTU of 1402. The 1375-byte ping
 fails, because the packet does not fit and `-M do` forbids fragmenting it.
 Leave the console with `Ctrl+]`.
 
+The figure follows the metadata call of this step. The lab's agent runs on the
+cluster of its Nova, so the call takes the solid path, to the Service
+`controlplane-nova-metadata` over plain HTTP.
+[The path of a request](./reference/neutron/neutron-metadata-agent-crd.md#metadata-path)
+lists the hops.
+
+![The path of a metadata request in six numbered hops. Hop 1: an instance calls http://169.254.169.254, an address OVN answers on the chassis of its node. Hop 2: Open vSwitch hands the request to a haproxy in the network namespace of the instance's network; the metadata agent creates one such namespace per network under /run/netns and starts one haproxy in each. Hop 3: haproxy passes the request to the metadata agent over the socket metadata_proxy. Hop 4: the agent finds the port that is asking in the Southbound database. Hop 5: the agent forwards the request to the Nova metadata API {nova}-metadata on port 8775 and signs it with the shared secret, as the header X-Instance-ID-Signature. Hop 6: the metadata API checks the signature with the same secret and resolves the instance from the mappings in the API database. One Secret, {cp}-nova-metadata-secret, carries the shared secret to both ends, as an environment variable on each. For an agent on a compute cluster two things change: it reads a copy of the secret that the c5c3-operator writes there, and it reaches the metadata API over https through the metadata Gateway.](./diagrams/compute-metadata-path.svg)
+
 ### Step 7: Attach a volume {#hv-volume}
 
 Create a 1 GiB volume, which the scheduler places on the backend `nfs1`, and
