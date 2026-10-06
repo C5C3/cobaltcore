@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: the long-running dizzy soak of
+# #1274. A Job in the namespace dizzy runs `dizzy mix chaos`, the combined
+# churn of a CI, a Gardener and a Legacy persona, in an OpenStack project of
+# its own, samples the platform's pods and conditions beside it, and writes a
+# report with a PASS or FAIL verdict to a claim. `make dizzy-soak-start`
+# (hack/dizzy-soak.sh start) applies this directory; nothing else does, and
+# hack/deploy-infra.sh never reads it. It needs the dizzy stack of ../dizzy
+# (WITH_DIZZY=true), which declares the namespace dizzy, a Ready ControlPlane
+# and the fixtures of ../hypervisor-fixtures.
+#
+# The directory renders nine objects:
+#   - identity.yaml: the K-ORC Domain, Project, User, Role and RoleAssignment
+#     in openstack that give the Keystone user dizzy-soak the role admin on
+#     the project dizzy-soak;
+#   - rbac.yaml: the ServiceAccount dizzy-soak in dizzy and the read-only
+#     ClusterRole and ClusterRoleBinding dizzy-soak-platform-reader;
+#   - reports-pvc.yaml: the claim dizzy-soak-reports in dizzy.
+#
+# Two files sit outside the kustomization. scenario.yaml is the default
+# scenario, which start ships as the ConfigMap dizzy-soak-scenario. job.yaml
+# is the Job template; start replaces its token DIZZY_VERSION with the pin of
+# hack/dizzy.sh and creates the Job. start also writes the Secrets
+# dizzy-soak-user-password (in openstack, once) and dizzy-soak-clouds and the
+# ConfigMaps dizzy-soak-runner, dizzy-soak-scenario and dizzy-soak-config (in
+# dizzy, on every start).
+#
+# POSTURE: the ClusterRole reads pods, namespaces, pod metrics and the
+# CobaltCore service kinds with get and list, and no Secret. The Keystone user
+# holds admin on its project, because the Legacy persona's migration
+# pre-check needs it; its password lives in a Secret and reaches Keystone over
+# plain HTTP inside the cluster.
+#
+# The teardown, `EXTERNAL_CLUSTER=true make teardown-infra`, deletes the Job
+# and the reader pod first, which ends a running soak with its report, then
+# the render of this directory, before the hypervisors go. The Secrets and
+# ConfigMaps go with their namespaces in its step 7.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - identity.yaml
+  - rbac.yaml
+  - reports-pvc.yaml

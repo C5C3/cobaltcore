@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Job of the dizzy soak, a template that the kustomization does not list.
+# hack/dizzy-soak.sh start creates it after it has applied the directory and
+# written the Secret and the three ConfigMaps the pod mounts. The dizzy image
+# carries the token DIZZY_VERSION in place of a tag: start replaces it with
+# the pin of hack/dizzy.sh, the one dizzy version of the repository.
+#
+# The init container copies the dizzy binary of the upstream image onto an
+# emptyDir. The container runner runs hack/dizzy-soak-runner.sh from the
+# ConfigMap dizzy-soak-runner: it starts dizzy, samples the platform beside
+# it, forwards a TERM to dizzy once, and writes the report to the claim
+# dizzy-soak-reports. Its exit code is the verdict, so the Job ends Complete
+# on PASS and Failed on FAIL. backoffLimit 0 ends a soak whose pod is lost;
+# nothing restarts it. The grace period of 540 seconds, below the 600 of the
+# teardown's TEARDOWN_TIMEOUT, is the time dizzy has to remove its resources
+# and the runner to write the report after a TERM.
+#
+# The runner's image is the kubectl release of the lab's Kubernetes minor,
+# with bash, jq, awk and tar; Renovate moves its patch release and digest.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dizzy-soak
+  namespace: dizzy
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: dizzy-soak
+      terminationGracePeriodSeconds: 540
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: dizzy
+          image: ghcr.io/b42labs/dizzy:DIZZY_VERSION
+          imagePullPolicy: IfNotPresent
+          command: ["cp", "/usr/local/bin/dizzy", "/tools/dizzy"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+      containers:
+        - name: runner
+          image: docker.io/alpine/k8s:1.35.9@sha256:b9cb6db0091a2327c0a56ecda69d37fa830c7a96ea669e7382b3ee778aa07a24
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "/runner/dizzy-soak-runner.sh"]
+          env:
+            - name: HOME
+              value: /tmp
+          envFrom:
+            - configMapRef:
+                name: dizzy-soak-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+            - name: runner
+              mountPath: /runner
+              readOnly: true
+            - name: scenario
+              mountPath: /scenario
+              readOnly: true
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+            - name: reports
+              mountPath: /reports
+      volumes:
+        - name: tools
+          emptyDir: {}
+        - name: runner
+          configMap:
+            name: dizzy-soak-runner
+        - name: scenario
+          configMap:
+            name: dizzy-soak-scenario
+            items:
+              - key: scenario.yaml
+                path: scenario.yaml
+        - name: clouds
+          secret:
+            secretName: dizzy-soak-clouds
+            defaultMode: 0440
+            items:
+              - key: clouds.yaml
+                path: clouds.yaml
+        - name: reports
+          persistentVolumeClaim:
+            claimName: dizzy-soak-reports

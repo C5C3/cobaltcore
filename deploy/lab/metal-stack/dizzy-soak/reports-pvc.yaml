@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The reports of the dizzy soak, one directory per run, which outlive the
+# run's pod. The claim names no storage class and binds to the cluster's
+# default class. At the default sample interval of 60 seconds a cluster of
+# about 150 containers writes roughly 45 MB of samples a day, so 5Gi holds an
+# unbounded run for about three months. Nothing prunes old runs; see the
+# section "Freeing the claim" of docs/reference/testing/dizzy-chaos-testing.md.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dizzy-soak-reports
+  namespace: dizzy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
