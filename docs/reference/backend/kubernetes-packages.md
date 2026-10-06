@@ -816,19 +816,27 @@ compose them directly (for example a Keystone sub-reconciler calls
 
 ## Reconciler Integration Pattern
 
-A typical reconciler calls these packages in its sub-reconciler phases:
+A reconciler calls these packages from the steps of its pipeline. The figure
+shows the pipeline of the Keystone operator, and the table names the functions
+of this page each of its steps calls.
 
-```text
-SecretsReady      → secrets.WaitForExternalSecret, secrets.IsSecretReady
-DatabaseReady     → database.EnsureDatabase, database.EnsureDatabaseUser,
-                    job.RunJob
-ConfigReady       → config.CreateImmutableConfigMap
-DeploymentReady   → deployment.EnsureDeployment, deployment.EnsureService
-ConfigMapPruning  → config.PruneImmutableConfigMaps (after DeploymentReady)
-TLSReady          → tls.EnsureCertificate
-PolicyReady       → policy.LoadPolicyFromConfigMap
-```
+![The sub-reconciler pipeline of the Keystone operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DatabaseTLS, DBConnectionSecret, IdentityBackends, Config, a parallel group of FernetKeys, CredentialKeys and NetworkPolicy, then Database, PolicyValidation, Deployment, an unnamed prune step, a second parallel group of HTTPRoute, HealthCheck, HPA, VPA, Bootstrap and TrustFlush, and PasswordRotation. Every member of a group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady, and the prune step has none of its own. DBConnectionSecret hands the hash of the database connection to Deployment, IdentityBackends hands on the name of the domains Secret and the federation projection, Config hands on the name of the ConfigMap, and Deployment sets status.endpoint, which HealthCheck waits for. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-reconciler-pipeline.svg)
 
-Each phase returns a readiness boolean. The reconciler advances to the next phase only
-when the previous phase returns `true`. If any phase returns `false`, the reconciler
-requeues and re-evaluates on the next reconciliation.
+| Step | Functions of this page it calls |
+| --- | --- |
+| `DatabaseTLS` | `tls.EnsureCertificate` |
+| `IdentityBackends` | `secrets.GetSecretValue`, `satellite.SecretNameForVolume` |
+| `Config` | `policy.LoadPolicyFromConfigMap`, `config.CreateImmutableConfigMap` |
+| `FernetKeys`, `CredentialKeys` | `config.CreateImmutableConfigMap`, `job.EnsureCronJob`, `secrets.EnsurePushSecret` |
+| `PolicyValidation` | `job.RunJob` |
+| `Deployment` | `deployment.EnsureDeployment`, `deployment.EnsureService` |
+| `(prune)` | `config.PruneImmutableConfigMaps` |
+| `Bootstrap` | `secrets.GetSecretValue` |
+| `TrustFlush` | `job.EnsureCronJob` |
+| `PasswordRotation` | `config.CreateImmutableConfigMap`, `config.PruneImmutableConfigMaps`, `job.EnsureCronJob`, `secrets.EnsurePushSecret` |
+
+The steps the table leaves out call shared flows this page does not describe,
+such as `database.ReconcileProvision`, `database.ReconcileSyncJobs` and
+`deployment.ReconcileHPA`. A step returns a `ctrl.Result` and an error. The
+pipeline moves on when the result is zero and the error is nil; otherwise the
+pass ends, and the status is still written.

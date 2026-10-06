@@ -17,14 +17,21 @@ in-depth reference doc for that area.
 
 ## Lifecycle and Reconciliation
 
-- **Sub-reconciler chain.** A focused pipeline of sub-reconcilers — Secrets →
+The figure shows the pipeline one pass runs.
+[Reconciliation Flow](./keystone-reconciler.md#reconciliation-flow) lists every
+entry with its condition and its requeue interval.
+
+![The sub-reconciler pipeline of the Keystone operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DatabaseTLS, DBConnectionSecret, IdentityBackends, Config, a parallel group of FernetKeys, CredentialKeys and NetworkPolicy, then Database, PolicyValidation, Deployment, an unnamed prune step, a second parallel group of HTTPRoute, HealthCheck, HPA, VPA, Bootstrap and TrustFlush, and PasswordRotation. Every member of a group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady, and the prune step has none of its own. DBConnectionSecret hands the hash of the database connection to Deployment, IdentityBackends hands on the name of the domains Secret and the federation projection, Config hands on the name of the ConfigMap, and Deployment sets status.endpoint, which HealthCheck waits for. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-reconciler-pipeline.svg)
+
+- **Sub-reconciler chain.** A pipeline of sub-reconcilers: Secrets →
   DatabaseTLS → DBConnectionSecret → IdentityBackends → Config → FernetKeys /
   CredentialKeys / NetworkPolicy → Database → PolicyValidation → Deployment →
-  HTTPRoute → HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation —
-  each emitting a typed sub-condition that aggregates into `Ready`. See
-  [Reconciler Architecture](./keystone-reconciler.md).
-- **Parallel execution group.** FernetKeys, CredentialKeys and NetworkPolicy
-  run concurrently via `errgroup` to cut tail latency on cold reconciles.
+  HTTPRoute / HealthCheck / HPA / VPA / Bootstrap / TrustFlush →
+  PasswordRotation. Each reports through a typed sub-condition that aggregates
+  into `Ready`. See [Reconciler Architecture](./keystone-reconciler.md).
+- **Two parallel groups.** FernetKeys, CredentialKeys and NetworkPolicy run
+  concurrently via `errgroup`, and so do HTTPRoute, HealthCheck, HPA, VPA,
+  Bootstrap and TrustFlush, to cut tail latency on cold reconciles.
 - **Two finalizers.** The standard cleanup finalizer cascades owned resources;
   the OpenBao finalizer gates deletion on ESO `PushSecret` cleanup so
   Fernet/credential key backups in OpenBao stay consistent.
