@@ -67,9 +67,11 @@ the path is `./diagrams/<name>.svg`. A page further down puts one `../` per
 directory level in front of `diagrams/<name>.svg`, so a page two levels down
 spells it `../../diagrams/<name>.svg`. Give the image an alt text that states
 what the diagram shows, and add a row to the [inventory](#inventory) that lists
-every page that embeds it. When a file, a row and an embed disagree,
-`tests/unit/docs/diagrams_inventory_test.sh` fails, and a missing file also
-fails `npm run docs:build`.
+every page that embeds it. Every embed of a figure carries the same alt text,
+so a change to what a figure shows updates the alt text on every page its row
+lists. When a file, a row and an embed disagree, or two embeds of a figure
+carry different alt texts, `tests/unit/docs/diagrams_inventory_test.sh` fails,
+and a missing file also fails `npm run docs:build`.
 
 ## File names
 
