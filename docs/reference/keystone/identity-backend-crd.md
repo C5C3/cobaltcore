@@ -413,6 +413,14 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 `DomainReady` (it gates config projection) and writes the aggregated
 `IdentityBackendsReady` condition onto the Keystone CR instead.
 
+The figure draws the handshake every satellite kind shares. Its gate,
+`CredentialsReady`, is `DomainReady` on this kind, and `ConfigProjected` here
+also waits for the rollout.
+[The handshake](../backend/kubernetes-packages.md#satellite-handshake)
+lists the five steps and what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 | Field | Type | Description |
 | --- | --- | --- |
 | `conditions` | `[]metav1.Condition` | `DomainReady`, `ConfigProjected`, for federation backends (OIDC **and** SAML) additionally `FederationObjectsReady` and `MappingsReady`, and the aggregate `Ready` (see below). The aggregate derives from the backend type's own sub-condition set, so LDAP backends are unaffected by the federation-only types. |

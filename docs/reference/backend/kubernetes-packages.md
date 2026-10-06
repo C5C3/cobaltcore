@@ -502,13 +502,57 @@ rules, err := policy.LoadPolicyFromConfigMap(ctx, client,
 Holds the mechanics shared by the satellite-CRD controllers and by the parent
 reconcilers that aggregate them. A satellite CR is a namespaced configuration CR
 attached to a parent service CR by name, and it observes its own effect through
-the Deployment the parent runs. `GlanceBackend` consumes every helper,
-`BarbicanSecretStore` consumes resolve, observe and collect, and
-`KeystoneIdentityBackend` consumes the volume lookup alone.
+the Deployment the parent runs. `GlanceBackend`, `CinderBackend` and
+`BarbicanSecretStore` consume resolve, observe and collect.
+`CinderBackupBackend` consumes resolve, collect and the volume lookup, and
+`KeystoneIdentityBackend` the volume lookup alone.
 
 The condition vocabulary, the messages, the events and the requeue intervals
 stay in the operator. Each helper either hands a decision back for the operator
 to stamp, or takes the condition texts as parameters.
+
+### The handshake {#satellite-handshake}
+
+A satellite and its parent settle in five steps. The figure draws them, and its
+numbers are the steps below.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
+1. The satellite controller resolves the parent the satellite names, checks
+   what the satellite needs, and sets the gate condition on the satellite:
+   `CredentialsReady`.
+2. The aggregation step in the parent's pipeline lists the satellites that name
+   the parent and reads that one condition of each. A satellite whose gate is
+   not `True` is skipped, and the pipeline goes on.
+3. The step renders one section per satellite that passed into a Secret whose
+   name carries a hash of its content.
+4. The pod template of the parent's Deployment mounts that Secret. A new
+   Secret name is a new pod template, so the pods roll.
+5. The satellite controller reads the pod template, follows the volume to the
+   Secret, and finds its own section there. It sets `ConfigProjected`, and the
+   aggregate `Ready` follows once both conditions are `True`.
+
+The step never reads a satellite's `Ready`. `Ready` needs `ConfigProjected`,
+and `ConfigProjected` turns `True` only after the step has projected the
+satellite, so a step that waited for `Ready` would wait for itself. Another
+controller may gate on `Ready`: the c5c3-operator does, for the websso choices
+it projects onto Horizon.
+
+No status field of the parent carries the projection. The Deployment and the
+Secret are the evidence, and while `ConfigProjected` is `False` the satellite
+controller polls for it every 15 seconds, every 30 on a `BarbicanSecretStore`.
+
+| Kind | Gate the step reads | What the gate needs | Rendered into | Workload | Evidence for `ConfigProjected` |
+| --- | --- | --- | --- | --- | --- |
+| `GlanceBackend` | `CredentialsReady` | The Secret of `spec.s3.credentialsSecretRef` with both S3 keys | Key `backends.conf` of the Secret `{glance}-backends-{hash}` | Deployment `{glance}` | The header `[{name}]` in the mounted Secret |
+| `CinderBackend` | `CredentialsReady` | Nothing. It is `True/CredentialsNotRequired` once the parent resolves | The Secret `{cinder}-backend-{name}-{hash}`, one per backend | Deployment `{cinder}-volume-{name}`, one per backend | The header `[{name}]` in the key `backend.conf` |
+| `CinderBackupBackend` | `CredentialsReady` | Nothing. It is `True/CredentialsNotRequired` once the parent resolves | Key `backup.conf` of a Secret named after the backend | Deployment `{cinder}-backup` | The name of the Secret its `backup` volume references. The content is not read |
+| `BarbicanSecretStore` | `CredentialsReady` | The credentials Secret and a login the OpenBao server accepts. A store the operator provisions sets `ProvisioningReady` first, and the step does not read that | The section `[secretstore:{name}]` of `barbican.conf` in the Secret `{barbican}-config-{hash}` | Deployment `{barbican}` | The section header in the mounted Secret |
+| `KeystoneIdentityBackend` | `DomainReady` | The Keystone API answering, the admin password Secret, and the domain created or adopted | `keystone.{domain}.conf` in the Secret `{keystone}-domains-{hash}`; the OIDC and SAML documents in `{keystone}-federation-{hash}` | Deployment `{keystone}` | The data key in the mounted Secret, and the rollout finished |
+
+`KeystoneIdentityBackend` is the exception by design. Its gate needs the
+Keystone API, so the parent's Deployment already runs when step 1 passes, and
+its `ConfigProjected` has a third state, `WaitingForRollout`.
 
 ### ResolveParentChildren
 

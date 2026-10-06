@@ -180,6 +180,14 @@ the same two questions, so an operator reads one status shape whichever kind is
 in front of them. The cinder-side sub-reconciler only reads `CredentialsReady`
 and writes the aggregated `BackupBackendReady` condition onto the Cinder CR.
 
+The figure shows the order the two conditions turn `True` in. A
+`CinderBackupBackend` passes step 1 without a credential, and step 5 compares
+the name of the Secret the `backup` volume references.
+[The handshake](../backend/kubernetes-packages.md#satellite-handshake)
+lists the five steps and what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 | Type | Owner | Status | Reason | Meaning |
 | --- | --- | --- | --- | --- |
 | `CredentialsReady` | CinderBackupBackend | True | `CredentialsNotRequired` | The NFS export is mounted with the pod's own identity, so there is no credential to resolve. |

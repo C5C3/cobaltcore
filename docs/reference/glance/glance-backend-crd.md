@@ -180,6 +180,12 @@ The glance-side sub-reconciler only reads `CredentialsReady` (it gates config
 projection) and writes the aggregated `BackendsReady` condition onto the Glance
 CR instead.
 
+The figure shows why the step reads `CredentialsReady` and never `Ready`.
+[The handshake](../backend/kubernetes-packages.md#satellite-handshake)
+lists the five steps and what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 | Type | Owner | Status | Reason | Meaning |
 | --- | --- | --- | --- | --- |
 | `CredentialsReady` | GlanceBackend | True | `CredentialsAvailable` | The credentials Secret exists and carries `access-key-id` / `secret-access-key`. |
