@@ -16,7 +16,7 @@ Four make targets drive the deployment:
 
 | Target | What it does |
 | --- | --- |
-| `make install-test-deps` | Installs chainsaw, flux, kind and kubectl |
+| `make install-test-deps` | Installs chainsaw, kind and kubectl, and flux under `WITH_FLUX_CLI=true` |
 | `make deploy-infra` | Runs the 8-step deployment into the kind cluster |
 | `make e2e` | Runs the Chainsaw E2E tests against the cluster |
 | `make teardown-infra` | Deletes the kind cluster |
@@ -41,7 +41,8 @@ is applied.
 | chainsaw | Kyverno Chainsaw for E2E test execution |
 | jq | JSON processor used by deployment scripts |
 
-All CLI tools except Docker can be installed via `make install-test-deps`.
+`make install-test-deps` installs chainsaw, kind and kubectl, and flux on request;
+Docker and jq come from the package manager of the system.
 
 ## Makefile Targets
 
@@ -462,7 +463,7 @@ failing — each step detects the work it already completed and skips it:
   containerd reports both already match. Checking the drop-in alone would
   permanently skip a node whose write landed but whose restart failed, leaving
   containerd uncapped behind a clean-looking deploy.
-- **Gateway API CRDs** are skipped when all five standard-channel CRDs are
+- **Gateway API CRDs** are skipped when all ten standard-channel CRDs are
   present (see the sequence above).
 - The **kustomize overlays** and **TLS prerequisites** re-apply convergently
   (`kubectl apply` / upserts).
@@ -556,7 +557,7 @@ relies on it. The patches lower requests and change no limit.
 | Replicas | 3 | 1 |
 | Galera | enabled | disabled |
 | MaxScale | enabled | disabled |
-| Storage class | default | `standard` |
+| Storage class | `ceph-rbd` | `standard` |
 | Resources | operator defaults (none) | memory request and limit `1Gi`, no CPU |
 
 The memory request takes the single database out of the BestEffort class, which
@@ -572,8 +573,9 @@ stay unset on purpose: a 500m request left pods Pending on the keystone leg
 | --- | --- | --- |
 | Replicas | 3 | 1 |
 
-Other operators (cert-manager, mariadb-operator, ESO, memcached-operator) are not
-patched — they are single-replica or stateless by default.
+cert-manager, mariadb-operator and ESO are not patched — they are single-replica or
+stateless by default. The memcached-operator release gets one patch,
+`webhook.enabled: false`.
 
 ### Lab Overlay Patches
 

@@ -30,8 +30,8 @@ target clusters.
 
 The stack is built in three declarative layers.
 
-**Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance` syncs
-the repository, and HelmReleases install cert-manager, the External Secrets
+**Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance`
+installs the Flux controllers, and HelmReleases install cert-manager, the External Secrets
 Operator, OpenBao, and the infrastructure and service operators along an
 explicit `dependsOn` graph; K-ORC and the RabbitMQ Cluster Operator are
 applied by Flux `Kustomization`s of their own. The full stack, its namespaces,

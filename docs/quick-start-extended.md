@@ -222,7 +222,7 @@ Step 2.
 The script also triggers a re-reconciliation of the `openstack-db` MariaDB CR and waits for it to
 become `Ready` before returning.
 
-::: tip kind-only ExternalSecret shims
+::: tip ExternalSecret shims of the kind overlay
 The `keystone-admin`, `keystone-db`, and `mariadb-root-password` ExternalSecrets applied
 in Step 5 and awaited in Step 8 are **kind-overlay shims**
 (`deploy/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
@@ -335,8 +335,8 @@ Removing a previously enabled flag does not uninstall that component; cleanup is
 
 ::: tip Enabling Prometheus & Grafana
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
-`make deploy-infra` flow leaves the `monitoring` namespace absent so first-run
-deployments stay lean and do not pin extra CPU/memory on a developer laptop.
+`make deploy-infra` flow puts no workload into the `monitoring` namespace, so
+first-run deployments stay lean and do not pin extra CPU/memory on a developer laptop.
 Production overlays (`deploy/flux-system/`) also omit the stack, because production
 clusters wire their own Prometheus.
 
