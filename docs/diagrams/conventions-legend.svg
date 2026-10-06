@@ -147,4 +147,10 @@
 <polyline points="210.5,1342 224.5,1349 210.5,1356" fill="none" stroke="#2457C5" stroke-width="3"/>
 <text x="154.5" y="1387.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Browser hop</text>
 <text x="268" y="1356.2" font-size="20" font-weight="400" fill="#55606E">sent by the browser: a link, a redirect or a form</text>
+<rect x="918" y="1274" width="850" height="150" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="937" y="1313.36" font-size="26" font-weight="700" fill="#2B3440">Images</text>
+<polygon points="959,1327 1117,1327 1133,1349 1117,1371 959,1371 943,1349" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1038" y="1357.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">python-base</text>
+<text x="1038" y="1401.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Container image</text>
+<text x="1158" y="1356.2" font-size="20" font-weight="400" fill="#55606E">in a registry or in the Docker daemon of a runner</text>
 </svg>
