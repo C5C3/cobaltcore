@@ -21,6 +21,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/plugins"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
+	"github.com/c5c3/cobaltcore/internal/common/release"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
@@ -320,7 +321,6 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 			"enable_proxy_headers_parsing": "true",
 		},
 		"oslo_policy": {
-			"enforce_scope":        "true",
 			"enforce_new_defaults": "true",
 		},
 		"identity": {
@@ -334,6 +334,13 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 			// (oslo.config env override)..
 			"connection": dbConnectionPlaceholder,
 		},
+	}
+
+	// oslo.policy 6.0 (2026.2) removed [oslo_policy] enforce_scope and checks
+	// every rule's scope_types unconditionally, so the switch is rendered only
+	// for the releases whose oslo.policy still reads it.
+	if !keystoneReleaseEnforcesScopeAlways(keystone.Spec.Image.Tag) {
+		defaults["oslo_policy"]["enforce_scope"] = "true"
 	}
 
 	// Turn the domain-specific-drivers machinery on when at least one
@@ -398,6 +405,18 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 	}
 
 	return defaults
+}
+
+// keystoneReleaseEnforcesScopeAlways reports whether the oslo.policy of the
+// Keystone release spec.image.tag names enforces token scope without an
+// [oslo_policy] enforce_scope option: true from 2026.2 onward, false below it
+// and for an empty or unparseable tag, which keep rendering the option.
+func keystoneReleaseEnforcesScopeAlways(imageTag string) bool {
+	rel, err := release.ParseRelease(imageTag)
+	if err != nil {
+		return false
+	}
+	return rel.AtLeast(2026, 2)
 }
 
 // policyConfigMapResourceVersion returns the ResourceVersion of the external
