@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Keystone identity of the dizzy soak, as K-ORC resources: the user
+# dizzy-soak with the role admin on the project dizzy-soak, both in the
+# ControlPlane's admin domain. The soak cannot use the admin application
+# credential behind K-ORC, which rotates every 168 hours. Managed objects are
+# created and deleted by K-ORC; the two imports only resolve the domain
+# Default and the role admin, which stay in place on deletion.
+#
+# The user's password comes from the Secret dizzy-soak-user-password (key
+# password), which hack/dizzy-soak.sh start creates only when it is absent:
+# K-ORC applies a password again only when the Secret's name changes.
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Domain
+metadata:
+  name: dizzy-soak-domain
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: unmanaged
+  import:
+    filter:
+      name: Default
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Project
+metadata:
+  name: dizzy-soak
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: dizzy-soak
+    domainRef: dizzy-soak-domain
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: User
+metadata:
+  name: dizzy-soak
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    name: dizzy-soak
+    domainRef: dizzy-soak-domain
+    defaultProjectRef: dizzy-soak
+    passwordRef: dizzy-soak-user-password
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Role
+metadata:
+  name: dizzy-soak-admin-role
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: unmanaged
+  import:
+    filter:
+      name: admin
+---
+# admin rather than member: the migration pre-check of dizzy's Legacy persona
+# needs it, and without it the run skips live migration.
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: RoleAssignment
+metadata:
+  name: dizzy-soak-admin
+  namespace: openstack
+spec:
+  cloudCredentialsRef:
+    secretName: k-orc-clouds-yaml
+    cloudName: admin
+  managementPolicy: managed
+  resource:
+    roleRef: dizzy-soak-admin-role
+    userRef: dizzy-soak
+    projectRef: dizzy-soak

@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The identity of the soak's runner in the cluster. The runner samples the
+# containers of the platform's pods and their usage, and reads the conditions
+# of the ControlPlanes and the CobaltCore service kinds at the start and end
+# of a run. It reads, with get and list alone, and reads no Secret.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dizzy-soak
+  namespace: dizzy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dizzy-soak-platform-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["c5c3.io"]
+    resources: ["controlplanes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["keystone.openstack.c5c3.io"]
+    resources: ["keystones"]
+    verbs: ["get", "list"]
+  - apiGroups: ["glance.openstack.c5c3.io"]
+    resources: ["glances"]
+    verbs: ["get", "list"]
+  - apiGroups: ["placement.openstack.c5c3.io"]
+    resources: ["placements"]
+    verbs: ["get", "list"]
+  - apiGroups: ["barbican.openstack.c5c3.io"]
+    resources: ["barbicans"]
+    verbs: ["get", "list"]
+  - apiGroups: ["horizon.openstack.c5c3.io"]
+    resources: ["horizons"]
+    verbs: ["get", "list"]
+  - apiGroups: ["neutron.openstack.c5c3.io"]
+    resources: ["neutrons", "neutronmetadataagents"]
+    verbs: ["get", "list"]
+  - apiGroups: ["nova.openstack.c5c3.io"]
+    resources: ["novas", "novacomputes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cinder.openstack.c5c3.io"]
+    resources: ["cinders"]
+    verbs: ["get", "list"]
+  - apiGroups: ["ovn.openstack.c5c3.io"]
+    resources: ["ovncentrals", "ovnchassis"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dizzy-soak-platform-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dizzy-soak-platform-reader
+subjects:
+  - kind: ServiceAccount
+    name: dizzy-soak
+    namespace: dizzy
