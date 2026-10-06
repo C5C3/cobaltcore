@@ -74,6 +74,11 @@ The v1 operator resolves the onboarding decisions as follows:
 
 ## Owned resources
 
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
+
 For a Placement CR named `{name}` the operator manages:
 
 | Resource | Name | Purpose |

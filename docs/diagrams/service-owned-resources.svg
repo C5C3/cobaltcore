@@ -1,0 +1,234 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2584" viewBox="0 0 1808 2584" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="What one Keystone resource creates">
+<title>What one Keystone resource creates</title>
+<rect width="1808" height="2584" fill="#F6F5F1"/>
+<rect x="340" y="40" width="1428" height="276" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="359" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Read, not owned</text>
+<rect x="40" y="360" width="1728" height="2106" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="399.36" font-size="26" font-weight="700" fill="#2B3440">Owned by Keystone {name}</text>
+<text x="59" y="431.2" font-size="20" font-weight="400" fill="#55606E">every object carries an owner reference to it</text>
+<text x="59" y="457.2" font-size="20" font-weight="400" fill="#55606E">on a target cluster: ownership labels in its place</text>
+<rect x="70" y="476" width="485" height="964" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="89" y="515.36" font-size="26" font-weight="700" fill="#2B3440">Serving</text>
+<rect x="682" y="476" width="1066" height="964" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="701" y="515.36" font-size="26" font-weight="700" fill="#2B3440">Config and Secrets</text>
+<rect x="70" y="1536" width="775" height="498" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="89" y="1575.36" font-size="26" font-weight="700" fill="#2B3440">One-shot Jobs</text>
+<text x="89" y="1607.2" font-size="20" font-weight="400" fill="#55606E">every Job mounts the ConfigMap;</text>
+<text x="89" y="1633.2" font-size="20" font-weight="400" fill="#55606E">all but policy-validation read {name}-db-connection</text>
+<rect x="865" y="1536" width="883" height="910" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="884" y="1575.36" font-size="26" font-weight="700" fill="#2B3440">CronJobs</text>
+<rect x="885" y="1596" width="843" height="464" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="904" y="1635.36" font-size="26" font-weight="700" fill="#2B3440">keystone-manage CronJobs</text>
+<rect x="90" y="536" width="445" height="408" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="702" y="536" width="790" height="394" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="1370" y="1226" width="330" height="194" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1389" y="1265.36" font-size="26" font-weight="700" fill="#2B3440">Key Secrets</text>
+<rect x="90" y="1796" width="735" height="218" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="885" y="2084" width="843" height="342" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="70" y="268" width="230" height="48" rx="20" fill="#1D47A6"/>
+<text x="185" y="300.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Keystone {name}</text>
+<path d="M360 100 H567 L583 116 V148 H360 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="567,100 567,116 583,116" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="471.5" y="132.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">admin password</text>
+<text x="597" y="119.2" font-size="20" font-weight="400" fill="#55606E">spec.bootstrap.</text>
+<text x="597" y="145.2" font-size="20" font-weight="400" fill="#55606E">adminPasswordSecretRef</text>
+<path d="M860 100 H1062 L1078 116 V148 H860 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1062,100 1062,116 1078,116" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="969" y="132.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">policy overrides</text>
+<text x="1092" y="119.2" font-size="20" font-weight="400" fill="#55606E">spec.policyOverrides.</text>
+<text x="1092" y="145.2" font-size="20" font-weight="400" fill="#55606E">configMapRef</text>
+<path d="M1290 100 H1545 L1561 116 V148 H1290 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1545,100 1545,116 1561,116" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1425.5" y="132.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">database credentials</text>
+<text x="1575" y="119.2" font-size="20" font-weight="400" fill="#55606E">spec.database.</text>
+<text x="1575" y="145.2" font-size="20" font-weight="400" fill="#55606E">secretRef</text>
+<rect x="360" y="176" width="423" height="48" rx="20" fill="#2B3440"/>
+<text x="571.5" y="208.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ClusterSecretStore or SecretStore</text>
+<text x="797" y="208.2" font-size="20" font-weight="400" fill="#55606E">spec.secretStoreRef</text>
+<rect x="1060" y="176" width="463" height="48" rx="20" fill="#2B3440"/>
+<text x="1291.5" y="208.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ClusterIssuer openstack-db-ca-issuer</text>
+<rect x="375" y="252" width="134" height="48" rx="20" fill="#2B3440"/>
+<text x="442" y="284.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Gateway</text>
+<text x="523" y="271.2" font-size="20" font-weight="400" fill="#55606E">spec.gateway.</text>
+<text x="523" y="297.2" font-size="20" font-weight="400" fill="#55606E">parentRef</text>
+<rect x="655" y="252" width="329" height="48" rx="20" fill="#2B3440"/>
+<text x="819.5" y="284.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">KeystoneIdentityBackend</text>
+<text x="998" y="271.2" font-size="20" font-weight="400" fill="#55606E">names this Keystone</text>
+<text x="998" y="297.2" font-size="20" font-weight="400" fill="#55606E">in spec.keystoneRef</text>
+<rect x="1210" y="252" width="131" height="48" rx="20" fill="#2B3440"/>
+<text x="1275.5" y="284.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">MariaDB</text>
+<text x="1355" y="271.2" font-size="20" font-weight="400" fill="#55606E">spec.database.</text>
+<text x="1355" y="297.2" font-size="20" font-weight="400" fill="#55606E">clusterRef</text>
+<rect x="262" y="556" width="253" height="48" rx="20" fill="#2B3440"/>
+<text x="388.5" y="588.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">HTTPRoute {name}</text>
+<text x="262" y="633.2" font-size="20" font-weight="400" fill="#55606E">spec.gateway</text>
+<rect x="110" y="652" width="287" height="48" rx="20" fill="#2B3440"/>
+<text x="253.5" y="684.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NetworkPolicy {name}</text>
+<text x="110" y="729.2" font-size="20" font-weight="400" fill="#55606E">spec.networkPolicy</text>
+<rect x="110" y="748" width="409" height="48" rx="20" fill="#2B3440"/>
+<text x="314.5" y="780.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">HorizontalPodAutoscaler {name}</text>
+<text x="110" y="825.2" font-size="20" font-weight="400" fill="#55606E">spec.autoscaling</text>
+<rect x="110" y="844" width="378" height="48" rx="20" fill="#2B3440"/>
+<text x="299" y="876.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">VerticalPodAutoscaler {name}</text>
+<text x="110" y="921.2" font-size="20" font-weight="400" fill="#55606E">spec.deployment.verticalAutoscaling</text>
+<rect x="90" y="964" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="190" y="996.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {name}</text>
+<text x="304" y="995.2" font-size="20" font-weight="400" fill="#55606E">port 5000</text>
+<rect x="90" y="1028" width="370" height="48" rx="20" fill="#2B3440"/>
+<text x="275" y="1060.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PodDisruptionBudget {name}</text>
+<rect x="90" y="1106" width="260" height="228" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="220" y="1228.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Deployment {name}</text>
+<text x="90" y="1363.2" font-size="20" font-weight="400" fill="#55606E">container keystone</text>
+<text x="90" y="1389.2" font-size="20" font-weight="400" fill="#55606E">sidecar federation-proxy</text>
+<text x="90" y="1415.2" font-size="20" font-weight="400" fill="#55606E">with a federation backend</text>
+<path d="M722 560 H1036 L1052 576 V608 H722 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1036,560 1036,576 1052,576" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="887" y="592.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-domains-{hash}</text>
+<text x="722" y="637.2" font-size="20" font-weight="400" fill="#55606E">an LDAP identity backend</text>
+<path d="M722 660 H1036 L1052 676 V708 H722 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1036,660 1036,676 1052,676" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="887" y="692.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-federation-{hash}</text>
+<text x="722" y="737.2" font-size="20" font-weight="400" fill="#55606E">an OIDC or SAML backend</text>
+<text x="722" y="763.2" font-size="20" font-weight="400" fill="#55606E">with {name}-oidc-crypto-passphrase,</text>
+<text x="722" y="789.2" font-size="20" font-weight="400" fill="#55606E">{name}-saml-sp, {name}-saml-sp-metadata</text>
+<rect x="1092" y="560" width="380" height="48" rx="20" fill="#2B3440"/>
+<text x="1282" y="592.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database, User, Grant {name}</text>
+<text x="1092" y="637.2" font-size="20" font-weight="400" fill="#55606E">spec.database.clusterRef</text>
+<rect x="1092" y="660" width="350" height="48" rx="20" fill="#2B3440"/>
+<text x="1267" y="692.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Certificate {name}-db-client</text>
+<path d="M1092 806 H1326 L1342 822 V854 H1092 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1326,806 1326,822 1342,822" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1217" y="838.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-db-client</text>
+<text x="1092" y="883.2" font-size="20" font-weight="400" fill="#55606E">spec.database.tls on</text>
+<text x="1092" y="909.2" font-size="20" font-weight="400" fill="#55606E">a managed database</text>
+<rect x="702" y="952" width="484" height="48" rx="20" fill="#2B3440"/>
+<text x="944" y="984.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PushSecret {name}-fernet-keys-backup</text>
+<rect x="702" y="1012" width="530" height="48" rx="20" fill="#2B3440"/>
+<text x="967" y="1044.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PushSecret {name}-credential-keys-backup</text>
+<text x="702" y="1089.2" font-size="20" font-weight="400" fill="#55606E">copy the keys to OpenBao</text>
+<path d="M702 1286 H1006 L1022 1302 V1334 H702 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1006,1286 1006,1302 1022,1302" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="862" y="1318.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">{name}-config-{hash}</text>
+<text x="702" y="1363.2" font-size="20" font-weight="400" fill="#55606E">immutable; the current one</text>
+<text x="702" y="1389.2" font-size="20" font-weight="400" fill="#55606E">and three older ones are kept</text>
+<path d="M1390 1286 H1664 L1680 1302 V1338 H1390 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1664,1286 1664,1302 1680,1302" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1535" y="1320.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-fernet-keys</text>
+<path d="M1390 1350 H1664 L1680 1366 V1402 H1390 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1664,1350 1664,1366 1680,1366" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1535" y="1384.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-credential-keys</text>
+<path d="M1046 1286 H1330 L1346 1302 V1334 H1046 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1330,1286 1330,1302 1346,1302" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1196" y="1318.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-db-connection</text>
+<text x="1046" y="1363.2" font-size="20" font-weight="400" fill="#55606E">the database URL</text>
+<rect x="90" y="1652" width="291" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M113.28 1652 V1700 M357.72 1652 V1700" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="235.5" y="1684.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job {name}-db-sync</text>
+<rect x="405" y="1652" width="378" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M435.24 1652 V1700 M752.76 1652 V1700" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="594" y="1684.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job {name}-schema-check</text>
+<rect x="90" y="1724" width="313" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M115.04 1724 V1772 M377.96 1724 V1772" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="246.5" y="1756.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job {name}-bootstrap</text>
+<rect x="110" y="1816" width="407" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M142.56 1816 V1864 M484.44 1816 V1864" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="313.5" y="1848.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job {name}-policy-validation</text>
+<text x="110" y="1893.2" font-size="20" font-weight="400" fill="#55606E">spec.policyOverrides</text>
+<rect x="110" y="1914" width="697" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M165.76 1914 V1962 M751.24 1914 V1962" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="458.5" y="1946.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Jobs {name}-db-expand, -db-migrate, -db-contract</text>
+<text x="110" y="1991.2" font-size="20" font-weight="400" fill="#55606E">during a release upgrade</text>
+<rect x="905" y="1656" width="472" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M942.76 1656 V1704 M1339.24 1656 V1704" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1141" y="1688.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob {name}-fernet-rotate</text>
+<text x="905" y="1741.2" font-size="20" font-weight="400" fill="#55606E">ServiceAccount, Role and RoleBinding</text>
+<text x="905" y="1767.2" font-size="20" font-weight="400" fill="#55606E">of the same name</text>
+<path d="M1285 1748 H1639 L1655 1764 V1800 H1285 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1639,1748 1639,1764 1655,1764" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1470" y="1782.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-fernet-keys-rotation</text>
+<rect x="905" y="1824" width="472" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M942.76 1824 V1872 M1339.24 1824 V1872" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1141" y="1856.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob {name}-credential-rotate</text>
+<text x="905" y="1909.2" font-size="20" font-weight="400" fill="#55606E">ServiceAccount, Role and RoleBinding</text>
+<text x="905" y="1935.2" font-size="20" font-weight="400" fill="#55606E">of the same name</text>
+<path d="M1285 1916 H1669 L1685 1932 V1968 H1285 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1669,1916 1669,1932 1685,1932" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1485" y="1950.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-credential-keys-rotation</text>
+<rect x="905" y="1992" width="389" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M936.12 1992 V2040 M1262.88 1992 V2040" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1099.5" y="2024.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob {name}-trust-flush</text>
+<text x="905" y="2119.2" font-size="20" font-weight="400" fill="#55606E">spec.passwordRotation.enabled</text>
+<rect x="905" y="2138" width="564" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M950.12 2138 V2186 M1423.88 2138 V2186" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1187" y="2170.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob {name}-admin-password-rotate</text>
+<text x="905" y="2215.2" font-size="20" font-weight="400" fill="#55606E">mounts only its script</text>
+<path d="M1285 2230 H1689 L1705 2246 V2282 H1285 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1689,2230 1689,2246 1705,2246" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1495" y="2264.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-admin-password-rotation</text>
+<path d="M905 2294 H1269 L1285 2310 V2346 H905 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1269,2294 1269,2310 1285,2310" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1095" y="2328.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-admin-password-next</text>
+<rect x="905" y="2358" width="545" height="48" rx="20" fill="#2B3440"/>
+<text x="1177.5" y="2390.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PushSecret {name}-admin-password-backup</text>
+<polyline points="185,334 185,360" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="185,318 180.3,326 185,334 189.7,326" fill="#7D8794"/>
+<polyline points="722,584 570,584 570,1130 360.5,1130" fill="none" stroke="#B0387F" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="350,1130 365,1137.2 365,1122.8" fill="#B0387F"/>
+<polyline points="722,684 586,684 586,1166 360.5,1166" fill="none" stroke="#B0387F" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="350,1166 365,1173.2 365,1158.8" fill="#B0387F"/>
+<polyline points="1092,830 602,830 602,1202 360.5,1202" fill="none" stroke="#B0387F" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="350,1202 365,1209.2 365,1194.8" fill="#B0387F"/>
+<polyline points="1086,1286 1086,1204 634,1204 634,1274 360.5,1274" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="350,1274 365,1281.2 365,1266.8" fill="#B0387F"/>
+<polyline points="1660,1226 1660,1184 618,1184 618,1238 360.5,1238" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="350,1238 365,1245.2 365,1230.8" fill="#B0387F"/>
+<polyline points="702,1310 350,1310" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="362" y="1121.2" font-size="20" font-weight="400" fill="#8A2B63">mount</text>
+<text x="362" y="1157.2" font-size="20" font-weight="400" fill="#8A2B63">mount, sidecar</text>
+<text x="362" y="1193.2" font-size="20" font-weight="400" fill="#8A2B63">mount</text>
+<text x="362" y="1229.2" font-size="20" font-weight="400" fill="#8A2B63">mount</text>
+<text x="362" y="1265.2" font-size="20" font-weight="400" fill="#8A2B63">env</text>
+<polyline points="986,1334 986,1462 790,1462 790,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1008,1334 1008,1506 1286,1506 1286,1596" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1430,1420 1430,1585.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1430,1596 1437.2,1581 1422.8,1581" fill="#B0387F"/>
+<text x="1444" y="1569.2" font-size="20" font-weight="400" fill="#8A2B63">mount</text>
+<polyline points="1296,1334 1296,1484 818,1484 818,1525.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="818,1536 825.2,1521 810.8,1521" fill="#B0387F"/>
+<text x="830" y="1525.2" font-size="20" font-weight="400" fill="#8A2B63">env</text>
+<polyline points="1326,1334 1326,1585.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1326,1596 1333.2,1581 1318.8,1581" fill="#B0387F"/>
+<text x="1340" y="1569.2" font-size="20" font-weight="400" fill="#8A2B63">env</text>
+<polyline points="360,124 54,124 54,1748 79.5,1748" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="90,1748 75,1740.8 75,1755.2" fill="#B0387F"/>
+<text x="64" y="345.2" font-size="20" font-weight="400" fill="#8A2B63">env</text>
+<polyline points="1325,1704 1325,1737.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1325,1748 1332.2,1733 1317.8,1733" fill="#B0387F"/>
+<text x="1339" y="1733.2" font-size="20" font-weight="400" fill="#8A2B63">patch</text>
+<polyline points="1325,1872 1325,1905.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1325,1916 1332.2,1901 1317.8,1901" fill="#B0387F"/>
+<text x="1339" y="1901.2" font-size="20" font-weight="400" fill="#8A2B63">patch</text>
+<polyline points="1325,2186 1325,2219.5" fill="none" stroke="#B0387F" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1325,2230 1332.2,2215 1317.8,2215" fill="#B0387F"/>
+<text x="1339" y="2215.2" font-size="20" font-weight="400" fill="#8A2B63">patch</text>
+<polyline points="1537,148 1537,1218 1306,1218 1306,1275.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1306,1286 1313.2,1271 1298.8,1271" fill="#B0387F"/>
+<text x="1525" y="1001.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="end">the operator builds the URL</text>
+<polyline points="1508,224 1508,684 1452.5,684" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1442,684 1457,691.2 1457,676.8" fill="#3A4452"/>
+<text x="1496" y="345.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">issues</text>
+<polyline points="1267,708 1267,795.5" fill="none" stroke="#B0387F" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1267,806 1274.2,791 1259.8,791" fill="#B0387F"/>
+<text x="1281" y="764.2" font-size="20" font-weight="400" fill="#8A2B63">cert-manager writes</text>
+<polyline points="960,300 960,549.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="960,560 967.2,545 952.8,545" fill="#3A4452"/>
+<text x="972" y="345.2" font-size="20" font-weight="400" fill="#2B3440">one file per projected backend</text>
+<polyline points="499,300 499,545.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="499,556 506.2,541 491.8,541" fill="#3A4452"/>
+<text x="511" y="345.2" font-size="20" font-weight="400" fill="#2B3440">accepts the route</text>
+<polyline points="1321,300 1321,549.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1321,560 1328.2,545 1313.8,545" fill="#3A4452"/>
+<text x="1309" y="513.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">must be healthy first</text>
+<text x="40" y="2511.2" font-size="20" font-weight="400" fill="#55606E">{name}: the Keystone resource. {hash}: eight hex digits of a hash of the content.</text>
+<text x="40" y="2537.2" font-size="20" font-weight="400" fill="#55606E">The staged rotation behind each patch arrow has a figure of its own.</text>
+</svg>
