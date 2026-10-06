@@ -862,6 +862,33 @@ dizzy-keystone dizzy-glance: dizzy-%:
 	@kubectl get secret "$${DIZZY_SECRET:-controlplane-keystone-admin-credentials}" -n "$${DIZZY_CP_NAMESPACE:-openstack}" >/dev/null 2>&1 || { echo 'no ControlPlane admin Secret found; deploy the quick-start ControlPlane and wait for Ready first' >&2; exit 1; }
 	hack/dizzy.sh chaos $*
 
+.PHONY: dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report
+# dizzy-soak-start, -status, -stop and -report drive the long-running dizzy
+# soak of the metal-stack lab: a Job in the namespace dizzy that runs
+# `dizzy mix chaos` in the cluster of the current kubeconfig context, in the
+# OpenStack project dizzy-soak, for 6h by default or until
+# dizzy-soak-stop, and writes a report with a PASS or FAIL verdict to the
+# claim dizzy-soak-reports. dizzy-soak-report copies the newest run to
+# _output/dizzy/soak/<run>/; `hack/dizzy-soak.sh report <run>` copies
+# another. See docs/reference/testing/dizzy-chaos-testing.md#in-cluster-soak.
+#
+# Variables:
+#   DIZZY_SOAK_SERVICE          dizzy service, as in dizzy <service> chaos (default mix).
+#   DIZZY_SOAK_DURATION         6h by default; 0 runs until stopped.
+#   DIZZY_SCENARIO              scenario file (default the overlay's).
+#   DIZZY_ARGS                  extra dizzy flags, space-separated.
+#   DIZZY_VERSION               pin override; the pin lives in hack/dizzy.sh.
+#   DIZZY_AUTH_URL              in-cluster Keystone URL override.
+#   DIZZY_CP_NAME               ControlPlane name (default controlplane).
+#   DIZZY_CP_NAMESPACE          ControlPlane namespace (default openstack).
+#   EXTERNAL_OVERLAY            overlay root (default deploy/lab/metal-stack).
+#   DIZZY_SOAK_NAMESPACES       platform namespaces to sample.
+#   DIZZY_SOAK_SAMPLE_INTERVAL  seconds between samples (default 60).
+#   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).
+#   DIZZY_SOAK_MAX_P95_SECONDS  p95 latency threshold (default none).
+dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak-%:
+	hack/dizzy-soak.sh $*
+
 .PHONY: refresh-operator-digests
 # refresh-operator-digests re-resolves the digest behind the self-built
 # operators' :latest images (keystone/c5c3/horizon), refreshes the
