@@ -105,7 +105,7 @@ active:
 | --- | --- |
 | `Expanding` | `cinder-manage db sync` running on the target image |
 | `Migrating` | `cinder-status upgrade check` running on the target image |
-| `RollingUpdate` | Waiting for the four Deployments to converge on the target image |
+| `RollingUpdate` | Waiting for the Deployments to converge on the target image |
 | `Contracting` | `cinder-manage db online_data_migrations` running on the target image |
 
 ---
@@ -297,7 +297,7 @@ operator rejects.
 
 `spec.image` and `spec.openStackRelease` are separate fields so digest pinning
 stays possible: the release drives tracking and upgrade detection, the phase
-Jobs and the four Deployments run the image. The operator's contract is that the
+Jobs and the Deployments run the image. The operator's contract is that the
 two are bumped together, and for a tag-pinned image the reconciler enforces it.
 When `spec.image.tag` parses as an OpenStack release that differs from
 `spec.openStackRelease`, `DatabaseReady` goes `False` and neither the upgrade nor

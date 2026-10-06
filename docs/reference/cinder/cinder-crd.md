@@ -12,7 +12,7 @@ The Helm chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 
 One `Cinder` CR describes the block-storage service: its OpenStack release,
 container image, the database, cache and message-bus connections, the Keystone
-integration, and the pod-level knobs of its four Deployments. Storage is not
+integration, and the pod-level knobs of its Deployments. Storage is not
 part of this spec. Volume backends attach through
 [`CinderBackend`](./cinder-backend-crd.md) CRs and the backup driver through a
 [`CinderBackupBackend`](./cinder-backup-backend-crd.md).
@@ -28,7 +28,7 @@ part of this spec. Volume backends attach through
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` in {1,2}). It governs install and upgrade tracking: `status.installedRelease` is promoted to it after a successful migration. Kept separate from the image tag so a digest-pinned image still resolves a schema |
 | `image` | `ImageSpec` | yes | The container image every process runs: API, scheduler, volume, backup, and the migration, purge and service-remove Jobs. Exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. The rules are inherited from `commonv1.DatabaseSpec` |
-| `cache` | `CacheSpec` | yes | Memcached. Exactly one of `clusterRef` (managed) or `servers` (brownfield). It backs both `[keystone_authtoken] memcached_servers` and the `[coordination]` lock backend |
+| `cache` | `CacheSpec` | yes | Memcached. Exactly one of `clusterRef` (managed) or `servers` (brownfield). It backs `[keystone_authtoken] memcached_servers`. The `[coordination]` lock backend is the tooz file driver below `/var/lib/cinder`, not Memcached |
 | `messaging` | `MessagingSpec` | yes | The RabbitMQ connection. Required rather than optional: every volume request travels the bus, so a Cinder without a broker accepts requests nothing acts on. Exactly one of `clusterRef` (managed) or `secretRef` (brownfield), plus optional `tls` |
 | `api` | [`CinderAPISpec`](#cinderapispec) | no | The API Deployment's pod-level block and its uWSGI parameters |
 | `scheduler` | [`CinderSchedulerSpec`](#cinderschedulerspec) | no | The scheduler Deployment's pod-level block |
@@ -50,7 +50,7 @@ part of this spec. Volume backends attach through
 | `policyOverrides` | `PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders `policy.yaml` and wires `[oslo_policy] policy_file` |
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
 | `secretStoreRef` | `SecretStoreRefSpec` | no | Selects the External Secrets store `SecretsReady` is resolved against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used |
-| `targetClusterRef` | `TargetClusterRefSpec` | no | Names the registered target cluster that receives this Cinder's children: the four Deployments, the ConfigMaps, the Secrets, the Jobs and the database CRs. The CR itself does not move, and neither do its status, its finalizers or the webhooks that admit it. An attached satellite carries no ref of its own and follows this one. Immutable (two CEL transition rules, mirrored by the webhook): adding, removing or renaming it strands the children on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
+| `targetClusterRef` | `TargetClusterRefSpec` | no | Names the registered target cluster that receives this Cinder's children: the Deployments, the ConfigMaps, the Secrets, the Jobs and the database CRs. The CR itself does not move, and neither do its status, its finalizers or the webhooks that admit it. An attached satellite carries no ref of its own and follows this one. Immutable (two CEL transition rules, mirrored by the webhook): adding, removing or renaming it strands the children on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
 
 ### CinderAPISpec
 
@@ -385,7 +385,7 @@ shared directory plus the overlays it alone may see.
 | `/var/lib/cinder` | `[DEFAULT] state_path`, an `emptyDir`; `conversion` and `tmp` live below it | All four processes |
 | `/var/lib/cinder/mnt/<md5>` | One volume backend's NFS export | That backend's `cinder-volume`, and the backup pod |
 | `/var/lib/cinder/backup_mount/<md5>` | The backup target's NFS export | The backup pod |
-| `/tmp` | Writable scratch beside the read-only root filesystem | All four processes and every Job |
+| `/tmp` | Writable scratch beside the read-only root filesystem | All four processes |
 | `/etc/cinder-db-tls/` | `ca.crt`, `tls.crt`, `tls.key` | Only while `spec.database.tls` is enabled |
 | `/etc/rabbitmq-ca` | `ca.crt`, the file `ssl_ca_file` names | Only while `spec.messaging.tls` is set |
 
@@ -393,10 +393,11 @@ The figure shows the two NFS rows of the table: which pod mounts which export.
 
 ![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
 
-The migration, purge and service-remove Jobs mount the whole config ConfigMap at
+The migration and service-remove Jobs mount the whole config ConfigMap at
 `/etc/cinder/cinder.conf.d`. The one extra file they see is `scheduler.conf`,
-whose host identity `cinder-manage` never consults. The four workloads mount
-every key except that one, so no pod registers under the scheduler's identity.
+whose host identity `cinder-manage` never consults. The four workloads and the
+purge CronJob mount every key except that one, so no pod registers under the
+scheduler's identity.
 
 `BuildWorkload` stamps `fsGroup: 42424` on every pod it builds, and kubelet's
 ownership pass walks every file under a mounted volume at each pod start. On an
