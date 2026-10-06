@@ -2632,6 +2632,12 @@ autoscaling blocks use the VPA and the metrics-server of the platform (see
 walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
 
+The figure shows what those manifests add up to: the cluster-wide parts of
+`base/`, `infrastructure/`, `nfs/` and `controlplane/`, and the parts
+`hypervisor/` and `migration-ports/` put on every worker.
+
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, an NFS server for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the NFS server inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../../diagrams/compute-metal-stack-lab.svg)
+
 ### Node probe
 
 **File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
