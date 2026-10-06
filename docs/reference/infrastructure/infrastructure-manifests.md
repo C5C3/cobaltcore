@@ -1429,9 +1429,10 @@ trust anchor next to `clouds.yaml`. No extra push plumbing is needed: the
 PushSecret mirrors the source Secret **whole** (it declares no `match.secretKey`),
 so the `cacert` key the operator projects into the app-credential Secret already
 reaches OpenBao alongside `clouds.yaml`. Clearing the ref drops the read-back
-entry on the next reconcile; the now-orphaned `cacert` property lingers at the
-OpenBao key because the PushSecret's `deletionPolicy` is `None`, but nothing reads
-it.
+entry and removes the `cacert` key from the source Secret on the next
+reconcile. The operator then forces a re-push (`c5c3.io/push-cacert-hash`), so
+the Secret in OpenBao no longer carries the key. The PushSecret's
+`deletionPolicy` is `Delete`: the OpenBao key leaves with the ControlPlane.
 
 **No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
 manifest that previously declared K-ORC's global default `clouds.yaml` mount has been

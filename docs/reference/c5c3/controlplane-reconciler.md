@@ -3188,10 +3188,11 @@ digest and drives a hash-driven re-mint.
 `reconcileAdminCredential` commits the minted credential and mirrors it to
 OpenBao:
 
-- **Clobber-safe operator Secret.** The Secret K-ORC writes the minted
-  credential into is ensured by the operator, but the `CreateOrUpdate` mutate
-  closure **never touches `secret.Data`** — only the owner reference. K-ORC owns
-  the data, so a reconcile can never overwrite a freshly minted credential.
+- **Operator-owned Secret.** The operator generates key `value` of
+  `{name}-admin-app-credential` once and keeps it across reconciles, because a
+  new value would force a re-mint. K-ORC only reads `value` and passes it to
+  Keystone. `reconcileAdminCredential` writes key `clouds.yaml` and skips the
+  write when the content is unchanged.
 - **clouds.yaml gate.** Readiness is checked via
   `secrets.WaitForExternalSecret(childNamespace(cp)/CloudCredentialsRef.SecretName)`
   so the credential is never published before K-ORC can actually authenticate.
@@ -3211,11 +3212,9 @@ OpenBao:
   and switching the ref moves the push in place — unchanged name and remote key) at
   the per-ControlPlane remote
   key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
-  (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: None`** — the
-  admin credential is a per-ControlPlane persistent bootstrap secret, so deleting
-  the PushSecret on ControlPlane teardown (or when rotation is disabled) leaves the
-  last-pushed credential intact in OpenBao at that CR's own path, so re-adoption
-  works and the admin is never locked out.
+  (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: Delete`**; see
+  [Security invariant](#security-invariant) for why the credential leaves
+  OpenBao with the ControlPlane.
 - **Forced re-push on credential change.** ESO's PushSecret controller does
   **not** watch its source Secret: its refresh gate reacts only to the PushSecret
   object's own label/annotation hash, so a source-Secret update — e.g. the
@@ -4172,8 +4171,9 @@ its namespace.
 This mirrors the Keystone reconciler's sequenced-finalizer discipline (MariaDB
 then OpenBao cleanup); see
 [Keystone reconciler — finalizer](../keystone/keystone-reconciler.md#finalizer).
-The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
-`DeletionPolicy: None` so its OpenBao path is not purged on teardown.
+The `{name}-admin-app-credential-backup` PushSecret carries
+`DeletionPolicy: Delete` like the others, so its OpenBao path is purged on
+teardown.
 
 #### The placed namespaces — `openstack.c5c3.io/remote-children` {#placed-namespaces-remote-children}
 
@@ -4244,8 +4244,8 @@ it.
 | `ExternalSecret` (admin password) | `{name}-keystone-admin-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | managed mode only |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | both modes; carries `cobaltcore.c5c3.io/admin-password-hash` |
-| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; data written by K-ORC, not the operator |
-| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: None` |
+| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; `value` generated and `clouds.yaml` assembled by the operator, read by K-ORC |
+| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: Delete` |
 | `User` (K-ORC) | `{name}-user-admin` | ControlPlane CR | both modes; unmanaged import |
 | `Domain` (K-ORC) | `{name}-domain-default` | ControlPlane CR | both modes; unmanaged import |
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | both modes; managed catalog entry in Managed mode, unmanaged import in External mode |
@@ -4444,10 +4444,9 @@ the finalizer that would have done the revoke or the `DELETE`, so each `Managed`
 it releases orphans its OpenStack resource. Those are the CRs the
 `ORCResourcesOrphaned` Warning names.
 
-The OpenBao-backed Secrets are torn down by owner-reference GC, **except** the
-path behind the `{name}-admin-app-credential-backup` PushSecret: its
-`DeletionPolicy` is deliberately `None`, so the last-pushed credential survives
-at its OpenBao path. Nothing else is touched — a K-ORC CR the ControlPlane does
+The OpenBao-backed Secrets are torn down by owner-reference GC, and the path
+behind the `{name}-admin-app-credential-backup` PushSecret is purged with it
+(`DeletionPolicy: Delete`). Nothing else is touched — a K-ORC CR the ControlPlane does
 not own is never swept.
 
 ### Security invariant
@@ -4465,12 +4464,11 @@ invariants are enforced by the `credential_invariant_test.go` checks
 `TestCredentialInvariant_AppCredentialSecretReferencedOnlyByPushSecretAndAC`,
 `TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret`).
 
-The `PushSecret`'s `DeletionPolicy: None` is the one deliberate exception to the
-GC cascade: tearing down a ControlPlane removes the PushSecret CR but leaves the
-last-pushed credential in OpenBao at this ControlPlane's own per-CR path
-(`openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`), so a
-re-created control plane in the same namespace re-adopts that per-ControlPlane
-bootstrap secret rather than being locked out mid-rotation.
+The `PushSecret` carries `DeletionPolicy: Delete`. The credential leaves
+OpenBao with the ControlPlane. The teardown revokes it in Keystone, so a value
+kept at the path would be dead, and the next ControlPlane of the same name would
+authenticate K-ORC with it and fail. A re-created control plane mints a new
+credential.
 
 ---
 
