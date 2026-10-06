@@ -18,9 +18,10 @@ import (
 func TestNovaOptionCatalogs_EmbeddedReleasesParse(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(optionCatalogs).To(gomega.HaveLen(2))
+	g.Expect(optionCatalogs).To(gomega.HaveLen(3))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2025.2"))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.1"))
+	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.2"))
 
 	for rel, catalog := range optionCatalogs {
 		g.Expect(catalog.Service).To(gomega.Equal("nova"), "release %s must name the nova service", rel)
