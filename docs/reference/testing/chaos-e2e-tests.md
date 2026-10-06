@@ -15,77 +15,63 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 9 chaos test suites validate operator behavior during and after fault injection.
-Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
-operator self-recovery, CronJob workload fault tolerance, and PDB availability guarantee
-scenarios. Phase 3 adds an all-pod operator kill with leader re-election
-verification. Phase 4 adds network chaos scenarios (partition and latency).
-Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
-[Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos` fault, asserts the expected degradation
-(or stability), removes the fault, and asserts full recovery. Tests use
-[Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion lifecycle.
+The 27 chaos test suites validate operator behavior during and after fault
+injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
+operator self-recovery, CronJob workload fault tolerance, and PDB availability
+guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
+re-election verification. Phase 4 adds network chaos scenarios (partition and
+latency). The suites added since cover the other service operators and their
+dependencies. Each suite deploys the resources of the service under test,
+asserts a healthy baseline, injects a fault, asserts the expected degradation
+(or stability), removes the fault, and asserts full recovery. Every suite
+except `deletion-stuck-finalizer` and `cinder-nfs-outage` injects with a
+[Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`. Those two
+scale a Deployment to zero with `kubectl scale` instead. Tests use
+[Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion
+lifecycle.
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Chainsaw Chaos E2E Runner (parallel: 1)                                     │
-│                                                                              │
-│  Phase 1: Dependency Pod Kill                                                │
-│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
-│  │ mariadb-pod-kill     │  │ memcached-pod-kill   │  │ openbao-pod-kill   │  │
-│  │ SC-CHAOS-001         │  │ SC-CHAOS-002         │  │ SC-CHAOS-003       │  │
-│  │ (keystone-chaos-db)  │  │ (keystone-chaos-mc)  │  │ (keystone-chaos-   │  │
-│  │                      │  │                      │  │  bao)              │  │
-│  │ Pattern: degradation │  │ Pattern: no-         │  │ Pattern:           │  │
-│  │ and recovery         │  │ regression           │  │ degradation and    │  │
-│  │                      │  │                      │  │ recovery           │  │
-│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
-│                                                                              │
-│  Phase 2: Operator Resilience and Workload Chaos                             │
-│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐  │
-│  │ operator-pod-crash   │  │ cronjob-rotation-    │  │ api-pod-kill-pdb   │  │
-│  │ SC-CHAOS-004         │  │ failure              │  │ SC-CHAOS-008       │  │
-│  │ (keystone-chaos-op)  │  │ SC-CHAOS-005         │  │ (keystone-chaos-   │  │
-│  │                      │  │ (keystone-chaos-     │  │  api)              │  │
-│  │ Pattern: operator    │  │  cron)               │  │                    │  │
-│  │ self-recovery        │  │                      │  │ Pattern: PDB       │  │
-│  │ (no-regression)      │  │ Pattern: workload    │  │ availability       │  │
-│  │                      │  │ fault tolerance      │  │ guarantee          │  │
-│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘  │
-│                                                                              │
-│  Phase 3: Concurrent Conflicts and Failover                                  │
-│  ┌──────────────────────┐                                                    │
-│  │ operator-pod-kill    │                                                    │
-│  │ SC-CHAOS-009         │                                                    │
-│  │ (keystone-chaos-opk) │                                                    │
-│  │                      │                                                    │
-│  │ Pattern: operator    │                                                    │
-│  │ pod kill (all) with  │                                                    │
-│  │ failover reconcile   │                                                    │
-│  └──────────────────────┘                                                    │
-│                                                                              │
-│  Phase 4: Network Chaos                                                      │
-│  ┌──────────────────────┐  ┌──────────────────────┐                          │
-│  │ mariadb-network-     │  │ mariadb-network-     │                          │
-│  │ partition            │  │ latency              │                          │
-│  │ SC-CHAOS-006         │  │ SC-CHAOS-007         │                          │
-│  │ (keystone-chaos-     │  │ (keystone-chaos-     │                          │
-│  │  net-part)           │  │  net-lat)            │                          │
-│  │                      │  │                      │                          │
-│  │ Pattern: degradation │  │ Pattern: latency     │                          │
-│  │ and recovery         │  │ tolerance            │                          │
-│  │ (NetworkChaos)       │  │ (no-regression)      │                          │
-│  └──────────────────────┘  └──────────────────────┘                          │
-│                                                                              │
-│  All tests run in: namespace openstack                                       │
-│  Fault injection: Chaos Mesh PodChaos and NetworkChaos CRDs                  │
-│  Infrastructure: MariaDB, Memcached, ESO, OpenBao, Chaos Mesh (pre-deployed) │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+The first panel of the figure shows the test bed and the six steps a suite
+takes. The second shows why a partition rule sits on the server pods, the reason
+the partition suites below give for their fixtures. The list describes every
+step under its number.
+
+![Two panels. The first shows the chaos test bed and the six steps of a suite. Chainsaw on the runner applies the service resources and asserts the baseline, applies the chaos resource, a PodChaos or a NetworkChaos, waits until the fault is injected, asserts the behaviour under the fault, deletes the chaos resource and asserts recovery. In the cluster, the chaos-controller-manager in the namespace chaos-mesh reconciles the chaos resource and calls the chaos-daemon on the node of a victim. The daemon kills the pod or a container, or sets rules in the network namespace of the pod. The victims are pods in the namespace openstack or in another namespace: shared-services, or the namespace of an operator. The second panel shows why a partition rule sits on the server pods. A client pod dials the ClusterIP of a Service, and kube-proxy rewrites the destination to the address of a server pod only in the root network namespace of the node. A rule in the client pods that matches the addresses of the server pods never sees one, so the partition does nothing. A rule in the server pods matches the source address of the client pod, which the packet still carries, and drops it.](../../diagrams/test-chaos-bed.svg)
+
+1. **Apply the service resources.** The suite applies the resources of the
+   service under test and asserts the baseline, `Ready=True` with reason
+   `AllReady`.
+2. **Apply the chaos resource.** A `PodChaos` or a `NetworkChaos`. It lives in
+   `openstack`, or in the namespace of the operator it kills in the five
+   operator suites of the other services. Its `selector` names the victims by
+   namespace and label. `chaos-controller-manager` picks them and calls the
+   `chaos-daemon` on their node, which kills the pod or a container, or sets
+   rules in the network namespace of the pod.
+3. **Wait for the injection.** The `NetworkChaos` suites,
+   `ovn-southbound-outage` and `keystone-federation` run
+   `kubectl wait --for=condition=AllInjected` on the chaos resource. The other
+   `PodChaos` suites prove the kill on the victim, by a pod UID that is gone
+   or a ready replica count that drops, or read it from the condition of
+   step 4.
+4. **Assert under the fault.** Either the degradation the suite expects (a
+   condition turns `False`, a write fails closed) or that nothing regresses
+   (`Ready=True` holds, no container restarts).
+5. **Delete the chaos resource.** Chaos Mesh lifts the fault. The `duration`
+   of the resource is a safety net for a run that never reaches the delete.
+   `cronjob-rotation-failure` and the IdP outage of `keystone-federation` let
+   a `duration` of 60 seconds end the fault.
+6. **Assert recovery.** The conditions return to `True`, and where a write
+   failed, a fresh write succeeds.
+
+`deletion-stuck-finalizer` and `cinder-nfs-outage` take the same steps without a
+chaos resource: step 2 scales a Deployment to zero, and step 5 scales it back.
+Every suite runs in the namespace `openstack`.
+[Test Suite Inventory](#test-suite-inventory) lists every suite with its
+scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed and
-healthy.
+All 27 test suites require the infrastructure stack to be deployed and healthy.
+The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
 Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-infra`
