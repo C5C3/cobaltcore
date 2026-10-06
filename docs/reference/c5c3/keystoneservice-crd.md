@@ -113,7 +113,8 @@ The rule lives in the schema, so it binds even when the webhook is unavailable.
 
 The referenced ControlPlane does **not** have to exist at admission time.
 GitOps may apply the registration before the plane; a dangling reference
-surfaces as `Ready=False/ControlPlaneNotFound`, not as an admission error.
+surfaces as `ControlPlaneNotFound` on every declared block, with
+`Ready=False/NotAllReady`, not as an admission error.
 
 ### KeystoneServiceCatalogSpec
 

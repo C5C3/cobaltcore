@@ -1668,10 +1668,10 @@ the `ServiceRegistrationFieldsReclaimed` condition record it: an event ages out 
 etcd on the cluster's TTL, and without the condition a tampering remediated at
 02:00 would leave the ControlPlane reporting `Ready=True` with no durable trace.
 
-**One registration carries no catalog entry at all.** Both spec blocks of a
+**Two registrations carry no catalog entry at all.** Both spec blocks of a
 `KeystoneService` are optional, so a registration naming only the account
 provisions the Keystone user and touches the catalog not at all.
-`desiredNeutronNovaNotifierRegistration` builds the one such registration: the
+`desiredNeutronNovaNotifierRegistration` builds one of them: the
 `{controlplane.Name}-neutron-nova` child carrying the user the network service
 posts its port-status notifications to the compute service as. A user another
 service authenticates as answers no requests itself, so it has no endpoint to
@@ -1684,7 +1684,10 @@ service's own registration does not: nova resolves the instance behind a notifie
 port with the caller's own context, unelevated, so an account holding `service`
 alone has every notification answered 404 and leaves the port in `BUILD`. Every
 other rule `builtinRegistration` documents holds here too, the explicit
-ControlPlane namespace and the unset `adopt` flags among them.
+ControlPlane namespace and the unset `adopt` flags among them. The other is
+`{controlplane.Name}-nova-hypervisor-operator`, which
+`desiredNovaHypervisorOperatorRegistration` builds while
+`services.nova.hypervisorOperator` is set.
 
 **Credentials follow a placed service.** For a service on a target cluster the leg
 mirrors the registration's consumer credentials there
