@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1758" viewBox="0 0 1808 1758" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="OVN control plane and its clients">
+<title>OVN control plane and its clients</title>
+<rect width="1808" height="1758" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="250" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Neutron {neutron}</text>
+<text x="59" y="113.2" font-size="20" font-weight="400" fill="#55606E">all three processes read ovn_nb_connection and ovn_sb_connection</text>
+<rect x="400" y="136" width="444" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<path d="M435.52 136 V184 M808.48 136 V184" fill="none" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="622" y="168.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">CronJob {neutron}-ovn-db-sync</text>
+<text x="860" y="154.2" font-size="20" font-weight="400" fill="#55606E">only with spec.ovnDBSync</text>
+<text x="860" y="180.2" font-size="20" font-weight="400" fill="#55606E">mode log compares, mode repair rewrites</text>
+<rect x="1290" y="143" width="150" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1365" y="168.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{neutron}</text>
+<text x="1290" y="203.2" font-size="20" font-weight="400" fill="#55606E">API with the ML2/OVN driver</text>
+<rect x="860" y="232" width="420" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1070" y="257.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{neutron}-ovn-maintenance-worker</text>
+<rect x="1310" y="232" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1475" y="257.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{neutron}-periodic-workers</text>
+<rect x="640" y="374" width="460" height="48" rx="20" fill="#2B3440"/>
+<text x="870" y="406.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ClusterIssuer openstack-ovn-ca-issuer</text>
+<text x="640" y="449.2" font-size="20" font-weight="400" fill="#55606E">named by spec.tls.issuerRef</text>
+<text x="640" y="475.2" font-size="20" font-weight="400" fill="#55606E">TLS is not optional</text>
+<rect x="40" y="514" width="1728" height="856" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="553.36" font-size="26" font-weight="700" fill="#2B3440">OVNCentral {central}</text>
+<text x="59" y="587.2" font-size="20" font-weight="400" fill="#55606E">what one resource runs</text>
+<rect x="760" y="584" width="470" height="346" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="779" y="623.36" font-size="26" font-weight="700" fill="#2B3440">Certificates</text>
+<text x="779" y="655.2" font-size="20" font-weight="400" fill="#55606E">one Secret per Certificate; each database</text>
+<text x="779" y="679.2" font-size="20" font-weight="400" fill="#55606E">and the relay mount their own</text>
+<path d="M784 696 H1018 L1034 712 V744 H784 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1018,696 1018,712 1034,712" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="909" y="728.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{central}-client</text>
+<path d="M784 760 H1018 L1034 776 V808 H784 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1018,760 1018,776 1034,776" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="909" y="792.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{central}-nb-server</text>
+<path d="M784 824 H1018 L1034 840 V872 H784 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1018,824 1018,840 1034,840" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="909" y="856.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{central}-sb-server</text>
+<path d="M784 888 H1018 L1034 904 V936 H784 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2" stroke-dasharray="6 4"/>
+<polyline points="1018,888 1018,904 1034,904" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="909" y="920.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{central}-sb-relay</text>
+<rect x="525" y="1000" width="152" height="48" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="601" y="1032.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-nb</text>
+<text x="509" y="1018.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">Northbound database: 3 Raft members by default</text>
+<text x="509" y="1044.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">clients on 6641, Raft on 6643</text>
+<rect x="747" y="1000" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="847" y="1032.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-northd</text>
+<text x="747" y="1075.2" font-size="20" font-weight="400" fill="#55606E">3 replicas by default, one active</text>
+<text x="747" y="1101.2" font-size="20" font-weight="400" fill="#55606E">the others wait on a lock</text>
+<text x="747" y="1127.2" font-size="20" font-weight="400" fill="#55606E">in the Southbound database</text>
+<rect x="1127" y="1000" width="150" height="48" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1202" y="1032.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-sb</text>
+<text x="1293" y="1018.2" font-size="20" font-weight="400" fill="#55606E">Southbound database: 3 Raft members by default</text>
+<text x="1293" y="1044.2" font-size="20" font-weight="400" fill="#55606E">clients on 6642, Raft on 6644</text>
+<polyline points="677,1024 736.5,1024" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="747,1024 732,1031.2 732,1016.8" fill="#2457C5"/>
+<text x="712" y="1013.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">reads</text>
+<polyline points="947,1024 1116.5,1024" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1127,1024 1112,1031.2 1112,1016.8" fill="#2457C5"/>
+<text x="1037" y="1013.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">writes the flows</text>
+<rect x="1300" y="1150" width="230" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1415" y="1175.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">{central}-sb-relay</text>
+<text x="1300" y="1115.2" font-size="20" font-weight="400" fill="#55606E">only with spec.relay</text>
+<text x="1300" y="1141.2" font-size="20" font-weight="400" fill="#55606E">answers reads from its copy, forwards writes</text>
+<rect x="760" y="1194" width="362" height="48" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<path d="M788.96 1194 V1242 M1093.04 1194 V1242" fill="none" stroke="#B38A00" stroke-width="2"/>
+<text x="941" y="1226.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">CronJob {central}-backup</text>
+<text x="760" y="1269.2" font-size="20" font-weight="400" fill="#55606E">ovsdb-client backup of both databases,</text>
+<text x="760" y="1295.2" font-size="20" font-weight="400" fill="#55606E">02:00 by default; volume {central}-backup,</text>
+<text x="760" y="1321.2" font-size="20" font-weight="400" fill="#55606E">then S3 with spec.backup.s3</text>
+<rect x="40" y="1420" width="1728" height="214" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="1459.36" font-size="26" font-weight="700" fill="#2B3440">OVNChassis {chassis}</text>
+<text x="59" y="1493.2" font-size="20" font-weight="400" fill="#55606E">on every node it selects</text>
+<rect x="300" y="1516" width="426" height="48" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<path d="M334.08 1516 V1564 M691.92 1516 V1564" fill="none" stroke="#B38A00" stroke-width="2"/>
+<text x="513" y="1548.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">Job {chassis}-evacuate-{hash}</text>
+<text x="300" y="1591.2" font-size="20" font-weight="400" fill="#55606E">when a node stops being a gateway</text>
+<rect x="760" y="1523" width="200" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="860" y="1548.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">metadata agent</text>
+<text x="760" y="1591.2" font-size="20" font-weight="400" fill="#55606E">of a NeutronMetadataAgent</text>
+<rect x="1040" y="1516" width="459" height="48" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<path d="M1076.72 1516 V1564 M1462.28 1516 V1564" fill="none" stroke="#B38A00" stroke-width="2"/>
+<text x="1269.5" y="1548.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">Job {chassis}-chassis-del-{hash}</text>
+<text x="1040" y="1591.2" font-size="20" font-weight="400" fill="#55606E">when a node leaves the chassis</text>
+<rect x="1530" y="1523" width="190" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1625" y="1548.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">ovn-controller</text>
+<polyline points="610,290 610,989.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="610,1000 602.8,985 617.2,985" fill="#2457C5"/>
+<text x="626" y="319.2" font-size="20" font-weight="400" fill="#2B3440">ovn_nb_connection: the logical model</text>
+<polyline points="545,184 545,989.5" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="545,1000 537.8,985 552.2,985" fill="#2457C5"/>
+<text x="529" y="879.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">repair: rewrites</text>
+<polyline points="1262,290 1262,989.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1262,1000 1254.8,985 1269.2,985" fill="#2457C5"/>
+<text x="1278" y="339.2" font-size="20" font-weight="400" fill="#2B3440">ovn_sb_connection</text>
+<polyline points="1000,422 1000,573.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1000,584 992.8,569 1007.2,569" fill="#B0387F"/>
+<text x="1016" y="463.2" font-size="20" font-weight="400" fill="#8A2B63">cert-manager</text>
+<polyline points="1034,706 1210,706 1210,300.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1210,290 1217.2,305 1202.8,305" fill="#B0387F"/>
+<text x="1194" y="355.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="end">mirrored as {neutron}-ovn-client</text>
+<polyline points="1034,734 1190,734 1190,960 897,960 897,989.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="897,1000 889.8,985 904.2,985" fill="#B0387F"/>
+<polyline points="1034,720 1752,720 1752,1409.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1752,1420 1744.8,1405 1759.2,1405" fill="#B0387F"/>
+<text x="1282" y="709.2" font-size="20" font-weight="400" fill="#8A2B63">copied as {chassis}-ovn-client on another cluster</text>
+<polyline points="760,1218 650,1218 650,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="650,1048 657.2,1063 642.8,1063" fill="#2457C5"/>
+<polyline points="1122,1218 1140,1218 1140,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1140,1048 1147.2,1063 1132.8,1063" fill="#2457C5"/>
+<polyline points="580,1516 580,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="580,1048 587.2,1063 572.8,1063" fill="#2457C5"/>
+<text x="564" y="1499.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">removes gateway bindings</text>
+<polyline points="790,1523 790,1486 1165,1486 1165,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1165,1048 1172.2,1063 1157.8,1063" fill="#2457C5"/>
+<text x="806" y="1475.2" font-size="20" font-weight="400" fill="#2B3440">watches it, writes Chassis_Private</text>
+<polyline points="1190,1516 1190,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1190,1048 1197.2,1063 1182.8,1063" fill="#2457C5"/>
+<text x="1206" y="1499.2" font-size="20" font-weight="400" fill="#2B3440">deletes the chassis row</text>
+<polyline points="1550,1523 1550,1260 1215,1260 1215,1058.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1215,1048 1222.2,1063 1207.8,1063" fill="#2457C5"/>
+<text x="1236" y="1251.2" font-size="20" font-weight="400" fill="#2B3440">registers the chassis, reads the flows</text>
+<polyline points="1690,1523 1690,1167 1540.5,1167" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1530,1167 1545,1159.8 1545,1174.2" fill="#2457C5"/>
+<text x="1674" y="1211.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">with a relay: this instead</text>
+<polyline points="1300,1167 1250,1167 1250,1058.5" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1250,1048 1257.2,1063 1242.8,1063" fill="#2457C5"/>
+<text x="40" y="1685.2" font-size="20" font-weight="400" fill="#55606E">{central}: the OVNCentral. {neutron}: the Neutron resource. {chassis}: an OVNChassis. {hash}: eight hex digits from the node name.</text>
+<text x="40" y="1711.2" font-size="20" font-weight="400" fill="#55606E">The client certificate carries no role: every certificate of this CA may read and write both databases.</text>
+</svg>
