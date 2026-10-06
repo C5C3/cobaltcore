@@ -257,10 +257,10 @@ test_the_key_set_covers_every_image_in_the_tree() {
   assert_eq "the map's keys are the tree's images" \
     "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
 
-  # Ten operators, eight services across two releases, nova-compute for both
-  # nova releases, two Tempest images and the federation proxy. The number
-  # moves with the tree; the equality above is what keeps it honest.
-  assert_eq "the tree yields 31 images today" "31" "$(jq -r 'length' <<<"$MAP")"
+  # Ten operators, eight services across three releases, nova-compute for
+  # every nova release, three Tempest images and the federation proxy. The
+  # number moves with the tree; the equality above is what keeps it honest.
+  assert_eq "the tree yields 41 images today" "41" "$(jq -r 'length' <<<"$MAP")"
 
   assert_eq "an operator image is keyed by its dev tag" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-operator:dev")' <<<"$MAP")"
@@ -320,8 +320,8 @@ test_a_changed_service_builds_all_its_releases() {
 
   assert_eq "the resolver exits 0" "0" "$RC"
   # The resolver's images_base class marks a service, never a single release, so
-  # both releases build.
-  assert_eq "both glance releases are built" "glance 2025.2 glance 2026.1" \
+  # every release builds.
+  assert_eq "every glance release is built" "glance 2025.2 glance 2026.1 glance 2026.2" \
     "$(env_block BUILD_SERVICE_IMAGES)"
   assert_eq "the 2025.2 image carries the run-scoped tag" \
     "ghcr.io/c5c3/glance:e2e-test-2025.2" "$(map_value ghcr.io/c5c3/glance:2025.2)"
@@ -341,8 +341,8 @@ test_a_changed_nova_builds_the_compute_image() {
   run_resolve CHANGED_SERVICES='["nova"]'
 
   assert_eq "the resolver exits 0" "0" "$RC"
-  assert_eq "nova and nova-compute are built for both releases" \
-    "nova 2025.2 nova 2026.1 nova 2025.2 nova-compute nova 2026.1 nova-compute" \
+  assert_eq "nova and nova-compute are built for every release" \
+    "nova 2025.2 nova 2026.1 nova 2026.2 nova 2025.2 nova-compute nova 2026.1 nova-compute nova 2026.2 nova-compute" \
     "$(env_block BUILD_SERVICE_IMAGES)"
   assert_eq "nova-compute 2025.2 carries the run-scoped tag" \
     "ghcr.io/c5c3/nova-compute:e2e-test-2025.2" "$(map_value ghcr.io/c5c3/nova-compute:2025.2)"
@@ -382,7 +382,7 @@ test_changed_tempest_builds_every_release() {
   run_resolve CHANGED_TEMPEST=true
 
   assert_eq "the resolver exits 0" "0" "$RC"
-  assert_eq "both Tempest releases are built" "2025.2 2026.1" \
+  assert_eq "every Tempest release is built" "2025.2 2026.1 2026.2" \
     "$(env_block BUILD_TEMPEST_RELEASES)"
   assert_eq "the 2025.2 Tempest image carries the run-scoped tag" \
     "ghcr.io/c5c3/tempest:e2e-test-2025.2" "$(map_value ghcr.io/c5c3/tempest:2025.2)"

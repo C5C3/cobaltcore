@@ -1009,13 +1009,16 @@ test_nova_leg_loads_the_tempest_image() {
 
   assert_eq "the tempest image is the last ref the nova leg resolves" \
     "ghcr.io/c5c3/tempest:2025.2" "$(printf '%s\n' "$refs" | tail -1)"
-  # Twenty: the leg's own two, the five siblings' fifteen, the nova-compute
-  # image of both nova releases, the OVN daemon image and this one. A release
-  # added under releases/ moves the number.
-  assert_eq "it comes on top of the nineteen the leg already had" "20" \
+  # Twenty-six: the leg's own four (the operator and the nova image of each
+  # release), the five siblings' seventeen (five operators and, per release, the
+  # images of the four that ship one), the nova-compute image of each nova
+  # release, the OVN daemon image and this one. A release added under releases/
+  # moves the number.
+  assert_eq "it comes on top of the twenty-five the leg already had" "26" \
     "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
   assert_contains "the 2025.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2025.2"
   assert_contains "the 2026.1 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.1"
+  assert_contains "the 2026.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.2"
 
   # And the branch still gates: the cinder leg, whose suites run no client Job,
   # resolves no tempest ref and loads no gigabyte it never uses.
@@ -1587,7 +1590,7 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
        ."nova-cr-name", ."ovn-cr-name", ."neutron-cr-name",
        ."placement-cr-name", ."glance-cr-name", ."tempest-concurrency"]
     | @tsv')
-  assert_eq "the generator emits one nova leg per release" "2" \
+  assert_eq "the generator emits one nova leg per release" "3" \
     "$(printf '%s\n' "$legs" | grep -c .)"
 
   local dir release slug cr svc_k8s nova ovn neutron placement glance workers
