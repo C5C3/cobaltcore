@@ -36,6 +36,7 @@ the patch, `stestr run --concurrency 1` on the module passes both
 variants in one process, and the whole
 cinder.tests.unit.volume.drivers.netapp package stays green (1691
 passed, 2 skipped). No 2026.1 twin: 28.0.0 already carries the commit.
+No 2026.2 twin: 29.0.0 already carries the commit.
 
 Upstream status: merged on master as cc981d81b6, backported to
 stable/2025.2 as 7faebca9b5 (2026-02-27, Closes-bug: #2125159).
