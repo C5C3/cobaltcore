@@ -123,25 +123,6 @@ active:
 Each transition is driven by a phase Job completing or by every rendered role
 reporting a finished rollout.
 
-```text
-spec.openStackRelease bumped (e.g. 2025.2 -> 2026.1, image in lockstep)
-        |
-        v
-  Expanding      {name}-db-expand: nova-status upgrade check,
-        |                          nova-manage api_db sync, nova-manage db sync
-        v
-  Migrating      {name}-db-migrate: nova-manage cell_v2 list_cells
-        |
-        v
-  RollingUpdate  conductor, scheduler, metadata, console proxy, API roll onto the new image
-        |
-        v
-  Contracting    {name}-db-contract: nova-manage db online_data_migrations, cell then cell0
-        |
-        v
-  installedRelease = "2026.1", targetRelease = "", upgradePhase = ""
-```
-
 | Phase | What runs | Job |
 | --- | --- | --- |
 | `Expanding` | `nova-status upgrade check`, then `nova-manage --config-dir /etc/nova/nova.conf.d api_db sync` and `nova-manage --config-dir /etc/nova/nova.conf.d db sync` on the target image, while every process still runs the installed release. Both migrations are additive, so the old release keeps running against the widened schemas. Between 2025.2 and 2026.1 neither schema takes a revision (decision D3 of [#1014](https://github.com/C5C3/cobaltcore/issues/1014), lab evidence in [#1015](https://github.com/C5C3/cobaltcore/issues/1015#issuecomment-5685726178), section (b)) | `{name}-db-expand` |
@@ -154,6 +135,12 @@ Every phase Job runs `spec.image`, the target-release image, with
 database the Job cannot reach is slow: `nova-manage api_db sync` retries its
 connection and exits 255 after 207 seconds (same lab evidence), so each such try
 costs about 3.5 minutes.
+
+The figure draws the same four phases with what the table leaves out: the gate
+in front of them, the state a failed Job leaves, the hold on a changed target,
+and the abort.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### The second roll
 

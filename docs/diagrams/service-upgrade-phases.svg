@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2352" viewBox="0 0 1808 2352" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Release upgrade phase machine">
+<title>Release upgrade phase machine</title>
+<rect width="1808" height="2352" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="1534" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Phased upgrade</text>
+<text x="59" y="111.2" font-size="20" font-weight="400" fill="#55606E">Keystone, Glance, Cinder, Nova and Neutron share one implementation</text>
+<rect x="880" y="270" width="868" height="1014" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="899" y="309.36" font-size="26" font-weight="700" fill="#2B3440">Upgrade in flight</text>
+<text x="899" y="341.2" font-size="20" font-weight="400" fill="#55606E">upgradePhase is set</text>
+<rect x="900" y="370" width="828" height="568" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="919" y="409.36" font-size="26" font-weight="700" fill="#2B3440">Abort is safe</text>
+<rect x="900" y="1028" width="828" height="236" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="919" y="1067.36" font-size="26" font-weight="700" fill="#2B3440">Abort is unsafe</text>
+<rect x="120" y="170" width="180" height="1030" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="210" y="693.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">No upgrade</text>
+<text x="120" y="1229.2" font-size="20" font-weight="400" fill="#55606E">upgradePhase is empty</text>
+<text x="120" y="1255.2" font-size="20" font-weight="400" fill="#55606E">installedRelease is the release that runs</text>
+<circle cx="60" cy="200" r="10" fill="#17202B"/>
+<polyline points="70,200 109.5,200" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="120,200 105,192.8 105,207.2" fill="#3A4452"/>
+<rect x="830" y="180" width="180" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="920" y="216.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Rejected</text>
+<text x="1026" y="203.2" font-size="20" font-weight="400" fill="#55606E">VersionParseError, DowngradeNotSupported or UpgradePathInvalid</text>
+<text x="1026" y="229.2" font-size="20" font-weight="400" fill="#55606E">no phase is set; the old image keeps running</text>
+<polyline points="300,196 819.5,196" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="830,196 815,188.8 815,203.2" fill="#3A4452"/>
+<text x="565" y="159.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">it does not parse, is older, or skips a release</text>
+<text x="565" y="185.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step, on every pass</text>
+<polyline points="830,220 310.5,220" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="300,220 315,227.2 315,212.8" fill="#3A4452"/>
+<text x="565" y="249.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the spec names the installed or the next release</text>
+<text x="565" y="275.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a person</text>
+<rect x="930" y="440" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1060" y="476.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Expanding</text>
+<text x="930" y="525.2" font-size="20" font-weight="400" fill="#55606E">Job {name}-db-expand</text>
+<rect x="930" y="646" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1060" y="682.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Migrating</text>
+<text x="930" y="731.2" font-size="20" font-weight="400" fill="#55606E">Job {name}-db-migrate</text>
+<rect x="930" y="852" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1060" y="888.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">RollingUpdate</text>
+<text x="1206" y="875.2" font-size="20" font-weight="400" fill="#55606E">no Job; the workloads roll onto the new image</text>
+<text x="1206" y="901.2" font-size="20" font-weight="400" fill="#55606E">no failure state: it waits as long as the rollout takes</text>
+<rect x="930" y="1128" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1060" y="1164.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Contracting</text>
+<text x="930" y="1213.2" font-size="20" font-weight="400" fill="#55606E">Job {name}-db-contract</text>
+<rect x="1490" y="440" width="200" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1590" y="476.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ExpandFailed</text>
+<text x="1490" y="525.2" font-size="20" font-weight="400" fill="#55606E">the phase stays;</text>
+<text x="1490" y="551.2" font-size="20" font-weight="400" fill="#55606E">a deleted Job runs again</text>
+<rect x="1490" y="646" width="200" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1590" y="682.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">MigrateFailed</text>
+<text x="1490" y="731.2" font-size="20" font-weight="400" fill="#55606E">the phase stays;</text>
+<text x="1490" y="757.2" font-size="20" font-weight="400" fill="#55606E">a deleted Job runs again</text>
+<rect x="1490" y="1128" width="200" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1590" y="1164.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ContractFailed</text>
+<text x="1490" y="1213.2" font-size="20" font-weight="400" fill="#55606E">the phase stays;</text>
+<text x="1490" y="1239.2" font-size="20" font-weight="400" fill="#55606E">a deleted Job runs again</text>
+<polyline points="300,468 919.5,468" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="930,468 915,460.8 915,475.2" fill="#3A4452"/>
+<text x="590" y="431.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the spec release is one release ahead</text>
+<text x="590" y="457.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step: sets targetRelease</text>
+<polyline points="1174,496 1174,635.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1174,646 1181.2,631 1166.8,631" fill="#3A4452"/>
+<text x="1190" y="542.64" font-size="24" font-weight="400" fill="#2B3440">the expand Job completes</text>
+<text x="1190" y="568.2" font-size="20" font-weight="400" fill="#55606E">Database step</text>
+<polyline points="1174,702 1174,841.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1174,852 1181.2,837 1166.8,837" fill="#3A4452"/>
+<text x="1190" y="748.64" font-size="24" font-weight="400" fill="#2B3440">the migrate Job completes</text>
+<text x="1190" y="774.2" font-size="20" font-weight="400" fill="#55606E">Database step</text>
+<polyline points="1174,908 1174,1117.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1174,1128 1181.2,1113 1166.8,1113" fill="#3A4452"/>
+<text x="1190" y="979.64" font-size="24" font-weight="400" fill="#2B3440">every replica runs the new image</text>
+<text x="1190" y="1005.2" font-size="20" font-weight="400" fill="#55606E">Deployment step</text>
+<polyline points="930,1156 310.5,1156" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="300,1156 315,1163.2 315,1148.8" fill="#3A4452"/>
+<text x="590" y="1119.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the contract Job completes</text>
+<text x="590" y="1145.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step: installedRelease is the target now</text>
+<polyline points="1190,468 1479.5,468" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1490,468 1475,460.8 1475,475.2" fill="#3A4452"/>
+<text x="1340" y="431.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the Job used up its retries</text>
+<text x="1340" y="457.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step</text>
+<polyline points="1190,674 1479.5,674" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1490,674 1475,666.8 1475,681.2" fill="#3A4452"/>
+<text x="1340" y="637.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the Job used up its retries</text>
+<text x="1340" y="663.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step</text>
+<polyline points="1190,1156 1479.5,1156" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1490,1156 1475,1148.8 1475,1163.2" fill="#3A4452"/>
+<text x="1340" y="1119.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the Job used up its retries</text>
+<text x="1340" y="1145.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step</text>
+<polyline points="900,747 310.5,747" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="300,747 315,754.2 315,739.8" fill="#3A4452"/>
+<text x="590" y="710.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the spec goes back to installedRelease</text>
+<text x="590" y="736.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a person; the Database step deletes the phase Jobs</text>
+<polyline points="900,1068 310.5,1068" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="300,1068 315,1075.2 315,1060.8" fill="#3A4452"/>
+<text x="590" y="1031.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the spec goes back to installedRelease</text>
+<text x="590" y="1057.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">accepted, but the old release then meets a contracted schema</text>
+<rect x="1090" y="1434" width="300" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1240" y="1470.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">UpgradeTargetChanged</text>
+<text x="1090" y="1519.2" font-size="20" font-weight="400" fill="#55606E">the spec names a third release</text>
+<text x="1090" y="1545.2" font-size="20" font-weight="400" fill="#55606E">no Job is started while it holds</text>
+<polyline points="1150,1284 1150,1423.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1150,1434 1157.2,1419 1142.8,1419" fill="#3A4452"/>
+<text x="1134" y="1355.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="end">the spec changes to a third release</text>
+<text x="1134" y="1381.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">Database step, on every pass</text>
+<polyline points="1330,1434 1330,1294.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,1284 1322.8,1299 1337.2,1299" fill="#3A4452"/>
+<text x="1346" y="1355.64" font-size="24" font-weight="400" fill="#2B3440">the spec names targetRelease again</text>
+<text x="1346" y="1381.2" font-size="20" font-weight="400" fill="#55606E">a person; the phase resumes</text>
+<rect x="40" y="1604" width="1728" height="604" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="1643.36" font-size="26" font-weight="700" fill="#2B3440">Single pass</text>
+<text x="59" y="1675.2" font-size="20" font-weight="400" fill="#55606E">Barbican and Placement: no phases and no abort</text>
+<rect x="540" y="1754" width="180" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="630" y="1790.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">No upgrade</text>
+<rect x="540" y="2020" width="180" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="630" y="2056.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Rejected</text>
+<text x="540" y="2105.2" font-size="20" font-weight="400" fill="#55606E">the three rejections of the phased upgrade,</text>
+<text x="540" y="2131.2" font-size="20" font-weight="400" fill="#55606E">or ImageReleaseMismatch when the image did not change</text>
+<rect x="1130" y="1754" width="240" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1250" y="1790.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBSyncInProgress</text>
+<text x="1386" y="1777.2" font-size="20" font-weight="400" fill="#55606E">Job {name}-db-sync on the new image</text>
+<text x="1386" y="1803.2" font-size="20" font-weight="400" fill="#55606E">targetRelease is set</text>
+<rect x="1130" y="2020" width="240" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1250" y="2056.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBSyncFailed</text>
+<text x="1130" y="2105.2" font-size="20" font-weight="400" fill="#55606E">targetRelease stays set</text>
+<polyline points="720,1770 1119.5,1770" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1130,1770 1115,1762.8 1115,1777.2" fill="#3A4452"/>
+<text x="925" y="1703.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the release is one ahead,</text>
+<text x="925" y="1733.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">with a new image</text>
+<text x="925" y="1759.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step: sets targetRelease</text>
+<polyline points="1130,1794 730.5,1794" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="720,1794 735,1801.2 735,1786.8" fill="#3A4452"/>
+<text x="925" y="1823.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the Job completes</text>
+<text x="925" y="1849.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Database step: promotes installedRelease,</text>
+<text x="925" y="1873.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">then the Deployment rolls</text>
+<polyline points="580,1810 580,2009.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="580,2020 587.2,2005 572.8,2005" fill="#3A4452"/>
+<text x="564" y="1911.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="end">the release or the image does not pass the gate</text>
+<text x="564" y="1937.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">Database step, on every pass</text>
+<polyline points="680,2020 680,1820.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="680,1810 672.8,1825 687.2,1825" fill="#3A4452"/>
+<text x="696" y="1911.64" font-size="24" font-weight="400" fill="#2B3440">the spec is corrected</text>
+<text x="696" y="1937.2" font-size="20" font-weight="400" fill="#55606E">a person</text>
+<polyline points="1170,1810 1170,2009.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1170,2020 1177.2,2005 1162.8,2005" fill="#3A4452"/>
+<text x="1186" y="1911.64" font-size="24" font-weight="400" fill="#2B3440">the Job used up its retries</text>
+<text x="1186" y="1937.2" font-size="20" font-weight="400" fill="#55606E">Database step</text>
+<text x="59" y="2177.2" font-size="20" font-weight="400" fill="#55606E">From the end of the Job until the last old pod stops, the old release serves the new schema.</text>
+<text x="40" y="2253.2" font-size="20" font-weight="400" fill="#55606E">{name}: the service resource. The spec release is spec.image.tag on a Keystone and spec.openStackRelease on the others.</text>
+<text x="40" y="2279.2" font-size="20" font-weight="400" fill="#55606E">The phases report DatabaseReady=False with ExpandInProgress, MigrateInProgress, UpgradeRollingUpdate and ContractInProgress.</text>
+<text x="40" y="2305.2" font-size="20" font-weight="400" fill="#55606E">Glance, Cinder, Nova and Neutron also hold with ImageReleaseMismatch while spec.image names another release than spec.openStackRelease.</text>
+</svg>

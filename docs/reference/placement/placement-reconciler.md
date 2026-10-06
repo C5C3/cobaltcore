@@ -161,6 +161,9 @@ An accepted bump stamps `status.targetRelease`, the db-sync Job runs on the new
 image, the Deployment rolls onto it, and the sync flow promotes
 `status.installedRelease` on Job success, at which point `targetRelease` is
 cleared and `status.installedImage` records the image that ran the migration.
+The second panel of the figure under
+[Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
+draws this single pass beside the phase machine it does without.
 
 Two guards keep the release marker honest, one per pinning style. A tag-pinned
 image whose tag names a different release than `spec.openStackRelease` sets

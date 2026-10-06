@@ -146,6 +146,14 @@ When all four complete successfully:
 - The ControlPlane's `.status.services[?(@.name=='keystone')].release` reports the new release
 - A `UpgradeComplete` event is emitted on the child
 
+The figure shows the same four phases with their failure states. Its abort
+arrows start at the child's own spec, which the ControlPlane owns here: lowering
+`spec.openStackRelease` is rejected at admission, so
+[Recovering from a bad upgrade](#recovering-from-a-bad-upgrade) describes the
+way back on this path.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../diagrams/service-upgrade-phases.svg)
+
 ::: warning Upgrade constraints
 Only **sequential** upgrades are supported: `2025.1 → 2025.2`, `2025.2 → 2026.1`,
 `2026.1 → 2026.2`. A **downgrade** is rejected at ControlPlane admission with
