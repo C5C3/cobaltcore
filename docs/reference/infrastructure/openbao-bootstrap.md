@@ -39,11 +39,13 @@ per-ControlPlane remote path `bootstrap/{ns}/{name}-keystone/admin`. Likewise
 the `{cp}-keystone-db-credentials` ExternalSecret is **not** a static deploy-time
 resource; it is created **per-ControlPlane** by the operator's
 `reconcileDBCredentials` sub-reconciler (default
-`controlplane-keystone-db-credentials`), reading the per-ControlPlane remote path
-`openstack/keystone/{ns}/{name}/db`. Standalone Keystone instances (no
-ControlPlane CR) instead reference a Secret named `keystone-db`; the **kind
-overlay** ships a `keystone-db` ExternalSecret pinned to the default identity's
-path (`deploy/kind/infrastructure/keystone-db-externalsecret.yaml`), while the
+`controlplane-keystone-db-credentials`). In the default Dynamic mode it draws
+engine-issued credentials through a `VaultDynamicSecret` generator. In Static
+mode it reads the KV path `openstack/keystone/{ns}/{name}/db`. Standalone
+Keystone instances (no ControlPlane CR) instead reference a Secret named
+`keystone-db`; the **kind overlay** ships a `keystone-db` ExternalSecret pinned
+to the default identity's path
+(`deploy/kind/infrastructure/keystone-db-externalsecret.yaml`), while the
 production stack ships none.
 
 ## Prerequisites
