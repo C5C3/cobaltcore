@@ -2297,6 +2297,12 @@ namespace from the allowlist does and does not do.
 Declares the admin OpenStack credential and the application-credential rotation
 policy for the control plane.
 
+The figure shows where these fields act.
+[K-ORC admin credential chain](./controlplane-reconciler.md#k-orc-admin-credential-chain)
+lists its steps.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |

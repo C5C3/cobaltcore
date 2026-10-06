@@ -3812,41 +3812,57 @@ field indexers.
 ## K-ORC admin credential chain
 
 The end-to-end path that delivers the admin application credential to the K-ORC
-controller spans three sub-reconcilers and the ESO/OpenBao backend:
+controller spans four sub-reconcilers (`reconcileAdminPassword`,
+`reconcileKORC`, `reconcileAdminCredential`, `reconcileCatalog`) and the
+ESO/OpenBao backend.
 
-```text
-OpenBao kv  bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin   (admin password)
-        │  (managed mode; reconcileAdminPassword, owner-ref'd to the ControlPlane)
-        ▼
-ExternalSecret  →  {control-plane ns}/{controlplane.Name}-keystone-admin-credentials
-        │            (ESO owns the materialised Secret; CreationPolicy: Owner)
-        ▼
-admin-password Secret (the effective admin-password ref; read by c5c3-operator)
-        │  SHA-256 → cobaltcore.c5c3.io/admin-password-hash annotation
-        ▼
-c5c3-operator mints a RESTRICTED ApplicationCredential        (reconcileKORC)
-   restricted:true  ⇒  K-ORC spec.resource.unrestricted=false  (INVERSION)
-        │
-        ▼
-K-ORC writes the minted credential into the operator-owned Secret
-   {controlplane.Name}-admin-app-credential   (Resource.SecretRef target)
-        │
-        ▼  (reconcileAdminCredential, gated on KORCReady + clouds.yaml ES)
-PushSecret  →  OpenBao kv  openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
-   (DeletionPolicy: None — per-ControlPlane bootstrap secret survives teardown;
-    ESO does not watch the source Secret, so a content-hash annotation nudge
-    forces the re-push on credential change, and the clouds.yaml force-sync
-    below is keyed on that hash + the completed push's syncedResourceVersion)
-        │
-        ▼
-ExternalSecret  →  {control-plane ns}/k-orc-clouds-yaml  (the clouds.yaml gate;
-        │            operator-created per-CR by reconcileKORC, owner-ref'd to
-        │            the ControlPlane; the orc-system copy is the retained
-        │            STATIC manifest for K-ORC's global mount)
-        ▼
-K-ORC controller authenticates with the admin clouds.yaml and reconciles
-   the catalog Service + Endpoint                              (reconcileCatalog)
-```
+The path passes OpenBao twice. The numbers in the figure are the steps below.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
+
+1. ESO reads property `password` of
+   `kv-v2/bootstrap/{keystone namespace}/{cp}-keystone/admin` into the Secret
+   `{cp}-keystone-admin-credentials`. `reconcileAdminPassword` creates the
+   ExternalSecret in managed mode, owner-referenced to the ControlPlane. The
+   Keystone namespace is the ControlPlane namespace unless
+   `spec.services.keystone.namespace` is set.
+2. `reconcileKORC` reads the password, writes the Secret
+   `{cp}-admin-password-cloud` with a password-based `clouds.yaml` on every
+   pass, and keeps the SHA-256 of the password for the
+   `cobaltcore.c5c3.io/admin-password-hash` annotation. Until the password
+   exists: `KORCReady=False`, reason `WaitingForAdminPassword`.
+3. `reconcileKORC` writes the Secret `{cp}-admin-app-credential`. Its key
+   `value` is the secret of the future application credential, 32 random bytes
+   that the operator generates. Its key `clouds.yaml` is seeded with the
+   password-based document while it is empty (`seedBootstrapCloudsYAML`).
+4. ESO pushes the Secret whole through the PushSecret
+   `{cp}-admin-app-credential-backup` to
+   `kv-v2/openstack/keystone/{ns}/{cp}/admin/app-credential`. The deletion
+   policy is `Delete`: the key leaves OpenBao with the ControlPlane.
+5. ESO reads property `clouds.yaml`, and `cacert` when a CA bundle is set, into
+   the Secret that `spec.korc.adminCredential.cloudCredentialsRef.secretName`
+   names, by default `k-orc-clouds-yaml`, in the ControlPlane namespace
+   (`ensureKORCCloudsYAMLExternalSecret`, refresh 1h, `creationPolicy: Owner`,
+   owner-referenced to the ControlPlane). `orc-system` holds no copy: K-ORC
+   resolves the `cloudCredentialsRef` of a resource in that resource's own
+   namespace.
+6. K-ORC resolves the unmanaged imports `Domain` `{cp}-domain-default` and
+   `User` `{cp}-user-admin` with `k-orc-clouds-yaml`, which still carries the
+   password.
+7. K-ORC creates the `ApplicationCredential` `{cp}-admin-app-credential` in
+   Keystone. It authenticates with `{cp}-admin-password-cloud` and passes
+   `value` as the secret. `restricted: true`, the default, becomes
+   `unrestricted: false` on the K-ORC resource. `KORCReady` turns True with
+   reason `ApplicationCredentialMinted`.
+8. `reconcileAdminCredential` takes the credential id from the ControlPlane
+   status, overwrites key `clouds.yaml` of `{cp}-admin-app-credential` with the
+   application-credential document, and stamps `c5c3.io/push-content-hash` on
+   the PushSecret, because ESO does not watch the source Secret. Steps 4 and 5
+   run a second time. The operator force-syncs the ExternalSecret and sets
+   `AdminCredentialReady=True` once the id and the secret in
+   `k-orc-clouds-yaml` match.
+9. K-ORC authenticates with the application credential and reconciles the
+   catalog `Service` and `Endpoint` resources (`reconcileCatalog`).
 
 **Re-mint trigger.** A rotation is signalled by comparing
 `SHA-256(admin password)` against the `cobaltcore.c5c3.io/admin-password-hash`
@@ -3855,7 +3871,9 @@ they differ; the CredentialRotation reconciler forces the same path by clearing
 the annotation (which guarantees a mismatch). The admin-password Secret watch
 (see [Secret Field Indexer](#secret-field-indexer)) wakes the ControlPlane the
 moment the password rotates so the chain converges without waiting for the next
-periodic requeue.
+periodic requeue. A change of `restricted` or `accessRules` re-mints as well,
+because K-ORC's `spec.resource` is immutable (`adminACResourceDrifted` in
+`reconcileKORC`).
 
 ---
 
