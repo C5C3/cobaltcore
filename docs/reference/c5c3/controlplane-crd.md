@@ -3976,6 +3976,13 @@ the service children first and waits for them (their own operators run a
 sequenced ESO cleanup through the tenant store in the same namespace), then takes
 the namespace down per its lifecycle.
 
+The figure shows the ControlPlane namespace, a service namespace and a target
+cluster with the ownership model of each.
+[ControlPlane placement](../target-clusters.md#controlplane-placement) covers
+the third.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../../diagrams/controlplane-children-placement.svg)
+
 ### Secret distribution
 
 An ESO `SecretStore` and the Secrets it materializes are namespace-local, so a

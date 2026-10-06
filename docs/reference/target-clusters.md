@@ -860,6 +860,11 @@ Whether the named cluster is registered is not checked at admission. An unknown
 name surfaces per CR as a condition instead, with reason
 `TargetClusterUnavailable` and the resolver's `cluster not found`.
 
+The figure shows the three places a child of a ControlPlane can live and how
+each is tied to it. The table after it lists every object.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../diagrams/controlplane-children-placement.svg)
+
 What a placed service takes with it, and what stays behind:
 
 | Object | Created on |
