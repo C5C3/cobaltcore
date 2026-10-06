@@ -84,9 +84,11 @@ See [KeystoneIdentityBackend CRD](./identity-backend-crd.md) and the
   `maxActiveKeys`; rotation script delivered via ConfigMap.
 - **Credential keys.** Same rotation model, but each rotation is automatically
   followed by a `credential_migrate` step.
-- **Automatic rolling restart on rotation.** The pod template carries
-  `keystone.c5c3.io/fernet-keys-hash` and `credential-keys-hash` annotations,
-  so any key change triggers a Deployment rollout.
+- **In-place key rotation, no rollout.** The operator replaces the data of the
+  key Secret and the kubelet projects it into the running pods. The pod
+  template carries no hash of the key Secrets. Its one hash annotation,
+  `keystone.c5c3.io/db-connection-hash`, rolls the Deployment when a Dynamic
+  database credential changes.
 - **OpenBao backup via ESO PushSecret.** Keys are mirrored to OpenBao for
   disaster recovery; staging Secrets are owner-referenced for cache eviction
   on rotation.
