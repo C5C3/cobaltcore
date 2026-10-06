@@ -373,6 +373,38 @@ func TestReconcileConfig_PoolPinOverrideReported(t *testing.T) {
 	}
 }
 
+// TestReconcileConfig_WorkersByRelease pins the rendered glance-api.conf on
+// both sides of the 2026.2 boundary for a Glance that sets
+// spec.apiServer.workers: 2026.1 still writes the inert [DEFAULT] workers line,
+// and 2026.2, whose glance dropped the option, writes none.
+func TestReconcileConfig_WorkersByRelease(t *testing.T) {
+	for _, tc := range []struct {
+		release     string
+		wantWorkers bool
+	}{
+		{release: "2026.1", wantWorkers: true},
+		{release: "2026.2", wantWorkers: false},
+	} {
+		t.Run(tc.release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := glanceForConfig()
+			atRelease(glance, tc.release)
+			r := newGlanceTestReconciler(glance)
+
+			_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+			g.Expect(err).NotTo(HaveOccurred())
+
+			conf := renderedConfig(t, r, art)
+			g.Expect(conf).To(ContainSubstring("enabled_backends = store:s3"))
+			if tc.wantWorkers {
+				g.Expect(conf).To(MatchRegexp(`(?m)^workers = 4$`))
+			} else {
+				g.Expect(conf).NotTo(MatchRegexp(`(?m)^workers = `))
+			}
+		})
+	}
+}
+
 // TestReconcileConfig_WorkersOverrideNamesTheCap verifies that an eventlet
 // [DEFAULT] workers override in spec.extraConfig, which the rendered config
 // honours while the connection cap still counts spec.apiServer.workers, is
@@ -518,7 +550,8 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
 // node's CPU count and OOMs the container; an explicit value wins, and one
 // below 1 renders the default, as effectiveEventletWorkers resolves it for the
 // connection cap. From 2026.1 (uWSGI) the key is inert, so an unset workers
-// renders nothing.
+// renders nothing. From 2026.2 glance no longer registers the option, so not
+// even an explicit value renders.
 func TestOperatorDefaults_EventletWorkers(t *testing.T) {
 	makeGlance := func(release string, workers *int32) *glancev1alpha1.Glance {
 		glance := testGlance()
@@ -542,6 +575,8 @@ func TestOperatorDefaults_EventletWorkers(t *testing.T) {
 		{"eventlet zero renders the default the cap sizes", "2025.2", ptr.To(int32(0)), expectedDefault},
 		{"uwsgi unset renders nothing", "2026.1", nil, ""},
 		{"uwsgi explicit still rendered inert", "2026.1", ptr.To(int32(4)), "4"},
+		{"2026.2 unset renders nothing", "2026.2", nil, ""},
+		{"2026.2 explicit not rendered, glance dropped the option", "2026.2", ptr.To(int32(4)), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -549,7 +584,7 @@ func TestOperatorDefaults_EventletWorkers(t *testing.T) {
 			defaults := operatorDefaults(makeGlance(tc.release, tc.workers), validProjection())
 			got, present := defaults["DEFAULT"]["workers"]
 			if tc.wantWorkers == "" {
-				g.Expect(present).To(BeFalse(), "workers must not render under uWSGI when unset")
+				g.Expect(present).To(BeFalse(), "workers must not render")
 				return
 			}
 			g.Expect(present).To(BeTrue(), "workers must render")
