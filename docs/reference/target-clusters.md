@@ -63,6 +63,11 @@ service between clusters means deleting the CR and creating it anew.
 A target cluster is registered by a kubeconfig Secret on the management cluster.
 The Secret's name is the cluster name a CR references.
 
+The figure shows where the Secret sits, what the target cluster grants in
+return, and what crosses between the two clusters.
+
+![A workload CR that names a target cluster. On the management cluster, the Secret {cluster} in the namespace c5c3-clusters registers the target: it carries the label sigs.k8s.io/multicluster-runtime-kubeconfig and a kubeconfig. The Keystone CR {name} sets spec.targetClusterRef to that name and stays on the management cluster with its status, its finalizers and its webhooks. On the target cluster, the chart target-cluster-access provides the ServiceAccount, the token and the Roles the kubeconfig uses, and the namespace of the CR receives every child: Deployment, Service, HTTPRoute, ConfigMaps, Secrets, Jobs, CronJobs and the database CRs, each marked with the labels openstack.c5c3.io/owner-kind, owner-name and owner-namespace and without an owner reference. Four routes cross the cluster boundary. The operator writes and watches the children through the target's API server, probes the service API through services/proxy, and reaches the OpenBao of a placed BarbicanSecretStore through pods/portforward. Clients and services on other clusters reach the workload by its public URL, through a Gateway or load balancer on the target.](../diagrams/controlplane-target-cluster.svg)
+
 ```yaml
 apiVersion: v1
 kind: Secret

@@ -22,6 +22,12 @@ The field's contract (immutability, the ownership labels, the teardown order,
 what a ControlPlane places per service) is
 [Target Clusters](../reference/target-clusters.md).
 
+The figure shows what this guide builds. `{cluster}` is `cobaltcore-target`,
+`{name}` is `keystone`, `{ns}` is `openstack` and `{access-ns}` is
+`c5c3-access` here.
+
+![A workload CR that names a target cluster. On the management cluster, the Secret {cluster} in the namespace c5c3-clusters registers the target: it carries the label sigs.k8s.io/multicluster-runtime-kubeconfig and a kubeconfig. The Keystone CR {name} sets spec.targetClusterRef to that name and stays on the management cluster with its status, its finalizers and its webhooks. On the target cluster, the chart target-cluster-access provides the ServiceAccount, the token and the Roles the kubeconfig uses, and the namespace of the CR receives every child: Deployment, Service, HTTPRoute, ConfigMaps, Secrets, Jobs, CronJobs and the database CRs, each marked with the labels openstack.c5c3.io/owner-kind, owner-name and owner-namespace and without an owner reference. Four routes cross the cluster boundary. The operator writes and watches the children through the target's API server, probes the service API through services/proxy, and reaches the OpenBao of a placed BarbicanSecretStore through pods/portforward. Clients and services on other clusters reach the workload by its public URL, through a Gateway or load balancer on the target.](../diagrams/controlplane-target-cluster.svg)
+
 ## Prerequisites
 
 ::: info Devstack
