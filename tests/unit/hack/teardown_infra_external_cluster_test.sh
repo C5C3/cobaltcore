@@ -98,6 +98,13 @@
 #      a second run, on which the Flux kinds are gone, and a cluster deployed
 #      without WITH_PROMETHEUS=true, on which the deletes find nothing, exit
 #      0.
+#   8. The dizzy soak goes after Chaos Mesh and before step 0: the Job
+#      dizzy-soak and the pod dizzy-soak-reader in the foreground, then the
+#      render of dizzy-soak/, once each, before the ControlPlane delete and
+#      every delete of step 0. An overlay without dizzy-soak/ gets neither
+#      delete nor the render. A Job delete that runs out exits 1 with
+#      kubectl's line before any NovaCompute delete, a render that fails
+#      exits 1 before the objects' delete, and a second run exits 0.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -249,6 +256,11 @@ ippools.crd.projectcalico.org"
 #                          exit code of the delete of the kubelet Service and
 #                          Endpoints alone, which the API server then refuses
 #                          with Forbidden (default 0)
+#   KUBECTL_SOAK_DELETE_RC exit code of the delete of the dizzy soak Job and
+#                          reader pod alone, which then times out on the Job
+#                          (default 0)
+#   KUBECTL_SOAK_RENDER_RC non-empty: `kustomize` of dizzy-soak/ fails; it
+#                          answers soak-render.yaml otherwise
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
 # hvo-cc3test that a second run no longer finds. On a second run the named
 # deletes of HelmReleases and HelmRepositories fail on the missing kind. The
@@ -375,6 +387,60 @@ kind: DaemonSet
 metadata:
   name: chaos-mesh-modules
   namespace: chaos-mesh
+YAML
+  # What `kubectl kustomize` renders for the overlay's dizzy-soak/.
+  cat >"$dir/soak-render.yaml" <<'YAML'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dizzy-soak
+  namespace: dizzy
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Role
+metadata:
+  name: dizzy-soak-admin-role
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dizzy-soak-platform-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dizzy-soak-platform-reader
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dizzy-soak-reports
+  namespace: dizzy
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Domain
+metadata:
+  name: dizzy-soak-domain
+  namespace: openstack
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: Project
+metadata:
+  name: dizzy-soak
+  namespace: openstack
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: RoleAssignment
+metadata:
+  name: dizzy-soak-admin
+  namespace: openstack
+---
+apiVersion: openstack.k-orc.cloud/v1alpha1
+kind: User
+metadata:
+  name: dizzy-soak
+  namespace: openstack
 YAML
   cat >"$dir/base-render.yaml" <<'YAML'
 apiVersion: v1
@@ -683,6 +749,13 @@ case "$args" in
     fi
     cat "$dir/chaos-render.yaml"
     ;;
+  "kustomize "*"/dizzy-soak")
+    if [ -n "${KUBECTL_SOAK_RENDER_RC:-}" ]; then
+      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'identity.yaml'"'"': open identity.yaml: no such file or directory' >&2
+      exit 1
+    fi
+    cat "$dir/soak-render.yaml"
+    ;;
   "kustomize "*)
     if [ -n "${KUBECTL_RENDER_RC:-}" ]; then
       echo 'error: accumulating resources: must build at directory: not a valid directory' >&2
@@ -732,6 +805,12 @@ case "$args" in
         if [ "${KUBECTL_KUBELET_SERVICE_DELETE_RC:-0}" != "0" ]; then
           echo 'Error from server (Forbidden): services "kube-prometheus-stack-kubelet" is forbidden: User "lab" cannot delete resource "services" in API group "" in the namespace "kube-system"' >&2
           exit "${KUBECTL_KUBELET_SERVICE_DELETE_RC}"
+        fi
+        ;;
+      "delete jobs.batch/dizzy-soak "*)
+        if [ "${KUBECTL_SOAK_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on jobs/dizzy-soak" >&2
+          exit "${KUBECTL_SOAK_DELETE_RC}"
         fi
         ;;
       "delete networkchaos.chaos-mesh.org,"*)
@@ -914,6 +993,9 @@ test_external_teardown_order() {
     'kubectl delete remoteclusters.chaos-mesh.org --all' \
     'kubectl kustomize deploy/lab/metal-stack/chaos-mesh' \
     'kubectl delete -f - [kinds: DaemonSet HelmRelease HelmRepository]' \
+    'kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground' \
+    'kubectl kustomize deploy/lab/metal-stack/dizzy-soak' \
+    'kubectl delete -f - [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]' \
     'kubectl delete novacomputes.nova.openstack.c5c3.io --all -n openstack' \
     'kubectl delete neutronmetadataagents.neutron.openstack.c5c3.io --all -n openstack' \
     'kubectl delete ovnchassis.ovn.openstack.c5c3.io --all -n openstack' \
@@ -956,7 +1038,7 @@ test_external_teardown_order() {
     'kubectl delete lease cert-manager-cainjector-leader-election cert-manager-controller -n kube-system')"
   local actual
   actual="$(mutations "$CALL_LOG" | grep -v 'customresourcedefinition')"
-  assert_eq "the deletes run in finalizer order, Chaos Mesh and the lab hypervisors first (patches only for installed, suspended objects)" \
+  assert_eq "the deletes run in finalizer order, Chaos Mesh, the dizzy soak and the lab hypervisors first (patches only for installed, suspended objects)" \
     "$expected" "$actual"
 
   # Chaos Mesh goes first: its CRD scope read, then its deletes, all before the
@@ -1810,6 +1892,122 @@ test_dizzy_step() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7d: the dizzy soak, after Chaos Mesh and before step 0
+# ---------------------------------------------------------------------------
+test_dizzy_soak_step() {
+  echo "Test: the dizzy soak step ends a soak before the hypervisors go, then deletes its objects"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (29 checks skipped)"
+    SKIP=$((SKIP + 29))
+    return
+  fi
+
+  local tmp output rc calls job objects flags
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  flags='--ignore-not-found --wait --timeout=600s'
+  job="kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground $flags"
+  objects="kubectl delete -f - $flags [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]"
+
+  # The default overlay carries dizzy-soak/ and hypervisor/.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "the teardown exits 0" "0" "$rc"
+  local chaos_line job_line render_line objects_line hypervisor_line controlplane_line
+  chaos_line="$(grep -nF '[kinds: DaemonSet HelmRelease HelmRepository]' <<<"$calls" | cut -d: -f1 | head -n1)"
+  job_line="$(grep -nxF "$job" <<<"$calls" | cut -d: -f1 | head -n1)"
+  render_line="$(grep -nx "kubectl kustomize .*/deploy/lab/metal-stack/dizzy-soak" <<<"$calls" | cut -d: -f1 | head -n1)"
+  objects_line="$(grep -nxF "$objects" <<<"$calls" | cut -d: -f1 | head -n1)"
+  hypervisor_line="$(grep -nE '^kubectl (get crd|delete) novacomputes\.' <<<"$calls" | cut -d: -f1 | head -n1)"
+  controlplane_line="$(grep -n '^kubectl delete controlplane --all -n openstack ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  assert_eq "the Job and reader pod are deleted once, in the foreground, ignoring absence and waiting" "1" \
+    "$(grep -cxF "$job" <<<"$calls")"
+  assert_eq "dizzy-soak/ is rendered once" "1" "$(grep -cx "kubectl kustomize .*/deploy/lab/metal-stack/dizzy-soak" <<<"$calls")"
+  assert_eq "its nine objects are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$objects" <<<"$calls")"
+  assert_eq "the Job goes after the Chaos Mesh overlay" "true" \
+    "$([[ -n "$chaos_line" && -n "$job_line" && "$chaos_line" -lt "$job_line" ]] && echo true || echo false)"
+  assert_eq "the objects after the Job" "true" \
+    "$([[ -n "$job_line" && -n "$render_line" && -n "$objects_line" && "$job_line" -lt "$render_line" &&
+      "$render_line" -lt "$objects_line" ]] && echo true || echo false)"
+  assert_eq "and before the first call of step 0" "true" \
+    "$([[ -n "$objects_line" && -n "$hypervisor_line" && "$objects_line" -lt "$hypervisor_line" ]] && echo true || echo false)"
+  assert_eq "and before the ControlPlane delete" "true" \
+    "$([[ -n "$objects_line" && -n "$controlplane_line" && "$objects_line" -lt "$controlplane_line" ]] && echo true || echo false)"
+  assert_contains "the Job delete is logged" "$output" "Deleting the dizzy soak Job and reader pod..."
+  assert_contains "the objects' delete is logged" "$output" "Deleting the dizzy soak objects..."
+
+  # An overlay without hypervisor/: the soak still goes before the
+  # ControlPlane.
+  mkdir -p "$tmp/no-hypervisor/base" "$tmp/no-hypervisor/infrastructure"
+  : >"$tmp/no-hypervisor/base/kustomization.yaml"
+  : >"$tmp/no-hypervisor/infrastructure/kustomization.yaml"
+  cp -R "$PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak" "$tmp/no-hypervisor/dizzy-soak"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-hypervisor")"
+  rc=$?
+  assert_eq "an overlay with dizzy-soak/ and without hypervisor/ tears down" "0" "$rc"
+  assert_eq "the soak's deletes are its first mutations, the ControlPlane's next" "$(printf '%s\n' \
+    'kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground' \
+    "kubectl kustomize $tmp/no-hypervisor/dizzy-soak" \
+    'kubectl delete -f - [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]' \
+    'kubectl delete controlplane --all -n openstack')" "$(mutations "$CALL_LOG" | head -n 4)"
+
+  # An overlay without dizzy-soak/: neither delete nor the render.
+  mkdir -p "$tmp/no-soak/base" "$tmp/no-soak/infrastructure"
+  : >"$tmp/no-soak/base/kustomization.yaml"
+  : >"$tmp/no-soak/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-soak")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without dizzy-soak/ tears down" "0" "$rc"
+  assert_not_contains "without the Job and reader pod delete" "$calls" "jobs.batch/dizzy-soak"
+  assert_not_contains "without the render" "$calls" "/dizzy-soak"
+  assert_eq "and the ControlPlane delete is the first mutation" \
+    "kubectl delete controlplane --all -n openstack" "$(mutations "$CALL_LOG" | head -n 1)"
+
+  # A soak whose teardown outlives the wait: exit 1 with kubectl's line, and
+  # nothing after it is deleted, step 0 included.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SOAK_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a Job delete that runs out exits 1" "1" "$rc"
+  assert_contains "the error names the step" "$output" \
+    "ERROR: deleting the dizzy soak Job and reader pod failed or did not finish within 600s:"
+  assert_contains "and the Job kubectl still waits for" "$output" "error: timed out waiting for the condition on jobs/dizzy-soak"
+  assert_not_contains "dizzy-soak/ is not rendered" "$calls" "kubectl kustomize $PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak"
+  assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
+  assert_not_contains "nor the ControlPlane" "$calls" "delete controlplane"
+
+  # dizzy-soak/ does not render: exit 1 before its delete and step 0.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SOAK_RENDER_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a dizzy-soak/ that does not render exits 1" "1" "$rc"
+  assert_contains "says which overlay cannot be rendered" "$output" \
+    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak (kustomize's error is above)."
+  assert_not_contains "no objects' delete follows" "$calls" "[kinds: ClusterRole"
+  assert_not_contains "and no step 0 delete" "$calls" "delete novacomputes"
+
+  # A second run: the Job is gone, and so are the K-ORC kinds.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_contains "its Job delete passes" "$calls" "$job"
+  assert_not_contains "and it prints no 'No resources found'" "$output" "No resources found"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Test 7c: kube-prometheus-stack and what its uninstall leaves, in step 3
 # ---------------------------------------------------------------------------
 test_prometheus_step() {
@@ -1984,6 +2182,7 @@ test_external_teardown_failures
 test_hypervisor_step_zero
 test_chaos_mesh_step
 test_dizzy_step
+test_dizzy_soak_step
 test_prometheus_step
 test_requires_yq
 test_requires_mikefarah_yq
