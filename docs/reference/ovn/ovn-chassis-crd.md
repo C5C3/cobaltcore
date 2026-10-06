@@ -314,6 +314,11 @@ land where the CR says and nowhere else. `spec.gateway.nodeSelector` is evaluate
 on top of it: a node is a gateway when it matches both. A nil `spec.gateway`
 matches no node.
 
+The figure shows the two chassis pods on a node, the pods of a metadata agent
+and of a compute pool that wait for them, and what a gateway node adds.
+
+![One hypervisor node with the four pods three resources put on it. An OVNChassis creates two DaemonSets: the pod {chassis}-ovs with the init container host-prepare and the containers ovsdb-server and ovs-vswitchd, and the pod {chassis}-ovn-controller with the init container apply-node and the container ovn-controller. A NeutronMetadataAgent creates the pod {agent}-metadata-agent, a NovaCompute the pod {pool}-nova-compute. All four run in the network namespace of the node, beside a libvirtd that no operator runs. Three gates order the start. The operator creates the ovn-controller DaemonSet only once every OVS pod is Ready. The init container wait-for-chassis of nova-compute waits until apply-node has written a system-id into the local Open vSwitch database. The init container wait-for-chassis of the metadata agent waits until ovn-controller has registered the chassis in the Southbound database. The pods share host paths: /run/openvswitch is mounted by all four, /run/ovn by the two chassis pods, /run/netns by the metadata agent, /run/libvirt and /var/lib/nova by nova-compute and libvirtd. A gateway node has no further pod: it also matches spec.gateway.nodeSelector, and apply-node sets ovn-cms-options=enable-chassis-as-gw.](../../diagrams/compute-node-anatomy.svg)
+
 The operator never writes a Node. Its RBAC on `nodes` is `get`, `list` and
 `watch`, and the labels a node carries are an input. Whoever provisions the
 cluster owns them.
