@@ -326,7 +326,7 @@ metadata keys the API never writes. Six of its entries are refused in
 
 | Key | Owned by | Why the override is refused |
 | --- | --- | --- |
-| `[DEFAULT] metadata_proxy_shared_secret` | `spec.novaMetadata.sharedSecretRef` | The shared secret is env-injected from the referenced Secret, so a file override is ignored at runtime and copies credential material into the rendered config Secret |
+| `[DEFAULT] metadata_proxy_shared_secret` | `spec.novaMetadata.sharedSecretRef` | The shared secret is env-injected from the referenced Secret, so a file override is ignored at runtime and copies credential material into the rendered ConfigMap |
 | `[ovs] ovsdb_connection` | `spec.chassisRef` | The agent reads the local Open vSwitch database over the socket the chassis pods share; another address points it at a node whose ports it is not answering for |
 | `[ovn] ovn_sb_connection` | `spec.chassisRef` | The connection string is the Southbound address the `OVNCentral` the referenced chassis registers with publishes for the chassis's cluster: the internal one on the central's cluster, the node-port one from another; another address points the agent at a logical model it does not serve |
 | `[ovn] ovn_sb_private_key` | operator-computed | The operator mounts the client keypair the chassis publishes in `status.clientSecretName`, signed by the `OVNCentral` issuer; another path names a file the pod does not carry, and the connection falls back to no client identity |
