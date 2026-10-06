@@ -28,10 +28,10 @@ run against the same database while the schema moves forward:
    longer needs.
 
 Glance was the second operator to adopt this machine. The phase choreography
-lives in `internal/common/database` (`upgrade.go`) and is shared with Keystone;
-the Glance controller supplies the service-specific parts: the
-`spec.openStackRelease` seam, the `glance-manage` phase commands, and the
-`DatabaseReady` condition it reports on. Keystone's own behaviour is documented
+lives in `internal/common/database` (`upgrade.go`) and is shared with Keystone,
+Cinder, Nova and Neutron; the Glance controller supplies the service-specific
+parts: the `spec.openStackRelease` seam, the `glance-manage` phase commands,
+and the `DatabaseReady` condition it reports on. Keystone's own behaviour is documented
 in [Keystone Upgrade Flow](../keystone/keystone-upgrade-flow.md).
 
 The flow is driven by two sub-reconcilers. `reconcileDatabase` runs the expand,
@@ -112,7 +112,7 @@ of four values while an upgrade is active:
 ## Phases
 
 The upgrade walks a fixed sequence. Each transition is driven by a phase Job
-completing or by the Deployment reporting ready.
+completing or by the Deployment finishing its rollout.
 
 Each job-running phase creates one distinctly named Job on `spec.image` (the new
 release image) with `backoffLimit: 4`:
@@ -198,7 +198,8 @@ to abort.
 ## Events
 
 The upgrade path emits these events on the Glance CR. The reasons come from
-`internal/common/database` and are shared with Keystone.
+`internal/common/database` and are shared with every operator that runs the
+phase machine.
 
 | Type | Reason | Trigger |
 | --- | --- | --- |

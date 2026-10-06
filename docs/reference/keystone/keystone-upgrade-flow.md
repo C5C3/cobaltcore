@@ -31,8 +31,8 @@ coexist during the transition:
 The Keystone operator implements this as a state machine within the `reconcileDatabase`
 sub-reconciler, coordinated with `reconcileDeployment` for the rolling update phase
 between migrate and contract. The phase machine itself lives in
-`internal/common/database` and is shared with the Glance operator; Keystone
-supplies the image-tag seam and the `keystone-manage` phase commands.
+`internal/common/database` and is shared with the Glance, Cinder, Nova and
+Neutron operators; Keystone supplies the image-tag seam and the `keystone-manage` phase commands.
 
 ---
 
@@ -155,9 +155,9 @@ failure leaves, and the two ways out of an upgrade in flight.
   (empty result), allowing the reconciler chain to continue to `reconcileDeployment`.
 - `reconcileDeployment` ensures the Deployment is configured with `spec.image.tag` (the NEW image).
   Kubernetes performs a rolling update of the pods.
-- **On Deployment ready:** `reconcileDeployment` transitions the phase to
-  `Contracting` and requeues.
-- **While not ready:** Requeues with `RequeueDeploymentPolling` (10s).
+- **On a finished rollout:** once every replica is updated, ready and counted,
+  `reconcileDeployment` transitions the phase to `Contracting` and requeues.
+- **Until then:** Requeues with `RequeueDeploymentPolling` (10s).
 - The Keystone API remains available throughout because old pods continue serving
   traffic until new pods pass readiness checks.
 
@@ -206,8 +206,9 @@ The `DatabaseReady` condition reflects upgrade state with specific reasons:
 | Reason | Phase | Description |
 | --- | --- | --- |
 | `VersionParseError` | Pre-upgrade | `installedRelease` or `spec.image.tag` is not a valid `YYYY.N` format |
+| `DowngradeNotSupported` | Pre-upgrade | The target release is older than `installedRelease` |
 | `UpgradePathInvalid` | Pre-upgrade | Upgrade is not sequential (e.g., skip-level) |
-| `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value different from `targetRelease` |
+| `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value that is neither `targetRelease` nor `installedRelease` |
 
 All condition messages include the source and target release version strings for
 operator visibility (e.g., `"Expand phase running: 2025.2 -> 2026.1"`).
@@ -228,7 +229,7 @@ reconcileDatabase (called first in reconciler chain)
   |  +- Delegate to reconcileUpgrade() -> dispatch by phase
   |
   +- isUpgrade()? (installedRelease != "" && tag != installedRelease && !patchOnly)
-  |  +- No: simple db_sync -> on completion: set installedRelease if empty
+  |  +- No: simple db_sync -> on completion: set installedRelease to the tag
   |  +- Yes: initiateUpgrade() -> validate path -> set targetRelease + Expanding -> requeue
   |
   +--- continues to reconcileDeployment (only if result is zero-value) ---+
@@ -236,7 +237,7 @@ reconcileDatabase (called first in reconciler chain)
 reconcileDeployment                                                       |
   |                                                                       |
   +- EnsureDeployment(spec.image.tag)  <----------------------------------+
-  +- If upgradePhase == RollingUpdate && Deployment ready:
+  +- If upgradePhase == RollingUpdate && Deployment fully rolled out:
   |    -> upgradePhase = Contracting -> requeue (back to reconcileDatabase)
   +- Normal: set DeploymentReady, Endpoint
 ```
@@ -558,7 +559,7 @@ below).
 **Symptom:** `DatabaseReady=False`, reason `UpgradeTargetChanged`.
 
 **Cause:** `spec.image.tag` was changed during an active upgrade to a value
-different from the current `targetRelease`.
+that is neither the current `targetRelease` nor `installedRelease`.
 
 **Resolution:** Choose one of:
 
