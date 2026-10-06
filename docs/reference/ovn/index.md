@@ -96,7 +96,7 @@ For an `OVNCentral` named `{name}` the operator manages:
 | ConfigMap | `{name}-central-scripts` | The run, set-connection, and backup scripts both databases share |
 | Deployment | `{name}-northd` | `ovn-northd`; one replica is active and the rest wait on the Southbound lock |
 | Deployment | `{name}-sb-relay` | Only while `spec.relay` is set |
-| Service | `{name}-sb-relay` | ClusterIP in front of the relays, published as `status.relayAddress` |
+| Service | `{name}-sb-relay` | ClusterIP in front of the relays, published as `status.relayAddress`. `NodePort` under `spec.relay.externallyReachable`, then also published as `status.relayDbAddress` |
 | Certificate + Secret | `{name}-nb-server`, `{name}-sb-server`, `{name}-client`, and `{name}-sb-relay` with a relay | cert-manager issues them; each Secret takes its Certificate's name |
 | PersistentVolumeClaim | `{name}-backup` | The snapshot volume |
 | CronJob | `{name}-backup` | Snapshots both databases and prunes the window |
@@ -106,7 +106,7 @@ For an `OVNChassis` named `{name}`:
 | Resource | Name | Purpose |
 | --- | --- | --- |
 | DaemonSet | `{name}-ovs` | The `ovsdb-server` and `ovs-vswitchd` containers on the selected nodes, in the node's network namespace |
-| DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the Southbound address the central published |
+| DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the relay address the central published, or to its Southbound address when it runs no relay the chassis can reach |
 | ConfigMap | `{name}-nodes` | One key per selected node, carrying that node's `external_ids` values |
 | ConfigMap | `{name}-chassis-scripts` | The scripts both DaemonSets and the maintenance Jobs run |
 | Job | `{name}-apply-<hash>`, `{name}-evacuate-<hash>`, `{name}-chassis-del-<hash>` | Per node; the node name is hashed to eight hex characters because a Job name has 63 and a node name up to 253 |
