@@ -274,7 +274,11 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 
 **Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
 `hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
-horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
+horizon's upstream `tools/unit_tests.sh` driver in the pytest path. Horizon
+27.0.0 (2026.2) no longer ships that driver, so for it the runner calls pytest
+four times the way that tag's `tox.ini` does, once per project with its own
+Django settings module (`openstack_auth`, `horizon`, `openstack_dashboard` and
+its plugin tests).
 
 ### glance
 
