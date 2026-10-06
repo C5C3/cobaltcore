@@ -729,6 +729,18 @@ func glanceReleaseUsesUWSGI(openStackRelease string) bool {
 	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
 }
 
+// glanceReleaseDropsWorkersOption reports whether the Glance of the given
+// OpenStack release no longer registers [DEFAULT] workers: true from 2026.2
+// onward, where glance 33.0.0 removed the option with the standalone glance-api
+// server, false below it and for an empty or unparseable release.
+func glanceReleaseDropsWorkersOption(openStackRelease string) bool {
+	rel, err := release.ParseRelease(openStackRelease)
+	if err != nil {
+		return false
+	}
+	return rel.AtLeast(2026, 2)
+}
+
 // glanceUWSGIChunkedInputLimit is the --chunked-input-limit the uWSGI launch
 // mode runs with, in bytes: 16 MiB, against a 1 MB default that rejects the
 // 1 MiB chunks glanceclient uploads in.

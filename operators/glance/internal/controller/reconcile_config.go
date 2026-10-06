@@ -313,9 +313,11 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	// pod's CPU limit and OOMs the container under load. Under the uWSGI launch
 	// mode (2026.1+) the key is inert (uWSGI ignores it), so it is rendered only
 	// when explicitly set, for transparency; the webhook warns on that combination.
+	// Glance 33.0.0 (2026.2) dropped the option together with the standalone
+	// server, so from 2026.2 on it is not rendered at all.
 	if !glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", effectiveEventletWorkers(glance))
-	} else if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
+	} else if s := glance.Spec.APIServer; s != nil && s.Workers != nil && !glanceReleaseDropsWorkersOption(glance.Spec.OpenStackRelease) {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
 	}
 	// max_pool_size = 5 and max_overflow = 0 bound an eventlet worker at five

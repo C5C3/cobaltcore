@@ -195,6 +195,29 @@ func TestGlanceReleaseUsesUWSGI(t *testing.T) {
 	}
 }
 
+// TestGlanceReleaseDropsWorkersOption pins the release from which glance no
+// longer registers [DEFAULT] workers: 2026.2 onward, not below it and not for a
+// release that does not parse.
+func TestGlanceReleaseDropsWorkersOption(t *testing.T) {
+	cases := []struct {
+		release string
+		want    bool
+	}{
+		{release: "2026.2", want: true},
+		{release: "2027.1", want: true},
+		{release: "2026.1", want: false},
+		{release: "2025.2", want: false},
+		{release: "", want: false},
+		{release: "garbage", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(glanceReleaseDropsWorkersOption(tc.release)).To(Equal(tc.want))
+		})
+	}
+}
+
 // TestGlanceMaxUserConnections pins the connection-cap arithmetic in both launch
 // modes and across a mixed fleet. The cap is what the operator asks
 // mariadb-operator for, and a value below the real concurrency does not
