@@ -1162,7 +1162,7 @@ one reaches ACTIVE.
 | 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
 | 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-broker-chaos-ovn`, `neutron-nova-broker-chaos`, `placement-nova-broker-chaos`, `glance-nova-broker-chaos` and `glance-nova-broker-chaos-s3` |
 | 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
-| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with all fifteen sub-conditions True and `Ready=True/AllReady`, the baseline the partition phase is read against |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with the fifteen sub-conditions the suite asserts True (every one but `VPAReady`) and `Ready=True/AllReady`, the baseline the partition phase is read against |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-broker-chaos` |
 | 8 | Baseline | `script` (11m) + `script` (2m) | `14-baseline-job.yaml` boots a server end to end (`BASELINE-OK`) and prints how long the create call took; the scheduler, conductor and API containers are recorded ready (`BASELINE-READY-OK`) |
 | 9 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-rabbitmq-nova`), waited for `AllInjected`. The step cleanup deletes it |
@@ -1297,7 +1297,7 @@ Placement client.
 | 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
 | 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-placement-chaos-ovn`, `neutron-nova-placement-chaos`, `placement-nova-placement-chaos`, `glance-nova-placement-chaos` and `glance-nova-placement-chaos-s3` |
 | 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
-| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with all fifteen sub-conditions True and `Ready=True/AllReady` |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with the fifteen sub-conditions the suite asserts True (every one but `VPAReady`) and `Ready=True/AllReady` |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-placement-chaos` |
 | 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`) |
 | 9 | Inject NetworkChaos to partition Placement | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-placement-nova`), waited for `AllInjected`. The step cleanup deletes it |
