@@ -90,7 +90,22 @@ deletes it. A CRD read that fails exits 1 with
 before any delete, and a render that fails exits 1 with
 `ERROR: cannot render <overlay>/chaos-mesh (kustomize's error is above).`
 before the overlay delete. The NetworkChaos modules the loader put on the
-nodes stay until a node reboots. Then:
+nodes stay until a node reboots.
+
+When the overlay has a `dizzy-soak/` kustomization (see
+[Lab dizzy soak](infrastructure-manifests.md#lab-dizzy-soak)), the dizzy soak
+goes next, before the hypervisors: its servers would keep a `NovaCompute`
+from being finalized. The teardown deletes the Job `dizzy-soak` and the pod
+`dizzy-soak-reader` in `dizzy` in the foreground. The runner gets TERM, dizzy
+removes the run's servers, volumes, ports and networks, and the runner writes
+its report, within the pod's grace period of 540 seconds. Then the teardown
+deletes the render of `<overlay>/dizzy-soak`: the K-ORC identity of the soak,
+while K-ORC and Keystone still run, its ServiceAccount, ClusterRole and
+ClusterRoleBinding, and the claim `dizzy-soak-reports` with the reports. A
+delete that runs out exits 1 with kubectl's error before step 0, and a render
+that fails exits 1 with
+`ERROR: cannot render <overlay>/dizzy-soak (kustomize's error is above).`
+before its delete. Then:
 
 0. The lab hypervisors, when the overlay has a `hypervisor/` kustomization
    (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
@@ -209,9 +224,9 @@ nodes stay until a node reboots. Then:
    `dizzy-grafana` in `dizzy`, whose finalizer has the helm-controller
    uninstall both charts, then the HelmRepositories `victoria-metrics` and
    `grafana` in `flux-system`, then the PVCs in `dizzy`, which Helm leaves
-   behind. Where the default class has the reclaim policy `Delete`, the
-   VictoriaMetrics volume goes with its claim. A HelmRelease delete that runs
-   out exits 1 before any claim is deleted.
+   behind; the soak's claim went before step 0. Where the default class has the
+   reclaim policy `Delete`, the VictoriaMetrics volume goes with its claim. A
+   HelmRelease delete that runs out exits 1 before any claim is deleted.
 4. The PVCs in `shared-services` and `openstack`. The openbao-operator chart's
    admission policy denies deleting its managed PVCs until step 3 has
    uninstalled the chart.
@@ -487,7 +502,7 @@ the production manifests. The figure shows that chain and who applies each
 directory. The table lists every directory under `deploy/` that holds a
 `kustomization.yaml`, with the bases it lists under `resources`.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
 
 | Directory | Base | Applied by |
 | --- | --- | --- |
@@ -519,6 +534,7 @@ directory. The table lists every directory under `deploy/` that holds a
 | `deploy/lab/metal-stack/hypervisor` | `deploy/lab/metal-stack/migration-ports` | a person, after the ControlPlane |
 | `deploy/lab/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
 | `deploy/lab/metal-stack/probe` | none | a person ([Node probe](infrastructure-manifests.md#node-probe)) |
+| `deploy/lab/metal-stack/dizzy-soak` | none | `make dizzy-soak-start` ([Lab dizzy soak](infrastructure-manifests.md#lab-dizzy-soak)) |
 
 The overlays reference the production FluxCD manifests as their base and apply
 strategic merge patches to reduce resource requirements for a single-node kind
@@ -599,6 +615,13 @@ deploy/lab/metal-stack/
 │   └── kustomization.yaml          References ../../../kind/dizzy/
 │                                    Patches the Namespace → Gardener opt-out label,
 │                                    VictoriaMetrics HelmRelease → 10Gi volume, ClusterIP Service
+├── dizzy-soak/                     The dizzy soak (#1274), applied by make dizzy-soak-start
+│   ├── kustomization.yaml          Lists the three manifests below
+│   ├── identity.yaml               K-ORC Domain, Project, User, Role and RoleAssignment of the user dizzy-soak
+│   ├── rbac.yaml                   ServiceAccount, read-only ClusterRole and ClusterRoleBinding
+│   ├── reports-pvc.yaml            Claim dizzy-soak-reports, 5Gi, no storage class
+│   ├── job.yaml                    Job dizzy-soak, outside the kustomization, created by start
+│   └── scenario.yaml               dizzy's mix small profile with the lab's names, outside the kustomization
 ├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
 │   ├── kustomization.yaml          Lists ../migration-ports and the seven manifests below; the apply order and node labels in its header
 │   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
@@ -651,10 +674,11 @@ volume, turns off four scrape jobs and adds the hvo dashboard. It changes
 nothing else. The script never applies
 `controlplane/`; the completion hint of
 `WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
-`hypervisor-fixtures/`, which follow the ControlPlane by hand. Every volume of
+`hypervisor-fixtures/`, which follow the ControlPlane by hand, or
+`dizzy-soak/`, which `make dizzy-soak-start` applies. Every volume of
 the lab, the proving `OpenBaoCluster`'s, the NFS export claim, the dizzy
-VictoriaMetrics claim and the Prometheus claim included, binds to the
-cluster's default class, which Step 1 checks exists.
+VictoriaMetrics claim, the soak's report claim and the Prometheus claim
+included, binds to the cluster's default class, which Step 1 checks exists.
 
 | Setting | Kind | Lab |
 | --- | --- | --- |
