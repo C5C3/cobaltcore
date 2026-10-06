@@ -5,7 +5,7 @@
 
 # Verify the optional block-storage path in docs/quick-start-controlplane.md:
 #   - the `### Create a first volume` check exists in Step 7
-#   - the Step 6 chain runs NeutronReady -> CinderReady -> NovaReady
+#   - the Step 6 condition table runs NeutronReady -> CinderReady -> NovaReady
 #   - Step 4 carries the `::: details` container for the optional block
 #   - Step 2 documents the WITH_NFS=true bring-up
 #   - the `# block-storage.yaml` fragment names the two kind NFS exports and
@@ -27,6 +27,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/quick_start_controlplane.sh
+source "$PROJECT_ROOT/tests/lib/quick_start_controlplane.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-controlplane.md}"
 
@@ -43,11 +45,18 @@ test_volume_heading() {
     '^### Create a first volume$'
 }
 
-# --- Test 2: the Step 6 condition chain ---
+# --- Test 2: the Step 6 condition table ---
 test_condition_chain() {
-  echo "Test: the chain runs NeutronReady -> CinderReady -> NovaReady"
-  assert_file_contains "CinderReady sits between NeutronReady and NovaReady" \
-    "$QUICK_START_DOC" \
+  echo "Test: the table runs NeutronReady -> CinderReady -> NovaReady"
+  local chain
+  chain="$(step6_chain "$QUICK_START_DOC")"
+  if [[ -z "$chain" ]]; then
+    echo "  FAIL: no condition table in Step 6 of $QUICK_START_DOC"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  assert_contains "CinderReady sits between NeutronReady and NovaReady" \
+    "$chain" \
     'NeutronReady → CinderReady → NovaReady'
 }
 

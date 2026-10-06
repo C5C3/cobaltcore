@@ -3387,30 +3387,38 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by twenty sub-reconcilers, each owning one
-condition type, plus an aggregate `Ready` condition. The condition-type
-constants in `controlplane_controller.go` (`subConditionTypes`) are the single
-source of truth; call sites reference the constants rather than inline literals.
+The ControlPlane status is driven by twenty-one sub-reconcilers. Twenty own one
+condition type each; `reconcileKORCCatalogRefresh` owns none. An aggregate
+`Ready` condition comes on top. The condition-type constants in
+`controlplane_controller.go` (`subConditionTypes`) are the single source of
+truth; call sites reference the constants rather than inline literals.
 
-The sub-reconcilers run in dependency order; a stage that has not converged
-requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Nine stages additionally gate **explicitly** on an
-earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileHorizon` on `KeystoneReady`, `reconcileGlance`, `reconcilePlacement`
-and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
-`KeystoneService` registration each of them projects for itself,
-`reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own registration,
-`reconcileCinder` on `KeystoneReady` plus its own registration,
-`reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
-`AdminCredentialReady`):
+The sub-reconcilers run in two phases. The first seven are a blocking prefix: a
+step that has not converged requeues and ends the pass. The other fourteen run
+as one group on every pass, and none of them stops another. Eleven steps gate
+**explicitly** on an earlier condition being `True` (`reconcileKeystone` on
+`InfrastructureReady`, `reconcileHorizon` on `KeystoneReady`, `reconcileGlance`,
+`reconcilePlacement` and `reconcileBarbican` on `KeystoneReady` and on the
+`AccountReady` of the `KeystoneService` registration each of them projects for
+itself, `reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own
+registration, `reconcileCinder` on `KeystoneReady` plus its own registration,
+`reconcileNova` on `KeystoneReady` and `PlacementReady` plus its own
+registration, `reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
+`AdminCredentialReady`, `reconcileKORCCatalogRefresh` on
+`ServiceAccountsReady`).
 
-```
-SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
-  → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
-  → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady
-  → BarbicanReady → OVNReady → NeutronReady → CinderReady
-  → ServiceAccountsReady → RegistrationTenantStoresReady
-```
+The figure shows which condition waits for which.
+[Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow) lists
+every step with its gate and its requeue interval.
+
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+
+In call order the condition types are `SizingReady`, `NamespacesReady`,
+`InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`,
+`AdminPasswordReady`, `KeystoneReady`, `HorizonReady`, `KORCReady`,
+`AdminCredentialReady`, `CatalogReady`, `GlanceReady`, `PlacementReady`,
+`BarbicanReady`, `OVNReady`, `NeutronReady`, `CinderReady`, `NovaReady`,
+`ServiceAccountsReady` and `RegistrationTenantStoresReady`.
 
 `SizingReady` runs first because every later stage projects its children from
 the resolved sizing: a `SizingProfile` that cannot be read stops the pass before
@@ -3426,11 +3434,12 @@ in External mode.
 
 `ServiceAccountsReady` and `RegistrationTenantStoresReady` run **last** and carry
 no gate of their own. The first only reads the `KeystoneService` registrations
-the Glance, Placement, Barbican and Neutron legs wrote earlier in the same pass,
-so there is no projection it could defer. The second writes into namespaces the
-control plane does not own, which is why it sits at the end of the chain rather
-than beside `ESOTenantStoreReady`: a namespace someone else administers must never
-park this control plane's own credential material behind it.
+the Glance, Placement, Barbican, Neutron, Cinder and Nova legs wrote earlier in
+the same pass, so there is no projection it could defer. The second writes into
+namespaces the control plane does not own, which is why it sits at the end of
+the chain rather than beside `ESOTenantStoreReady`: a namespace someone else
+administers must never park this control plane's own credential material behind
+it.
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
