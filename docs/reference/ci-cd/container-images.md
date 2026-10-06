@@ -348,12 +348,28 @@ applies to 32.0.0 at an offset. No upstream test pins the old behaviour:
 `S3CredentialUpdateTestCase` in `glance/tests/unit/common/test_utils.py` gives
 every mocked store the bare host `s3.amazonaws.com`, and the single-store S3
 tests in `glance/tests/unit/test_store_image.py` never reach
-`_construct_s3_url`. The patch therefore carries no test hunk.
-`tests/container-images/verify_glance.sh` Test 12 drives the real repair against
-the built image. A location the driver's `StoreLocation` wrote under an
-`http://` and an `https://` host has to stay unchanged while the credentials
-match, and still has to be rewritten once the access key rotates. Upstream
+`_construct_s3_url`. The patch therefore carries no test hunk. Upstream
 status: not yet proposed.
+
+Glance 33.0.0 (2026.2) carries no patch, because it removed `_construct_s3_url`
+together with the comparison it fed. Its `_update_s3_location_credentials`
+runs on every image read and strips the credentials a legacy location URL
+embeds, rewriting the location to the credential-free form the S3 driver of
+glance_store 5.7.0 writes. The rewrite is lazy: a location no 2026.2 pod reads
+keeps its embedded credentials. During a 2026.1 → 2026.2 rolling update the
+patched 2026.1 pods, whose glance_store 5.4.0 reads the credentials from the
+URL, put them back on each read and log "S3 URL mismatch", so a location can
+flip back and forth until the last 2026.1 pod is gone.
+
+`tests/container-images/verify_glance.sh` Test 12 drives the repair the built
+image carries, under an `http://` and an `https://` host. On 2025.2 and 2026.1
+it calls `_update_s3_location_and_store_id`: a location the driver's
+`StoreLocation` wrote has to stay unchanged while the credentials match, and
+still has to be rewritten once the access key rotates. On 2026.2 it calls
+`_update_s3_location_credentials`: a location the driver wrote carries no
+credentials and stays unchanged, a legacy location with embedded credentials
+becomes the driver-written URL, and a second pass changes nothing. An image
+that carries neither function fails the test.
 
 **Final image properties:**
 
@@ -368,7 +384,8 @@ runs its suite under stestr (the default path, as for keystone).
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
-Its Test 12 fails against an image built without the source patch above.
+On 2025.2 and 2026.1, its Test 12 fails against an image built without the
+source patch above.
 
 ### placement
 
