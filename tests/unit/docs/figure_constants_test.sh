@@ -36,7 +36,13 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 FIGURE_CONSTANTS="\
 service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_backends.go|nfsMountPointBase|%s/{md5}
 service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_backup_backend.go|backupMountPointBase|%s/{md5}
-service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_volumeservices.go|nfsCSIDriverName|driver %s:"
+service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_volumeservices.go|nfsCSIDriverName|driver %s:
+service-glance-image-paths|operators/glance/internal/controller/reconcile_deployment.go|stagingVolumeName|emptyDir %s
+service-glance-image-paths|operators/glance/internal/controller/reconcile_deployment.go|tasksVolumeName|emptyDir %s
+service-glance-image-paths|operators/glance/internal/controller/reconcile_deployment.go|imageCacheVolumeName|emptyDir %s
+service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceStagingStorePath|%s,
+service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceTasksStorePath|%s,
+service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceImageCachePath|%s,"
 
 # check_figure_constants <root> <diagrams-dir> <rows>: print one problem per
 # line, sorted and without repeats, and nothing when both files of every
