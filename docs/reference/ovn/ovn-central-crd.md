@@ -404,7 +404,7 @@ Eight sub-reconcilers each own one condition type. The aggregate `Ready` is
 | `BackupReady` | False | `BackupPVCInvalid` | The API server rejected the snapshot claim, which is what lowering `spec.backup.storage.size` produces. No error is returned: only a spec edit can undo it |
 | `BackupReady` | False | `BackupError` | The claim, the CronJob, or the Job listing failed |
 | `BackupReady` | False | `WaitingForEndpoints` | Both database addresses reach the run as environment variables, and one is not published yet |
-| `Ready` | True | `AllReady` | All seven sub-conditions are True |
+| `Ready` | True | `AllReady` | All eight sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |
