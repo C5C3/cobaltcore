@@ -6,7 +6,7 @@ quadrant: operator
 # Glance Reconciler Architecture
 
 The Glance controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with nine sub-reconcilers. Every step is
+(`internal/common/reconcile`) with twelve sub-reconcilers. Every step is
 instrumented under the `glance_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain — conditions and
 the requeue are persisted on every exit path through the shared status skeleton.
@@ -60,7 +60,7 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
+ten sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |

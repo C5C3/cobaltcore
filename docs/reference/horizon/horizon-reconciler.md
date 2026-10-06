@@ -6,7 +6,7 @@ quadrant: operator
 # Horizon Reconciler Architecture
 
 The Horizon controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with seven sub-reconcilers. Every step is
+(`internal/common/reconcile`) with eight sub-reconcilers and one unnamed prune step. Every step is
 instrumented under the `horizon_operator` metrics prefix
 (`horizon_operator_reconcile_duration_seconds`,
 `horizon_operator_reconcile_errors_total`), and the first step to return a
@@ -43,7 +43,7 @@ draws that pattern with every step of the Keystone operator.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when
-all seven sub-conditions are `True`:
+all eight sub-conditions are `True`:
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |

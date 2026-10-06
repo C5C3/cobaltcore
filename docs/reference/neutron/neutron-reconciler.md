@@ -6,8 +6,8 @@ quadrant: operator
 # Neutron Reconciler Architecture
 
 The neutron-operator runs two controllers over the shared table-driven pipeline
-(`internal/common/reconcile`): `NeutronReconciler` with fourteen sub-reconcilers
-and `NeutronMetadataAgentReconciler` with four. In both, the first step to return
+(`internal/common/reconcile`): `NeutronReconciler` with fifteen sub-reconcilers
+and `NeutronMetadataAgentReconciler` with five. In both, the first step to return
 a non-zero result or an error short-circuits the chain, and every exit path
 persists the conditions and the requeue through the shared status skeleton, which
 skips the write when a pass left status unchanged.
@@ -92,7 +92,7 @@ the one window that changes it. Its only input is the rendered config the CronJo
 mounts. Database itself comes before Deployment, so the API pods start once the
 schema they query exists, and Workers after Deployment, sharing its five digests.
 
-Once the Deployment and the Service are in place, the last four steps read none
+Once the Deployment and the Service are in place, the last five steps read none
 of each other's output and run as a parallel group. Each member works on its own
 copy of the CR and always sets its one condition type, so a cluster without a
 gateway, an autoscaler or a network policy still resolves the aggregate through
@@ -128,7 +128,7 @@ be shared by every CR reconciled concurrently.
 
 Each aggregate `Ready` is `True` with reason `AllReady` when every sub-condition
 of that kind is `True`, and `False` with `NotAllReady` otherwise. A `Neutron`
-aggregates ten, a `NeutronMetadataAgent` three.
+aggregates eleven, a `NeutronMetadataAgent` four.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
