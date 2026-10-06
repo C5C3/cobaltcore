@@ -3129,6 +3129,12 @@ Operator (ESO) then syncs it back into the admin Secret and
 [`reconcileBootstrap`](#reconcilebootstrap) re-runs `keystone-manage bootstrap`
 (admin-password-hash gate) to apply it.
 
+The figure shows the path. The
+[scheduled-rotation guide](../../guides/keystone/keystone-admin-password-scheduled-rotation.md#_3-topology-what-the-operator-stands-up)
+lists its steps.
+
+![Rotation of the Keystone admin password in six numbered steps. On a standalone Keystone a CronJob generates a password and patches it onto a staging Secret, the keystone-operator validates it and commits it to a push-source Secret, and a PushSecret writes it to OpenBao. A person can instead write the password to the same OpenBao path by hand. From OpenBao an ExternalSecret updates the admin Secret, the keystone-operator sees the changed password hash and recreates the bootstrap Job, and keystone-manage bootstrap sets the new password in the Keystone database without restarting the API pods. A rejected password raises the event AdminPasswordRotationRejected and is not pushed.](../../diagrams/secrets-rotation-admin-password.svg)
+
 Two lifecycle paths:
 
 1. **Disabled / teardown** (`spec.passwordRotation` is nil OR

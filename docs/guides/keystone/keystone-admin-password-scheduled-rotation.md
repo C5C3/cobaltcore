@@ -182,27 +182,30 @@ The four fields of `passwordRotation`:
 ## 3. Topology: what the operator stands up
 
 When `enabled: true`, the `reconcilePasswordRotation` sub-reconciler ensures a
-chain of resources. A rotation flows left to right:
+chain of resources. The figure numbers the steps of one rotation:
 
-```
-CronJob keystone-admin-password-rotate
-  │  (mounts only /scripts/admin_password_rotate.sh; never runs keystone-manage)
-  │  PATCH password + cobaltcore.c5c3.io/rotation-completed-at
-  ▼
-staging Secret keystone-admin-password-rotation
-  │  operator validates (non-empty, >= min length) and COMMITS
-  ▼
-push-source Secret keystone-admin-password-next   (operator-owned)
-  │  PushSecret keystone-admin-password-backup mirrors it
-  ▼
-OpenBao  bootstrap/openstack/keystone/admin   (per-CR path)
-  │  ESO keystone-admin ExternalSecret syncs it
-  ▼
-admin Secret keystone-admin
-  │  secretToKeystoneMapper triggers a reconcile
-  ▼
-reconcileBootstrap re-runs `keystone-manage bootstrap`  →  credential cut over
-```
+![Rotation of the Keystone admin password in six numbered steps. On a standalone Keystone a CronJob generates a password and patches it onto a staging Secret, the keystone-operator validates it and commits it to a push-source Secret, and a PushSecret writes it to OpenBao. A person can instead write the password to the same OpenBao path by hand. From OpenBao an ExternalSecret updates the admin Secret, the keystone-operator sees the changed password hash and recreates the bootstrap Job, and keystone-manage bootstrap sets the new password in the Keystone database without restarting the API pods. A rejected password raises the event AdminPasswordRotationRejected and is not pushed.](../../diagrams/secrets-rotation-admin-password.svg)
+
+1. The CronJob `keystone-admin-password-rotate` generates a password and
+   PATCHes `password` and the annotation
+   `cobaltcore.c5c3.io/rotation-completed-at` onto
+   `keystone-admin-password-rotation`. It mounts only
+   `/scripts/admin_password_rotate.sh` and never runs `keystone-manage`.
+2. The operator checks that the password is not empty and has the minimum
+   length, commits it to `keystone-admin-password-next`, deletes the staging
+   Secret and emits `AdminPasswordRotated`. A rejected password raises the
+   Warning event `AdminPasswordRotationRejected`, stays on the staging Secret
+   for inspection and is not pushed.
+3. The PushSecret `keystone-admin-password-backup` writes OpenBao
+   `bootstrap/openstack/keystone/admin`. A manual rotation enters here:
+   [Rotate the admin password](./keystone-admin-password-rotation.md) writes
+   the same path with `bao kv put`.
+4. The ExternalSecret `keystone-admin` syncs the admin Secret
+   `keystone-admin`.
+5. `secretToKeystoneMapper` triggers a reconcile, `reconcileBootstrap` sees a
+   new password hash and deletes and recreates the Job `keystone-bootstrap`.
+6. The Job runs `keystone-manage bootstrap`, and the new password is live when
+   it completes.
 
 The resources, by name:
 
