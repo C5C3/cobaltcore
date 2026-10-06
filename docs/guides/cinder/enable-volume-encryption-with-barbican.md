@@ -86,9 +86,9 @@ carries the same reasoning field by field.
 Across every project, not only Cinder's own. `secret:get` and `secret:delete`
 accept a bare `admin` wherever it is held, so anything that reaches this service
 user's credential — a compromised Cinder pod, which carries the password in its
-environment, or a reader of the `cinder-service-user` Secret — can read and
-permanently delete every tenant's volume encryption key. A deleted key makes its
-LUKS volume unrecoverable; nothing else holds the passphrase.
+environment, or a reader of the `controlplane-cinder-credentials` Secret — can
+read and permanently delete every tenant's volume encryption key. A deleted key
+makes its LUKS volume unrecoverable; nothing else holds the passphrase.
 
 What the role buys is one fallback path: the key of a volume deleted by someone
 other than its owner. Weigh the two. Where an orphaned key is the cheaper
@@ -169,11 +169,12 @@ Remove the type:
 openstack --insecure volume type delete demo-luks
 ```
 
-::: warning No Nova on this stack
+::: warning No hypervisor on this stack
 Unlocking the LUKS container is os-brick's work in the compute service at attach
-time, which is what `--encryption-control-location front-end` selects. CobaltCore
-has not onboarded Nova. An encrypted volume can therefore be created, listed,
-backed up and deleted here, and never attached or written on.
+time, which is what `--encryption-control-location front-end` selects. This
+devstack runs no hypervisor that could attach a volume. An encrypted volume can
+therefore be created, listed, backed up and deleted here, and never attached or
+written on.
 :::
 
 ## Standalone Cinder, without a ControlPlane

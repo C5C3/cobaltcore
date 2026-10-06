@@ -197,11 +197,11 @@ a 1 GiB volume, which is more than the chunk arithmetic alone accounts for.
 Treat `2Gi` as the budget for volumes of roughly that size, and raise it before
 a backup target takes larger ones.
 
-The ControlPlane exposes no pod-level knob for the backup Deployment, so the
-raise is a standalone-CR change. It goes on `spec.backup.deployment.resources` of
-a `Cinder` CR you own, where `replicas: 1` has to be spelled out beside it: the
-shared schema default of three lands on any present `deployment` block before the
-webhook runs, and a CEL rule pins this Deployment at one replica.
+On a ControlPlane the raise goes on `spec.sizing.cinder.backup.resources`, and
+the operator pins the replica count. On a `Cinder` CR you own it goes on
+`spec.backup.deployment.resources`, where `replicas: 1` has to be spelled out
+beside it: the shared schema default of three lands on any present `deployment`
+block before the webhook runs, and a CEL rule pins this Deployment at one replica.
 
 ```yaml
 spec:

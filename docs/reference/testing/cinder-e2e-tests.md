@@ -105,7 +105,7 @@ into the `cinder-volume` pod that holds the mount.
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` |
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
-| NFS export | `nfs-server` Deployment and csi-driver-nfs in `openstack` (`WITH_NFS=true`) |
+| NFS export | `nfs-server` Deployment in `openstack` and csi-driver-nfs in `kube-system` (`WITH_NFS=true`) |
 | Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade` |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
@@ -160,7 +160,7 @@ deletions.
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [httproute](#httproute) | `cinder-route` | `spec.gateway` lifecycle: HTTPRoute created, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec block |
 | [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete |
-| [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent and release on `ServiceRemoveSkipped` |
+| [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent; the `CinderBackend` releases its finalizer on `ServiceRemoveSkipped`, the `CinderBackupBackend` holds none |
 | [pod-security-restricted](#pod-security-restricted) | `cinder-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, with zero `FailedCreate` violations |
 | [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the three Deployments, the API on the new release, the upgrade-check event read without a pod informer |
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `cinder-isolation` | db-purge and service-remove pods never become API Service backends, and the Service is never left without any |
@@ -716,8 +716,9 @@ is a verdict and fails hard with its code.
 ### File inspection through the mount (`script` with `kubectl exec`)
 
 A volume is a file on the export, so the data-path suites read it where the
-driver wrote it. The `cinder-volume` pod is the one process holding the mount,
-and the mount path is the md5 os-brick's remotefs driver derives from the share:
+driver wrote it. The `cinder-volume` pod of the backend holds the mount, as does
+the `cinder-backup` pod while a backup target is attached, and the mount path is
+the md5 os-brick's remotefs driver derives from the share:
 
 ```bash
 MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
