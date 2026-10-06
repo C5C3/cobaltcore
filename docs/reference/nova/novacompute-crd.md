@@ -294,6 +294,11 @@ deleted, so the record of a drain outlives the selection.
 | `Releasing` | No instance is left, or another pool took the node over. The pod is released, and the service is deleted once the pod is gone |
 | `Conflict` | Selected, but another NovaCompute of the same Nova on the same cluster holds the node. No pod of this CR runs there |
 
+The figure draws the five phases with what triggers each change and who drives
+it. The rules below decide the cases the arrows leave out.
+
+![The five phases of a node in a NovaCompute pool as a state machine. A node the selector matches starts in Pending and turns Active once its compute service is registered and its host is mapped; it falls back to Pending when the service disappears from Nova. A node another pool of the same Nova holds starts in Conflict and becomes Pending when that pool drops its entry. A selected node goes Draining when its label is removed, its Node is deleted or the pool is deleted, and the pool disables its compute service once. It goes Releasing when Nova counts no server on the host, or at once and without a disable when another pool selects it. From Releasing the pool releases the pod and deletes the compute service, which drops the entry from status.nodes and cannot be undone; a delete Nova refuses returns the node to Draining. A node selected again while Draining or Releasing goes back to Active with its service still disabled. The pool never moves a server, never enables a service and never times a drain out.](../../diagrams/compute-node-phases.svg)
+
 A `Pending` node with a registered service turns `Active` once Nova lists its
 host as a hypervisor, which Nova does only for a host with a host mapping.
 Until then the pool runs the host discovery (see [Reaching Nova](#reaching-nova)).

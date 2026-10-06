@@ -16,6 +16,12 @@ while Nova counts servers on the host. When none is left, the pool releases the
 pod and deletes the service, which removes the host mapping, the resource
 provider and the aggregate membership. The pool never migrates an instance.
 
+The figure shows the phases a node of a pool passes through. This guide walks
+the path from `Active` through `Draining` and `Releasing` until the entry is
+dropped.
+
+![The five phases of a node in a NovaCompute pool as a state machine. A node the selector matches starts in Pending and turns Active once its compute service is registered and its host is mapped; it falls back to Pending when the service disappears from Nova. A node another pool of the same Nova holds starts in Conflict and becomes Pending when that pool drops its entry. A selected node goes Draining when its label is removed, its Node is deleted or the pool is deleted, and the pool disables its compute service once. It goes Releasing when Nova counts no server on the host, or at once and without a disable when another pool selects it. From Releasing the pool releases the pod and deletes the compute service, which drops the entry from status.nodes and cannot be undone; a delete Nova refuses returns the node to Draining. A node selected again while Draining or Releasing goes back to Active with its service still disabled. The pool never moves a server, never enables a service and never times a drain out.](../../diagrams/compute-node-phases.svg)
+
 This guide drains the node of the ControlPlane devstack through a pool on
 nova's fake driver. It then gives the order on a compute cluster that runs
 [openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
