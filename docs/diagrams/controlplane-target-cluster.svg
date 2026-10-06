@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1250" viewBox="0 0 1808 1250" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="A workload resource on a target cluster">
+<title>A workload resource on a target cluster</title>
+<rect width="1808" height="1250" fill="#F6F5F1"/>
+<rect x="40" y="40" width="650" height="860" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<rect x="64" y="120" width="602" height="220" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="160.64" font-size="24" font-weight="700" fill="#2B3440">c5c3-clusters</text>
+<path d="M88 220 H212 L228 236 V268 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="212,220 212,236 228,236" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="158" y="252.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{cluster}</text>
+<rect x="124" y="184" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="176" y="205.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="124" y="295.2" font-size="20" font-weight="400" fill="#55606E">label sigs.k8s.io/multicluster-runtime-kubeconfig: true</text>
+<text x="124" y="321.2" font-size="20" font-weight="400" fill="#55606E">keys kubeconfig, namespaces</text>
+<rect x="64" y="430" width="230" height="210" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="179" y="543.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">keystone-operator</text>
+<polyline points="104,268 104,419.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="104,430 96.8,415 111.2,415" fill="#B0387F"/>
+<text x="124" y="381.2" font-size="20" font-weight="400" fill="#8A2B63">engages the cluster</text>
+<rect x="64" y="680" width="602" height="200" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="697" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="719.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="720.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="88" y="740" width="230" height="48" rx="20" fill="#1D47A6"/>
+<text x="203" y="772.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Keystone {name}</text>
+<text x="88" y="815.2" font-size="20" font-weight="400" fill="#55606E">spec.targetClusterRef.name: {cluster}</text>
+<text x="88" y="841.2" font-size="20" font-weight="400" fill="#55606E">status, finalizers and webhooks stay here</text>
+<text x="88" y="867.2" font-size="20" font-weight="400" fill="#55606E">finalizer openstack.c5c3.io/remote-children</text>
+<rect x="64" y="960" width="360" height="88" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="244" y="994.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Client</text>
+<text x="244" y="1021.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a user, or a service on another cluster</text>
+<rect x="740" y="40" width="1028" height="1060" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="766.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="804.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="856.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Target cluster {cluster}</text>
+<rect x="1000" y="120" width="744" height="220" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="1018" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1044" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1084" y="160.64" font-size="24" font-weight="700" fill="#2B3440">{access-ns}</text>
+<text x="1234.77" y="159.2" font-size="20" font-weight="400" fill="#55606E">release namespace of the chart target-cluster-access</text>
+<path d="M1024 220 H1348 L1364 236 V268 H1024 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1348,220 1348,236 1364,236" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1194" y="252.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">target-cluster-access-token</text>
+<rect x="1260" y="184" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1312" y="205.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="1024" y="295.2" font-size="20" font-weight="400" fill="#55606E">ServiceAccount target-cluster-access</text>
+<text x="1024" y="321.2" font-size="20" font-weight="400" fill="#55606E">one Role per namespace, one ClusterRole</text>
+<polyline points="1024,244 238.5,244" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="228,244 243,236.8 243,251.2" fill="#B0387F"/>
+<text x="260" y="231.2" font-size="20" font-weight="400" fill="#8A2B63">kubeconfig with the token</text>
+<rect x="764" y="410" width="190" height="230" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="859" y="533.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">kube-apiserver</text>
+<rect x="1300" y="360" width="444" height="716" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="1318" y="377" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1344" y="399.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1384" y="400.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<text x="1446.69" y="399.2" font-size="20" font-weight="400" fill="#55606E">exists before the CR is created</text>
+<rect x="1324" y="430" width="396" height="622" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1343" y="469.36" font-size="26" font-weight="700" fill="#2B3440">Children of Keystone {name}</text>
+<text x="1343" y="507.2" font-size="20" font-weight="400" fill="#55606E">labels openstack.c5c3.io/owner-kind,</text>
+<text x="1343" y="533.2" font-size="20" font-weight="400" fill="#55606E">owner-name, owner-namespace</text>
+<text x="1343" y="559.2" font-size="20" font-weight="400" fill="#55606E">no owner reference</text>
+<rect x="1372" y="590" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1522" y="622.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Deployment, Service</text>
+<path d="M1372 668 H1656 L1672 684 V716 H1372 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1656,668 1656,684 1672,684" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1522" y="700.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">ConfigMaps</text>
+<path d="M1372 746 H1656 L1672 762 V794 H1372 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1656,746 1656,762 1672,762" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1522" y="778.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">Secrets</text>
+<rect x="1372" y="824" width="300" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M1396 824 V872 M1648 824 V872" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="1522" y="856.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Jobs, CronJobs</text>
+<rect x="1372" y="902" width="300" height="48" rx="20" fill="#2B3440"/>
+<text x="1522" y="934.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database, User, Grant</text>
+<rect x="1372" y="980" width="300" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1522" y="1012.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">HTTPRoute</text>
+<rect x="764" y="800" width="380" height="76" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="954" y="831.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">mariadb-operator,</text>
+<text x="954" y="861.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">external-secrets, cert-manager</text>
+<text x="764" y="903.2" font-size="20" font-weight="400" fill="#55606E">act on the children here</text>
+<rect x="764" y="980" width="320" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="924" y="1012.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Gateway or load balancer</text>
+<text x="764" y="1055.2" font-size="20" font-weight="400" fill="#55606E">provided by the deployment</text>
+<polyline points="294,460 753.5,460" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="764,460 749,467.2 749,452.8" fill="#3A4452"/>
+<text x="314" y="423.2" font-size="20" font-weight="400" fill="#2B3440">a placed BarbicanSecretStore:</text>
+<text x="314" y="449.2" font-size="20" font-weight="400" fill="#2B3440">pods/portforward to its OpenBao</text>
+<polyline points="294,520 753.5,520" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="764,520 749,527.2 749,512.8" fill="#2F8A57"/>
+<polyline points="954,520 1313.5,520" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1324,520 1309,527.2 1309,512.8" fill="#2F8A57"/>
+<text x="970" y="507.2" font-size="20" font-weight="400" fill="#1E6B40">writes and watches every child</text>
+<polyline points="294,614 753.5,614" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="764,614 749,621.2 749,606.8" fill="#2457C5"/>
+<polyline points="954,614 1361.5,614" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1372,614 1357,621.2 1357,606.8" fill="#2457C5"/>
+<text x="970" y="601.2" font-size="20" font-weight="400" fill="#1D47A6">API health probe: services/proxy</text>
+<polyline points="424,1004 753.5,1004" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="764,1004 749,1011.2 749,996.8" fill="#2457C5"/>
+<polyline points="1084,1004 1361.5,1004" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1372,1004 1357,1011.2 1357,996.8" fill="#2457C5"/>
+<text x="1120" y="989.2" font-size="20" font-weight="400" fill="#1D47A6">public URL</text>
+<polyline points="336,764 1324,764" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="320,764 328,768.7 336,764 328,759.3" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="1151.2" font-size="20" font-weight="400" fill="#55606E">{cluster}: the name of the registration Secret, which is the cluster name a CR references.</text>
+<text x="40" y="1177.2" font-size="20" font-weight="400" fill="#55606E">{name}, {ns}: the workload CR and its namespace. {access-ns}: where the target's administrator installed the chart.</text>
+<text x="40" y="1203.2" font-size="20" font-weight="400" fill="#55606E">Twelve workload kinds are placed this way. Keystone stands for all of them.</text>
+</svg>
