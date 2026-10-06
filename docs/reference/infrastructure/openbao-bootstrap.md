@@ -997,14 +997,16 @@ the OpenBao listener does not verify SANs on client auth, only the issuing CA.
 
 | SAN | Type | Cert | Usages | Purpose |
 | --- | --- | --- | --- | --- |
-| `openbao-0.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 0 |
-| `openbao-1.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 1 |
-| `openbao-2.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 2 |
-| `openbao.shared-services.svc` | DNS | `openbao-tls` (server) | `server auth` | Kubernetes Service endpoint |
-| `127.0.0.1` | IP | `openbao-tls` (server) | `server auth` | Pod-local loopback (bootstrap scripts, `bao_exec`) |
-| `::1` | IP | `openbao-tls` (server) | `server auth` | IPv6 loopback |
+| `openbao-0.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 0 |
+| `openbao-1.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 1 |
+| `openbao-2.openbao-internal` | DNS | `openbao-tls` (server) | not set | StatefulSet pod 2 |
+| `openbao.shared-services.svc` | DNS | `openbao-tls` (server) | not set | Kubernetes Service endpoint |
+| `127.0.0.1` | IP | `openbao-tls` (server) | not set | Pod-local loopback (bootstrap scripts, `bao_exec`) |
+| `::1` | IP | `openbao-tls` (server) | not set | IPv6 loopback |
 | `openbao-client.shared-services.svc` | DNS | `openbao-client-tls` | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
 | `eso-openbao-client.shared-services.svc` | DNS | `eso-openbao-client-tls` | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
+
+`openbao-tls` sets no `usages` field, so cert-manager's default key usages apply.
 
 ### Resource Limits
 
