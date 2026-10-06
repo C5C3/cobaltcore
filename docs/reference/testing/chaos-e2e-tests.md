@@ -87,7 +87,7 @@ the metal-stack lab is described in
 | Prerequisite | Details |
 | --- | --- |
 | Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
-| Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` (or by `chaos-mesh/chaos-mesh-action` in CI) |
+| Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/`; CI sets `WITH_CHAOS_MESH=true` on every leg of the job |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |
@@ -115,12 +115,14 @@ settings tuned for fault injection scenarios:
 | Setting | Chaos | Happy-Path | Rationale |
 | --- | --- | --- | --- |
 | `timeouts.assert` | 300s | 120s | Recovery requires multiple reconciliation cycles and pod restart time |
-| `timeouts.cleanup` | 120s | 60s | Chaos Mesh CRs may take longer to finalize and release faults |
+| `timeouts.cleanup` | 120s | 3m | Chaos Mesh CRs need time to finalize and release faults; the happy-path value is higher because finalizer-driven Keystone deletion under `parallel: 4` can take longer |
 | `execution.parallel` | 1 | 4 | Chaos tests mutate shared infrastructure pod availability; serial execution prevents cross-test interference |
 | `execution.failFast` | true | true | Stop on first failure for faster feedback |
 | `report.name` | `chainsaw-chaos-report` | `chainsaw-report` | Distinct JUnit report artifact |
 
-Individual test suites override the assert timeout to 5 minutes (`5m`) at the spec level.
+Most suites restate the assert timeout of 5 minutes (`5m`) at the spec level.
+`mariadb-network-partition` raises it to `8m`, the three nova suites raise single asserts to
+`8m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
 
 ## CI Trigger Policy
 
@@ -129,25 +131,24 @@ The job is path-filtered; its four matrix legs gate differently. The pod leg is
 blocking, the network, ovn and nova legs are not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
-**Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
-`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job.
+**Path filter (`tests_chaos`):** Only changes under `tests/e2e-chaos/**` trigger the job.
 
 A Go code change does not. The pod and network legs alone cost about 62 runner
 minutes between them, and a change to an operator is exercised by that operator's own e2e leg;
 the chaos suites test recovery behaviour, which is what the `tests_chaos` filter
 watches. Apply the `ci:chaos` label to run them against a pull request that
-changes something else. On `v*` tag pushes the job is forced active regardless
-of which files were touched.
+changes something else.
 
 **Trigger conditions:**
 
 | Event | Runs when |
 | --- | --- |
-| Push to `main` | Not scheduled; the merged pull request already ran it (always on `v*` tags) |
+| Push to `main` or a `v*` tag | Never; the job runs on `pull_request` events only |
 | Pull request | A suite under `tests/e2e-chaos/**` changed, or the `ci:chaos` label is applied |
 
-**Dependencies:** The job depends on all gate jobs (`lint`, `shellcheck`, `test`,
-`test-integration`, `verify-codegen`). It only runs if no dependency failed or was
+**Dependencies:** The job depends on `changes`, `lint`, `shellcheck`, `test`,
+`test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` and
+`e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
 cancelled.
 
 **Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}</code>):** The `pod`
@@ -201,8 +202,8 @@ fault severs a whole broker. The suites run on a leg of their own rather than on
 the network one, which already spends 78 of its 90 minutes and deploys no
 placement-operator.
 
-**Timeout:** 90 minutes to accommodate serial test execution and longer recovery
-assertion windows.
+**Timeout:** 90 minutes for the pod, network and ovn legs and 150 minutes for the nova leg,
+to accommodate serial test execution and longer recovery assertion windows.
 
 ## Test Suite Inventory
 
@@ -211,7 +212,7 @@ assertion windows.
 | [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone-chaos-db` | Degradation and recovery | `DatabaseReady=False` → `DatabaseReady=True`, `Ready=True` |
 | [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone-chaos-mc` | No-regression | All 6 conditions remain `True` during outage |
 | [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone-chaos-bao` | Degradation and recovery | `SecretsReady=False` → `SecretsReady=True`, `Ready=True` |
-| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | Operator pod `Ready=false` → `Ready=true`, CR `Ready=True` maintained |
+| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone-chaos-op` | Operator self-recovery (no-regression) | At least one pre-chaos operator pod UID gone, operator Deployment `readyReplicas` back to `spec.replicas`, CR `Ready=True` before and after |
 | [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone-chaos-cron` | Workload fault tolerance | `FernetKeysReady=True` maintained, `Ready=True` maintained |
 | [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone-chaos-net-part` | Degradation and recovery (NetworkChaos) | `DeploymentReady=False`, `Ready=False` → `DeploymentReady=True`, `Ready=True` |
 | [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` |
@@ -332,14 +333,18 @@ OpenBao returns and ESO resumes syncing.
 | 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-openbao` targeting `app.kubernetes.io/name: openbao` in `shared-services` |
 | 4 | Assert degradation | `assert` (5m) | SecretsReady=False — ESO cannot reach OpenBao |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-openbao` to lift the fault |
-| 6 | Assert recovery | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
+| 6 | Re-unseal OpenBao | `script` (180s) | Runs `../unseal-openbao.sh`: the single-replica OpenBao of the kind stack restarts sealed and has no auto-unseal, so the helper unseals `openbao-0` with the keys from Secret `openbao-init-keys` in `shared-services` |
+| 7 | Assert recovery | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
 
-**Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+**Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`; step 6 runs the shared helper
+`tests/e2e-chaos/unseal-openbao.sh`
 
-**Catch blocks:** Steps 2, 4, and 6 include catch blocks dumping Keystone CR status,
-OpenBao pod status (in `shared-services`), Chaos Mesh experiment status, ESO ExternalSecret
-conditions (via `jsonpath='{.status.conditions}'`), operator logs (including `--previous`),
-and namespace events.
+**Catch blocks:** Step 2 calls `diagnostics.sh baseline`, which dumps Keystone CR status,
+the logs of all pods in `openstack`, OpenBao pod status (in `shared-services`), and namespace
+events. Steps 4, 6, and 7 call `diagnostics.sh chaos` with `--eso`, which dumps Keystone CR
+status, OpenBao pod status (in `shared-services`), Chaos Mesh experiment status, ESO
+ExternalSecret conditions (via `jsonpath='{.status.conditions}'`), operator logs (including
+`--previous`), and namespace events.
 
 ---
 
@@ -361,22 +366,23 @@ invisible to the CR's status conditions.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-op` with database `keystone_chaos_op` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-operator` targeting `app.kubernetes.io/name: keystone-operator` in `keystone-system` (the operator controller lives in its own Namespace; the PodChaos CR itself is still created in the test's `openstack` namespace) |
-| 4 | Wait for operator pod crash and recovery | `wait` (2m + 2m) | Condition-based waits: operator pod `Ready=false` (kill took effect), then `Ready=true` (Deployment controller restarted pod) |
-| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up |
-| 6 | Assert Ready=True after re-reconciliation | `assert` (5m) | Ready=True with reason AllReady — no sub-condition stuck in False state |
+| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator`, `mode: one`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`; the PodChaos CR itself is created in the test's `openstack` namespace), waits until at least one pre-chaos UID is gone, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
+| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up |
+| 5 | Assert Ready=True after re-reconciliation | `assert` (5m) | Ready=True with reason AllReady — no sub-condition stuck in False state |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
 
-**Catch blocks:** Steps 2 and 6 include catch blocks calling `diagnostics.sh` with
-appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system`.
-Step 4 includes a catch block with chaos diagnostics for the operator pod.
+**Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Steps 3 and 5 call
+`diagnostics.sh chaos` with
+`--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system`.
 
-**Design note:** Step 4 uses condition-based waits on the operator pod (`Ready=false` then
-`Ready=true`) instead of a fixed sleep. This confirms the kill actually took effect before
-proceeding, and is the same pattern used in SC-CHAOS-002. A theoretical race exists where
-the kill-and-restart completes faster than Chainsaw's poll interval — see the inline comment
-for mitigation guidance if CI flakiness occurs.
+**Design note:** Step 3 uses identity-based tracking (pod UIDs) instead of a fixed sleep or a
+`readyReplicas`-drop poll. With `mode: one` and `gracePeriod: 0`, the kill, reschedule and
+ready cycle can complete faster than the 2-second poll observes, so a poll for a transient
+drop can see `readyReplicas` at the desired count throughout. Snapshotting the UIDs before
+applying the PodChaos and waiting until at least one of them is gone confirms the kill took
+effect regardless of timing. The apply and the wait share one script so the snapshot and the
+wait share state. SC-CHAOS-009 uses the same pattern.
 
 ---
 
@@ -441,12 +447,12 @@ Lifting the partition restores readiness and the CR returns to `Ready=True`.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-net-part` with database `keystone_chaos_net_part` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
+| 2 | Assert baseline Ready=True | `assert` (8m) | Ready=True with reason AllReady — confirms healthy state before fault injection |
 | 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml` — NetworkChaos `partition-mariadb` severing keystone↔MariaDB traffic at the MariaDB pods in `openstack` |
-| 4 | Assert NetworkChaos injection active | `assert` (5m) | NetworkChaos `partition-mariadb` has `AllInjected=True` — confirms fault is active before checking effects |
-| 5 | Assert degradation | `assert` (5m) | DeploymentReady=False and Ready=False — keystone pods fail the database-aware readiness probe and are depooled. `DatabaseReady` stays True (the operator still sees the cluster CR as Ready) |
+| 4 | Assert NetworkChaos injection active | `script` (60s) | `kubectl wait` until NetworkChaos `partition-mariadb` reports `AllInjected` — confirms fault is active before checking effects |
+| 5 | Assert degradation | `assert` (8m) | DeploymentReady=False and Ready=False — keystone pods fail the database-aware readiness probe and are depooled. `DatabaseReady` stays True (the operator still sees the cluster CR as Ready) |
 | 6 | Delete NetworkChaos | `delete` | Removes NetworkChaos `partition-mariadb` to lift the partition |
-| 7 | Assert recovery | `assert` (5m) | DeploymentReady=True and Ready=True with reason AllReady |
+| 7 | Assert recovery | `assert` (8m) | DeploymentReady=True and Ready=True with reason AllReady |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
 
@@ -490,9 +496,8 @@ mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
 
 **Scenario:** SC-CHAOS-007
 
-**Purpose:** Validates that the Keystone operator tolerates slow MariaDB responses (10s
-latency, 2s jitter) without crash-looping or losing Ready status, confirming adequate
-timeout configuration in the operator's database client.
+**Purpose:** Validates that a Keystone whose API pods see 10s latency (2s jitter) towards
+MariaDB keeps `Ready=True`, and that the operator pods do not restart meanwhile.
 
 **Steps:**
 
@@ -515,7 +520,7 @@ appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=ma
 - Uses `NetworkChaos` with `action: delay` instead of `PodChaos`. Injects 10s latency with
   2s jitter at 100% correlation, simulating degraded network conditions without full outage.
 - The test verifies no-regression (Ready=True maintained) rather than degradation-recovery,
-  because latency should be tolerated by the operator's database client timeouts.
+  because the Keystone API pods should tolerate the latency towards MariaDB.
 - `duration: 180s` acts as a safety net for auto-expiry.
 - Step 4 uses `kubectl wait --for=condition=AllInjected` to confirm injection is active
   before checking operator stability, replacing a fixed sleep for determinism.
@@ -636,7 +641,7 @@ the CR, and asserts the CR is still removed (the finalizer does not wait), the f
 events are emitted, and the MariaDB CRs sit in Terminating until the controller is scaled
 back up and processes their finalizers.
 
-Unlike the other suites, this one injects the fault with `kubectl scale` rather than a
+Like `cinder-nfs-outage`, this suite injects the fault with `kubectl scale` rather than a
 Chaos Mesh CR, so it needs no Chaos Mesh installation.
 
 **Steps:**
@@ -696,7 +701,7 @@ proxy keeps answering 201; after the outage the federated flow recovers.
 | --- | --- | --- | --- |
 | 1 | Fixture + federated Keystone | `apply` + `assert` (5m) | Keycloak fixture ready, Keystone `Ready=True`, backend `Ready=True`, sidecar rollout complete (`updatedReplicas == replicas`) |
 | 2 | Baseline federated auth | `script` (120s) | ROPC bearer from Keycloak, federated auth through the sidecar answers 201 |
-| 3 | Kill the sidecar container | `apply` | PodChaos `container-kill`, `containerNames: [federation-proxy]`, `mode: one` |
+| 3 | Kill the sidecar container | `apply` + `script` (120s) | PodChaos `container-kill`, `containerNames: [federation-proxy]`, `mode: one`; the script waits for `AllInjected=True` and deletes and re-applies the experiment up to three times when it is not injected |
 | 4 | Restart observed + recovery | `script` (210s) + `assert` + `script` (120s) | `federation-proxy` `restartCount >= 1` (the kill is provably observed), `readyReplicas` back to desired, `Ready=True/AllReady`, federated bearer auth answers 201 again |
 | 5 | Delete container-kill chaos | `delete` | Removes PodChaos `kill-federation-proxy` |
 | 6 | IdP outage fails closed | `script` (150s) | Fetches a bearer BEFORE applying a bounded (60s) pod-failure on Keycloak inline, then asserts federated auth turns non-2xx while password auth via the proxy stays 201 |
@@ -707,8 +712,8 @@ https listener for the introspection endpoint), `01-keystone-cr.yaml`
 (replicas 2, federation proxy image), `02-backend-cr.yaml` (explicit
 endpoints, introspection with `tlsVerify: false`), `03-container-kill.yaml`
 
-**Catch blocks:** every step calls `../diagnostics.sh` with the Keycloak
-dependency label and the keystone instance log label.
+**Catch blocks:** every step but step 5, the delete, calls `../diagnostics.sh` with the
+Keycloak dependency label; steps 3, 4, 6 and 7 add the keystone instance log label.
 
 **Design note:** the IdP-outage chaos is applied inline from the step-6
 script (not a fixture apply) so the probe bearer token is provably fetched
@@ -1099,8 +1104,7 @@ logs from `cinder-system`.
   with `hostNetwork: true`, so the kernel NFS client sends from the node's network
   namespace and an iptables rule keyed on the `cinder-volume` pod IP never matches
   a single mount packet. Removing the endpoint the client dials works instead,
-  which is what `deletion-stuck-finalizer` does to the mariadb-operator on this
-  same leg.
+  which is what `deletion-stuck-finalizer` does to the mariadb-operator on the pod leg.
 - Recovery takes longer than the fault. The restarted server comes up in its
   NFSv4 grace period, up to 90 s in which it serves reclaims alone, and the client
   retries through it without telling the application. The post-recovery create
@@ -1155,7 +1159,7 @@ one reaches ACTIVE.
 | 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
 | 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-broker-chaos-ovn`, `neutron-nova-broker-chaos`, `placement-nova-broker-chaos`, `glance-nova-broker-chaos` and `glance-nova-broker-chaos-s3` |
 | 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
-| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with the fifteen sub-conditions the suite asserts True (every one but `VPAReady`) and `Ready=True/AllReady`, the baseline the partition phase is read against |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with the sixteen conditions the suite asserts True beside `Ready` (fifteen `*Ready` sub-conditions and `ExtraConfigHealthy`; `VPAReady` is not among them) and `Ready=True/AllReady`, the baseline the partition phase is read against |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-broker-chaos` |
 | 8 | Baseline | `script` (11m) + `script` (2m) | `14-baseline-job.yaml` boots a server end to end (`BASELINE-OK`) and prints how long the create call took; the scheduler, conductor and API containers are recorded ready (`BASELINE-READY-OK`) |
 | 9 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-rabbitmq-nova`), waited for `AllInjected`. The step cleanup deletes it |
@@ -1184,7 +1188,7 @@ and the operator logs from `nova-system`, `keystone-system`, `ovn-system`,
 - The readiness flip gets 180 seconds rather than one probe period. A partition
   drops packets without a FIN or an RST, so the socket `nova-amqp-ready` reads
   stays ESTABLISHED until the client closes it; the probe documents that blind
-  spot at `images/nova/nova-amqp-ready:28-36`. What closes the socket is
+  spot at `images/nova/nova-amqp-ready:29-33`. What closes the socket is
   oslo.messaging's heartbeat, which gives up after `heartbeat_timeout_threshold`
   (60 s by default, with no operator override), and the probe then needs one
   more failure at its 5-second period.
@@ -1290,7 +1294,7 @@ Placement client.
 | 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
 | 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-placement-chaos-ovn`, `neutron-nova-placement-chaos`, `placement-nova-placement-chaos`, `glance-nova-placement-chaos` and `glance-nova-placement-chaos-s3` |
 | 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
-| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with the fifteen sub-conditions the suite asserts True (every one but `VPAReady`) and `Ready=True/AllReady` |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with the sixteen conditions the suite asserts True beside `Ready` (fifteen `*Ready` sub-conditions and `ExtraConfigHealthy`; `VPAReady` is not among them) and `Ready=True/AllReady` |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-placement-chaos` |
 | 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`) |
 | 9 | Inject NetworkChaos to partition Placement | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-placement-nova`), waited for `AllInjected`. The step cleanup deletes it |
@@ -1798,14 +1802,14 @@ Used when the killed dependency is non-critical and the operator must maintain `
 despite the outage.
 
 ```text
-Apply CR → Assert Ready=True → Inject PodChaos → Wait Pod Ready=false → Wait Pod Ready=true
+Apply CR → Assert Ready=True → Inject PodChaos → Poll readyReplicas < desired → Poll readyReplicas = desired
          → Assert ALL conditions=True → Delete PodChaos → Assert Ready=True
 ```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos to kill a non-critical dependency pod
-3. Wait for pod to become NotReady (confirms chaos took effect)
-4. Wait for pod to return to Ready (confirms recovery)
+3. Poll the dependency Deployment until `readyReplicas` drops below `spec.replicas` (confirms chaos took effect)
+4. Poll until `readyReplicas` equals `spec.replicas` again (confirms recovery)
 5. Assert **all 6 conditions** remain `True` — no regression
 6. Delete PodChaos and assert `Ready=True` after recovery
 
@@ -1817,14 +1821,15 @@ Keystone CR — the Deployment controller handles pod restart, and controller-ru
 re-registers watches and resumes reconciliation.
 
 ```text
-Apply CR → Assert Ready=True → Inject PodChaos → Wait Operator Pod Ready=false
-         → Wait Operator Pod Ready=true → Delete PodChaos → Assert Ready=True
+Apply CR → Assert Ready=True → Snapshot operator pod UIDs → Inject PodChaos
+         → Wait one pre-chaos UID gone → Wait readyReplicas = desired
+         → Delete PodChaos → Assert Ready=True
 ```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
-2. Apply PodChaos to kill the operator pod
-3. Wait for operator pod `Ready=false` (confirms kill took effect)
-4. Wait for operator pod `Ready=true` (Deployment controller restarted it)
+2. Snapshot the operator pod UIDs and apply PodChaos to kill one operator pod
+3. Wait until at least one pre-chaos UID is gone (confirms kill took effect)
+4. Wait until the operator Deployment `readyReplicas` equals `spec.replicas` (Deployment controller restarted it)
 5. Delete PodChaos and assert `Ready=True` after re-reconciliation
 
 ### Workload Fault Tolerance (SC-CHAOS-005)
@@ -1870,14 +1875,15 @@ controller to restart all pods and trigger leader re-election. After recovery, a
 capability beyond just running.
 
 ```text
-Apply CR → Assert Ready=True → Inject PodChaos (mode: all) → Wait readyReplicas 0→2
+Apply CR → Assert Ready=True → Snapshot operator pod UIDs → Inject PodChaos (mode: all)
+         → Wait all pre-chaos UIDs gone → Wait readyReplicas = desired
          → Delete PodChaos → Assert all 6 conditions=True → Patch replicas 1→2
          → Assert Deployment replicas=2 + Ready=True
 ```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
-2. Apply PodChaos with `mode: all` to kill every operator pod
-3. Poll operator Deployment `readyReplicas`: wait for drop to 0 (kill confirmed), then return to 2 (recovered)
+2. Snapshot the operator pod UIDs and apply PodChaos with `mode: all` to kill every operator pod
+3. Wait until none of the pre-chaos UIDs remain (kill confirmed), then poll operator Deployment `readyReplicas` until it equals `spec.replicas` (recovered)
 4. Delete PodChaos to lift the fault
 5. Assert all 6 conditions remain `True` — operator restart is invisible to CR status
 6. Patch `spec.deployment.replicas` from 1 to 2
@@ -2014,25 +2020,24 @@ assertion fails. The information collected varies by scenario:
 
 | Diagnostic | MariaDB (001) | Memcached (002) | OpenBao (003) | Operator (004) | CronJob (005) | Net Partition (006) | Net Latency (007) | API PDB (008) | Pod Kill (009) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `diagnostics.sh` | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 4, 5, 7 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 4, 6, 8 |
-| Target pod status | Steps 4, 6 | Steps 4, 6 | Steps 2, 4, 6 | — | — | — | — | — | — |
-| Chaos Mesh experiment status | Steps 4, 6 | Steps 4, 6 | Steps 4, 6 | — | — | — | — | — | — |
+| `diagnostics.sh` | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6, 7 | Steps 2, 3, 5 | Steps 2, 5, 7 | Steps 2, 4, 5, 7 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 3, 5, 7 |
+| Target pod status | Steps 4, 6 | Steps 4, 6 | Steps 2, 4, 6, 7 | Steps 3, 5 | Steps 5, 7 | Steps 2, 4, 5, 7 | Steps 2, 4, 6 | Steps 5, 7 | Steps 3, 5, 7 |
+| Chaos Mesh experiment status | Steps 4, 6 | Steps 4, 6 | Steps 4, 6, 7 | Steps 3, 5 | Steps 5, 7 | Steps 4, 5, 7 | Steps 4, 6 | Steps 5, 7 | Steps 3, 5, 7 |
 | NetworkChaos CR status | — | — | — | — | — | Step 4 | — | — | — |
-| Operator logs (`--previous`) | Steps 4, 6 | — | Steps 4, 6 | — | — | — | — | — | — |
-| Target pod logs (`--previous`) | — | Steps 4, 6 | — | — | — | — | — | — | — |
-| ESO ExternalSecret conditions | — | — | Steps 4, 6 | — | — | — | — | — | — |
-| All pod logs | Step 2 | Step 2 | Step 2 | — | — | — | — | — | — |
-| Namespace events | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6 | — | — | — | — | — | — |
+| Operator logs (`--previous`) | Steps 4, 6 | — | Steps 4, 6, 7 | Steps 3, 5 | — | Steps 4, 5, 7 | Steps 4, 6 | — | Steps 3, 5, 7 |
+| Target pod logs (`--previous`) | — | Steps 4, 6 | — | — | Steps 5, 7 | — | — | Steps 5, 7 | — |
+| ESO ExternalSecret conditions | — | — | Steps 4, 6, 7 | — | — | — | — | — | — |
+| All pod logs | Step 2 | Step 2 | Step 2 | Step 2 | Step 2 | Step 2 | Step 2 | Step 2 | Step 2 |
+| Namespace events | Steps 2, 4, 6 | Steps 2, 4, 6 | Steps 2, 4, 6, 7 | Steps 2, 3, 5 | Steps 2, 5, 7 | Steps 2, 4, 5, 7 | Steps 2, 4, 6 | Steps 2, 5, 7 | Steps 2, 3, 5, 7 |
 | CronJob/Job status | — | — | — | — | Steps 4, 5 | — | — | — | — |
 | Job pod logs | — | — | — | — | Step 5 | — | — | — | — |
 | PDB describe | — | — | — | — | — | — | — | Step 3 | — |
 
-Phase 2 scenarios (004, 005, 008) and Phase 3 (009) use `diagnostics.sh` exclusively for catch diagnostics
-(which internally collects CR status, pod status, logs, and events). Phase 1 scenarios
-(001, 002, 003) use inline `kubectl` commands in catch blocks. Phase 4 network chaos
-scenarios (006, 007) use `diagnostics.sh` for all catch blocks; SC-CHAOS-006 additionally
-dumps the NetworkChaos CR status in Step 4 to confirm fault injection state.
-SC-CHAOS-005 additionally collects CronJob/Job-specific diagnostics in Steps 4 and 5.
+All nine scenarios call `diagnostics.sh` in their catch blocks (it collects CR status, pod
+status, logs, and events). SC-CHAOS-003 passes `--eso` in Steps 4, 6, and 7. SC-CHAOS-006
+also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state.
+SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
+SC-CHAOS-008 describes the PDB in Step 3.
 
 ## File Layout
 
