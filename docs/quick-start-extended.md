@@ -25,6 +25,13 @@ identical to what CI validates.
 - The Keystone operator running with leader election
 - A `Keystone` custom resource that provisions a Keystone API service backed by MariaDB and Memcached
 
+On the map of the four quick starts this page is the box Quick Start (Extended): the devstack
+of the [Quick Start](./quick-start.md), with every step explained. Step 2 creates the kind
+cluster `cobaltcore` on host port 443. The Quick Start creates a cluster of the same name on
+8443, so run `make teardown-infra` first if that cluster still runs.
+
+![A map of the four quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other two run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Each quick start begins at git clone and is complete in itself.](./diagrams/quickstart-map.svg)
+
 ---
 
 ## Prerequisites

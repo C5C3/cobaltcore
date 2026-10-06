@@ -62,6 +62,12 @@ The block is machine-checkable. It must be:
 3. Followed by any guide-specific prerequisite bullets (an external LDAP server,
    a Keycloak realm, a CNI that enforces NetworkPolicy, ...).
 
+The map shows what each of the four devstacks deploys and how they relate. A
+guide whose devstack is a ControlPlane cannot start from a standalone cluster:
+that step takes `make teardown-infra` and a fresh cluster.
+
+![A map of the four quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other two run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Each quick start begins at git clone and is complete in itself.](../diagrams/quickstart-map.svg)
+
 The four devstacks and the names each produces:
 
 | Devstack | Verbatim bring-up | Names the examples may use |

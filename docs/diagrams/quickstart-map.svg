@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1166" viewBox="0 0 1808 1166" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The four quick starts">
+<title>The four quick starts</title>
+<rect width="1808" height="1166" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="412" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Standalone: one Keystone resource</text>
+<text x="59" y="115.2" font-size="20" font-weight="400" fill="#55606E">the keystone-operator runs the Keystone you apply</text>
+<rect x="60" y="200" width="812" height="232" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="76" y="238.64" font-size="24" font-weight="700" fill="#2B3440">Quick Start</text>
+<rect x="76" y="258" width="259" height="40" rx="20" fill="#1D47A6"/>
+<text x="205.5" y="286.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Keystone keystone</text>
+<text x="76" y="331.2" font-size="20" font-weight="400" fill="#55606E">Runs on: a kind cluster on the workstation</text>
+<text x="76" y="357.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: KIND_HOST_PORT=8443 make deploy-infra</text>
+<text x="76" y="383.2" font-size="20" font-weight="400" fill="#55606E">Deploys: the infrastructure stack, the keystone-operator, one Keystone</text>
+<text x="76" y="409.2" font-size="20" font-weight="400" fill="#55606E">Ends with: a token from https://keystone.127-0-0-1.nip.io:8443/v3</text>
+<rect x="936" y="200" width="812" height="232" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="952" y="238.64" font-size="24" font-weight="700" fill="#2B3440">Quick Start (Extended)</text>
+<rect x="952" y="258" width="259" height="40" rx="20" fill="#1D47A6"/>
+<text x="1081.5" y="286.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Keystone keystone</text>
+<text x="952" y="331.2" font-size="20" font-weight="400" fill="#55606E">Runs on: a kind cluster on the workstation</text>
+<text x="952" y="357.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: kind create cluster, then make deploy-infra</text>
+<text x="952" y="383.2" font-size="20" font-weight="400" fill="#55606E">Adds: the UIs, the WITH_* opt-ins, local builds, the CA file</text>
+<text x="952" y="409.2" font-size="20" font-weight="400" fill="#55606E">Ends with: the E2E suite and Tempest against the cluster</text>
+<text x="904" y="157.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the same devstack, deeper</text>
+<text x="904" y="182.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">make teardown-infra, then Step 2 on port 443</text>
+<polyline points="872,230 925.5,230" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="936,230 921,237.2 921,222.8" fill="#3A4452"/>
+<polyline points="440,452 440,541.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="440,552 432.8,537 447.2,537" fill="#3A4452"/>
+<text x="460" y="498.64" font-size="24" font-weight="400" fill="#2B3440">a mode change</text>
+<text x="460" y="523.2" font-size="20" font-weight="400" fill="#55606E">make teardown-infra, then a fresh cluster</text>
+<rect x="40" y="552" width="1728" height="490" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="591.36" font-size="26" font-weight="700" fill="#2B3440">ControlPlane: a whole control plane from one resource</text>
+<text x="59" y="627.2" font-size="20" font-weight="400" fill="#55606E">the c5c3-operator creates the backing services and the service resources</text>
+<rect x="60" y="712" width="812" height="310" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="76" y="750.64" font-size="24" font-weight="700" fill="#2B3440">Quick Start (ControlPlane)</text>
+<rect x="76" y="770" width="340" height="40" rx="20" fill="#1E6B40"/>
+<text x="246" y="798.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane controlplane</text>
+<text x="76" y="843.2" font-size="20" font-weight="400" fill="#55606E">Runs on: a fresh kind cluster on the workstation</text>
+<text x="76" y="869.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra</text>
+<text x="76" y="895.2" font-size="20" font-weight="400" fill="#55606E">Deploys: the service operators, K-ORC, the c5c3-operator, OVNCentral</text>
+<text x="76" y="921.2" font-size="20" font-weight="400" fill="#55606E">The ControlPlane creates: MariaDB, Memcached, RabbitMQ, Keystone,</text>
+<text x="76" y="947.2" font-size="20" font-weight="400" fill="#55606E">Horizon, Glance, Placement, Barbican, Neutron, Nova, optionally Cinder</text>
+<text x="76" y="973.2" font-size="20" font-weight="400" fill="#55606E">Ends with: a token, an image, a secret, a network, the dashboard</text>
+<rect x="936" y="712" width="812" height="310" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="952" y="750.64" font-size="24" font-weight="700" fill="#2B3440">Quick Start (metal-stack)</text>
+<rect x="952" y="770" width="340" height="40" rx="20" fill="#1E6B40"/>
+<text x="1122" y="798.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane controlplane</text>
+<rect x="1308" y="770" width="244" height="40" rx="20" fill="#A3262E"/>
+<text x="1430" y="798.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NovaCompute lab</text>
+<text x="952" y="843.2" font-size="20" font-weight="400" fill="#55606E">Runs on: a Gardener shoot on metal-stack, two or more workers</text>
+<text x="952" y="869.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true</text>
+<text x="952" y="895.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra</text>
+<text x="952" y="921.2" font-size="20" font-weight="400" fill="#55606E">Deploys: Part 1, the control plane with Cinder, behind a port-forward</text>
+<text x="952" y="947.2" font-size="20" font-weight="400" fill="#55606E">Part 2, every worker as a KVM hypervisor and OVN chassis</text>
+<text x="952" y="973.2" font-size="20" font-weight="400" fill="#55606E">Ends with: a server on every worker, a volume, a live migration,</text>
+<text x="952" y="999.2" font-size="20" font-weight="400" fill="#55606E">an eviction and a backup</text>
+<text x="904" y="669.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">the same ControlPlane resource</text>
+<text x="904" y="694.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">on a real cluster, with real servers</text>
+<polyline points="872,742 925.5,742" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="936,742 921,749.2 921,734.8" fill="#3A4452"/>
+<text x="40" y="1093.2" font-size="20" font-weight="400" fill="#55606E">Each quick start begins at git clone and is complete in itself. An arrow tells how two of them relate.</text>
+<text x="40" y="1119.2" font-size="20" font-weight="400" fill="#55606E">KIND_HOST_PORT=8443 keeps kind off the privileged port 443, the default of the Quick Start (Extended).</text>
+</svg>
