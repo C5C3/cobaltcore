@@ -19,7 +19,8 @@
 #      and the ClusterRole and ClusterRoleBinding dizzy-soak-platform-reader.
 #   4. The ClusterRole grants get and list alone, names no wildcard and no
 #      secrets, and covers pods, namespaces, the pods of metrics.k8s.io and
-#      the thirteen kinds whose conditions the runner reads.
+#      the thirteen kinds whose conditions the runner reads, the
+#      CONDITION_KINDS of hack/dizzy-soak-runner.sh.
 #   5. job.yaml, read by file, is the batch/v1 Job dizzy-soak in dizzy with
 #      the fields of the issue's boundary 6, the runner image pinned by tag
 #      and digest, the dizzy image ghcr.io/b42labs/dizzy:DIZZY_VERSION once
@@ -56,6 +57,7 @@ JOB="$SOAK_DIR/job.yaml"
 SCENARIO="$SOAK_DIR/scenario.yaml"
 FIXTURES_DIR="$PROJECT_ROOT/deploy/kind/hypervisor-operator-fixtures"
 DIZZY_SH="$PROJECT_ROOT/hack/dizzy.sh"
+RUNNER_SH="$PROJECT_ROOT/hack/dizzy-soak-runner.sh"
 
 RUNNER_IMAGE_PATTERN='^docker\.io/alpine/k8s:[^@]+@sha256:[a-f0-9]{64}$'
 DIZZY_IMAGE='ghcr.io/b42labs/dizzy:DIZZY_VERSION'
@@ -201,25 +203,14 @@ test_cluster_role() {
     "$(obj ClusterRole dizzy-soak-platform-reader '.rules[] | (.apiGroups + .resources + .verbs)[]' | grep -cxF '*')"
   assert_eq "no rule names secrets" "0" \
     "$(obj ClusterRole dizzy-soak-platform-reader '[.rules[].resources[] | select(. == "secrets")] | length')"
+  # The kinds come from the runner itself; its BASH_SOURCE guard keeps
+  # main() from running when it is sourced.
   local want
-  want="$(printf '%s\n' \
-    'barbicans.barbican.openstack.c5c3.io' \
-    'cinders.cinder.openstack.c5c3.io' \
-    'controlplanes.c5c3.io' \
-    'glances.glance.openstack.c5c3.io' \
-    'horizons.horizon.openstack.c5c3.io' \
-    'keystones.keystone.openstack.c5c3.io' \
-    'namespaces' \
-    'neutronmetadataagents.neutron.openstack.c5c3.io' \
-    'neutrons.neutron.openstack.c5c3.io' \
-    'novacomputes.nova.openstack.c5c3.io' \
-    'novas.nova.openstack.c5c3.io' \
-    'ovncentrals.ovn.openstack.c5c3.io' \
-    'ovnchassis.ovn.openstack.c5c3.io' \
-    'placements.placement.openstack.c5c3.io' \
-    'pods' \
-    'pods.metrics.k8s.io' | sort)"
-  assert_eq "the resources are pods, namespaces, the pod metrics and the thirteen kinds" "$want" \
+  want="$( {
+    bash -c 'source "$1" && printf "%s\n" $CONDITION_KINDS' _ "$RUNNER_SH"
+    printf '%s\n' namespaces pods pods.metrics.k8s.io
+  } | sort)"
+  assert_eq "the resources are pods, namespaces, the pod metrics and every kind the runner reads" "$want" \
     "$(obj ClusterRole dizzy-soak-platform-reader '.rules[] | .apiGroups[] as $g | .resources[] |
       (select($g == "") // (. + "." + $g))' | sort)"
 }
