@@ -115,25 +115,6 @@ active:
 Each transition is driven by a phase Job completing or by every Deployment
 reporting a finished rollout.
 
-```text
-spec.openStackRelease bumped (e.g. 2025.2 -> 2026.1, image in lockstep)
-        |
-        v
-  Expanding      <cinder>-db-expand: cinder-manage db sync
-        |
-        v
-  Migrating      <cinder>-db-migrate: cinder-status upgrade check
-        |
-        v
-  RollingUpdate  scheduler, volume services, backup, API roll onto the new image
-        |
-        v
-  Contracting    <cinder>-db-contract: cinder-manage db online_data_migrations
-        |
-        v
-  installedRelease = "2026.1", targetRelease = "", upgradePhase = ""
-```
-
 | Phase | What runs | Job |
 | --- | --- | --- |
 | `Expanding` | `cinder-manage --config-dir /etc/cinder/cinder.conf.d db sync` on the target image while every service still runs the installed release. Between the cinder 27.0.0 and 28.0.0 trees the alembic revision set is identical, so this pass applies zero schema revisions | `<cinder>-db-expand` |
@@ -147,6 +128,12 @@ readiness: a Deployment counts as rolled out only once every replica is updated,
 ready and counted, because the surge-tolerant readiness signal turns true while
 old-image pods still serve, and the contract phase would then run migrations
 those pods have no code for.
+
+The figure draws the same four phases with what the table leaves out: the gate
+in front of them, the state a failed Job leaves, the hold on a changed target,
+and the abort.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### The second roll
 

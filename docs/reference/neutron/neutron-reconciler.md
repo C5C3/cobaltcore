@@ -461,6 +461,8 @@ check, so the contract Jobs drop nothing the old pods still read. Fresh installs
 and patch bumps stay on the single-pass `{name}-db-sync` Job, which runs
 `neutron-db-manage upgrade head`; there is no schema-check Job, because that
 upgrade is idempotent and a second read-only run would assert nothing.
+[Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
+draws the machine with its failure states and the abort.
 
 **Condition Contract:**
 

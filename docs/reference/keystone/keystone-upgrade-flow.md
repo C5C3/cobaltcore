@@ -119,40 +119,15 @@ An enum with four valid values during an upgrade:
 
 ## Phase Transitions
 
-The upgrade proceeds through a fixed sequence of phases. Each phase transition is
-driven by Job completion or Deployment readiness.
+The upgrade proceeds through a fixed sequence of phases. A phase ends when its
+Job completes, and `RollingUpdate` ends when the Deployment has finished rolling
+out.
 
-```text
-spec.image.tag changed (e.g., 2025.2 -> 2026.1)
-         |
-         v
-  validateUpgradePath()
-  - ParseRelease(installedRelease)
-  - ParseRelease(spec.image.tag)
-  - IsSequentialUpgrade(from, to)
-         |
-    +----v-----+
-    | Expanding |--- db_sync --expand (NEW image: 2026.1) --- Job complete
-    +----------+                                                  |
-         +--------------------------------------------------------+
-    +----v------+
-    | Migrating |--- db_sync --migrate (NEW image: 2026.1) --- Job complete
-    +-----------+                                                  |
-         +-----------------------------------------------------   +
-    +----v-----------+
-    | RollingUpdate   |--- Deployment updates to NEW image (2026.1)
-    +----------------+    waits for rollout --- rollout complete
-                                                        |
-         +----------------------------------------------+
-    +----v---------+
-    | Contracting  |--- db_sync --contract (NEW image: 2026.1) --- Job complete
-    +--------------+                                                    |
-         +--------------------------------------------------------------+
-         v
-  installedRelease = "2026.1"
-  targetRelease    = ""
-  upgradePhase     = ""
-```
+The figure draws the four phases with the gate in front of them, the state each
+failure leaves, and the two ways out of an upgrade in flight.
+[Phase Details](#phase-details) has the command of each phase.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### Phase Details
 
