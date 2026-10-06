@@ -83,7 +83,7 @@ lists the hops.
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the metadata Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `uwsgi` | `UWSGISpec` | no | materialized | The same uWSGI parameters as the API's |
 | `sharedSecretRef` | `SecretRefSpec` | yes | `key` to `shared_secret` | The Secret holding the value the Neutron metadata agent signs proxied requests with. The operator reads it rather than generating one: the same value has to reach the `NeutronMetadataAgent`, and a value only this side knows leaves every metadata request rejected |
-| `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. Rarely wanted: the metadata agent dials the Service from inside the cluster |
+| `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. An agent on this Nova's cluster dials the Service; an agent on a compute cluster dials this hostname over https |
 
 ### NovaSchedulerSpec
 
@@ -199,7 +199,7 @@ because honoring them does the damage before any condition could report it.
 | `[DEFAULT]` | `web` | The directory the console proxy serves the noVNC client from. The operator mounts the client the image ships at this path; another path either is empty or is not that client, and the browser gets a blank page with no error from the proxy |
 | `[database]`, `[api_database]` | `connection` | Env-injected via `OS_DATABASE__CONNECTION` and `OS_API_DATABASE__CONNECTION`, same reasoning as `transport_url` |
 | `[keystone_authtoken]`, `[service_user]`, `[placement]`, `[neutron]`, `[cinder]` | `password` | Each is env-injected through its own `OS_<SECTION>__PASSWORD` override |
-| `[neutron]` | `metadata_proxy_shared_secret` | Env-injected; a file value would copy the value a proxied request's signature is verified with into the config Secret every pod mounts |
+| `[neutron]` | `metadata_proxy_shared_secret` | Env-injected; a file value would copy the value a proxied request's signature is verified with into the ConfigMap every pod mounts |
 | `[oslo_messaging_rabbit]` | `ssl`, `ssl_ca_file` | The first selects whether the bus that carries every RPC call is encrypted; the second points the verification at a file the operator mounts |
 | `[vnc]` | `novncproxy_host`, `novncproxy_port` | The proxy's Service routes to this address and port. Another one leaves the Service with a port nothing listens on while the pod stays Ready |
 
