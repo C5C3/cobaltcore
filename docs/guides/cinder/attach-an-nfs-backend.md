@@ -99,6 +99,13 @@ nfs1   True    NFS    controlplane-cinder   8m
 The entry name reaches the satellite unprefixed. Cinder keys every volume by the
 backend it was created on, so a rename would strand the volumes already there.
 
+`READY` turns `True` only after the volume Deployment of the backend mounts its
+section. The figure shows the steps in between, and
+[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists them with what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 The Cinder child aggregates its backends through `BackendsReady`, True under the
 reason `AllBackendsProjected` once every attached backend is credential-ready
 and projected:

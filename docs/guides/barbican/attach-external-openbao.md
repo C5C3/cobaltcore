@@ -241,6 +241,12 @@ the running Deployment carries this store's section. `ProvisioningReady` is
 removed rather than reported `False`: it belongs to a store the operator
 provisions, and reporting it here would claim a step that never ran.
 
+The figure shows the order the two conditions turn `True` in, and
+[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists its five steps with what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 `CredentialsReady=True/CredentialsAvailable` means the operator logged in with
 the referenced role ID and secret ID and confirmed, through
 `sys/capabilities-self` on `<mount>/data/probe`, that the policy grants all five
