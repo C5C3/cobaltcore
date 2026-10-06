@@ -1667,6 +1667,24 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
     assert_eq "$dir names the catalog Job the workflow waits on" \
       "nova-tempest-catalog-setup" \
       "$(yq -r '.metadata.name' "$fixtures/01-catalog-setup-job.yaml")"
+    # From 2026.2 on, keystonemiddleware (13.0.0) answers 401 to a service
+    # token that carries none of its service_token_roles ("service" by
+    # default), and nova sends one beside the user token on every call to
+    # Neutron and Glance. The leg's CRs name the bootstrap admin as their
+    # service user, and bootstrap assigns that role to nobody, so the Job
+    # grants it; without it every server show and delete fails
+    # (NeutronAdminCredentialConfigurationInvalid in the nova-compute log).
+    case "$release" in
+      2025.2 | 2026.1) ;;
+      *)
+        assert_file_contains "$dir grants the service role to the service user" \
+          "$fixtures/01-catalog-setup-job.yaml" \
+          "openstack role add --user admin --user-domain Default"
+        assert_file_contains "$dir grants it on the admin project" \
+          "$fixtures/01-catalog-setup-job.yaml" \
+          "project admin --project-domain Default service"
+        ;;
+    esac
     assert_eq "$dir names the image-seed Job the workflow waits on" \
       "nova-tempest-image-seed" \
       "$(yq -r '.metadata.name' "$fixtures/08-image-seed-job.yaml")"
