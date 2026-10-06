@@ -3,6 +3,9 @@
 A guide for writing docs (`docs/`) so they read as if a person wrote them:
 varied, plain where it can be, with no filler.
 
+Write at collegue graduate level. Formulate sentences active, direct, simple and
+avoid excessive referential pronouns.
+
 **Scope.** This file governs rhetorical style: em-dash/italics/
 antithesis/callout/aphorism budgets, filler vocabulary, and quality
 self-labels. It is not a completeness check.
