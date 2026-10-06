@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1164" viewBox="0 0 1808 1164" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="ControlPlane gate graph">
+<title>ControlPlane gate graph</title>
+<rect width="1808" height="1164" fill="#F6F5F1"/>
+<rect x="40" y="40" width="640" height="880" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Blocking prefix</text>
+<text x="59" y="117.2" font-size="20" font-weight="400" fill="#55606E">one step after another: a step that requeues or fails ends the pass</text>
+<rect x="64" y="160" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="196.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">SizingReady</text>
+<rect x="64" y="264" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="300.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NamespacesReady</text>
+<rect x="64" y="368" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="404.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">InfrastructureReady</text>
+<rect x="64" y="472" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="508.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ESOTenantStoreReady</text>
+<rect x="64" y="576" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="612.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBCredentialsReady</text>
+<rect x="64" y="736" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="772.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">AdminPasswordReady</text>
+<rect x="64" y="840" width="290" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="209" y="876.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">KeystoneReady</text>
+<rect x="250" y="540" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="302" y="561.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="124" y="661.2" font-size="20" font-weight="400" fill="#55606E">setup-database-tenant.sh, once MariaDB is Ready</text>
+<text x="124" y="687.2" font-size="20" font-weight="400" fill="#55606E">until then: WaitingForDBCredentialSecret</text>
+<polyline points="104,216 104,253.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,264 96.8,249 111.2,249" fill="#3A4452"/>
+<polyline points="104,320 104,357.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,368 96.8,353 111.2,353" fill="#3A4452"/>
+<polyline points="104,424 104,461.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,472 96.8,457 111.2,457" fill="#3A4452"/>
+<polyline points="104,528 104,565.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,576 96.8,561 111.2,561" fill="#3A4452"/>
+<polyline points="104,632 104,725.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,736 96.8,721 111.2,721" fill="#3A4452"/>
+<polyline points="104,792 104,829.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="104,840 96.8,825 111.2,825" fill="#3A4452"/>
+<rect x="730" y="40" width="1038" height="1000" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="749" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Tail group</text>
+<text x="891" y="80.2" font-size="20" font-weight="400" fill="#55606E">14 members, all run on every pass, each gates itself</text>
+<rect x="754" y="120" width="190" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="849" y="156.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">KORCReady</text>
+<text x="754" y="203.2" font-size="20" font-weight="400" fill="#55606E">no condition gate</text>
+<rect x="1004" y="120" width="300" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1154" y="156.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">AdminCredentialReady</text>
+<rect x="1364" y="120" width="200" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1464" y="156.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CatalogReady</text>
+<polyline points="944,148 993.5,148" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1004,148 989,155.2 989,140.8" fill="#3A4452"/>
+<polyline points="1304,148 1353.5,148" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1364,148 1349,155.2 1349,140.8" fill="#3A4452"/>
+<rect x="754" y="256" width="180" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="844" y="292.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HorizonReady</text>
+<rect x="984" y="260" width="340" height="48" rx="20" fill="#1E6B40"/>
+<text x="1154" y="292.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">KeystoneService {cp}-{svc}</text>
+<text x="1040" y="335.2" font-size="20" font-weight="400" fill="#55606E">one registration per service leg</text>
+<polyline points="1154,176 1154,249.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1154,260 1146.8,245 1161.2,245" fill="#3A4452"/>
+<rect x="1404" y="256" width="340" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1574" y="292.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ServiceAccountsReady</text>
+<text x="1404" y="339.2" font-size="20" font-weight="400" fill="#55606E">no gate, folds the registrations</text>
+<polyline points="1324,284 1393.5,284" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1404,284 1389,291.2 1389,276.8" fill="#3A4452"/>
+<text x="1364" y="271.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">Ready</text>
+<rect x="1464" y="420" width="280" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1604" y="456.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">KORCCatalogRefresh</text>
+<text x="1604" y="503.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">sets no condition</text>
+<polyline points="1714,312 1714,409.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1714,420 1706.8,405 1721.2,405" fill="#3A4452"/>
+<rect x="1344" y="600" width="400" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1544" y="636.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">RegistrationTenantStoresReady</text>
+<text x="1344" y="683.2" font-size="20" font-weight="400" fill="#55606E">no gate</text>
+<rect x="754" y="581" width="528" height="392" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="773" y="620.36" font-size="26" font-weight="700" fill="#2B3440">Service legs</text>
+<text x="773" y="656.2" font-size="20" font-weight="400" fill="#55606E">each waits for the AccountReady of its own registration</text>
+<rect x="778" y="681" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="888" y="717.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">GlanceReady</text>
+<rect x="778" y="787" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="888" y="823.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">PlacementReady</text>
+<rect x="1038" y="681" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1148" y="717.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BarbicanReady</text>
+<rect x="1038" y="787" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1148" y="823.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NeutronReady</text>
+<rect x="1038" y="893" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1148" y="929.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CinderReady</text>
+<rect x="778" y="893" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="888" y="929.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NovaReady</text>
+<polyline points="888,843 888,882.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="888,893 880.8,878 895.2,878" fill="#3A4452"/>
+<polyline points="1010,308 1010,570.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1010,581 1002.8,566 1017.2,566" fill="#3A4452"/>
+<text x="933" y="449.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">AccountReady</text>
+<rect x="1342" y="787" width="180" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1432" y="823.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">OVNReady</text>
+<text x="1342" y="870.2" font-size="20" font-weight="400" fill="#55606E">mirrors OVNCentral {central}</text>
+<text x="1342" y="896.2" font-size="20" font-weight="400" fill="#55606E">referenced, not owned</text>
+<polyline points="1342,815 1268.5,815" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1258,815 1273,807.8 1273,822.2" fill="#3A4452"/>
+<polyline points="354,868 743.5,868" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="754,868 739,875.2 739,860.8" fill="#3A4452"/>
+<polyline points="354,868 705,868 705,284 743.5,284" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="754,284 739,291.2 739,276.8" fill="#3A4452"/>
+<polyline points="209,920 209,1000 719.5,1000" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="730,1000 715,1007.2 715,992.8" fill="#3A4452"/>
+<text x="300" y="985.2" font-size="20" font-weight="400" fill="#2B3440">the prefix passed</text>
+<text x="40" y="1091.2" font-size="20" font-weight="400" fill="#55606E">{cp}: the ControlPlane name. {svc}: glance, placement, barbican, neutron, cinder or nova. {central}: the OVNCentral that spec.services.neutron.ovn.centralRef names.</text>
+<text x="40" y="1117.2" font-size="20" font-weight="400" fill="#55606E">A service block that is not set reports its condition True with a NotManaged reason.</text>
+</svg>

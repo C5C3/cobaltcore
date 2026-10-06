@@ -5,9 +5,9 @@
 
 # Verify the compute service in docs/quick-start-controlplane.md:
 #   - Step 7 carries the `### Boot a first server` check
-#   - the Step 6 chain runs CinderReady -> NovaReady -> ServiceAccountsReady, and
-#     both the aggregate's count and the chain's length match the operator's
-#     subConditionTypes
+#   - the condition table of Step 6 runs CinderReady -> NovaReady ->
+#     ServiceAccountsReady, the aggregate's count matches the operator's
+#     subConditionTypes, and the table names every entry of it once
 #   - the optional server boot applies the deploy/kind/fake-compute overlay and
 #     boots with --nic none, since the devstack runs no OVN chassis
 #   - the `# controlplane.yaml` CR of Step 4 publishes the compute API on
@@ -31,6 +31,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/quick_start_controlplane.sh
+source "$PROJECT_ROOT/tests/lib/quick_start_controlplane.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-controlplane.md}"
 GATEWAY_MANIFEST="$PROJECT_ROOT/deploy/kind/base/openstack-gateway.yaml"
@@ -50,17 +52,23 @@ test_boot_heading() {
     '^### Boot a first server$'
 }
 
-# --- Test 2: the Step 6 condition chain ---
+# --- Test 2: the Step 6 condition table ---
 test_condition_chain() {
-  echo "Test: the chain runs CinderReady -> NovaReady -> ServiceAccountsReady"
-  assert_file_contains_fixed "NovaReady sits between CinderReady and ServiceAccountsReady" \
-    "$QUICK_START_DOC" \
+  echo "Test: the table runs CinderReady -> NovaReady -> ServiceAccountsReady"
+  local want chain want_names have_names
+  chain="$(step6_chain "$QUICK_START_DOC")"
+  if [[ -z "$chain" ]]; then
+    echo "  FAIL: no condition table in Step 6 of $QUICK_START_DOC"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  assert_contains "NovaReady sits between CinderReady and ServiceAccountsReady" \
+    "$chain" \
     'CinderReady → NovaReady → ServiceAccountsReady'
 
   # The count comes from the operator's subConditionTypes, the list the
   # aggregate Ready is computed over, so a service that adds a condition fails
-  # here until the prose and the chain name it.
-  local want chain
+  # here until the prose and the table name it.
   want="$(awk '/^var subConditionTypes = \[\]string\{/{f=1;next} f&&/^\}/{exit} f&&/conditionType/{n++} END{print n+0}' \
     "$CONTROLPLANE_CONTROLLER" 2>/dev/null)"
   if [[ -z "$want" || "$want" -eq 0 ]]; then
@@ -71,9 +79,19 @@ test_condition_chain() {
   assert_file_contains_fixed "the aggregate counts all $want sub-conditions" \
     "$QUICK_START_DOC" \
     "all $want sub-conditions"
-  chain="$(grep -m1 '^SizingReady →' "$QUICK_START_DOC")"
-  assert_eq "the Step 6 chain names all $want sub-conditions" \
-    "$want" "$(( $(grep -o '→' <<<"$chain" | wc -l) + 1 ))"
+
+  # The names come from the same slice, each constant resolved to its string
+  # in a first pass over the file, so a row that repeats one condition in
+  # place of another fails here too.
+  want_names="$(awk '
+    NR == FNR { if ($2 == "=" && $3 ~ /^"/) { v = $3; gsub(/"/, "", v); value[$1] = v }; next }
+    /^var subConditionTypes = \[\]string\{/ { in_slice = 1; next }
+    in_slice && /^\}/ { exit }
+    in_slice { gsub(/[\t ,"]/, ""); print ($0 in value ? value[$0] : $0) }
+  ' "$CONTROLPLANE_CONTROLLER" "$CONTROLPLANE_CONTROLLER" | LC_ALL=C sort)"
+  have_names="$(awk -F ' → ' '{ for (i = 1; i <= NF; i++) print $i }' <<<"$chain" | LC_ALL=C sort)"
+  assert_eq "the Step 6 table names every sub-condition once" \
+    "$want_names" "$have_names"
 }
 
 # --- Test 3: the optional server boot ---

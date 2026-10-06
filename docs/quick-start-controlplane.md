@@ -652,30 +652,42 @@ is the override for a store you manage yourself. See the
 
 ## Step 6 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 20 sub-conditions are met, in
-dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
-`PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
-`KeystoneService` registration each service projects for itself; `OVNReady`
-gates on nothing and only mirrors the readiness of the referenced
-`controlplane-ovn`, since nothing this chain produces can converge a central it
-does not own; `NeutronReady` carries the two gates its siblings do, plus
-`OVNReady` and the delivery of the message bus into the network service's
-namespace; `CinderReady` gates on `KeystoneReady`, its registration and the bus
-delivery, and reads `True/CinderNotManaged` when the block-storage block is
-absent; `NovaReady` gates on `KeystoneReady`, `PlacementReady`, its
-registration and the bus delivery; `ServiceAccountsReady` then folds the
-registrations of glance, placement, barbican, neutron, neutron-nova, cinder
-when present, and nova, so it comes after them; the K-ORC branch runs
-alongside):
+The aggregate `Ready` flips to `True` once all 20 sub-conditions are met. They
+do not form one line. The first seven are a blocking prefix, and each waits for
+the one before it. The others belong to steps that all run on every pass, so
+several of them can be `False` at once, and each waits only for what the figure
+draws an arrow from.
 
-```
-SizingReady → NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → CinderReady → NovaReady → ServiceAccountsReady → RegistrationTenantStoresReady
-```
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](./diagrams/controlplane-gate-graph.svg)
 
-`RegistrationTenantStoresReady` closes the chain and reads
-`True/NoRegistrationNamespaces` on this ControlPlane devstack: it provisions secret stores for
-namespaces outside this ControlPlane's own that register services against it, and
-the quick start declares none.
+The conditions in call order, with what each waits for on this devstack:
+
+| Condition | Waits for |
+| --- | --- |
+| `SizingReady` | Nothing |
+| `NamespacesReady` | `SizingReady`. Reads `True/NoDedicatedNamespaces` here: no service has a namespace of its own |
+| `InfrastructureReady` | `NamespacesReady`, then the backing services of `spec.infrastructure` |
+| `ESOTenantStoreReady` | `InfrastructureReady`, then the secret store `openbao-tenant-store` |
+| `DBCredentialsReady` | `ESOTenantStoreReady`, then the onboarding of Step 5 |
+| `AdminPasswordReady` | `DBCredentialsReady`, then the admin password from OpenBao |
+| `KeystoneReady` | `AdminPasswordReady`, then the Keystone child `controlplane-keystone` |
+| `HorizonReady` | `KeystoneReady` |
+| `KORCReady` | The prefix. It has no gate of its own |
+| `AdminCredentialReady` | `KORCReady` |
+| `CatalogReady` | `AdminCredentialReady` |
+| `GlanceReady` | `KeystoneReady` and its own `KeystoneService` registration |
+| `PlacementReady` | `KeystoneReady` and its own registration |
+| `BarbicanReady` | `KeystoneReady` and its own registration |
+| `OVNReady` | Nothing in this chain. It mirrors `controlplane-ovn` from Step 3 |
+| `NeutronReady` | `KeystoneReady`, `OVNReady`, its registration and the message bus in its namespace |
+| `CinderReady` | `KeystoneReady`, its registration and the message bus. Reads `True/CinderNotManaged` without the block-storage block |
+| `NovaReady` | `KeystoneReady`, `PlacementReady`, its registration and the message bus |
+| `ServiceAccountsReady` | The registrations of glance, placement, barbican, neutron, neutron-nova, cinder when present, and nova |
+| `RegistrationTenantStoresReady` | Nothing. Reads `True/NoRegistrationNamespaces` here: no other namespace registers a service against this ControlPlane |
+
+Each of the six services registers through a `KeystoneService`, and a
+registration waits for `AdminCredentialReady`, so the six service conditions
+turn `True` only after it.
 
 ```bash
 kubectl get controlplane controlplane -n openstack \

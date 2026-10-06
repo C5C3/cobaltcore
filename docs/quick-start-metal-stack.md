@@ -206,6 +206,12 @@ explains what the script sets up.
 kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=30m
 ```
 
+The wait covers the twenty conditions of the figure.
+[Step 6 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
+lists what each one waits for.
+
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](./diagrams/controlplane-gate-graph.svg)
+
 No image is preloaded on the lab, so the wait allows 30 minutes, twice the
 15 of the Quick Start (ControlPlane). Then open the port-forward to the Gateway
 in a second terminal, from the root of the clone, and keep it running for the

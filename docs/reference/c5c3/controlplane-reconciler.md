@@ -372,167 +372,65 @@ cluster-scoped `namespaces` verbs as well, which is why the markers add
 
 ## Reconciliation Flow
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                    CONTROLPLANE RECONCILIATION FLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                     │
-│  ControlPlane CR changed (or requeue timer fires)                                   │
-│         │                                                                           │
-│         ▼                                                                           │
-│  Fetch ControlPlane CR (return empty result if NotFound)                            │
-│         │                                                                           │
-│         ▼                                                                           │
-│  Duplicate guard — park all but the oldest ControlPlane in the namespace            │
-│  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)             │
-│         │                                                                           │
-│         ▼                                                                           │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileSizing          │  Resolve spec.sizing (built-in + SizingProfile)       │
-│  │  (gate: none)            │  Sets: SizingReady                                    │
-│  └────────┬─────────────────┘  Error (stops the pass) when the profile is missing   │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileNamespaces      │  Ensure the namespaces services are placed in         │
-│  │  (gate: none)            │  Sets: NamespacesReady                                │
-│  └────────┬─────────────────┘  Requeue: 15s while a namespace is unusable           │
-│           │  (True immediately when no service declares a namespace)                │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children          │
-│  │  (gate: none)            │  Sets: InfrastructureReady                            │
-│  └────────┬─────────────────┘  Requeue: 15s while a child is not Ready              │
-│           │  early-return if !result.IsZero() || err                                │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileESOTenantStore  │  Provision the per-tenant SecretStore + SA +          │
-│  │  (gate: none)            │  mTLS cert. Sets: ESOTenantStoreReady                 │
-│  └────────┬─────────────────┘  Requeue: 10s while the store is not Ready            │
-│           │  (skipped when spec.secretStoreRef overrides the default)               │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret          │
-│  │  (gate: none)            │  Sets: DBCredentialsReady                             │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileAdminPassword   │  Project per-CP admin-password ExternalSecret         │
-│  │  (gate: none)            │  Sets: AdminPasswordReady                             │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ┌──────────────────────────┐                                                       │
-│  │ reconcileKeystone        │  Project the Keystone child CR                        │
-│  │  (gate: InfraReady)      │  Sets: KeystoneReady                                  │
-│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready              │
-│           │                                                                         │
-│           ▼                                                                         │
-│  ╔════════════════════════════════════════════════════════════════════════════════╗ │
-│  ║  RunSequentialGroup — tail group · non-short-circuiting                        ║ │
-│  ║                                                                                ║ │
-│  ║  every member runs each pass · each member condition always persists           ║ │
-│  ║                                                                                ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileHorizon         │  Project the Horizon dashboard child CR          ║ │
-│  ║  │  (gate: KeystoneReady)   │  Sets: HorizonReady (not-managed when unset)     ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileKORC            │  Mint the admin ApplicationCredential            ║ │
-│  ║  │  (gate: none*)           │  Sets: KORCReady                                 ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s while AC not Available             ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileAdminCredential │  Commit minted Secret + PushSecret to OpenBao    ║ │
-│  ║  │  (gate: KORCReady)       │  Sets: AdminCredentialReady                      ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s gated / clouds.yaml not Ready      ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileCatalog         │  Register identity Service + public Endpoint     ║ │
-│  ║  │  (gate: AdminCredReady)  │  Sets: CatalogReady (Service+Endpoint Available) ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal   ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileGlance          │  Project the Glance image-service child CR       ║ │
-│  ║  │ (gate: KS + its registr.)│  Sets: GlanceReady (not-managed when unset)      ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcilePlacement       │  Project the Placement child CR                  ║ │
-│  ║  │ (gate: KS + its registr.)│  Sets: PlacementReady (not-managed when unset)   ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileBarbican        │  Project the Barbican child, its secret store,   ║ │
-│  ║  │ (gate: KS + its registr.)│  and a dedicated OpenBao instance                ║ │
-│  ║  └────────┬─────────────────┘  Sets: BarbicanReady (not-managed when unset)    ║ │
-│  ║           │                    Requeue: 5s gated / 15s instance or child       ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileOVN             │  Mirror the referenced OVNCentral's readiness    ║ │
-│  ║  │  (gate: none)            │  Sets: OVNReady (not-managed when unset)         ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 15s while the central is not usable    ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileNeutron         │  Deliver the shared bus, then project the        ║ │
-│  ║  │ (gate: KS + OVN + its    │  Neutron network-service child CR                ║ │
-│  ║  │  registration)           │  Sets: NeutronReady (not-managed when unset)     ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileCinder          │  Deliver the shared bus and the two satellite    ║ │
-│  ║  │ (gate: KS + its registr.)│  kinds, then project the Cinder child CR         ║ │
-│  ║  └────────┬─────────────────┘  Sets: CinderReady (not-managed when unset)      ║ │
-│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileNova            │  Deliver the shared bus, the two DB              ║ │
-│  ║  │ (gate: KS + Placement +  │  credentials and the metadata secret,            ║ │
-│  ║  │  its registration)       │  then project the Nova child CR                  ║ │
-│  ║  └────────┬─────────────────┘  Sets: NovaReady (not-managed when unset)        ║ │
-│  ║           │                    Requeue: 5s gated / 15s child or bus / 10s reg. ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileServiceAccounts │  Fold the seven registration children's          ║ │
-│  ║  │  (gate: none)            │  readiness. Sets: ServiceAccountsReady           ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s while one is not Ready             ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileKORCCatalog-    │  Record the catalog epoch on the K-ORC           ║ │
-│  ║  │ Refresh                  │  pod template; a change rolls the pod            ║ │
-│  ║  │ (gate: ServiceAccounts)  │  Sets: no condition                              ║ │
-│  ║  └────────┬─────────────────┘  Requeue: none                                   ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────────┐                                              ║ │
-│  ║  │ reconcileRegistrationTenant- │  Tenant-store trio in each allowlisted       ║ │
-│  ║  │ Stores    (gate: none)       │  registration namespace                      ║ │
-│  ║  └──────────────────────────────┘  Sets: RegistrationTenantStoresReady         ║ │
-│  ║                                    Requeue: 10s while a store is not Ready     ║ │
-│  ║                                                                                ║ │
-│  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
-│  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
-│              │                                                                      │
-│              ▼                                                                      │
-│  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)                │
-│  updateStatus()       — stamp status.observedGeneration, persist                    │
-│                                                                                     │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+A pass runs a blocking prefix of seven steps and then one group of fourteen
+members that all run. The figure draws an arrow only where one condition gates
+another.
 
-  * reconcileKORC has no condition gate, but it defers (KORCReady=False,
-    requeue) until the admin-password Secret can be read.
-```
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+
+One pass, in order:
+
+1. Fetches the ControlPlane. `NotFound` ends the pass with an empty result.
+2. Hands a ControlPlane that carries a deletion timestamp to `reconcileDelete`
+   (see [Owner-ref / GC model](#owner-ref-gc-model)).
+3. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
+   parked with `Ready=False/DuplicateControlPlane` and requeued after 30s, and
+   none of its sub-reconcilers run (see [Multi-instance](#multi-instance)).
+4. Installs the finalizer `c5c3.io/orc-teardown`, and
+   `openstack.c5c3.io/remote-children` once a target cluster the spec names
+   resolves. A pass that installs one ends with a requeue.
+5. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
+   step that returns a requeue or an error ends the pass.
+6. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
+   runs. Member requeues collapse to the shortest (`ShortestRequeue`), member
+   errors are joined (`errors.Join`).
+7. Calls `updateStatus()` on every exit path of steps 5 and 6: it recomputes the
+   aggregate `Ready` as `AllTrue(subConditionTypes)`, writes `status.services`,
+   stamps `status.observedGeneration`, and skips the write when nothing changed.
+
+The 21 sub-reconcilers, in call order. The Gate column names the conditions a
+step checks itself and, after them, what else it waits for. A prefix step also
+runs only after the step before it has converged.
+
+| # | Step | Sets | Gate | Does | Requeue |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `reconcileSizing` | `SizingReady` | nothing | Resolves `spec.sizing` from the built-in profile or a `SizingProfile` | none: a missing or unreadable profile returns the error |
+| 2 | `reconcileNamespaces` | `NamespacesReady` | nothing | Ensures or verifies the namespaces services are placed in. `True/NoDedicatedNamespaces` when no service declares one | 15s while a namespace is unusable |
+| 3 | `reconcileInfrastructure` | `InfrastructureReady` | nothing | Ensures the managed MariaDB, Memcached and RabbitMQ children | 15s while a child is not Ready |
+| 4 | `reconcileESOTenantStore` | `ESOTenantStoreReady` | nothing | Provisions ServiceAccount, client Certificate and the `SecretStore` `openbao-tenant-store` in every namespace the ControlPlane occupies. `True/StoreRefOverridden` when `spec.secretStoreRef` is set | 10s while a store is not Ready |
+| 5 | `reconcileDBCredentials` | `DBCredentialsReady` | the secret store, and in Dynamic mode the tenant onboarding a person runs (`setup-database-tenant.sh`) | Projects the DB-credential `ExternalSecret` of Keystone | 10s while it has not synced (`WaitingForDBCredentialSecret`) |
+| 6 | `reconcileAdminPassword` | `AdminPasswordReady` | the secret store | Projects the admin-password `ExternalSecret` | 10s while it has not synced |
+| 7 | `reconcileKeystone` | `KeystoneReady` | `InfrastructureReady` | Projects the Keystone child | 5s gated, 15s while the child is not Ready |
+| 8 | `reconcileHorizon` | `HorizonReady` | `KeystoneReady` | Projects the Horizon child | 5s gated, 15s child |
+| 9 | `reconcileKORC` | `KORCReady` | no condition. The admin-password Secret, and the Keystone CA bundle when one is referenced | Writes the password-based `clouds.yaml`, has K-ORC mint the admin `ApplicationCredential`, and drives a re-mint | 10s |
+| 10 | `reconcileAdminCredential` | `AdminCredentialReady` | `KORCReady` | Assembles the credential Secret, pushes it to OpenBao and waits until `k-orc-clouds-yaml` carries it | 10s |
+| 11 | `reconcileCatalog` | `CatalogReady` | `AdminCredentialReady` | Managed mode: registers the identity `Service`, its public `Endpoint` and the adopted `Region`. External mode: imports the catalog | 10s |
+| 12 | `reconcileGlance` | `GlanceReady` | `KeystoneReady`. Then its registration's `AccountReady` and its DB credential | Projects the `KeystoneService` registration, the DB credential, the Glance child and its backends | 5s gated, 10s registration or DB credential, 15s child |
+| 13 | `reconcilePlacement` | `PlacementReady` | `KeystoneReady`. Then its registration's `AccountReady` and its DB credential | Projects the registration, the DB credential and the Placement child | 5s gated, 10s registration or DB credential, 15s child |
+| 14 | `reconcileBarbican` | `BarbicanReady` | `KeystoneReady`. Then its registration's `AccountReady`, its DB credential, and on a dedicated secret store the OpenBao instance serving (`WaitingForOpenBaoInstance`) | Projects the registration, the DB credential, the dedicated OpenBao instance, the secret store and the Barbican child | 5s gated, 10s registration or DB credential, 15s instance or child |
+| 15 | `reconcileOVN` | `OVNReady` | nothing | Reads the `OVNCentral` that `services.neutron.ovn.centralRef` names and mirrors its readiness. Writes nothing | 15s while the central is not usable |
+| 16 | `reconcileNeutron` | `NeutronReady` | `KeystoneReady`, `OVNReady`. Then the message bus delivered into its namespace, its registration's `AccountReady` (and the notifier's while Nova is set) and its DB credential | Delivers the bus, projects the registrations, the DB credential and the Neutron child | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 17 | `reconcileCinder` | `CinderReady` | `KeystoneReady`. Then the bus, its registration's `AccountReady` and its DB credential | Delivers the bus, projects the registration, the DB credential, the `CinderBackend` and `CinderBackupBackend` satellites and the Cinder child | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 18 | `reconcileNova` | `NovaReady` | `KeystoneReady`, `PlacementReady`. Then the bus, its registration's `AccountReady` and its two DB credentials | Delivers the bus, projects the registration, the two DB credentials, the metadata shared secret and the Nova child, then the hypervisor operator's account when it is set | 5s gated, 15s bus or child, 10s registration or DB credential |
+| 19 | `reconcileServiceAccounts` | `ServiceAccountsReady` | nothing | Folds the `Ready` of the registrations the legs projected, up to eight | 10s while one is not Ready |
+| 20 | `reconcileKORCCatalogRefresh` | none | `ServiceAccountsReady`, and every registration settled | Records the catalog epoch on the K-ORC pod template. A change rolls the pod | none |
+| 21 | `reconcileRegistrationTenantStores` | `RegistrationTenantStoresReady` | nothing | Provisions the tenant-store trio in each allowlisted namespace that holds a registration. `True/NoRegistrationNamespaces` when there is none | 10s while a store is not Ready |
+
+A service whose block is not set reports its condition `True` with a
+`NotManaged` reason, so the aggregate is not blocked: `KeystoneNotManaged`,
+`HorizonNotManaged`, `GlanceNotManaged`, `PlacementNotManaged`,
+`BarbicanNotManaged`, `OVNNotManaged`, `NeutronNotManaged`, `CinderNotManaged`,
+`NovaNotManaged`.
 
 ### Execution Model
 
