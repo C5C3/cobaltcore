@@ -10,8 +10,8 @@ quadrant: infrastructure
 > [C5C3 architecture document](https://c5c3.github.io/C5C3/03-components/02-hypervisor).
 > What exists is the node layer: this repository has `NovaCompute`,
 > `OVNChassis` and `NeutronMetadataAgent`, and the
-> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on two
-> workers of the control-plane cluster, beside a containerized libvirt
+> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on every
+> worker of the control-plane cluster, beside a containerized libvirt
 > DaemonSet and the upstream openstack-hypervisor-operator and kvm-node-agent.
 > Their `Hypervisor` CRs belong to the API group `kvm.cloud.sap`, not to the
 > sketched `hypervisor.c5c3.io`.
@@ -52,7 +52,8 @@ this cluster is the one labelled OpenStack Compute.
 A hypervisor cluster is a registered target cluster
 ([Target Clusters](../reference/target-clusters.md)). `nova-compute` runs there
 as a `NovaCompute` pool, beside openstack-hypervisor-operator and
-kvm-node-agent, which CobaltCore adopts from cobaltcore-dev as they are. The
+kvm-node-agent, whose upstream charts CobaltCore runs with images it builds
+from pinned commits and its own patches. The
 [Nova](../reference/nova/index.md) and [Neutron](../reference/neutron/index.md)
 control planes this cluster presumes are onboarded, and the
 [OVN operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller`

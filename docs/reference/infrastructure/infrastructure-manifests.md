@@ -4684,8 +4684,8 @@ exited 0 and left the platform's namespaces alone and no VPA outside
 it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
 two manifests it lists
 
-`hypervisor-fixtures/` and `hypervisor/` turn the lab's two workers into KVM
-hypervisors of the [Lab ControlPlane](#lab-controlplane), planned in
+`hypervisor-fixtures/` and `hypervisor/` turn every labelled worker of the lab
+into a KVM hypervisor of the [Lab ControlPlane](#lab-controlplane), planned in
 [#1142](https://github.com/c5c3/cobaltcore/issues/1142). They add libvirt in a
 DaemonSet, the OVN chassis, the metadata agent and a `NovaCompute` pool, and
 run openstack-hypervisor-operator (hvo) and kvm-node-agent (kna) from upstream
