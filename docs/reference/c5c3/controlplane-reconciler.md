@@ -459,13 +459,15 @@ carries no `sub_reconciler` name of its own. `RunSequentialGroup` attempts
 **every** member on **every** pass and never short-circuits: each member
 self-gates on the conditions it needs (Horizon on `KeystoneReady`; KORC until the
 admin-password Secret is readable; AdminCredential on `KORCReady`; Catalog on
-`AdminCredentialReady`; Glance, Placement, Barbican and Neutron on `KeystoneReady`
-and on the `AccountReady` of the `KeystoneService` registration each projects for
-itself, see [Built-in service registrations](#built-in-service-registrations)), so
+`AdminCredentialReady`; Glance, Placement, Barbican, Neutron, Cinder and Nova on
+`KeystoneReady` and on the `AccountReady` of the `KeystoneService` registration
+each projects for itself, see
+[Built-in service registrations](#built-in-service-registrations)), so
 running all of them each pass is safe. Barbican carries one gate the others do
 not: on a dedicated secret store it holds the projection until the OpenBao
-instance it provisions serves requests. Neutron carries two: `OVNReady`, and the
-shared message bus having been delivered into its namespace. OVN itself carries
+instance it provisions serves requests. Neutron, Cinder and Nova also wait for
+the shared message bus to be delivered into their namespace. Neutron gates on
+`OVNReady` as well, and Nova on `PlacementReady`. OVN itself carries
 none, because the `OVNCentral` it mirrors is deployed outside the plane and
 nothing this chain produces can converge it.
 
@@ -517,9 +519,9 @@ This guarantees:
 2. **Group (phase 2) — every member runs each pass.** No member's non-zero
    result or error prevents a later member from running, so a still-converging
    or failing Horizon no longer parks KORC, the AdminCredential/Catalog
-   identity bootstrap, Glance, Placement, Barbican, OVN, Neutron, or the three
-   members that close the group. Each member's condition therefore always
-   persists.
+   identity bootstrap, Glance, Placement, Barbican, OVN, Neutron, Cinder,
+   Nova, or the three members that close the group. Each member's condition
+   therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
    is nil. When one or more members error, the group returns `ctrl.Result{}`
@@ -567,8 +569,9 @@ return or final), a stale status is always distinguishable from a current one.
 
 ### Ready Condition Aggregation
 
-After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether every
-sub-condition type is `True` using `aggregateReady()`, which delegates to
+On every status write, including a pass that ends early, `setReadyCondition()`
+evaluates whether every sub-condition type is `True` using `aggregateReady()`,
+which delegates to
 `conditions.AllTrue(conds, subConditionTypes...)`:
 
 | All Sub-Conditions True | Ready Condition | Reason | Message |
@@ -580,7 +583,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
+SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, CinderReady, NovaReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -599,7 +602,7 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set), then `barbican` (present when `spec.services.barbican` is set), then `neutron` (present when `spec.services.neutron` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
+| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set), then `barbican` (present when `spec.services.barbican` is set), then `neutron` (present when `spec.services.neutron` is set), then `cinder` (present when `spec.services.cinder` is set), then `nova` (present when `spec.services.nova` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
 
 ---
 
@@ -882,23 +885,25 @@ the uWSGI, Job and Glance launch-mode helpers. See
 | --- | --- |
 | File | `reconcile_namespaces.go` |
 | Condition | `NamespacesReady` |
-| Gate | none (runs first) |
+| Gate | none (second in the prefix, after `reconcileSizing`) |
 | Projects / Owns | `Namespace` objects for every service placed in a namespace of its own under the `Managed` lifecycle, on the management cluster and on the target cluster of a service that names one |
 | Requeue | `namespaceRequeueAfter` = **15s** while a namespace is unusable |
 
 `reconcileNamespaces` ensures the namespaces the ControlPlane's services are
 placed in outside its own (see
 [Service Namespaces](./controlplane-crd.md#service-namespaces)), and runs
-**first** because every later sub-reconciler projects into one of them — applying
-into a namespace that does not exist fails with an error naming neither the
-ControlPlane nor the assignment behind it. A ControlPlane with no assignments (the
-default) has nothing to ensure and reports `NamespacesReady=True` immediately, so
-the step costs nothing on the common path.
+ahead of every sub-reconciler that projects, because each of them projects into
+one of them — applying into a namespace that does not exist fails with an error
+naming neither the ControlPlane nor the assignment behind it. A ControlPlane
+with no assignments (the default) has nothing to ensure and reports
+`NamespacesReady=True` immediately, so the step costs nothing on the common
+path.
 
 The two lifecycles are asymmetric. Under **`Managed`** the operator creates the
 namespace and stamps it with the ownership labels plus
-`app.kubernetes.io/managed-by`, and on a target cluster the annotation
-`c5c3.io/controlplane-uid` as well; a namespace that already exists without the
+`app.kubernetes.io/managed-by`, and the annotation `c5c3.io/controlplane-uid`,
+which holds the ControlPlane's UID. Adoption requires it on a target cluster. A
+namespace that already exists without the
 labels is **never adopted** — the condition fails loud rather than taking over a
 namespace it did not create. On a target cluster the mark is required on top of
 them, because the labels alone are forgeable there: both are derived from the CR's
@@ -1703,20 +1708,22 @@ aggregate condition over every projected registration, see
 | Condition | `GlanceReady` |
 | Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — the per-ControlPlane DB-credential objects in the Glance service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `glance-db-creds`, an mTLS client Certificate `{controlplane.Name}-glance-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/glance-{glance-namespace}` (auth role `glance-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-glance-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `infraRequeueAfter` = **15s** while the child is not Ready |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
-`reconcileGlance` runs **last** in the pipeline (after `reconcileServiceAccounts`),
-because it gates on the per-account readiness that stage computes into status in
-the same pass. It is optional: `spec.services.glance` unset means this ControlPlane
-manages no image service, and the sub-reconciler reports `GlanceReady=True` /
-`GlanceNotManaged` so the aggregate is not blocked (staged adoption). A
-previously-projected child — and its `GlanceBackend` children, DB-credential
-ExternalSecret, and (from a prior Dynamic deployment) the `VaultDynamicSecret`
-generator, its client Certificate, and the `glance-db-creds` ServiceAccount — is
-**preserved** unless the ControlPlane opts in with
-`c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the image catalog
-K-ORC CRs, are deleted). Cross-namespace children are ownership-checked, so a
-hand-created `GlanceBackend` sharing the namespace is never touched.
+`reconcileGlance` is the fifth member of the tail group and runs before
+`reconcileServiceAccounts`. It gates on the `AccountReady` of the registration
+it projects itself, and `reconcileServiceAccounts` folds that registration later
+in the same pass. It is optional: `spec.services.glance` unset means this
+ControlPlane manages no image service, and the sub-reconciler reports
+`GlanceReady=True` / `GlanceNotManaged` so the aggregate is not blocked (staged
+adoption). A previously-projected child — and its `GlanceBackend` children,
+DB-credential ExternalSecret, and (from a prior Dynamic deployment) the
+`VaultDynamicSecret` generator, its client Certificate, and the
+`glance-db-creds` ServiceAccount — is **preserved** unless the ControlPlane opts
+in with `c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the
+image catalog K-ORC CRs, are deleted). Cross-namespace children are
+ownership-checked, so a hand-created `GlanceBackend` sharing the namespace is
+never touched.
 
 When managed, the projection mirrors the Keystone/Horizon *thin* discipline,
 reusing the ControlPlane's own specs so Glance points at the same backing services:
@@ -1816,9 +1823,9 @@ unowned, and the finalizer sweeps it by those labels.
 | Projects / Owns | one `Placement` child named `{controlplane.Name}-placement` (`placementNameSuffix`) in `cp.PlacementNamespace()`; and, on a managed database only, the per-ControlPlane DB-credential objects in the Placement service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `placement-db-creds`, an mTLS client Certificate `{controlplane.Name}-placement-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/placement-{placement-namespace}` (auth role `placement-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-placement-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/placement/{placement-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.placement` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `placement` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
-`reconcilePlacement` runs after `reconcileServiceAccounts` (and after
-`reconcileGlance`, last in the pipeline) because it gates on the per-account
-readiness that stage computes into status in the same pass. It is optional:
+`reconcilePlacement` is the sixth member of the tail group, after
+`reconcileGlance` and before `reconcileServiceAccounts`. It gates on the
+`AccountReady` of the registration it projects itself. It is optional:
 `spec.services.placement` unset means this ControlPlane manages no placement
 service, and the sub-reconciler reports `PlacementReady=True` /
 `PlacementNotManaged` so the aggregate is not blocked (staged adoption). A
@@ -2870,7 +2877,7 @@ unowned, and the finalizer sweeps it by those labels.
 | Condition | `KORCReady` |
 | Gate | none (but defers until the admin-password Secret is readable) |
 | Projects / Owns | one K-ORC `ApplicationCredential` named `{controlplane.Name}-admin-app-credential` and the password-based clouds.yaml Secret `{controlplane.Name}-admin-password-cloud`, both in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while deferring, while the CRD is missing, while a re-mint is in progress, or while the AC is not yet Available |
+| Requeue | `korcRequeueAfter` = **10s** while deferring, while a re-mint is in progress, or while the AC is not yet Available |
 
 `reconcileKORC` create-or-updates an **owned** K-ORC `ApplicationCredential` CR
 that instructs K-ORC to mint the admin application credential, and drives re-mint. Key behaviours:
@@ -4427,6 +4434,8 @@ The `condition_type` label is resolved from the package-private
 | `Glance` | `GlanceReady` |
 | `Placement` | `PlacementReady` |
 | `Barbican` | `BarbicanReady` |
+| `OVN` | `OVNReady` |
+| `Neutron` | `NeutronReady` |
 | `Cinder` | `CinderReady` |
 | `Nova` | `NovaReady` |
 | `KORC` | `KORCReady` |
