@@ -618,6 +618,12 @@ such a compute, and names it in `status.remoteComputeConfigSecretRef`. The
 in-cluster contract keeps its bytes, so a compute beside this Nova keeps reading
 it.
 
+The figure shows where the remote contract goes: the ControlPlane mirrors it
+onto the compute cluster under the in-cluster name, and `nova-compute` there
+dials the addresses it carries.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../../diagrams/compute-cluster-wiring.svg)
+
 The remote contract carries the same six keys. `password`,
 `metadata_proxy_shared_secret`, `cell_name` and `ca.crt` hold the same values,
 and the fragment has the same sections and the same mount path. It differs in

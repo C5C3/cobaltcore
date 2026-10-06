@@ -2746,6 +2746,11 @@ target that cannot be served parks `NovaReady` rather than failing the pass: the
 control plane is up, but a compute cluster that never receives the contract
 registers no hypervisor.
 
+The figure shows the mirror beside the other Secrets a compute cluster
+receives, and the addresses its components dial.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../../diagrams/compute-cluster-wiring.svg)
+
 The plane records nothing in its status about what it mirrored, because
 `reconcileNova` runs in the parallel group, which keeps only conditions and
 metadata. A mirror left behind by the last pool of a cluster is reaped by that
