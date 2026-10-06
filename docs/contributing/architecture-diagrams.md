@@ -54,6 +54,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `ci-stage-overview` | The jobs of the CI workflow grouped into stages, with the order of the stages on a pull request and on a push | [Job Dependency DAG](../reference/ci-cd/ci-workflow.md#job-dependency-dag) |
 | `ci-service-image-build` | Which file of the repository feeds which step and which stage of a service image build, on the two base images, with the nova-compute image beside it | [Dockerfile Hierarchy](../reference/ci-cd/container-images.md#dockerfile-hierarchy), [build-service-images](../reference/ci-cd/build-images-workflow.md#build-service-images) |
 | `ci-image-publish` | The image build workflow on a pull request and on a push: what both build, where a pull request stops, and what a push merges, attests and signs | [PR vs Push Behavior](../reference/ci-cd/build-images-workflow.md#pr-vs-push-behavior), [Service Images](../reference/ci-cd/container-images.md#service-images) |
+| `test-tempest-bed` | The Tempest container on the runner, the port-forwards and host aliases that take it to the Services, and the seed Jobs inside the cluster | [Data Flow (CI End-to-End)](../reference/testing/tempest-test-infrastructure.md#data-flow-ci-end-to-end), [tempest](../reference/ci-cd/ci-workflow.md#tempest) |
 | `conventions-legend` | The notation for frames, objects, arrows, sequences, state machines, markers, outside actors, nodes, browser hops and images | [Notation legend](./architecture-diagrams.md#notation-legend) |
 
 ## Change a diagram

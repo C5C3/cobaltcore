@@ -857,32 +857,48 @@ the base image at build time.
 
 ## Data Flow (CI End-to-End)
 
+The figure shows where the parts of one job run: the Tempest container on the
+runner host, the port-forwards and host aliases that take it to the Services,
+and the seed Jobs inside the cluster. The block below lists the commands in the
+order the job runs them.
+
+![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
+
 ```text
-releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_TEMPEST_PLUGIN_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSION
-                         │
-                         ▼
+releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_TEMPEST_PLUGIN_VERSION +
+                         │                KEYSTONE_TEMPEST_PLUGIN_VERSION + NEUTRON_TEMPEST_PLUGIN_VERSION +
+                         │                CINDER_TEMPEST_PLUGIN_VERSION
+                         ▼ (build-e2e-images job, per release: hack/ci-build-tempest-image.sh)
          docker build --build-arg TEMPEST_VERSION=... \
                       --build-arg BARBICAN_TEMPEST_PLUGIN_VERSION=... \
                       --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=... \
+                      --build-arg NEUTRON_TEMPEST_PLUGIN_VERSION=... \
+                      --build-arg CINDER_TEMPEST_PLUGIN_VERSION=... \
                       --build-context upper-constraints=releases/<release>/ \
                       images/tempest/
                          │
-                         ▼ (tempest job, per matrix.release)
-         kubectl port-forward svc/<service-k8s-name> 5000:5000
+                         ▼ (tempest job, per matrix.service and matrix.release)
+         hack/ci-run-tempest.sh, in this order:
+           1. kubectl get secret keystone-admin -n openstack (admin password)
+           2. kubectl port-forward svc/<service-k8s-name> -n openstack 5000:5000, plus one forward per
+              <SERVICE>_K8S_NAME the leg sets (9292, 9311, 9696, 8776, 8774, 6080, 8778); each forward
+              is polled on localhost, up to 10 attempts
+           3. sed renders tempest.conf (localhost:5000 URI + admin password) into
+              _output/tempest/config; exclude-tests.txt and the runner scripts are copied there
+           4. include-tests.txt is split into phases/phase-1-core.txt and phases/phase-2-plugin.txt
                          │
                          ▼
-         hack/ci-run-tempest.sh (resolve localhost URI + admin password)
-                         │
-                         ▼
-         docker run --network host \
-           -v tempest.conf:/etc/tempest/tempest.conf \
-           -v phases/phase-1-core.txt:/etc/tempest/phases/phase-1-core.txt \
-           -v phases/phase-2-plugin.txt:/etc/tempest/phases/phase-2-plugin.txt \
-           -v exclude-tests.txt:/etc/tempest/exclude-tests.txt \
-           -v extract-failed.py:/etc/tempest/extract-failed.py \
-           -v merge-retry-junit.py:/etc/tempest/merge-retry-junit.py \
-           -v run-tests.sh:/etc/tempest/run-tests.sh \
-           c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
+         docker run --rm --network host \
+           --add-host <service-k8s-name>.openstack.svc.cluster.local:127.0.0.1 \
+           --add-host <service-k8s-name>.openstack.svc:127.0.0.1 \
+           (the same two --add-host flags for every other forwarded Service) \
+           -v <workspace>/_output/tempest/config:/etc/tempest:ro \
+           -v <workspace>/_output/tempest:/output \
+           -e TEMPEST_CONCURRENCY=... \
+           -e TEMPEST_GROUP_START=::group:: \
+           -e TEMPEST_GROUP_END=::endgroup:: \
+           -e TEMPEST_ERROR_PREFIX=::error:: \
+           ghcr.io/c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
          #
          # Internal logic of run-tests.sh (kept here for reference; the runner
          # scripts never invoke these steps inline — they always `bash
