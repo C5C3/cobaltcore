@@ -114,6 +114,11 @@ BGP is out of scope here and tracked in its own meta,
 
 ## Owned resources
 
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
+
 For a `Neutron` named `{name}` the operator manages:
 
 | Resource | Name | Purpose |

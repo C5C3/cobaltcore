@@ -105,6 +105,11 @@ this operator implements, together with the choices the CRD carries.
 
 ## Owned resources
 
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
+
 For a `Nova` named `{name}`:
 
 | Resource | Name | Purpose |

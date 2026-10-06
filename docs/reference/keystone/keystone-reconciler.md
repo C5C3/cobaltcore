@@ -1544,7 +1544,7 @@ validation answers HTTP 500.
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-db-sync` |
+| Name | `{name}-db-sync` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `keystone-manage db_sync` |
 | BackoffLimit | 4 |
@@ -2894,7 +2894,7 @@ project, roles, and service catalog entries.
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-bootstrap` |
+| Name | `{name}-bootstrap` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `keystone-manage bootstrap` |
 | BackoffLimit | 4 |
@@ -3483,48 +3483,79 @@ returned directly to controller-runtime, which applies exponential backoff with 
 
 ## Owned Resources
 
-All resources created by the reconciler carry an owner reference pointing to the
-Keystone CR via `controllerutil.SetControllerReference()`. This enables:
+On the cluster of the Keystone CR every object the reconciler creates carries a
+controller owner reference to it, so deleting the CR garbage-collects them.
+With `spec.targetClusterRef` the children live on another cluster, where no
+owner reference can point at the CR: they carry ownership labels, and the
+`openstack.c5c3.io/remote-children` finalizer sweeps them. The figure groups
+the objects and draws who mounts what.
 
-- **Automatic garbage collection** — Deleting the Keystone CR cascades to all owned
-  resources.
-- **Watch-based reconciliation** — Changes to owned resources trigger re-reconciliation
-  of the owning Keystone CR.
+![What one Keystone resource creates, in four groups inside a frame of owned objects, and what it only reads. Serving: the Deployment, the Service and the PodDisruptionBudget, and with their spec fields a HorizontalPodAutoscaler, a VerticalPodAutoscaler, a NetworkPolicy and an HTTPRoute. Config and Secrets: the immutable config ConfigMap, the Fernet and credential key Secrets with a PushSecret each, the db-connection Secret, and with their spec fields the domains Secret, the federation Secret, the database client Certificate with its Secret, and the MariaDB Database, User and Grant. One-shot Jobs: db-sync, schema-check and bootstrap, the policy validation Job, and the three Jobs of a release upgrade. CronJobs: the two key rotations with a ServiceAccount, a Role, a RoleBinding and a staging Secret each, the trust flush, and with its spec field the admin password rotation with its staging Secret, its push source Secret and its PushSecret. The Deployment mounts the ConfigMap and the key Secrets and reads the database URL from the db-connection Secret. Every Job mounts the ConfigMap, the keystone-manage CronJobs mount the ConfigMap and the key Secrets, and each rotation CronJob patches only its staging Secret. Read and not owned: the database credentials Secret, the admin password Secret, the policy ConfigMap, the MariaDB cluster, the secret store, the Gateway, the ClusterIssuer of the database CA and the identity backends. Every owned object carries an owner reference to the Keystone; on a target cluster ownership labels take its place.](../../diagrams/service-owned-resources.svg)
 
-| Resource | Name | Owner |
+For a Keystone CR named `{name}` the operator manages:
+
+| Resource | Name | Exists |
 | --- | --- | --- |
-| Secret | `{name}-fernet-keys` | Keystone CR |
-| Secret | `{name}-fernet-keys-rotation` | Keystone CR (rotation staging) |
-| CronJob | `{name}-fernet-rotate` | Keystone CR |
-| PushSecret | `{name}-fernet-keys-backup` | Keystone CR |
-| Secret | `{name}-credential-keys` | Keystone CR |
-| Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging) |
-| CronJob | `{name}-credential-rotate` | Keystone CR |
-| PushSecret | `{name}-credential-keys-backup` | Keystone CR |
-| ConfigMap | `{name}-config-{hash}` | Keystone CR |
-| Secret | `{name}-domains-{hash}` | Keystone CR (only while at least one KeystoneIdentityBackend is projected) |
-| Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
-| Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
-| Deployment | `{name}` | Keystone CR (bare CR name) |
-| Service | `{name}` | Keystone CR (bare CR name) |
-| PodDisruptionBudget | `{name}` | Keystone CR (bare CR name) |
-| HorizontalPodAutoscaler | `{name}` | Keystone CR (only when `spec.autoscaling` is set; bare CR name) |
-| HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set; bare CR name) |
-| Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
-| CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
-| Secret | `{name}-admin-password-rotation` | Keystone CR (rotation staging; only when `spec.passwordRotation.enabled`) |
-| Secret | `{name}-admin-password-next` | Keystone CR (rotation push-source; only when `spec.passwordRotation.enabled`) |
-| CronJob | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| PushSecret | `{name}-admin-password-backup` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ServiceAccount | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| Role | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| RoleBinding | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR |
-| ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR |
-| Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
-| User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
-| Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
+| Deployment | `{name}` | Always |
+| Service | `{name}` | Always |
+| PodDisruptionBudget | `{name}` | Always |
+| HorizontalPodAutoscaler | `{name}` | Only with `spec.autoscaling` |
+| VerticalPodAutoscaler | `{name}` | Only with `spec.deployment.verticalAutoscaling`, on a cluster that serves the kind |
+| NetworkPolicy | `{name}` | Only with `spec.networkPolicy` |
+| HTTPRoute | `{name}` | Only with `spec.gateway`, on a cluster that serves the Gateway API |
+| ConfigMap | `{name}-config-{hash}` | Always. Immutable; the current one and the three newest before it are kept |
+| Secret | `{name}-db-connection` | Always |
+| Secret | `{name}-fernet-keys` | Always |
+| Secret | `{name}-credential-keys` | Always |
+| PushSecret | `{name}-fernet-keys-backup` | Always |
+| PushSecret | `{name}-credential-keys-backup` | Always |
+| Secret | `{name}-domains-{hash}` | Only while at least one KeystoneIdentityBackend is projected |
+| Secret | `{name}-federation-{hash}` | Only while an OIDC or SAML backend is projected and `spec.federation.proxyImage` is set |
+| Secret | `{name}-oidc-crypto-passphrase` | Created with the first OIDC backend and kept afterwards |
+| Secret | `{name}-saml-sp` | Created with a SAML backend that names no certificate Secret of its own, and kept afterwards |
+| Secret | `{name}-saml-sp-metadata` | Only while a SAML backend is projected |
+| Certificate | `{name}-db-client` | Only with `spec.database.tls` and `spec.database.clusterRef`. cert-manager writes the Secret of the same name |
+| Database | `{name}` | Only with `spec.database.clusterRef`; additionally cleaned up by the finalizer |
+| User | `{name}` | Only with `spec.database.clusterRef` and a credentials mode other than `Dynamic`; additionally cleaned up by the finalizer |
+| Grant | `{name}` | Only with `spec.database.clusterRef` and a credentials mode other than `Dynamic`; additionally cleaned up by the finalizer |
+| Job | `{name}-db-sync` | Always |
+| Job | `{name}-schema-check` | Always, after db-sync |
+| Job | `{name}-db-expand` | Only during a release upgrade |
+| Job | `{name}-db-migrate` | Only during a release upgrade |
+| Job | `{name}-db-contract` | Only during a release upgrade |
+| Job | `{name}-bootstrap` | Always |
+| Job | `{name}-policy-validation` | Only with `spec.policyOverrides` |
+| CronJob | `{name}-fernet-rotate` | Always |
+| ServiceAccount, Role, RoleBinding | `{name}-fernet-rotate` | Always |
+| Secret | `{name}-fernet-keys-rotation` | Always (rotation staging) |
+| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Always |
+| CronJob | `{name}-credential-rotate` | Always |
+| ServiceAccount, Role, RoleBinding | `{name}-credential-rotate` | Always |
+| Secret | `{name}-credential-keys-rotation` | Always (rotation staging) |
+| ConfigMap | `{name}-credential-rotate-script-{hash}` | Always |
+| CronJob | `{name}-trust-flush` | Only with `spec.trustFlush`, which the defaulting webhook sets |
+| CronJob | `{name}-admin-password-rotate` | Only with `spec.passwordRotation.enabled` |
+| ServiceAccount, Role, RoleBinding | `{name}-admin-password-rotate` | Only with `spec.passwordRotation.enabled` |
+| Secret | `{name}-admin-password-rotation` | Only with `spec.passwordRotation.enabled` (rotation staging) |
+| Secret | `{name}-admin-password-next` | Only with `spec.passwordRotation.enabled` (push source) |
+| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Only with `spec.passwordRotation.enabled` |
+| PushSecret | `{name}-admin-password-backup` | Only with `spec.passwordRotation.enabled`, once the push source holds a valid password |
+
+### Who mounts what
+
+Every workload reads the database URL from the env var `OS_DATABASE__CONNECTION`,
+which comes from `{name}-db-connection`, unless the table says otherwise.
+
+| Workload | Mounts | Reads through env | Writes through the API |
+| --- | --- | --- | --- |
+| Deployment `{name}`, container `keystone` | The config ConfigMap, `{name}-fernet-keys`, `{name}-credential-keys`; the domains Secret and the database TLS Secrets when they exist | The database URL | Nothing |
+| Deployment `{name}`, sidecar `federation-proxy` | `{name}-federation-{hash}` | Nothing | Nothing |
+| Jobs `-db-sync`, `-schema-check`, `-db-expand`, `-db-migrate`, `-db-contract` | The config ConfigMap; the domains Secret and the database TLS Secrets when they exist | The database URL | Nothing |
+| Job `-bootstrap` | The config ConfigMap, `{name}-fernet-keys`; the domains Secret and the database TLS Secrets when they exist | The database URL, and `BOOTSTRAP_PASSWORD` from the admin password Secret | Nothing |
+| Job `-policy-validation` | The config ConfigMap; the domains Secret when it exists | No Secret | Nothing |
+| CronJobs `-fernet-rotate`, `-credential-rotate` | The config ConfigMap, both key Secrets, the script ConfigMap; the domains Secret when it exists | The database URL | Patches its staging Secret |
+| CronJob `-trust-flush` | The config ConfigMap, both key Secrets; the domains Secret when it exists | The database URL | Nothing |
+| CronJob `-admin-password-rotate` | Its script ConfigMap | No Secret | Patches `{name}-admin-password-rotation` |
 
 ---
 
@@ -3629,7 +3660,7 @@ operator. Containers that use the env var include:
 | --- | --- | --- |
 | `Deployment` | `buildKeystoneDeployment` (`reconcile_deployment.go`) | Keystone API pods |
 | `Job` `{name}-bootstrap` | `buildBootstrapJob` (`reconcile_bootstrap.go`) | Initial bootstrap of admin user/project/roles |
-| `Job` `keystone-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`reconcile_database.go`) | Database schema provisioning and drift checks |
+| `Job` `{name}-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`database_jobs.go`) | Database schema provisioning and drift checks |
 | `CronJob` `{name}-trust-flush` | `trustFlushCronJob` (`reconcile_trustflush.go`) | Periodic expired trust cleanup — default-on hourly via webhook materialization |
 | `CronJob` `{name}-fernet-rotate` | `fernetRotationCronJob` (`reconcile_fernet.go`) | Fernet key rotation — appended alongside the pre-existing `OS_fernet_tokens__max_active_keys` override |
 | `CronJob` `{name}-credential-rotate` | `credentialRotationCronJob` (`reconcile_credential.go`) | Credential key rotation |
