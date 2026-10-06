@@ -109,6 +109,9 @@
 <text x="1502" y="767.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">lab only</text>
 <text x="1182" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">By hand</text>
 <text x="1435" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">kind only, lab only</text>
+<rect x="1600" y="746" width="84" height="30" rx="15" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1642" y="767.48" font-size="18" font-weight="700" fill="#A3262E" text-anchor="middle">never</text>
+<text x="1642" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Never</text>
 <rect x="938" y="836" width="250" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="1063" y="870.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Workstation</text>
 <text x="1063" y="897.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">a person with kubectl</text>
