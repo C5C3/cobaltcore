@@ -1385,7 +1385,13 @@ The c5c3-operator mints a single restricted admin Application Credential per clu
 mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
 `clouds.yaml` Secret that K-ORC authenticates with. The chain materialises the
 Kubernetes Secret `k-orc-clouds-yaml` via a single `ExternalSecret`, created per
-ControlPlane by the operator:
+ControlPlane by the operator.
+
+The figure numbers the steps of the chain.
+[K-ORC admin credential chain](../c5c3/controlplane-reconciler.md#k-orc-admin-credential-chain)
+lists them.
+
+![The admin credential path in nine numbered steps across five lanes: OpenBao, ESO, c5c3-operator, K-ORC and Keystone. The admin password leaves OpenBao through an ExternalSecret. The c5c3-operator writes a password-based clouds.yaml and a Secret with a generated application-credential secret, a PushSecret stores that Secret in OpenBao, and an ExternalSecret returns it as k-orc-clouds-yaml. K-ORC imports the admin domain and user and creates the restricted application credential in Keystone. The operator then rewrites clouds.yaml with the application credential, the push and the read run a second time, and K-ORC registers the catalog with the application credential. A re-mint starts again at the generated secret when the admin password changes, a CredentialRotation resource asks for it, or the restriction settings change.](../../diagrams/secrets-admin-credential-loop.svg)
 
 | Namespace | Source | Purpose |
 | --- | --- | --- |
