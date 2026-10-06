@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1191" viewBox="0 0 1808 1191" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Overlay inheritance: production, kind, lab">
+<title>Overlay inheritance: production, kind, lab</title>
+<rect width="1808" height="1191" fill="#F6F5F1"/>
+<text x="80" y="66.36" font-size="26" font-weight="700" fill="#2B3440">Production</text>
+<text x="80" y="100.2" font-size="20" font-weight="400" fill="#55606E">deploy/flux-system</text>
+<text x="632" y="66.36" font-size="26" font-weight="700" fill="#2B3440">kind</text>
+<text x="632" y="100.2" font-size="20" font-weight="400" fill="#55606E">deploy/kind</text>
+<text x="1224" y="66.36" font-size="26" font-weight="700" fill="#2B3440">Lab on metal-stack</text>
+<text x="1224" y="100.2" font-size="20" font-weight="400" fill="#55606E">deploy/lab/metal-stack</text>
+<rect x="80" y="131" width="514" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="99" y="170.36" font-size="26" font-weight="700" fill="#2B3440">deploy/flux-system</text>
+<text x="99" y="204.2" font-size="20" font-weight="400" fill="#55606E">Namespaces, FluxInstance, sources, releases</text>
+<text x="99" y="230.2" font-size="20" font-weight="400" fill="#55606E">kubectl apply -k</text>
+<rect x="263.59" y="210" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="315.59" y="231.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="632" y="131" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="170.36" font-size="26" font-weight="700" fill="#2B3440">deploy/kind/base</text>
+<text x="651" y="204.2" font-size="20" font-weight="400" fill="#55606E">adds Envoy Gateway, the Gateway openstack-gw,</text>
+<text x="651" y="230.2" font-size="20" font-weight="400" fill="#55606E">headlamp and flux-web</text>
+<text x="651" y="256.2" font-size="20" font-weight="400" fill="#55606E">patches OpenBao, the operator releases, Flux</text>
+<text x="651" y="282.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra, Step 3</text>
+<rect x="1224" y="131" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1243" y="170.36" font-size="26" font-weight="700" fill="#2B3440">deploy/lab/metal-stack/base</text>
+<text x="1243" y="204.2" font-size="20" font-weight="400" fill="#55606E">labels and annotates every Namespace</text>
+<text x="1243" y="230.2" font-size="20" font-weight="400" fill="#55606E">removes the storage class of OpenBao</text>
+<text x="1243" y="256.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 3</text>
+<rect x="80" y="345" width="514" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="99" y="384.36" font-size="26" font-weight="700" fill="#2B3440">deploy/flux-system/infrastructure</text>
+<text x="99" y="418.2" font-size="20" font-weight="400" fill="#55606E">issuers, CAs, certificates, MariaDB, Memcached,</text>
+<text x="99" y="444.2" font-size="20" font-weight="400" fill="#55606E">Garage, and deploy/eso with the ClusterSecretStore</text>
+<text x="99" y="470.2" font-size="20" font-weight="400" fill="#55606E">kubectl apply -k</text>
+<rect x="263.59" y="450" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="315.59" y="471.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="632" y="345" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="384.36" font-size="26" font-weight="700" fill="#2B3440">deploy/kind/infrastructure</text>
+<text x="651" y="418.2" font-size="20" font-weight="400" fill="#55606E">adds the EnvoyProxy, the Gateway certificates,</text>
+<text x="651" y="444.2" font-size="20" font-weight="400" fill="#55606E">ExternalSecrets, the proving OpenBao</text>
+<text x="651" y="470.2" font-size="20" font-weight="400" fill="#55606E">patches MariaDB, Memcached, Garage</text>
+<text x="651" y="496.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra, Step 5</text>
+<rect x="1224" y="345" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1243" y="384.36" font-size="26" font-weight="700" fill="#2B3440">deploy/lab/metal-stack/infrastructure</text>
+<text x="1243" y="418.2" font-size="20" font-weight="400" fill="#55606E">removes the storage class of MariaDB and Garage</text>
+<text x="1243" y="444.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 5</text>
+<rect x="80" y="559" width="514" height="148" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="99" y="598.36" font-size="26" font-weight="700" fill="#2B3440">deploy/examples/sizing-overlay</text>
+<text x="99" y="632.2" font-size="20" font-weight="400" fill="#55606E">a template to copy, with base and infrastructure/</text>
+<text x="99" y="658.2" font-size="20" font-weight="400" fill="#55606E">each takes its production directory as its base</text>
+<rect x="632" y="559" width="544" height="148" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="598.36" font-size="26" font-weight="700" fill="#2B3440">chaos-mesh, dizzy, nfs, prometheus</text>
+<text x="651" y="632.2" font-size="20" font-weight="400" fill="#55606E">four directories under deploy/kind</text>
+<text x="651" y="658.2" font-size="20" font-weight="400" fill="#55606E">Step 3, each under its WITH_ flag</text>
+<rect x="1224" y="559" width="544" height="148" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1243" y="598.36" font-size="26" font-weight="700" fill="#2B3440">chaos-mesh, dizzy, nfs, prometheus</text>
+<text x="1243" y="632.2" font-size="20" font-weight="400" fill="#55606E">four directories under deploy/lab/metal-stack</text>
+<text x="1243" y="658.2" font-size="20" font-weight="400" fill="#55606E">each patches the kind directory of its name</text>
+<text x="1243" y="684.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 3, the same flags</text>
+<rect x="632" y="747" width="544" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="786.36" font-size="26" font-weight="700" fill="#2B3440">hypervisor-operator-fixtures</text>
+<text x="651" y="820.2" font-size="20" font-weight="400" fill="#55606E">K-ORC fixtures for the hypervisor operator</text>
+<rect x="1060" y="762" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1112" y="783.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="1224" y="747" width="544" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1243" y="786.36" font-size="26" font-weight="700" fill="#2B3440">hypervisor-fixtures</text>
+<text x="1243" y="820.2" font-size="20" font-weight="400" fill="#55606E">deletes VolumeType, Network and Subnet</text>
+<rect x="1652" y="762" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1704" y="783.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="632" y="883" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="922.36" font-size="26" font-weight="700" fill="#2B3440">Without a base</text>
+<text x="651" y="956.2" font-size="20" font-weight="400" fill="#55606E">metrics-server, vpa: Step 3, kind mode only</text>
+<text x="651" y="982.2" font-size="20" font-weight="400" fill="#55606E">messaging: after Step 5, WITH_MESSAGING</text>
+<text x="651" y="1008.2" font-size="20" font-weight="400" fill="#55606E">controlplane: by hand, or WITH_CONTROLPLANE_CR</text>
+<text x="651" y="1034.2" font-size="20" font-weight="400" fill="#55606E">fake-compute: by hand</text>
+<rect x="1224" y="883" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1243" y="922.36" font-size="26" font-weight="700" fill="#2B3440">Without a base</text>
+<text x="1243" y="956.2" font-size="20" font-weight="400" fill="#55606E">controlplane, probe, migration-ports</text>
+<text x="1243" y="982.2" font-size="20" font-weight="400" fill="#55606E">hypervisor, which lists ../migration-ports</text>
+<rect x="1652" y="898" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1704" y="919.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<polyline points="594,218 621.5,218" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="632,218 617,225.2 617,210.8" fill="#3A4452"/>
+<polyline points="1176,218 1213.5,218" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1224,218 1209,225.2 1209,210.8" fill="#3A4452"/>
+<polyline points="594,432 621.5,432" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="632,432 617,439.2 617,424.8" fill="#3A4452"/>
+<polyline points="1176,432 1213.5,432" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1224,432 1209,439.2 1209,424.8" fill="#3A4452"/>
+<polyline points="1176,633 1213.5,633" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1224,633 1209,640.2 1209,625.8" fill="#3A4452"/>
+<polyline points="1176,795 1213.5,795" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1224,795 1209,802.2 1209,787.8" fill="#3A4452"/>
+<polyline points="80,218 60,218 60,539 380,539 380,548.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="380,559 372.8,544 387.2,544" fill="#3A4452"/>
+<polyline points="520,519 520,548.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="520,559 512.8,544 527.2,544" fill="#3A4452"/>
+<text x="40" y="1118.2" font-size="20" font-weight="400" fill="#55606E">An arrow runs from a directory to the overlay that lists it under resources. The overlay renders what its base renders and then patches it.</text>
+<text x="40" y="1144.2" font-size="20" font-weight="400" fill="#55606E">Step n is a step of make deploy-infra. EXTERNAL_CLUSTER=true applies the lab column in place of the kind column, and EXTERNAL_OVERLAY names another root.</text>
+</svg>

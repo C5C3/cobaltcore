@@ -2817,6 +2817,13 @@ overlay patches:
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
 
+The figure shows that chain from the production manifests over the kind
+overlay to the lab, and who applies each directory.
+[Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
+lists every directory with its base.
+
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+
 The patches remove the kind pin `standard` from the OpenBao, MariaDB and
 Garage volumes. The lab has a `standard` class too, so the pin would bind to it
 by coincidence. These volumes and the proving `OpenBaoCluster` name no class

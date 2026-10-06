@@ -481,18 +481,43 @@ failing — each step detects the work it already completed and skips it:
 
 ## Kustomize Overlay Structure
 
-```text
-deploy/kind/
-├── base/
-│   └── kustomization.yaml          References ../../flux-system/
-│                                    Patches OpenBao HelmRelease → standalone mode, 100m CPU
-│                                    Patches operator HelmReleases → 1 replica
-│                                    Patches FluxInstance → 25m CPU per Flux controller
-└── infrastructure/
-    └── kustomization.yaml          References ../../flux-system/infrastructure/
-                                     Patches MariaDB CR → 1 replica, no Galera, 1Gi memory
-                                     Patches Memcached CR → 1 replica
-```
+The lab overlay takes the kind overlay as its base, and the kind overlay takes
+the production manifests. The figure shows that chain and who applies each
+directory. The table lists every directory under `deploy/` that holds a
+`kustomization.yaml`, with the bases it lists under `resources`.
+
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+
+| Directory | Base | Applied by |
+| --- | --- | --- |
+| `deploy/flux-system` | none | a person, with `kubectl apply -k` ([Deployment](infrastructure-manifests.md#deployment)) |
+| `deploy/flux-system/infrastructure` | `deploy/eso` | a person, once the operators have installed their CRDs |
+| `deploy/eso` | none | nothing on its own |
+| `deploy/examples/sizing-overlay` | `deploy/flux-system` | nothing: a template to copy ([Sizing and placement overrides](infrastructure-manifests.md#sizing-and-placement-overrides)) |
+| `deploy/examples/sizing-overlay/infrastructure` | `deploy/flux-system/infrastructure` | nothing: the second phase of that template |
+| `deploy/kind/base` | `deploy/flux-system` | `make deploy-infra`, Step 3 |
+| `deploy/kind/infrastructure` | `deploy/flux-system/infrastructure` | `make deploy-infra`, Step 5 |
+| `deploy/kind/chaos-mesh` | none | Step 3 under `WITH_CHAOS_MESH=true` |
+| `deploy/kind/dizzy` | none | Step 3 under `WITH_DIZZY=true` |
+| `deploy/kind/nfs` | none | Step 3 under `WITH_NFS=true` |
+| `deploy/kind/prometheus` | none | Step 3 under `WITH_PROMETHEUS=true` |
+| `deploy/kind/metrics-server` | none | Step 3 under `WITH_METRICS_SERVER=true` or `WITH_VPA=true`, in kind mode only |
+| `deploy/kind/vpa` | none | Step 3 under `WITH_VPA=true`, in kind mode only |
+| `deploy/kind/messaging` | none | after the apply of Step 5 under `WITH_MESSAGING=true`, in both cluster modes |
+| `deploy/kind/controlplane` | none | a person, as the file `controlplane.yaml` ([Quick Start (ControlPlane)](../../quick-start-controlplane.md)), or the script under `WITH_CONTROLPLANE_CR=true` |
+| `deploy/kind/fake-compute` | none | a person ([Run a Fake Compute for Testing](../../guides/nova/run-a-fake-compute-for-testing.md)) |
+| `deploy/kind/hypervisor-operator-fixtures` | none | a person ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md)) |
+| `deploy/lab/metal-stack/base` | `deploy/kind/base` | Step 3 under `EXTERNAL_CLUSTER=true` |
+| `deploy/lab/metal-stack/infrastructure` | `deploy/kind/infrastructure` | Step 5 under `EXTERNAL_CLUSTER=true` |
+| `deploy/lab/metal-stack/chaos-mesh` | `deploy/kind/chaos-mesh` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CHAOS_MESH=true` |
+| `deploy/lab/metal-stack/dizzy` | `deploy/kind/dizzy` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_DIZZY=true` |
+| `deploy/lab/metal-stack/nfs` | `deploy/kind/nfs` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_NFS=true` |
+| `deploy/lab/metal-stack/prometheus` | `deploy/kind/prometheus` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_PROMETHEUS=true` |
+| `deploy/lab/metal-stack/controlplane` | none | a person ([Quick Start (metal-stack)](../../quick-start-metal-stack.md)) |
+| `deploy/lab/metal-stack/hypervisor-fixtures` | `deploy/kind/hypervisor-operator-fixtures` | a person, after the ControlPlane |
+| `deploy/lab/metal-stack/hypervisor` | `deploy/lab/metal-stack/migration-ports` | a person, after the ControlPlane |
+| `deploy/lab/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
+| `deploy/lab/metal-stack/probe` | none | a person ([Node probe](infrastructure-manifests.md#node-probe)) |
 
 The overlays reference the production FluxCD manifests as their base and apply
 strategic merge patches to reduce resource requirements for a single-node kind
