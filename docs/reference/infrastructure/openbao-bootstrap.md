@@ -14,32 +14,16 @@ initial credentials required by downstream services.
 
 ## Architecture Overview
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Management Cluster                           │
-│                                                                     │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐             │
-│  │  openbao-0   │   │  openbao-1   │   │  openbao-2   │             │
-│  │  (leader)    │◄──►  (follower)  │◄──►  (follower)  │             │
-│  │  Raft peer   │   │  Raft peer   │   │  Raft peer   │             │
-│  └──────┬───────┘   └──────────────┘   └──────────────┘             │
-│         │                                                           │
-│         │  TLS (openbao-tls Secret from cert-manager)               │
-│         │                                                           │
-│  ┌──────▼────────────────────────────────────────────────────────┐  │
-│  │              ClusterSecretStore: openbao-cluster-store        │  │
-│  │              (kubernetes/management auth, role eso-management)│  │
-│  └──────┬────────────────────────────────────────────────────────┘  │
-│         │                                                           │
-│  ┌──────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐    │
-│  │ ExternalSec │  │ ExternalSec  │  │ ExternalSecret           │    │
-│  │ {cp}-       │  │ {cp}-        │  │ (kind overlay shims:     │    │
-│  │ keystone-   │  │ keystone-db- │  │  keystone-admin,         │    │
-│  │ admin-creds │  │ credentials  │  │  mariadb-root-password)  │    │
-│  └─────────────┘  └──────────────┘  └──────────────────────────┘    │
-│   operator-projected per-ControlPlane          kind-only             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+OpenBao runs as three Raft peers, `openbao-0` to `openbao-2`, in
+`shared-services` and serves TLS from the `openbao-tls` Secret. The figure
+shows how secrets leave and enter it.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../../diagrams/secrets-flow.svg)
+
+| Store | Kind | OpenBao login | Serves |
+| --- | --- | --- | --- |
+| `openbao-cluster-store` | `ClusterSecretStore` (`deploy/eso/clustersecretstore.yaml`) | Mount `kubernetes/management`, role `eso-management`, ServiceAccount `external-secrets`, client certificate `eso-openbao-client-tls` | The namespaces `openstack` and `shared-services`: standalone service CRs and the static ExternalSecrets of the kind overlay (`keystone-admin`, `mariadb-root-password`) |
+| `openbao-tenant-store` | `SecretStore`, one per ControlPlane namespace, created by `reconcileESOTenantStore` | Mount `kubernetes/management`, role `eso-tenant`, ServiceAccount `eso-tenant-auth`, client certificate `eso-tenant-client-tls` | The ExternalSecrets and PushSecrets of one ControlPlane and its children, such as `{cp}-keystone-admin-credentials` and `{cp}-keystone-db-credentials` in Static mode |
 
 The production stack (`deploy/eso/`, included by `deploy/flux-system/`) ships
 **no** ExternalSecret resources — its kustomization renders only

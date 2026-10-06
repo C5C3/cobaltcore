@@ -371,6 +371,11 @@ and bootstrap material and is **denied** on any other tenant's paths — so
 OpenBao itself, not a naming convention, isolates one control plane's secret
 material from another.
 
+The figure shows the tenant store of one ControlPlane namespace beside the
+shared cluster store.
+
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../diagrams/secrets-flow.svg)
+
 This is the **enforced default**: you configure nothing, and existing
 operator-managed ControlPlanes migrate onto it on operator upgrade. The shared
 cluster-scoped store `openbao-cluster-store` no longer carries any
