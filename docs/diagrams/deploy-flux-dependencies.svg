@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1300" viewBox="0 0 1808 1300" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Flux install dependency graph">
+<title>Flux install dependency graph</title>
+<rect width="1808" height="1300" fill="#F6F5F1"/>
+<rect x="80" y="40" width="388" height="296" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="99" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Layer 1</text>
+<text x="99" y="113.2" font-size="20" font-weight="400" fill="#55606E">no dependsOn</text>
+<rect x="100" y="140" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="172.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">cert-manager</text>
+<rect x="100" y="204" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="236.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">mariadb-operator-crds</text>
+<rect x="100" y="268" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="300.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">prometheus-operator-crds</text>
+<rect x="560" y="228" width="330" height="552" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="579" y="267.36" font-size="26" font-weight="700" fill="#2B3440">Layer 2</text>
+<text x="579" y="301.2" font-size="20" font-weight="400" fill="#55606E">wait for cert-manager</text>
+<rect x="580" y="328" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="360.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">mariadb-operator</text>
+<rect x="580" y="392" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="424.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">memcached-operator</text>
+<rect x="580" y="456" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="488.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">external-secrets</text>
+<rect x="580" y="520" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="552.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">garage-operator</text>
+<rect x="580" y="584" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="616.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao</text>
+<rect x="580" y="648" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="725" y="680.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">openbao-operator</text>
+<rect x="580" y="712" width="290" height="48" rx="20" fill="#6F5600"/>
+<text x="725" y="744.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ovn-operator</text>
+<rect x="940" y="40" width="410" height="168" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="959" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Layer 3</text>
+<text x="959" y="113.2" font-size="20" font-weight="400" fill="#55606E">waits for database, cache and secrets</text>
+<rect x="960" y="140" width="260" height="48" rx="20" fill="#1D47A6"/>
+<text x="1090" y="172.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">keystone-operator</text>
+<rect x="1400" y="228" width="330" height="616" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1419" y="267.36" font-size="26" font-weight="700" fill="#2B3440">Layer 4</text>
+<text x="1419" y="301.2" font-size="20" font-weight="400" fill="#55606E">wait for keystone-operator</text>
+<rect x="1420" y="328" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="360.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">horizon-operator</text>
+<rect x="1420" y="392" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="424.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">glance-operator</text>
+<rect x="1420" y="456" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="488.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">placement-operator</text>
+<rect x="1420" y="520" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="552.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">cinder-operator</text>
+<rect x="1420" y="584" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="616.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">nova-operator</text>
+<rect x="1420" y="648" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="680.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">barbican-operator</text>
+<rect x="1420" y="712" width="290" height="48" rx="20" fill="#1D47A6"/>
+<text x="1565" y="744.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">neutron-operator</text>
+<rect x="1420" y="776" width="290" height="48" rx="20" fill="#1E6B40"/>
+<text x="1565" y="808.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">c5c3-operator</text>
+<rect x="80" y="910" width="388" height="232" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="99" y="949.36" font-size="26" font-weight="700" fill="#2B3440">Flux Kustomizations</text>
+<text x="99" y="983.2" font-size="20" font-weight="400" fill="#55606E">outside every dependsOn list</text>
+<rect x="100" y="1010" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="1042.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">rabbitmq-cluster-operator</text>
+<rect x="100" y="1074" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="1106.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">k-orc</text>
+<polyline points="448,164 760,164 760,217.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="760,228 752.8,213 767.2,213" fill="#3A4452"/>
+<text x="482" y="145.2" font-size="20" font-weight="400" fill="#2B3440">every release of layer 2</text>
+<polyline points="448,228 528,228 528,352 569.5,352" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="580,352 565,359.2 565,344.8" fill="#3A4452"/>
+<polyline points="448,292 498,292 498,416 569.5,416" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="580,416 565,423.2 565,408.8" fill="#3A4452"/>
+<polyline points="870,352 1010,352 1010,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1010,188 1017.2,203 1002.8,203" fill="#3A4452"/>
+<polyline points="870,416 1090,416 1090,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,188 1097.2,203 1082.8,203" fill="#3A4452"/>
+<polyline points="870,480 1170,480 1170,198.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1170,188 1177.2,203 1162.8,203" fill="#3A4452"/>
+<polyline points="1220,164 1640,164 1640,217.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1640,228 1632.8,213 1647.2,213" fill="#3A4452"/>
+<text x="1364" y="145.2" font-size="20" font-weight="400" fill="#2B3440">every release of layer 4</text>
+<polyline points="870,672 1409.5,672" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1420,672 1405,679.2 1405,664.8" fill="#3A4452"/>
+<polyline points="870,736 1409.5,736" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1420,736 1405,743.2 1405,728.8" fill="#3A4452"/>
+<polyline points="100,164 58,164 58,870 410,870 410,999.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="410,1010 402.8,995 417.2,995" fill="#3A4452"/>
+<text x="80" y="823.2" font-size="20" font-weight="400" fill="#2B3440">its Issuer and Certificates need cert-manager's CRDs</text>
+<text x="80" y="851.2" font-size="20" font-weight="400" fill="#55606E">retryInterval 2m, until they exist</text>
+<polyline points="448,1098 1480,1098 1480,834.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="1480,824 1487.2,839 1472.8,839" fill="#3A4452"/>
+<text x="508" y="1055.2" font-size="20" font-weight="400" fill="#2B3440">the manager starts only with the K-ORC CRDs</text>
+<text x="508" y="1083.2" font-size="20" font-weight="400" fill="#55606E">install retries: 30</text>
+<text x="40" y="1201.2" font-size="20" font-weight="400" fill="#55606E">A pill is a HelmRelease of deploy/flux-system/releases, under its metadata.name. The two in the box Flux Kustomizations are Flux Kustomization resources.</text>
+<text x="40" y="1227.2" font-size="20" font-weight="400" fill="#55606E">A solid arrow is a dependsOn entry. An entry that other arrows imply is left out. The table on the page lists every entry.</text>
+<text x="40" y="1253.2" font-size="20" font-weight="400" fill="#55606E">A dotted arrow holds at run time and is declared nowhere: dependsOn of a HelmRelease names only HelmReleases, dependsOn of a Kustomization only Kustomizations.</text>
+</svg>
