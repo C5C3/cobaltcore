@@ -26,6 +26,10 @@ Either:
   check-doc-expressions, or check-doc-structure (the `[SEVERITY]
   <PREFIX>-<n> — <location> — <problem> — Fix: <hint>` format those
   skills emit), or
+- a review or issue, including inline reviewer comments and follow-up
+  questions; split each requested outcome into a separate acceptance item
+  before editing, and track reviewer questions separately for a direct answer,
+  or
 - nothing — in which case, run **all** check-doc-* skills, at
   a depth matching the requested scope, to generate findings. Default to
   all even when the request names only "the style guide" or
@@ -37,6 +41,12 @@ Either:
 If given a specific severity or file scope ("just the HIGH ones", "only
 the quick-start pages"), filter to that before classifying — this narrows
 which findings to act on, not which check-doc-* skills produce them.
+
+For a review or issue, preserve each requested outcome as its own acceptance
+item. Treat each explicit reviewer question as a question to answer, not as
+implicitly resolved by a prose edit. Establish factual answers from the owning
+code or configuration; when the answer cannot be established, report it as
+unresolved and identify the missing source rather than guessing.
 
 ## Procedure
 
@@ -125,6 +135,12 @@ List what was fixed, what was skipped and why (deferred pending user
 decision, or still needs research), grouped the same way the input
 findings were grouped. Reference the original finding ID
 (`CONS-3`, `EXPR-1`, `STRUCT-2`, …) next to its outcome.
+For review- or issue-backed work, report every acceptance item separately with
+its status and concrete evidence. Answer every reviewer question in the report
+and cite the code or configuration path and symbol that supports the answer;
+mark an answer unresolved when no source establishes it. Keep documentation
+changes distinct from implementation follow-ups that were not changed and
+verified.
 
 ## Notes
 

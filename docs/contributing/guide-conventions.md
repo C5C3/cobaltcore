@@ -45,7 +45,7 @@ the first command runs. Every guide therefore opens with a standardized
 prerequisites block that names **exactly one** Getting-Started tutorial and its
 verbatim bring-up command.
 
-The block is machine-checkable. It must be:
+The section is short and machine-checkable. It consists of:
 
 1. A `## Prerequisites` heading.
 2. Whose first element is a `::: info Devstack` container that holds, in order:
@@ -59,8 +59,10 @@ The block is machine-checkable. It must be:
      that needs a ControlPlane names `WITH_CONTROLPLANE=true`, and so on);
    - a completion pointer — how far the reader follows the tutorial (its final
      **Verify** step, so the devstack is running).
-3. Followed by any guide-specific prerequisite bullets (an external LDAP server,
-   a Keycloak realm, a CNI that enforces NetworkPolicy, ...).
+3. Followed by at most one prose paragraph of guide-specific prerequisites
+  (an external LDAP server, a Keycloak realm, a CNI that enforces
+  NetworkPolicy, ...); omit it when there are none. Do not use a list or
+  stack another callout box when the prerequisite fits in this paragraph.
 
 The map shows what each of the four devstacks deploys and how they relate. A
 guide whose devstack is a ControlPlane cannot start from a standalone cluster:

@@ -223,15 +223,13 @@ CR named \`controlplane\` is \`Ready\` in the \`openstack\` namespace and its pr
 examples below is one that devstack produces.
 :::
 
-::: warning The ${SUBJECT_KIND} child is operator-owned
-On a ControlPlane deployment the \`controlplane-${SUBJECT}\` ${SUBJECT_KIND} CR is
-**projected** by the c5c3-operator, so a knob you set directly on the child is
-reverted on the next reconcile. Set operational knobs on the \`ControlPlane\` CR
-and let the operator project them down. Where the \`ControlPlane\` CRD does not
-expose a knob, this guide points to the
+On a ControlPlane deployment, the \`controlplane-${SUBJECT}\` ${SUBJECT_KIND} CR is
+**projected** by the c5c3-operator, so a setting made directly on the child is
+reverted on the next reconcile. Set operational options on the \`ControlPlane\` CR
+and let the operator project them down. For options the \`ControlPlane\` CRD does
+not expose, use the
 [Standalone ${SUBJECT_KIND}](#standalone-${SUBJECT}-without-a-controlplane) section,
-which drives a ${SUBJECT_KIND} CR you own.
-:::
+which changes a ${SUBJECT_KIND} CR you own.
 EOF
     ;;
   quick-start-extended)
@@ -252,11 +250,10 @@ EOF
     ;;
 esac
 
-cat <<EOF
-
-1. **TODO guide-specific prerequisite.** Anything the devstack does not
-   provide (an external LDAP server, a Keycloak realm, a CNI that enforces
-   NetworkPolicy, ...). Delete this list if there is none.
+cat <<'EOF'
+TODO: Add any guide-specific prerequisite here (an external LDAP server, a
+Keycloak realm, or a CNI that enforces NetworkPolicy). Delete this sentence if
+there are none.
 
 ---
 
