@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1984" viewBox="0 0 1808 1984" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Sub-reconciler pipeline of the Keystone operator">
+<title>Sub-reconciler pipeline of the Keystone operator</title>
+<rect width="1808" height="1984" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="1670" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Secrets</text>
+<text x="530" y="185.2" font-size="20" font-weight="400" fill="#55606E">sets SecretsReady</text>
+<rect x="240" y="242" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="278.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DatabaseTLS</text>
+<text x="530" y="277.2" font-size="20" font-weight="400" fill="#55606E">sets DatabaseTLSReady</text>
+<rect x="240" y="334" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="370.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBConnectionSecret</text>
+<text x="530" y="356.2" font-size="20" font-weight="400" fill="#55606E">reports through SecretsReady</text>
+<text x="530" y="382.2" font-size="20" font-weight="400" fill="#55606E">hands on dbConnectionHash</text>
+<rect x="240" y="437" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="473.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">IdentityBackends</text>
+<text x="530" y="446.2" font-size="20" font-weight="400" fill="#55606E">sets IdentityBackendsReady</text>
+<text x="530" y="472.2" font-size="20" font-weight="400" fill="#55606E">hands on domainsSecretName and federation</text>
+<text x="530" y="498.2" font-size="20" font-weight="400" fill="#55606E">never requeues</text>
+<rect x="240" y="540" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="576.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Config</text>
+<text x="530" y="562.2" font-size="20" font-weight="400" fill="#55606E">reports through SecretsReady</text>
+<text x="530" y="588.2" font-size="20" font-weight="400" fill="#55606E">hands on configMapName</text>
+<rect x="120" y="632" width="840" height="201" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="139" y="671.36" font-size="26" font-weight="700" fill="#2B3440">Parallel group 1</text>
+<text x="139" y="703.2" font-size="20" font-weight="400" fill="#55606E">every member starts; the shortest requeue is returned</text>
+<rect x="140" y="725" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="761.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">FernetKeys</text>
+<text x="140" y="808.2" font-size="20" font-weight="400" fill="#55606E">sets FernetKeysReady</text>
+<rect x="420" y="725" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="761.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CredentialKeys</text>
+<text x="420" y="808.2" font-size="20" font-weight="400" fill="#55606E">sets CredentialKeysReady</text>
+<rect x="700" y="725" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="805" y="761.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NetworkPolicy</text>
+<text x="700" y="808.2" font-size="20" font-weight="400" fill="#55606E">sets NetworkPolicyReady</text>
+<rect x="240" y="869" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="905.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Database</text>
+<text x="530" y="904.2" font-size="20" font-weight="400" fill="#55606E">sets DatabaseReady</text>
+<rect x="240" y="961" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="997.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">PolicyValidation</text>
+<text x="530" y="996.2" font-size="20" font-weight="400" fill="#55606E">sets PolicyValidReady</text>
+<rect x="240" y="1064" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1100.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Deployment</text>
+<text x="530" y="1073.2" font-size="20" font-weight="400" fill="#55606E">sets DeploymentReady</text>
+<text x="530" y="1099.2" font-size="20" font-weight="400" fill="#55606E">reads dbConnectionHash</text>
+<text x="530" y="1125.2" font-size="20" font-weight="400" fill="#55606E">sets status.endpoint</text>
+<rect x="240" y="1167" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1203.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">(prune)</text>
+<text x="530" y="1189.2" font-size="20" font-weight="400" fill="#55606E">no name and no condition of its own</text>
+<text x="530" y="1215.2" font-size="20" font-weight="400" fill="#55606E">drops old ConfigMaps and Secrets</text>
+<rect x="120" y="1259" width="840" height="335" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="139" y="1298.36" font-size="26" font-weight="700" fill="#2B3440">Parallel group 2</text>
+<text x="139" y="1330.2" font-size="20" font-weight="400" fill="#55606E">every member starts; the shortest requeue is returned</text>
+<rect x="140" y="1352" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="1388.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HTTPRoute</text>
+<text x="140" y="1435.2" font-size="20" font-weight="400" fill="#55606E">sets HTTPRouteReady</text>
+<rect x="420" y="1352" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="1388.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HealthCheck</text>
+<text x="420" y="1435.2" font-size="20" font-weight="400" fill="#55606E">sets KeystoneAPIReady</text>
+<text x="420" y="1461.2" font-size="20" font-weight="400" fill="#55606E">waits for status.endpoint</text>
+<rect x="700" y="1352" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="805" y="1388.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HPA</text>
+<text x="700" y="1435.2" font-size="20" font-weight="400" fill="#55606E">sets HPAReady</text>
+<rect x="140" y="1486" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="1522.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">VPA</text>
+<text x="140" y="1569.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<rect x="420" y="1486" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="1522.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Bootstrap</text>
+<text x="420" y="1569.2" font-size="20" font-weight="400" fill="#55606E">sets BootstrapReady</text>
+<rect x="700" y="1486" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="805" y="1522.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">TrustFlush</text>
+<text x="700" y="1569.2" font-size="20" font-weight="400" fill="#55606E">sets TrustFlushReady</text>
+<rect x="240" y="1630" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1666.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">PasswordRotation</text>
+<text x="530" y="1665.2" font-size="20" font-weight="400" fill="#55606E">sets PasswordRotationReady</text>
+<text x="990" y="726.7" font-size="20" font-weight="400" fill="#55606E">configMapName and domainsSecretName</text>
+<text x="990" y="752.7" font-size="20" font-weight="400" fill="#55606E">reach every later entry that builds a pod.</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,170.8 225,185.2" fill="#3A4452"/>
+<polyline points="375,206 375,231.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,242 382.2,227 367.8,227" fill="#3A4452"/>
+<polyline points="375,298 375,323.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,334 382.2,319 367.8,319" fill="#3A4452"/>
+<polyline points="375,390 375,426.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,437 382.2,422 367.8,422" fill="#3A4452"/>
+<polyline points="375,493 375,529.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,540 382.2,525 367.8,525" fill="#3A4452"/>
+<polyline points="375,596 375,621.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,632 382.2,617 367.8,617" fill="#3A4452"/>
+<polyline points="375,833 375,858.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,869 382.2,854 367.8,854" fill="#3A4452"/>
+<polyline points="375,925 375,950.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,961 382.2,946 367.8,946" fill="#3A4452"/>
+<polyline points="375,1017 375,1053.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1064 382.2,1049 367.8,1049" fill="#3A4452"/>
+<polyline points="375,1120 375,1156.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1167 382.2,1152 367.8,1152" fill="#3A4452"/>
+<polyline points="375,1223 375,1248.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1259 382.2,1244 367.8,1244" fill="#3A4452"/>
+<polyline points="375,1594 375,1619.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1630 382.2,1615 367.8,1615" fill="#3A4452"/>
+<rect x="1330" y="1750" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="1786.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1835.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1861.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,1686 375,1778 1319.5,1778" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,1778 1315,1770.8 1315,1785.2" fill="#3A4452"/>
+<text x="820" y="1761.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,1739.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,1750 1447.2,1735 1432.8,1735" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1911.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics. (prune) has none.</text>
+<text x="40" y="1937.2" font-size="20" font-weight="400" fill="#55606E">The other service operators run the same pattern with their own steps and one parallel group at the end.</text>
+</svg>
