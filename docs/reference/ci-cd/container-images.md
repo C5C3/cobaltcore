@@ -660,7 +660,7 @@ those absolute paths.
 
 **Source patch:**
 `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
-and its 2026.1 twin flip the one `run_as_root=True` in
+and its 2026.1 and 2026.2 twins flip the one `run_as_root=True` in
 `NfsDriver._qemu_img_info` to `run_as_root=False`. `_qemu_img_info_base` in
 `cinder/volume/drivers/remotefs.py` then follows `nas_secure_file_operations`
 for that call, like every other file operation of the driver. Upstream forced
@@ -691,9 +691,9 @@ green, because its test driver never calls `set_nas_security_options` and
 hunk. Upstream status: not yet proposed.
 
 `patches/cinder/2025.2/0002-create-from-image-run-qemu-img-as-the-service-user.patch`
-and its 2026.1 twin flip two more forced-root `qemu-img info` calls. Both sit
-above the NFS driver on the create-from-image path and neither goes through it,
-so the flip in `0001` never reaches them.
+and its 2026.1 and 2026.2 twins flip two more forced-root `qemu-img info`
+calls. Both sit above the NFS driver on the create-from-image path and neither
+goes through it, so the flip in `0001` never reaches them.
 `CreateVolumeFromSpecTask._create_from_image_cache_or_download`
 (`cinder/volume/flows/manager/create_volume.py`) inspects the image it has just
 downloaded with `image_utils.qemu_img_info(tmp_image)`, whose `run_as_root`
@@ -722,8 +722,9 @@ second ddt variant to run in a process fails with a `KeyError`. stestr assigns
 tests to workers in per-process hash order, so the two variants shared a
 worker in about one `test-service-images (cinder, 2025.2)` run out of four.
 The patch moves the fakes inline into the test method. It changes nothing at
-runtime and has no 2026.1 twin. Upstream status: merged on master, backported
-to stable/2025.2 as `7faebca9b5`.
+runtime and has no 2026.1 and no 2026.2 twin, because cinder 28.0.0 and 29.0.0
+carry the commit. Upstream status: merged on master, backported to
+stable/2025.2 as `7faebca9b5`.
 
 `patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
 and its twin
@@ -740,7 +741,8 @@ elements", as it did once in `test-service-images (cinder, 2025.2)` on
 every such finalizer has run before the first assertion; the assertions are
 unchanged. The patch changes nothing at runtime. Upstream status: not yet
 proposed; master replaced both tests when the backup service moved to native
-threads (`c07c49c586`).
+threads (`c07c49c586`). Cinder 29.0.0 carries that commit, so 2026.2 needs no
+twin.
 
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
