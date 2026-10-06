@@ -261,6 +261,13 @@ cluster; the `novacompute` reads stay on the management cluster. hvo keeps one
 cluster-scoped `Hypervisor` (short name `hv`) per hypervisor Node, named after
 it.
 
+The figure shows the order below with what hvo and the pool do after each
+command. [The drain](../../reference/nova/novacompute-crd.md#the-drain) lists
+the seven steps. Step 1 of this section is steps 1 to 3 of the figure, step 2
+waits for step 3 to finish, and step 3 is steps 4 to 7.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](../../diagrams/compute-node-drain.svg)
+
 1. Put the node into manual maintenance:
 
    ```bash

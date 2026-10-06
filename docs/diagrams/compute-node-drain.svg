@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1270" viewBox="0 0 1808 1270" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Drain of a compute node under the hypervisor operator">
+<title>Drain of a compute node under the hypervisor operator</title>
+<rect width="1808" height="1270" fill="#F6F5F1"/>
+<rect x="40" y="40" width="340" height="420" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Person</text>
+<rect x="400" y="40" width="460" height="420" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="419" y="79.36" font-size="26" font-weight="700" fill="#2B3440">hypervisor operator</text>
+<rect x="880" y="40" width="480" height="420" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="899" y="79.36" font-size="26" font-weight="700" fill="#2B3440">NovaCompute pool</text>
+<rect x="1380" y="40" width="388" height="420" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1399" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Nova API</text>
+<rect x="40" y="550" width="340" height="520" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="400" y="550" width="460" height="520" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="880" y="550" width="480" height="520" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="1380" y="550" width="388" height="520" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="50" y="100" width="300" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="200" y="134.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Person</text>
+<text x="200" y="161.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">kubectl on the compute cluster</text>
+<rect x="600" y="230" width="240" height="48" rx="20" fill="#2B3440"/>
+<text x="720" y="262.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Hypervisor {node}</text>
+<rect x="600" y="370" width="220" height="48" rx="20" fill="#2B3440"/>
+<text x="710" y="402.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Eviction {node}</text>
+<rect x="1400" y="230" width="340" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1570" y="262.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">compute service of {node}</text>
+<rect x="1400" y="370" width="240" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1520" y="402.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">servers on {node}</text>
+<polyline points="300,176 300,212 810,212 810,219.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="810,230 802.8,215 817.2,215" fill="#3A4452"/>
+<circle cx="300" cy="202" r="18" fill="#17202B"/>
+<text x="300" y="209.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<rect x="416" y="174" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="468" y="195.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="530" y="201.2" font-size="20" font-weight="400" fill="#2B3440">spec.maintenance: manual</text>
+<polyline points="840,254 1389.5,254" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1400,254 1385,261.2 1385,246.8" fill="#2457C5"/>
+<circle cx="866" cy="254" r="18" fill="#17202B"/>
+<text x="866" y="261.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="900" y="243.2" font-size="20" font-weight="400" fill="#2B3440">disables it</text>
+<text x="888" y="295.2" font-size="20" font-weight="400" fill="#55606E">reason Hypervisor CRD: spec.maintenance=manual</text>
+<polyline points="640,278 640,359.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="640,370 632.8,355 647.2,355" fill="#2F8A57"/>
+<text x="656" y="313.2" font-size="20" font-weight="400" fill="#2B3440">hvo creates it</text>
+<polyline points="820,394 1389.5,394" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1400,394 1385,401.2 1385,386.8" fill="#2457C5"/>
+<circle cx="846" cy="394" r="18" fill="#17202B"/>
+<text x="846" y="401.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<text x="900" y="383.2" font-size="20" font-weight="400" fill="#2B3440">migrates every server away</text>
+<text x="900" y="421.2" font-size="20" font-weight="400" fill="#55606E">then status.evicted: true</text>
+<text x="220" y="512.2" font-size="20" font-weight="400" fill="#55606E">Up to here one patch reverts the drain: clearing spec.maintenance makes hvo enable the service and delete the Eviction.</text>
+<rect x="940" y="682" width="200" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1040" y="718.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Draining</text>
+<polyline points="120,176 120,710 929.5,710" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="940,710 925,717.2 925,702.8" fill="#3A4452"/>
+<circle cx="120" cy="202" r="18" fill="#17202B"/>
+<text x="120" y="209.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<rect x="416" y="672" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="468" y="693.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="530" y="699.2" font-size="20" font-weight="400" fill="#2B3440">removes the pool label</text>
+<text x="416" y="737.2" font-size="20" font-weight="400" fill="#55606E">from here on, leave spec.maintenance set</text>
+<polyline points="970,682 970,646 1520,646 1520,428.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1520,418 1527.2,433 1512.8,433" fill="#2457C5"/>
+<circle cx="970" cy="656" r="18" fill="#17202B"/>
+<text x="970" y="663.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<text x="1000" y="583.2" font-size="20" font-weight="400" fill="#2B3440">counts the servers: none</text>
+<text x="1000" y="609.2" font-size="20" font-weight="400" fill="#55606E">the service is disabled</text>
+<text x="1000" y="635.2" font-size="20" font-weight="400" fill="#55606E">already; hvo's reason stays</text>
+<rect x="940" y="902" width="200" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1040" y="938.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Releasing</text>
+<polyline points="1040,738 1040,891.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1040,902 1032.8,887 1047.2,887" fill="#3A4452"/>
+<circle cx="1040" cy="764" r="18" fill="#17202B"/>
+<text x="1040" y="771.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<text x="1070" y="799.2" font-size="20" font-weight="400" fill="#2B3440">releases the pod</text>
+<text x="1070" y="827.2" font-size="20" font-weight="400" fill="#55606E">and waits until it is gone</text>
+<polyline points="1140,930 1752,930 1752,254 1750.5,254" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1740,254 1755,246.8 1755,261.2" fill="#2457C5"/>
+<circle cx="1166" cy="930" r="18" fill="#17202B"/>
+<text x="1166" y="937.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<text x="1400" y="919.2" font-size="20" font-weight="400" fill="#2B3440">DELETE /os-services/{id}</text>
+<text x="1400" y="957.2" font-size="20" font-weight="400" fill="#55606E">Nova drops the host mapping,</text>
+<text x="1400" y="983.2" font-size="20" font-weight="400" fill="#55606E">the resource providers</text>
+<text x="1400" y="1009.2" font-size="20" font-weight="400" fill="#55606E">and the aggregate membership</text>
+<text x="220" y="1107.2" font-size="20" font-weight="400" fill="#55606E">Point of no return: after the delete the node comes back only as a new entry.</text>
+<text x="40" y="1171.2" font-size="20" font-weight="400" fill="#55606E">{node}: the Kubernetes node and the Nova host of the same name. {id}: the id of its compute service.</text>
+<text x="40" y="1197.2" font-size="20" font-weight="400" fill="#55606E">The statements about the hypervisor operator are as read at commit a2baf3f, the one images/openstack-hypervisor-operator/Dockerfile pins.</text>
+<text x="40" y="1223.2" font-size="20" font-weight="400" fill="#55606E">Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.</text>
+</svg>
