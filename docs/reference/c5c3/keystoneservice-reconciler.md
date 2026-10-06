@@ -419,6 +419,53 @@ Only the **delivery objects** stay in the registration's own namespace: the
 assembled source Secret, the PushSecret, the ExternalSecret, and the consumer
 Secret the service reads.
 
+The figure shows both namespaces and the path of the password. Its numbers are
+the steps below.
+
+![A KeystoneService registration from a namespace the ControlPlane does not own, in seven numbered steps. 1: the ControlPlane lists the registration namespace in spec.korc.serviceRegistrations.allowedNamespaces, and without that consent the registration reports NamespaceNotAllowed and nothing is projected. 2: the c5c3-operator writes the children into the ControlPlane namespace, beside the admin credential K-ORC reads there: a generated password Secret, the K-ORC User, Project, Role and RoleAssignment, and the catalog Service, Region and Endpoint, all marked with the labels c5c3.io/keystoneservice-name and c5c3.io/keystoneservice-namespace. 3: K-ORC creates the user in Keystone with that password. 4: the operator copies the password into a source Secret in the registration namespace. 5: a PushSecret stores it in OpenBao through the tenant secret store of that namespace. 6: an ExternalSecret reads it back into the consumer Secret {reg}-credentials. 7: the service mounts that Secret.](../../diagrams/controlplane-keystoneservice-registration.svg)
+
+In the figure `{reg}` and `{reg-ns}` stand for the registration's name and
+namespace, and `{prefix}` for the child-name prefix of
+[Name composition](#name-composition), written `<prefix>` below.
+
+1. `resolveControlPlane` reads the ControlPlane that `spec.controlPlaneRef`
+   names, and `keystoneServiceNamespaceAllowed` admits the registration when its
+   namespace is the ControlPlane's own, one of its dedicated service namespaces,
+   or listed in `spec.korc.serviceRegistrations.allowedNamespaces`. A CR from
+   any other namespace reports `NamespaceNotAllowed` on every declared block and
+   projects nothing. Past the gate the registration waits with
+   `WaitingForAdminCredential` until the ControlPlane reports
+   `AdminCredentialReady`.
+2. The operator writes the children into the ControlPlane namespace: the Secret
+   `<prefix>password-v<N>` with a generated password under the key `password`,
+   the account children (`User`, `Project`, one `Role` import and one
+   `RoleAssignment` per role) and the catalog children (`Service`, the `Region`
+   import, one `Endpoint` per interface). Each child carries the labels
+   `c5c3.io/keystoneservice-name` and `c5c3.io/keystoneservice-namespace`,
+   because an owner reference cannot cross the namespace.
+3. K-ORC creates the user in Keystone with the password its `User` names in
+   `passwordRef`. K-ORC reads the `clouds.yaml` a child names in the child's own
+   namespace: managed children authenticate with
+   `{controlplane.Name}-admin-password-cloud`, probes and imports with
+   `k-orc-clouds-yaml`.
+4. Once the `User` reports the current password Secret as applied and the role
+   assignments are Available, the operator copies the password into the Secret
+   `<prefix>source` in the registration namespace and adds `username`,
+   `project_name`, `user_domain_name`, `project_domain_name`, `auth_url`,
+   `region_name` and a `clouds.yaml`. This copy is the only step that crosses
+   the namespace.
+5. The PushSecret `<prefix>backup` pushes the source Secret through the secret
+   store of the registration namespace, by default the `SecretStore`
+   `openbao-tenant-store` that `reconcileRegistrationTenantStores` provisions
+   there, to `openstack/keystone/<namespace>/<name>/service-accounts/credentials`.
+   Its deletion policy is `Delete`.
+6. The ExternalSecret `<metadata.name>-credentials` reads the properties
+   `password` and `clouds.yaml` from that path into the Secret of the same name,
+   with a refresh of 1h. `AccountReady` turns `True` with reason
+   `AccountProvisioned` once the materialized password equals the generated one.
+7. The service mounts `<metadata.name>-credentials`. It is the one child whose
+   name carries no prefix.
+
 ### Ownership
 
 | Placement | Mechanism |
