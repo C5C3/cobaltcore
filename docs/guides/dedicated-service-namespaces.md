@@ -82,6 +82,12 @@ finalizer tears them down explicitly. The
 reference covers the full contract, including the `Managed` / `External`
 lifecycles and the tenant-key uniqueness rules.
 
+In the figure, Keystone is the service in the middle namespace and Horizon the
+one on the left: `{ns}` is `openstack` and `{ns-2}` is `openstack-internal`
+here. The target cluster on the right is not part of this guide.
+
+![The three places a child of a ControlPlane lives. In the ControlPlane namespace on the management cluster, the service CR, its database and cache, its secret store, its Secrets, its ConfigMaps and its workloads carry an owner reference, and the garbage collector reaps them. In a dedicated service namespace on the management cluster the children of the ControlPlane carry the labels c5c3.io/controlplane-name and c5c3.io/controlplane-namespace instead, and the finalizer c5c3.io/orc-teardown deletes them. For a service placed on a target cluster, the service CR stays in its namespace on the management cluster, while database, cache, secret store, Secrets, ConfigMaps and workloads land in a namespace of the same name on the target, marked with those two labels plus openstack.c5c3.io/owner-kind, owner-name and owner-namespace, and the finalizer openstack.c5c3.io/remote-children sweeps them. A namespace the operator creates carries the annotation c5c3.io/controlplane-uid. The K-ORC resources stay in the ControlPlane namespace for every service.](../diagrams/controlplane-children-placement.svg)
+
 A service **without** an assignment stays in the ControlPlane's namespace —
 that is the whole configuration for Horizon in this guide: its spec block
 simply carries no `namespace`.
