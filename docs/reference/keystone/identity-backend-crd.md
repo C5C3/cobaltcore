@@ -442,7 +442,7 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 | `ConfigProjected` | True | `ConfigProjected` | LDAP: the Keystone Deployment's `domains` volume Secret carries this backend's `keystone.<domain>.conf`. OIDC: the federation Secret mounted by the sidecar carries this backend's client document. SAML: the federation Secret carries this backend's IdP-metadata document. In every case the Deployment has also finished rolling that template out. |
 | `ConfigProjected` | False | `WaitingForProjection` | The projection has not landed in the Deployment's pod template yet. |
 | `ConfigProjected` | False | `WaitingForRollout` | The pod template mounts this backend's config, but replicas of the previous template still serve; the condition flips once every replica runs the projected config. |
-| `Ready` | True | `AllReady` | Both sub-conditions are True. |
+| `Ready` | True | `AllReady` | Every sub-condition of the backend's type is True: two for LDAP, four for OIDC and SAML. |
 | `Ready` | False | `NotAllReady` | At least one sub-condition is not True. |
 
 Once `DomainReady`, `FederationObjectsReady`, or `MappingsReady` has reached
@@ -471,10 +471,10 @@ finalizer:
 
 1. **De-projection first.** The keystone-side sub-reconciler drops the
    backend's config from the projection (the domains Secret for LDAP, the
-   federation Secret — and with the last OIDC backend, the whole sidecar —
-   for OIDC) and rolls the Deployment; the finalizer waits for this so
+   federation Secret for OIDC and SAML, and with the last federation backend
+   the whole sidecar) and rolls the Deployment; the finalizer waits for this so
    keystone never runs with config pointing at a dead domain.
-2. **Federation-object teardown (OIDC).** The protocol, mapping, and
+2. **Federation-object teardown (OIDC and SAML).** The protocol, mapping, and
    identity provider are removed in reverse dependency order —
    unconditionally, regardless of the domain deletion policy — tolerating
    objects already gone. Declarative groups follow the domain (keystone
@@ -484,9 +484,9 @@ finalizer:
    (keystone forbids deleting an enabled domain). `Retain` (the default) and
    adopted domains always leave the domain in place.
 4. **Fail open.** When the referenced Keystone CR is gone (stack teardown),
-   or the admin credential is no longer available, the finalizer releases
-   with a Warning event instead of holding the backend hostage; the domain is
-   retained.
+   the finalizer releases with a log line. When the admin credential is no
+   longer available, it releases with a Warning event. Neither holds the
+   backend hostage, and the domain is retained.
 
 ## Immutability and Validation Summary
 

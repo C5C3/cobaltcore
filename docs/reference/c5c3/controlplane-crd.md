@@ -553,8 +553,8 @@ its fields carry per-field External-mode forbid-rules.
 > produces an origin Keystone will reject, so whenever a `gateway` is configured
 > the validating webhook rejects the ControlPlane instead. The **port** may still
 > differ, since Gateway API hostnames carry none. Behind a gateway the scheme
-> must be `https`: the listener terminates TLS, and Keystone POSTs the unscoped
-> WebSSO token to this origin. See the
+> must be `https`: the listener terminates TLS, and the browser posts the
+> unscoped WebSSO token to this origin. See the
 > [End-to-End SSO guide](../../guides/end-to-end-sso.md).
 
 ---
@@ -2797,7 +2797,7 @@ short-circuit on the first error.
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
 | Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
 | Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
-| Dashboard public endpoint agrees with the gateway | `spec.services.horizon.publicEndpoint` | `field.Invalid` | With `services.horizon.gateway` set: the scheme is not `https` (the listener terminates TLS, and Keystone POSTs the unscoped WebSSO token to this origin), or its host differs from `gateway.hostname` (Django derives the origin it sends from the request `Host` header). The port may differ. **Cross-field, webhook-only.** |
+| Dashboard public endpoint agrees with the gateway | `spec.services.horizon.publicEndpoint` | `field.Invalid` | With `services.horizon.gateway` set: the scheme is not `https` (the listener terminates TLS, and the browser posts the unscoped WebSSO token to this origin), or its host differs from `gateway.hostname` (Django derives the origin it sends from the request `Host` header). The port may differ. **Cross-field, webhook-only.** |
 | Gateway hostname is a usable DNS name | `spec.services.{keystone,horizon}.gateway.hostname` | `field.Invalid` | A wildcard, an embedded port, a path, a scheme, a control character, or over 253 characters. Each shape either breaks the browser-facing origins derived from the hostname or overruns the children's own `MaxLength` markers on those origins. |
 | External block forbidden in non-External mode | `spec.services.keystone.external` | `field.Forbidden` | `external` set while `mode` is not `External`. Defense-in-depth mirror of the CEL rule. |
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |

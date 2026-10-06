@@ -34,8 +34,10 @@ running. Every resource name in the examples below is one that devstack produces
 :::
 
 On the kind devstack, stand up the fixture IdP and LDAP directory this guide
-federates against. These are the same fixtures the two backend guides use, with
-the WebSSO gateway redirect URIs added for the token hand-off:
+federates against. These are the fixtures of the mirroring e2e suite. Its
+Keycloak registers the gateway host of Keystone as a redirect URI, which is where
+the identity provider sends the browser back in hop 4 of
+[the login](#login-hops):
 
 ```bash
 kubectl apply -f tests/e2e-controlplane-sso/00-keycloak.yaml \
@@ -66,13 +68,13 @@ only action you take. The ControlPlane operator watches those backends and, for
 every one that reaches `Ready`, projects:
 
 - a **WebSSO choice** onto the Horizon child (`spec.websso`), so the login page
-  gains an entry in its "Authenticate using" dropdown for each federation
-  backend;
+  gains an entry in its "Authenticate using" dropdown for each OIDC backend;
 - a **domain field** onto the Horizon child (`spec.multiDomain`), once any
   LDAP-backed domain is in play;
 - the **trusted dashboard origin** onto the Keystone child
   (`spec.federation.trustedDashboards`), so Keystone accepts the token hand-off
-  back to your dashboard.
+  back to your dashboard. This one waits for no backend: the operator derives it
+  from `services.horizon` on every pass.
 
 Only `Ready` backends contribute. A backend whose Keystone-side federation
 objects are not provisioned yet never produces an SSO button that dead-ends.
@@ -117,7 +119,8 @@ spec:
 
 ::: warning Keystone matches the origin verbatim
 Keystone compares the origin the dashboard sends against its
-`[federation] trusted_dashboard` list character for character. Two rules follow:
+`[federation] trusted_dashboard` list character for character. Three rules
+follow:
 
 - **`publicEndpoint` must include a non-default port.** If you publish the
   dashboard on `https://horizon.example.com:8443`, say so. When
@@ -131,10 +134,11 @@ Keystone compares the origin the dashboard sends against its
   validating webhook rejects the ControlPlane instead. The port may still
   differ, since Gateway API hostnames carry none.
 - **`publicEndpoint` must use `https` behind a gateway.** The Gateway listener
-  terminates TLS, and Keystone POSTs the unscoped WebSSO token to this origin
-  after every federated login. Over `http` that bearer token — good for the
-  user's full API privileges — travels in cleartext, so the validating webhook
-  rejects it. Without a gateway the value is only warned about.
+  terminates TLS, and after every federated login the browser posts the
+  unscoped WebSSO token to this origin, in a form Keystone hands it. Over `http`
+  that bearer token — good for the user's full API privileges — travels in
+  cleartext, so the validating webhook rejects it. Without a gateway the value
+  is only warned about.
 :::
 
 ## Step 2 — Attach a federation backend
@@ -334,9 +338,9 @@ dashboard's `spec.websso` block on the Horizon CR yourself — the same shape th
 ControlPlane would have projected.
 
 ::: warning Do not also set it in `extraConfig`
-`spec.extraConfig` wins the render-time merge, so declaring
-`[federation] trusted_dashboard` in both places would silently drop the typed
-list. The validating webhook rejects the combination.
+The typed list is written after the `spec.extraConfig` merge, so declaring
+`[federation] trusted_dashboard` in both places would silently drop the
+`extraConfig` value. The validating webhook rejects the combination.
 :::
 
 ## Publishing the dashboard on a non-default port
@@ -394,13 +398,16 @@ kubectl get keystone controlplane-keystone -n openstack \
   -o jsonpath='{.spec.federation.trustedDashboards}'
 ```
 
-Then check the two rules from Step 1: the port must be present when it is not
+Then check two of the rules from Step 1: the port must be present when it is not
 443, and `publicEndpoint` must name the same host as `gateway.hostname`.
 
-**The SSO button redirects to an unreachable URL.** `spec.websso.keystoneURL`
-is projected from `services.keystone.publicEndpoint`. If that is unset, Horizon
-falls back to `spec.keystoneEndpoint` — the cluster-local Service URL, which the
-browser cannot resolve. Set `publicEndpoint`.
+**The SSO button redirects to an unreachable URL.** This is hop 2 of
+[the login](#login-hops). `spec.websso.keystoneURL` is projected from
+`services.keystone.publicEndpoint`. If that is unset, the operator derives
+`https://{gateway.hostname}/v3`, the default-443 form, which a gateway published
+on another port does not answer. Set `publicEndpoint` with the port. Only a
+Horizon CR you write yourself falls back to `spec.keystoneEndpoint`, the
+cluster-local Service URL, when its `spec.websso.keystoneURL` is empty.
 
 ## Tested by
 

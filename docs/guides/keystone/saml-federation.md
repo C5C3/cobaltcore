@@ -203,9 +203,9 @@ kubectl get secret keystone-saml-sp-metadata \
 
 Register that SP metadata with your IdP out of band (in Keycloak: create a
 SAML client, import the SP metadata, and confirm the client's `clientId`
-equals the SP `entityID` from the Secret). The export is written even before
-the IdP metadata resolves, so you can register the SP first and supply the
-IdP metadata afterward.
+equals the SP `entityID` from the Secret). The export is written once the
+backend renders, and a backend whose IdP metadata does not resolve is skipped.
+Supply the IdP metadata first, then register the SP.
 
 ## Step 7 — Log in via WebSSO
 
@@ -273,9 +273,10 @@ the last federation backend restores the plain uWSGI-only pod.
 
 ## Tested by
 
-Attaching the SAML backend, watching the conditions converge, exporting the SP
-metadata, and a WebSSO login are asserted end-to-end on the CI e2e kind cluster
-by this chainsaw suite:
+Attaching the SAML backend, watching the conditions converge, and exporting the
+SP metadata are asserted on the CI e2e kind cluster by this chainsaw suite. It
+runs no WebSSO login: the SAML round trip through a browser is left to a check
+by hand.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/saml-federation
