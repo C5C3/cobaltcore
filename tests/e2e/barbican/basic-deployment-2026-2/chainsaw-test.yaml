@@ -5,9 +5,10 @@
 # Chainsaw E2E test for happy-path Barbican deployment (2026.2 release).
 # The per-release twin of the 2025.2 basic-deployment suite. Barbican has only
 # ever shipped a WSGI application, so there is no launch mode to select per
-# release: this suite asserts the SAME uWSGI command and the same [vault_plugin]
-# credential split against the 2026.2 image. What does differ is the paste file
-# the image ships, and the assertions below are the inverse of the 2025.2 leg's:
+# release. Barbican 23.0.0 ships the same paste file as 22.0.0, so this suite
+# asserts the SAME uWSGI command, the same [vault_plugin] credential split, the
+# same [oslo_policy] posture and the 2026.1-and-later paste shape against the
+# 2026.2 image; the paste assertions are the inverse of the 2025.2 leg's:
 #   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - The attached managed secret store reaches Ready=True
@@ -16,8 +17,8 @@
 #     NOT its approle_secret_id
 #   - The rendered barbican.conf carries [oslo_policy]
 #     enforce_new_defaults = true and no enforce_scope
-#   - The rendered paste file has the 2026.2 shape: the oslo request_id filter is
-#     present and the repoze.profile pipeline is gone
+#   - The rendered paste file has the 2026.1-and-later shape: the oslo
+#     request_id filter is present and the repoze.profile pipeline is gone
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -208,10 +209,12 @@ spec:
   # [oslo_policy] greps are identical to the 2025.2 leg's as well, since the
   # policy posture does not move with the release either.
   #
-  # The paste greps are the INVERSE of the 2025.2 leg's. Upstream added the oslo
-  # request_id filter to every pipeline and dropped the repoze.profile pipeline
-  # in 2026.2, and both deltas ride on the same release boundary in
-  # reconcile_config.go, so a boundary that moved shows up here.
+  # The paste greps are the 2026.1 leg's, the INVERSE of the 2025.2 leg's.
+  # Barbican 23.0.0 ships the same paste file as 22.0.0: the oslo request_id
+  # filter in every pipeline and no repoze.profile pipeline. A paste assertion
+  # that fails here means the operator moved the 2026.1 boundary in
+  # pasteCarriesRequestID (reconcile_config.go), not that upstream changed the
+  # file.
   - try:
     - script:
         content: |
@@ -244,10 +247,10 @@ spec:
           echo "OK: $SEC renders enforce_new_defaults = true in [oslo_policy] and no enforce_scope"
           grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-2026-2-paste.ini
           if grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-2026-2-paste.ini; then
-            echo "ERROR: barbican-api-paste.ini carries the pre-2026.2 barbican-profile pipeline"
+            echo "ERROR: barbican-api-paste.ini carries the pre-2026.1 barbican-profile pipeline"
             exit 1
           fi
-          echo "OK: $SEC renders the 2026.2 paste shape (request_id filter, no barbican-profile pipeline)"
+          echo "OK: $SEC renders the 2026.1-and-later paste shape (request_id filter, no barbican-profile pipeline)"
   # ── Step 6: Assert the Barbican API answers /healthcheck over HTTP ──────
   - try:
     - script:
