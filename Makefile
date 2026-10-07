@@ -349,15 +349,18 @@ verify-go-tidy:
 
 .PHONY: sync-helm-rbac
 # sync-helm-rbac regenerates every operator chart's templates/_rbac-rules.tpl
-# from the controller-gen ClusterRole in operators/<op>/config/rbac/role.yaml
-# (itself generated from the +kubebuilder:rbac markers by manifests). The chart
-# RBAC rules are never edited by hand: change the markers, then run this.
+# and templates/_webhook-rbac-rules.tpl from the <op>-operator and <op>-webhook
+# ClusterRoles in operators/<op>/config/rbac/role.yaml (itself generated from
+# the +kubebuilder:rbac markers by manifests). The chart RBAC rules are never
+# edited by hand: change the markers, then run this.
 sync-helm-rbac: manifests
 	python3 hack/gen-helm-rbac-rules.py
 
 .PHONY: verify-helm-rbac
-# verify-helm-rbac fails if any committed templates/_rbac-rules.tpl has drifted
-# from the committed config/rbac/role.yaml (run in CI; mirrors verify-crd-sync).
+# verify-helm-rbac fails if any committed templates/_rbac-rules.tpl or
+# templates/_webhook-rbac-rules.tpl has drifted from the committed
+# config/rbac/role.yaml, or if <op>-webhook grants a read <op>-operator does not
+# (run in CI; mirrors verify-crd-sync).
 # It reads the committed role.yaml, so it needs no controller-gen.
 verify-helm-rbac:
 	python3 hack/gen-helm-rbac-rules.py --check
