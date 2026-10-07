@@ -6,6 +6,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -34,6 +36,13 @@ const (
 	defaultDjangoSessionEngine      = "django.contrib.sessions.backends.signed_cookies"
 	horizonStaticRoot               = "/var/lib/openstack/horizon-static"
 	horizonLocalSettingsMountedPath = "/etc/openstack-dashboard/"
+	// cacheKeyPrefixStem starts every rendered CACHES["default"]["KEY_PREFIX"].
+	cacheKeyPrefixStem = "horizon-"
+	// cacheKeyPrefixHashLen is the number of hex characters of the image
+	// reference's SHA-256 in the key prefix. It is longer than the ConfigMap
+	// suffix's 8 because a collision between two releases would bring back
+	// the template-cache poisoning the prefix exists to prevent.
+	cacheKeyPrefixHashLen = 12
 )
 
 // reconcileConfig renders local_settings.py, creates an immutable ConfigMap
@@ -119,8 +128,9 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 		"SESSION_ENGINE": defaultDjangoSessionEngine,
 		"CACHES": map[string]any{
 			"default": map[string]any{
-				"BACKEND":  effectiveCacheBackend(horizon),
-				"LOCATION": cacheLocations(horizon),
+				"BACKEND":    effectiveCacheBackend(horizon),
+				"KEY_PREFIX": cacheKeyPrefix(horizon),
+				"LOCATION":   cacheLocations(horizon),
 			},
 		},
 		"OPENSTACK_KEYSTONE_URL": horizon.Spec.KeystoneEndpoint,
@@ -384,6 +394,21 @@ func cacheLocations(horizon *horizonv1alpha1.Horizon) []any {
 		locations = append(locations, s)
 	}
 	return locations
+}
+
+// cacheKeyPrefix returns the Django KEY_PREFIX for CACHES["default"]: the
+// constant stem "horizon-" followed by the first 12 hex characters of the
+// SHA-256 of spec.image's reference ("repository:tag" or "repository@digest").
+// Django prepends it to every cache key, template fragments included, so two
+// Horizon releases sharing one Memcached never read each other's entries
+// (OfflineGenerationError, HTTP 500: see issue #1305) and an image change
+// starts with a cold cache. The prefix is scoped per image, not per CR: two
+// CRs running the same image share a warm cache by design. It follows the
+// spec, not the running digest, so two builds pushed behind one tag share a
+// prefix; only a digest pin isolates them.
+func cacheKeyPrefix(horizon *horizonv1alpha1.Horizon) string {
+	sum := sha256.Sum256([]byte(horizon.Spec.Image.Reference()))
+	return cacheKeyPrefixStem + hex.EncodeToString(sum[:])[:cacheKeyPrefixHashLen]
 }
 
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
