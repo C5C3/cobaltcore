@@ -17,6 +17,10 @@
 #       launch command it ran at 2026.1, and the rollout completes
 #   (6) The steady-state db-sync Job re-runs on the :2026.2 image (its
 #       db load_metadefs pass loads the 2026.2 metadata definitions)
+#   (7) An image uploaded at 2026.1 is active and downloads intact at 2026.2,
+#       and the 33.0.0 S3 location rewrite strips the credentials
+#       glance_store 5.4.0 embedded in its location: the image_locations row
+#       carries them after step 3 and no longer after step 6
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -103,11 +107,167 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Patch release + image tag to trigger the cross-release upgrade ─
+  # ── Step 3: Seed an image on :2026.1 ────────────────────────────────────
+  # Runs an in-cluster python client on the 2026.1 glance image: it creates an
+  # image record, PUTs a small payload to the default S3 store and asserts the
+  # image goes active. glance_store 5.4.0, the 2026.1 pin, writes that S3
+  # location with the credentials embedded, which is what step 6 hands to the
+  # 2026.2 API; the step reads the row back to prove it. The client picks a
+  # fresh random image id per run: the S3 driver's add raises Duplicate when
+  # the object key already exists, and the glance-images bucket keeps the
+  # object of an earlier run, so a fixed id would fail the second run on one
+  # cluster. Connection errors and timeouts are retried. A timeout can come
+  # after Glance applied the create or the upload, and Glance answers the
+  # retry with 409 (the id exists, or the image has left queued), so a 409 on
+  # a retry counts as the earlier attempt and the active check proves the
+  # result. Any other HTTP error fails fast with the response body. The
+  # SEED-OK sentinel is grepped so a swallowed pod exit code still fails the
+  # step.
+  #
+  # The probe runs detached and its output is read back with kubectl logs after
+  # the pod reaches a terminal phase: kubectl run -i only streams from the
+  # moment the attach lands, and with the image cached the probe can exit
+  # before the attach, losing the sentinel.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          kubectl delete pod glance-release-upgrade-seed -n $NAMESPACE --ignore-not-found
+          kubectl run glance-release-upgrade-seed -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
+            --command -- python3 -c '
+          import json, sys, time, uuid, urllib.request, urllib.error
+
+          BASE = "http://glance-release-upgrade.openstack.svc:9292"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=30)
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def write(method, path, data, ctype, what):
+              tries = [0]
+              def fn():
+                  tries[0] += 1
+                  try:
+                      return call(method, path, data=data, headers={"Content-Type": ctype})
+                  except urllib.error.HTTPError as e:
+                      if e.code == 409 and tries[0] > 1:
+                          print("%s -> HTTP 409 on attempt %d, an earlier attempt landed" % (what, tries[0]))
+                          return None
+                      raise
+              return do(fn, what)
+
+          image_id = str(uuid.uuid4())
+          payload = json.dumps({"id": image_id, "name": "release-upgrade-probe", "disk_format": "raw", "container_format": "bare"}).encode()
+          write("POST", "/v2/images", payload, "application/json", "create image")
+          write("PUT", "/v2/images/%s/file" % image_id, b"release-upgrade-probe-payload", "application/octet-stream", "upload")
+
+          # An upload retry that met 409 can find the first attempt still saving.
+          for i in range(24):
+              final = json.loads(do(lambda: call("GET", "/v2/images/%s" % image_id), "get image").read())
+              if final.get("status") != "saving":
+                  break
+              time.sleep(5)
+          if final.get("status") != "active":
+              fail("image status is %r, want active" % final.get("status"))
+          print("created image %s" % image_id)
+          print("SEED-OK")
+          '
+          # 48 polls x 5s = 4m, inside the 6m step timeout with room for the
+          # image_locations read below, so the phase check (with the logs
+          # echoed) reports a stuck pod, not the chainsaw kill.
+          PHASE=""
+          for i in $(seq 1 48); do
+            PHASE="$(kubectl get pod glance-release-upgrade-seed -n $NAMESPACE \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$PHASE" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs glance-release-upgrade-seed -n $NAMESPACE 2>&1 || true)"
+          kubectl delete pod glance-release-upgrade-seed -n $NAMESPACE --ignore-not-found
+          echo "${OUT}"
+          [ "$PHASE" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'SEED-OK'
+          echo "OK: image stored on :2026.1 and active"
+          # The SQL user is named after the instance
+          # (internal/common/database/builders.go) and its password is the one
+          # database.secretRef points at. The password goes over stdin as
+          # MYSQL_PWD, as in tests/e2e-autoscaling/mariadb-sql.sh, so it is on
+          # no command line. `kubectl` calls fail transiently under
+          # `parallel: 4`, and an exec dial can connect and then stall (see
+          # ../gateway-large-upload), so each attempt re-reads the password
+          # and runs the exec under `timeout`.
+          # The location is matched, not printed: it carries the S3 secret key.
+          IMAGE_ID="$(echo "${OUT}" | sed -n 's/^created image //p')"
+          READ_OK=""
+          for attempt in 1 2 3; do
+            PW="$(kubectl get secret glance-db -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)" || PW=""
+            if [ -n "$PW" ] && LOC="$(printf '%s' "$PW" | timeout 20 kubectl exec -i -n $NAMESPACE openstack-db-0 -c mariadb -- \
+                sh -c 'export MYSQL_PWD; MYSQL_PWD="$(cat)"; exec mariadb -uglance-release-upgrade -N glance_release_upgrade -e "$1"' sh \
+                "SELECT value FROM image_locations WHERE image_id = '${IMAGE_ID}' AND deleted = 0")"; then
+              READ_OK=yes
+              break
+            fi
+            [ -n "$PW" ] || echo "glance-db password read attempt $attempt returned nothing"
+            echo "image_locations read attempt $attempt failed"
+            sleep 4
+          done
+          [ -n "$READ_OK" ] || { echo "FAIL: could not read the image_locations row of image ${IMAGE_ID}"; exit 1; }
+          case "$LOC" in
+          s3*://*:*@*) echo "OK: the 2026.1 location of image ${IMAGE_ID} carries embedded credentials" ;;
+          *) echo "FAIL: the 2026.1 location of image ${IMAGE_ID} carries no embedded credentials: '${LOC}'"; exit 1 ;;
+          esac
+    catch: &probe-dump
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-release-upgrade-s3 -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Probe pod logs ==="
+          # The wrapper deletes its probe pod before it fails; one is left only
+          # when the step timeout killed the wrapper first.
+          for pod in glance-release-upgrade-seed glance-release-upgrade-read; do
+            if kubectl get pod "$pod" -n $NAMESPACE >/dev/null 2>&1; then
+              echo "--- $pod ---"
+              kubectl logs "$pod" -n $NAMESPACE 2>&1 || true
+            fi
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Patch release + image tag to trigger the cross-release upgrade ─
   - try:
     - patch:
         file: 02-patch-upgrade.yaml
-  # ── Step 4: Assert the upgrade completes via expand-migrate-contract ─────
+  # ── Step 5: Assert the upgrade completes via expand-migrate-contract ─────
   - try:
     # Gate on the settled end state first: installedRelease is promoted to
     # 2026.2 only after the contract phase, and the fresh post-upgrade db-sync
@@ -222,3 +382,110 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the image survived the upgrade ───────────────────────
+  # Runs the step-3 client on the 2026.2 glance image against the upgraded API.
+  # It lists the images named release-upgrade-probe and wants exactly one: the
+  # suite's own schema glance_release_upgrade holds only what step 3 stored.
+  # Reading that image's record is what runs glance 33.0.0's S3 location rewrite
+  # (ImageRepoProxy.get -> _update_s3_location_credentials), which drops the
+  # credentials glance_store 5.4.0 embedded and saves the image. The download
+  # then resolves the rewritten location through glance_store 5.7.0, which takes
+  # the keys from the backend config, and must return the seeded bytes. The
+  # download would succeed from the old URI too, so the step reads the saved
+  # URI from the image_locations table, as step 3 did, and wants it free of
+  # credentials. The API is not asked for it: only show_multiple_locations or
+  # the admin locations API expose it, and either would widen the opened
+  # policy. The UPGRADE-IMAGE-OK sentinel, the detached-pod wrapper and the
+  # retried, password-on-stdin row read are step 3's.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          kubectl delete pod glance-release-upgrade-read -n $NAMESPACE --ignore-not-found
+          kubectl run glance-release-upgrade-read -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2026.2 --restart=Never \
+            --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-release-upgrade.openstack.svc:9292"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=30)
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          listing = json.loads(do(lambda: call("GET", "/v2/images?name=release-upgrade-probe&limit=2"), "list images").read())
+          images = listing.get("images", [])
+          if len(images) != 1:
+              fail("image list by name returned %d images, want 1" % len(images))
+          image_id = images[0]["id"]
+          print("listed image %s" % image_id)
+
+          rec = json.loads(do(lambda: call("GET", "/v2/images/%s" % image_id), "get image").read())
+          if rec.get("status") != "active":
+              fail("image status is %r, want active" % rec.get("status"))
+
+          want = b"release-upgrade-probe-payload"
+          body = do(lambda: call("GET", "/v2/images/%s/file" % image_id), "download").read()
+          if len(body) == 0:
+              fail("downloaded 0 bytes, want %d" % len(want))
+          if body != want:
+              fail("downloaded bytes differ from the seeded payload")
+          print("downloaded %d bytes, identical to the seeded payload" % len(body))
+          print("UPGRADE-IMAGE-OK")
+          '
+          # 48 polls x 5s = 4m, inside the 6m step timeout with room for the
+          # image_locations read below, so the phase check (with the logs
+          # echoed) reports a stuck pod, not the chainsaw kill.
+          PHASE=""
+          for i in $(seq 1 48); do
+            PHASE="$(kubectl get pod glance-release-upgrade-read -n $NAMESPACE \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$PHASE" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs glance-release-upgrade-read -n $NAMESPACE 2>&1 || true)"
+          kubectl delete pod glance-release-upgrade-read -n $NAMESPACE --ignore-not-found
+          echo "${OUT}"
+          [ "$PHASE" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'UPGRADE-IMAGE-OK'
+          echo "OK: the image stored on :2026.1 is active and downloads intact on :2026.2"
+          IMAGE_ID="$(echo "${OUT}" | sed -n 's/^listed image //p')"
+          READ_OK=""
+          for attempt in 1 2 3; do
+            PW="$(kubectl get secret glance-db -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)" || PW=""
+            if [ -n "$PW" ] && LOC="$(printf '%s' "$PW" | timeout 20 kubectl exec -i -n $NAMESPACE openstack-db-0 -c mariadb -- \
+                sh -c 'export MYSQL_PWD; MYSQL_PWD="$(cat)"; exec mariadb -uglance-release-upgrade -N glance_release_upgrade -e "$1"' sh \
+                "SELECT value FROM image_locations WHERE image_id = '${IMAGE_ID}' AND deleted = 0")"; then
+              READ_OK=yes
+              break
+            fi
+            [ -n "$PW" ] || echo "glance-db password read attempt $attempt returned nothing"
+            echo "image_locations read attempt $attempt failed"
+            sleep 4
+          done
+          [ -n "$READ_OK" ] || { echo "FAIL: could not read the image_locations row of image ${IMAGE_ID}"; exit 1; }
+          case "$LOC" in
+          s3*://*@*) echo "FAIL: the location of image ${IMAGE_ID} still carries embedded credentials after the 2026.2 read"; exit 1 ;;
+          s3*://*) echo "OK: the 2026.2 read rewrote the location of image ${IMAGE_ID} to ${LOC}" ;;
+          *) echo "FAIL: the location of image ${IMAGE_ID} is '${LOC}', want an s3 URI"; exit 1 ;;
+          esac
+    catch: *probe-dump
