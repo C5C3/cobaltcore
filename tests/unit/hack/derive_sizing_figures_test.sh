@@ -144,7 +144,7 @@ test_complete_run() {
     "30m,1Gi" "$(value_of minimalDatabase)"
   assert_eq "Memcached at a 40Mi target keeps its 96Mi floor, CPU its 10m floor" \
     "10m,96Mi" "$(value_of minimalCache)"
-  assert_eq "the broker keeps its 512Mi floor" "100m,512Mi" "$(value_of minimalMessaging)"
+  assert_eq "the broker keeps its 1Gi floor" "100m,1Gi" "$(value_of minimalMessaging)"
   assert_eq "OpenBao at a 180Mi target rounds up to 192Mi, 12m to 15m" \
     "15m,192Mi" "$(value_of minimalSecretStore)"
   assert_eq "the sidecar CPU keeps its 25m floor" "25m" "$(value_of sidecarCPURequest)"
