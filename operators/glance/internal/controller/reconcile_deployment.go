@@ -397,6 +397,10 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
+				// A single-worker API holds the probe's GET for the whole request in
+				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
+				// is the readiness probe's timeout, below the 20s period.
+				TimeoutSeconds: 10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
