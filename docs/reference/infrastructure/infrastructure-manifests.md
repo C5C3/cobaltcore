@@ -2580,8 +2580,8 @@ Production ships no equivalent object. A production `ControlPlane` declares
 | Target namespace | `openstack` (pre-existing; the overlay ships no inline `Namespace`) |
 | API version | `rabbitmq.com/v1beta1` |
 | Replicas | `1` |
-| Requests | `100m` CPU, `512Mi` memory |
-| Limits | `512Mi` memory, no CPU limit |
+| Requests | `100m` CPU, `1Gi` memory |
+| Limits | `1Gi` memory, no CPU limit |
 | Dependencies | the RabbitMQ Cluster Operator (Phase 3b) and the `rabbitmqclusters.rabbitmq.com` CRD (the Step 5 `wait_for_crds` list) |
 
 **Sizing.** The cluster operator requests 1 CPU and 2Gi per pod by default.
@@ -2589,7 +2589,11 @@ That request does not fit beside the rest of the stack on the self-hosted
 runner's kind node: it takes the last schedulable CPU and the next pod stays `Pending` on
 `Insufficient cpu`. `tests/e2e-chaos/neutron-broker-outage` records the same
 finding for its own broker. The e2e suites push little traffic through the
-bus, so `100m` and `512Mi` carry them. Memory is limited at the request.
+bus, so `100m` CPU carries them. The memory figure follows from the broker's
+alarm: the cluster operator alarms the broker at 0.6 of the limit minus a
+fifth, so `512Mi` alarmed at 245.8 MiB against an idle footprint of about
+236 MiB ([#1298](https://github.com/c5c3/cobaltcore/issues/1298)) and `1Gi`
+alarms at 491.5 MiB. Memory is limited at the request.
 There is no CPU limit, so a busy moment goes unthrottled.
 
 **One vhost per suite.** Every standalone Cinder e2e suite creates its own
