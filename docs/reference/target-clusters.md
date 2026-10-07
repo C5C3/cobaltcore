@@ -128,7 +128,10 @@ An install that needs no target clusters carries none of the cross-cluster
 exposure: a namespace-scoped install clears `--clusters-namespace` (see below),
 the operator engages nothing, and a `targetClusterRef` naming any cluster
 reports `TargetClusterUnavailable`. The `novacomputes` grant still reaches the
-management cluster's own nodes.
+management cluster's own nodes. A standalone webhook release
+(`webhook.standalone=true`, which starts the manager with
+`--enable-controllers=false`) engages nothing either: it runs no reconciler and
+reads no registration Secret.
 
 ## Registration does not validate credentials
 
