@@ -24,7 +24,10 @@
 # docs/reference/infrastructure/infrastructure-manifests.md name its alerts
 # and query counts beside the chart tag they were read from, and
 # tests/unit/docs/infrastructure_manifests_lab_prometheus_test.sh fails while
-# that tag differs from ref.tag.
+# that tag differs from ref.tag. hvo-release.yaml's post-renderer patch on
+# the PrometheusRules writes hvo's ref.tag into their version label, and
+# tests/unit/deploy/metal_stack_hypervisor_test.sh fails while that value
+# differs from ref.tag.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
