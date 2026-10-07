@@ -63,24 +63,26 @@ bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
     TargetClusters:   true,
-    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
+    SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
         mgr := mcMgr.GetLocalManager()
-        if err := (&controller.ControlPlaneReconciler{
-            Client:   mgr.GetClient(),
-            Scheme:   mgr.GetScheme(),
-            Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
-            Resolver: mcMgr,
-        }).SetupWithManager(mcMgr); err != nil {
-            return err
+        if opts.Controllers {
+            if err := (&controller.ControlPlaneReconciler{
+                Client:   mgr.GetClient(),
+                Scheme:   mgr.GetScheme(),
+                Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
+                Resolver: mcMgr,
+            }).SetupWithManager(mcMgr); err != nil {
+                return err
+            }
+            if err := (&controller.CredentialRotationReconciler{
+                Client:   mgr.GetClient(),
+                Scheme:   mgr.GetScheme(),
+                Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"),
+            }).SetupWithManager(mgr); err != nil {
+                return err
+            }
         }
-        if err := (&controller.CredentialRotationReconciler{
-            Client:   mgr.GetClient(),
-            Scheme:   mgr.GetScheme(),
-            Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"),
-        }).SetupWithManager(mgr); err != nil {
-            return err
-        }
-        if webhooks {
+        if opts.Webhooks {
             return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).
                 SetupWebhookWithManager(mgr)
         }
@@ -95,7 +97,7 @@ bootstrap.Run(bootstrap.ManagerConfig{
 | Primary reconciler | `ControlPlaneReconciler` (event recorder `controlplane-controller`), completed through the **multicluster** builder: it takes `mcMgr`, and its `Resolver` turns a service's [`targetClusterRef`](../target-clusters.md) into the client that service's children are written with |
 | Secondary reconciler | `CredentialRotationReconciler` (event recorder `credentialrotation-controller`), on the local manager: it only ever touches the management cluster |
 | `TargetClusters` | `true`: the binary engages the clusters registered in `--clusters-namespace`. The provider engages nothing while that namespace holds no registration Secret, which is the single-cluster default every existing install keeps |
-| Webhook | `ControlPlaneWebhook`, registered **only** when `bootstrap.Run` passes `webhooks == true` to `SetupFunc` (the bool is resolved once by the bootstrap layer from the manager environment) |
+| Webhook | `ControlPlaneWebhook`, registered **only** when `bootstrap.Run` passes `opts.Webhooks == true` to `SetupFunc` (the bootstrap layer resolves `bootstrap.SetupOptions` once from the flags). The reconcilers are registered only when `opts.Controllers` is true, which `--enable-controllers=false` clears for a standalone webhook deployment |
 
 ### Scheme Registration
 

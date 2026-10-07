@@ -27,6 +27,26 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
+// SetupOptions carries the resolved flags SetupFunc registers against.
+type SetupOptions struct {
+	// Controllers is false under --enable-controllers=false, the standalone
+	// webhook deployment: SetupFunc registers no reconciler and no watch, so
+	// the manager starts no informer, and the ServiceAccount needs only what
+	// the webhooks read.
+	Controllers bool
+	// Webhooks is the resolved --enable-webhooks flag.
+	Webhooks bool
+	// MaxConcurrentReconciles is the resolved --max-concurrent-reconciles
+	// value; controllers that do not tune concurrency ignore it.
+	MaxConcurrentReconciles int
+	// Namespace is the resolved --namespace flag: empty for a cluster-wide
+	// operator, the watched namespace otherwise. It is neither
+	// --clusters-namespace nor the namespace the operator Pod runs in. A
+	// controller uses it to leave out what a namespaced Role cannot grant,
+	// such as a watch on a cluster-scoped kind.
+	Namespace string
+}
+
 // ManagerConfig holds per-operator configuration for the shared manager
 // bootstrap. Every operator provides its own Scheme (with custom API types
 // registered) and a unique LeaderElectionID.
@@ -54,15 +74,9 @@ type ManagerConfig struct {
 	// +kubebuilder:scaffold:builder marker in a standard kubebuilder project.
 	// It receives the multicluster manager, because only that manager can hand
 	// out a client for a cluster other than the local one; operators that talk
-	// to the management cluster only take its GetLocalManager. The third
-	// argument is the resolved --max-concurrent-reconciles value; controllers
-	// that do not tune concurrency may ignore it. The fourth argument is the
-	// resolved --namespace value: empty for a cluster-wide operator, the
-	// watched namespace otherwise. It is neither --clusters-namespace nor the
-	// namespace the operator Pod runs in. A controller uses it to leave out
-	// what a namespaced Role cannot grant, such as a watch on a cluster-scoped
-	// kind.
-	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error
+	// to the management cluster only take its GetLocalManager. The resolved
+	// flags arrive as SetupOptions.
+	SetupFunc func(mgr mcmanager.Manager, opts SetupOptions) error
 
 	// RegisterFlags is an optional, nil-safe hook for registering
 	// operator-specific flags on the shared flag set. It is invoked after the
@@ -354,7 +368,12 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles, opts.namespace); err != nil {
+		if err := cfg.SetupFunc(mgr, SetupOptions{
+			Controllers:             opts.enableControllers,
+			Webhooks:                opts.enableWebhooks,
+			MaxConcurrentReconciles: opts.maxConcurrentReconciles,
+			Namespace:               opts.namespace,
+		}); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}
