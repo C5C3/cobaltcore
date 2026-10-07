@@ -18,8 +18,19 @@
 # "  dependsOn:" and the next line that starts with two spaces and a letter.
 # A pill is a cell of the .drawio in the style "arcSize=40;". It prints one
 # problem per line, sorted, and nothing when the table and both files of the
-# figure agree with the manifests. The fixture tests prove each check on a
-# scratch tree before the last test runs it on the repository.
+# figure agree with the manifests.
+#
+# The same page counts the base kustomization three times: the Resource
+# count line and the category table of "### Base Kustomization", and the
+# sentence under "### Step 1: Apply base resources" that starts with "This
+# applies". check_resource_counts reads the files the top-level resources:
+# list of deploy/flux-system/kustomization.yaml names, counts their documents
+# by kind and holds the three places to the files: the file count, the count
+# and the names of every kind, the Total row, and every number of the
+# sentence, where "sources" is the sum of the *Repository kinds.
+#
+# The fixture tests prove each check on a scratch tree before the last tests
+# run both checks on the repository.
 #
 # Usage: bash tests/unit/docs/flux_dependency_table_test.sh
 
@@ -159,6 +170,186 @@ check_flux_dependencies() {
 }
 
 # ---------------------------------------------------------------------------
+# Resource counts of the base kustomization
+# ---------------------------------------------------------------------------
+
+# The files of the top-level resources: list of a kustomization.yaml, one per
+# line, without the comment that may follow an entry.
+# shellcheck disable=SC2016 # an awk program, not shell
+RESOURCES_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+/^resources:/ { list = 1; next }
+list && /^[^ \t#]/ { list = 0 }
+list && /^  - / { s = $0; sub(/^  - /, "", s); sub(/[ \t]+#.*$/, "", s); print trim(s) }
+'
+
+# One line per document with a kind: kind and name, separated by a tab.
+# shellcheck disable=SC2016 # an awk program, not shell
+DOCUMENTS_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+function emit() { if (kind != "") print kind "\t" name }
+FNR == 1 { emit(); kind = ""; meta = 0; name = "" }
+/^---[ \t]*$/ { emit(); kind = ""; meta = 0; name = ""; next }
+kind == "" && /^kind: / { kind = trim(substr($0, 7)) }
+/^metadata:/ { meta = 1; next }
+meta && name == "" && /^  name: / { name = trim(substr($0, 9)) }
+END { emit() }
+'
+
+# The count statements of the page: "COUNT<tab><line>" for the Resource
+# count line of "### Base Kustomization", "TABLE" once the category table is
+# found, "ROW<tab>kind<tab>count<tab>names" per row, "TOTAL<tab>count" for
+# the Total row, and "SENTENCE<tab>text" for the sentence under "### Step 1"
+# that starts with "This applies", joined across lines and cut at its period.
+# shellcheck disable=SC2016 # an awk program, not shell
+COUNTS_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+function flush(   t, i) {
+  if (para == "") return
+  t = substr(para, index(para, "This applies "))
+  i = index(t, ". ")
+  if (i > 0) t = substr(t, 1, i)
+  print "SENTENCE\t" t
+  para = ""
+}
+/^#/ { flush(); base = ($0 == "### Base Kustomization"); step1 = ($0 == "### Step 1: Apply base resources"); table = 0 }
+base && /^\*\*Resource count:\*\* / { print "COUNT\t" $0 }
+base && !table && $0 == "| Category | Count | Resources |" { table = 1; print "TABLE"; next }
+table {
+  if ($0 !~ /^\|/) table = 0
+  else if ($0 !~ /^\| *-+ *\|/) {
+    split($0, cell, "|")
+    kind = trim(cell[2]); count = trim(cell[3]); names = trim(cell[4])
+    gsub(/\*/, "", kind); gsub(/\*/, "", count); gsub(/`/, "", names)
+    if (kind == "Total") print "TOTAL\t" count
+    else print "ROW\t" kind "\t" count "\t" names
+  }
+}
+step1 && para == "" && /This applies / { para = $0; next }
+step1 && para != "" { if ($0 ~ /^[ \t]*$/) flush(); else para = para " " $0 }
+END { flush() }
+'
+
+# The manifests, read as "M<tab>kind<tab>name", against the statements of
+# the page and "FILES<tab>n", the number of files the kustomization lists.
+# shellcheck disable=SC2016 # an awk program, not shell
+COMPARE_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+function number(s, which,   n, i) {
+  n = 0
+  while (match(s, /[0-9]+/)) {
+    n++
+    if (n == which) return substr(s, RSTART, RLENGTH)
+    s = substr(s, RSTART + RLENGTH)
+  }
+  return ""
+}
+function join(a, n,   i, s) { for (i = 1; i <= n; i++) s = (i == 1 ? a[i] : s ", " a[i]); return s }
+$1 == "M" {
+  if (!($2 in count)) kinds[++nk] = $2
+  count[$2]++; total++
+  names[$2] = (names[$2] == "" ? $3 : names[$2] SUBSEP $3)
+  next
+}
+$1 == "FILES" { files = $2; next }
+$1 == "COUNT" { countline = $2; next }
+$1 == "ROW" { if (!($2 in row)) rows[++nr] = $2; row[$2] = $3; rownames[$2] = $4; next }
+$1 == "TOTAL" { totalrow = $2; next }
+$1 == "SENTENCE" { sentence = $2; next }
+END {
+  for (i = 1; i <= nk; i++) {
+    k = kinds[i]
+    if (!(k in row)) { print "kind without a row: " k; continue }
+    if (row[k] != count[k]) printf "count differs: %s: manifests %d, table %s\n", k, count[k], row[k]
+    s = rownames[k]; gsub(/ *\([^)]*\)/, "", s)
+    nt = split(s, t, ","); delete intable
+    for (j = 1; j <= nt; j++) { t[j] = trim(t[j]); if (t[j] != "") intable[t[j]] = 1 }
+    nm = split(names[k], m, SUBSEP); delete inmanifest
+    for (j = 1; j <= nm; j++) inmanifest[m[j]] = 1
+    no = 0; for (j = 1; j <= nm; j++) if (!(m[j] in intable)) only[++no] = m[j]
+    nx = 0; for (j = 1; j <= nt; j++) if (t[j] != "" && !(t[j] in inmanifest)) extra[++nx] = t[j]
+    if (no > 0 || nx > 0)
+      printf "names differ: %s: manifests only \"%s\", table only \"%s\"\n", k, join(only, no), join(extra, nx)
+  }
+  for (i = 1; i <= nr; i++) if (!(rows[i] in count)) print "row without a kind: " rows[i]
+  if (totalrow == "") print "no Total row"
+  else if (totalrow != total) printf "total differs: manifests %d, table %s\n", total, totalrow
+  if (countline == "") print "no resource count line"
+  else {
+    if (number(countline, 1) != files) printf "file count differs: manifests %d, page %s\n", files, number(countline, 1)
+    if (number(countline, 2) != total) printf "resource count differs: manifests %d, page %s\n", total, number(countline, 2)
+  }
+  if (sentence == "") { print "no resources sentence under Step 1"; exit }
+  sources = 0
+  for (i = 1; i <= nk; i++) if (kinds[i] ~ /Repository$/) sources += count[kinds[i]]
+  ntok = split(sentence, tok, /[ ,():]+/)
+  for (i = 1; i < ntok; i++) {
+    if (tok[i] !~ /^[0-9]+$/) continue
+    w = tok[i + 1]
+    if (w == "Flux" && i + 2 <= ntok) w = tok[i + 2]
+    if (w == "resources") expected = total
+    else if (w == "sources") expected = sources
+    else {
+      kw = w
+      if (!(kw in count)) { sub(/s$/, "", kw); kw = toupper(substr(kw, 1, 1)) substr(kw, 2) }
+      if (!(kw in count)) { print "step 1 names no kind: " w; continue }
+      mentioned[kw] = 1; expected = count[kw]
+    }
+    if (tok[i] != expected) printf "step 1 differs: %s: manifests %d, page %s\n", w, expected, tok[i]
+  }
+  for (i = 1; i <= nk; i++) if (!(kinds[i] in mentioned)) print "step 1 without " kinds[i]
+}
+'
+
+# check_resource_counts <flux-system-dir> <page>: print one problem per
+# line, sorted, and nothing when the Resource count line, the category table
+# and the sentence under Step 1 of the page state what the files of the
+# kustomization hold. A missing kustomization.yaml, one without a file, a
+# missing page and a page without the table are each the only line.
+check_resource_counts() {
+  local dir="$1" page="$2"
+  local kfile="$dir/kustomization.yaml"
+  local entry docs statements problems=""
+  local files=()
+
+  if [[ ! -f "$kfile" ]]; then
+    echo "missing $kfile"
+    return
+  fi
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ -f "$dir/$entry" ]]; then
+      files+=("$dir/$entry")
+    else
+      problems="${problems}not a file: $entry ($kfile)"$'\n'
+    fi
+  done < <(awk "$RESOURCES_AWK" "$kfile")
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "no file under resources in $kfile"
+    return
+  fi
+  if [[ ! -f "$page" ]]; then
+    echo "missing $page"
+    return
+  fi
+  statements="$(awk "$COUNTS_AWK" "$page")"
+  if ! grep -q '^TABLE$' <<<"$statements"; then
+    echo "no resource table in $page"
+    return
+  fi
+  docs="$(awk "$DOCUMENTS_AWK" "${files[@]}")"
+
+  {
+    printf '%s' "$problems"
+    {
+      sed "s/^/M$TAB/" <<<"$docs"
+      printf 'FILES\t%s\n' "${#files[@]}"
+      printf '%s\n' "$statements"
+    } | awk -F'\t' "$COMPARE_AWK"
+  } | LC_ALL=C sort
+}
+
+# ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
 
@@ -279,6 +470,116 @@ check() {
 # rewrite <file> <sed-script>: apply a sed script in place (BSD and GNU sed).
 rewrite() {
   sed "$2" "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# build_counts_fixture: write a base kustomization and its page and print the
+# root. flux/kustomization.yaml lists six files: two Namespaces in one file,
+# a FluxInstance, a HelmRepository, two HelmReleases and a Flux
+# Kustomization, seven resources. page.md states them under "### Base
+# Kustomization" and "### Step 1: Apply base resources".
+build_counts_fixture() {
+  local root
+  root="$(mktemp -d "$TMP_ROOT/counts.XXXXXX")"
+  mkdir -p "$root/flux/sources" "$root/flux/releases"
+  cat >"$root/flux/kustomization.yaml" <<'EOF2'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Namespaces first.
+  - namespaces.yaml
+  - fluxinstance.yaml # the instance
+  - sources/alpha.yaml
+  - releases/alpha.yaml
+  - releases/beta.yaml
+  - releases/kappa.yaml
+EOF2
+  cat >"$root/flux/namespaces.yaml" <<'EOF2'
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-b
+EOF2
+  cat >"$root/flux/fluxinstance.yaml" <<'EOF2'
+apiVersion: fluxcd.controlplane.io/v1
+kind: FluxInstance
+metadata:
+  name: flux
+  namespace: flux-system
+EOF2
+  cat >"$root/flux/sources/alpha.yaml" <<'EOF2'
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: alpha
+EOF2
+  cat >"$root/flux/releases/alpha.yaml" <<'EOF2'
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alpha
+EOF2
+  cat >"$root/flux/releases/beta.yaml" <<'EOF2'
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: beta
+EOF2
+  cat >"$root/flux/releases/kappa.yaml" <<'EOF2'
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kappa
+EOF2
+  cat >"$root/page.md" <<'EOF2'
+## Kustomization
+
+### Base Kustomization
+
+**File:** `flux/kustomization.yaml`
+
+**Resource count:** 6 files producing 7 Kubernetes resources.
+
+| Category | Count | Resources |
+| --- | --- | --- |
+| Namespace | 2 | ns-a, ns-b |
+| FluxInstance | 1 | flux (drives the flux-operator) |
+| HelmRepository | 1 | alpha |
+| HelmRelease | 2 | alpha, beta |
+| Kustomization | 1 | kappa |
+| **Total** | **7** | |
+
+The table above lists every resource.
+
+### Infrastructure Kustomization
+
+## Deployment
+
+### Step 1: Apply base resources
+
+```bash
+kubectl apply -k flux/
+```
+
+This applies 7 resources: 2 namespaces, 1 FluxInstance, 1 sources
+(1 HelmRepository), 2 HelmReleases and 1 Flux
+Kustomizations (kappa). FluxCD resolves the dependency graph between
+HelmReleases.
+
+### Step 2: Apply infrastructure resources
+EOF2
+  printf '%s\n' "$root"
+}
+
+# check_counts <root>: run the count check on a fixture tree.
+check_counts() {
+  check_resource_counts "$1/flux" "$1/page.md"
 }
 
 # ---------------------------------------------------------------------------
@@ -538,6 +839,146 @@ test_repository_table_and_figure_match_the_releases() {
     "$(check_flux_dependencies "$releases" "$page" "$copy")"
 }
 
+test_counts_consistent_fixture_reports_nothing() {
+  echo "Test: a page whose counts match the base kustomization reports nothing"
+
+  local root
+  root="$(build_counts_fixture)"
+  assert_eq "no problems" "" "$(check_counts "$root")"
+}
+
+test_counts_table_row_differs() {
+  echo "Test: a row whose count or names differ from the manifests is reported"
+
+  local root
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| HelmRelease | 2 | alpha, beta |/| HelmRelease | 3 | alpha, beta |/'
+  assert_eq "count off by one" "count differs: HelmRelease: manifests 2, table 3" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| HelmRelease | 2 | alpha, beta |/| HelmRelease | 2 | alpha, gamma |/'
+  assert_eq "one name replaced" \
+    'names differ: HelmRelease: manifests only "beta", table only "gamma"' "$(check_counts "$root")"
+
+  # The parenthesis after a name is not part of it.
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| FluxInstance | 1 | flux (drives the flux-operator) |/| FluxInstance | 1 | flux |/'
+  assert_eq "a name without its parenthesis" "" "$(check_counts "$root")"
+}
+
+test_counts_kind_and_row_without_partner() {
+  echo "Test: a kind without a row and a row without a kind are reported"
+
+  local root
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" '/^| Kustomization | 1 | kappa |/d'
+  assert_eq "Kustomization row removed" \
+    "kind without a row: Kustomization" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| Kustomization | 1 | kappa |/&\
+| OCIRepository | 1 | zeta |/'
+  assert_eq "a row for a kind no file holds" \
+    "row without a kind: OCIRepository" "$(check_counts "$root")"
+}
+
+test_counts_total_row() {
+  echo "Test: the Total row is held to the number of documents"
+
+  local root
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| \*\*Total\*\* | \*\*7\*\* | |/| **Total** | **8** | |/'
+  assert_eq "a wrong total" "total differs: manifests 7, table 8" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" '/^| \*\*Total\*\* |/d'
+  assert_eq "no Total row" "no Total row" "$(check_counts "$root")"
+}
+
+test_counts_resource_count_line() {
+  echo "Test: the Resource count line is held to the files and the documents"
+
+  local root
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^\*\*Resource count:\*\* 6 files producing 7/**Resource count:** 5 files producing 8/'
+  assert_eq "both numbers wrong" \
+    "file count differs: manifests 6, page 5"$'\n'"resource count differs: manifests 7, page 8" \
+    "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" '/^\*\*Resource count:\*\*/d'
+  assert_eq "no line" "no resource count line" "$(check_counts "$root")"
+}
+
+test_counts_step_1_sentence() {
+  echo "Test: the numbers of the Step 1 sentence are held to the documents"
+
+  local root
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/, 2 HelmReleases and/, 3 HelmReleases and/'
+  assert_eq "a wrong number across the line break" \
+    "step 1 differs: HelmReleases: manifests 2, page 3" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/This applies 7 resources: 2 namespaces, 1 FluxInstance, 1 sources/This applies 8 resources: 2 namespaces, 2 sources/'
+  assert_eq "a kind left out and two sums wrong" \
+    "step 1 differs: resources: manifests 7, page 8"$'\n'"step 1 differs: sources: manifests 1, page 2"$'\n'"step 1 without FluxInstance" \
+    "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/1 FluxInstance, /1 FluxInstance, 3 ImagePolicies, /'
+  assert_eq "a word that is no kind" "step 1 names no kind: ImagePolicies" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^This applies 7 resources.*/The graph resolves itself./'
+  assert_eq "no sentence" "no resources sentence under Step 1" "$(check_counts "$root")"
+}
+
+test_counts_only_reports() {
+  echo "Test: a missing kustomization, page or table is the only report"
+
+  local root
+  root="$(build_counts_fixture)"
+  rm "$root/page.md"
+  assert_eq "no kustomization" "missing $root/absent/kustomization.yaml" \
+    "$(check_resource_counts "$root/absent" "$root/page.md")"
+  assert_eq "no page" "missing $root/page.md" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/page.md" 's/^| Category | Count | Resources |/| Kind | Count | Names |/'
+  assert_eq "another header row" "no resource table in $root/page.md" "$(check_counts "$root")"
+
+  root="$(build_counts_fixture)"
+  rewrite "$root/flux/kustomization.yaml" 's/^  - .*/  - sources/'
+  assert_eq "no file among the resources" "no file under resources in $root/flux/kustomization.yaml" \
+    "$(check_counts "$root")"
+
+  # A directory among the files is reported beside the other checks, and its
+  # documents are not counted.
+  root="$(build_counts_fixture)"
+  rewrite "$root/flux/kustomization.yaml" 's/^  - sources\/alpha.yaml/  - sources/'
+  assert_eq "a directory among the files" \
+    "file count differs: manifests 5, page 6"$'\n'"not a file: sources ($root/flux/kustomization.yaml)"$'\n'"resource count differs: manifests 6, page 7"$'\n'"row without a kind: HelmRepository"$'\n'"step 1 differs: resources: manifests 6, page 7"$'\n'"step 1 differs: sources: manifests 0, page 1"$'\n'"step 1 names no kind: HelmRepository"$'\n'"total differs: manifests 6, table 7" \
+    "$(check_counts "$root")"
+}
+
+test_repository_counts_match_the_base_kustomization() {
+  echo "Test: the repository's Resource count, table and Step 1 sentence match deploy/flux-system"
+
+  local flux="$PROJECT_ROOT/deploy/flux-system"
+  local page="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
+  local copy
+  assert_eq "no problems" "" "$(check_resource_counts "$flux" "$page")"
+
+  # The same check on a copy with another total proves it reads the real
+  # page against the real files.
+  copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
+  cp "$page" "$copy/page.md"
+  rewrite "$copy/page.md" 's/^| \*\*Total\*\* | \*\*53\*\* | |/| **Total** | **52** | |/'
+  assert_eq "a copy with another total" "total differs: manifests 53, table 52" \
+    "$(check_resource_counts "$flux" "$copy/page.md")"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -557,6 +998,14 @@ test_missing_page_is_the_only_report
 test_page_without_table_is_the_only_report
 test_missing_figure_file_is_the_only_report
 test_repository_table_and_figure_match_the_releases
+test_counts_consistent_fixture_reports_nothing
+test_counts_table_row_differs
+test_counts_kind_and_row_without_partner
+test_counts_total_row
+test_counts_resource_count_line
+test_counts_step_1_sentence
+test_counts_only_reports
+test_repository_counts_match_the_base_kustomization
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
