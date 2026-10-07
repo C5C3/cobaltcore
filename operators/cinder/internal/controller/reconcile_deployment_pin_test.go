@@ -110,6 +110,7 @@ spec:
             port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: cinder-api
         ports:
         - containerPort: 8776
@@ -283,6 +284,7 @@ spec:
             port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: cinder-api
         ports:
         - containerPort: 8776
@@ -453,6 +455,7 @@ spec:
             port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: cinder-api
         ports:
         - containerPort: 8776
