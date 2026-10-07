@@ -5,6 +5,11 @@
 # Keystone CR fixture for the namespace-scoped RBAC E2E test.
 # Managed mode: database via clusterRef to openstack-db,
 # cache via clusterRef to openstack-memcached.
+# spec.deployment.priorityClassName names the PriorityClass of
+# 01-priority-class.yaml, which the validating webhook looks up. Neither
+# fernet.maxActiveKeys nor trustFlush is set. maxActiveKeys also has a CRD
+# schema default; trustFlush has none, so the asserted trustFlush.schedule
+# proves the defaulting webhook ran.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -16,6 +21,7 @@ spec:
     name: openbao-tenant-store
   deployment:
     replicas: 1
+    priorityClassName: keystone-ns-scoped
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"
@@ -31,7 +37,6 @@ spec:
     backend: dogpile.cache.pymemcache
   fernet:
     rotationSchedule: "0 0 * * 0"
-    maxActiveKeys: 3
   bootstrap:
     adminUser: admin
     adminPasswordSecretRef:

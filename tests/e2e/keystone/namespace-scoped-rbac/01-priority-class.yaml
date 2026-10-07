@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PriorityClass fixture for the namespace-scoped RBAC E2E test.
+# Created before the Keystone CR, which names it in
+# spec.deployment.priorityClassName, so the validating webhook of the
+# standalone release finds it through its reduced ClusterRole.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: keystone-ns-scoped
+globalDefault: false
+value: 1000
+description: >-
+  Priority class of the namespace-scoped RBAC E2E test's Keystone pods.

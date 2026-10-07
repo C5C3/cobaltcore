@@ -127,7 +127,7 @@ Deployment rollout, bootstrap Job).
 | logging | `keystone-logging` | `spec.logging` propagation to oslo.log: defaults, level/format overrides, per-logger levels |
 | maintenance-endpoint-isolation | `keystone-endpoint-isolation` | Maintenance pods never become API Service backends: the non-terminating EndpointSlice address count for the API Service stays at exactly the live replica count — never above, never empty — across a sampling window that observes a live trust-flush pod holding a pod IP |
 | metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
-| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
+| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` beside a standalone webhook release (`webhook.standalone=true`): the standalone release's ClusterRole carries only the two webhook reads, the CR is defaulted at admission and reconciles to Ready, an invalid cron expression is rejected at admission, and the standalone pod's `controller_runtime_webhook_requests_total` counters show that it admitted both |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
 | resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), the Job defaults on the db-sync Job template (70m CPU and 368Mi memory requests, a 368Mi memory limit, no CPU limit), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
@@ -1073,8 +1073,10 @@ tests/e2e/keystone/
 │   ├── 00-keystone-cr.yaml             Keystone CR with non-existent secretRefs
 │   └── 01-late-secrets.yaml            ExternalSecrets created after CR
 ├── namespace-scoped-rbac/
-│   ├── chainsaw-test.yaml              Namespace-scoped RBAC
-│   └── 00-keystone-cr.yaml             Keystone CR for RBAC test
+│   ├── chainsaw-test.yaml              Namespace-scoped RBAC + standalone webhook
+│   ├── 00-keystone-cr.yaml             Keystone CR for RBAC test
+│   ├── 01-priority-class.yaml          PriorityClass the CR names
+│   └── 02-invalid-cron.yaml            Keystone CR the standalone webhook rejects
 ├── network-policy/
 │   ├── chainsaw-test.yaml              NetworkPolicy reconciliation
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy

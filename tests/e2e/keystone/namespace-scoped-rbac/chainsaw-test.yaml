@@ -3,11 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for namespace-scoped RBAC deployment.
-# Validates the operator deployed with rbac.namespaceScoped=true and
-# webhook.enabled=false can successfully reconcile a Keystone CR:
+# Validates the topology the Multi-Tenant Deployment guide recommends: a
+# namespace-scoped operator (rbac.namespaceScoped=true, webhook.enabled=false)
+# whose CRs are admitted by a standalone webhook release of the same chart
+# (webhook.standalone=true):
+#   - Standalone webhook deployed via Helm: --enable-controllers=false, a
+#     ClusterRole with the two webhook reads and no Role
 #   - Operator deployed via Helm with namespace-scoped RBAC
 #   - Role/RoleBinding created (not ClusterRole/ClusterRoleBinding)
-#   - Keystone CR reconciles to Ready=True
+#   - Keystone CR defaulted at admission, its PriorityClass looked up by the
+#     validating webhook under the reduced ClusterRole, reconciled to
+#     Ready=True
+#   - Keystone CR with an invalid cron expression rejected at admission
+#   - The standalone pod's controller_runtime_webhook_requests_total counters
+#     show that it admitted the valid CR, and its own response log that it
+#     rejected the invalid one
+#
+# The cluster-wide keystone-operator in "keystone-system" keeps its in-process
+# webhook, so its webhook configurations admit the same requests, and while
+# this suite runs a second pair of configurations, the standalone release's,
+# intercepts every Keystone write in the cluster. The counters of the
+# standalone pod and its response log are what tell the two apart.
 #
 # The test runs in the "openstack" namespace where the shared infrastructure
 # (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
@@ -27,7 +43,9 @@
 # The namespace-scoped operator reconciles every Keystone in "openstack" beside
 # the cluster-wide one, and every other keystone suite puts its Keystone there.
 # Two operators would drive another suite's upgrade or rotation at once, so this
-# suite runs alone, before the concurrent suites start.
+# suite runs alone, before the concurrent suites start. Running alone also keeps
+# the second webhook configurations, and the window before their caBundle is
+# injected, away from every other suite's Keystone writes.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -38,8 +56,85 @@ spec:
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
-  # Step 5 uninstalls the release before chainsaw deletes the Keystone. The
+  # ── Step 1: Deploy the standalone webhook release ─────────────────────
+  # One replica, because Step 8 reads one pod's counters and log. Log level 5
+  # has the webhook server log every response it writes, the rejection Step 8
+  # looks for included. The webhook configurations fail closed, so the step
+  # waits for cert-manager to inject both caBundles before any Keystone is
+  # written. Step 9 uninstalls the release; the step cleanup removes one a
+  # failed step left installed.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install keystone-operator-webhook \
+            ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
+            --namespace openstack \
+            --set webhook.standalone=true \
+            --set replicas=1 \
+            --set-string logging.level=5 \
+            --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --wait --timeout 90s
+    - script:
+        timeout: 90s
+        content: |
+          for i in $(seq 1 30); do
+            mutating=$(kubectl get mutatingwebhookconfigurations keystone-operator-webhook-mutating \
+              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
+            validating=$(kubectl get validatingwebhookconfigurations keystone-operator-webhook-validating \
+              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
+            if [ -n "$mutating" ] && [ -n "$validating" ]; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "caBundle not injected after 60 s"
+              exit 1
+            fi
+            sleep 2
+          done
+          # Give the TLS listener a moment after the certificate is mounted,
+          # as hack/ci-deploy-operator.sh does.
+          sleep 3
+          echo "OK: caBundle injected into both webhook configurations"
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status keystone-operator-webhook -n openstack 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        content: |
+          helm uninstall keystone-operator-webhook -n openstack 2>&1 || true
+  # ── Step 2: Assert the standalone webhook's reduced grant ──────────────
+  # The ClusterRole is the generated keystone-webhook rule set: get on
+  # priorityclasses and list on keystoneidentitybackends, nothing on secrets,
+  # rolebindings or leases. A standalone release renders no Role.
+  - try:
+    - script:
+        content: |
+          if ! kubectl get clusterrole keystone-operator-webhook -o json | jq -e '
+              (.rules | length) == 2
+              and (any(.rules[].resources[]; . == "secrets" or . == "rolebindings" or . == "leases") | not)
+              and ([.rules[] | select(any(.resources[]; . == "priorityclasses")) | .verbs] == [["get"]])
+            ' >/dev/null; then
+            echo "FAIL: ClusterRole keystone-operator-webhook is not the two-rule webhook set:"
+            kubectl get clusterrole keystone-operator-webhook -o jsonpath='{.rules}' 2>&1 || true
+            exit 1
+          fi
+          echo "OK: ClusterRole keystone-operator-webhook carries the two webhook reads"
+          if kubectl get role keystone-operator-webhook -n openstack 2>/dev/null; then
+            echo "FAIL: Role should not exist for a standalone webhook release"
+            exit 1
+          fi
+          echo "OK: No Role found (expected)"
+  # ── Step 3: Deploy operator with namespace-scoped RBAC ─────────────────
+  # Step 9 uninstalls the release before chainsaw deletes the Keystone. The
   # step cleanup runs at the end of the test and removes a release that a
   # failed step left installed, so it cannot outlive this suite.
   - try:
@@ -69,7 +164,7 @@ spec:
     - script:
         content: |
           helm uninstall keystone-operator-ns-scoped -n openstack 2>&1 || true
-  # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
+  # ── Step 4: Assert Role and RoleBinding exist (not ClusterRole) ────────
   - try:
     - assert:
         resource:
@@ -93,11 +188,30 @@ spec:
             exit 1
           fi
           echo "OK: No ClusterRole found (expected)"
-  # ── Step 3: Apply Keystone CR ──────────────────────────────────────────
+  # ── Step 5: Apply the PriorityClass and the Keystone CR ────────────────
+  # The CR names the PriorityClass, so the validating webhook reads a
+  # cluster-scoped kind under the reduced ClusterRole. It omits
+  # fernet.maxActiveKeys and trustFlush, which the defaulting webhook fills:
+  # maxActiveKeys also carries a CRD schema default, trustFlush has none, so
+  # its schedule is written by the mutating webhook alone.
   - try:
     - apply:
+        file: 01-priority-class.yaml
+    - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 4: Assert successful reconciliation ───────────────────────────
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ns-scoped
+            namespace: openstack
+          spec:
+            fernet:
+              maxActiveKeys: 3
+            trustFlush:
+              schedule: "0 * * * *"
+  # ── Step 6: Assert successful reconciliation ───────────────────────────
   - try:
     - assert:
         resource:
@@ -131,8 +245,75 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 5: Cleanup Helm release ───────────────────────────────────────
+  # ── Step 7: Assert the invalid cron expression is rejected ─────────────
+  - try:
+    - apply:
+        file: 02-invalid-cron.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'invalid cron expression')): true
+  # ── Step 8: Assert the standalone pod admitted the requests ────────────
+  # controller_runtime_webhook_requests_total carries the labels webhook (the
+  # path) and code. A rejection is counted under its own code, so each path is
+  # summed across every code: at least one defaulting call for the admitted CR,
+  # and at least two validating calls, its create and the update that adds its
+  # finalizers. The counters cannot single out the rejection, and the
+  # cluster-wide release returns the same denial for Step 7, so the step also
+  # requires the "wrote response" line with "allowed":false and the cron error
+  # in the standalone pod's own log.
+  - try:
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          kubectl port-forward --address 127.0.0.1 -n openstack \
+            deploy/keystone-operator-webhook 18080:8080 >/tmp/keystone-webhook-pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true; wait "$PF_PID" 2>/dev/null || true' EXIT
+
+          metrics=""
+          for _ in $(seq 1 10); do
+            if metrics=$(curl -sf http://127.0.0.1:18080/metrics); then
+              break
+            fi
+            metrics=""
+            sleep 2
+          done
+          if [ -z "$metrics" ]; then
+            echo "metrics endpoint unreachable"
+            cat /tmp/keystone-webhook-pf.log
+            exit 1
+          fi
+
+          # sum_for <path>: the requests the webhook at <path> served, every
+          # code summed. The closing quote keeps /...-keystone from matching
+          # /...-keystoneidentitybackend.
+          sum_for() {
+            awk -v label="webhook=\"$1\"" '
+              /^controller_runtime_webhook_requests_total\{/ && index($0, label) { sum += $NF }
+              END { print sum + 0 }' <<<"$metrics"
+          }
+          mutate=$(sum_for /mutate-keystone-openstack-c5c3-io-v1alpha1-keystone)
+          validate=$(sum_for /validate-keystone-openstack-c5c3-io-v1alpha1-keystone)
+          echo "standalone webhook requests: mutate=$mutate validate=$validate"
+          if [ "$mutate" -lt 1 ] || [ "$validate" -lt 2 ]; then
+            echo "FAIL: want mutate >= 1 and validate >= 2 on the standalone webhook pod"
+            exit 1
+          fi
+          echo "OK: the standalone webhook pod admitted the Keystone requests"
+
+          logs=$(kubectl logs -n openstack deploy/keystone-operator-webhook)
+          if ! grep -F '"msg":"wrote response"' <<<"$logs" | grep -F '"allowed":false' \
+              | grep -F 'invalid cron expression' >/dev/null; then
+            echo "FAIL: the standalone webhook pod logged no denial of the invalid cron expression"
+            grep -F '"msg":"wrote response"' <<<"$logs" | tail -20
+            exit 1
+          fi
+          echo "OK: the standalone webhook pod rejected the invalid cron expression"
+  # ── Step 9: Cleanup Helm releases ──────────────────────────────────────
   - try:
     - script:
         content: |
           helm uninstall keystone-operator-ns-scoped -n openstack 2>&1 || true
+          helm uninstall keystone-operator-webhook -n openstack 2>&1 || true
