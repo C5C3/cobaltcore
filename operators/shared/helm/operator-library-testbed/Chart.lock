@@ -1,6 +1,6 @@
 dependencies:
 - name: operator-library
   repository: file://../operator-library
-  version: 0.10.0
-digest: sha256:c7734b8f7c869df823c3e29c2421d29592cc6c2b510cba57a0a250f9ea6871ef
-generated: "2026-10-04T19:23:15.262269136Z"
+  version: 0.11.0
+digest: sha256:b066fb281649a3b919dc860bf746da65f3b842b9502f4175f4a8c548a62a247a
+generated: "2026-10-07T12:52:30.26247Z"

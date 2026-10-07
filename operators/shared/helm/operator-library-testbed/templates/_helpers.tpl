@@ -2,7 +2,9 @@
 The operator charts generate their RBAC rules from kubebuilder markers
 (make sync-helm-rbac); this test consumer has no Go module, so it carries a
 small hand-written rule set under the same "<chart name>.rbacRules" name the
-operator-library ClusterRole and Role templates resolve via .Chart.Name.
+operator-library ClusterRole and Role templates resolve via .Chart.Name, and a
+second one under "<chart name>.webhookRbacRules", the rule set the ClusterRole
+renders under webhook.standalone.
 
 No "operator-library.chart.*" hook is overridden here on purpose: the suites
 in tests/ pin the library's default (hook-less) rendering; the operator charts
@@ -29,4 +31,13 @@ that override a hook pin that in their own suites.
   - patch
   - update
   - watch
+{{- end }}
+
+{{- define "operator-library-testbed.webhookRbacRules" -}}
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get
 {{- end }}
