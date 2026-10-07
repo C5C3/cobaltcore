@@ -38,8 +38,11 @@ The v1 operator resolves the onboarding decisions as follows:
   10 seconds apart, each with an 8-second timeout) before the liveness probe
   takes over. A cold start therefore does not restart the container, even when
   a CPU limit set on the container or a contended node slows the imports or the
-  boot-time sync of traits and resource classes against the database runs long. The oslo healthcheck middleware
-  Glance probes at `/healthcheck` has nowhere to be wired here: placement
+  boot-time sync of traits and resource classes against the database runs
+  long. The liveness probe then allows 10 seconds per check, the readiness
+  probe's timeout, so one slow request on a single-worker API does not restart
+  the container. The oslo healthcheck middleware Glance probes at
+  `/healthcheck` has nowhere to be wired here: placement
   composes its middleware stack in code and reads no paste pipeline, so the
   operator renders no `api-paste.ini` and the CRD carries no `middleware` field.
 - **No upgrade phase machine.** The CR has no `upgradePhase` status field. A

@@ -95,6 +95,7 @@ spec:
             port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: placement-api
         ports:
         - containerPort: 8778
@@ -233,6 +234,7 @@ spec:
             port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: placement-api
         ports:
         - containerPort: 8778
@@ -372,6 +374,7 @@ spec:
             port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: placement-api
         ports:
         - containerPort: 8778
@@ -533,6 +536,7 @@ spec:
             port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: placement-api
         ports:
         - containerPort: 8778
