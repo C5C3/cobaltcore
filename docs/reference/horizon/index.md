@@ -46,6 +46,15 @@ The v1 operator resolves the onboarding decisions as follows:
 - **WSGI server: uWSGI.** Already pinned in the shared venv-builder image and
   operationally identical to the keystone deployment; uWSGI loads
   `openstack_dashboard.wsgi` directly. No per-CR uWSGI knobs in v1.
+- **Login-page probes.** The readiness and startup probes GET `/auth/login/`
+  with a fixed `Host: localhost` header, which satisfies Django's
+  `ALLOWED_HOSTS` check without allow-listing the pod IP; rendering the page
+  exercises Django's URL routing, the templates and the offline-compression
+  manifest without a live Keystone. The liveness probe only opens a TCP
+  connection to port 8080. The startup probe allows 300 seconds (30 probes
+  10 seconds apart, each with an 8-second timeout) before the liveness probe
+  takes over, so a cold start slowed by a CPU limit set on the container or
+  a contended node does not restart the container.
 - **The `horizon===` constraint pin is stripped.** Unlike keystone, horizon
   is pinned in `upper-constraints.txt`; `overrides/<release>/constraints.txt`
   removes the pin so the source install builds the ref from
