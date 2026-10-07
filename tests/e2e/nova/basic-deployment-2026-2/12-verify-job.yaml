@@ -53,7 +53,7 @@ spec:
 
               # The image the servers boot from, seeded by 08-image-seed-job.yaml
               # under an id this suite owns.
-              SEED=4e0a0000-0000-4000-8000-000000000002
+              SEED=4e0a0000-0000-4000-8000-000000000007
 
               # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
               # object's status every 5s. On the deadline it prints the object's

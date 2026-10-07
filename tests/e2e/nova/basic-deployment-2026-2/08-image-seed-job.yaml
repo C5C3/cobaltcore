@@ -52,7 +52,7 @@ spec:
           args:
             - |
               set -euo pipefail
-              SEED_ID="4e0a0000-0000-4000-8000-000000000002"
+              SEED_ID="4e0a0000-0000-4000-8000-000000000007"
               if openstack image show "${SEED_ID}" >/dev/null 2>&1; then
                 echo "OK: seed image ${SEED_ID} already present"
                 exit 0
