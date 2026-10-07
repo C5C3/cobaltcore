@@ -201,7 +201,7 @@ step `s` means rounding up to the next multiple of `s`, and a job is the
    | --- | --- | --- |
    | Database (`MariaDB`) | `1Gi` | Its working set grows with the connection count, which one CI run does not drive to the ceiling |
    | Cache (`Memcached`) | `96Mi` | The operator's floor of `maxMemoryMB` 64 plus `32Mi` |
-   | Messaging (`RabbitmqCluster`) | `512Mi` | RabbitMQ derives its memory alarm from its limit, so its use reflects the limit it ran under. In the full chain this is the shared kind broker |
+   | Messaging (`RabbitmqCluster`) | `1Gi` | The Cluster Operator alarms the broker at 0.6 of the limit minus a fifth, so its use reflects the limit it ran under. Its idle footprint is about 236 MiB: `512Mi` (alarm at 245.8 MiB) alarmed without a backlog ([#1298](https://github.com/C5C3/cobaltcore/issues/1298)), and `1Gi` (491.5 MiB) keeps the footprint below half the alarm threshold. In the full chain this is the shared kind broker |
    | Secret store (`OpenBaoCluster`) | `64Mi` | |
 
 8. Sidecar. `sidecarCPURequest` is the largest `federation-proxy` CPU target
@@ -245,7 +245,10 @@ served its scale subresource, and is not used.
 
 ## Derivation output
 
-The derivation printed this Markdown for the recorded run.
+The derivation printed this Markdown for the recorded run. It predates the
+`1Gi` broker floor ([#1298](https://github.com/C5C3/cobaltcore/issues/1298)):
+on the same inputs the derivation now prints `815m,1Gi` for `minimalMessaging`
+and `815m, 1Gi` for the `RabbitmqCluster` row.
 
 ### Derived figures
 
