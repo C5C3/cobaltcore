@@ -51,7 +51,7 @@ func main() {
 		// The reconcilers resolve spec.targetClusterRef, so the binary engages
 		// the clusters registered in --clusters-namespace.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -61,41 +61,43 @@ func main() {
 			if err := controller.RegisterMetrics(); err != nil {
 				return err
 			}
-			// +kubebuilder:scaffold:builder — register controllers here
-			if err := (&controller.CinderReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("cinder-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
-				NamespaceScoped:         namespace != "",
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
+			if opts.Controllers {
+				// +kubebuilder:scaffold:builder — register controllers here
+				if err := (&controller.CinderReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("cinder-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
+					NamespaceScoped:         opts.Namespace != "",
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
+				// The two satellite controllers run in the same manager (further
+				// reconcilers, not further binaries). They MUST be registered after
+				// CinderReconciler: that reconciler's SetupWithManager is the single
+				// registration site for the field indexes all three of them use.
+				if err := (&controller.CinderBackendReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("cinderbackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mgr); err != nil {
+					return err
+				}
+				if err := (&controller.CinderBackupBackendReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("cinderbackupbackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mgr); err != nil {
+					return err
+				}
 			}
-			// The two satellite controllers run in the same manager (further
-			// reconcilers, not further binaries). They MUST be registered after
-			// CinderReconciler: that reconciler's SetupWithManager is the single
-			// registration site for the field indexes all three of them use.
-			if err := (&controller.CinderBackendReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("cinderbackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
-				return err
-			}
-			if err := (&controller.CinderBackupBackendReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("cinderbackupbackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
-				return err
-			}
-			if webhooks {
+			if opts.Webhooks {
 				// DECISION: the webhooks read through mgr.GetAPIReader()
 				// (direct, uncached) rather than mgr.GetClient(), so a
 				// cluster-scoped lookup never rejects a just-created object from

@@ -117,7 +117,7 @@ func main() {
 		// engages nothing while it holds none, which is the single-cluster
 		// default every existing install keeps.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			// The ControlPlane reconciler completes through the multicluster
 			// builder, so it takes mcMgr. The local manager is what the
 			// CredentialRotation reconciler and the webhook run on: both only
@@ -130,37 +130,39 @@ func main() {
 			if err := controller.RegisterMetrics(); err != nil {
 				return err
 			}
-			// +kubebuilder:scaffold:builder — register controllers here
-			if err := (&controller.ControlPlaneReconciler{
-				Client:                         mgr.GetClient(),
-				Scheme:                         mgr.GetScheme(),
-				Recorder:                       mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles:        maxConcurrentReconciles,
-				BarbicanOperatorNamespace:      strings.TrimSpace(os.Getenv(barbicanOperatorNamespaceEnv)),
-				BarbicanOperatorServiceAccount: strings.TrimSpace(os.Getenv(barbicanOperatorServiceAccountEnv)),
-				Resolver:                       mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
+			if opts.Controllers {
+				// +kubebuilder:scaffold:builder — register controllers here
+				if err := (&controller.ControlPlaneReconciler{
+					Client:                         mgr.GetClient(),
+					Scheme:                         mgr.GetScheme(),
+					Recorder:                       mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles:        opts.MaxConcurrentReconciles,
+					BarbicanOperatorNamespace:      strings.TrimSpace(os.Getenv(barbicanOperatorNamespaceEnv)),
+					BarbicanOperatorServiceAccount: strings.TrimSpace(os.Getenv(barbicanOperatorServiceAccountEnv)),
+					Resolver:                       mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
+				if err := (&controller.CredentialRotationReconciler{
+					Client:   mgr.GetClient(),
+					Scheme:   mgr.GetScheme(),
+					Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				}).SetupWithManager(mgr); err != nil {
+					return err
+				}
+				// The KeystoneService reconciler also runs on the local manager: a
+				// registration delivers into its own namespace on the management
+				// cluster, so it carries no cluster Resolver.
+				if err := (&controller.KeystoneServiceReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("keystoneservice-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+				}).SetupWithManager(mgr); err != nil {
+					return err
+				}
 			}
-			if err := (&controller.CredentialRotationReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-			}).SetupWithManager(mgr); err != nil {
-				return err
-			}
-			// The KeystoneService reconciler also runs on the local manager: a
-			// registration delivers into its own namespace on the management
-			// cluster, so it carries no cluster Resolver.
-			if err := (&controller.KeystoneServiceReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("keystoneservice-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-			}).SetupWithManager(mgr); err != nil {
-				return err
-			}
-			if webhooks {
+			if opts.Webhooks {
 				// DECISION Client must be non-nil for the
 				// one-ControlPlane-per-namespace ValidateCreate check. It reads
 				// through mgr.GetAPIReader() (direct, uncached) rather than

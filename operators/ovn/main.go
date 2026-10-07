@@ -42,7 +42,7 @@ func main() {
 		// The reconcilers resolve spec.targetClusterRef, so the binary engages
 		// the clusters registered in --clusters-namespace.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -51,31 +51,33 @@ func main() {
 			if err := controller.RegisterMetrics(); err != nil {
 				return err
 			}
-			// +kubebuilder:scaffold:builder — register controllers here
-			if err := (&controller.OVNCentralReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("ovncentral-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
+			if opts.Controllers {
+				// +kubebuilder:scaffold:builder — register controllers here
+				if err := (&controller.OVNCentralReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("ovncentral-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
+				// The chassis controller runs in the same manager (a second
+				// reconciler, not a second binary). It MUST be registered after the
+				// OVNCentral reconciler: that reconciler's SetupWithManager is the
+				// single registration site for the OVNChassis field index this
+				// controller's central-to-chassis mapper lists through.
+				if err := (&controller.OVNChassisReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("ovnchassis-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
 			}
-			// The chassis controller runs in the same manager (a second
-			// reconciler, not a second binary). It MUST be registered after the
-			// OVNCentral reconciler: that reconciler's SetupWithManager is the
-			// single registration site for the OVNChassis field index this
-			// controller's central-to-chassis mapper lists through.
-			if err := (&controller.OVNChassisReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("ovnchassis-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
-			}
-			if webhooks {
+			if opts.Webhooks {
 				// DECISION: the webhooks read through mgr.GetAPIReader()
 				// (direct, uncached) rather than mgr.GetClient(), so a
 				// cluster-scoped lookup never rejects a just-created object from
