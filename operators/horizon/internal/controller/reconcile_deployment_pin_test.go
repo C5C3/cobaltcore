@@ -130,6 +130,7 @@ spec:
             path: /auth/login/
             port: 8080
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/openstack-dashboard/
           name: config
@@ -266,6 +267,7 @@ spec:
             path: /auth/login/
             port: 8080
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/openstack-dashboard/
           name: config
