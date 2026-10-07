@@ -108,6 +108,7 @@ spec:
             port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: neutron-api
         ports:
         - containerPort: 9696
@@ -273,6 +274,7 @@ spec:
             port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: neutron-api
         ports:
         - containerPort: 9696
@@ -443,6 +445,7 @@ spec:
             port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: neutron-api
         ports:
         - containerPort: 9696
@@ -609,6 +612,7 @@ spec:
             port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: neutron-api
         ports:
         - containerPort: 9696
@@ -793,6 +797,7 @@ spec:
             port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: neutron-api
         ports:
         - containerPort: 9696
