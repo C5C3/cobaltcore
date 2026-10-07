@@ -52,6 +52,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-horizon-openstack-c5c3-io-v1alpha1-horizon,mutating=true,failurePolicy=fail,sideEffects=None,groups=horizon.openstack.c5c3.io,resources=horizons,verbs=create;update,versions=v1alpha1,name=mhorizon.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-horizon-openstack-c5c3-io-v1alpha1-horizon,mutating=false,failurePolicy=fail,sideEffects=None,groups=horizon.openstack.c5c3.io,resources=horizons,verbs=create;update,versions=v1alpha1,name=vhorizon.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses the spec names
+// (validation.PriorityClassExists).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=horizon-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *HorizonWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {

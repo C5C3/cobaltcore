@@ -46,6 +46,12 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-c5c3-io-v1alpha1-sizingprofile,mutating=true,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=sizingprofiles,verbs=create;update,versions=v1alpha1,name=msizingprofile.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-c5c3-io-v1alpha1-sizingprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=sizingprofiles,verbs=create;update,versions=v1alpha1,name=vsizingprofile.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses the profile names
+// (validateNewPriorityClasses).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=c5c3-webhook
+// The validating webhook lists the ControlPlanes that reference the profile
+// (validateReferencingControlPlanes).
+// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=list,roleName=c5c3-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with
 // the manager.

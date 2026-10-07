@@ -110,6 +110,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend,mutating=true,failurePolicy=fail,sideEffects=None,groups=cinder.openstack.c5c3.io,resources=cinderbackends,verbs=create;update,versions=v1alpha1,name=mcinderbackend.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend,mutating=false,failurePolicy=fail,sideEffects=None,groups=cinder.openstack.c5c3.io,resources=cinderbackends,verbs=create;update,versions=v1alpha1,name=vcinderbackend.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the referenced Cinder for its
+// spec.internalTenant (warnImageVolumeCacheWithoutInternalTenant).
+// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders,verbs=get,roleName=cinder-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with
 // the manager.

@@ -64,6 +64,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend,mutating=true,failurePolicy=fail,sideEffects=None,groups=cinder.openstack.c5c3.io,resources=cinderbackupbackends,verbs=create;update,versions=v1alpha1,name=mcinderbackupbackend.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend,mutating=false,failurePolicy=fail,sideEffects=None,groups=cinder.openstack.c5c3.io,resources=cinderbackupbackends,verbs=create;update,versions=v1alpha1,name=vcinderbackupbackend.kb.io,admissionReviewVersions=v1
+// The validating webhook lists the backup backends in the namespace
+// (validation.AttachedSiblings).
+// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinderbackupbackends,verbs=list,roleName=cinder-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with
 // the manager.

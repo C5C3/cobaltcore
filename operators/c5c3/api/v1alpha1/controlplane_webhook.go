@@ -2375,6 +2375,15 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-c5c3-io-v1alpha1-controlplane,mutating=true,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=controlplanes,verbs=create;update,versions=v1alpha1,name=mcontrolplane.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-c5c3-io-v1alpha1-controlplane,mutating=false,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=controlplanes,verbs=create;update,versions=v1alpha1,name=vcontrolplane.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses a sizing names
+// (validateNewPriorityClasses).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=c5c3-webhook
+// Both webhooks read the SizingProfile spec.sizing.profileRef names
+// (defaultDatabaseSizing, validateSizingReferences).
+// +kubebuilder:rbac:groups=c5c3.io,resources=sizingprofiles,verbs=get,roleName=c5c3-webhook
+// The validating webhook lists ControlPlanes for the one-per-namespace and
+// namespace-claim checks (validateUniqueInNamespace, validateNamespaceClaims).
+// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=list,roleName=c5c3-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *ControlPlaneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {

@@ -279,6 +279,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-glance-openstack-c5c3-io-v1alpha1-glance,mutating=true,failurePolicy=fail,sideEffects=None,groups=glance.openstack.c5c3.io,resources=glances,verbs=create;update,versions=v1alpha1,name=mglance.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-glance-openstack-c5c3-io-v1alpha1-glance,mutating=false,failurePolicy=fail,sideEffects=None,groups=glance.openstack.c5c3.io,resources=glances,verbs=create;update,versions=v1alpha1,name=vglance.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses the spec names
+// (validation.PriorityClassExists).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=glance-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *GlanceWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {

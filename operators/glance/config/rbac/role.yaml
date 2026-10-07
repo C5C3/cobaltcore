@@ -191,3 +191,21 @@ rules:
   - get
   - list
   - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glance-webhook
+rules:
+- apiGroups:
+  - glance.openstack.c5c3.io
+  resources:
+  - glancebackends
+  verbs:
+  - list
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get
