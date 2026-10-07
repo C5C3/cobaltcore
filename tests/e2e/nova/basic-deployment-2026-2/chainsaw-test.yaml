@@ -6,10 +6,10 @@
 # The per-release twin of the 2025.2 basic-deployment suite. Nothing the config
 # step renders reads spec.openStackRelease, so this suite asserts the same
 # conditions, the same workload shapes and the same nova.conf against the
-# 2026.2 image, and a difference between the two legs is the failure it exists
-# to catch. It pins the API container image too, so a release bump that forgot
-# the tag shows up here rather than in a passing 2025.2 run. The two suites are
-# hand-maintained copies: a change to one belongs in the other.
+# 2026.2 image, and a difference between the three suites is the failure it
+# exists to catch. It pins the API container image too, so a release bump that
+# forgot the tag shows up here rather than in a passing 2025.2 run. The three
+# suites are hand-maintained copies: a change to one belongs in the others.
 #
 # Validates the full reconciliation cycle of a Nova against real pods, a real
 # broker vhost and a fake-driver nova-compute:
@@ -48,7 +48,7 @@
 #
 # Host discovery is not run by hand. nova-scheduler maps a newly registered
 # compute into cell1 from a periodic whose interval is
-# [scheduler] discover_hosts_in_cells_interval, and nova 33.0.0 runs it with
+# [scheduler] discover_hosts_in_cells_interval, and nova 34.0.0 runs it with
 # run_immediately=True, so the first scan happens at scheduler start, before the
 # compute registers, and the mapping lands on the next one. Step 7 waits that
 # interval out. The interval itself is not overridden: the key is Reported in
