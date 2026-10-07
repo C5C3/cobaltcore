@@ -389,6 +389,9 @@ The Link 6z total of the measured e2e-controlplane node was 3480m CPU and 14754M
 | 15m | 2885m | 15474Mi |
 
 The node budget is 4000m CPU and 16384Mi of memory.
+The shared kind broker's memory request rose from 512Mi to 1Gi after this
+measurement ([#1298](https://github.com/C5C3/cobaltcore/issues/1298)), so the
+measured total and the projection are 512Mi low until the next measurement.
 
 ### Input rows
 

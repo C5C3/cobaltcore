@@ -11,8 +11,8 @@
 #     the default LoadRestrictionsRootOnly security check (no --load-restrictor
 #     flag): the shared-rabbitmq RabbitmqCluster in openstack.
 #   - That broker carries the sizing the 4-vCPU kind node has room for: one
-#     replica, 100m CPU and 512Mi memory requested, 512Mi memory limited, and
-#     no CPU limit (a limit would throttle the broker during a suite).
+#     replica, 100m CPU and 1Gi memory requested, 1Gi memory limited, and no
+#     CPU limit (a limit would throttle the broker during a suite).
 #   - kustomize build of deploy/flux-system, deploy/kind/base and
 #     deploy/kind/infrastructure renders ZERO RabbitmqCluster documents
 #     (default posture: no broker unless the overlay is asked for).
@@ -188,10 +188,10 @@ test_broker_sizing() {
   # schedulable CPU on the kind node and leaves the next pod Pending.
   assert_eq "the broker requests 100m CPU" \
     "100m" "$(render_value "$rendered" "$cr | .spec.resources.requests.cpu")"
-  assert_eq "the broker requests 512Mi memory" \
-    "512Mi" "$(render_value "$rendered" "$cr | .spec.resources.requests.memory")"
-  assert_eq "the broker limits memory to 512Mi" \
-    "512Mi" "$(render_value "$rendered" "$cr | .spec.resources.limits.memory")"
+  assert_eq "the broker requests 1Gi memory" \
+    "1Gi" "$(render_value "$rendered" "$cr | .spec.resources.requests.memory")"
+  assert_eq "the broker limits memory to 1Gi" \
+    "1Gi" "$(render_value "$rendered" "$cr | .spec.resources.limits.memory")"
 
   # No CPU limit: a limit throttles the broker mid-suite, while the request
   # is what the scheduler reads.

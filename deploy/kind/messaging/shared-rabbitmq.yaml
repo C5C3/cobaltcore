@@ -15,7 +15,14 @@
 # schedulable CPU and leaves the next pod Pending on "Insufficient cpu".
 # tests/e2e-chaos/neutron-broker-outage/01-rabbitmqcluster.yaml records the
 # same reason for its own broker. The suites push little traffic through the
-# bus, so 100m and 512Mi are what it needs here.
+# bus, so 100m CPU is what it needs here.
+#
+# Memory follows from the broker's alarm. The Cluster Operator sets
+# total_memory_available_override_value to the limit minus a fifth, and
+# RabbitMQ blocks every publisher once it uses 0.6 of that value. 512Mi
+# alarms at 245.8 MiB against an idle footprint of about 236 MiB, 1Gi at
+# 491.5 MiB (#1298). nova-api and cinder-api publish to this broker in the
+# Tempest legs and in the e2e-controlplane chain.
 #
 # The cluster operator labels the server pod
 # `app.kubernetes.io/name: shared-rabbitmq` and names it
@@ -31,6 +38,6 @@ spec:
   resources:
     requests:
       cpu: 100m
-      memory: 512Mi
+      memory: 1Gi
     limits:
-      memory: 512Mi
+      memory: 1Gi
