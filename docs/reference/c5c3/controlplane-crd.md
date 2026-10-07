@@ -1694,8 +1694,23 @@ the `e2e-controlplane` job checks.
 | `<service>.jobs` | none | requests.cpu 15m |
 | `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 65m / memory 1Gi, limits memory 1Gi |
 | `cache` | replicas 3 | replicas 1, requests cpu 15m / memory 96Mi, limits memory 96Mi |
-| `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 512Mi, limits memory 512Mi |
+| `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 1Gi, limits memory 1Gi |
 | `secretStore` | none | requests cpu 35m / memory 64Mi, limits memory 64Mi |
+
+The `Minimal` broker figure follows from the broker's memory alarm. For a
+RabbitmqCluster with a memory limit, the RabbitMQ Cluster Operator sets
+`total_memory_available_override_value` to the limit minus a fifth, and
+RabbitMQ 4.3.4 raises its memory alarm at 0.6 of that value. At `1Gi` the alarm
+sits at 491.5 MiB, about twice the 236 MiB a broker uses with every queue
+empty. At `512Mi` it sat at 245.8 MiB, so an idle broker alarmed and blocked
+every publisher without a backlog (#1298). A `Minimal` broker provisioned with
+the older figure is re-projected on the operator's next pass, and the Cluster
+Operator rolls its StatefulSet, which restarts a single-replica broker once. A
+node that cannot fit the extra 512Mi leaves the broker pod `Pending`, and the
+ControlPlane reports `InfrastructureReady=False` with reason
+`WaitingForMessaging` until the pod schedules. A site that wants another figure
+sets `spec.sizing.messaging.resources` on the ControlPlane or in a
+[`SizingProfile`](#sizingprofile).
 
 A profile sizes service pods by counts and CPU requests only. Service memory
 stays with the child's per-process formula, so a lower process count lowers the
@@ -1704,7 +1719,22 @@ memory the child renders.
 The resolved sizing is validated as a whole, so a `Minimal` request must not
 exceed a limit the ControlPlane sets on the same component. A ControlPlane that
 sets a `messaging` CPU limit below `815m` under `Minimal` is rejected on its next
-update until the limit rises or the request is overridden.
+update of `spec.sizing` until the limit rises or the request is overridden. The
+same holds for memory: a `messaging` memory limit below `1Gi` under `Minimal`,
+without a lower memory request beside it, fails the requests-within-limits
+check. The operator does not repeat that check when it resolves the sizing, so a
+limit between `512Mi` and `1Gi` admitted while the `Minimal` broker requested
+`512Mi` resolves to a `1Gi` request above it after the upgrade. The API server
+rejects a broker StatefulSet with that pair, so the broker keeps its running
+pod at the old figures, but the `RabbitmqCluster` reports
+`ReconcileSuccess=False` while the ControlPlane keeps `InfrastructureReady=True`:
+readiness follows `AllReplicasReady`, and the running StatefulSet still has
+every replica ready. Until the pair is fixed, no later broker change reaches the
+StatefulSet, including a `messaging.replicas` grow. After upgrading,
+`kubectl get rabbitmqcluster -A` lists such a broker with `ReconcileSuccess`
+`False`. Before upgrading, raise such a limit to `1Gi` or set
+`messaging.resources.requests.memory` no higher than it, on the ControlPlane or
+in a `SizingProfile` with `base: Minimal`.
 
 ### Merge rules
 

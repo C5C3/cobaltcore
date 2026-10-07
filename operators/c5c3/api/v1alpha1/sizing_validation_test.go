@@ -474,6 +474,17 @@ func TestValidateCreate_SizingRejections(t *testing.T) {
 			want: []string{"spec.sizing.keystone.api.resources.requests.cpu: Invalid value", "cpu request must not exceed limit (10m)"},
 		},
 		{
+			name: "Minimal plus a messaging memory limit below its 1Gi request",
+			cp: withSizing(ControlPlaneSizingSpec{
+				Profile: SizingProfileMinimal,
+				SizingSpec: SizingSpec{Messaging: &ScaledSizingSpec{PinnedSizingSpec: PinnedSizingSpec{
+					ContainerSizingSpec: ContainerSizingSpec{Resources: resources(nil,
+						corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")})},
+				}}},
+			}),
+			want: []string{"spec.sizing.messaging.resources.requests.memory: Invalid value", "memory request must not exceed limit (768Mi)"},
+		},
+		{
 			name: "an autoscaling target against a zero CPU request",
 			cp: func() *ControlPlane {
 				api := withResourcesAPI(resources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0")}, nil))

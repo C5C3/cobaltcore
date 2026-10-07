@@ -693,7 +693,7 @@ Two things are left unasserted on purpose. **Consumer wiring** is one: no servic
 reads the bus yet, so the suite stops at the provisioned, owned, sized, ready
 broker, and the transport-URL projection into a service's oslo.messaging config
 lands with the first consumer. **Pod resources** are the other: the `Minimal`
-profile sizes the broker at 815m CPU and 512Mi per pod, limited at 512Mi,
+profile sizes the broker at 815m CPU and 1Gi per pod, limited at 1Gi,
 instead of the operator's default of 1 CPU and 2Gi, and the PVC stays at the
 operator's 10Gi. A pod that will not schedule on the CI node is a finding to
 report; the fixture stays as it is.
