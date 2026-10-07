@@ -11,9 +11,9 @@
 # so 01-barbican-secretstore.yaml attaches one before Ready can settle.
 #
 # Apart from the release, the image tag, and the names, this is the 2025.2
-# fixture. The one thing that differs at 2026.2 is the paste file barbican ships:
-# the oslo request_id filter arrived and the repoze.profile pipeline was dropped,
-# which is what the suite asserts.
+# fixture. Barbican 23.0.0 ships the same paste file as 22.0.0 (the oslo
+# request_id filter present, no repoze.profile pipeline), which is what the
+# suite asserts.
 apiVersion: barbican.openstack.c5c3.io/v1alpha1
 kind: Barbican
 metadata:
