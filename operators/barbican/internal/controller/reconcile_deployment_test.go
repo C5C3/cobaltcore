@@ -319,6 +319,23 @@ func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T
 	g.Expect(container.StartupProbe.TimeoutSeconds).To(Equal(int32(8)))
 }
 
+// One request in flight on a single-worker API holds the liveness probe's GET,
+// and three such probes 20 seconds apart restarted nova-api twice in 20 minutes
+// under the #1274 soak. The barbican liveness probe therefore waits as long as
+// the readiness probe, and stays below its period so probes never overlap.
+func TestBuildBarbicanDeployment_LivenessTimeoutOutlastsASlowRequest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+
+	deploy := buildBarbicanDeployment(barbican, validProjection(), deploymentConfigSecretName, "", "")
+	probe := deploy.Spec.Template.Spec.Containers[0].LivenessProbe
+
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)))
+	g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
+		"liveness timeout below its period")
+}
+
 // Once the Service selects by component, it must never widen again: re-widening
 // would re-admit db-clean pods as endpoints for the duration of every later
 // rollout. The latch is decided from the uncached reader, so a cache that still

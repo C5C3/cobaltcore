@@ -98,6 +98,7 @@ spec:
             port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: barbican-api
         ports:
         - containerPort: 9311
@@ -240,6 +241,7 @@ spec:
             port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: barbican-api
         ports:
         - containerPort: 9311
@@ -392,6 +394,7 @@ spec:
             port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: barbican-api
         ports:
         - containerPort: 9311
@@ -552,6 +555,7 @@ spec:
             port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: barbican-api
         ports:
         - containerPort: 9311
@@ -698,6 +702,7 @@ spec:
             port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: barbican-api
         ports:
         - containerPort: 9311
