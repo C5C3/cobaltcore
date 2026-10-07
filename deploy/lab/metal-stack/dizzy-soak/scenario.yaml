@@ -4,7 +4,7 @@
 
 # The default scenario of the dizzy soak on the metal-stack lab: a copy of
 # dizzy's mix small profile,
-# https://github.com/B42Labs/dizzy/blob/v0.4.0/scenarios/mix/small.yaml,
+# https://github.com/B42Labs/dizzy/blob/v0.5.0/scenarios/mix/small.yaml,
 # with six departures:
 #   - name: lab-soak;
 #   - image: cirros-kvm and flavor: hvo-smoke-test, the public image and
