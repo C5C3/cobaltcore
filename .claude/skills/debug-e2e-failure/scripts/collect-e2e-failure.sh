@@ -70,6 +70,7 @@ db-sync-1054|1054, \"Unknown column|a db-sync lost its connection mid-DDL and ev
 jmespath-nil|invalid type for: <nil>, expected|chainsaw aborted an assert at its first poll: a JMESPath function got an absent field; guard with || \`[]\`
 evidence-after-finally|vhost ['a-z0-9_/-]+ not found|noise: pod tails captured after the suite's finally removed the vhost; the cause is in the catch block, not the later dump
 shared-memcached-401|keystoneauth1\.exceptions\.http\.Unauthorized|a service got 401 from Keystone; with two Keystone CRs on one Memcached this is the identity-cache collision
+shared-memcached-500|OfflineGenerationError|Horizon read another release's template-cache fragment from a shared Memcached; check the rendered CACHES for KEY_PREFIX
 aborted-connection|Aborted connection .*Got an error reading communication packets|noise: a short-lived MariaDB client (nova-manage, a healthcheck) exited without COM_QUIT; progress, not a hang
 catalog-import-race|all catalog imports resolved .*expected '4', got '3'|K-ORC resolves the admin Endpoint after the Service flips Available; the suite sampled too early
 korc-log-selector|No resources found in orc-system namespace|noise: a catch block from before #1107 selected K-ORC by a label no pod carries; rerun on a tree with #1107 for the K-ORC log

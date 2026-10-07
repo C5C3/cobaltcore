@@ -28,6 +28,17 @@ The v1 operator resolves the onboarding decisions as follows:
   neither logs users out nor flips any condition. The operator therefore has
   no database sub-reconcilers at all. DB-backed sessions are revisited only
   if signed cookies plus Memcached prove insufficient.
+- **Cache keys: scoped per image.** The operator derives
+  `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
+  first 12 hex characters of the SHA-256 of the image reference. Horizon
+  keeps its Angular template-cache preload in the Django fragment cache, and
+  django-compressor hashes that fragment against the offline manifest built
+  into each image. A fragment written by another release has no entry in
+  that manifest, so every page render raises `OfflineGenerationError` and
+  the dashboard answers HTTP 500, the login page included. With the prefix,
+  Horizon CRs on different images never read each other's entries. An image
+  change starts with a cold cache, and two CRs on one image share a warm one
+  ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)).
 - **Keystone endpoint: a plain URL field.** `spec.keystoneEndpoint` keeps the
   operator decoupled from the keystone-operator. The c5c3 ControlPlane
   operator derives the value top-down from its Keystone child's naming
