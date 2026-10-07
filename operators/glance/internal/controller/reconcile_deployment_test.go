@@ -688,6 +688,7 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 		g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
 		g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
 		g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
+		g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 	}
 }
 
