@@ -200,6 +200,8 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 		g.Expect(probe.HTTPGet.Path).To(Equal("/"), name+" probe path")
 		g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(9696), name+" probe port")
 	}
+	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)),
+		"liveness timeout: one slow request on a single-worker API must not restart it")
 }
 
 // TestNeutronPodAnnotations covers the rollout trigger: every digest is stamped
