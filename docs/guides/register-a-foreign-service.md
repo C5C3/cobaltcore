@@ -10,12 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # How-to: Register a Service the ControlPlane Does Not Manage
 
-A `KeystoneService` CR registers a service against a ControlPlane's identity
-plane from the service's **own namespace**, one the ControlPlane neither created
-nor owns. This guide walks that flow: consent on the ControlPlane, the
-registration itself, the credentials that come back as a Secret beside the
-workload, and what happens when consent is withdrawn again. Withdrawing it
-revokes nothing, and the last two sections show why that distinction matters.
+A `KeystoneService` CR can be used to register an unmanaged service against a
+ControlPlane's identity plane.
 
 The example registers a fictional `workflow` service running in a namespace of
 the same name.
@@ -39,18 +35,17 @@ examples below is one that devstack produces.
 
 ## Background: what lands where
 
-A registration spreads across two namespaces, and knowing which piece goes where
-is what makes the commands below read sensibly.
+This example spreads the registration across two namespaces:
 
-| Piece | Namespace | Why |
+| Description | Namespace | Why |
 | --- | --- | --- |
 | The allowlist entry | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
-| The K-ORC children: user, project, role import, role assignment, catalog service row, region import, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is materialized once, beside the ControlPlane |
+| The K-ORC children: user, project, role import, role assignment, catalog service row, region import, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is created once, beside the ControlPlane |
 | The tenant secret store and the consumer Secret | `workflow` | Credentials are delivered where the workload that reads them runs |
 
 The children follow the credential into `openstack`. Copying the cloud-admin
 `clouds.yaml` into every registering namespace would hand each of them the whole
-cloud, which is the escalation the allowlist exists to prevent. Those children
+cloud, which is the escalation the allowlist exists to prevent. The child resources
 are marked with the labels `c5c3.io/keystoneservice-name` and
 `c5c3.io/keystoneservice-namespace`, because an owner reference cannot cross a
 namespace.
@@ -70,12 +65,9 @@ lists the numbered steps. `{reg}` and `{reg-ns}` are both `workflow` here,
 kubectl create namespace workflow
 ```
 
-The namespace is yours. The ControlPlane never creates it and never deletes it.
-It only delivers into it, once you have admitted it below.
-
 ### 2. Grant consent on the ControlPlane
 
-A `KeystoneService` can mint a Keystone user with any role it asks for, so a
+A `KeystoneService` can create a Keystone user with any role it asks for, so a
 registration from a namespace the ControlPlane has not consented to is refused.
 Admit `workflow`:
 
@@ -84,18 +76,7 @@ kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"korc":{"serviceRegistrations":{"allowedNamespaces":["workflow"]}}}}'
 ```
 
-Read it back:
-
-```bash
-kubectl get controlplane controlplane -n openstack \
-  -o jsonpath='{.spec.korc.serviceRegistrations.allowedNamespaces}'
-```
-
-```
-["workflow"]
-```
-
-A merge patch replaces the whole list, so name every namespace you consent to in
+A Merge patch replaces the whole list, so name every namespace you consent to in
 one patch. Admitting a second one later means repeating the first.
 
 Nothing happens in `workflow` yet. The ControlPlane provisions a secret store
@@ -104,7 +85,7 @@ condition keeps reading `True/NoRegistrationNamespaces` until Step 3.
 
 The ControlPlane's own namespace and its dedicated service namespaces need no
 entry here: they are already its own, and a registration in one of them is
-admitted as it stands. See
+admitted without an allowlist entry. See
 [Deploy Services into Dedicated Namespaces](./dedicated-service-namespaces.md#registering-a-service-in-the-dedicated-namespace).
 
 ### 3. Register the service
@@ -136,11 +117,8 @@ spec:
 EOF
 ```
 
-What those fields do, and what happens when you leave them out:
-
 - **`controlPlaneRef.namespace` is required here.** It defaults to the CR's own
-  namespace, where no ControlPlane lives, and the registration would sit at
-  `ControlPlaneNotFound`.
+  namespace, where currently no ControlPlane is deployed.
 - **The endpoint URLs name a Service that does not have to exist.** Registering a
   catalog row records an address; nothing connects to it.
 - **`catalog.serviceName`, `account.userName` and `account.domainName` are
@@ -160,7 +138,7 @@ What those fields do, and what happens when you leave them out:
 kubectl wait --for=condition=Ready keystoneservice/workflow -n workflow --timeout=15m
 ```
 
-Fifteen minutes is generous on purpose. K-ORC creates a user, a project, a role
+K-ORC creates a user, a project, a role
 assignment, a catalog service row and two endpoint rows in Keystone, and the
 password round-trips through OpenBao before the Secret appears.
 
@@ -246,12 +224,13 @@ clouds:
     identity_api_version: 3
 ```
 
-Three things about that document catch readers out:
-
 - **The cloud entry is named `admin`.** The name follows the ControlPlane's
   `korc.adminCredential.cloudCredentialsRef.cloudName`, which is what every
-  consumer on this control plane selects. The credentials inside it belong to the
-  service account.
+  consumer on this control plane selects. The credentials inside it belong to
+  the service account. This example assigns the `service` role on the
+  `service-workflow` project. The cloud entry's name does not grant admin
+  permissions, but a registration can request privileged roles such as `admin`.
+  The operator does not enforce a service-specific permission boundary.
 - **The auth URL is cluster-internal**, so the consumer runs in the cluster.
 - **A `password` key sits beside `clouds.yaml`** in the same Secret, for a
   service that fills in its own `[keystone_authtoken]` configuration instead of
@@ -280,7 +259,7 @@ rotation. See the
 
 ## Verification
 
-A materialized Secret only proves External Secrets wrote something. Authenticate
+A created Secret only proves External Secrets wrote something. Authenticate
 with it, from inside the namespace it was delivered to:
 
 ```bash
