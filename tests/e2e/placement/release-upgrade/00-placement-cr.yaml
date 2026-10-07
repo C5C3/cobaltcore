@@ -3,25 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Placement CR fixture for the release-upgrade E2E test.
-# Managed mode at the initial 2025.2 release: database via clusterRef to
+# Managed mode at the initial 2026.1 release: database via clusterRef to
 # openstack-db (schema placement_release_upgrade), cache via clusterRef to
 # openstack-memcached. The database credentials come from the ESO-synced
 # placement-db Secret and the service-user password from the pre-seeded
 # keystone-admin Secret (both deploy/kind/infrastructure). A single replica
 # keeps the rollout observable when 01-patch-upgrade.yaml bumps the release to
-# 2026.1.
+# 2026.2.
 apiVersion: placement.openstack.c5c3.io/v1alpha1
 kind: Placement
 metadata:
   name: placement-release-upgrade
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
