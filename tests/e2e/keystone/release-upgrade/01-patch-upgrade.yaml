@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to trigger a cross-release upgrade from 2025.2 to 2026.1.
+# Patch to trigger a cross-release upgrade from 2026.1 to 2026.2.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -10,4 +10,4 @@ metadata:
   namespace: openstack
 spec:
   image:
-    tag: "2026.1"
+    tag: "2026.2"

@@ -5,8 +5,8 @@
 # Chainsaw E2E test for the expand-migrate-contract upgrade flow.
 # Verifies:
 #   (1) Fresh deployment sets status.installedRelease
-#   (2) Sequential upgrade (2025.2 -> 2026.1) triggers expand-migrate-contract phases
-#   (3) Skip-level upgrade (2026.1 -> 2027.2) is rejected with UpgradePathInvalid
+#   (2) Sequential upgrade (2026.1 -> 2026.2) triggers expand-migrate-contract phases
+#   (3) Skip-level upgrade (2026.2 -> 2027.2) is rejected with UpgradePathInvalid
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -16,7 +16,7 @@ spec:
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Apply Keystone CR with initial release 2025.2 ─────────────
+  # ── Step 1: Apply Keystone CR with initial release 2026.1 ─────────────
   - try:
     - apply:
         file: 00-keystone-cr.yaml
@@ -30,7 +30,7 @@ spec:
             name: keystone-upgrade-flow
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -76,7 +76,7 @@ spec:
             name: keystone-upgrade-flow
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -134,7 +134,7 @@ spec:
             name: keystone-upgrade-flow
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'DatabaseReady']):
             - status: "False"
               reason: UpgradePathInvalid

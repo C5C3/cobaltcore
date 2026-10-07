@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for cross-release upgrade from 2025.2 to 2026.1.
+# Chainsaw E2E test for cross-release upgrade from 2026.1 to 2026.2.
 # Verifies the full upgrade lifecycle including the expand-migrate-contract
-# database migration path (keystone 28.0.0 → 29.0.0):
-#   (1) Fresh deployment with tag 2025.2 reaches Ready=True with installedRelease=2025.2
+# database migration path (keystone 29.0.0 → 30.0.0):
+#   (1) Fresh deployment with tag 2026.1 reaches Ready=True with installedRelease=2026.1
 #   (2) Keystone API at /v3 is accessible before the upgrade
-#   (3) Patching spec.image.tag to 2026.1 triggers expand-migrate-contract upgrade
+#   (3) Patching spec.image.tag to 2026.2 triggers expand-migrate-contract upgrade
 #   (4) db-expand, db-migrate, and db-contract Jobs are created
-#   (5) Deployment image updates to 2026.1 and rollout completes
-#   (6) Ready=True with installedRelease=2026.1 after upgrade
+#   (5) Deployment image updates to 2026.2 and rollout completes
+#   (6) Ready=True with installedRelease=2026.2 after upgrade
 #   (7) Keystone API at /v3 remains accessible after the upgrade
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -22,7 +22,7 @@ spec:
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Apply Keystone CR with initial release 2025.2 ──────────────
+  # ── Step 1: Apply Keystone CR with initial release 2026.1 ──────────────
   - try:
     - apply:
         file: 00-keystone-cr.yaml
@@ -36,14 +36,14 @@ spec:
             name: keystone-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
     - script:
         content: |
           kubectl get deploy keystone-release-upgrade -n openstack \
-            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.1$'
     catch:
     - script:
         content: |
@@ -80,7 +80,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run curl-test-release-pre -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+          kubectl run curl-test-release-pre -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None
@@ -122,7 +122,7 @@ spec:
             name: keystone-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -142,7 +142,7 @@ spec:
     - script:
         content: |
           kubectl get deploy keystone-release-upgrade -n openstack \
-            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.1$'
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.2$'
     - assert:
         resource:
           apiVersion: apps/v1
@@ -186,7 +186,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run curl-test-release-post -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
+          kubectl run curl-test-release-post -n $NAMESPACE --image=ghcr.io/c5c3/keystone:2026.2 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None
