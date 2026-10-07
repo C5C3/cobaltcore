@@ -2,25 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a cross-release Nova upgrade from 2025.2 to 2026.1.
+# Chainsaw E2E test for a cross-release Nova upgrade from 2026.1 to 2026.2.
 #
 # Every other nova suite installs a release into fresh, empty schemas and so
 # only ever runs the steady-state db-sync; none of them enters the four-phase
 # machine of operators/nova/internal/controller/reconcile_database.go. This
-# suite is the one that does, against schemas the 2025.2 db-sync already
+# suite is the one that does, against schemas the 2026.1 db-sync already
 # populated. Verifies:
-#   (1) A fresh deployment at 2025.2 reaches Ready=True/AllReady with
-#       installedRelease=2025.2 and no phase Job in sight
-#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#   (1) A fresh deployment at 2026.1 reaches Ready=True/AllReady with
+#       installedRelease=2026.1 and no phase Job in sight
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.2 walks
 #       status.upgradePhase through an ordered subsequence of
 #       Expanding -> Migrating -> RollingUpdate -> Contracting that contains
 #       RollingUpdate, then clears the phase and promotes installedRelease
-#   (3) The three phase Jobs each succeed on the :2026.1 image, and the expand
-#       Job's pod carries the nova-status verdict in its termination message
-#   (4) All five Deployments flip to :2026.1 with a converged rollout, and the
+#   (3) The three phase Jobs each succeed on the :2026.2 image, the expand Job
+#       moves the cell schema and cell0 to the alembic revision ab450ba04102,
+#       and its pod carries the nova-status verdict in its termination message
+#   (4) All five Deployments flip to :2026.2 with a converged rollout, and the
 #       four processes behind the API carry the installed-release stamp that
 #       makes them drop their cached RPC versions
-#   (5) The steady-state db-sync Job re-runs on :2026.1
+#   (5) The steady-state db-sync Job re-runs on :2026.2
 #   (6) The cell mappings survive the upgrade and the API on the new release
 #       serves its version document
 #
@@ -28,7 +29,7 @@
 # fixture tier of the other single-CR suites does without: the expand phase runs
 # nova-status upgrade check, and that check reads Placement as an authenticated
 # client, so without either the check exits above 1 and the script stops the
-# phase. Both sit at 2026.1 for the whole run. A check run by 2026.1 nova
+# phase. Both sit at 2026.2 for the whole run. A check run by 2026.2 nova
 # against an older Placement is not a pairing this repository proves, and
 # identity and placement move ahead of the computes in any upgrade order.
 #
@@ -169,7 +170,7 @@ spec:
             - status: "True"
               reason: AllReady
     catch: *upgrade-dump
-  # ── Step 4: Assert the pre-upgrade steady state on :2025.2 ─────────────
+  # ── Step 4: Assert the pre-upgrade steady state on :2026.1 ─────────────
   - try:
     - apply:
         file: 03-metadata-secret.yaml
@@ -183,7 +184,7 @@ spec:
             name: nova-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -199,7 +200,7 @@ spec:
               spec:
                 containers:
                 - name: nova-api
-                  image: ghcr.io/c5c3/nova:2025.2
+                  image: ghcr.io/c5c3/nova:2026.1
           status:
             (availableReplicas > `0`): true
     # No phase Job exists before the release moves. Asserting their absence here
@@ -289,14 +290,52 @@ spec:
             echo "OK: observed upgrade phases [$observed] are an ordered subsequence of [$CANON]"
           }
 
+          # cell_revisions prints the alembic revision of the cell schema and
+          # of cell0. The cell block's SQL user is named after the instance
+          # and holds the grant on cell0 too; its password is the one
+          # database.secretRef points at. The password goes over stdin as
+          # MYSQL_PWD, as in tests/e2e-autoscaling/mariadb-sql.sh, so it is on
+          # no command line. `kubectl` calls fail transiently under
+          # `parallel: 4`, and an exec dial can connect and then stall (see
+          # ../../glance/gateway-large-upload), so each attempt re-reads the
+          # password and runs the exec under `timeout`. The retries stop at
+          # DEADLINE, so a late read cannot carry the loop past the step
+          # budget. A schema whose reads all fail prints an empty revision,
+          # which the check below reports.
+          cell_revisions() {
+            local pw schema rev attempt
+            for schema in nova_upgrade nova_upgrade_cell0; do
+              for attempt in 1 2 3; do
+                pw="$(kubectl get secret nova-db -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)" || pw=""
+                if [ -n "$pw" ] && rev="$(printf '%s' "$pw" | timeout 20 kubectl exec -i -n "$NAMESPACE" openstack-db-0 -c mariadb -- \
+                    sh -c 'export MYSQL_PWD; MYSQL_PWD="$(cat)"; exec mariadb -unova-upgrade -N "$1" -e "SELECT version_num FROM alembic_version"' sh "$schema")"; then
+                  break
+                fi
+                rev=""
+                [ -n "$pw" ] || echo "nova-db password read for $schema attempt $attempt returned nothing" >&2
+                echo "alembic read of $schema attempt $attempt failed" >&2
+                [ "$(date +%s)" -lt "$DEADLINE" ] || break
+                sleep 4
+              done
+              printf '%s=%s ' "$schema" "$rev"
+            done
+          }
+
           # Both fields come off one read, so a sample can never pair a phase
           # with a release the CR did not carry at the same moment. The bound is
           # a wall-clock deadline rather than a round count: each round issues a
           # kubectl call of unbounded duration, so a fixed count of rounds
           # cannot keep the loop inside the step budget, and an overrun produces
           # the opaque chainsaw timeout this loop exists to replace.
+          #
+          # The schemas are read once, at the first RollingUpdate sample: the
+          # expand Job has run by then, and the steady-state db-sync, whose
+          # db sync would apply the same revision, re-runs on the new image
+          # only after the contract phase promotes the release. What the read
+          # sees is therefore the expand Job's work alone.
           SEEN=""
           LAST=""
+          REVS=""
           SETTLED=0
           DEADLINE=$(( $(date +%s) + 540 ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -308,8 +347,12 @@ spec:
               SEEN="${SEEN}${SEEN:+ }${PHASE}"
               LAST="$PHASE"
               echo "upgradePhase=$PHASE installedRelease=$RELEASE"
+              if [ "$PHASE" = RollingUpdate ] && [ -z "$REVS" ]; then
+                REVS="$(cell_revisions)"
+                echo "alembic revisions at RollingUpdate: $REVS"
+              fi
             fi
-            if [ -z "$PHASE" ] && [ "$RELEASE" = "2026.1" ]; then
+            if [ -z "$PHASE" ] && [ "$RELEASE" = "2026.2" ]; then
               SETTLED=1
               break
             fi
@@ -321,9 +364,19 @@ spec:
             kubectl get nova "$CR" -n "$NAMESPACE" -o yaml 2>&1 | tail -60 || true
             exit 1
           fi
-          echo "OK: installedRelease is 2026.1 and status.upgradePhase is empty"
+          echo "OK: installedRelease is 2026.2 and status.upgradePhase is empty"
 
           check_phases "$SEEN"
+
+          # nova 34.0.0 adds the cell schema revision ab450ba04102 (two
+          # indexes on migrations) over 2903cd72dc14, the 2026.1 head, and the
+          # expand Job's db sync applies it to cell0 and to the cell.
+          WANT="nova_upgrade=ab450ba04102 nova_upgrade_cell0=ab450ba04102 "
+          if [ "$REVS" != "$WANT" ]; then
+            echo "FAIL: alembic revisions at RollingUpdate are [$REVS], want [$WANT]"
+            exit 1
+          fi
+          echo "OK: the expand Job moved both cell schemas to ab450ba04102"
     - assert:
         resource:
           apiVersion: nova.openstack.c5c3.io/v1alpha1
@@ -332,7 +385,7 @@ spec:
             name: nova-upgrade
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -340,7 +393,7 @@ spec:
   # ── Step 6: Assert the three phase Jobs ran on the new release ─────────
   # The operator leaves the phase Jobs in place, and each runs spec.image: the
   # contract is that the image moves with spec.openStackRelease, so the new
-  # release's migration tree owns the schema deltas. A Job left on :2025.2 would
+  # release's migration tree owns the schema deltas. A Job left on :2026.1 would
   # mean the flow migrated with the old tree and promoted installedRelease
   # anyway.
   - try:
@@ -356,7 +409,7 @@ spec:
               spec:
                 containers:
                 - name: db-expand
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             succeeded: 1
     - assert:
@@ -371,7 +424,7 @@ spec:
               spec:
                 containers:
                 - name: db-migrate
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             succeeded: 1
     - assert:
@@ -386,7 +439,7 @@ spec:
               spec:
                 containers:
                 - name: db-contract
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             succeeded: 1
     # The expand phase runs `nova-status upgrade check` ahead of both schema
@@ -433,7 +486,7 @@ spec:
           fi
           echo "OK: pod $POD reports '$MSG'"
     catch: *upgrade-dump
-  # ── Step 7: Assert all five Deployments rolled onto :2026.1 ────────────
+  # ── Step 7: Assert all five Deployments rolled onto :2026.2 ────────────
   # updatedReplicas == replicas is what separates a rollout that finished from
   # one that merely started: the Deployment carries the new pod template from
   # the moment it is patched, while the old pods keep serving until the new ones
@@ -461,7 +514,7 @@ spec:
               spec:
                 containers:
                 - name: nova-api
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -476,11 +529,11 @@ spec:
             template:
               metadata:
                 annotations:
-                  nova.c5c3.io/installed-release: "2026.1"
+                  nova.c5c3.io/installed-release: "2026.2"
               spec:
                 containers:
                 - name: nova-metadata
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -495,11 +548,11 @@ spec:
             template:
               metadata:
                 annotations:
-                  nova.c5c3.io/installed-release: "2026.1"
+                  nova.c5c3.io/installed-release: "2026.2"
               spec:
                 containers:
                 - name: scheduler
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -514,11 +567,11 @@ spec:
             template:
               metadata:
                 annotations:
-                  nova.c5c3.io/installed-release: "2026.1"
+                  nova.c5c3.io/installed-release: "2026.2"
               spec:
                 containers:
                 - name: conductor
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -533,11 +586,11 @@ spec:
             template:
               metadata:
                 annotations:
-                  nova.c5c3.io/installed-release: "2026.1"
+                  nova.c5c3.io/installed-release: "2026.2"
               spec:
                 containers:
                 - name: novncproxy
-                  image: ghcr.io/c5c3/nova:2026.1
+                  image: ghcr.io/c5c3/nova:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -547,12 +600,12 @@ spec:
         content: |
           set -euo pipefail
           JOB=nova-upgrade-db-sync
-          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.2 ==="
           # RunJob deletes and re-creates a completed Job in place when its
           # pod-spec hash changes, so the same-named db-sync Job is replaced on
-          # the :2026.1 image after the contract phase promotes installedRelease.
+          # the :2026.2 image after the contract phase promotes installedRelease.
           # Poll to ride out the brief delete/re-create window right after the
-          # upgrade settles, then assert the current Job carries :2026.1 and
+          # upgrade settles, then assert the current Job carries :2026.2 and
           # succeeded. Both fields come off one read, the way the phase loop in
           # step 5 reads them: the Job is deleted and re-created under this
           # loop, so two calls could pair the image of the old object with the
@@ -570,7 +623,7 @@ spec:
             IMG="${OUT%%|*}"
             SUCC="${OUT##*|}"
             case "$IMG" in
-            *:2026.1)
+            *:2026.2)
               if [ "$SUCC" = "1" ]; then
                 echo "OK: $JOB at $IMG succeeded=$SUCC"
                 exit 0
@@ -579,13 +632,13 @@ spec:
             esac
             sleep 5
           done
-          echo "FAIL: $JOB did not reach :2026.1 succeeded=1 (image=${IMG:-<none>} succeeded=${SUCC:-<none>})"
+          echo "FAIL: $JOB did not reach :2026.2 succeeded=1 (image=${IMG:-<none>} succeeded=${SUCC:-<none>})"
           exit 1
     catch: *upgrade-dump
   # ── Step 8: Assert the cells survived and the upgraded API answers ─────
   # The conditions and the images are the operator's view. status.cells is
   # nova's own: the mappings live in the nova_api schema the expand phase
-  # migrated, and the db-sync Job that re-ran on :2026.1 reports them back. A
+  # migrated, and the db-sync Job that re-ran on :2026.2 reports them back. A
   # second cell1 would mean the Job mapped the cell again instead of finding the
   # one that was there.
   - try:

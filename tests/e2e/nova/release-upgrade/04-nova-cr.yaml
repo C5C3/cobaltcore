@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the release-upgrade E2E test, installed at 2025.2.
+# Nova CR for the release-upgrade E2E test, installed at 2026.1.
 #
 # The light fixture tier of the Nova suites with one addition: a Keystone and a
 # Placement stand beside it, because the expand phase runs nova-status upgrade
@@ -24,7 +24,7 @@
 # which is meaningful at one replica and only slower at two.
 #
 # 05-patch-upgrade.yaml moves spec.openStackRelease and spec.image.tag to
-# 2026.1, which is what puts the CR through the expand-migrate-contract machine
+# 2026.2, which is what puts the CR through the expand-migrate-contract machine
 # instead of the steady-state db-sync every other nova suite exercises.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: Nova
@@ -32,10 +32,10 @@ metadata:
   name: nova-upgrade
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1
