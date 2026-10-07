@@ -109,6 +109,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-ovn-openstack-c5c3-io-v1alpha1-ovncentral,mutating=true,failurePolicy=fail,sideEffects=None,groups=ovn.openstack.c5c3.io,resources=ovncentrals,verbs=create;update,versions=v1alpha1,name=movncentral.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-ovn-openstack-c5c3-io-v1alpha1-ovncentral,mutating=false,failurePolicy=fail,sideEffects=None,groups=ovn.openstack.c5c3.io,resources=ovncentrals,verbs=create;update,versions=v1alpha1,name=vovncentral.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses the spec names
+// (validation.PriorityClassExists).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=ovn-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *OVNCentralWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {

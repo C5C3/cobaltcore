@@ -49,6 +49,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-placement-openstack-c5c3-io-v1alpha1-placement,mutating=true,failurePolicy=fail,sideEffects=None,groups=placement.openstack.c5c3.io,resources=placements,verbs=create;update,versions=v1alpha1,name=mplacement.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-placement-openstack-c5c3-io-v1alpha1-placement,mutating=false,failurePolicy=fail,sideEffects=None,groups=placement.openstack.c5c3.io,resources=placements,verbs=create;update,versions=v1alpha1,name=vplacement.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the PriorityClasses the spec names
+// (validation.PriorityClassExists).
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get,roleName=placement-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *PlacementWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {

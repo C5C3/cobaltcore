@@ -55,6 +55,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-nova-openstack-c5c3-io-v1alpha1-novacompute,mutating=true,failurePolicy=fail,sideEffects=None,groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=create;update,versions=v1alpha1,name=mnovacompute.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-nova-openstack-c5c3-io-v1alpha1-novacompute,mutating=false,failurePolicy=fail,sideEffects=None,groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=create;update,versions=v1alpha1,name=vnovacompute.kb.io,admissionReviewVersions=v1
+// The validating webhook reads the referenced Nova for its release
+// (novaComputeCatalogCheck).
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get,roleName=nova-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *NovaComputeWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
