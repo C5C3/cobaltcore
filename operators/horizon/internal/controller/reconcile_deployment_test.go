@@ -105,6 +105,7 @@ func TestBuildHorizonDeployment_Shape(t *testing.T) {
 	g.Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/auth/login/"))
 	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/auth/login/"))
 	g.Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 
 	// The HTTP probes pin the Host header to a fixed value so the requests
 	// satisfy Django's ALLOWED_HOSTS allow-list without the operator having to

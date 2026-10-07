@@ -89,6 +89,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 8080
+          timeoutSeconds: 10
         name: horizon
         ports:
         - containerPort: 8080
@@ -225,6 +226,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 8080
+          timeoutSeconds: 10
         name: horizon
         ports:
         - containerPort: 8080
