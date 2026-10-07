@@ -89,6 +89,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 5000
+          timeoutSeconds: 10
         name: keystone
         ports:
         - containerPort: 5000
@@ -241,6 +242,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 5000
+          timeoutSeconds: 10
         name: keystone
         ports:
         - containerPort: 5000
@@ -391,6 +393,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 5000
+          timeoutSeconds: 10
         name: keystone
         ports:
         - containerPort: 5000
@@ -573,7 +576,7 @@ spec:
               5).close()"
           initialDelaySeconds: 15
           periodSeconds: 20
-          timeoutSeconds: 8
+          timeoutSeconds: 10
         name: keystone
         ports:
         - containerPort: 5000
@@ -810,6 +813,7 @@ spec:
           periodSeconds: 20
           tcpSocket:
             port: 5000
+          timeoutSeconds: 10
         name: keystone
         ports:
         - containerPort: 5000
