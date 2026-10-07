@@ -3,13 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for a happy-path Neutron deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. The operator
-# renders the same files for both releases (nothing in the config step reads
-# spec.openStackRelease), so this suite asserts the SAME uWSGI command, the
-# same ML2/OVN driver set and the same neutron.conf shape against the 2026.2
-# image, and a difference between the two legs is the failure it exists to
-# catch. It pins the container image as well, so a release bump that forgot the
-# tag shows up here rather than in a passing 2025.2 run.
+# The per-release twin of the 2025.2 basic-deployment suite. The config step
+# renders the same files for every release. The deployment step reads
+# spec.openStackRelease from 2026.2 on and adds the /tmp volume and the
+# marker-cleanup hook to the API pod, so this suite asserts the 2026.2 uWSGI
+# command and pod shape, the same ML2/OVN driver set and the same neutron.conf
+# shape against the 2026.2 image, and an API pod without the volume or the hook
+# is the failure it exists to catch. It pins the container image as well, so a
+# release bump that forgot the tag shows up here rather than in a passing 2025.2
+# run.
 #
 # Validates the full reconciliation cycle:
 #   - all 10 sub-conditions progress to True with their expected reasons, and
@@ -17,6 +19,8 @@
 #   - the API Deployment launches uWSGI against the module the image ships
 #     (--module neutron.wsgi.api) with the rendered uwsgi.ini behind --ini, and
 #     points neutron at the mounted config through the two OS_NEUTRON_* env vars
+#   - the API pod mounts an emptyDir at /tmp and removes the marker files of an
+#     earlier container before the uWSGI master forks; the workers get no /tmp
 #   - the database URL, the transport URL and the service-user password arrive
 #     as oslo.config env overrides sourced from Secrets
 #   - the owned children exist: both worker Deployments, the Service on 9696,
@@ -132,14 +136,25 @@ spec:
                 # application is imported as a module. A --wsgi-file launch
                 # would mean the image layout changed under the operator.
                 (contains(join(' ', containers[0].command), '--module neutron.wsgi.api')): true
-                # uwsgi.ini carries the start-time marker the API reports its
-                # uptime from, and --ini is the only thing that loads it.
+                # uwsgi.ini still carries the start-time marker, and --ini is
+                # the only thing that loads it.
                 (contains(join(' ', containers[0].command), '--ini /etc/neutron/uwsgi.ini')): true
-                # D10: the start time comes from uWSGI's own %t inside that ini
-                # file, not from a --set-placeholder on the command line. A
-                # placeholder flag here would mean the decision was reverted
-                # without the file following.
+                # D10: the marker is uWSGI's own %t inside that ini file, not a
+                # --set-placeholder on the command line; a placeholder flag here
+                # would mean the decision was reverted without the file
+                # following. Neutron 29.0.0 ignores the marker: it writes the
+                # start time and the first-worker election to
+                # neutron_start_time* and neutron_first_worker* files under
+                # tempfile.gettempdir(). The API container therefore gets a
+                # writable emptyDir at /tmp, and the --hook-asap removes a
+                # replaced container's markers before the master forks. A
+                # missing hook would mean a restarted container reads its
+                # predecessor's start time.
                 (contains(join(' ', containers[0].command), '--set-placeholder')): false
+                (contains(join(' ', containers[0].command), '--hook-asap exec:rm -f /tmp/neutron_start_time* /tmp/neutron_first_worker*')): true
+                (containers[0].volumeMounts[?name == 'tmp'].mountPath | [0]): /tmp
+                (length(volumes[?name == 'tmp']) == `1`): true
+                (volumes[?name == 'tmp'].emptyDir | [0] != null): true
                 # Neutron runs one process per API pod: the workers live in
                 # their own Deployments and the OVN client identity is a
                 # mounted Secret, not a sidecar. A second container would mean
@@ -171,6 +186,12 @@ spec:
           metadata:
             name: neutron-basic-2026-2-periodic-workers
             namespace: openstack
+          spec:
+            template:
+              spec:
+                # The workers never reach neutron's marker-file code, so the
+                # /tmp volume belongs to the API Deployment alone.
+                (length(volumes[?name == 'tmp']) == `0`): true
           status:
             availableReplicas: 1
     - assert:
@@ -307,7 +328,10 @@ spec:
           echo "OK: $CM runs no RPC worker and renders no transport_url"
     # D11: uwsgi.ini is exactly the start-time marker. uWSGI expands %t while it
     # reads the file, so the epoch second needs neither an entry point nor a
-    # writable copy of a file the kubelet projects read-only.
+    # writable copy of a file the kubelet projects read-only. Neutron 29.0.0
+    # does not read the marker; the file stays because the ConfigMap is pinned
+    # byte-identical across releases
+    # (TestPinNeutronConf_ReleasesRenderIdentically).
     - script:
         content: |
           set -eu
