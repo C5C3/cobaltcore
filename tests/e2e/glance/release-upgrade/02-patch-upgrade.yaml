@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to trigger a cross-release upgrade from 2025.2 to 2026.1. Glance keys the
+# Patch to trigger a cross-release upgrade from 2026.1 to 2026.2. Glance keys the
 # expand-migrate-contract flow off spec.openStackRelease, and the phase Jobs run
 # the release image, so both the release and the image tag are bumped together.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
@@ -11,6 +11,6 @@ metadata:
   name: glance-release-upgrade
   namespace: openstack
 spec:
-  openStackRelease: "2026.1"
+  openStackRelease: "2026.2"
   image:
-    tag: "2026.1"
+    tag: "2026.2"

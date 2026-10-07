@@ -2,21 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a cross-release Glance upgrade from 2025.2 to 2026.1.
+# Chainsaw E2E test for a cross-release Glance upgrade from 2026.1 to 2026.2.
 # Glance is the second consumer of the shared expand-migrate-contract database
 # upgrade flow. Verifies the full upgrade lifecycle:
-#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
-#       installedRelease=2025.2 and the eventlet glance-api launch command
-#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#   (1) Fresh deployment at 2026.1 reaches Ready=True/AllReady with
+#       installedRelease=2026.1 under the uWSGI launch command
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.2 walks
 #       status.upgradePhase Expanding -> Migrating -> RollingUpdate ->
 #       Contracting -> "" via the db-expand/-db-migrate/-db-contract phase Jobs
-#   (3) installedRelease is promoted to 2026.1 only after the contract phase, and
+#   (3) installedRelease is promoted to 2026.2 only after the contract phase, and
 #       status.upgradePhase is cleared
 #   (4) The three phase Jobs are left in place after the upgrade succeeds
-#   (5) The Deployment flips to the uWSGI launch command on the :2026.1 image and
-#       the rollout completes
-#   (6) The steady-state db-sync Job re-runs on the :2026.1 image (its
-#       db load_metadefs pass loads the 2026.1 metadata definitions)
+#   (5) The Deployment flips to the :2026.2 image, still under the uWSGI
+#       launch command it ran at 2026.1, and the rollout completes
+#   (6) The steady-state db-sync Job re-runs on the :2026.2 image (its
+#       db load_metadefs pass loads the 2026.2 metadata definitions)
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -27,13 +27,13 @@ spec:
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Apply the Glance CR and its default S3 backend at 2025.2 ─────
+  # ── Step 1: Apply the Glance CR and its default S3 backend at 2026.1 ─────
   - try:
     - apply:
         file: 00-glance-cr.yaml
     - apply:
         file: 01-glance-backend.yaml
-  # ── Step 2: Assert the pre-upgrade steady state and eventlet command ─────
+  # ── Step 2: Assert the pre-upgrade steady state and uWSGI command ───────
   - try:
     - assert:
         resource:
@@ -43,7 +43,7 @@ spec:
             name: glance-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -59,12 +59,30 @@ spec:
               spec:
                 containers:
                 - name: glance-api
-                  command:
-                  - glance-api
-                  - --config-dir
-                  - /etc/glance/glance-api.conf.d/
-                  - --config-dir
-                  - /etc/glance/backends.conf.d/
+                  image: ghcr.io/c5c3/glance:2026.1
+                  command: &uwsgi-command
+                  - uwsgi
+                  - "--http"
+                  - ":9292"
+                  - "--http-auto-chunked"
+                  - "--http-chunked-input"
+                  - "--chunked-input-limit"
+                  - "16777216"
+                  - "--http-keepalive"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/glance-wsgi-api"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "1"
+                  - "--pyargv"
+                  - "--config-dir /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/"
           status:
             (availableReplicas > `0`): true
     catch:
@@ -92,7 +110,7 @@ spec:
   # ── Step 4: Assert the upgrade completes via expand-migrate-contract ─────
   - try:
     # Gate on the settled end state first: installedRelease is promoted to
-    # 2026.1 only after the contract phase, and the fresh post-upgrade db-sync
+    # 2026.2 only after the contract phase, and the fresh post-upgrade db-sync
     # flips DatabaseReady (and so Ready) back False until it completes, so a
     # stable Ready=True/AllReady here means the whole flow has drained.
     - assert:
@@ -103,7 +121,7 @@ spec:
             name: glance-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -132,8 +150,9 @@ spec:
               exit 1
             fi
           done
-    # The Deployment now launches under uWSGI on the :2026.1 image and the
-    # single-replica rollout has fully converged (updatedReplicas == replicas).
+    # The Deployment now runs the :2026.2 image under step 2's uWSGI command
+    # and the single-replica rollout has fully converged
+    # (updatedReplicas == replicas).
     - assert:
         resource:
           apiVersion: apps/v1
@@ -146,30 +165,8 @@ spec:
               spec:
                 containers:
                 - name: glance-api
-                  image: ghcr.io/c5c3/glance:2026.1
-                  command:
-                  - uwsgi
-                  - "--http"
-                  - ":9292"
-                  - "--http-auto-chunked"
-                  - "--http-chunked-input"
-                  - "--chunked-input-limit"
-                  - "16777216"
-                  - "--http-keepalive"
-                  - "--log-master"
-                  - "--log-format"
-                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
-                  - "--wsgi-file"
-                  - "/var/lib/openstack/bin/glance-wsgi-api"
-                  - "--master"
-                  - "--lazy-apps"
-                  - "--need-app"
-                  - "--processes"
-                  - "2"
-                  - "--threads"
-                  - "1"
-                  - "--pyargv"
-                  - "--config-dir /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/"
+                  image: ghcr.io/c5c3/glance:2026.2
+                  command: *uwsgi-command
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -178,20 +175,20 @@ spec:
         content: |
           set -eu
           JOB=glance-release-upgrade-db-sync
-          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.2 ==="
           # job.RunJob deletes and re-creates a completed Job in place when its
           # pod-spec-hash changes, so the same-named db-sync Job is replaced on
-          # the :2026.1 image after the contract phase promotes installedRelease.
-          # Its db load_metadefs pass loads the 2026.1 metadata definitions. Poll
+          # the :2026.2 image after the contract phase promotes installedRelease.
+          # Its db load_metadefs pass loads the 2026.2 metadata definitions. Poll
           # to ride out the brief delete/re-create window right after the upgrade
-          # settles, then assert the current Job carries :2026.1 and succeeded.
+          # settles, then assert the current Job carries :2026.2 and succeeded.
           for _ in $(seq 1 30); do
             IMG=$(kubectl get job "$JOB" -n openstack \
               -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
             SUCC=$(kubectl get job "$JOB" -n openstack \
               -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
             case "$IMG" in
-            *:2026.1)
+            *:2026.2)
               if [ "$SUCC" = "1" ]; then
                 echo "OK: $JOB at $IMG succeeded=$SUCC"
                 exit 0
@@ -200,7 +197,7 @@ spec:
             esac
             sleep 5
           done
-          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          echo "ERROR: $JOB did not reach :2026.2 succeeded=1 (image=$IMG succeeded=$SUCC)"
           exit 1
     catch:
     - script:
