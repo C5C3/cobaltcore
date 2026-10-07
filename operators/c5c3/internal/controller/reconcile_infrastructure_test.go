@@ -3023,7 +3023,7 @@ func TestEnsureRabbitMQ_Sizing(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		u := getBus(g, c, cp)
 		memory, _, _ := unstructured.NestedString(u.Object, "spec", "resources", "limits", "memory")
-		g.Expect(memory).To(Equal("512Mi"))
+		g.Expect(memory).To(Equal("1Gi"))
 		tolerations, _, _ := unstructured.NestedSlice(u.Object, "spec", "tolerations")
 		g.Expect(tolerations).To(ConsistOf(map[string]interface{}{"key": "infra", "operator": "Exists"}))
 		podSpec, found, _ := unstructured.NestedMap(u.Object, "spec", "override", "statefulSet", "spec", "template", "spec")
@@ -3101,6 +3101,33 @@ func TestEnsureRabbitMQ_Sizing(t *testing.T) {
 		g.Expect(replicas).To(Equal(int64(3)))
 		_, found, _ := unstructured.NestedMap(u.Object, "spec", "resources")
 		g.Expect(found).To(BeFalse(), "Standard sets no resources, so the Minimal ones are removed")
+	})
+
+	t.Run("an owned Minimal bus at the old 512Mi figure is raised to 1Gi in place", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		cp.Spec.Infrastructure.Messaging.Replicas = 0
+		owned := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, nil)
+		g.Expect(unstructured.SetNestedField(owned.Object, int64(1), "spec", "replicas")).To(Succeed())
+		g.Expect(unstructured.SetNestedMap(owned.Object, map[string]interface{}{
+			"requests": map[string]interface{}{"cpu": "815m", "memory": "512Mi"},
+			"limits":   map[string]interface{}{"memory": "512Mi"},
+		}, "spec", "resources")).To(Succeed())
+		g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureRabbitMQ(context.Background(), c, cp, cp.Spec.Infrastructure.Messaging,
+			messagingSizing(c5c3v1alpha1.BuiltinSizing(c5c3v1alpha1.SizingProfileMinimal)), cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u := getBus(g, c, cp)
+		g.Expect(u.GetDeletionTimestamp()).To(BeNil(), "a memory raise is an in-place Update")
+		res, _, _ := unstructured.NestedMap(u.Object, "spec", "resources")
+		g.Expect(res).To(Equal(map[string]interface{}{
+			"requests": map[string]interface{}{"cpu": "815m", "memory": "1Gi"},
+			"limits":   map[string]interface{}{"memory": "1Gi"},
+		}))
 	})
 
 	t.Run("a Standard-to-Minimal switch without the opt-in refuses the shrink", func(t *testing.T) {
