@@ -169,3 +169,39 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  # Standalone webhook mode: the ClusterRole carries only the reads of
+  # templates/_webhook-rbac-rules.tpl, generated from the markers with
+  # roleName=cinder-webhook, and no leases rule.
+  - it: should render only the webhook rule set when webhook.standalone is true
+    set:
+      webhook:
+        standalone: true
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 3
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete

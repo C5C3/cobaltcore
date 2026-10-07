@@ -2,7 +2,7 @@ apiVersion: v2
 name: ovn-operator
 description: A Helm chart for deploying the OVN central-database and chassis operator
 type: application
-version: 0.4.0
+version: 0.5.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for all operator
@@ -15,6 +15,8 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: "webhook.standalone runs the release as a standalone admission webhook for namespace-scoped installs: --enable-controllers=false, no leader election, a ClusterRole reduced to the webhook reads (operator-library 0.11.0)"
     - kind: added
       description: controller.defaultImagePullPolicy renders --default-image-pull-policy, the imagePullPolicy of every container whose image reference names no pullPolicy (operator-library 0.10.0)
     - kind: added

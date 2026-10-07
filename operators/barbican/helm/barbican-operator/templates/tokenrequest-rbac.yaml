@@ -20,7 +20,14 @@ than listed flat alongside it, so the two never cross-multiply: adding a second
 namespace grants nothing in the first. The map is empty by default: brownfield
 stores (spec.openBao.server) need no token at all, so nothing is granted until
 someone opts into managed provisioning.
+
+A webhook.standalone release runs no BarbicanSecretStore controller and mints
+no token, yet its pod admits the stores of every namespace. The chart refuses
+the grant there rather than binding it to that pod's ServiceAccount.
 */}}
+{{- if and .Values.webhook.standalone .Values.rbac.secretStoreNamespaces }}
+{{- fail "webhook.standalone=true runs no BarbicanSecretStore controller and mints no tokens; leave rbac.secretStoreNamespaces empty on the standalone webhook release" }}
+{{- end }}
 {{- range $namespace, $accounts := .Values.rbac.secretStoreNamespaces }}
 {{- if not $accounts }}
 {{- fail (printf "rbac.secretStoreNamespaces.%s must name the provisioner ServiceAccounts the operator may mint tokens for; an unrestricted TokenRequest Role would cover every ServiceAccount in that namespace" $namespace) }}

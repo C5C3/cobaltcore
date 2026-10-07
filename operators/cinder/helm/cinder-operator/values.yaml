@@ -64,6 +64,15 @@ controller:
 
 webhook:
   enabled: true
+  # Run this release as a standalone admission webhook for the namespace-scoped
+  # installs of this chart (rbac.namespaceScoped=true renders no webhook
+  # configuration): the manager registers no controller
+  # (--enable-controllers=false), elects no leader, and the ClusterRole carries
+  # only what the webhooks read (templates/_webhook-rbac-rules.tpl). One such
+  # release per cluster serves the CRs of every namespace. Requires
+  # webhook.enabled=true and rbac.namespaceScoped=false. See the Multi-Tenant
+  # Deployment guide.
+  standalone: false
 
 metrics:
   port: 8080
