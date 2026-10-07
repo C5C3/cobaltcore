@@ -77,6 +77,7 @@ single sequential step forward. Everything else is refused:
 | --- | --- | --- | --- |
 | `2025.1` | `2025.2` | Yes | Same year, minor +1 |
 | `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2026.2` | Yes | Same year, minor +1 |
 | `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
 | `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
 | `2026.1` | `2025.2` | No | Downgrade |
@@ -144,7 +145,11 @@ their readiness checks, so the API stays available.
 The launch mode derives from `spec.openStackRelease`: the eventlet `glance-api`
 server below `2026.1`, uWSGI from `2026.1` onward. A `2025.2` to `2026.1`
 upgrade therefore switches the container command from eventlet to uWSGI during
-this rollout. Both modes load the same two `--config-dir` roots; the reconciler
+this rollout. A `2026.1` to `2026.2` upgrade, the transition
+`tests/e2e/glance/release-upgrade/` runs, keeps uWSGI on both sides. A
+`spec.apiServer.workers` value renders `[DEFAULT] workers` under `2026.1` and
+stops rendering at `2026.2`, because glance 33.0.0 no longer registers the
+option. Both modes load the same two `--config-dir` roots; the reconciler
 reference covers the [launch modes](./glance-reconciler.md#launch-modes) in
 detail.
 

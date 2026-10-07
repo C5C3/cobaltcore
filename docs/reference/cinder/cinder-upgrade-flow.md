@@ -78,6 +78,7 @@ downgrade are both refused:
 | --- | --- | --- | --- |
 | `2025.1` | `2025.2` | Yes | Same year, minor +1 |
 | `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2026.2` | Yes | Same year, minor +1 |
 | `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
 | `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
 | `2026.1` | `2025.2` | No | Downgrade |
