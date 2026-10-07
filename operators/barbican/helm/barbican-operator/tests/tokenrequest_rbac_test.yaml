@@ -90,6 +90,29 @@ tests:
       - failedTemplate:
           errorMessage: rbac.secretStoreNamespaces.openstack must name the provisioner ServiceAccounts the operator may mint tokens for; an unrestricted TokenRequest Role would cover every ServiceAccount in that namespace
 
+  # A standalone webhook release mints no token, but its pod admits the stores
+  # of every namespace. A values file shared with the controller release must
+  # not hand that pod the grant.
+  - it: should refuse the grant on a standalone webhook release
+    set:
+      webhook:
+        standalone: true
+      rbac:
+        secretStoreNamespaces:
+          openstack:
+            - openbao-instance-provisioner
+    asserts:
+      - failedTemplate:
+          errorMessage: webhook.standalone=true runs no BarbicanSecretStore controller and mints no tokens; leave rbac.secretStoreNamespaces empty on the standalone webhook release
+
+  - it: should render nothing on a standalone webhook release by default
+    set:
+      webhook:
+        standalone: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: should bind the operator ServiceAccount from the release namespace
     set:
       rbac:
