@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
@@ -45,6 +47,11 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"`))
 	g.Expect(rendered).To(ContainSubstring(`"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache"`))
 	g.Expect(rendered).To(ContainSubstring(`"LOCATION": ["memcached:11211"]`))
+	// The image-scoped KEY_PREFIX sorts between BACKEND and LOCATION. The
+	// literal is sha256("ghcr.io/c5c3/horizon:2025.2")[:12], pinned rather
+	// than computed so a change of the hash input or length fails here.
+	g.Expect(rendered).To(ContainSubstring(`"KEY_PREFIX": "horizon-cb859537a8dc"`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-cb859537a8dc", "LOCATION": ["memcached:11211"]}}`))
 
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"`))
 	// The server-side clients must use the internal catalog interface — the
@@ -542,4 +549,127 @@ func TestDefaultSettings_RegistryDriftGuard(t *testing.T) {
 		t.Errorf("registry key %s is not rendered by defaultSettings: remove it "+
 			"from horizonv1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Key)
 	}
+}
+
+// --- image-scoped cache KEY_PREFIX ---
+
+// TestCacheKeyPrefix_DerivesFromImageReference pins the prefix of the three
+// releases under releases/ and of the edge inputs. Expected values are
+// literals, never a call to cacheKeyPrefix, so a change of the hash input or
+// length fails the test.
+func TestCacheKeyPrefix_DerivesFromImageReference(t *testing.T) {
+	const repository = "ghcr.io/c5c3/horizon"
+	tests := []struct {
+		name  string
+		image commonv1.ImageSpec
+		want  string
+	}{
+		{name: "2025.2 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2025.2"}, want: "horizon-cb859537a8dc"},
+		{name: "2026.1 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2026.1"}, want: "horizon-e3b48cc65c6f"},
+		{name: "2026.2 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2026.2"}, want: "horizon-bf42999233c3"},
+		// 64 hex characters, the digest shape the CRD pattern accepts. The
+		// hash input is "repository@digest".
+		{name: "digest pin", image: commonv1.ImageSpec{Repository: repository, Digest: "sha256:38fee8a6" + strings.Repeat("0", 56)}, want: "horizon-2ac8c5c0813f"},
+		// Reference() of a zero ImageSpec is ":"; the webhook rejects such a
+		// CR, the renderer still answers without an error path.
+		{name: "zero ImageSpec", image: commonv1.ImageSpec{}, want: "horizon-e7ac0786668e"},
+	}
+
+	seen := make(map[string]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			h.Spec.Image = tt.image
+
+			var got string
+			g.Expect(func() { got = cacheKeyPrefix(h) }).NotTo(Panic())
+			g.Expect(got).To(MatchRegexp(`^horizon-[0-9a-f]{12}$`))
+			g.Expect(got).To(Equal(tt.want))
+			// The ConfigMap name hashes the rendered prefix, so a second call
+			// on the same CR must return the same string.
+			g.Expect(cacheKeyPrefix(h)).To(Equal(got))
+			seen[got] = tt.name
+		})
+	}
+
+	// Pairwise distinct: every row, the three releases, the digest pin and
+	// the zero ImageSpec, gets its own prefix, so no two of them share cache
+	// entries on one Memcached. A new row must hash to a new prefix too.
+	if len(seen) != len(tests) {
+		t.Errorf("cacheKeyPrefix returned %d distinct prefixes for %d images: %v", len(seen), len(tests), seen)
+	}
+}
+
+// TestReconcileConfig_SameImageRendersSameConfigMapName pins that the prefix
+// moves the content-addressed ConfigMap name when the image moves and only
+// then: the image tag appears nowhere else in local_settings.py.
+func TestReconcileConfig_SameImageRendersSameConfigMapName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	r := newTestReconciler(testScheme(), h)
+	ctx := context.Background()
+
+	first, err := r.reconcileConfig(ctx, r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+	// The second render hits AlreadyExists on the immutable ConfigMap and
+	// must return the same name.
+	second, err := r.reconcileConfig(ctx, r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(second).To(Equal(first))
+
+	h.Spec.Image.Tag = "2026.1"
+	third, err := r.reconcileConfig(ctx, r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(third).NotTo(Equal(first), "an image change must move the ConfigMap name")
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(ctx, types.NamespacedName{Namespace: "default", Name: third}, &cm)).To(Succeed())
+	g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(`"KEY_PREFIX": "horizon-e3b48cc65c6f"`))
+}
+
+// TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported covers the
+// escape hatch for a cache backend spec.cache cannot express: the user dict
+// replaces the operator's CACHES whole, KEY_PREFIX included, and the guard
+// names the lost prefix in the condition and the Warning event.
+func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		"CACHES": {Raw: []byte(`{"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`)},
+	}
+	r := newTestReconciler(testScheme(), h)
+
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+	rendered := cm.Data["local_settings.py"]
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
+	g.Expect(rendered).NotTo(ContainSubstring("KEY_PREFIX"))
+
+	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("CACHES"))
+	g.Expect(cond.Message).To(ContainSubstring("KEY_PREFIX"))
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	g.Expect(fakeRecorder.Events).To(Receive(ContainSubstring("KEY_PREFIX")))
+}
+
+// TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix covers
+// a CacheSpec with neither clusterRef nor servers (a CR that bypassed the
+// webhook): cacheLocations returns nil, which renders as None, and the
+// prefix still renders beside it.
+func TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Cache = commonv1.CacheSpec{Backend: horizonv1alpha1.DefaultCacheBackend}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-cb859537a8dc", "LOCATION": None}}`))
 }
