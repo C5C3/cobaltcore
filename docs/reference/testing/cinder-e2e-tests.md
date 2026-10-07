@@ -106,7 +106,7 @@ into the `cinder-volume` pod that holds the mount.
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | NFS export | `nfs-server` Deployment in `openstack` and csi-driver-nfs in `kube-system` (`WITH_NFS=true`) |
-| Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade` |
+| Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade`, and `ghcr.io/c5c3/cinder:2026.2` for `basic-deployment-2026-2` |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
@@ -152,6 +152,7 @@ deletions.
 | --- | --- | --- |
 | [basic-deployment](#basic-deployment) | `cinder-basic` | Happy path on 2025.2: thirteen sub-conditions, the three Deployments and their owned children, the rendered `cinder.conf` and backend Secret, the API over HTTP |
 | [basic-deployment-2026-1](#basic-deployment-2026-1) | `cinder-basic-2026-1` | The same assertions against the 2026.1 image, so a difference between the two releases fails here |
+| [basic-deployment-2026-2](#basic-deployment-2026-2) | `cinder-basic-2026-2` | The same assertions against the 2026.2 image, so a difference between the three releases fails here |
 | [nfs-backend](#nfs-backend) | `cinder-nfs` | Volume data path on one export: create, extend, clone and delete, each read back through the mount |
 | [multi-backend](#multi-backend) | `cinder-multi` | One `cinder-volume` Deployment per backend, a per-pod `enabled_backends` overlay, volume-type placement on the second export |
 | [backend-detach](#backend-detach) | `cinder-detach` | `CinderBackend` deletion: volume Deployment removed first, service-remove Job run, finalizer released, service registry and `status.volumeServices` follow |
@@ -221,6 +222,32 @@ than in a passing 2025.2 run.
 | 4 | Assert the rendered cinder.conf | `script` | The noauth pipeline, the privsep contexts, and no `enabled_backends` |
 | 5 | Assert the rendered backend Secret | `script` | Driver wiring, the export line and the `enabled_backends` overlay of `basic-2026-1-nfs1` |
 | 6 | Assert the Cinder API answers over HTTP | `script` (6m) | The same probe against the 2026.1 API |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`
+
+---
+
+### basic-deployment-2026-2
+
+**File:** `tests/e2e/cinder/basic-deployment-2026-2/chainsaw-test.yaml`
+
+**Purpose:** The 2026.2 twin of `basic-deployment`. Nothing in the config step
+reads `spec.openStackRelease`, so the operator renders the same files for every
+release and this suite asserts the same uWSGI command, the same backend Secret
+and the same `cinder.conf` shape against the 2026.2 image. A difference between
+the three suites is the failure it exists to catch. The CR pins
+`image.tag: "2026.2"`, so a release bump that forgot the tag fails here.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-basic-2026-2 …`, then `00-cinder-cr.yaml` (`cinder-basic-2026-2`) and `01-cinderbackend-cr.yaml` (`basic-2026-2-nfs1`) |
+| 2 | Assert every sub-condition, Ready and the volume services | `assert` (5m) | The thirteen sub-conditions, `Ready=True/AllReady`, and `status.volumeServices` carrying `cinder-basic-2026-2@basic-2026-2-nfs1` |
+| 3 | Assert the three Deployments, the Service, PDB and CronJob | `assert` (5m) | The same workload shape as `basic-deployment`, against the `:2026.2` image |
+| 4 | Assert the rendered cinder.conf | `script` | The noauth pipeline, the privsep contexts, and no `enabled_backends` |
+| 5 | Assert the rendered backend Secret | `script` | The driver options, the export line and the `enabled_backends` overlay of `basic-2026-2-nfs1` |
+| 6 | Assert the Cinder API answers over HTTP | `script` (6m) | The same probe against the 2026.2 API |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`
 
@@ -707,7 +734,7 @@ last. A missing sentinel fails the step even when the pod succeeded.
       echo "${OUT}" | grep -q 'BASIC-PROBE-OK'
 ```
 
-The sentinels are per suite: `BASIC-PROBE-OK` in the two `basic-deployment`
+The sentinels are per suite: `BASIC-PROBE-OK` in the three `basic-deployment`
 suites, and one per stage in the data-path suites. The Python side retries only
 connection-level failures, because kube-proxy's endpoint programming can trail
 the CR's Ready flip by a second or two. Every HTTP status the API answers with
@@ -754,6 +781,10 @@ tests/e2e/cinder/
 │   ├── chainsaw-test.yaml              Happy path on 2026.1
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-basic-2026-1
 │   └── 01-cinderbackend-cr.yaml        Backend basic-2026-1-nfs1
+├── basic-deployment-2026-2/
+│   ├── chainsaw-test.yaml              Happy path on 2026.2
+│   ├── 00-cinder-cr.yaml               Cinder CR cinder-basic-2026-2
+│   └── 01-cinderbackend-cr.yaml        Backend basic-2026-2-nfs1
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Finalizer cleanup and the orphaned satellites
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-cleanup
