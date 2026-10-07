@@ -11,7 +11,7 @@
 # spends most of.
 #
 # The OVN control plane is release-independent: the daemon image carries no
-# OpenStack release, so it is unaffected by the 2025.2 -> 2026.1 patch in step 4
+# OpenStack release, so it is unaffected by the 2026.1 -> 2026.2 patch in step 4
 # and stays up across it.
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
 kind: OVNCentral
