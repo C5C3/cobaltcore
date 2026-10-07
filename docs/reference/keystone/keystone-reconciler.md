@@ -2255,17 +2255,22 @@ preserving the no-rollout behavior.
 
 | Probe | Type | Target | InitialDelay | Period | Timeout |
 | --- | --- | --- | --- | --- | --- |
-| Liveness | TCPSocket 5000; with federation active an exec-form localhost connect (uWSGI binds `127.0.0.1` only) | uWSGI accepting connections | 15s | 20s | kubelet default (1s); 8s for the federation exec variant |
+| Liveness | TCPSocket 5000; with federation active an exec-form localhost connect (uWSGI binds `127.0.0.1` only) | uWSGI accepting connections | 15s | 20s | 10s (both variants) |
 | Readiness | Exec | TCP connect to the host/port parsed from `OS_DATABASE__CONNECTION` (inner connect timeout 20s) | 10s | 30s | 25s |
 | Startup | HTTPGet `/v3` port 5000; with federation active an exec-form localhost fetch (inner timeout 5s) | WSGI app answering | — | 10s | 8s (FailureThreshold 30) |
 
 The exec-form probes fork a shell plus a Python interpreter, which alone can
 consume the kubelet's 1-second default timeout — every exec probe therefore
 carries an explicit `timeoutSeconds` sitting above its inner connect/fetch
-timeout and below its own period. The liveness and readiness probes are
-intentionally separated. The liveness probe only verifies uWSGI is accepting
-connections, without exercising the database code path, so the kubelet does
-not kill pods during transient database outages (e.g., MariaDB maintenance).
+timeout and below its own period. The liveness probe carries 10 seconds in
+both variants, the liveness timeout of every API front end: a single-worker
+uWSGI holds an HTTP check for the whole request in flight, and the kubelet's
+1-second default would restart a busy API. A TCP connect does not wait on the
+worker, so keystone takes the value to stay in line with the other front ends.
+The liveness and readiness probes are intentionally separated. The liveness
+probe only verifies uWSGI is accepting connections, without exercising the
+database code path, so the kubelet does not kill pods during transient
+database outages (e.g., MariaDB maintenance).
 The readiness probe TCP-connects to the database endpoint from inside the
 pod — `/v3` is served without touching the database and cannot observe a lost
 connection — so a keystone-side database outage depools the pod from the
