@@ -209,6 +209,9 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
+				// A TCP connect does not wait on the worker; the explicit value keeps
+				// the liveness timeout of every API front end the same (#1294).
+				TimeoutSeconds: 10,
 			},
 			// Readiness renders the login page: Django URL routing,
 			// templates, and the offline-compression manifest are all
