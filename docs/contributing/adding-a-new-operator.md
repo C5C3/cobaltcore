@@ -29,7 +29,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/conditions` | `SetCondition` (a `LastTransitionTime`-preserving upsert), `GetCondition`, `IsReady`, `AllTrue` |
 | `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `StoreRefFanOut` (enqueues only the CRs whose effective `spec.secretStoreRef` matches a changed cluster-scoped `ClusterSecretStore` or namespaced `SecretStore`), `ClusterRefMapper` (database-cluster reference to owning CRs), `ParentRefIndexer`/`RegisterParentRefIndex` (the satellite parent-reference index), `SatelliteToParentMapper`/`ParentToSatellitesMapper`/`SecretToParentsViaSatellitesMapper` (the three satellite event mappers) |
 | `internal/common/satellite` | Satellite-CRD mechanics: `ResolveParentChildren` (parent Get plus target-cluster resolve, holding the pass on the satellite's gate condition), `SectionProjected`/`SecretNameForVolume`/`SectionPresent` (projection observation through the parent's Deployment), `Collect` (sort-skip-gate-default collection); `GlanceBackend` is the reference consumer, and Keystone's satellite controller stays in the keystone operator by design |
-| `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
+| `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap and the `SetupOptions` its `SetupFunc` receives (register the reconcilers under `opts.Controllers`, the webhooks under `opts.Webhooks`), `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
 | `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
 | `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
 | `internal/common/apply` | The SSA apply primitives under every ensure helper: `EnsureObject` (owner-referenced) and `EnsureUnownedObject` |
@@ -86,8 +86,12 @@ bottom when scaffolding `operators/<op>/`:
   `operator-library` chart: every shared manifest (deployment, certificate,
   service, serviceaccount, rolebindings, PDB, ServiceMonitor,
   webhook-configuration) is a one-line `include`; per-operator content is
-  `Chart.yaml`, `values.yaml`, the `<op>-operator.rbacRules` helper, and the
-  helm-unittest suite.
+  `Chart.yaml`, `values.yaml`, the `<op>-operator.rbacRules` and
+  `<op>-operator.webhookRbacRules` helpers, and the helm-unittest suite. Each
+  read a webhook performs is declared with a `+kubebuilder:rbac` marker ending
+  in `roleName=<op>-webhook` beside the webhook, and `make sync-helm-rbac`
+  turns those markers into `templates/_webhook-rbac-rules.tpl`, the
+  ClusterRole of a `webhook.standalone` release.
 - **Option catalog** (oslo-INI services only) — map the service to its
   upstream oslo-config-generator config in `hack/gen-option-catalog.sh`, add
   it to the service loops of the `gen-option-catalogs` and

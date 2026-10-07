@@ -151,9 +151,13 @@ placement-operator 0.3.0 carry. An older chart rejects them.
 
 **Conditional constraint:** When `rbac.namespaceScoped` is `true`, the schema
 requires `webhook.enabled` to be `false`. This is enforced via a top-level `if`/`then`
-rule. Namespace-scoped RBAC cannot coexist with webhooks because
-`ValidatingWebhookConfiguration` and `MutatingWebhookConfiguration` are cluster-scoped
-resources that require a `ClusterRole` to manage.
+rule. Helm renders the `ValidatingWebhookConfiguration` and
+`MutatingWebhookConfiguration` of a release, and both are cluster-scoped: each
+intercepts the CR kind in every namespace and routes to its own release. Several
+namespace-scoped releases of one chart would each intercept every tenant's CRs,
+and the webhooks read cluster-scoped kinds a namespaced `Role` grants nothing
+for. A namespace-scoped install is admitted by a standalone webhook release
+instead (see [webhook](#webhook)).
 
 **Production recommendation:** For a control plane confined to a single
 namespace, set `rbac.namespaceScoped: true` to bound a compromised operator pod
@@ -200,6 +204,26 @@ because it renders no container.
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
 | `webhook.enabled` | `boolean` | — | `true` |
+| `webhook.standalone` | `boolean` | conditional: requires `webhook.enabled=true` and `rbac.namespaceScoped=false` | `false` |
+
+`webhook.standalone: true` runs the release as a standalone admission webhook:
+the manager is started with `--enable-controllers=false` and without
+`--leader-elect`, so it registers no controller and elects no leader, and the
+`ClusterRole` renders the chart's webhook rule set
+(`templates/_webhook-rbac-rules.tpl`) instead of the manager rules. One such
+release per cluster serves the CRs of every namespace, for the namespace-scoped
+installs of the chart, which set `webhook.enabled=false`. See
+[Multi-Tenant Deployment → Admission webhooks](../../guides/multi-tenant-deployment.md#admission-webhooks-the-standalone-webhook-release).
+
+**Conditional constraint:** When `webhook.standalone` is `true`, a second
+top-level `if`/`then` rule requires `webhook.enabled` to be `true` and
+`rbac.namespaceScoped` to be `false`: the release serves the webhooks of every
+namespace under a `ClusterRole`.
+
+The key needs operator-library 0.11.0, which the chart versions keystone-operator
+0.13.0, c5c3-operator 0.17.0, horizon-operator 0.6.0, cinder-operator and
+nova-operator 0.4.0, and barbican-, glance-, neutron-, ovn- and
+placement-operator 0.5.0 carry. An older chart rejects it.
 
 ### metrics
 
@@ -337,7 +361,8 @@ ships an enforced schema and covers the keys its extras file adds.
 | Unknown properties | `image.digest: "sha256:abc"` |
 | Invalid quantities | `resources.limits.cpu: "not-valid"` |
 | Exponent+suffix | `cpu: "1e3m"`, `memory: "1e3Ki"` |
-| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true` |
+| Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true`; `webhook.standalone=true` with `webhook.enabled=false` or with `rbac.namespaceScoped=true` |
+| Standalone webhook type | `webhook.standalone: "yes"` |
 | Logging constraints | `logging.development: "yes"`, `logging.encoder: "xml"`, `logging.level: "verbose"` |
 | Placement constraints | `nodeSelector: {role: 1}`, a toleration with `operator: Sometimes`, `effect: NoSchedul`, `tolerationSeconds: "300"` or the unknown key `taint`, `priorityClassName: 5`, a `priorityClassName` of 254 characters |
 
@@ -351,6 +376,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Numeric resource quantities | `cpu: 0.5` |
 | Exponent-only quantities | `cpu: "1e3"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` |
+| Standalone webhook | `webhook.standalone=true` |
 | Logging overrides | `development: true`, `level: debug`, `encoder: console` |
 | Operator image pull policy | `controller.defaultImagePullPolicy: Never` |
 | Placement keys | `priorityClassName`, a `nodeSelector` label and two tolerations, one with `tolerationSeconds`; a toleration with `effect: ""`, which matches every effect |
@@ -382,6 +408,7 @@ description, and by carrying no `federation` key (see the
 | `controller.maxConcurrentReconciles` | `2` | unset (accepted, not consumed) |
 | `controller.defaultImagePullPolicy` | unset | unset (accepted, not consumed) |
 | `webhook.enabled` | `true` | `true` |
+| `webhook.standalone` | `false` | `false` |
 | `metrics.port` | `8080` | `8080` |
 | `monitoring.serviceMonitor.enabled` | `false` | `false` |
 | `networkPolicy.enabled` | `false` | key not present |

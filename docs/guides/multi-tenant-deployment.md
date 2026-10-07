@@ -36,7 +36,10 @@ the c5c3-operator.
 The chart still ships cluster-wide (`rbac.namespaceScoped: false`) by default
 because some capabilities still need cluster scope — see
 [When cluster-wide RBAC is still required](#when-cluster-wide-rbac-is-still-required).
-Adopt namespace-scoped mode when your deployment fits in one namespace.
+Adopt namespace-scoped mode when your deployment fits in one namespace, and pair
+it with one standalone webhook release per operator type, so the CRs of the
+namespace-scoped installs are still defaulted and validated at admission (see
+[Admission webhooks](#admission-webhooks-the-standalone-webhook-release)).
 :::
 
 ## Prerequisites
@@ -88,10 +91,10 @@ needs cluster scope, which namespace-scoped mode cannot provide:
 - **Cross-namespace CR management** — a single operator instance reconciles
   `Keystone` (or `ControlPlane`) CRs in more than one namespace. A
   namespace-scoped operator only watches and reconciles its own namespace.
-- **Admission webhooks** — the defaulting and validating webhooks register
-  through cluster-scoped `ValidatingWebhookConfiguration` /
-  `MutatingWebhookConfiguration` objects, which only a `ClusterRole` can manage
-  (see [Webhook caveat](#webhook-caveat)).
+- **Admission webhooks** — a namespace-scoped release renders no webhook
+  configuration, so its CRs are admitted by a separate, cluster-wide standalone
+  webhook release of the same chart (see
+  [Admission webhooks: the standalone webhook release](#admission-webhooks-the-standalone-webhook-release)).
 - **`ClusterSecretStore` reads** — a CR reads its secrets through a
   `ClusterSecretStore`, such as the shared `openbao-cluster-store`. A
   namespace-scoped operator refuses such a CR (see
@@ -174,12 +177,14 @@ confines both the RBAC grant and the informer cache to a single namespace.
 
 ## Helm values
 
-Two values control namespace-scoped mode:
+Two values control namespace-scoped mode. A third one turns a release into the
+standalone webhook that admits the CRs of the namespace-scoped installs:
 
 | Value | Default | Description |
 | --- | --- | --- |
 | `rbac.namespaceScoped` | `false` | Deploy namespace-scoped `Role` / `RoleBinding` instead of `ClusterRole` / `ClusterRoleBinding`. Passes `--namespace` to the operator binary to restrict its cache and watches. |
-| `webhook.enabled` | `true` | Must be set to `false` when `rbac.namespaceScoped` is `true` (see [Webhook caveat](#webhook-caveat)). |
+| `webhook.enabled` | `true` | `false` on a namespace-scoped install, which the schema requires: the release then renders no webhook configuration (see [Admission webhooks](#admission-webhooks-the-standalone-webhook-release)). |
+| `webhook.standalone` | `false` | `true` on the one standalone webhook release per operator type only. Requires `webhook.enabled=true` and `rbac.namespaceScoped=false`. |
 
 Minimal values override:
 
@@ -194,19 +199,149 @@ webhook:
 
 ---
 
-## Webhook caveat
+## Admission webhooks: the standalone webhook release
 
-When `rbac.namespaceScoped` is `true`, you **must** disable webhooks by setting
-`webhook.enabled: false`.
+When `rbac.namespaceScoped` is `true`, the values schema requires
+`webhook.enabled: false`, and the release renders no webhook configuration.
 
-**Why:** Kubernetes admission webhooks are registered via
-`ValidatingWebhookConfiguration` and `MutatingWebhookConfiguration`, which are
-**cluster-scoped** resources. A namespace-scoped operator does not have
-permission to create or manage cluster-scoped resources, so webhook
-registration will fail.
+Helm renders the `MutatingWebhookConfiguration` and
+`ValidatingWebhookConfiguration` of a release under the installer's
+credentials. Both are cluster-scoped: each intercepts the CR kind in every
+namespace and routes the request to the Service of its own release. Two
+namespace-scoped releases of one chart would therefore register two pairs that
+both intercept every tenant's CRs, and each operator pod would admit CRs it
+cannot otherwise see. The webhooks also read cluster-scoped kinds, such as the
+`PriorityClass` a CR names, and a namespaced `Role` grants nothing for them.
 
-**Trade-off:** With webhooks disabled the following admission-time behaviors
-are lost:
+Instead, a cluster admin installs one standalone webhook release per operator
+type, cluster-wide, for example into `keystone-system`:
+
+```bash
+helm install keystone-operator-webhook \
+  operators/keystone/helm/keystone-operator/ \
+  --namespace keystone-system --create-namespace \
+  --set webhook.standalone=true
+```
+
+The release runs the operator image with `--enable-controllers=false`. Its
+manager registers no controller, elects no leader, engages no target cluster,
+and serves only the admission webhooks; the pod reports Ready once the webhook
+server's TLS listener is up. Its `ClusterRole` carries only what the webhooks
+read. For keystone that is two rules, `get` on `priorityclasses` and `list` on
+`keystoneidentitybackends`, and no rule on `secrets`, `rolebindings` or
+`leases`. Its webhook configurations admit the CRs of every namespace, so the
+one release serves every namespace-scoped install of the chart.
+
+The webhook configurations fail closed (`failurePolicy: Fail`). Until
+cert-manager has injected the CA bundle into both of them, and whenever no pod
+of the release is Ready, the API server rejects every create and update of the
+chart's CRs in every namespace. Before the first CR write, check that
+`kubectl get mutatingwebhookconfiguration keystone-operator-webhook-mutating -o jsonpath='{.webhooks[0].clientConfig.caBundle}'`
+and the same query on `validatingwebhookconfiguration keystone-operator-webhook-validating`
+print a non-empty value. Keep `replicas` at its default of 2, which also renders
+a PodDisruptionBudget, so a node drain does not take the admission path down.
+
+A cluster-wide release of the same chart with `webhook.enabled=true` already
+admits the CRs of every namespace through its in-process webhook. On a cluster
+that runs one, either leave out the standalone release or set
+`webhook.enabled=false` on the cluster-wide release. With both in place, both
+pairs of configurations admit every request, which works but makes each
+admission call twice.
+
+### Adding the release to existing namespace-scoped installs
+
+A namespace-scoped install that ran without admission webhooks stores CRs the
+webhooks never defaulted or validated. Once the standalone release is up, its
+webhooks intercept every update of those CRs: a label change, a GitOps
+re-apply, and the operator's own finalizer updates alike.
+
+- The defaulting webhook fills its defaults on the next write to each CR. For a
+  `Keystone` without `spec.trustFlush`, that is the hourly schedule
+  `0 * * * *`, and the operator then starts a `keystone-manage trust_flush`
+  CronJob for that tenant.
+- The validating webhook checks the whole spec on every update. A CR stored
+  with a spec the webhook rejects, such as an invalid cron expression, refuses
+  every update until you fix that spec.
+
+Before you install the release, list the `Keystone` CRs without
+`spec.trustFlush`:
+
+```bash
+kubectl get keystones -A -o json \
+  | jq -r '.items[] | select(.spec.trustFlush == null) | "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+Set `spec.trustFlush` on each of them: keep the default schedule, or set
+`suspend: true`, which creates the CronJob suspended so trust_flush does not
+run:
+
+```bash
+kubectl patch keystone <name> -n <namespace> --type merge \
+  -p '{"spec":{"trustFlush":{"suspend":true}}}'
+```
+
+Once the release is up, send each `Keystone` and each
+`KeystoneIdentityBackend` a server-side dry-run update. It passes both webhooks
+without persisting anything, and each CR whose stored spec the validating
+webhook rejects prints the field to fix:
+
+```bash
+for kind in keystones keystoneidentitybackends; do
+  kubectl get "$kind" -A --no-headers \
+    -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name \
+    | while read -r ns name; do
+        kubectl annotate "$kind" "$name" -n "$ns" \
+          c5c3.io/admission-check=1 --dry-run=server >/dev/null
+      done
+done
+```
+
+The validating webhook also checks a `KeystoneIdentityBackend` that is being
+deleted. A backend it rejects refuses the operator's finalizer removal and
+stays `Terminating`, so fix the backends the sweep reports before you delete
+any of them. Backends of one `Keystone` that clash on a field the CRD makes
+immutable, such as domain names that differ only in case, leave no spec to
+fix: delete every backend of the clash. The webhook skips a `Terminating`
+sibling in its cross-backend checks, so their finalizer removals pass.
+
+One backend of a domain-name clash usually owns the Keystone domain: the
+`Manage` backend whose `status.domainID` is set. With `deletionPolicy: Delete`,
+its finalizer disables and deletes that domain and everything in it. Delete the
+other backends of the clash first, without waiting: they stay `Terminating`
+until the owner is deleted too. Once they are `Terminating`, the webhook admits
+updates of the owner again, so set the owner to `Retain` before you delete it:
+
+```bash
+kubectl get keystoneidentitybackends -n <namespace> \
+  -o custom-columns=NAME:.metadata.name,DOMAIN:.spec.domain.name,MODE:.spec.domain.mode,DOMAIN_ID:.status.domainID,POLICY:.spec.domain.deletionPolicy
+kubectl delete keystoneidentitybackend <other> -n <namespace> --wait=false
+kubectl patch keystoneidentitybackend <owner> -n <namespace> --type merge \
+  -p '{"spec":{"domain":{"deletionPolicy":"Retain"}}}'
+kubectl delete keystoneidentitybackend <owner> -n <namespace>
+```
+
+Recreate the backend you keep with `domain.mode: Adopt`. A new `Manage`
+backend finds the retained domain, which it did not create, and reports
+`DomainAlreadyExists`.
+
+### Keeping the standalone release in step
+
+The standalone release defaults and validates the CRs of every
+namespace-scoped install, so its operator version sets the admission rules for
+all of them. Run it at the newest operator version any namespace-scoped install
+of the chart runs, and upgrade in this order: the CRDs, then the standalone
+release, then the namespace-scoped installs. An older standalone release
+rejects values only a newer webhook accepts and leaves the defaults a newer
+controller expects unset. A rule a newer release tightens applies from the next
+write of every existing CR on, the controllers' own finalizer updates included,
+so fix the CRs it rejects before you upgrade the release, or find them right
+after with the dry-run update above.
+
+### Running without admission webhooks
+
+Without a standalone webhook release, and without a cluster-wide release that
+keeps its webhook, the CRs of a namespace-scoped install reach the reconciler
+unadmitted. The following admission-time behaviors are lost:
 
 | Behavior | Impact |
 | --- | --- |
@@ -268,6 +403,26 @@ make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
 kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
 ```
 
+Install the standalone webhook release first. It admits the `Keystone` CRs of
+`team-alpha` and of every later namespace-scoped install:
+
+```bash
+helm install keystone-operator-webhook \
+  operators/keystone/helm/keystone-operator/ \
+  --namespace keystone-system --create-namespace \
+  --set webhook.standalone=true \
+  --set image.repository=ghcr.io/c5c3/keystone-operator \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never \
+  --wait --timeout 120s
+```
+
+The devstack's cluster-wide keystone-operator keeps its own webhook, so on the
+devstack both releases admit each request. On a cluster without a cluster-wide
+release, the standalone release is the only admission path for `team-alpha`.
+
+Then install the namespace-scoped operator:
+
 ```bash
 helm install keystone-operator \
   operators/keystone/helm/keystone-operator/ \
@@ -313,6 +468,10 @@ helm install keystone-operator \
   --set rbac.namespaceScoped=true \
   --set webhook.enabled=false
 ```
+
+Both instances share the standalone webhook release installed in
+[the example above](#example-namespace-scoped-install): its webhook
+configurations admit the `Keystone` CRs of `team-alpha` and `team-beta` alike.
 
 Each instance only watches and reconciles resources in its own namespace.
 There is no cross-namespace interference because:
@@ -471,9 +630,9 @@ namespace, so two ControlPlanes already get two instances.
 
 ## Tested by
 
-The namespace-scoped install and the two-ControlPlanes-in-two-namespaces tenancy
-this guide describes are asserted on the CI e2e kind cluster by these chainsaw
-suites:
+The namespace-scoped install beside a standalone webhook release, and the
+two-ControlPlanes-in-two-namespaces tenancy this guide describes, are asserted
+on the CI e2e kind cluster by these chainsaw suites:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/namespace-scoped-rbac
