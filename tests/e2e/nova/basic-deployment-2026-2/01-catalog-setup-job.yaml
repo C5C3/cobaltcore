@@ -16,6 +16,22 @@
 # read at their first request, and a row written after a pod started is only
 # picked up once the token middleware's catalog cache expires.
 #
+# One role is assigned: the service role, to the bootstrap admin every CR of
+# this suite names as its service user. Nova sends a service token beside the
+# user token on every call to Neutron and Glance ([service_user]
+# send_service_user_token = true, internal/common/keystoneauth), and
+# keystonemiddleware 13.0.1, the 2026.2 pin, answers 401 to a service token
+# that carries none of its [keystone_authtoken] service_token_roles ("service"
+# by default): service_token_roles_required moved to true in that release.
+# Without the grant the server create of the verify Job fails
+# (NeutronAdminCredentialConfigurationInvalid). keystone-manage bootstrap
+# creates the role but assigns it to nobody, and the ControlPlane grants it to
+# every service account it registers
+# (operators/c5c3/internal/controller/builtin_registrations.go), so the suite
+# mirrors that grant, as tests/tempest/nova-2026-2 does. The two older suites
+# run keystonemiddleware 10 and 12, whose default is false, and keep the plain
+# catalog Job.
+#
 # It authenticates as the bootstrap admin (keystone-admin Secret) and every step
 # is idempotent, so a Job retry converges rather than erroring on a duplicate.
 apiVersion: batch/v1
@@ -111,5 +127,10 @@ spec:
               create_endpoint neutron public "${NEUTRON_URL}"
               create_endpoint neutron internal "${NEUTRON_URL}"
 
-              echo "OK: compute, placement, image and network services registered"
+              # Unguarded: keystone's role-assignment PUT is idempotent (204 on
+              # a repeat), so a retry converges without a listing in front.
+              openstack role add --user admin --user-domain Default \
+                --project admin --project-domain Default service
+
+              echo "OK: compute, placement, image and network services registered, service role granted"
               openstack endpoint list --format value -c "Service Name" -c Interface -c URL

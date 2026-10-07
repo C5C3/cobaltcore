@@ -10,6 +10,9 @@
 # exists to catch. It pins the API container image too, so a release bump that
 # forgot the tag shows up here rather than in a passing 2025.2 run. The three
 # suites are hand-maintained copies: a change to one belongs in the others.
+# The one fixture this copy keeps apart is the service role grant in
+# 01-catalog-setup-job.yaml, which keystonemiddleware 13, the 2026.2 pin,
+# requires of the service token Nova sends.
 #
 # Validates the full reconciliation cycle of a Nova against real pods, a real
 # broker vhost and a fake-driver nova-compute:

@@ -368,14 +368,17 @@ renders reads `spec.openStackRelease`, so the suite asserts the same conditions,
 the same workload shapes and the same `nova.conf` against the 2026.2 image, and
 a difference between the three suites is the failure it exists to catch. The
 three suites are hand-maintained copies, and the helper CRs of this one run at
-2026.2 as well.
+2026.2 as well. Its catalog Job also grants the bootstrap admin the `service`
+role: Nova sends a service token on every call to Neutron and Glance, and
+keystonemiddleware 13.0.1, the 2026.2 pin, answers 401 to a service token
+without that role.
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then bring up Keystone | `script` (2m) + `apply` + `assert` | `broker-vhost.sh create nova-basic-2026-2 nova-basic-2026-2-messaging openstack` and `keystone-nova-basic-2026-2` Ready |
-| 2 | Register the four services in the catalog | `script` + `assert` | `01-catalog-setup-job.yaml`, `succeeded: 1` |
+| 2 | Register the four services in the catalog | `script` + `assert` | `01-catalog-setup-job.yaml`, which also grants the `service` role, `succeeded: 1` |
 | 3 | Bring up the four services the boot path depends on | `apply` + `assert` | `nova-basic-2026-2-ovn`, `neutron-nova-basic-2026-2`, `placement-nova-basic-2026-2`, `glance-nova-basic-2026-2` and `glance-nova-basic-2026-2-s3`, each Ready |
 | 4 | Seed the image the server boots from | `script` + `assert` | `08-image-seed-job.yaml`, `succeeded: 1` |
 | 5 | Assert the conditions, the children and the config | `apply` + `assert` (10m) + `script` | The same fifteen sub-conditions and children as `basic-deployment`, with `installedRelease: "2026.2"` and the API container pinned to `ghcr.io/c5c3/nova:2026.2`, so a release bump that forgot the tag fails here |
@@ -1064,7 +1067,7 @@ tests/e2e/nova/
 ├── basic-deployment-2026-2/
 │   ├── chainsaw-test.yaml             The same run on 2026.2
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-basic-2026-2
-│   ├── 01-catalog-setup-job.yaml      Catalog rows for this suite's services
+│   ├── 01-catalog-setup-job.yaml      Catalog rows and the service role grant
 │   ├── 02-messaging-secret.yaml       Transport URL for the Neutron beside the Nova
 │   ├── 03-ovncentral-cr.yaml          OVNCentral nova-basic-2026-2-ovn
 │   ├── 04-neutron-cr.yaml             Neutron neutron-nova-basic-2026-2
