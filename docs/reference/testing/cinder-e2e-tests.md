@@ -106,7 +106,7 @@ into the `cinder-volume` pod that holds the mount.
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | NFS export | `nfs-server` Deployment in `openstack` and csi-driver-nfs in `kube-system` (`WITH_NFS=true`) |
-| Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade`, and `ghcr.io/c5c3/cinder:2026.2` for `basic-deployment-2026-2` |
+| Service images | `ghcr.io/c5c3/cinder:2025.2` for every suite except the two `basic-deployment-2026-*` variants and `release-upgrade`, plus `ghcr.io/c5c3/cinder:2026.1` for `basic-deployment-2026-1` and the start half of `release-upgrade`, and `ghcr.io/c5c3/cinder:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade` |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
@@ -163,7 +163,7 @@ deletions.
 | [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete |
 | [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent; the `CinderBackend` releases its finalizer on `ServiceRemoveSkipped`, the `CinderBackupBackend` holds none |
 | [pod-security-restricted](#pod-security-restricted) | `cinder-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, with zero `FailedCreate` violations |
-| [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the three Deployments, the API on the new release, the upgrade-check event read without a pod informer |
+| [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2026.1 to 2026.2: phase progression, the three phase Jobs, the three Deployments, the API on the new release, the upgrade-check event read without a pod informer |
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `cinder-isolation` | db-purge and service-remove pods never become API Service backends, and the Service is never left without any |
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `cinder-smoke` | `curl -k https://cinder.127-0-0-1.nip.io/` answers HTTP 300 with the Cinder version document |
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
@@ -558,19 +558,19 @@ service-remove Job.
 **Purpose:** The one Cinder suite that enters the four-phase upgrade machine of
 `operators/cinder/internal/controller/reconcile_database.go`. Every other suite
 installs a release into a fresh, empty schema and so only ever runs the db-sync
-command. This one upgrades 2025.2 to 2026.1 against a schema the 2025.2 db-sync
+command. This one upgrades 2026.1 to 2026.2 against a schema the 2026.1 db-sync
 already populated.
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-upgrade …`, then `00-cinder-cr.yaml` (`cinder-upgrade`, `:2025.2`) and `01-cinderbackend-cr.yaml` (`upgrade-nfs1`) |
-| 2 | Assert the pre-upgrade steady state on :2025.2 | `assert` (10m) + `error` | `Ready=True/AllReady` with `installedRelease` 2025.2, and `error` assertions pinning that none of the three phase Jobs exists yet |
-| 3 | Patch release + image tag to trigger the upgrade | `patch` | `03-patch-upgrade.yaml` sets `openStackRelease` and `image.tag` to 2026.1 |
-| 4 | Follow status.upgradePhase to the settled end state | `script` (10m) + `assert` (10m) | The observed phases must be an ordered subsequence of `Expanding`, `Migrating`, `RollingUpdate`, `Contracting` that contains `RollingUpdate`; then `status.upgradePhase` clears, `installedRelease` is 2026.1, and `Ready=True/AllReady` |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-upgrade …`, then `00-cinder-cr.yaml` (`cinder-upgrade`, `:2026.1`) and `01-cinderbackend-cr.yaml` (`upgrade-nfs1`) |
+| 2 | Assert the pre-upgrade steady state on :2026.1 | `assert` (10m) + `error` | `Ready=True/AllReady` with `installedRelease` 2026.1, and `error` assertions pinning that none of the three phase Jobs exists yet |
+| 3 | Patch release + image tag to trigger the upgrade | `patch` | `03-patch-upgrade.yaml` sets `openStackRelease` and `image.tag` to 2026.2 |
+| 4 | Follow status.upgradePhase to the settled end state | `script` (10m) + `assert` (10m) | The observed phases must be an ordered subsequence of `Expanding`, `Migrating`, `RollingUpdate`, `Contracting` that contains `RollingUpdate`; then `status.upgradePhase` clears, `installedRelease` is 2026.2, and `Ready=True/AllReady` |
 | 5 | Assert the three phase Jobs ran on the new release | `assert` (10m) + `script` (2m) | Jobs `cinder-upgrade-db-expand`, `-db-migrate` and `-db-contract` each succeeded, and the migrate Job's pod carries the `cinder-status` verdict in its termination message |
-| 6 | Assert all three Deployments rolled onto :2026.1 | `assert` (10m) + `script` (5m) | The API, scheduler and volume Deployments are on `:2026.1` with a converged rollout, and the steady-state db-sync Job re-ran on the new image |
+| 6 | Assert all three Deployments rolled onto :2026.2 | `assert` (10m) + `script` (5m) | The API, scheduler and volume Deployments are on `:2026.2` with a converged rollout, and the steady-state db-sync Job re-ran on the new image |
 | 7 | Assert the upgraded API answers and its registry is healthy | `script` (8m) | The probe pod reaches the API on the new release and every process in `/v3/os-services` reports state `up` |
 | 8 | Assert the upgrade check reached the Cinder and no pod informer ran | `script` (2m) | `cinder-upgrade` carries an `UpgradeCheckCompleted` event with `cinder-status upgrade check exit 0` or an `UpgradeCheckWarnings` event with exit 1 or 2, and the cinder-operator log holds no `Failed to watch` line for `*v1.Pod`, which a cached pod read would leave behind |
 
@@ -845,10 +845,10 @@ tests/e2e/cinder/
 │   ├── 02-cinderbackupbackend-cr.yaml  Backup backend pss-nfsbk
 │   └── 03-cinder-cr.yaml               Cinder CR cinder-pss in brownfield mode
 ├── release-upgrade/
-│   ├── chainsaw-test.yaml              Cross-release upgrade 2025.2 to 2026.1
-│   ├── 00-cinder-cr.yaml               Cinder CR cinder-upgrade on 2025.2
+│   ├── chainsaw-test.yaml              Cross-release upgrade 2026.1 to 2026.2
+│   ├── 00-cinder-cr.yaml               Cinder CR cinder-upgrade on 2026.1
 │   ├── 01-cinderbackend-cr.yaml        Backend upgrade-nfs1
-│   └── 03-patch-upgrade.yaml           Patch to release and image tag 2026.1
+│   └── 03-patch-upgrade.yaml           Patch to release and image tag 2026.2
 └── scale/
     ├── chainsaw-test.yaml              API replica scaling and PDB policy
     ├── 00-cinder-cr.yaml               Cinder CR cinder-scale with replicas 3

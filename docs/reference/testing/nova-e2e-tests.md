@@ -201,7 +201,7 @@ and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | Gateway | `GatewayClass/envoy` and `Gateway/openstack-gw` with the `https-nova`, `https-nova-metadata` and `https-nova-console` listeners, for the two suites that curl them |
-| Service images | `ghcr.io/c5c3/nova:2025.2` for every suite, `ghcr.io/c5c3/nova:2026.1` for `basic-deployment-2026-1` and the target half of `release-upgrade`, `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
+| Service images | `ghcr.io/c5c3/nova:2025.2` for every suite except the two `basic-deployment-2026-*` variants and `release-upgrade`, `ghcr.io/c5c3/nova:2026.1` for `basic-deployment-2026-1` and the start half of `release-upgrade`, `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
@@ -274,7 +274,7 @@ a labelled namespace of its own.
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `nova-smoke` | The three external URLs the quick start names answer 200 through `openstack-gw` |
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `nova-isolation` | A live db-archive pod is never an address of the API, metadata or console Service, and none of the three is left without backends |
 | [db-archive](#db-archive) | `nova-archive` | The archive CronJob fires on a minute schedule and moves the deleted server into the shadow tables, with no `DBArchiveJobFailed` event on the CR |
-| [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2025.2 to 2026.1: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
+| [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2026.1 to 2026.2: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
 | [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, the instances directory on the node, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
 | [console-proxy](#console-proxy) | `nova-vnc` | The console URL the API publishes carries the gateway hostname, the token handshake through it reaches the instance console, and an invalid token is turned down |
 | [remote-compute-contract](#remote-compute-contract) | `nova-rc` | The remote compute contract `spec.remoteCompute` publishes: both status refs, the six keys, the external transport URL, a fragment addressed at the public Keystone URL and the public catalog rows, the in-cluster contract unchanged, and the Secret gone once the block is removed |
@@ -642,7 +642,7 @@ row behind in the live table.
 **Purpose:** The one Nova suite that enters the four-phase upgrade machine of
 `operators/nova/internal/controller/reconcile_database.go`. Every other suite
 installs a release into empty schemas and so only runs the steady-state db-sync.
-A Keystone and a Placement stand beside the Nova, both at 2026.1 for the whole
+A Keystone and a Placement stand beside the Nova, both at 2026.2 for the whole
 run, because the expand phase runs `nova-status upgrade check` and that check
 reads Placement as an authenticated client.
 
@@ -653,10 +653,10 @@ reads Placement as an authenticated client.
 | 1 | Give the suite its vhost, then bring up Keystone | `script` (2m) + `apply` + `assert` | `broker-vhost.sh create nova-upgrade nova-upgrade-messaging openstack` and `keystone-nova-upgrade` Ready |
 | 2 | Register compute and placement in the catalog | `script` + `assert` | `01-catalog-setup-job.yaml`, `succeeded: 1` |
 | 3 | Bring up the Placement the upgrade check reads | `apply` + `assert` | `placement-nova-upgrade` Ready |
-| 4 | Assert the pre-upgrade steady state on :2025.2 | `apply` + `assert` (10m) + `error` | `installedRelease: "2025.2"`, `Ready=True/AllReady`, the API container on `ghcr.io/c5c3/nova:2025.2`, and `error` assertions on all three phase Jobs, which is what makes their presence in step 6 evidence of the upgrade |
-| 5 | Patch the release and follow the phase to the end | `patch` + `script` (10m) + `assert` | The loop records each distinct `status.upgradePhase` it reads until the phase is empty and `installedRelease` is 2026.1, then checks the recorded values are an ordered subsequence of Expanding, Migrating, RollingUpdate, Contracting containing RollingUpdate |
-| 6 | Assert the three phase Jobs ran on the new release | `assert` + `script` (2m) | `nova-upgrade-db-expand`, `-db-migrate` and `-db-contract` each `succeeded: 1` on `ghcr.io/c5c3/nova:2026.1`, and the expand pod's termination message reading `nova-status upgrade check exit 0` or `exit 1` |
-| 7 | Assert all five Deployments rolled onto :2026.1 | `assert` + `script` (5m) | Every Deployment on the new image with `updatedReplicas == replicas`; the metadata API, scheduler, conductor and console proxy carry `nova.c5c3.io/installed-release: "2026.1"` and the API carries no such annotation, because it rolled during RollingUpdate. A script then waits for the steady-state db-sync Job to re-run on `:2026.1` and succeed |
+| 4 | Assert the pre-upgrade steady state on :2026.1 | `apply` + `assert` (10m) + `error` | `installedRelease: "2026.1"`, `Ready=True/AllReady`, the API container on `ghcr.io/c5c3/nova:2026.1`, and `error` assertions on all three phase Jobs, which is what makes their presence in step 6 evidence of the upgrade |
+| 5 | Patch the release and follow the phase to the end | `patch` + `script` (10m) + `assert` | The loop records each distinct `status.upgradePhase` it reads until the phase is empty and `installedRelease` is 2026.2, then checks the recorded values are an ordered subsequence of Expanding, Migrating, RollingUpdate, Contracting containing RollingUpdate. At the first RollingUpdate sample, before the steady-state db-sync can re-run, the loop reads `alembic_version` in `nova_upgrade` and `nova_upgrade_cell0`; both must be at `ab450ba04102`, the revision the expand Job applies |
+| 6 | Assert the three phase Jobs ran on the new release | `assert` + `script` (2m) | `nova-upgrade-db-expand`, `-db-migrate` and `-db-contract` each `succeeded: 1` on `ghcr.io/c5c3/nova:2026.2`, and the expand pod's termination message reading `nova-status upgrade check exit 0` or `exit 1` |
+| 7 | Assert all five Deployments rolled onto :2026.2 | `assert` + `script` (5m) | Every Deployment on the new image with `updatedReplicas == replicas`; the metadata API, scheduler, conductor and console proxy carry `nova.c5c3.io/installed-release: "2026.2"` and the API carries no such annotation, because it rolled during RollingUpdate. A script then waits for the steady-state db-sync Job to re-run on `:2026.2` and succeed |
 | 8 | Assert the cells survived and the upgraded API answers | `assert` + `script` (2m) | cell0 still under the all-zero uuid and exactly one cell1, then a `GET /` from inside the conductor pod answering 200 with `v2.1` in the body |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-catalog-setup-job.yaml`,
@@ -1164,13 +1164,13 @@ tests/e2e/nova/
 │   ├── 00-brownfield-db-setup.yaml    Pre-created MariaDB Databases, Users and Grants
 │   └── 01-nova-cr.yaml                Nova CR nova-pss in brownfield mode
 ├── release-upgrade/
-│   ├── chainsaw-test.yaml             Cross-release upgrade 2025.2 to 2026.1
+│   ├── chainsaw-test.yaml             Cross-release upgrade 2026.1 to 2026.2
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-upgrade
 │   ├── 01-catalog-setup-job.yaml      Compute and placement catalog rows
 │   ├── 02-placement-cr.yaml           Placement placement-nova-upgrade
 │   ├── 03-metadata-secret.yaml        The metadata shared secret
-│   ├── 04-nova-cr.yaml                Nova CR nova-upgrade on 2025.2
-│   └── 05-patch-upgrade.yaml          Patch to release and image tag 2026.1
+│   ├── 04-nova-cr.yaml                Nova CR nova-upgrade on 2026.1
+│   └── 05-patch-upgrade.yaml          Patch to release and image tag 2026.2
 ├── remote-compute-contract/
 │   ├── chainsaw-test.yaml             Both compute contracts, and the remote one's removal
 │   ├── 00-secrets.yaml                The seven input Secrets, every address a placeholder
