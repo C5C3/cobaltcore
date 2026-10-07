@@ -8,7 +8,7 @@
 # from the ESO-synced glance-db Secret and the service-user password from the
 # pre-seeded keystone-admin Secret (both deploy/kind/infrastructure). glance-api
 # cannot start without a default image store, so 01-glance-backend.yaml attaches
-# one before Ready can settle. From 2026.2 the API launches under uWSGI rather
+# one before Ready can settle. From 2026.1 the API launches under uWSGI rather
 # than the eventlet glance-api server.
 #
 # spec.dbPurge is set here rather than left to the operator defaults so the

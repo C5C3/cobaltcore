@@ -6,7 +6,7 @@
 # Validates the full reconciliation cycle:
 #   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
-#   - The API Deployment launches under uWSGI (the 2026.2-and-later launch mode,
+#   - The API Deployment launches under uWSGI (the 2026.1-and-later launch mode,
 #     `uwsgi ... --wsgi-file /var/lib/openstack/bin/glance-wsgi-api ...`; the
 #     image-shipped shim, because glance's stock WSGI module ignores --pyargv
 #     and would never see the two --config-dir mounts) — this is the one
