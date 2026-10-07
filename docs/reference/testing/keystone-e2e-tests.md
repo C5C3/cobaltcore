@@ -99,7 +99,7 @@ Deployment rollout, bootstrap Job).
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
 | [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
-| [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2025.2 to 2026.1 via expand-migrate-contract, API accessibility before/after |
+| [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2026.1 to 2026.2 via expand-migrate-contract, API accessibility before/after |
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact |
 | [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved |
 | [events](#events) | `keystone-events` | Kubernetes event emission for BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated |
@@ -389,12 +389,12 @@ gated by its pod template hash and leaves the key-gated bootstrap Job alone.
 
 **File:** `tests/e2e/keystone/release-upgrade/chainsaw-test.yaml`
 
-**Purpose:** Validates a cross-release upgrade from OpenStack 2025.2 to 2026.1 via the
-expand-migrate-contract database migration path (keystone 28.0.0 → 29.0.0). Deploys a
-Keystone CR with tag 2025.2, verifies the Keystone API at `/v3` is accessible, patches
-`spec.image.tag` to 2026.1, then verifies the expand/migrate/contract Jobs are created,
-the Deployment image updates to 2026.1, the rollout completes, `installedRelease` reaches
-2026.1, and the Keystone API remains accessible post-upgrade.
+**Purpose:** Validates a cross-release upgrade from OpenStack 2026.1 to 2026.2 via the
+expand-migrate-contract database migration path (keystone 29.0.0 → 30.0.0). Deploys a
+Keystone CR with tag 2026.1, verifies the Keystone API at `/v3` is accessible, patches
+`spec.image.tag` to 2026.2, then verifies the expand/migrate/contract Jobs are created,
+the Deployment image updates to 2026.2, the rollout completes, `installedRelease` reaches
+2026.2, and the Keystone API remains accessible post-upgrade.
 
 This differs from `image-upgrade`, which tests same-release tag swaps
 (2025.2→2025.2-upgraded) without database migration, and from `upgrade-flow`,
@@ -404,11 +404,11 @@ which focuses on internal state machine mechanics (skip-level rejection).
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Keystone CR with tag 2025.2 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-release-upgrade` in managed mode with tag 2025.2 |
-| 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2025.2; script verifies Deployment `keystone-release-upgrade-api` container image ends with `2025.2` |
+| 1 | Apply Keystone CR with tag 2026.1 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-release-upgrade` in managed mode with tag 2026.1 |
+| 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2026.1; script verifies Deployment `keystone-release-upgrade-api` container image ends with `2026.1` |
 | 3 | Verify API before upgrade | `script` (30s) | `kubectl run curl-test-release-pre` with python3 `urllib.request` — verifies GET `/v3` succeeds |
-| 4 | Patch image tag to 2026.1 | `patch` | Applies `01-patch-upgrade.yaml` — patches `spec.image.tag` to `2026.1` |
-| 5 | Assert upgrade completes | `assert` (5m) + `script` | `installedRelease`=2026.1, Ready=True (AllReady); scripts verify db-expand, db-migrate, db-contract Jobs exist and Deployment image ends with `2026.1`; assert verifies `updatedReplicas == replicas` and `availableReplicas > 0` |
+| 4 | Patch image tag to 2026.2 | `patch` | Applies `01-patch-upgrade.yaml` — patches `spec.image.tag` to `2026.2` |
+| 5 | Assert upgrade completes | `assert` (5m) + `script` | `installedRelease`=2026.2, Ready=True (AllReady); scripts verify db-expand, db-migrate, db-contract Jobs exist and Deployment image ends with `2026.2`; assert verifies `updatedReplicas == replicas` and `availableReplicas > 0` |
 | 6 | Verify API after upgrade | `script` (30s) | `kubectl run curl-test-release-post` with python3 `urllib.request` — verifies GET `/v3` succeeds post-upgrade |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-upgrade.yaml`
@@ -1113,9 +1113,9 @@ tests/e2e/keystone/
 ├── prometheus-stack/
 │   └── chainsaw-test.yaml              WITH_PROMETHEUS opt-in addon path
 ├── release-upgrade/
-│   ├── chainsaw-test.yaml              Cross-release upgrade 2025.2→2026.1
-│   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2025.2
-│   └── 01-patch-upgrade.yaml           Patch spec.image.tag to 2026.1
+│   ├── chainsaw-test.yaml              Cross-release upgrade 2026.1→2026.2
+│   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2026.1
+│   └── 01-patch-upgrade.yaml           Patch spec.image.tag to 2026.2
 ├── resources/
 │   ├── chainsaw-test.yaml              Resource defaults and propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit resources
