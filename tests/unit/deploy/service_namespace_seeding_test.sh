@@ -104,7 +104,13 @@ make_kubectl_full() {
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
 # The bao writes reach OpenBao via 'kubectl exec ... openbao-0'; swallow them.
+# bao_exec_stdin passes -i and pipes the root password in (password=-): read
+# that stdin before exiting, or the script's printf gets EPIPE when this stub
+# exits first and pipefail ends the script at that write.
 if [[ "\$1" == "exec" ]]; then
+  if [[ " \$* " == *" -i "* ]]; then
+    cat >/dev/null
+  fi
   exit 0
 fi
 # Existence check: the ControlPlane is there.
