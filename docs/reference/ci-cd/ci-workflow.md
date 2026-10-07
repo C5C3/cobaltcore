@@ -763,10 +763,10 @@ a new operator chart in that layout is validated without editing the job.
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
 | 4 | `make verify-helm-schema` | Fails if any chart's `values.schema.json` has drifted from the shared generator |
-| 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml` |
+| 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` or `templates/_webhook-rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml`, or if a webhook rule grants a read the manager rules do not |
 | 6 | `make helm-deps` | Vendors the `operator-library` subchart into each consumer chart's `charts/` |
 | 7 | `helm lint` | Validates chart structure and syntax for every chart |
-| 8 | `helm template` (6 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
+| 8 | `helm template` (7 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
 | 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 | 10 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/target-cluster/target-cluster-access` |
 
@@ -780,6 +780,7 @@ a new operator chart in that layout is validated without editing the job.
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
 | 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator, c5c3-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
 | 6 — node placement | `priorityClassName=cobaltcore-platform`, `nodeSelector.role=platform`, one `tolerations` entry | Validates that the generated schema admits the placement keys and that they render |
+| 7 — standalone webhook | `webhook.standalone=true` | Validates the standalone webhook release: the ClusterRole names no `secrets`, and the Deployment args carry `--enable-controllers=false` and no `--leader-elect` |
 
 **Unit test suites (step 9):** the shared templates are tested once, in the
 operator-library testbed (`operators/shared/helm/operator-library-testbed/tests/`);
@@ -787,11 +788,11 @@ each operator chart's own `tests/` suites cover what that chart adds.
 
 | Chart | Test File | Key Assertions |
 | --- | --- | --- |
-| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args, `extraArgs`/`extraEnv`, conditional webhook volume mount |
+| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args (including the `webhook.standalone` args), `extraArgs`/`extraEnv`, conditional webhook volume mount |
 | testbed | `networkpolicy_test.yaml`, `certificate_test.yaml`, `service_test.yaml`, `serviceaccount_test.yaml`, `clusterrolebinding_test.yaml`, `rolebinding_test.yaml`, `pdb_test.yaml`, `servicemonitor_test.yaml`, `release_namespace_test.yaml` | The shared manifests, their conditionals and the release-namespace threading |
-| testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook guard, the hook-less default |
-| testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints |
-| operator | `clusterrole_test.yaml`, `role_test.yaml` | Wiring of the generated rules, the grants whose restriction is deliberate, a chart's refusal of namespace-scoped mode |
+| testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook rule set under `webhook.standalone`, the webhook guard, the hook-less default |
+| testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints, including the `webhook.standalone` rule |
+| operator | `clusterrole_test.yaml`, `role_test.yaml` | Wiring of the generated rules, the grants whose restriction is deliberate, the webhook rule set and its rule count under `webhook.standalone`, a chart's refusal of namespace-scoped mode |
 | operator | `deployment_test.yaml` | The chart's image default and what the chart adds through its hooks (keystone federation flag, c5c3 barbican-operator identity) |
 | operator | `webhook_test.yaml` | Mutating/Validating configs for the chart's CR kinds when enabled, absent when disabled |
 | operator | `schema_validation_test.yaml` | The chart ships an enforced schema; the keys its `values.schema.extras.json` adds |
