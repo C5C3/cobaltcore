@@ -241,6 +241,11 @@
           "type": "boolean",
           "description": "Enable admission webhooks for Neutron and NeutronMetadataAgent CR validation and defaulting",
           "default": true
+        },
+        "standalone": {
+          "type": "boolean",
+          "description": "Run this release as a standalone admission webhook: the manager registers no controller (--enable-controllers=false), elects no leader, and the ClusterRole carries only what the webhooks read. One such release per cluster serves the CRs of every namespace, for namespace-scoped operator installs that set webhook.enabled=false. Requires webhook.enabled=true and rbac.namespaceScoped=false",
+          "default": false
         }
       }
     },
@@ -497,6 +502,43 @@
           "webhook": {
             "properties": {
               "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "webhook": {
+            "properties": {
+              "standalone": {
+                "const": true
+              }
+            },
+            "required": [
+              "standalone"
+            ]
+          }
+        },
+        "required": [
+          "webhook"
+        ]
+      },
+      "then": {
+        "properties": {
+          "webhook": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "rbac": {
+            "properties": {
+              "namespaceScoped": {
                 "const": false
               }
             }
