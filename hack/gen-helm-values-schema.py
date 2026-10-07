@@ -10,7 +10,9 @@ resourceQuantity/cidr/stringMap definitions, the image / replicas / resources /
 nodeSelector / tolerations / priorityClassName / rbac / leaderElection /
 controller / webhook / metrics / logging / monitoring / serviceAccount /
 extraArgs / extraEnv / name-override properties, the
-operator-library subchart-values property, the rbac->webhook constraint, and —
+operator-library subchart-values property, the rbac->webhook constraint, the
+webhook.standalone constraint (webhook.enabled=true and
+rbac.namespaceScoped=false), and —
 for every chart that ships templates/networkpolicy.yaml — the NetworkPolicy
 property with its fail-closed constraint. This script holds that shared schema
 once and emits each chart's values.schema.json.
@@ -230,8 +232,9 @@ CONTROLLER = {
 
 
 def webhook_property(kinds):
-    """The webhook.enabled property; kinds are the CR kinds the chart's admission
-    webhooks cover, read from its config/webhook manifests."""
+    """The webhook.enabled and webhook.standalone properties; kinds are the CR
+    kinds the chart's admission webhooks cover, read from its config/webhook
+    manifests."""
     if kinds:
         covered = " and ".join([", ".join(kinds[:-1]), kinds[-1]]) if len(kinds) > 1 else kinds[0]
         description = f"Enable admission webhooks for {covered} CR validation and defaulting"
@@ -246,7 +249,12 @@ def webhook_property(kinds):
                 "type": "boolean",
                 "description": description,
                 "default": True,
-            }
+            },
+            "standalone": {
+                "type": "boolean",
+                "description": "Run this release as a standalone admission webhook: the manager registers no controller (--enable-controllers=false), elects no leader, and the ClusterRole carries only what the webhooks read. One such release per cluster serves the CRs of every namespace, for namespace-scoped operator installs that set webhook.enabled=false. Requires webhook.enabled=true and rbac.namespaceScoped=false",
+                "default": False,
+            },
         },
     }
 
@@ -460,6 +468,26 @@ RBAC_WEBHOOK_RULE = {
     "then": {"properties": {"webhook": {"properties": {"enabled": {"const": False}}}}},
 }
 
+# A standalone webhook release serves the admission webhooks of every namespace
+# under a ClusterRole, so it needs the webhooks on and the cluster-scoped RBAC.
+WEBHOOK_STANDALONE_RULE = {
+    "if": {
+        "properties": {
+            "webhook": {
+                "properties": {"standalone": {"const": True}},
+                "required": ["standalone"],
+            }
+        },
+        "required": ["webhook"],
+    },
+    "then": {
+        "properties": {
+            "webhook": {"properties": {"enabled": {"const": True}}},
+            "rbac": {"properties": {"namespaceScoped": {"const": False}}},
+        }
+    },
+}
+
 NETWORK_POLICY_RULE = {
     "if": {
         "properties": {
@@ -613,7 +641,7 @@ def build_schema(chart):
         "extraArgs": EXTRA_ARGS,
         "extraEnv": EXTRA_ENV,
     }
-    all_of = [RBAC_WEBHOOK_RULE]
+    all_of = [RBAC_WEBHOOK_RULE, WEBHOOK_STANDALONE_RULE]
 
     if chart["network_policy"]:
         properties["networkPolicy"] = NETWORK_POLICY
