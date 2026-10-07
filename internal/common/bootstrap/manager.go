@@ -156,12 +156,26 @@ func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration) []cluster.
 // spec.targetClusterRef, and for an install that clears --clusters-namespace. A
 // namespace-scoped deployment does exactly that: its Role grants nothing
 // outside its own namespace, so a widened Secret informer would never sync and
-// the manager would fail to start.
+// the manager would fail to start. It is empty under --enable-controllers=false
+// as well: no reconciler resolves a target cluster there, and the provider's
+// registration-Secret watch would need a grant the standalone webhook's
+// ClusterRole does not carry.
 func targetClustersNamespace(cfg ManagerConfig, opts runOptions) string {
+	if !opts.enableControllers {
+		return ""
+	}
 	if !cfg.TargetClusters {
 		return ""
 	}
 	return opts.clustersNamespace
+}
+
+// leaderElectionEnabled reports whether the manager competes for the leader
+// lease. A manager without controllers never does: every replica serves the
+// webhook server regardless of leadership, and the lease would need a leases
+// grant the standalone webhook's ClusterRole does not carry.
+func leaderElectionEnabled(opts runOptions) bool {
+	return opts.enableLeaderElection && opts.enableControllers
 }
 
 // zapOptions returns the base zap logging options shared by all operators.
@@ -184,6 +198,7 @@ type runOptions struct {
 	probeAddr               string
 	enableLeaderElection    bool
 	enableWebhooks          bool
+	enableControllers       bool
 	syncPeriod              time.Duration
 	namespace               string
 	clustersNamespace       string
@@ -212,6 +227,10 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 	fs.BoolVar(&o.enableWebhooks, "enable-webhooks", true,
 		"Enable admission webhooks. Set to false for namespace-scoped "+
 			"deployments where webhook infrastructure is not available.")
+	fs.BoolVar(&o.enableControllers, "enable-controllers", true,
+		"Register the controllers. Set to false for a standalone admission "+
+			"webhook deployment: the manager then serves the webhooks only, "+
+			"elects no leader and engages no target cluster.")
 	fs.DurationVar(&o.syncPeriod, "sync-period", 10*time.Minute,
 		"The minimum frequency at which watched resources are reconciled "+
 			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
@@ -251,6 +270,12 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 		err := fmt.Errorf("invalid --default-image-pull-policy %q: must be one of Always, IfNotPresent, Never", v)
 		// The caller's logger does not exist yet, so print the error the way
 		// the flag package prints its own parse errors.
+		_, _ = fmt.Fprintln(fs.Output(), err)
+		return runOptions{}, err
+	}
+	if !o.enableControllers && !o.enableWebhooks {
+		err := errors.New("--enable-controllers=false requires --enable-webhooks=true: " +
+			"a manager with neither controllers nor webhooks has nothing to run")
 		_, _ = fmt.Fprintln(fs.Output(), err)
 		return runOptions{}, err
 	}
@@ -313,7 +338,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 			BindAddress: opts.metricsAddr,
 		},
 		HealthProbeBindAddress: opts.probeAddr,
-		LeaderElection:         opts.enableLeaderElection,
+		LeaderElection:         leaderElectionEnabled(opts),
 		LeaderElectionID:       cfg.LeaderElectionID,
 	})
 	if err != nil {
@@ -333,6 +358,16 @@ func run(cfg ManagerConfig, opts runOptions) error {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}
+	// The API server is the only client of the webhook server and retries
+	// nothing: under failurePolicy Fail, a pod that reports Ready before its TLS
+	// listener is up rejects every CR write routed to it. Every SetupFunc
+	// registers at least one webhook when webhooks are enabled; one that
+	// registered none would start an empty server here.
+	if opts.enableWebhooks {
+		if err := mgr.AddReadyzCheck("webhook", mgr.GetLocalManager().GetWebhookServer().StartedChecker()); err != nil {
+			return fmt.Errorf("unable to set up webhook ready check: %w", err)
+		}
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to set up health check: %w", err)
@@ -343,6 +378,9 @@ func run(cfg ManagerConfig, opts runOptions) error {
 
 	if opts.namespace != "" {
 		setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)
+	}
+	if !opts.enableControllers {
+		setupLog.Info("standalone webhook mode enabled: no controllers registered")
 	}
 	if clustersNamespace != "" {
 		setupLog.Info("target clusters enabled", "clustersNamespace", clustersNamespace)

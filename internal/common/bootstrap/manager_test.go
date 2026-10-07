@@ -101,6 +101,9 @@ func TestParseRunOptions_defaults(t *testing.T) {
 	if !opts.enableWebhooks {
 		t.Fatal("enableWebhooks = false, want true (default)")
 	}
+	if !opts.enableControllers {
+		t.Fatal("enableControllers = false, want true (default)")
+	}
 	if opts.enableLeaderElection {
 		t.Fatal("enableLeaderElection = true, want false (default)")
 	}
@@ -153,6 +156,40 @@ func TestParseRunOptions_defaultImagePullPolicy(t *testing.T) {
 				t.Fatalf("error = %q, want it to contain %q", err, want)
 			}
 		})
+	}
+}
+
+// TestParseRunOptions_standaloneWebhook pins the arguments the chart renders
+// under webhook.standalone: the controllers are off and the webhooks stay on.
+func TestParseRunOptions_standaloneWebhook(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	opts, err := parseRunOptions(cfg, []string{"--enable-controllers=false"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if opts.enableControllers {
+		t.Fatal("enableControllers = true, want false")
+	}
+	if !opts.enableWebhooks {
+		t.Fatal("enableWebhooks = false, want true (default)")
+	}
+}
+
+// TestParseRunOptions_noControllersNoWebhooks verifies that a manager with
+// neither controllers nor webhooks is refused before it exists, with an error
+// that names the flag to set.
+func TestParseRunOptions_noControllersNoWebhooks(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	_, err := parseRunOptions(cfg, []string{"--enable-controllers=false", "--enable-webhooks=false"})
+	if err == nil {
+		t.Fatal("expected an error with controllers and webhooks both off, got nil")
+	}
+	want := "--enable-controllers=false requires --enable-webhooks=true: " +
+		"a manager with neither controllers nor webhooks has nothing to run"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
 
@@ -339,24 +376,55 @@ func TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache(t *tes
 // and an install that clears --clusters-namespace must be able to switch the
 // whole feature off — a namespace-scoped deployment relies on it, because its
 // Role covers its own namespace only and a widened informer would never sync.
+//
+// A standalone webhook (--enable-controllers=false) engages nothing either: no
+// reconciler resolves a target cluster, and its ClusterRole grants no Secret
+// read for the registration-Secret watch.
 func TestTargetClustersNamespace(t *testing.T) {
 	tests := []struct {
 		name              string
 		targetClusters    bool
+		enableControllers bool
 		clustersNamespace string
 		want              string
 	}{
-		{"enabled", true, "c5c3-clusters", "c5c3-clusters"},
-		{"operator opts out", false, "c5c3-clusters", ""},
-		{"install opts out", true, "", ""},
-		{"both off", false, "", ""},
+		{"enabled", true, true, "c5c3-clusters", "c5c3-clusters"},
+		{"operator opts out", false, true, "c5c3-clusters", ""},
+		{"install opts out", true, true, "", ""},
+		{"both off", false, true, "", ""},
+		{"standalone webhook", true, false, "c5c3-clusters", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ManagerConfig{TargetClusters: tc.targetClusters}
-			opts := runOptions{clustersNamespace: tc.clustersNamespace}
+			opts := runOptions{clustersNamespace: tc.clustersNamespace, enableControllers: tc.enableControllers}
 			if got := targetClustersNamespace(cfg, opts); got != tc.want {
 				t.Fatalf("targetClustersNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLeaderElectionEnabled verifies that only a manager with controllers
+// competes for the leader lease: --leader-elect on a standalone webhook is
+// ignored, because every replica serves the webhooks and its ClusterRole
+// carries no leases grant.
+func TestLeaderElectionEnabled(t *testing.T) {
+	tests := []struct {
+		name                 string
+		enableLeaderElection bool
+		enableControllers    bool
+		want                 bool
+	}{
+		{"controllers with leader election", true, true, true},
+		{"controllers without leader election", false, true, false},
+		{"standalone webhook with leader election", true, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := runOptions{enableLeaderElection: tc.enableLeaderElection, enableControllers: tc.enableControllers}
+			if got := leaderElectionEnabled(opts); got != tc.want {
+				t.Fatalf("leaderElectionEnabled() = %t, want %t", got, tc.want)
 			}
 		})
 	}
