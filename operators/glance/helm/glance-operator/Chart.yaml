@@ -9,7 +9,7 @@ appVersion: "0.1.0"
 # charts. It is vendored into charts/ at package time (helm dependency build).
 dependencies:
   - name: operator-library
-    version: 0.10.0
+    version: 0.11.0
     repository: "file://../../../shared/helm/operator-library"
 # Helm validates values against values.schema.json automatically.
 annotations:
