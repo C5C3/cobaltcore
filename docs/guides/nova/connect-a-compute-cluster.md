@@ -384,9 +384,11 @@ openstack --insecure compute service list --service nova-compute
 Both Secrets show `true`. The mirror carries the remote contract's data under
 the in-cluster name, so the pool reads it the way a pool beside the Nova reads
 the original. `NovaReady` reads `NovaReady` once every mirror target is served.
-The service list shows one `up` row per node, named after the Node. A pool that
-stays at `ConfigReady=False` under `WaitingForComputeConfig`, or at
-`AggregatesReady=False` under `NodesWithoutZone`, is explained under
+The service list shows one `up` row per node, named after the Node. Until the
+hvo of step 7 onboards the nodes, `AggregatesReady` reads `True` under
+`NodesOutsideZoneAggregate`. A pool that stays at `ConfigReady=False` under
+`WaitingForComputeConfig`, or at `AggregatesReady=False` under
+`NodesWithoutZone`, is explained under
 [Conditions](../../reference/nova/novacompute-crd.md#conditions).
 
 ### 7. Configure the hypervisor operator
@@ -454,12 +456,19 @@ hvo reads two node labels. It creates a `Hypervisor` for every Node labelled
 `nova.openstack.cloud.sap/virt-driver`.
 `cobaltcore.cloud.sap/node-hypervisor-lifecycle` turns on its lifecycle for
 the node: without the label hvo neither onboards nor offboards the node, and
-the value `skip-tests` skips the smoke test.
+the value `skip-tests` skips the smoke test. The annotation
+`nova.openstack.cloud.sap/aggregates` names the aggregates the host stays in
+once onboarding ends. hvo keeps the host in the aggregates the annotation lists
+plus the one of the zone label, and in no other. Without the annotation the
+host leaves both aggregates when onboarding ends, and the zone has no host in
+Nova. The value lists only aggregates beyond the zone's, and each of them must
+exist.
 
 ```bash
 kubectl --context "$COMPUTE_CONTEXT" label node <node> \
   nova.openstack.cloud.sap/virt-driver=kvm \
   cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
+kubectl --context "$COMPUTE_CONTEXT" annotate node <node> nova.openstack.cloud.sap/aggregates=
 ```
 
 hvo authenticates a second time at start, scoped to a project `test` in the
@@ -535,9 +544,11 @@ interval: openstack-hypervisor-operator polls every 60 seconds, so it sees such
 a node as mapped up to 360 seconds after the compute registered.
 [Nova Cells](../../reference/nova/nova-cells.md#host-discovery) describes the
 pool's discovery Job, the periodic and the command that maps a host at once.
-hvo onboards only the nodes that carry the lifecycle label, and puts each into
-its zone's aggregate and `tenant_filter_tests`, both of which the pool creates
-(see [The aggregates](../../reference/nova/novacompute-crd.md#the-aggregates)).
+hvo onboards only the nodes that carry the lifecycle label. It puts each node
+into its zone's aggregate and `tenant_filter_tests` while it onboards it, both
+of which the pool creates, and afterwards keeps it in the aggregates the
+annotation names plus its zone's (see
+[The aggregates](../../reference/nova/novacompute-crd.md#the-aggregates)).
 
 ## A hypervisor that receives no builds
 
