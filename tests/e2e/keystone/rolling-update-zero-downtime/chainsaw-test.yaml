@@ -123,7 +123,7 @@ spec:
                 restartPolicy: Never
                 containers:
                 - name: loadgen
-                  image: ghcr.io/c5c3/keystone:2025.2
+                  image: ghcr.io/c5c3/keystone:2026.1
                   imagePullPolicy: IfNotPresent
                   command: ["python3"]
                   args:
@@ -406,4 +406,4 @@ spec:
           IMAGE=$(kubectl -n $NAMESPACE get deploy keystone-rolling-update \
             -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "Deployment image: $IMAGE"
-          echo "$IMAGE" | grep -q '2025.2-upgraded'
+          echo "$IMAGE" | grep -q '2026.1-upgraded'

@@ -36,7 +36,7 @@ spec:
     - script:
         content: |
           kubectl get deploy keystone-upgrade -n openstack \
-            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2025\.2$'
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | grep '2026\.1$'
     catch:
     - script:
         content: |
@@ -81,14 +81,14 @@ spec:
           while [ $ELAPSED -lt $TIMEOUT ]; do
             IMAGE=$(kubectl get deploy keystone-upgrade -n openstack \
               -o jsonpath='{.spec.template.spec.containers[0].image}')
-            if echo "$IMAGE" | grep -q '2025.2-upgraded'; then
+            if echo "$IMAGE" | grep -q '2026.1-upgraded'; then
               echo "OK: Deployment image updated to $IMAGE"
               break
             fi
             sleep 5
             ELAPSED=$((ELAPSED + 5))
           done
-          if ! echo "$IMAGE" | grep -q '2025.2-upgraded'; then
+          if ! echo "$IMAGE" | grep -q '2026.1-upgraded'; then
             echo "ERROR: Deployment image did not update within ${TIMEOUT}s (current: $IMAGE)"
             exit 1
           fi

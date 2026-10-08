@@ -1516,13 +1516,13 @@ jobs:
             kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev" --name "${KIND_CLUSTER}"
             kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
           fi
-          # The image-upgrade E2E test re-tags the 2025.2 service image; only
-          # operators that ship a 2025.2 service image need it loaded.
+          # The image-upgrade E2E test re-tags the 2026.1 service image; only
+          # operators that ship a 2026.1 service image need it loaded.
           # shellcheck disable=SC2086 # deliberate: split the release list
-          if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2025.2; then
-            docker tag "${IMAGE_PREFIX}/${OPERATOR}:2025.2" \
-              "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded"
-            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name "${KIND_CLUSTER}"
+          if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2026.1; then
+            docker tag "${IMAGE_PREFIX}/${OPERATOR}:2026.1" \
+              "${IMAGE_PREFIX}/${OPERATOR}:2026.1-upgraded"
+            kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2026.1-upgraded" --name "${KIND_CLUSTER}"
           fi
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # The ovn and neutron chassis DaemonSets open a Geneve tunnel from the
