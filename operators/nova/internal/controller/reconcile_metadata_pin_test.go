@@ -475,7 +475,7 @@ status: {}
 // TestPinNovaMetadataDeployment pins what separates the metadata API from the
 // compute API: its own module on its own port, the overlay it trusts a proxied
 // instance identity from, and the secret digest only it carries. Both shapes are
-// rendered at both supported releases, and the second render must differ from
+// rendered at every supported release, and each later render must differ from
 // the first in the release strings alone, which is what keeps a
 // release-conditional field out of the builder.
 func TestPinNovaMetadataDeployment(t *testing.T) {
@@ -490,11 +490,13 @@ func TestPinNovaMetadataDeployment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			expectGolden(t, renderYAML(t, buildMetadataDeployment(tc.nova(), workloadArtifacts(),
-				workloadTestDigests())), tc.golden)
-			expectGolden(t, renderYAML(t, buildMetadataDeployment(atRelease(tc.nova(), "2026.1"), workloadArtifacts(),
-				workloadTestDigests())),
-				strings.ReplaceAll(tc.golden, "2025.2", "2026.1"))
+			for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+				t.Run(release, func(t *testing.T) {
+					expectGolden(t, renderYAML(t, buildMetadataDeployment(atRelease(tc.nova(), release), workloadArtifacts(),
+						workloadTestDigests())),
+						strings.ReplaceAll(tc.golden, "2025.2", release))
+				})
+			}
 		})
 	}
 }
