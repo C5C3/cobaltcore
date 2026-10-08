@@ -5029,7 +5029,8 @@ upgrades the failed release, which creates both rules.
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
 each node's certificate is hvo's alone.
 
-No manifest can patch a Node, so each node gets four labels by hand:
+No manifest can patch a Node, so each node gets four labels and one annotation
+by hand:
 
 | Label | Why |
 | --- | --- |
@@ -5037,6 +5038,15 @@ No manifest can patch a Node, so each node gets four labels by hand:
 | `openstack.c5c3.io/nova-compute-pool=lab` | `NovaCompute/lab` and the libvirt DaemonSet select it |
 | `nova.openstack.cloud.sap/virt-driver=kvm` | hvo creates a `Hypervisor` and a Certificate for such a node, and kna runs there |
 | `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` | The only way a `Hypervisor` gets `lifecycleEnabled` and `skipTests`. The smoke test boots onto a 64 GiB volume of the type `premium` on the network `hvo-smoke-test`, which the lab fixtures leave out |
+
+| Annotation | Why |
+| --- | --- |
+| `nova.openstack.cloud.sap/aggregates=` (empty) | hvo copies it into `Hypervisor.spec.aggregates` and appends the zone label, so each host stays in its zone's aggregate after onboarding. Without it the host leaves the zone's aggregate and `tenant_filter_tests` at `Handover`, and the zone has no host in Nova ([#1314](https://github.com/c5c3/cobaltcore/issues/1314)) |
+
+On a lab that onboarded its nodes without the annotation, the annotate command
+of Part 2, Step 1 is enough: hvo's list becomes the zone, which differs from
+`status.aggregates`, so hvo adds each host at once
+([The aggregates](../nova/novacompute-crd.md#the-aggregates)).
 
 Onboarding waits at its `Handover` phase for two more conditions, and the hvo
 image of this repository patches the controller behind each. Upstream hvo sets
