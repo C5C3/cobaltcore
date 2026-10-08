@@ -18,6 +18,8 @@
 #   - The standalone pod's controller_runtime_webhook_requests_total counters
 #     show that it admitted the valid CR, and its own response log that it
 #     rejected the invalid one
+#   - The namespace-scoped operator's own pod reconciled the CR, as its log
+#     and metrics show
 #
 # The cluster-wide keystone-operator in "keystone-system" keeps its in-process
 # webhook, so its webhook configurations admit the same requests, and while
@@ -25,19 +27,23 @@
 # intercepts every Keystone write in the cluster. The counters of the
 # standalone pod and its response log are what tell the two apart.
 #
+# The same cluster-wide operator watches every namespace and drives this
+# Keystone to Ready on its own, so the Ready condition of Step 6 does not show
+# that the namespace-scoped operator did any work: the suite stayed green while
+# that operator crash-looped on a forbidden ClusterSecretStore watch (#1159).
+# Step 9 reads the namespace-scoped pod's own log and metrics instead, through
+# ../../lib/assert-namespace-scoped-operator.sh. A cluster-scoped watch or
+# cached read fails it on the log within seconds of the pod starting, and a
+# manager blocked in its cache sync records no reconcile.
+#
 # The test runs in the "openstack" namespace where the shared infrastructure
 # (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
-# works exactly as in all other E2E tests.
+# works exactly as in all other E2E tests. A namespace-scoped operator only
+# watches its own release namespace, so its release is installed there too.
 #
-#
-# Namespace-scoped carve-out the new cluster-scoped default deploys
-# keystone-operator into the dedicated "keystone-system" Namespace (/).
-# This test intentionally exercises a DIFFERENT release Namespace ("openstack") with
-# namespace-scoped RBAC, proving the operator is not hard-wired to "keystone-system"
-# and that the namespaceScoped=true code path still produces Role/RoleBinding (not
-# ClusterRole/ClusterRoleBinding). It also requires the same Namespace as the shared
-# infra (MariaDB, Memcached, Secrets) because a namespace-scoped operator can only
-# watch its own release Namespace.
+# The namespace-scoped release runs one replica instead of the chart's two.
+# With two, one pod leads and the other stands by behind the same release
+# label, and the standby's metrics count no reconcile.
 #
 # ── concurrent: false ────────────────────────────────────────────────
 # The namespace-scoped operator reconciles every Keystone in "openstack" beside
@@ -45,7 +51,8 @@
 # Two operators would drive another suite's upgrade or rotation at once, so this
 # suite runs alone, before the concurrent suites start. Running alone also keeps
 # the second webhook configurations, and the window before their caBundle is
-# injected, away from every other suite's Keystone writes.
+# injected, away from every other suite's Keystone writes, and it keeps this
+# Keystone the only one in "openstack" while Step 9 counts reconciles.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -61,7 +68,7 @@ spec:
   # has the webhook server log every response it writes, the rejection Step 8
   # looks for included. The webhook configurations fail closed, so the step
   # waits for cert-manager to inject both caBundles before any Keystone is
-  # written. Step 9 uninstalls the release; the step cleanup removes one a
+  # written. Step 10 uninstalls the release; the step cleanup removes one a
   # failed step left installed.
   - try:
     - script:
@@ -134,9 +141,10 @@ spec:
           fi
           echo "OK: No Role found (expected)"
   # ── Step 3: Deploy operator with namespace-scoped RBAC ─────────────────
-  # Step 9 uninstalls the release before chainsaw deletes the Keystone. The
-  # step cleanup runs at the end of the test and removes a release that a
-  # failed step left installed, so it cannot outlive this suite.
+  # One replica, because Step 9 reads one pod's log and metrics. Step 10
+  # uninstalls the release before chainsaw deletes the Keystone. The step
+  # cleanup runs at the end of the test and removes a release that a failed
+  # step left installed, so it cannot outlive this suite.
   - try:
     - script:
         timeout: 120s
@@ -146,6 +154,7 @@ spec:
             --namespace openstack \
             --set rbac.namespaceScoped=true \
             --set webhook.enabled=false \
+            --set replicas=1 \
             --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator \
             --set image.tag=dev \
             --set image.pullPolicy=Never \
@@ -311,7 +320,21 @@ spec:
             exit 1
           fi
           echo "OK: the standalone webhook pod rejected the invalid cron expression"
-  # ── Step 9: Cleanup Helm releases ──────────────────────────────────────
+  # ── Step 9: Prove the namespace-scoped operator reconciled the Keystone ─
+  # The header of ../../lib/assert-namespace-scoped-operator.sh lists the
+  # checks it runs against the release's single pod.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../lib/assert-namespace-scoped-operator.sh openstack keystone-operator-ns-scoped keystone keystones.keystone.openstack.c5c3.io
+    catch:
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=keystone-operator-ns-scoped
+        tail: 200
+  # ── Step 10: Cleanup Helm releases ─────────────────────────────────────
   - try:
     - script:
         content: |
