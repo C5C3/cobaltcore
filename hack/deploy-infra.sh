@@ -4016,7 +4016,7 @@ main() {
       # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
       # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
       if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
-        local cp_release="2025.2"
+        local cp_release="2026.1"
         if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
           kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
           log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
