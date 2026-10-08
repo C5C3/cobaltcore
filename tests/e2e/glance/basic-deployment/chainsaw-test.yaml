@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Glance deployment (2025.2 release).
+# Chainsaw E2E test for happy-path Glance deployment (2026.1 release).
 # Validates the full reconciliation cycle:
 #   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
-#   - The API Deployment launches the eventlet glance-api server (the pre-2026.1
-#     launch mode: `glance-api --config-dir ...`)
+#   - The API Deployment launches under uWSGI (the 2026.1-and-later launch mode,
+#     `uwsgi ... --wsgi-file /var/lib/openstack/bin/glance-wsgi-api ...`; the
+#     image-shipped shim, because glance's stock WSGI module ignores --pyargv
+#     and would never see the two --config-dir mounts)
 #   - Owned resources exist (Deployment, Service on 9292, PDB, config ConfigMap,
 #     backends Secret)
 #   - A CR without spec.importFiltering renders the restrictive
@@ -89,7 +91,7 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert the Deployment, its eventlet launch command, Service ──
+  # ── Step 3: Assert the Deployment, its uWSGI launch command, Service ────
   # ── and PDB ─────────────────────────────────────────────────────────────
   - try:
     - assert:
@@ -105,16 +107,33 @@ spec:
                 containers:
                 - name: glance-api
                   command:
-                  - glance-api
-                  - --config-dir
-                  - /etc/glance/glance-api.conf.d/
-                  - --config-dir
-                  - /etc/glance/backends.conf.d/
+                  - uwsgi
+                  - "--http"
+                  - ":9292"
+                  - "--http-auto-chunked"
+                  - "--http-chunked-input"
+                  - "--chunked-input-limit"
+                  - "16777216"
+                  - "--http-keepalive"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/glance-wsgi-api"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "1"
+                  - "--pyargv"
+                  - "--config-dir /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/"
                 # This CR carries no spec.staging, so both scratch emptyDirs
                 # must fall back to the operator's 10Gi default. Without a
                 # sizeLimit an import fills the node's disk and takes every
                 # unrelated pod on it down with the API; the explicit-value path
-                # is covered by the 2026-1 variant of this suite.
+                # is covered by the 2026-2 variant of this suite.
                 (volumes[?name == 'staging'].emptyDir.sizeLimit | [0]): 10Gi
                 (volumes[?name == 'tasks-work'].emptyDir.sizeLimit | [0]): 10Gi
                 # It carries no spec.imageCache either, and that block is opt-in:
@@ -216,7 +235,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run curl-test-glance-basic -n $NAMESPACE --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+          kubectl run curl-test-glance-basic -n $NAMESPACE --image=ghcr.io/c5c3/glance:2026.1 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None
@@ -255,7 +274,7 @@ spec:
   # A CR without spec.dbPurge tracks the operator defaults: daily at 00:01,
   # glance-manage db purge with a 30-day retention and a 1000-row cap per table,
   # and no purge_images_table pass — that one frees a deleted image's UUID for
-  # reuse and is opt-in (the 2026-1 suite covers the opt-in shape). The manual
+  # reuse and is opt-in (the 2026-2 suite covers the opt-in shape). The manual
   # run pins the glance-manage purge CLI contract for this release rather than
   # waiting for the first midnight fire.
   - try:

@@ -297,7 +297,7 @@ spec:
           # exist BEFORE this call, so this read travels the cache path, and it
           # has to return the very same bytes. A fresh pod means a fresh
           # connection and possibly a different uWSGI worker — which is the point
-          # of pinning 2026.1: the workers share one cache directory.
+          # of running a uWSGI release: the workers share one cache directory.
           run_probe glance-cache-hit-probe-2 download "${IMAGE_ID}" "${DIGEST}"
           echo "OK: the second download of ${IMAGE_ID} returned the same bytes"
 

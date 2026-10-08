@@ -22,10 +22,10 @@
 #     would make the prune leg wait five minutes for a result it can get in
 #     one.
 #
-# 2026.1 is pinned deliberately rather than inherited from the default release:
-# that is the release where glance-api launches under uWSGI, so several worker
-# processes share one cache directory and one sqlite metadata file. That is the
-# configuration the cache has to survive, and only a 2026.1 run exercises it.
+# The suite needs a release where glance-api launches under uWSGI, so several
+# worker processes share one cache directory and one sqlite metadata file. That
+# is the configuration the cache has to survive. 2026.1, the default release,
+# is such a release.
 #
 # Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
 # so every object this suite owns carries the `glance-cache` prefix and the

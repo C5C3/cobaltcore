@@ -8,11 +8,10 @@
 # `glance-upload.127-0-0-1.nip.io` twice — once as a client PUT to /file, once
 # as a staged (glance-direct) upload to /stage — and then lowers
 # spec.staging.sizeLimit to prove the bound contains a runaway staged upload.
-# 2026.1 is picked because that is the release where glance-api launches under
-# uWSGI, the launch path that carries the chunked-body flags a streaming
-# upload depends on; the
-# `ghcr.io/c5c3/glance:2026.1` image is already kind-loaded on the glance
-# e2e-operator leg (the basic-deployment-2026-1 suite uses it).
+# 2026.1 is the default release, and glance-api launches under uWSGI there,
+# the launch path that carries the chunked-body flags a streaming upload
+# depends on; the `ghcr.io/c5c3/glance:2026.1` image is already kind-loaded on
+# the glance e2e-operator leg, because the leg loads every release.
 #
 # Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
 # so every object this suite owns carries the `glance-upload` prefix and the
