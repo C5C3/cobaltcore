@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a happy-path Neutron deployment (2025.2 release).
+# Chainsaw E2E test for a happy-path Neutron deployment (2026.1 release).
 # Validates the full reconciliation cycle:
 #   - all 10 sub-conditions progress to True with their expected reasons, and
 #     the aggregate Ready=True with reason AllReady
@@ -123,6 +123,7 @@ spec:
               spec:
                 containers:
                 - name: neutron-api
+                  image: ghcr.io/c5c3/neutron:2026.1
                 # The neutron image ships no WSGI entry script, so the
                 # application is imported as a module. A --wsgi-file launch
                 # would mean the image layout changed under the operator.
