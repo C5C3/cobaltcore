@@ -42,7 +42,7 @@
 #   - step 10 writes one network and then 31 more into the Northbound database,
 #     binds a port of each on the node, and reads the container's cgroup once
 #     the agent runs one haproxy per network
-#   - step 11 restarts the agent into 2026.1, where it provisions all 32
+#   - step 11 restarts the agent into 2026.2, where it provisions all 32
 #     networks in one pass
 # Every phase prints a MEMORY-READING line and fails on a container restart, on
 # an OOM kill and on a working set above 90% of the container's memory limit,
@@ -604,7 +604,9 @@ spec:
           source ./memory-lib.sh
 
           agent_pod
-          phase 2025.2 0 60
+          RELEASE="$(kubectl get neutronmetadataagent neutron-agent -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.openStackRelease}')"
+          phase "$RELEASE" 0 60
     catch: &agent-memory-dump
     # The dump is the same at steps 9, 10 and 11: what the agent reports and
     # logged, what it left on the node, and what the chassis and the probe pods
@@ -733,15 +735,17 @@ spec:
           }
 
           agent_pod
+          RELEASE="$(kubectl get neutronmetadataagent neutron-agent -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.openStackRelease}')"
 
           run_probe neutron-agent-memory-probe-seed-1 nb-seed 1 1 NB-SEED-OK
           plug 1 1
-          phase 2025.2 1 180
+          phase "$RELEASE" 1 180
 
           run_probe neutron-agent-memory-probe-seed-2 nb-seed 2 "$NETWORKS" NB-SEED-OK
           plug 2 "$NETWORKS"
-          phase 2025.2 "$NETWORKS" 600
-          processes 2025.2
+          phase "$RELEASE" "$NETWORKS" 600
+          processes "$RELEASE"
     catch: *agent-memory-dump
     cleanup:
     # Leaves the node as the step found it: the interfaces on br-int, the
@@ -834,7 +838,7 @@ spec:
           kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
             ovs-vsctl --timeout=15 list-ports br-int | grep -E '^(memvif-|tap)' || true
           exit "$STATUS"
-  # ── Step 11: Restart into 2026.1 and resync ─────────────────────────────
+  # ── Step 11: Restart into 2026.2 and resync ─────────────────────────────
   # The haproxy processes die with the old container while the namespaces stay
   # on the node, so the new agent's first sync provisions all 32 networks in
   # one pass. That is the path an OOM-killed agent takes on every restart, and
@@ -847,7 +851,21 @@ spec:
           set -euo pipefail
           source ./memory-lib.sh
 
-          kubectl patch neutronmetadataagent neutron-agent -n "$NAMESPACE" --type merge -p '{"spec":{"openStackRelease":"2026.1","image":{"tag":"2026.1"}}}'
+          # A patch to the release the agent already runs changes nothing: the
+          # old pod stays, and the phase below would read it a second time.
+          RELEASE=2026.2
+          FROM="$(kubectl get neutronmetadataagent neutron-agent -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.openStackRelease}')"
+          if [ "$FROM" = "$RELEASE" ]; then
+            echo "FAIL: the agent already runs ${RELEASE}, so this step would restart nothing; move RELEASE to the other release the default serves"
+            exit 1
+          fi
+          # The image, not the release field, decides whether the DaemonSet
+          # replaces the pod. The pod name after the rollout shows that it did.
+          agent_pod
+          OLD_POD="$POD"
+          kubectl patch neutronmetadataagent neutron-agent -n "$NAMESPACE" --type merge \
+            -p "{\"spec\":{\"openStackRelease\":\"${RELEASE}\",\"image\":{\"tag\":\"${RELEASE}\"}}}"
 
           # Wait for the operator to render the new image into the DaemonSet, so
           # the rollout status below does not return for the old template.
@@ -855,11 +873,11 @@ spec:
           for _ in $(seq 1 24); do
             IMAGE="$(kubectl get ds neutron-agent-metadata-agent -n "$NAMESPACE" \
               -o 'jsonpath={.spec.template.spec.containers[?(@.name=="metadata-agent")].image}')"
-            case "$IMAGE" in *:2026.1) break ;; esac
+            case "$IMAGE" in *:"${RELEASE}") break ;; esac
             sleep 5
           done
           case "$IMAGE" in
-          *:2026.1) ;;
+          *:"${RELEASE}") ;;
           *)
             echo "FAIL: the DaemonSet still runs ${IMAGE} 2m after the release patch"
             exit 1
@@ -869,6 +887,10 @@ spec:
           kubectl rollout status ds/neutron-agent-metadata-agent -n "$NAMESPACE" --timeout=5m
 
           agent_pod
-          phase 2026.1 "$NETWORKS" 600
-          processes 2026.1
+          if [ "$POD" = "$OLD_POD" ]; then
+            echo "FAIL: ${POD} survived the release patch, so the reading below would be the step-10 pod's"
+            exit 1
+          fi
+          phase "$RELEASE" "$NETWORKS" 600
+          processes "$RELEASE"
     catch: *agent-memory-dump

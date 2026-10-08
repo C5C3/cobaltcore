@@ -640,10 +640,10 @@ on the kind node, and read the container's cgroup in four phases:
 
 | Release | Networks | How the agent gets there |
 | --- | --- | --- |
-| 2025.2 | 0 | No port is bound on the node |
-| 2025.2 | 1 | The port of one network is bound |
-| 2025.2 | 32 | The ports of 31 more networks are bound |
-| 2026.1 | 32 | A restart into 2026.1, whose first sync provisions all 32 networks |
+| 2026.1 | 0 | No port is bound on the node |
+| 2026.1 | 1 | The port of one network is bound |
+| 2026.1 | 32 | The ports of 31 more networks are bound |
+| 2026.2 | 32 | A restart into 2026.2, whose first sync provisions all 32 networks |
 
 A phase polls every 5 seconds until the agent runs one haproxy per network,
 and for 30 seconds more. Its reading is the largest working set of those
@@ -666,8 +666,8 @@ the working set.
 
 ### From the readings to the figure
 
-`W1` is the working set of 2025.2 with one network, `W32a` that of 2025.2 with
-32 networks and `W32b` that of 2026.1 with 32 networks, all in MiB.
+`W1` is the working set of 2026.1 with one network, `W32a` that of 2026.1 with
+32 networks and `W32b` that of 2026.2 with 32 networks, all in MiB.
 
 | Figure | Rule | Meaning |
 | --- | --- | --- |
