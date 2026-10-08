@@ -41,7 +41,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 138
+_EXPECTED_FIXTURE_COUNT = 142
 
 
 def _load_generator() -> types.ModuleType:
@@ -128,6 +128,25 @@ class TestFixtures(unittest.TestCase):
             rendered = fixture.render()
             self.assertIn("remoteCompute:", rendered, fixture.filename)
             self.assertNotIn("gateway:", rendered, f"{fixture.filename} must publish through publicEndpoint alone")
+
+    def test_namespace_assignment_fixtures_render_at_spec_level(self) -> None:
+        # Fixtures 138 to 141 each carry a spec.namespaceAssignments block. It is
+        # a spec-level list beside korc, not a korc child, so it must render at
+        # indent 2 ahead of the korc block, and no other fixture may carry one.
+        assigned = [f for f in self.generator.FIXTURES if "namespaceAssignments:" in f.render()]
+        self.assertEqual(
+            sorted(f.filename for f in assigned),
+            sorted(f.filename for f in self.generator.FIXTURES if "-namespace-assignment-" in f.filename),
+        )
+        self.assertEqual(len(assigned), 4)
+        for fixture in assigned:
+            rendered = fixture.render()
+            self.assertIn("\n  namespaceAssignments:\n", rendered, fixture.filename)
+            self.assertLess(
+                rendered.index("\n  namespaceAssignments:\n"),
+                rendered.index("\n  korc:\n"),
+                f"{fixture.filename} must render the assignments before korc",
+            )
 
     def test_rendered_fixture_carries_spdx_header(self) -> None:
         for fixture in self.generator.FIXTURES:

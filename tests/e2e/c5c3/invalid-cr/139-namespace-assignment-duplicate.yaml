@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two spec.namespaceAssignments entries for the same namespace on the same
+# cluster are rejected by the validating webhook (no CEL twin: the cluster
+# name carries no maxLength, so the rule's cost cannot be bounded). The
+# consent lookup would only ever see the first of the two.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-assignment-duplicate
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+  namespaceAssignments:
+  - namespace: tenant-a
+  - namespace: tenant-a
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

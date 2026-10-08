@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.namespaceAssignments[].allowedRoles entry containing a comma is
+# rejected (CRD items pattern, mirroring the KeystoneService account roles):
+# no Keystone role an order can request carries one.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-assignment-role-comma
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+  namespaceAssignments:
+  - namespace: tenant-a
+    allowedRoles:
+    - a,b
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

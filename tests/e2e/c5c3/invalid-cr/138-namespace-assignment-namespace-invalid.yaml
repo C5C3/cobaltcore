@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.namespaceAssignments[].namespace outside the RFC-1123 label shape is
+# rejected (CRD pattern): it names the Kubernetes namespace whose orders the
+# entry consents to, so a value no namespace can carry assigns nothing.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-assignment-bad-namespace
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+  namespaceAssignments:
+  - namespace: Tenant_A
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

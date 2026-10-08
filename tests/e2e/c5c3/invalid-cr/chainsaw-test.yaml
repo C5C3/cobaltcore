@@ -1174,6 +1174,45 @@ spec:
             ($error != null): true
             (contains($error, 'allowedNamespaces')): true
             (contains($error, 'Duplicate value')): true
+  # A namespaceAssignments entry outside the RFC-1123 label shape names no
+  # namespace an order could come from (CRD pattern).
+  - try:
+    - apply:
+        file: 138-namespace-assignment-namespace-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'namespaceAssignments[0].namespace')): true
+            (contains($error, 'should match')): true
+  # The (namespace, cluster) pair is unique. Only the validating webhook checks
+  # it: a CEL twin would compare a cluster name without a maxLength.
+  - try:
+    - apply:
+        file: 139-namespace-assignment-duplicate.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'namespaceAssignments[1]')): true
+            (contains($error, 'Duplicate value')): true
+  # The role allowlist is a set (apiserver listType=set semantics).
+  - try:
+    - apply:
+        file: 140-namespace-assignment-role-duplicate.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedRoles')): true
+            (contains($error, 'Duplicate value')): true
+  # A role carries no comma, mirroring the KeystoneService account roles (CRD
+  # items pattern).
+  - try:
+    - apply:
+        file: 141-namespace-assignment-role-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedRoles[0]')): true
+            (contains($error, 'should match')): true
   # The shared message bus is either managed (clusterRef, a RabbitmqCluster the
   # ControlPlane provisions) or brownfield (secretRef, a transport URL read off a
   # Secret). Naming both leaves the reconciler no way to decide which broker the
