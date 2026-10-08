@@ -220,6 +220,7 @@ status:
 | `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, Placement, and Barbican today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (the operator-provisioned `SecretStore` `openbao-tenant-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, Neutron, Cinder, Nova and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, the c5c3-operator provisions the namespaced `SecretStore` `openbao-tenant-store` in the ControlPlane namespace and routes the control plane through it. Set the field only to use a store you manage yourself: `{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own namespace; the shared `openbao-cluster-store` lacks the per-ControlPlane grants and is not an option. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
+| `namespaceAssignments` | [`[]NamespaceAssignmentSpec`](#namespaceassignmentspec) | No | `nil` | Namespaces on the management cluster or on a registered target cluster assigned to the owners of services the control plane does not manage, each with the Keystone roles an order from it may request. `listType=atomic`, at most 32 entries, each (`namespace`, `targetClusterRef.name`) pair unique. It sits beside `korc` because the consent also covers database and message-bus orders. Reported in `status.namespaceAssignments` and by [`NamespaceAssignmentsReady`](#namespaceassignmentsready). Legal in both keystone modes. See [NamespaceAssignmentSpec](#namespaceassignmentspec). |
 
 ### SecretStoreRefSpec
 
@@ -2327,6 +2328,63 @@ namespace from the allowlist does and does not do.
 
 ---
 
+## NamespaceAssignmentSpec
+
+Assigns one namespace, on the management cluster or on a registered target
+cluster, to the owner of a service the control plane does not manage. An entry is
+the consent the order kinds check before they act on an order from that
+namespace, and it lists the Keystone roles such an order may request. The
+c5c3-operator reports every entry in `status.namespaceAssignments` (see
+[NamespaceAssignmentStatus](#namespaceassignmentstatus)).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `namespace` | `string` | Yes | — | The assigned namespace, 1 to 63 characters matching `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. The operator only reads it: it never creates, labels or deletes the namespace, and the entry may precede the namespace. |
+| `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the management cluster) | The registered target cluster the namespace lives on. Admission does not check that the cluster is registered. The ref may be edited: a changed ref is one entry removed and another added. |
+| `allowedRoles` | `[]string` | No | `[]` | The Keystone role names an order from this namespace may request. `listType=set`, at most 16 entries, each 1 to 255 bytes without a comma, the bounds of a `KeystoneService` account role. An empty list allows no role, while the namespace may still order a database or a message-bus vhost. |
+
+The pair (`namespace`, `targetClusterRef.name`) is unique, so the same
+namespace name on two clusters is two entries. Only the validating webhook
+enforces this: a CEL rule would compare `TargetClusterRefSpec.Name`, which has no
+maximum length, so its cost cannot be bounded. A webhook-bypassed duplicate is
+reported twice in status, and the consent lookup uses the first entry.
+
+> **Roles match by name.** `allowedRoles` compares case-sensitively and expands
+> nothing. Keystone's implied roles still apply to what an allowed role grants:
+> `member` implies `reader`, and `admin` implies both. A platform operator may
+> list `admin`.
+
+> **An entry binds the `KeystoneService` CRs of its namespace.** A
+> management-cluster entry for a namespace that `allowedNamespaces` admits
+> limits the account roles of every `KeystoneService` there. A role outside
+> `allowedRoles` reports `AccountReady=False/RoleNotAllowed`, and the catalog
+> block keeps reconciling. A `CredentialRotation` of that account refuses the
+> same way. A namespace without an entry stays unlimited, and removing the entry
+> lifts the limit again. The control plane's own namespace and its dedicated
+> service namespaces are never bound, so the built-in registrations are
+> unaffected. An entry never admits a `KeystoneService` and never provisions a
+> tenant store.
+
+> **Withdrawal freezes.** Removing an entry makes every order from its namespace
+> report refused, and the operator stops reconciling those orders: nothing is
+> rotated or delivered again. Nothing they created is revoked or deleted, and the
+> Secrets already delivered stay. Deleting an order still tears down what it
+> created. Credentials that live on renewal, such as MariaDB dynamic leases,
+> lapse at their TTL. A `KeystoneService` refused for a role freezes the same
+> way: a role assignment that already exists in Keystone stays until the owner
+> drops the role from `spec.account.roles` or deletes the CR.
+
+> **An unknown cluster is refused in status.** Admission never checks
+> registration. An entry whose cluster does not resolve sets
+> `NamespaceAssignmentsReady=False/TargetClusterUnavailable`, which turns the
+> control plane's `Ready` False. An outage of a cluster that only tenants use
+> does the same.
+
+The [Register a Service the ControlPlane Does Not Manage](../../guides/register-a-foreign-service.md#limit-the-roles-a-registration-may-request)
+guide limits the roles of a registration on the ControlPlane devstack.
+
+---
+
 ## AdminCredentialSpec
 
 Declares the admin OpenStack credential and the application-credential rotation
@@ -2794,6 +2852,10 @@ Keystone discipline:
 | `spec.services.nova.dbArchive.sleep` | Minimum: 0 |
 | `spec.services.nova.dedicatedBackingServices` (CEL) | `has(self.database) \|\| has(self.cache)` → "dedicatedBackingServices must declare at least one backing-service class (database, cache)" |
 | `spec.korc.serviceRegistrations.allowedNamespaces` | `listType=set` (the API server rejects duplicate entries); MaxItems 32; item MinLength 1; item MaxLength 63; item Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
+| `spec.namespaceAssignments` | `listType=atomic`; MaxItems 32. No schema rule keeps the (`namespace`, `targetClusterRef.name`) pair unique; the webhook does |
+| `spec.namespaceAssignments[].namespace` | Required; MinLength 1; MaxLength 63; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
+| `spec.namespaceAssignments[].targetClusterRef.name` | Required; MinLength 1; Pattern (DNS-1123 subdomain), the shared `TargetClusterRefSpec` markers |
+| `spec.namespaceAssignments[].allowedRoles` | `listType=set` (the API server rejects duplicate entries); MaxItems 16; item MinLength 1; item MaxLength 255; item Pattern `^[^,]+$` |
 
 ### Validating-webhook rules
 
@@ -2934,6 +2996,13 @@ short-circuit on the first error.
 | Registration allowlist cap | `spec.korc.serviceRegistrations.allowedNamespaces` | `field.TooMany` | More than 32 entries. Defense-in-depth alongside the `MaxItems` marker, for a caller that bypasses CRD schema admission. |
 | Registration allowlist entry shape | `spec.korc.serviceRegistrations.allowedNamespaces[i]` | `field.Invalid` | An entry is not a lowercase alphanumeric RFC-1123 label; it names a Kubernetes namespace. Defense-in-depth alongside the item `Pattern` marker. |
 | Registration allowlist duplicates | `spec.korc.serviceRegistrations.allowedNamespaces[i]` | `field.Duplicate` | An entry repeats an earlier one. Defense-in-depth alongside the `listType=set` marker. `validateServiceRegistrations` adds **no** rule beyond these three: an entry naming a namespace the control plane already owns is a redundant no-op rather than an error, see [ServiceRegistrationsSpec](#serviceregistrationsspec). |
+| Namespace assignment cap | `spec.namespaceAssignments` | `field.TooMany` | More than 32 entries. Defense-in-depth alongside the `MaxItems` marker. |
+| Namespace assignment namespace shape | `spec.namespaceAssignments[i].namespace` | `field.Invalid` | The namespace is not a lowercase alphanumeric RFC-1123 label. Defense-in-depth alongside the `Pattern` marker. |
+| Namespace assignment cluster name | `spec.namespaceAssignments[i].targetClusterRef.name` | `field.Required` | `targetClusterRef` is set with an empty `name` (`validation.TargetClusterRef`). Defense-in-depth alongside the `MinLength` marker. Whether the cluster is registered is not checked. |
+| Namespace assignment pair duplicates | `spec.namespaceAssignments[i]` | `field.Duplicate` | The entry repeats the (`namespace`, cluster) pair of an earlier one; the value reads `<namespace> on the management cluster` or `<namespace> on target cluster "<name>"`. The same namespace on two clusters is accepted. **Webhook-only**: a CEL twin would compare a cluster name without a maximum length, so its cost cannot be bounded. |
+| Namespace assignment role cap | `spec.namespaceAssignments[i].allowedRoles` | `field.TooMany` | More than 16 roles. Defense-in-depth alongside the `MaxItems` marker. |
+| Namespace assignment role shape | `spec.namespaceAssignments[i].allowedRoles[j]` | `field.Invalid` | A role is empty, longer than 255 bytes, or contains a comma. Defense-in-depth alongside the item markers. |
+| Namespace assignment role duplicates | `spec.namespaceAssignments[i].allowedRoles[j]` | `field.Duplicate` | A role repeats an earlier one. Defense-in-depth alongside the `listType=set` marker. `validateNamespaceAssignments` adds no rule for an entry naming a namespace the control plane occupies: such an entry binds nothing, see [NamespaceAssignmentSpec](#namespaceassignmentspec). |
 
 Whether the named target cluster is **registered** is deliberately not checked.
 A registration is a runtime fact that can appear and disappear long after the
@@ -3966,9 +4035,9 @@ condition over all of them. The step only reads: one namespace GET per entry, on
 the cluster the entry names. It never creates, labels or deletes an assigned
 namespace.
 
-An entry whose cluster does not resolve is refused here, not at admission. The
-False condition turns the aggregate `Ready` False, also when the cluster only
-serves tenants. A missing namespace keeps the condition `True`, because an
+Admission accepts an entry whose cluster does not resolve, and this condition
+refuses it. The False condition turns the aggregate `Ready` False, also when the
+cluster only serves tenants. A missing namespace keeps the condition `True`, because an
 assignment may precede its namespace. While any entry is not `Assigned` the step
 requeues after one minute, because no watch reaches an assigned namespace.
 

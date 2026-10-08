@@ -302,6 +302,24 @@ and keeps authenticating. Teardown happens only through deletion of the
 KeystoneService itself, so an allowlist edit can never destroy credentials a
 running service depends on.
 
+### Role allowlist
+
+A namespace admitted through `allowedNamespaces` may also have a
+management-cluster entry in the ControlPlane's `spec.namespaceAssignments`. Its
+`allowedRoles` then limits `spec.account.roles` of every KeystoneService in that
+namespace. A role matches only its own case-sensitive name. A role outside the list
+sets `AccountReady=False/RoleNotAllowed` and projects nothing for the account,
+while the catalog block keeps reconciling. The message names the allowed list and
+the refused roles.
+
+The refusal freezes the account: a role assignment that already exists in
+Keystone stays, and so does the delivered consumer Secret, until the owner drops
+the role from `spec.account.roles` or deletes the CR. A namespace without an
+entry stays unlimited, and removing the entry lifts the limit again. The
+ControlPlane's own namespace and its dedicated service namespaces are never
+bound, and an entry alone never admits a registration. See
+[NamespaceAssignmentSpec](./controlplane-crd.md#namespaceassignmentspec).
+
 The [Register a Service the ControlPlane Does Not Manage](../../guides/register-a-foreign-service.md)
 guide walks the flow on the ControlPlane devstack, including what removing a
 namespace from the allowlist does and does not do.
@@ -406,6 +424,7 @@ idea.
 | `AccountReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the account or one of its roles. A latched transport error is cleared first, so K-ORC retries. |
 | `AccountReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Project, the User or a role child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `AccountReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting or delivering the account. |
+| `AccountReady` | False | `RoleNotAllowed` | The ControlPlane's `spec.namespaceAssignments` entry for this namespace does not list every role in `spec.account.roles`. Nothing is projected for the account, and what it already holds stays. See [Role allowlist](#role-allowlist). |
 | both | False | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve. Deferred, not failed: GitOps may apply the registration first. |
 | both | False | `NamespaceNotAllowed` | The ControlPlane does not admit registrations from this namespace. Nothing is projected. See [Namespace consent](#namespace-consent). |
 | both | False | `WaitingForAdminCredential` | The ControlPlane's `AdminCredentialReady` is not True, so K-ORC cannot reach Keystone yet. |
