@@ -487,9 +487,12 @@ union over every NovaCompute of the Nova that is not being deleted, on any
 cluster; a pass that skipped the Nodes step lists those NovaComputes itself
 (`NovaComputeListError` when that fails). A marked aggregate outside the set is
 deleted once it holds no host, unless it carries metadata beyond the marker and
-its availability zone, which keeps it and records a Warning `AggregateKept`. A
-failed call reports `ComputeAPIError` and requeues after 30 seconds without an
-error. Only a completed pass lets a deleting pool release its finalizer.
+its availability zone, which keeps it and records a Warning `AggregateKept`.
+From the list it already read, the step then reports every `Active` node in no
+aggregate of its zone under `NodesOutsideZoneAggregate` and keeps
+`AggregatesReady` `True`. A failed call reports `ComputeAPIError` and requeues
+after 30 seconds without an error. Only a completed pass lets a deleting pool
+release its finalizer.
 
 ### reconcileNovaComputeServices
 

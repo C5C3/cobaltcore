@@ -354,6 +354,7 @@ stays out of the aggregate. For the pipeline see
 | `DaemonSetReady` | False | `DaemonSetProgressing` | A rollout is in flight. Not a wait: the aggregates and the drain still run |
 | `DaemonSetReady` | False | `DaemonSetError` | The DaemonSet could not be applied, read or deleted |
 | `AggregatesReady` | True | `AggregatesEnsured` | The aggregates of the pool's zones and `tenant_filter_tests` are in place |
+| `AggregatesReady` | True | `NodesOutsideZoneAggregate` | The aggregates are in place, but an `Active` node is in no aggregate of its zone, so Nova does not place it in that availability zone. The message names each node and its zone, which is also the name of the pool's aggregate; past 20 nodes it names the first 20 and counts the rest. Reported after `NodesWithoutZone` and `AggregateZoneMismatch`. See [The aggregates](#the-aggregates) |
 | `AggregatesReady` | False | `NodesWithoutZone` | A selected node carries no `topology.kubernetes.io/zone`; openstack-hypervisor-operator cannot onboard it. The other zones are still ensured |
 | `AggregatesReady` | False | `AggregateZoneMismatch` | An aggregate of that name exists with another availability zone; the message names both |
 | `AggregatesReady` | False | `WaitingForAggregate` | Another creator made the aggregate between the list and the create; the next pass reads it |
@@ -559,8 +560,9 @@ belongs in that list too, and no pod of the pool may tolerate
 `kvm.cloud.sap/offboarding:NoExecute` indefinitely.
 
 Every node needs the `topology.kubernetes.io/zone` label. The pool creates the
-aggregate named after the zone, and openstack-hypervisor-operator adds the host
-to it on onboarding.
+aggregate named after the zone. openstack-hypervisor-operator keeps the host in
+it after onboarding only when the Node carries the annotation
+`nova.openstack.cloud.sap/aggregates` (see [The aggregates](#the-aggregates)).
 
 ### Reaching Nova
 
@@ -605,9 +607,48 @@ a pool.
 
 For each zone of its `Pending` and `Active` nodes the pool ensures an aggregate
 named after the zone, carrying it as its availability zone, and, while it is
-not being deleted, the zone-less `tenant_filter_tests`. openstack-hypervisor-operator
-puts every host it onboards into both and fails the onboarding when either is
-missing. An aggregate the pool creates carries the metadata
+not being deleted, the zone-less `tenant_filter_tests`. The pool never adds a
+host to an aggregate. openstack-hypervisor-operator (hvo) decides which hosts
+the aggregates hold. The statements about hvo are as read at `a2baf3f`, the
+commit `images/openstack-hypervisor-operator/Dockerfile` pins:
+
+1. While hvo onboards a host, it keeps the host in the zone's aggregate and
+   `tenant_filter_tests` and in no other. This covers the `Onboarding` reasons
+   `Initial` and `Testing`, and `Handover` until `TraitsUpdated` is `True`. The
+   zone is the Node's `topology.kubernetes.io/zone` label. hvo creates neither
+   aggregate. While one is missing, the Hypervisor's `AggregatesUpdated`
+   condition reads `False` with reason `Failed` and the message
+   `aggregates not found: [<names>]`, and onboarding stays at `Initial`.
+   `skipTests` skips only the smoke test and leaves this step in place.
+2. From `Handover` with `TraitsUpdated=True` on, the host belongs to the
+   aggregates in `Hypervisor.spec.aggregates` and to no other. hvo adds the
+   host to the missing ones first. It then removes the host from every
+   aggregate outside the list: `tenant_filter_tests`, the zone's unless the
+   list names it, and any aggregate an admin added the host to by hand. hvo
+   applies the list only when its names differ from `status.aggregates`.
+3. hvo fills `spec.aggregates` from the Node. On every Node reconcile it copies
+   the annotation `nova.openstack.cloud.sap/aggregates`, a comma-separated list
+   whose blank entries it drops, into the field. Whenever the annotation is
+   present, even with an empty value, hvo appends the zone label. Without the
+   annotation the field keeps its value, which is `[]` on every Hypervisor hvo
+   creates, so the host leaves both aggregates at `Handover`. The empty value
+   `nova.openstack.cloud.sap/aggregates=` yields `[<zone>]`. A value that names
+   the zone lists it twice, so the value names only the aggregates beyond the
+   zone's. Every name in it must exist; a missing one fails the apply with
+   `aggregates not found`, as in item 1.
+4. Once a terminating Hypervisor is evicted (`Evicting=False`), the list is
+   empty and the host leaves every aggregate. Offboarding waits until the host
+   is in none.
+
+The pool reports an `Active` node that is in no aggregate of its zone as
+`AggregatesReady=True` under `NodesOutsideZoneAggregate`, with the node and its
+zone in the message. It leaves `Ready` alone, because a pool may run without
+hvo. Membership in any aggregate that carries the zone counts, since Nova
+derives a host's zone from every aggregate the host is in. An
+`openstack aggregate add host` by hand lasts only until hvo next applies its
+list, so extra aggregates go into the annotation's value.
+
+An aggregate the pool creates carries the metadata
 `c5c3.io:nova=<namespace>/<nova>`; one it created but could not mark is deleted
 again and recreated on the next pass. One that exists already is used as it is.
 A marked aggregate that no pool of the Nova needs is deleted once no host is

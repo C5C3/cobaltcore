@@ -106,7 +106,10 @@ kubectl wait novacompute/controlplane-pool-a -n openstack \
 The pool reports `Ready` only once Nova has mapped its host into the cell, which
 the pool's own host discovery does (see
 [Host discovery](../../reference/nova/nova-cells.md#host-discovery)), so the
-scheduler can place a server on the node right away.
+scheduler can place a server on the node right away. No hypervisor operator
+runs on this devstack, so `AggregatesReady` reads `True` under
+`NodesOutsideZoneAggregate`, and the node's servers boot in Nova's default
+zone.
 
 Create the flavor and the image of the quick start's fake-compute check, and
 boot a server without a network:
