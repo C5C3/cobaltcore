@@ -18,6 +18,11 @@
 #   - anything but four non-empty arguments exits 2 with the usage line
 #   - an edit to the script runs the e2e-operator jobs of the seven operators
 #     whose namespace-scoped-rbac suites call it, and no other
+#   - each of those seven suites calls it for its own release, controller and
+#     resource, the glance and cinder suites for their backend controller too,
+#     and no other namespace-scoped-rbac suite exists
+#   - the startup line and the metrics port it reads match the shared
+#     bootstrap and the seven charts
 # Usage: bash tests/unit/ci/assert_namespace_scoped_operator_test.sh
 
 set -uo pipefail
@@ -37,6 +42,9 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-namespace-scoped-operator.sh"
 PLURAL="keystones.keystone.openstack.c5c3.io"
+# The operators whose namespace-scoped-rbac suite runs the proof. Test 12
+# compares the list with the suites on disk.
+NS_SCOPED_OPS="barbican cinder glance horizon keystone nova placement"
 
 STUBS="$(mktemp -d)"
 trap 'rm -rf "$STUBS"' EXIT
@@ -474,7 +482,7 @@ test_the_seven_filters_list_the_shared_scripts() {
   echo "Test: the seven operators with a namespace-scoped-rbac suite list tests/e2e/lib/ in their filter"
 
   local op block
-  for op in keystone horizon glance placement barbican cinder nova; do
+  for op in $NS_SCOPED_OPS; do
     block="$(filter_block "tests_e2e_$op")"
     assert_contains "tests_e2e_$op lists the shared scripts" "$block" "'tests/e2e/lib/**'"
   done
@@ -484,6 +492,51 @@ test_the_seven_filters_list_the_shared_scripts() {
     block="$(filter_block "tests_e2e_$op")"
     assert_not_empty "tests_e2e_$op exists" "$block"
     assert_not_contains "tests_e2e_$op leaves the shared scripts out" "$block" "tests/e2e/lib/"
+  done
+}
+
+# --- Test 12: the seven suites ---
+test_the_seven_suites_run_the_proof() {
+  echo "Test: each namespace-scoped-rbac suite runs the proof against its own release"
+
+  # A new suite must join NS_SCOPED_OPS, so that tests 11 and 12 check its
+  # path filter and its call as well.
+  local f found op
+  found="$(for f in "$PROJECT_ROOT"/tests/e2e/*/namespace-scoped-rbac/chainsaw-test.yaml; do
+    f="${f%/namespace-scoped-rbac/chainsaw-test.yaml}"
+    echo "${f##*/}"
+  done | LC_ALL=C sort | paste -s -d ' ' -)"
+  assert_eq "the namespace-scoped-rbac suites on disk are NS_SCOPED_OPS" "$NS_SCOPED_OPS" "$found"
+
+  for op in $NS_SCOPED_OPS; do
+    assert_file_contains_fixed "the $op suite runs the proof" \
+      "$PROJECT_ROOT/tests/e2e/$op/namespace-scoped-rbac/chainsaw-test.yaml" \
+      "../../lib/assert-namespace-scoped-operator.sh openstack $op-operator-ns-scoped $op ${op}s.$op.openstack.c5c3.io"
+  done
+  # The cluster-wide operator drives these suites' backend CRs to Ready too.
+  for op in glance cinder; do
+    assert_file_contains_fixed "the $op suite runs the proof for its backend" \
+      "$PROJECT_ROOT/tests/e2e/$op/namespace-scoped-rbac/chainsaw-test.yaml" \
+      "../../lib/assert-namespace-scoped-operator.sh openstack $op-operator-ns-scoped ${op}backend ${op}backends.$op.openstack.c5c3.io"
+  done
+}
+
+# --- Test 13: the operator side of the proof ---
+test_the_proof_matches_the_operator() {
+  echo "Test: the startup line and the metrics port the proof reads match the operator"
+
+  # Check 5 greps the message and the key of this call.
+  assert_file_contains_fixed "the shared bootstrap logs the startup line of check 5" \
+    "$PROJECT_ROOT/internal/common/bootstrap/manager.go" \
+    'setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)'
+
+  # Check 7 reads the port each chart passes as --metrics-bind-address.
+  local op port
+  port="$(sed -n 's/^metrics_port=//p' "$SCRIPT")"
+  assert_not_empty "the script names its metrics port" "$port"
+  for op in $NS_SCOPED_OPS; do
+    assert_eq "the $op chart serves metrics on the script's port" "$port" \
+      "$(yq '.metrics.port' "$PROJECT_ROOT/operators/$op/helm/$op-operator/values.yaml")"
   done
 }
 
@@ -512,6 +565,8 @@ test_an_exponent_success_count_passes
 test_wrong_arguments_exit_2
 test_the_script_parses
 test_the_seven_filters_list_the_shared_scripts
+test_the_seven_suites_run_the_proof
+test_the_proof_matches_the_operator
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
