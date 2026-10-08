@@ -151,7 +151,7 @@ deletions.
 | Suite | CR Name | Reconciler Behavior Validated |
 | --- | --- | --- |
 | [basic-deployment](#basic-deployment) | `cinder-basic` | Happy path on 2025.2: thirteen sub-conditions, the three Deployments and their owned children, the rendered `cinder.conf` and backend Secret, the API over HTTP |
-| [basic-deployment-2026-1](#basic-deployment-2026-1) | `cinder-basic-2026-1` | The same assertions against the 2026.1 image, so a difference between the two releases fails here |
+| [basic-deployment-2026-1](#basic-deployment-2026-1) | `cinder-basic-2026-1` | The same assertions against the 2026.1 image, so a difference between 2025.2 and 2026.1 fails here |
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `cinder-basic-2026-2` | The same assertions against the 2026.2 image, so a difference between the three releases fails here |
 | [nfs-backend](#nfs-backend) | `cinder-nfs` | Volume data path on one export: create, extend, clone and delete, each read back through the mount |
 | [multi-backend](#multi-backend) | `cinder-multi` | One `cinder-volume` Deployment per backend, a per-pod `enabled_backends` overlay, volume-type placement on the second export |
@@ -206,9 +206,9 @@ single-writer shape the NFS drivers require, and the API answers over HTTP.
 
 **Purpose:** The per-release twin of `basic-deployment`. Nothing in the config
 step reads `spec.openStackRelease`, so the operator renders the same files for
-both releases and this suite asserts the same uWSGI command, the same backend
+every release and this suite asserts the same uWSGI command, the same backend
 wiring and the same `cinder.conf` shape against the 2026.1 image. A difference
-between the two suites is the failure it exists to catch. The CR pins
+between this suite and basic-deployment is the failure it exists to catch. The CR pins
 `image.tag: "2026.1"`, so a release bump that forgot the tag surfaces here rather
 than in a passing 2025.2 run.
 

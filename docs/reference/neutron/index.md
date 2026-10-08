@@ -94,9 +94,10 @@ this operator implements.
   `system-id` from the local ovsdb socket and waits until the Southbound
   database holds the `Chassis_Private` row of that name. See
   [Node contract](neutron-metadata-agent-crd.md#node-contract).
-- D10 (neutron-server launch mode): one launch mode for the API on both
-  releases. `neutron/wsgi/api.py` is byte-identical at 27.0.3 and 28.0.1 and
-  neither release ships a `neutron-server` binary, so the API is
+- D10 (neutron-server launch mode): one launch mode for the API on every
+  release. `neutron/wsgi/api.py` is byte-identical at 27.0.3 and 28.0.1,
+  29.0.0 adds `prog='neutron-api'` to the `boot_server` call, and no release
+  ships a `neutron-server` binary, so the API is
   `uwsgi … --module neutron.wsgi.api`. Configuration travels in
   `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES`, since `--config-dir`
   alone fails with `ConfigFilesNotFoundError`. `--set-placeholder

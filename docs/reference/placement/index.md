@@ -22,7 +22,7 @@ are the whole surface: no stores, no message bus, no satellite CRD.
 
 The v1 operator resolves the onboarding decisions as follows:
 
-- **One uWSGI launch mode for both releases.** Placement never shipped an
+- **One uWSGI launch mode for every release.** Placement never shipped an
   eventlet server, so it carries no release switch of the kind Glance has and no
   worker count outside uWSGI. The command loads the application through
   `--wsgi-file /var/lib/openstack/bin/placement-api`, the WSGI entry file the

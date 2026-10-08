@@ -263,7 +263,7 @@ a labelled namespace of its own.
 | Suite | CR Name | Reconciler Behavior Validated |
 | --- | --- | --- |
 | [basic-deployment](#basic-deployment) | `nova-basic` | Happy path on 2025.2: fifteen sub-conditions, the five Deployments and their owned children, the rendered `nova.conf` and the compute contract, a server booted, resized and deleted on a fake-driver compute |
-| [basic-deployment-2026-1](#basic-deployment-2026-1) | `nova-basic-2026-1` | The same assertions against the 2026.1 image, with the API container image pinned, so a difference between the two releases fails here |
+| [basic-deployment-2026-1](#basic-deployment-2026-1) | `nova-basic-2026-1` | The same assertions against the 2026.1 image, with the API container image pinned, so a difference between 2025.2 and 2026.1 fails here |
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between the three releases fails here |
 | [scale](#scale) | `nova-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, the other four Deployments left at the counts their own spec fields give them |
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
@@ -339,7 +339,8 @@ and `[api_database]` are not, and `cell_name` is `cell1`.
 **Purpose:** The per-release twin of `basic-deployment`. Nothing the config step
 renders reads `spec.openStackRelease`, so the suite asserts the same conditions,
 the same workload shapes and the same `nova.conf` against the 2026.1 image, and
-a difference between the two is the failure it exists to catch.
+a difference between this suite and basic-deployment is the failure it exists
+to catch.
 
 **Steps:**
 
