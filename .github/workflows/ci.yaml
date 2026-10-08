@@ -2018,14 +2018,14 @@ jobs:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
             ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
-            ${{ env.IMAGE_PREFIX }}/horizon:2025.2
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
-            ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
-            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
       # Every entry below is gated on the legs that deploy it; the action skips
       # the blank lines the other legs render here.
       - name: Load E2E images
@@ -2036,7 +2036,7 @@ jobs:
             # placement is exercised by the pod leg alone (see the pod-leg-only
             # load and deploy steps below).
             ${{ matrix.suite == 'pod' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
-            ${{ matrix.suite == 'pod' && format('{0}/placement:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'pod' && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
             # Both the ovn leg and the network leg's neutron suites bring up an
             # OVNCentral, so both need the operator image and the OVN daemon
             # image that operator rolls out.
@@ -2044,12 +2044,12 @@ jobs:
             ${{ matrix.suite != 'pod' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
             # The two neutron outage suites run on the network leg alone.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
-            ${{ matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'network' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
             # The three cinder outage suites run on the network leg alone.
             # Each deploys a Cinder, so each needs the service image beside
             # the operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
-            ${{ matrix.suite == 'network' && format('{0}/cinder:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
             # The three nova outage suites run on the nova leg alone. The OVN
             # pair above already covers that leg (!= 'pod'), and the keystone
             # and glance images arrive with the keystone stack on every
@@ -2057,29 +2057,29 @@ jobs:
             # A Nova boots no server without a Placement to claim from.
             ${{ matrix.suite == 'nova' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Placement API that operator rolls out.
-            ${{ matrix.suite == 'nova' && format('{0}/placement:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'nova' && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
             # The port of every booted server comes from a Neutron.
             ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
-            ${{ matrix.suite == 'nova' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
             # The operator whose CRs the three suites drive.
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
-            ${{ matrix.suite == 'nova' && format('{0}/nova:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
             # The openstack client the catalog, seed and verify Jobs run.
-            ${{ matrix.suite == 'nova' && format('{0}/tempest:2025.2', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'nova' && format('{0}/tempest:2026.1', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
       # placement-operator-pod-kill is the only suite that touches placement and
       # it runs on the pod leg; none of the network leg's suites reference it.
       # Keep the load off that leg — `kind load docker-image` is a docker
@@ -2089,7 +2089,7 @@ jobs:
         if: matrix.suite == 'pod'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
       # kubelet only skips the registry for a tag already on the node, so both
       # legs that run an OVNCentral load the daemon image the operator rolls
       # out alongside the operator image itself.
@@ -2102,12 +2102,12 @@ jobs:
         if: matrix.suite == 'network'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
       - name: Load cinder images into kind
         if: matrix.suite == 'network'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
       # The nova leg's own seven. None of the per-leg steps above reaches them:
       # the placement pair is gated on the pod leg and the neutron pair on the
       # network one. The OVN pair this leg also needs is loaded by the
@@ -2116,12 +2116,12 @@ jobs:
         if: matrix.suite == 'nova'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind

@@ -115,7 +115,7 @@ spec:
           # the c5c3 suites hand credentials to their openstack-client probes.
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/neutron:2026.1 --restart=Never \
             --env "OS_PASSWORD=${PW}" \
             --command -- python3 -c '
           import json, os, sys, time, urllib.request, urllib.error
@@ -243,7 +243,7 @@ spec:
           trap cleanup EXIT
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/neutron:2026.1 --restart=Never \
             --env "OS_PASSWORD=${PW}" \
             --command -- python3 -c '
           import json, os, sys, time, urllib.request, urllib.error
@@ -390,7 +390,7 @@ spec:
           trap cleanup EXIT
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/neutron:2026.1 --restart=Never \
             --env "OS_PASSWORD=${PW}" \
             --command -- python3 -c '
           import json, os, sys, time, urllib.request, urllib.error

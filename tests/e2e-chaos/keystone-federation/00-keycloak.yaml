@@ -89,7 +89,7 @@ spec:
       # backend CR opts out of verifying (tlsVerify: false).
       initContainers:
       - name: gen-cert
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         command:
         - python3
         - -c
@@ -139,8 +139,12 @@ spec:
         # mod_auth_openidc introspects over https :8443, and without this
         # Keycloak derives the expected issuer per request scheme+port and
         # rejects the token ("Access token JWT check failed" -> active:false).
+        # The host is the Service's namespace-qualified name, not its
+        # .svc.cluster.local FQDN: the issuer is also the identity provider's
+        # remote ID, and keystone 29.0.0 (2026.1) rejects a remote ID longer
+        # than 64 characters.
         - name: KC_HOSTNAME
-          value: http://keycloak-chaos.openstack.svc.cluster.local:8080
+          value: http://keycloak-chaos.openstack:8080
         - name: KC_HOSTNAME_STRICT
           value: "false"
         ports:

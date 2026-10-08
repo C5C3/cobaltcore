@@ -305,7 +305,7 @@ test_chaos_network_leg_runs_the_neutron_suites() {
   assert_contains "the leg pulls the neutron-operator image" "$load" \
     "matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX)"
   assert_contains "the leg pulls the neutron service image" "$load" \
-    "matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX)"
+    "matrix.suite == 'network' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX)"
 
   local kind_load
   kind_load=$(job_step e2e-chaos "Load neutron images into kind")
@@ -315,7 +315,7 @@ test_chaos_network_leg_runs_the_neutron_suites() {
   assert_contains "the operator image is loaded" "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron-operator:dev"
   assert_contains "the service image is loaded" "$kind_load" \
-    "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron:2025.2"
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron:2026.1"
 
   local deploy
   deploy=$(job_step e2e-chaos "Deploy neutron operator")

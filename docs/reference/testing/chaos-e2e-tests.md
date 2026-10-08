@@ -1611,7 +1611,7 @@ MariaDB partition turns `Ready` to `False`.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply the Glance CR and default S3 store | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-garage-chaos` with database `glance_garage_chaos` and one replica. Applies `01-glancebackend-cr.yaml`: GlanceBackend `glance-garage-chaos-s3` (`type: S3`, `isDefault: true`, host `http://garage.shared-services.svc.cluster.local:3900`, bucket `glance-images`). The CR reaches `BackendsReady=True/AllBackendsProjected` and `Ready=True/AllReady` |
+| 1 | Apply the Glance CR and default S3 store | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-garage-chaos` with database `glance_garage_chaos`, one replica and `spec.apiServer.uwsgi.harakiri: 20`. Applies `01-glancebackend-cr.yaml`: GlanceBackend `glance-garage-chaos-s3` (`type: S3`, `isDefault: true`, host `http://garage.shared-services.svc.cluster.local:3900`, bucket `glance-images`). The CR reaches `BackendsReady=True/AllBackendsProjected` and `Ready=True/AllReady` |
 | 2 | Baseline write | `script` (5m) | Pod `glance-garage-baseline-probe` on image `ghcr.io/c5c3/glance:2025.2` runs a python client against `http://glance-garage-chaos.openstack.svc:9292`: `POST /v2/images` creates `garage-baseline-probe`, `PUT /v2/images/{id}/file` uploads a payload to the default store, and `GET /v2/images/{id}` must report status `active`. The step reads the sentinel `WRITE-OK` from the pod log |
 | 3 | Inject NetworkChaos | `apply` | Applies `02-networkchaos.yaml`: NetworkChaos `partition-garage` (`action: partition`, `mode: all`, `direction: both`, `duration: "600s"`) |
 | 4 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-garage -n openstack --for=condition=AllInjected --timeout=60s` |
@@ -1659,8 +1659,19 @@ the NetworkChaos as YAML. Steps 5, 6 and 8 also list the Garage storage pods in
   does not affect. It gives the probe an image id to upload to.
 - Step 7 exists because a timeout in step 5 only proves that the client gave up. The
   store client of Glance could still have completed the upload through its own
-  retries. A fail-closed upload leaves the record `queued` or `killed`, and `active`
-  would mean the data arrived after the probe stopped waiting.
+  retries. A fail-closed upload leaves the record `queued`, `saving` or `killed`, and
+  `active` would mean the data arrived after the probe stopped waiting.
+- The Glance CR sets `spec.apiServer.uwsgi.harakiri: 20` so that step 7 can hold.
+  Under uWSGI (2026.1 and later) the HTTP router closes the client connection after
+  its own socket timeout (`--http-timeout`, 60 seconds by default, which the operator
+  does not set), while the worker keeps retrying the S3 write. Step 5 ends on that
+  disconnect, step 6 lifts the partition with the write still in flight, the next
+  boto attempt connects, and the image turns `active`. The 20-second cap kills the
+  worker before the router gives up on the client, so no write survives into the
+  recovered state. The value has to stay below the webhook's bound of
+  `terminationGracePeriodSeconds - preStopSleepSeconds` (25 at the deployment
+  defaults). Below 2026.1 the eventlet server held the client until the probe's own
+  90-second timeout, and the cap is inert there.
 - Every probe takes its verdict from the pod log. `kubectl run -i` carries only what
   the container writes after the attach is established, so a fast probe could reach
   its sentinel before the capture starts. The probe pod therefore runs without `--rm`,

@@ -29,12 +29,28 @@ metadata:
   name: glance-garage-chaos
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
+  # harakiri bounds the data PUT that step 4b makes while Garage is
+  # partitioned. Without it the uWSGI HTTP router drops the client after its
+  # own socket timeout (--http-timeout, 60s by default; the operator renders no
+  # value) while the worker keeps retrying the S3 write. Step 5 then lifts the
+  # partition with that write still in flight, boto's next attempt connects,
+  # and the image turns active: in CI run 37919541346 glance logged the PUT as
+  # 204 after 63721 ms, one second after the NetworkChaos was deleted, and
+  # step 5b failed on status=active. 20s kills the worker well before the
+  # router gives up on the client, so no write is left to complete once Garage
+  # is reachable, and it stays under the webhook's bound of
+  # terminationGracePeriodSeconds - preStopSleepSeconds (30 - 5 = 25 at the
+  # deployment defaults). A healthy PUT in this suite takes well under a
+  # second (step 2 measures it), so the cap cannot cut a legitimate upload.
+  apiServer:
+    uwsgi:
+      harakiri: 20
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

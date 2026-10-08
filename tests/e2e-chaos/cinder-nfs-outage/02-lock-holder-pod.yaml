@@ -46,7 +46,7 @@ spec:
     - name: holder
       # The image the suite's probes run; its python sits in a venv, at the
       # path tests/container-images/verify_cinder.sh pins.
-      image: ghcr.io/c5c3/cinder:2025.2
+      image: ghcr.io/c5c3/cinder:2026.1
       command: ["/var/lib/openstack/bin/python", "-u", "-c"]
       args:
         - |
