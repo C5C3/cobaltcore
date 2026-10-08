@@ -85,6 +85,28 @@ const (
 // and is not something to run on every periodic tick.
 const discoverHostsIntervalSeconds = 300
 
+// buildFailureWeightMultiplier is [filter_scheduler]
+// build_failure_weight_multiplier. Nova normalizes each weigher's raw weights
+// over the candidate hosts to the range 0 to 1 before it multiplies, so Nova's
+// own 1000000.0 puts a host with one failed or aborted build 1000000 below
+// every clean host, whatever the other weighers say. The counter resets only
+// when a build succeeds on that host, which with host_subset_size 1 never comes
+// while another host has room. 0 is the value Nova documents for switching the
+// weigher off; the counter keeps counting, and the per-aggregate metadata
+// override stays available to a deployment that wants the weigher on some hosts.
+// At 0 nothing steers builds away from a host whose builds keep failing: as the
+// emptiest host it keeps winning the ram, cpu and disk weighers, so unpinned
+// builds keep landing on it until its compute service is disabled.
+const buildFailureWeightMultiplier = "0"
+
+// shuffleBestSameWeighedHosts is [filter_scheduler]
+// shuffle_best_same_weighed_hosts. The hosts sharing the best weight are
+// shuffled before the scheduler picks the first one, so on a fresh deployment,
+// where every host ties, the first builds do not all go to the first host in
+// list order. The cost, less dense packing, applies only among hosts of equal
+// weight.
+const shuffleBestSameWeighedHosts = "true"
+
 // The console proxy's serving parameters.
 const (
 	// novncWebPath is the directory the nova image installs the noVNC client at
@@ -314,7 +336,15 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 		// cell. Without it a hypervisor that joined the bus stays invisible to
 		// scheduling until someone runs discover_hosts by hand.
 		"scheduler": {"discover_hosts_in_cells_interval": strconv.Itoa(discoverHostsIntervalSeconds)},
-		"vnc":       vncSection(nova),
+		// The failed-build weigher off and the shuffle among hosts of equal
+		// weight. Only the scheduler reads the section; it lives in the shared
+		// document rather than in schedulerOverlay so spec.extraConfig can
+		// override it.
+		"filter_scheduler": {
+			"build_failure_weight_multiplier": buildFailureWeightMultiplier,
+			"shuffle_best_same_weighed_hosts": shuffleBestSameWeighedHosts,
+		},
+		"vnc": vncSection(nova),
 	}
 
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits

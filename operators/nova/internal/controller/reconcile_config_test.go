@@ -589,20 +589,30 @@ func TestReconcileConfig_ConfigMapFailuresMarkSecretsReady(t *testing.T) {
 }
 
 // TestReconcileConfig_ExtraConfigOverlay covers the escape hatch: nil and empty
-// blocks render the defaults byte-identically, and a value under a reported key
-// wins over the operator's.
+// blocks, and an empty operator-rendered section, render the defaults
+// byte-identically, a value under a reported key wins over the operator's, and
+// a user key joins an operator-rendered section instead of replacing it.
 func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 	t.Run("nil and empty render identically", func(t *testing.T) {
-		g := NewGomegaWithT(t)
 		nilNova := validNova()
 		nilNova.Spec.ExtraConfig = nil
-		emptyNova := validNova()
-		emptyNova.Spec.ExtraConfig = map[string]map[string]string{}
-
 		_, nilArt := renderConfig(t, nilNova)
-		_, emptyArt := renderConfig(t, emptyNova)
-		g.Expect(emptyArt.configMapName).To(Equal(nilArt.configMapName),
-			"the ConfigMap name is the content hash, so an empty block must not rotate it")
+
+		// An empty block and an empty operator-rendered section both copy
+		// nothing, so neither may rotate the content-hashed ConfigMap.
+		for name, extra := range map[string]map[string]map[string]string{
+			"empty block":                     {},
+			"empty operator-rendered section": {"filter_scheduler": {}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				emptyNova := validNova()
+				emptyNova.Spec.ExtraConfig = extra
+				_, emptyArt := renderConfig(t, emptyNova)
+				g.Expect(emptyArt.configMapName).To(Equal(nilArt.configMapName),
+					"the ConfigMap name is the content hash, so an empty block or section must not rotate it")
+			})
+		}
 	})
 
 	t.Run("a user value wins over the operator default", func(t *testing.T) {
@@ -616,12 +626,34 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 
 		g.Expect(conf).To(ContainSubstring("state_path = /srv/nova"))
 		g.Expect(conf).NotTo(ContainSubstring("state_path = /var/lib/nova\n"))
-		g.Expect(conf).To(ContainSubstring("[filter_scheduler]"))
+		// The user key joins the operator's [filter_scheduler] section.
+		filterScheduler := sectionOf(t, conf, "filter_scheduler")
+		g.Expect(filterScheduler).To(ContainSubstring("host_subset_size = 3\n"))
+		g.Expect(filterScheduler).To(ContainSubstring("build_failure_weight_multiplier = 0\n"))
 
 		// The guard reports the take-over; it does not reject it.
 		cond := novaCondition(nova, "ExtraConfigHealthy")
 		g.Expect(cond).NotTo(BeNil())
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	})
+
+	t.Run("a user value restores Nova's weigher", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := validNova()
+		nova.Spec.ExtraConfig = map[string]map[string]string{
+			"filter_scheduler": {"build_failure_weight_multiplier": "1000000.0"},
+		}
+		filterScheduler := sectionOf(t, renderNovaConf(t, nova), "filter_scheduler")
+
+		g.Expect(filterScheduler).To(ContainSubstring("build_failure_weight_multiplier = 1000000.0\n"))
+		g.Expect(filterScheduler).NotTo(ContainSubstring("build_failure_weight_multiplier = 0\n"))
+		g.Expect(filterScheduler).To(ContainSubstring("shuffle_best_same_weighed_hosts = true\n"))
+
+		cond := novaCondition(nova, "ExtraConfigHealthy")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+		g.Expect(cond.Message).To(ContainSubstring("[filter_scheduler] build_failure_weight_multiplier"))
 	})
 }
 
