@@ -61,6 +61,10 @@ username = nova
 [database]
 connection = mysql+pymysql://placeholder
 
+[filter_scheduler]
+build_failure_weight_multiplier = 0
+shuffle_best_same_weighed_hosts = true
+
 [glance]
 region_name = RegionOne
 valid_interfaces = internal
@@ -152,6 +156,10 @@ memcache_servers = memcached:11211
 
 [database]
 connection = mysql+pymysql://placeholder
+
+[filter_scheduler]
+build_failure_weight_multiplier = 0
+shuffle_best_same_weighed_hosts = true
 
 [glance]
 valid_interfaces = internal
