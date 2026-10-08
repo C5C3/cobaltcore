@@ -12,7 +12,10 @@
 #     created /var/lib/nova/instances on the node, below a /var/lib/nova the
 #     suite gave to another user, the pod passed its wait-for-chassis gate and
 #     runs ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
-#     aggregate nova-pool-az1 and tenant_filter_tests, both marked
+#     aggregate nova-pool-az1 and tenant_filter_tests, both marked; no
+#     hypervisor operator adds the host to nova-pool-az1 on kind, so
+#     AggregatesReady reads True under NodesOutsideZoneAggregate and names the
+#     node
 #   - a second pool selecting the same node reports the conflict and schedules
 #     no pod
 #   - a server boots onto the node; removing the pool label drains the node: the
@@ -243,6 +246,12 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+            # Nothing adds the host to nova-pool-az1 on kind, so the pool
+            # reports its Active node outside its zone and keeps
+            # AggregatesReady, and Ready, True.
+            (conditions[?type == 'AggregatesReady']):
+            - status: "True"
+              reason: NodesOutsideZoneAggregate
             # The `|| `[]`` guard keeps the filter from aborting on the first
             # poll, while status.nodes is still absent.
             ((nodes || `[]`)[0]):
@@ -251,6 +260,16 @@ spec:
               serviceStatus: enabled
               serviceState: up
             installedImage: ghcr.io/c5c3/nova-compute:2025.2
+    # The node's name comes from the ConfigMap, so a script checks that the
+    # message names it with its zone.
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get configmap nova-pool-verify -n "$NAMESPACE" -o jsonpath='{.data.node}')"
+          MESSAGE="$(kubectl get novacompute pool-a -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="AggregatesReady")].message}')"
+          echo "$MESSAGE"
+          [[ "$MESSAGE" == *"$NODE (nova-pool-az1)"* ]]
     # 10-nova-cr.yaml turns the scheduler's discovery periodic off, so only the
     # pool's discovery Job can have mapped the host. The Job that did is still
     # there: the pool leaves it alone once the host is mapped, and its TTL is
