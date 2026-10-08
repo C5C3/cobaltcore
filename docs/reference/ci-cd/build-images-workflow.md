@@ -1012,7 +1012,7 @@ with nova's patches and constraint overrides. The image gets jobs of its own
 because a failed leg of `build-service-images` on a main push skips
 `merge-service-images` for every service. Extra steps in the nova leg would add
 a compiled binding and ten apt packages to that blast radius. A failed compute
-leg skips `merge-nova-compute-image` for both releases and leaves every other
+leg skips `merge-nova-compute-image` for every release and leaves every other
 merge job alone.
 
 `build-nova-compute-image` gates on `nova-compute-releases != '[]'` from
@@ -1055,7 +1055,7 @@ digest and uploaded as `digests-nova-compute-<release>-<platform-pair>`.
 SHA tags from every branch and the version and release tags from `main`, and
 writes `sbom-nova-compute-<release>.cyclonedx.json` with the Grype category
 `grype-nova-compute-<release>`. Like Tempest's, the category carries the
-release: both releases merge for the same commit, and under one category the
+release: all three releases merge for the same commit, and under one category the
 later SARIF upload would replace the earlier one and close its alerts as fixed.
 
 `verify-nova-compute-image` (push only) pulls the composite tag and runs
@@ -1194,7 +1194,7 @@ The workflow behaves differently depending on the trigger event:
 | --- | --- | --- |
 | Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
-| Service matrix | The services whose sources changed, both releases each | Every service |
+| Service matrix | The services whose sources changed, every release each | Every service |
 | Tempest images | On `images/tempest/**`, its verify script, a base change, or a plumbing change | Always |
 | OVN, federation proxy, backup shifter, libvirt, openstack-hypervisor-operator, kvm-node-agent | On their own sources, or a plumbing change | Always |
 | Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
