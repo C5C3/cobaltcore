@@ -1780,7 +1780,7 @@ jobs:
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
       # Pull the run-scoped images from GHCR: the locally built operator (:dev,
-      # the upgrade target) and the 2025.2 service image the CR fixture uses.
+      # the upgrade target) and the 2026.1 service image the CR fixture uses.
       # This step also `docker login`s GHCR, which the baseline image pull below
       # reuses.
       - name: Load E2E images
@@ -1789,11 +1789,11 @@ jobs:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
       # `helm registry login` is separate from the `docker login` that
       # load-e2e-images performs; the released chart is pulled via `helm pull`.
       - name: Log in to GHCR for Helm
