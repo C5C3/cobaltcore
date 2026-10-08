@@ -43,7 +43,7 @@
 # test's `finally` block.
 #
 # DECISION image is the repo's own tempest image, which bundles the
-# OpenStack client. The e2e-controlplane CI job loads ghcr.io/c5c3/tempest:2025.2
+# OpenStack client. The e2e-controlplane CI job loads ghcr.io/c5c3/tempest:2026.1
 # into kind (the tag CI builds — there is no :latest), so the image is pinned to
 # that tag with imagePullPolicy: IfNotPresent to use the kind-loaded copy rather
 # than pulling from GHCR. The `openstack secret` subcommands come from the
@@ -65,7 +65,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: osc
-          image: ghcr.io/c5c3/tempest:2025.2
+          image: ghcr.io/c5c3/tempest:2026.1
           imagePullPolicy: IfNotPresent
           env:
             - name: OS_CLIENT_CONFIG_FILE

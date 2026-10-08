@@ -4029,7 +4029,7 @@ main() {
       # operators + service/client images are provided by the caller (the
       # e2e-controlplane CI job deploys keystone-operator + c5c3-operator via
       # hack/ci-deploy-operator.sh, K-ORC via hack/ci-deploy-korc.sh, and loads
-      # keystone:2025.2 / tempest:2025.2 into kind). Skip the Flux waits and the
+      # keystone:2026.1 / tempest:2026.1 into kind). Skip the Flux waits and the
       # published-image preload — the suspended releases would never report Ready.
       log "  ControlPlane operators provided externally (CONTROLPLANE_OPERATORS=external);"
       log "  skipping Flux HelmRelease/Kustomization waits and the published-image preload."

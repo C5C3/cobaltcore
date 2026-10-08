@@ -2527,16 +2527,16 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
             ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
             ${{ env.IMAGE_PREFIX }}/nova-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
-            ${{ env.IMAGE_PREFIX }}/horizon:2025.2
-            ${{ env.IMAGE_PREFIX }}/glance:2025.2
-            ${{ env.IMAGE_PREFIX }}/placement:2025.2
-            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
-            ${{ env.IMAGE_PREFIX }}/neutron:2025.2
-            ${{ env.IMAGE_PREFIX }}/cinder:2025.2
-            ${{ env.IMAGE_PREFIX }}/nova:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
-            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
@@ -2549,16 +2549,16 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
       # suspend the Flux ControlPlane stack; the operators are deployed below.
       # CONTROLPLANE_NAME must match the fixture CR (controlplane-keystone) so the
