@@ -361,7 +361,38 @@ runs only while no other pod on another node mounts it.
 
 ### Lab soak run
 
-No lab run of the soak is recorded yet.
+The run of 2026-10-07 (`20261007T180919Z`, 18:09Z to 00:12Z) ran the default
+settings on `newforge`, the lab's shoot of three workers with 16 vCPUs and
+31 GiB each, from `main` right after #1304 merged, with dizzy v0.5.0, the
+10 s liveness timeouts of #1296 and the 1Gi broker of #1298. Verdict PASS:
+`dizzy-exit` pass (exit 0, `run-dd8c475c.json` written), `leak-check` pass
+(no run-tagged resource left), `controlplane-ready` pass, `no-restarts` pass
+(151 containers, 0 restarts, 0 OOM kills). dizzy ran 9912 operations with
+0 failures (error rate 0 %): 3885 server, 3263 volume, 1178 network, 797
+port, 788 subnet and 1 server group; p50 145 ms, p95 6.1 s, p99 7.6 s, with
+the port and server p95 the live-migration waits of the Legacy persona.
+`nova.migrations` holds 193 live migrations of the run, all `completed`.
+Keystone's 3600 s token lifetime showed as exactly three 401 on `nova-api`
+at every full hour after the start, one per persona, each followed by a
+re-authentication, so B42Labs/dizzy#85 held over six boundaries. The three
+earlier runs, two of them FAIL, are recorded in #1304. Findings, one per
+line:
+
+- The third hypervisor hosted nothing for the whole run: a stale
+  `failed_builds: 1` and Nova's default `BuildFailureWeigher` kept it out of
+  every placement, so the lab ran as a two-node cloud (#1310).
+- `nova-scheduler` grew from 128 to 191 MiB of anonymous memory at a constant
+  rate and had not levelled off at six hours (#1311).
+- `nova-compute` ran at 90 to 98 % of a 512Mi limit the operator never set;
+  the openbao tenant LimitRange sizes it, and the page cache of the instance
+  directory inflates the reading (#1312).
+- os-brick's ScaleIO connector logs an ERROR on every volume attach, 34 per
+  hour, for a tool the image does not ship (#1313).
+- No hypervisor is in a host aggregate, so the zone `eqx-mu4` the pool
+  reports is empty in Nova (#1314).
+- Not filed: the metadata agents grew by 70 to 80 MiB within their 2Gi
+  limit, oscillating, and a reader pod started while the previous soak pod
+  still held the claim got a `Multi-Attach` event until that pod was gone.
 
 ## Variables
 
