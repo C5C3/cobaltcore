@@ -162,14 +162,16 @@ for f in hack/*.sh; do
     var=$(echo "${ln}" | sed -nE 's/^([A-Z_]+_VERSION)=.*/\1/p')
     [[ -z "${var}" ]] && continue
     # Runtime-resolved values are not pins Renovate could bump: command
-    # substitutions (resolved from test-refs.yaml, Chart.yaml, …) and
-    # ${VAR:?} required-env passthroughs. ${VAR:-literal} fallbacks DO
-    # carry a bumpable default and stay in scope.
+    # substitutions (resolved from test-refs.yaml, Chart.yaml, …),
+    # ${VAR:?} required-env passthroughs, and ${VAR:-} passthroughs with an
+    # empty default. ${VAR:-literal} fallbacks DO carry a bumpable default
+    # and stay in scope.
     val="${ln#*=}"
     # shellcheck disable=SC2016 # the patterns match a literal "$(", not an expansion
     case "${val}" in
       '$('* | '"$('*) continue ;;
       *':?'*) continue ;;
+      '"${'*':-}"' | '${'*':-}') continue ;;
     esac
     if matches_cm "${f}"; then
       pass "${f}:${var} claimed by a customManager managerFilePatterns entry"
