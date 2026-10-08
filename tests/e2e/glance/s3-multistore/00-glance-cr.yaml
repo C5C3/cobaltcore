@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Glance CR fixture for the s3-multistore E2E test (2025.2 release). Two S3
+# Glance CR fixture for the s3-multistore E2E test (2026.1 release). Two S3
 # stores are attached (00/01/02): garage-a (default) and garage-b. The suite
 # uploads image data to the NON-default store via the X-Image-Meta-Store header
 # to lock the multistore store-selection contract.
@@ -28,12 +28,12 @@ metadata:
   name: glance-multistore
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

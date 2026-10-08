@@ -19,7 +19,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     host: openstack-db.openstack.svc.cluster.local
     port: 3306

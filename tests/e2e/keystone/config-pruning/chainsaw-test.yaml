@@ -61,7 +61,7 @@ spec:
   # ConfigMap. With retain=3, after the 4th patch the operator must prune
   # the oldest ConfigMap, capping the total at retain + 1 = 4.
   # The marker key is [DEFAULT] instance_format, a real oslo.log option that
-  # the extraConfig webhook accepts against the 2025.2 catalog (an invented
+  # the extraConfig webhook accepts against the 2026.1 catalog (an invented
   # key would now be rejected on every patch). Its value is not validated, and
   # instance_format is only interpolated into log records that carry instance
   # context — which keystone never emits — so it stays inert while each

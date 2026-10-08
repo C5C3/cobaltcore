@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the Glance S3 multistore contract (2025.2 release).
+# Chainsaw E2E test for the Glance S3 multistore contract (2026.1 release).
 # Two S3 stores are attached (garage-a default, garage-b non-default) and the
 # suite drives the plain PUT upload path (no import staging) against the
 # NON-default store to lock the design decisions:
@@ -107,7 +107,7 @@ spec:
           set -eu
           kubectl delete pod glance-multistore-probe -n $NAMESPACE --ignore-not-found
           kubectl run glance-multistore-probe -n $NAMESPACE \
-            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 

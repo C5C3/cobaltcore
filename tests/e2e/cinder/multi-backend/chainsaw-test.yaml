@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a Cinder serving two NFS backends (2025.2).
+# Chainsaw E2E test for a Cinder serving two NFS backends (2026.1).
 # One Cinder, two CinderBackends on two different exports, which is where the
 # per-backend projection stops being a formality:
 #   - the operator renders one cinder-volume Deployment per backend, and each
@@ -325,7 +325,7 @@ spec:
 
           # The image ships its python in a venv on PATH; the absolute path is
           # the one tests/container-images/verify_cinder.sh pins.
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-multi.openstack.svc.cluster.local:8776
 

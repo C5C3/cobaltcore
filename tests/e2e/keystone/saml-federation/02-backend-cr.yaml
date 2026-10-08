@@ -31,7 +31,7 @@ spec:
     description: Keycloak cobaltcore-saml realm
   type: SAML
   saml:
-    idpEntityID: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml
+    idpEntityID: http://keycloak-saml.openstack:8080/realms/cobaltcore-saml
     identityProviderName: keycloak-saml
     idpMetadata:
       secretRef:
@@ -42,7 +42,7 @@ spec:
   - remote:
     - type: HTTP_MELLON_IDP
       anyOneOf:
-      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml
+      - http://keycloak-saml.openstack:8080/realms/cobaltcore-saml
     - type: HTTP_MELLON_USERNAME
     local:
     # {0} is the first value-producing remote: the HTTP_MELLON_IDP rule carries

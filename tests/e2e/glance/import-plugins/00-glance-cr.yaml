@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Glance CR fixture for the import-plugins E2E test (2025.2 release).
+# Glance CR fixture for the import-plugins E2E test (2026.1 release).
 #
 # All three plugin blocks are set at once, because the rendered
 # image_import_plugins list is the operator's fixed order rather than the CR's
@@ -16,10 +16,10 @@
 #   - ignoreUserRoles is [admin, service] where the default resolves to admin
 #     alone.
 #
-# The release is the one the basic-deployment suite runs, rather than the 2026.1
-# the image-cache suite has to pin for its uWSGI worker layout. Nothing here
-# depends on the launch mode: qemu-img and lhafile ship in both release images,
-# and step 3 executes them in whichever this CR runs.
+# The release is the default one, 2026.1, which the plain basic-deployment
+# suite and the image-cache suite run as well. Nothing here depends on the
+# launch mode: qemu-img and lhafile ship in every release image, and step 3
+# executes them in whichever this CR runs.
 #
 # The CR opens no API access (no allow_anonymous_access, no unauthenticated
 # context filter, no policy overrides) because the suite makes no Glance API
@@ -40,7 +40,7 @@ metadata:
   name: glance-import-plugins
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     # One replica: every assertion reads the Deployment's config volume or execs
     # into the pod behind it, and a single pod keeps the revert leg's rollout
@@ -48,7 +48,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

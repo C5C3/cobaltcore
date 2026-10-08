@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Placement CR fixture for the namespace-scoped RBAC E2E test (2025.2
+# Placement CR fixture for the namespace-scoped RBAC E2E test (2026.1
 # release), the healthcheck fixture under the placement-ns-scoped names.
 # Managed mode: database via clusterRef to openstack-db (schema
 # placement_ns_scoped), cache via clusterRef to openstack-memcached. A single
@@ -15,7 +15,7 @@ metadata:
   name: placement-ns-scoped
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   secretStoreRef:
     kind: SecretStore
     name: openbao-tenant-store
@@ -23,7 +23,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

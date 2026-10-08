@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the remote-compute-contract E2E test (2025.2 release).
+# Nova CR for the remote-compute-contract E2E test (2026.1 release).
 #
 # The lightest fixture tier: no broker, no Keystone and no database. The suite
 # asserts the two compute contracts the ComputeConfig step publishes, and that
@@ -22,10 +22,10 @@ metadata:
   name: nova-rc
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1

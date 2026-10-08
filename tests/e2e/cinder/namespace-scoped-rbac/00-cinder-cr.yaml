@@ -19,13 +19,13 @@ metadata:
   name: cinder-ns-scoped
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   secretStoreRef:
     kind: SecretStore
     name: openbao-tenant-store
   image:
     repository: ghcr.io/c5c3/cinder
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Neutron CR for the ovn-db-sync-repair E2E test (2025.2 release).
+# Neutron CR for the ovn-db-sync-repair E2E test (2026.1 release).
 #
 # Managed mode throughout: the schema neutron_dbsync on the openstack-db MariaDB
 # cluster, the openstack-memcached cache, the ESO-synced neutron-db credentials
@@ -25,7 +25,7 @@ metadata:
   name: neutron-dbsync
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   workers:
@@ -33,7 +33,7 @@ spec:
       replicas: 1
   image:
     repository: ghcr.io/c5c3/neutron
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

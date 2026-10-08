@@ -378,7 +378,7 @@ gated by its pod template hash and leaves the key-gated bootstrap Job alone.
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Keystone CR without pullPolicy | `apply` | `00-keystone-cr.yaml`: Keystone CR `keystone-ipp`, tag `2025.2`, one replica |
+| 1 | Apply Keystone CR without pullPolicy | `apply` | `00-keystone-cr.yaml`: Keystone CR `keystone-ipp`, tag `2026.1`, one replica |
 | 2 | Assert Ready and the operator default | `assert` + `script` | Ready=True (AllReady); every container of Deployment `keystone-ipp` and of Job `keystone-ipp-db-sync` carries `IfNotPresent`; the UIDs of the db-sync and bootstrap Jobs go into ConfigMap `keystone-ipp-job-uids` |
 | 3 | Patch: pullPolicy Never | `patch` | `01-patch-pull-policy-never.yaml`: `spec.image.pullPolicy: Never` |
 | 4 | Assert Never, the re-run and Ready | `assert` + `script` | Every container and init container of the Deployment, the db-sync Job and the `fernet-rotate` and `credential-rotate` CronJobs carries `Never`; Ready=True at `observedGeneration: 2`; a script checks every CronJob of the instance (trust-flush included), a new db-sync UID and an unchanged bootstrap UID |

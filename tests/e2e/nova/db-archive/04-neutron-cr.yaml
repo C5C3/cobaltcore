@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Neutron CR for the db-archive E2E test (2025.2 release).
+# Neutron CR for the db-archive E2E test (2026.1 release).
 #
 # Nova needs a network service in the catalog it can reach: the API resolves
 # [neutron] on every request that touches ports, and the metadata API verifies a
@@ -22,7 +22,7 @@ metadata:
   name: neutron-nova-archive
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   workers:
@@ -30,7 +30,7 @@ spec:
       replicas: 1
   image:
     repository: ghcr.io/c5c3/neutron
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

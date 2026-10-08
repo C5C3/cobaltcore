@@ -157,8 +157,13 @@ spec:
         # Pin a fixed frontend URL so the realm/SAML issuer is stable across
         # requests (the SAML descriptor's entityID and the assertion issuer
         # must match the backend CR's idpEntityID).
+        # The host is the Service's namespace-qualified name, not its
+        # .svc.cluster.local FQDN: each realm's entityID or issuer is also an
+        # identity provider's remote ID, and keystone 29.0.0 (2026.1) rejects a
+        # remote ID longer than 64 characters. The longest, the
+        # cobaltcore-saml-oidc issuer, is 63.
         - name: KC_HOSTNAME
-          value: http://keycloak-saml.openstack.svc.cluster.local:8080
+          value: http://keycloak-saml.openstack:8080
         - name: KC_HOSTNAME_STRICT
           value: "false"
         ports:

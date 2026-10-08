@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the namespace-scoped RBAC E2E test (2025.2 release), the
+# Nova CR for the namespace-scoped RBAC E2E test (2026.1 release), the
 # healthcheck fixture under the nova-ns-scoped names.
 #
 # The light fixture tier: no Keystone, no Placement, no Neutron and no Glance
@@ -30,13 +30,13 @@ metadata:
   name: nova-ns-scoped
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   secretStoreRef:
     kind: SecretStore
     name: openbao-tenant-store
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1

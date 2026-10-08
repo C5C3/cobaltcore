@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Cinder CR for the maintenance-endpoint-isolation E2E test (2025.2 release).
+# Cinder CR for the maintenance-endpoint-isolation E2E test (2026.1 release).
 #
 # Same Keystone-free wiring as the basic-deployment fixture, on the schema
 # cinder_isolation.
@@ -27,10 +27,10 @@ metadata:
   name: cinder-isolation
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/cinder
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 2

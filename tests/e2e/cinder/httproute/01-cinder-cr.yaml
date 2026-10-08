@@ -28,10 +28,10 @@ metadata:
   name: cinder-route
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/cinder
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1

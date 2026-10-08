@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the Glance default-backend switch contract (2025.2).
+# Chainsaw E2E test for the Glance default-backend switch contract (2026.1).
 # Two S3 stores are attached (switch-a default, switch-b non-default) and the
 # suite flips which one carries isDefault to lock two invariants:
 #

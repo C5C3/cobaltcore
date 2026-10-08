@@ -27,12 +27,15 @@ spec:
     description: Keycloak cobaltcore-saml-oidc realm
   type: OIDC
   oidc:
-    issuer: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc
+    issuer: http://keycloak-saml.openstack:8080/realms/cobaltcore-saml-oidc
     clientID: keystone
     clientSecretRef:
       name: keycloak-saml-oidc-client
     endpoints:
-      authorizationEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/auth
+      # The browser opens this endpoint, so it uses the issuer's host: Keycloak
+      # posts the login form to that host, and a session cookie set on the FQDN
+      # would not be sent along (400, cookie_not_found).
+      authorizationEndpoint: http://keycloak-saml.openstack:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/token
       jwksURI: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/certs
       userinfoEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/userinfo
@@ -40,7 +43,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc
+      - http://keycloak-saml.openstack:8080/realms/cobaltcore-saml-oidc
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
