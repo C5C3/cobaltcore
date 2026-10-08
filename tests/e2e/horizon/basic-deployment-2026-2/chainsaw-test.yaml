@@ -116,8 +116,8 @@ spec:
                 app.kubernetes.io/instance: horizon-basic-2026-2
   # ── Step 4: Assert the rendered ConfigMap and its cache KEY_PREFIX ─────
   # The prefix is "horizon-" plus the first 12 hex characters of
-  # sha256("ghcr.io/c5c3/horizon:2026.2"); the two sibling suites pin their
-  # own, so the leg shows three releases on one Memcached render three
+  # sha256("ghcr.io/c5c3/horizon:2026.2"); the plain suite pins its own
+  # (2026.1), so the leg shows two releases on one Memcached render two
   # prefixes (#1305). The script reads the ConfigMap the Deployment mounts,
   # because the retention sweep keeps up to three historical ones beside
   # it. Plain grep -F, no -q: an early exit would break the pipe under
