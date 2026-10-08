@@ -198,7 +198,7 @@ test_job_prepares_the_management_cluster_datapath() {
   assert_contains "the OVN image reaches the management cluster" \
     "$job" 'ovn:${{ env.OVN_VERSION }} --name "$MGMT_CLUSTER"'
   assert_contains "the Neutron image reaches the management cluster" \
-    "$job" 'neutron:2025.2 --name "$MGMT_CLUSTER"'
+    "$job" 'neutron:2026.1 --name "$MGMT_CLUSTER"'
 }
 
 test_job_never_registers_an_admin_kubeconfig() {

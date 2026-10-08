@@ -3368,9 +3368,9 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
-            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
-            ${{ env.IMAGE_PREFIX }}/neutron:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
       # The service images run on the target; the operator images run on the
       # management cluster, which does not exist yet. The OVN daemon image is a
@@ -3378,9 +3378,9 @@ jobs:
       # on the target.
       - name: Load service images into the target cluster
         run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name "$TARGET_CLUSTER"
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name "$TARGET_CLUSTER"
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name "$TARGET_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "$TARGET_CLUSTER"
       - name: Setup target-cluster infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -3405,7 +3405,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name "$MGMT_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name "$MGMT_CLUSTER"
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "$MGMT_CLUSTER"
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name "$MGMT_CLUSTER"
       # hack/deploy-mgmt-cluster.sh left the kubectl context on the management
       # cluster, which is where all four operators are installed.
       - name: Deploy keystone-operator
