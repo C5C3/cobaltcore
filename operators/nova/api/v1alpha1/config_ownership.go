@@ -205,6 +205,13 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "scheduler", Key: "workers", OwnedBy: "spec.scheduler.workers"},
 	{Section: "conductor", Key: "workers", OwnedBy: "spec.conductor.workers"},
 
+	// [filter_scheduler]
+	// The failed-build weigher's multiplier and the shuffle among hosts of equal
+	// weight. Both are Reported: an operator may want Nova's weigher back, and a
+	// wrong value costs a placement, not a credential.
+	{Section: "filter_scheduler", Key: "build_failure_weight_multiplier", OwnedBy: "operator-computed", Impact: "0 keeps a host with failed builds eligible; Nova's own 1000000.0 removes a host from every placement after one failed or aborted build until a build succeeds on it, which with host_subset_size 1 never comes while another host has room; at 0 nothing steers builds away from a host whose builds keep failing, and as the emptiest host it keeps winning the ram, cpu and disk weighers, so unpinned builds keep landing on it until its compute service is disabled"},
+	{Section: "filter_scheduler", Key: "shuffle_best_same_weighed_hosts", OwnedBy: "operator-computed", Impact: "true spreads the first builds over hosts of equal weight; false sends every build among equal hosts to the first one in the scheduler's list"},
+
 	// [vnc] — the console-proxy block. The base URL is what the API hands the
 	// browser, and the listen pair is what the Service routes to.
 	{Section: "vnc", Key: "enabled", OwnedBy: "spec.consoleProxy.enabled", Impact: "the switch is what makes a compute node offer a console at all, so an override either advertises consoles nothing serves or hides the ones that are running"},
