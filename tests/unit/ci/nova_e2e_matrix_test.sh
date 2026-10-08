@@ -1086,8 +1086,8 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_not_empty "the leg loads its own images onto the node" "$kind_load"
   assert_contains "that load runs on the nova leg alone" "$kind_load" \
     "if: matrix.suite == 'nova'"
-  for ref in placement-operator:dev placement:2025.2 neutron-operator:dev \
-    neutron:2025.2 nova-operator:dev nova:2025.2 tempest:2025.2; do
+  for ref in placement-operator:dev placement:2026.1 neutron-operator:dev \
+    neutron:2026.1 nova-operator:dev nova:2026.1 tempest:2026.1; do
     # Pulled from GHCR ...
     assert_contains "the leg pulls ${ref}" "$load" \
       "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"

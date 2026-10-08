@@ -265,7 +265,7 @@ spec:
 
           # The image ships its python in a venv on PATH; the absolute path is
           # the one tests/container-images/verify_cinder.sh pins.
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
             nfs-outage-baseline
@@ -511,7 +511,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
             nfs-outage-partitioned cinder-nfs-chaos@nfs-chaos-nfs1 240
@@ -753,7 +753,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
             nfs-outage-recovered nfs-outage-partitioned
@@ -869,7 +869,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-nfs-chaos.openstack.svc.cluster.local:8776 \
             nfs-outage-

@@ -80,7 +80,7 @@ spec:
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
@@ -185,7 +185,7 @@ spec:
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
@@ -290,9 +290,11 @@ spec:
   # only proves the CLIENT gave up — glance's store client could still have
   # completed the upload via its own retry/backoff after the probe stopped
   # waiting. Re-read the image now that Garage is reachable again: it must
-  # still be non-active (queued/killed). An image that turned active is a
-  # write glance was never confirmed on — the fail-closed contract broken in
-  # exactly the way step 4b cannot see.
+  # still be non-active (queued, saving after the harakiri kill, or killed).
+  # An image that turned active is a write glance was never confirmed on — the
+  # fail-closed contract broken in exactly the way step 4b cannot see. The
+  # harakiri in 00-glance-cr.yaml is what keeps the worker's S3 retry from
+  # outliving the partition; see the comment there.
   - try:
     - script:
         timeout: 3m
@@ -303,7 +305,7 @@ spec:
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
@@ -375,7 +377,7 @@ spec:
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           kubectl run "$POD" -n "$NAMESPACE" \
-            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --image=ghcr.io/c5c3/glance:2026.1 --restart=Never \
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 

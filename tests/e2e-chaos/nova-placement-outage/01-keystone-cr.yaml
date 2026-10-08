@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the placement-outage chaos test (2025.2 release).
+# Keystone CR fixture for the placement-outage chaos test (2026.1 release).
 #
 # The suite boots a server, so every call in it is authenticated: the Nova API
 # validates the token, nova reaches Placement, Neutron and Glance with the same
@@ -31,7 +31,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

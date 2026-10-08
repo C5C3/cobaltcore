@@ -272,7 +272,7 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   assert_contains "the leg pulls the cinder-operator image" "$load" \
     "matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX)"
   assert_contains "the leg pulls the cinder service image" "$load" \
-    "matrix.suite == 'network' && format('{0}/cinder:2025.2', env.IMAGE_PREFIX)"
+    "matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX)"
 
   local kind_load
   kind_load=$(job_step e2e-chaos "Load cinder images into kind")
@@ -282,7 +282,7 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   assert_contains "the operator image is loaded" "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder-operator:dev"
   assert_contains "the service image is loaded" "$kind_load" \
-    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2025.2"
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2026.1"
 
   # All three suites attach an NFS backend, cinder-nfs-outage scales that
   # export away and back, and two of them take a vhost on the shared broker,

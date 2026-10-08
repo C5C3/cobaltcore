@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the database-outage chaos test (2025.2 release).
+# Nova CR for the database-outage chaos test (2026.1 release).
 #
 # The light fixture tier, the one ../../e2e/nova/healthcheck/ uses: no
 # Placement, no Neutron and no Glance run beside it, and no compute registers.
@@ -33,10 +33,10 @@ metadata:
   name: nova-db-chaos
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1
