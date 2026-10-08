@@ -98,7 +98,7 @@ spec:
           ADMIN_AC_KV="openstack/keystone/${CP_NS}/${CP}/admin/app-credential"
           NOVA_KV="openstack/keystone/${CP_NS}/nova/service-accounts/credentials"
           NOVA_SECRET="nova-credentials"
-          IMG=ghcr.io/c5c3/tempest:2025.2
+          IMG=ghcr.io/c5c3/tempest:2026.1
           WORK="$(mktemp -d)"
 
           # ── Presence guard ──────────────────────────────────────────────────

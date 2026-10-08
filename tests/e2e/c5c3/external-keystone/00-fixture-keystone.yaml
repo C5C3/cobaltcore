@@ -156,7 +156,7 @@ spec:
       # region pre-seed is needed — bootstrap creates the region for its endpoints.
       initContainers:
         - name: bootstrap
-          image: ghcr.io/c5c3/keystone:2025.2
+          image: ghcr.io/c5c3/keystone:2026.1
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
@@ -222,7 +222,7 @@ spec:
               mountPath: /tmp
       containers:
         - name: keystone
-          image: ghcr.io/c5c3/keystone:2025.2
+          image: ghcr.io/c5c3/keystone:2026.1
           imagePullPolicy: IfNotPresent
           # Same uWSGI invocation the keystone-operator builds (uwsgiCommand),
           # pinned to a single process/thread because SQLite serialises writes.

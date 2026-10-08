@@ -32,7 +32,7 @@ metadata:
   name: controlplane-ambiguous
   namespace: brownfield-ambiguous
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   services:
     keystone:
       mode: External
