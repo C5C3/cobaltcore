@@ -284,7 +284,7 @@ test_placement_chaos_wiring() {
   assert_contains \
     "the GHCR pull step lists the placement service image on the pod leg" \
     "$pull_step" \
-    "format('{0}/placement:2025.2', env.IMAGE_PREFIX)"
+    "format('{0}/placement:2026.1', env.IMAGE_PREFIX)"
 
   local kind_load_step
   kind_load_step=$(extract_yaml_step "$chaos_section" "Load placement images into kind")
@@ -297,7 +297,7 @@ test_placement_chaos_wiring() {
   assert_contains \
     "the kind-load step loads the placement service image" \
     "$kind_load_step" \
-    "IMAGE_PREFIX }}/placement:2025.2"
+    "IMAGE_PREFIX }}/placement:2026.1"
 
   assert_contains \
     "e2e-chaos deploys the placement operator into placement-system" \
@@ -343,7 +343,7 @@ test_placement_build_uses_the_image_map() {
     "$resolve_step" \
     "for base in"
 
-  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2025.2.
+  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2026.1.
   # The job builds neither unless placement changed, so the leg reads them from
   # the map. Missing the map input, it falls back to a run-scoped tag nothing
   # pushed and the blocking leg fails on `manifest unknown` an hour into the run.
