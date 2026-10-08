@@ -1156,7 +1156,7 @@ keeps the per-CR `e2e-operator` job and `make e2e` from sweeping it up.
 **The browser runs in-cluster.** Unlike the gateway quick-start smokes (which
 curl from the CI host through the kind `:443` → NodePort bridge), this suite
 cannot: mid-flow the browser is redirected to Keycloak's issuer, the in-cluster
-`keycloak.openstack.svc.cluster.local` name the host cannot resolve. Exposing
+`keycloak.openstack` name the host cannot resolve. Exposing
 Keycloak through the gateway instead would need a split-horizon DNS rewrite,
 since `mod_auth_openidc` must reach the same issuer from inside the cluster.
 The browser is therefore the Keystone pod (the image ships `python3`, no

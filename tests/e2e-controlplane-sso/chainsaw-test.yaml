@@ -40,7 +40,7 @@
 # Unlike the gateway-quick-start smokes (which curl from the CI host through
 # the kind :443 → NodePort bridge), this suite cannot run the browser on the
 # host: mid-flow the browser is redirected to Keycloak's issuer, which is the
-# in-cluster `keycloak.openstack.svc.cluster.local` name the host cannot
+# in-cluster `keycloak.openstack` name the host cannot
 # resolve. Exposing Keycloak through the gateway instead would need a
 # split-horizon DNS rewrite, since mod_auth_openidc must reach the same issuer
 # from inside the cluster.

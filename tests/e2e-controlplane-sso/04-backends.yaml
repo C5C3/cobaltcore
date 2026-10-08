@@ -30,7 +30,7 @@ spec:
     description: Keycloak cobaltcore realm
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
+    issuer: http://keycloak.openstack:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: keycloak-cobaltcore-client
@@ -39,7 +39,10 @@ spec:
     # exercises the browser websso flow only, so — unlike the keystone
     # oidc-federation suite — no oauth2Introspection block is needed.
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      # The browser opens this endpoint, so it uses the issuer's host: Keycloak
+      # posts the login form to that host, and a session cookie set on the FQDN
+      # would not be sent along (400, cookie_not_found).
+      authorizationEndpoint: http://keycloak.openstack:8080/realms/cobaltcore/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
       jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
       userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
@@ -47,7 +50,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
+      - http://keycloak.openstack:8080/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     # {0} is the first value-producing remote: the HTTP_OIDC_ISS rule carries
