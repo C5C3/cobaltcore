@@ -13,7 +13,7 @@
 #   (none — all have sensible defaults)
 #
 # Optional env vars:
-#   RELEASE         — Release directory name (default: 2025.2)
+#   RELEASE         — Release directory name (default: 2026.1)
 #   TEMPEST_IMAGE   — Target image name:tag (default: c5c3/tempest:local)
 #
 # Reusable image build script.
@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-RELEASE="${RELEASE:-2025.2}"
+RELEASE="${RELEASE:-2026.1}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 
 # ---------------------------------------------------------------------------

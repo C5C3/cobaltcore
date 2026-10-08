@@ -28,12 +28,12 @@
 # Optional env vars:
 #   SERVICE       — Service under test (default: keystone)
 #   CONFIG_DIR    — Directory containing tempest.conf template, include/exclude
-#                   lists (default: tests/tempest/${SERVICE}-2025-2)
+#                   lists (default: tests/tempest/${SERVICE}-2026-1)
 #   NAMESPACE     — Kubernetes namespace (default: openstack)
 #   ADMIN_SECRET  — Secret name holding admin password (default: keystone-admin)
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
 #   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
-#   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2)
+#   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2026-1)
 #   GLANCE_K8S_NAME  — K8s Service name of a Glance API to port-forward on 9292
 #                   (default: empty). When set, the script also forwards
 #                   svc/${GLANCE_K8S_NAME} 9292:9292, waits for its /healthcheck,
@@ -108,17 +108,17 @@ cd "${REPO_ROOT}"
 # Configuration
 # ---------------------------------------------------------------------------
 SERVICE="${SERVICE:-keystone}"
-CONFIG_DIR="${CONFIG_DIR:-tests/tempest/${SERVICE}-2025-2}"
+CONFIG_DIR="${CONFIG_DIR:-tests/tempest/${SERVICE}-2026-1}"
 NAMESPACE="${NAMESPACE:-openstack}"
 ADMIN_SECRET="${ADMIN_SECRET:-keystone-admin}"
 OUTPUT_DIR="${OUTPUT_DIR:-_output/tempest}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 
-# Derive the service name used in k8s (e.g. keystone-tempest-2025-2).
-# Allow override for release-specific CR names (e.g. keystone-tempest-2026-1).
+# Derive the service name used in k8s (e.g. keystone-tempest-2026-1).
+# Allow override for release-specific CR names (e.g. keystone-tempest-2026-2).
 # bare CR name; the historical "-api" suffix was dropped.
-SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2}"
+SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2026-1}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
 # Optional service APIs port-forwarded alongside Keystone, one row per leg as

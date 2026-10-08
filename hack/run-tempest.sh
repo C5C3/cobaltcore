@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 SERVICE="${SERVICE:-}"
 SERVICE_NAME="${SERVICE_NAME:-}"       # K8s service name; default: <SERVICE>-api
-RELEASE="${RELEASE:-2025.2}"
+RELEASE="${RELEASE:-2026.1}"
 TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 BUILD_IMAGE="${BUILD_IMAGE:-true}"     # Set to false to skip image build
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/_output/tempest}"
@@ -62,7 +62,7 @@ Required:
 
 Optional:
   SERVICE_NAME         Kubernetes service name (default: <SERVICE>-api)
-  RELEASE              Release version (default: 2025.2)
+  RELEASE              Release version (default: 2026.1)
   TEMPEST_IMAGE        Docker image tag (default: c5c3/tempest:local)
   BUILD_IMAGE          Build the image before running (default: true)
   OUTPUT_DIR           Directory for test results (default: _output/tempest)
