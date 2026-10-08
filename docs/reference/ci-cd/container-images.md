@@ -397,11 +397,13 @@ source patch above.
 
 The Placement service image uses the same two-stage build as Keystone. Its one
 service-specific twist is the WSGI entry script: upstream ships no usable one
-for either release. 2025.2 declares `placement-api` as a PBR `wsgi_scripts`
-entry in `setup.cfg`, which uv's `--prefix` install mode does not generate;
-2026.1 moved packaging to `pyproject.toml` and declares no WSGI script at all.
-The entry is therefore written by hand in the build stage under the upstream
-name, for both releases, with no release conditional.
+for any of the three releases. 2025.2 declares `placement-api` as a PBR
+`wsgi_scripts` entry in `setup.cfg`, which uv's `--prefix` install mode does
+not generate; 2026.1 moved packaging to `pyproject.toml` and declares no WSGI
+script at all. 16.0.0 (2026.2) declares only `placement-manage` and
+`placement-status` under `[project.scripts]` and no WSGI script either. The
+entry is therefore written by hand in the build stage under the upstream name,
+for every release, with no release conditional.
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
@@ -453,7 +455,7 @@ runs, non-root execution, and the absence of build tools.
 **Location:** `images/barbican/Dockerfile`
 
 The Barbican service image uses the same two-stage build as Keystone. It ships
-no WSGI entry script at all. Both releases ship `barbican/wsgi/api.py` with a
+no WSGI entry script at all. All three releases ship `barbican/wsgi/api.py` with a
 module-level `application`, so the barbican-operator launches uWSGI with the
 stock module path `barbican.wsgi.api:application` against config mounted at
 `/etc/barbican/`. Placement's entry script is written by hand because upstream
@@ -530,9 +532,10 @@ module-level binding is that sentinel is rejected; otherwise uWSGI binds
 **Location:** `images/neutron/Dockerfile`
 
 The Neutron service image uses the same two-stage build as Keystone. It ships
-no WSGI entry script. Neither release ships a `neutron-server` script, and
+no WSGI entry script. No release ships a `neutron-server` script.
 `neutron/wsgi/api.py` is byte-identical at 27.0.3 (2025.2) and 28.0.1
-(2026.1). Both tags bind a module-level `application` inside a
+(2026.1); 29.0.0 (2026.2) adds one argument, `prog='neutron-api'`, to the
+`boot_server` call. All three tags bind a module-level `application` inside a
 `threading.Lock()` block, so the neutron-operator launches uWSGI with
 `--module neutron.wsgi.api` and lets the process find its configuration
 through the `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES` environment
@@ -567,7 +570,7 @@ The image stays config-free. The neutron-operator supplies the configuration
 through `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES`, and either
 points `[DEFAULT] api_paste_config` at the shipped package data file
 `/var/lib/openstack/etc/neutron/api-paste.ini` or mounts that file to
-`/etc/neutron/api-paste.ini`. That file is byte-identical at both tags.
+`/etc/neutron/api-paste.ini`. That file is byte-identical at all three tags.
 
 **Runtime packages:**
 
@@ -581,7 +584,7 @@ points `[DEFAULT] api_paste_config` at the shipped package data file
 Noble ships Open vSwitch 3.3.9. The OVSDB wire protocol is schema-independent,
 so that client talks to the OVN 26.03 server.
 
-The virtualenv holds `ovs` 3.5.1 (2025.2) and 3.7.0 (2026.1), whose
+The virtualenv holds `ovs` 3.5.1 (2025.2), 3.7.0 (2026.1) and 3.7.1 (2026.2), whose
 `ovs/dns_resolve.py` resolves no hostname without the `unbound` Python module.
 The image ships no `python3-unbound`: the distribution package installs into
 the system interpreter, which the virtualenv under `/var/lib/openstack` does
@@ -602,9 +605,9 @@ renders `[ovn] ovn_nb_connection` and `ovn_sb_connection` from those.
 **Unit tests:** neutron ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
 runs its suite under stestr (the default path, as for keystone). The script
 appends `--exclude-list /workspace/test-excludes/neutron.txt` only when
-`releases/<release>/test-excludes/neutron.txt` exists, and neither release
-excludes a test: the first runs at 27.0.3 and 28.0.1 hit no
-environment-dependent failure. At roughly 21,000 tests the suite is the
+`releases/<release>/test-excludes/neutron.txt` exists, and no release
+excludes a test: the first runs at 27.0.3, 28.0.1 and 29.0.0 (22,093 tests)
+hit no environment-dependent failure. At roughly 21,000 tests the suite is the
 largest in the tree.
 
 **Image contract check:** `tests/container-images/verify_neutron.sh` is the
@@ -628,8 +631,9 @@ the script fails in each of its first nine tests.
 
 The Cinder service image uses the same two-stage build as Keystone. It ships
 no WSGI entry script. `cinder/wsgi/api.py` is byte-identical at 27.0.0
-(2025.2) and 28.0.0 (2026.1), and both tags bind a module-level `application`
-inside a `threading.Lock()` block. The cinder-operator launches uWSGI with
+(2025.2), 28.0.0 (2026.1) and 29.0.0 (2026.2), and all three tags bind a
+module-level `application` inside a `threading.Lock()` block. The
+cinder-operator launches uWSGI with
 `--module cinder.wsgi.api:application` and `--pyargv "--config-dir <dir>"`,
 because `initialize_application()` reads `CONF(sys.argv[1:])`. The PBR
 `wsgi_scripts` entry `cinder-wsgi` exists at 27.0.0 only and nothing calls it.
@@ -664,8 +668,9 @@ because `initialize_application()` reads `CONF(sys.argv[1:])`. The PBR
 
 The image stays config-free. The package data files `api-paste.ini`,
 `resource_filters.json`, `rootwrap.conf` and `rootwrap.d/volume.filters` land
-under `/var/lib/openstack/etc/cinder/` at both tags, declared in `setup.cfg`
-at 27.0.0 and in `pyproject.toml` at 28.0.0. Nothing in the Dockerfile copies
+under `/var/lib/openstack/etc/cinder/` at all three tags, declared in
+`setup.cfg` at 27.0.0 and under `[tool.setuptools.data-files]` in
+`pyproject.toml` at 28.0.0 and 29.0.0. Nothing in the Dockerfile copies
 `etc/cinder/` by hand, and the contract script asserts the four files. The
 cinder-operator points `api_paste_config` and `resource_query_filters_file` at
 those absolute paths.
@@ -821,9 +826,9 @@ test venv alongside stestr: cinder 27.0.0 imports `os_win` at module level
 `pkg_resources` (`os_win/_utils.py`), and setuptools 81 removed
 `pkg_resources`. stestr imports every test module during discovery before it
 applies `--exclude-list`, so without the pin the 2025.2 suite does not
-discover at all. 28.0.0 dropped the Windows drivers. Both releases carry an
-exclude file. Both record the 13 `TestFormatInspectors` failures of the first
-run — they build their fixture images with `qemu-img create` and died with
+discover at all. 28.0.0 dropped the Windows drivers. All three releases carry
+an exclude file. The 2025.2 and 2026.1 files record the 13
+`TestFormatInspectors` failures of the first run — they build their fixture images with `qemu-img create` and died with
 exit status 127 — and neither excludes them: six of the 13 are the safety
 checks between a tenant-uploaded image and the volume host, and this leg is
 the only gate in the pipeline that runs them, so `images/venv-builder/Dockerfile`
@@ -833,6 +838,9 @@ tests. `releases/2026.1/test-excludes/cinder.txt` excludes one test,
 `test_put_container_disabled`, which passes upstream only because tox runs
 unprivileged and `os.makedirs` raises `PermissionError`, whereas the container
 runs it as root; the first run of the 28.0.0 suite counted 18,076 tests.
+`releases/2026.2/test-excludes/cinder.txt` keeps that one pattern, and the
+first run of the 29.0.0 suite counted 19,003 tests with no failure (18,984
+passed, 19 skipped).
 
 **Image contract check:** `tests/container-images/verify_cinder.sh` is the
 hard gate. Its 16 tests cover `cinder-manage --version` and
@@ -875,7 +883,7 @@ uwsgi).
 The Nova service image uses the same two-stage build as Keystone, plus a
 `novnc` stage for the noVNC console assets `nova-novncproxy` serves. It is
 built from nova 32.0.0
-(2025.2) and 33.0.0 (2026.1) and ships no WSGI entry script. The nova-operator
+(2025.2), 33.0.0 (2026.1) and 34.0.0 (2026.2) and ships no WSGI entry script. The nova-operator
 of issue #1017 launches uWSGI on the module paths
 `nova.wsgi.osapi_compute:application` for the compute API and
 `nova.wsgi.metadata:application` for the metadata API, and passes the
@@ -937,9 +945,10 @@ bare image raises `ConfigFilesNotFoundError`. At 33.0.0 both also call
 
 The image stays config-free. The package data files `api-paste.ini`,
 `rootwrap.conf` and `rootwrap.d/compute.filters` land under
-`/var/lib/openstack/etc/nova/` at both tags, declared as `data_files` in
+`/var/lib/openstack/etc/nova/` at all three tags, declared as `data_files` in
 `setup.cfg` at 32.0.0 and under `[tool.setuptools.data-files]` in
-`pyproject.toml` at 33.0.0. `api-paste.ini` is byte-identical at the two tags.
+`pyproject.toml` at 33.0.0 and 34.0.0. `api-paste.ini` and `rootwrap.conf` are
+byte-identical at the three tags.
 Nothing in the Dockerfile copies `etc/nova/` by hand, and the contract script
 asserts the three files.
 
@@ -1051,10 +1060,10 @@ tox py3 env uses: at 33.0.0 `nova/cmd/scheduler.py` selects the threading
 backend at import while `nova/tests/unit/__init__.py` has already selected
 eventlet, and oslo.service raises `BackendAlreadySelected` during stestr
 discovery, before any exclude list applies. 32.0.0 and the other services
-ignore the variable. Both releases carry an exclude file that excludes
-nothing. The first run of the 32.0.0 suite counted 16,488 tests and the
-33.0.0 suite 16,803, each with 63 skips and 2 expected failures and no
-environment-dependent failure.
+ignore the variable. All three releases carry an exclude file that excludes
+nothing. The first runs counted 16,488 tests at 32.0.0 and 16,803 at 33.0.0,
+each with 63 skips and 2 expected failures, and 16,613 at 34.0.0 with 67 skips
+and 2 expected failures; none hit an environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
 gate. Its 13 tests cover `nova-manage --version` and `nova-status --help`, the
@@ -1087,7 +1096,8 @@ modules instead of importing them: an import runs
 `ConfigFilesNotFoundError` in a bare image. So it pairs
 `importlib.util.find_spec` for each module path with an `ast.parse` of the
 module source, and rejects a module whose only module-level binding of
-`application` is the `None` sentinel. Both release images pass all 56 assertions.
+`application` is the `None` sentinel.
+All three release images pass all 56 assertions.
 Pointed at a cinder image the script exits 1 with 37 of them failing: every
 test but the non-root and build-tool ones fails, while the wrong image still
 satisfies the uwsgi and sudo halves of the apt test and the libvirt-absence
@@ -1098,7 +1108,8 @@ half of the import test.
 **Location:** `images/nova-compute/Dockerfile`, `images/nova-compute/sudoers`
 
 nova-compute runs from this image on a compute cluster's hypervisor nodes. It
-is built from nova's own source pin (32.0.0 for 2025.2, 33.0.0 for 2026.1) with
+is built from nova's own source pin (32.0.0 for 2025.2, 33.0.0 for 2026.1,
+34.0.0 for 2026.2) with
 nova's patches and constraint overrides, and it is published under the same
 four tags as `ghcr.io/c5c3/nova` (see
 [Tag Schema](./build-images-workflow.md#tag-schema)). `nova-compute:2025.2`
@@ -1126,7 +1137,7 @@ step.
 - Declares `ARG PIP_EXTRAS` (empty) and `ARG PIP_PACKAGES`, which CI fills
   with `libvirt-python` from the `nova-compute` block of
   `extra-packages.yaml`. `upper-constraints.txt` fixes its version: 11.6.0 at
-  2025.2, 12.0.0 at 2026.1
+  2025.2, 12.0.0 at 2026.1, 12.6.0 at 2026.2
 - Installs `libvirt-dev` and `pkg-config`. PyPI ships libvirt-python as an
   sdist only, so the install compiles it against the libvirt API description
   and the pkg-config file of noble's libvirt 10.0.0. Both packages stay in
@@ -1293,7 +1304,7 @@ tests:
    `overrides/<release>/constraints.txt` when that file carries one and from
    `upper-constraints.txt` otherwise, because `checkout-service-source`
    rewrites `upper-constraints.txt` on pull requests. A nova version that no
-   release or two releases carry, a `-libvirt-python` override and a missing
+   release or more than one release carries, a `-libvirt-python` override and a missing
    pin each fail with a message naming the value.
 3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
    LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
@@ -1313,7 +1324,7 @@ tests:
 8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
 9. The state directories match `verify_nova.sh` test 13.
 
-Both release images pass all 48 assertions. Pointed at the nova control-plane
+All three release images pass all 48 assertions. Pointed at the nova control-plane
 image, the script exits 1: test 2 reports
 `ModuleNotFoundError: No module named 'libvirt'` and test 4 fails once per
 tool. A build without any `--build-arg` succeeds and fails the same two tests,

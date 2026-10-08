@@ -67,7 +67,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `image_<svc>` | `images/<svc>/**`, `patches/<svc>/**` | that service's `e2e-operator` leg |
 | `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
 | `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
-| `images_base` | `images/python-base/**`, `images/venv-builder/**`, `releases/**`, `scripts/**`, `overrides/**` | every service image, both Tempest images, every service operator's e2e leg |
+| `images_base` | `images/python-base/**`, `images/venv-builder/**`, `releases/**`, `scripts/**`, `overrides/**` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**` | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
@@ -94,7 +94,7 @@ Six labels add jobs. None of them ever removes one.
 | `ci:chaos` | all four `e2e-chaos` legs. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling` |
 | `ci:multicluster` | `e2e-multicluster` |
-| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all eighteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -934,7 +934,7 @@ Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2025.2 and 2026.1) and `ovn:<pin>` |
+| 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2025.2, 2026.1 and 2026.2 today) and the 2025.2-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2025.2, 2026.1 and 2026.2) and `ovn:<pin>` |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
@@ -1011,17 +1011,18 @@ their broker connection. It passes `WITH_OVN_KERNEL_MODULES: true` for that
 chassis. `WITH_NFS` stays off, since `spec.endpoints.cinder` is opt-in on the
 Nova CRD.
 
-On top of `nova-operator:dev`, `nova:2025.2` and `nova:2026.1`, the leg also
-resolves the five sibling operator images; `keystone`, `placement`, `glance`
-and `neutron` at every release each one ships (2025.2 and 2026.1 today, per
-`hack/ci-service-image-releases.sh`); `nova-compute` at every nova release,
-which the NovaCompute pool runs; `ovn:<pin>`; and `tempest:2025.2`, whose
-`openstack` client is what the catalog, seed and verify Jobs of the functional
-suites run, on every per-release suite, so it is loaded once. It loads the whole
-list in one `kind load docker-image` call, so the base layers the service images
-share go onto the node once. Both releases are there so a 2026.1 Nova suite can
-pair with 2026.1 siblings. The suites the leg carries are the eighteen under
-`tests/e2e/nova/` and the chart-level `metrics` suite under
+On top of `nova-operator:dev`, `nova:2025.2`, `nova:2026.1` and `nova:2026.2`,
+the leg also resolves the five sibling operator images; `keystone`,
+`placement`, `glance` and `neutron` at every release each one ships (2025.2,
+2026.1 and 2026.2 today, per `hack/ci-service-image-releases.sh`);
+`nova-compute` at every nova release, which the NovaCompute pool runs;
+`ovn:<pin>`; and `tempest:2025.2`, whose `openstack` client is what the
+catalog, seed and verify Jobs of the functional suites run, on every
+per-release suite, so it is loaded once. It loads the whole list in one
+`kind load docker-image` call, so the base layers the service images share go
+onto the node once. Every release is there so a 2026.1 or 2026.2 Nova suite
+can pair with siblings of its own release. The suites the leg carries are the
+eighteen under `tests/e2e/nova/` and the chart-level `metrics` suite under
 `tests/e2e/nova-operator/`, described in
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md).
 Chainsaw runs with `--parallel 2`, because a full-stack Nova suite carries a
@@ -1197,7 +1198,7 @@ estimate — confirm it against the first green run of the leg.
 | Timeout | 68 minutes, 150 for the `nova` leg | 90 minutes, 150 for the `nova` leg |
 | Blocking | Yes | `pod` leg blocking; `network`, `ovn` and `nova` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
-| Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only, plus the pinned OVN daemon image |
+| Service images | 2025.2 + 2025.2-upgraded + 2026.1 + 2026.2 | 2025.2 only, plus the pinned OVN daemon image |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
 mutate shared infrastructure pod availability. The assert timeout is 300s (vs 120s for
@@ -1739,7 +1740,7 @@ lists the commands of a job in order.
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
 output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
-Two releases and six services make twelve legs. A service without a
+Three releases and six services make eighteen legs. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
 `TEMPEST_SERVICES`, set from the change resolver, narrows the emitted entries to
 the services a pull request touches; the directory check still covers all six.
