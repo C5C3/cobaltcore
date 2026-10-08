@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Placement deployment (2025.2 release).
+# Chainsaw E2E test for happy-path Placement deployment (2026.1 release).
 # Validates the full reconciliation cycle:
 #   - All 7 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
@@ -97,6 +97,7 @@ spec:
               spec:
                 containers:
                 - name: placement-api
+                  image: ghcr.io/c5c3/placement:2026.1
                   command:
                   - uwsgi
                   - "--http"
@@ -221,7 +222,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run curl-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2025.2 --rm -i --restart=Never \
+          kubectl run curl-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2026.1 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None
@@ -252,7 +253,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run authz-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2025.2 --rm -i --restart=Never \
+          kubectl run authz-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2026.1 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None

@@ -8,9 +8,9 @@
 # database credentials come from the ESO-synced placement-db Secret and the
 # service-user password from the pre-seeded keystone-admin Secret (both
 # deploy/kind/infrastructure). Apart from the release, the image tag, and the
-# names, this is the 2025.2 fixture: placement has shipped the same WSGI
-# application across all three releases, so the operator renders the same
-# launch command and the same placement.conf for each of them.
+# names, this is the plain basic-deployment suite's fixture: placement has
+# shipped the same WSGI application across every release, so the operator
+# renders the same launch command and the same placement.conf for each of them.
 apiVersion: placement.openstack.c5c3.io/v1alpha1
 kind: Placement
 metadata:

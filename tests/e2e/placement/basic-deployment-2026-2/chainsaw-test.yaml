@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for happy-path Placement deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. Placement has only
+# The per-release twin of the plain basic-deployment suite. Placement has only
 # ever shipped a WSGI application, so there is no launch mode to select per
 # release: this suite asserts the SAME uWSGI command and the same
 # [placement_database] config shape against the 2026.2 image, and a difference
-# between the three suites is the failure it exists to catch.
+# between the two suites is the failure it exists to catch.
 #   - All 7 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - The API Deployment launches uWSGI against the image-shipped WSGI entry
@@ -168,7 +168,7 @@ spec:
               - key: batch.kubernetes.io/job-name
                 operator: DoesNotExist
   # ── Step 4: Assert the rendered config ConfigMap ────────────────────────
-  # The other two basic-deployment suites assert the same two greps. Keeping
+  # The plain basic-deployment suite asserts the same two greps. Keeping
   # them here is what turns the claim that placement.conf does not change with
   # the release (the config step reads no spec.openStackRelease) into an
   # end-to-end one against the 2026.2 image.
