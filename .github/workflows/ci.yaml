@@ -1466,9 +1466,9 @@ jobs:
             done
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
             # The catalog, seed and verify Jobs of the functional Nova suites
-            # run the `openstack` client the tempest image bundles, at 2025.2
-            # on both per-release suites, so it is loaded once.
-            refs="${refs}"$'\n'"${IMAGE_PREFIX}/tempest:2025.2"
+            # run the `openstack` client the tempest image bundles, at 2026.1
+            # in every suite, so it is loaded once.
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/tempest:2026.1"
           fi
           {
             echo "releases<<EOF"; echo "${releases}"; echo "EOF"
@@ -3701,7 +3701,7 @@ jobs:
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
-      # The 2025.2 stack of tests/e2e/nova/compute-node-pool, whose fixtures the
+      # The 2026.1 stack of tests/e2e/nova/compute-node-pool, whose fixtures the
       # suite applies, and the tempest image its Jobs run the openstack client
       # from. No libvirt image: it is not in the E2E image map, and the kind
       # node pulls the public ghcr.io/c5c3/libvirt:latest itself.
@@ -3716,14 +3716,14 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
             ${{ env.IMAGE_PREFIX }}/nova-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
-            ${{ env.IMAGE_PREFIX }}/placement:2025.2
-            ${{ env.IMAGE_PREFIX }}/glance:2025.2
-            ${{ env.IMAGE_PREFIX }}/neutron:2025.2
-            ${{ env.IMAGE_PREFIX }}/nova:2025.2
-            ${{ env.IMAGE_PREFIX }}/nova-compute:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
-            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
       # One call, so the python-base layers the service images share are saved
       # and imported once rather than once per image.
       - name: Load images into kind
@@ -3735,14 +3735,14 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev \
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev \
             ${{ env.IMAGE_PREFIX }}/nova-operator:dev \
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/placement:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/glance:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/neutron:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/nova:2025.2 \
-            ${{ env.IMAGE_PREFIX }}/nova-compute:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1 \
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} \
-            ${{ env.IMAGE_PREFIX }}/tempest:2025.2 \
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1 \
             --name "${{ env.KIND_CLUSTER }}"
       # The pool's chassis gate needs an OVNChassis on the node, which needs
       # the openvswitch module on the host, and every Nova process dials the

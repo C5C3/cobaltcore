@@ -204,13 +204,13 @@ test_the_job_reads_the_signal() {
   assert_contains "the job uploads its JUnit report" "$job" \
     "name: e2e-nova-libvirt-junit-report"
   assert_contains "the job pulls the nova-compute image the pool runs" \
-    "$(job_step e2e-nova-libvirt "Load E2E images")" "nova-compute:2025.2"
+    "$(job_step e2e-nova-libvirt "Load E2E images")" "nova-compute:2026.1"
   # Without the kind load the node pulls main's published image and the job
   # tests that instead of the PR's build.
   assert_contains "the job loads that image into kind" "$kind_load" \
-    "\${{ env.IMAGE_PREFIX }}/nova-compute:2025.2"
+    "\${{ env.IMAGE_PREFIX }}/nova-compute:2026.1"
   assert_contains "the job loads the Nova service image into kind" "$kind_load" \
-    "\${{ env.IMAGE_PREFIX }}/nova:2025.2"
+    "\${{ env.IMAGE_PREFIX }}/nova:2026.1"
 
   # cleanup-e2e-tags prunes the run-scoped image tags this job pulls, so it
   # has to wait for the job.

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the compute-node-pool E2E test (2025.2 release).
+# Nova CR for the compute-node-pool E2E test (2026.1 release).
 #
 # Managed mode throughout: the two schemas nova_pool_api and nova_pool on the
 # openstack-db MariaDB cluster (cell0 is derived as nova_pool_cell0), the
@@ -30,10 +30,10 @@ metadata:
   name: nova-pool
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1
