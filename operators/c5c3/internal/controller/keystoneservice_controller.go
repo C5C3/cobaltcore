@@ -97,6 +97,9 @@ const (
 	// reasonKeystoneServiceNamespaceNotAllowed reports that the ControlPlane does
 	// not consent to registrations from this CR's namespace.
 	reasonKeystoneServiceNamespaceNotAllowed = "NamespaceNotAllowed"
+	// reasonKeystoneServiceRoleNotAllowed reports an account role outside the
+	// allowedRoles of the spec.namespaceAssignments entry for the CR's namespace.
+	reasonKeystoneServiceRoleNotAllowed = "RoleNotAllowed"
 	// reasonKeystoneServiceAccountProvisioned is the True reason once the account
 	// is provisioned in Keystone and its credentials are materialized.
 	reasonKeystoneServiceAccountProvisioned = "AccountProvisioned"
@@ -204,6 +207,12 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
+	// A namespace assignment limits the roles the account may request. A refused
+	// account is frozen: nothing is projected for it, and the sweep below keeps
+	// every child the spec still declares, so a role granted earlier stays. The
+	// catalog block runs unchanged.
+	roleEntry, refusedRoles := keystoneServiceRoleRefusal(cp, ks)
+
 	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
 
 	// Each declared block runs through the shared instrumenter, so its duration
@@ -219,7 +228,7 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 		}
 		requeue = requeue || !res.IsZero()
 	}
-	if ks.Spec.Account != nil {
+	if ks.Spec.Account != nil && len(refusedRoles) == 0 {
 		res, err := instrumenter.Instrument(ctx, "KeystoneServiceAccount", func(ctx context.Context) (ctrl.Result, error) {
 			return r.ensureAccount(ctx, ks, cp, credRef, managedCredRef)
 		})
@@ -249,6 +258,12 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 			"%d undeclared service-account child CR(s) are still being removed", len(accountSwept),
 		))
 		requeue = true
+	}
+	// Written after the sweep, so its interim message cannot mask the refusal. No
+	// requeue: the ControlPlane watch brings the edit that lifts it.
+	if len(refusedRoles) > 0 {
+		keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonKeystoneServiceRoleNotAllowed,
+			namespaceAssignmentRoleMessage(cp, roleEntry, refusedRoles))
 	}
 
 	if requeue {
@@ -378,6 +393,39 @@ func keystoneServiceNamespaceAllowed(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1al
 		return slices.Contains(sr.AllowedNamespaces, ks.Namespace)
 	}
 	return false
+}
+
+// keystoneServiceRoleRefusal returns the spec.namespaceAssignments entry that
+// limits ks's account roles and the roles it refuses, or (nil, nil) when nothing
+// is refused.
+//
+// Only a management-cluster entry for the CR's own namespace binds, and only an
+// account is bound. The ControlPlane's own namespace and its dedicated service
+// namespaces are never bound, so the built-in registrations stay unaffected
+// whatever an entry naming them lists. Without an entry the namespace stays
+// unlimited. The entry never admits a registration: keystoneServiceNamespaceAllowed
+// runs first.
+func keystoneServiceRoleRefusal(
+	cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1alpha1.KeystoneService,
+) (*c5c3v1alpha1.NamespaceAssignmentSpec, []string) {
+	if ks.Spec.Account == nil || slices.Contains(controlPlaneNamespaces(cp), ks.Namespace) {
+		return nil, nil
+	}
+	entry := cp.NamespaceAssignmentFor(ks.Namespace, c5c3v1alpha1.ManagementCluster)
+	if entry == nil {
+		return nil, nil
+	}
+	return entry, entry.RolesOutside(ks.Spec.Account.Roles)
+}
+
+// namespaceAssignmentRoleMessage is the refusal message of a role outside a
+// namespace assignment's allowedRoles. The KeystoneService reconciler, the
+// CredentialRotation path and the order kinds share it.
+func namespaceAssignmentRoleMessage(
+	cp *c5c3v1alpha1.ControlPlane, a *c5c3v1alpha1.NamespaceAssignmentSpec, refused []string,
+) string {
+	return fmt.Sprintf("ControlPlane %s/%s admits roles %q from namespace %q on %s (spec.namespaceAssignments); %q is not on that list",
+		cp.Namespace, cp.Name, a.AllowedRoles, a.Namespace, a.Location(), refused)
 }
 
 // keystoneServiceCredentialRefs returns the two clouds.yaml references the
@@ -1177,9 +1225,10 @@ func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //     reference — the eight K-ORC kinds, the ESO delivery pair, and the
 //     operator-written password/source Secrets.
 //   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
-//     shared gate waits on and the allowlist edits that admit or de-list a
-//     namespace both arrive as ControlPlane updates, and both must re-enqueue
-//     the registrations at watch latency rather than at the next poll.
+//     shared gate waits on, the allowlist edits that admit or de-list a
+//     namespace, and the namespace-assignment edits that limit a namespace's
+//     roles all arrive as ControlPlane updates, and all must re-enqueue the
+//     registrations at watch latency rather than at the next poll.
 //   - Secret, through the consumer-Secret mapper: the materialized credentials
 //     Secret is ESO-owned, so only its name contract maps it back to the CR.
 func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crcontroller.Options) error {
