@@ -1,0 +1,193 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for namespace-scoped RBAC deployment.
+# Validates the install the Multi-Tenant Deployment guide recommends for a
+# single namespace: a cinder-operator release with rbac.namespaceScoped=true
+# and webhook.enabled=false in the namespace it reconciles:
+#   - Operator deployed via Helm with namespace-scoped RBAC
+#   - Role/RoleBinding created (not ClusterRole/ClusterRoleBinding)
+#   - Cinder CR and its NFS backend reconciled to Ready=True
+#   - The namespace-scoped operator's own pod reconciled the Cinder and its
+#     backend, as its log and metrics show
+#
+# The cluster-wide cinder-operator in "cinder-system" watches every namespace
+# and drives this Cinder to Ready on its own, so the Ready condition of Step 4
+# does not show that the namespace-scoped operator did any work. Step 5 reads
+# the namespace-scoped pod's own log and metrics instead, through
+# ../../lib/assert-namespace-scoped-operator.sh. A cluster-scoped watch or
+# cached read fails it on the log within seconds of the pod starting, and a
+# manager blocked in its cache sync records no reconcile. The cluster-wide
+# release also keeps its in-process webhook, which admits this suite's CRs.
+#
+# The test runs in the "openstack" namespace where the shared infrastructure
+# (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
+# works exactly as in all other E2E tests. A namespace-scoped operator only
+# watches its own release namespace, so its release is installed there too.
+#
+# The namespace-scoped release runs one replica instead of the chart's two.
+# With two, one pod leads and the other stands by behind the same release
+# label, and the standby's metrics count no reconcile.
+#
+# The suite takes a RabbitMQ vhost of its own, as every cinder suite does (see
+# ../broker-vhost.sh): Cinder's RPC topics are named after the service rather
+# than after the CR, so two suites on one vhost would share the scheduler and
+# volume queues.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# The namespace-scoped operator reconciles every Cinder in "openstack" beside
+# the cluster-wide one, and every other cinder suite puts its Cinder there. Two
+# operators would drive another suite's Cinder at once, so this suite runs
+# alone, before the concurrent suites start. Running alone also keeps this
+# Cinder the only one in "openstack" while Step 5 counts reconciles.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-namespace-scoped-rbac
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
+  # One replica, because Step 5 reads one pod's log and metrics. Step 6
+  # uninstalls the release before chainsaw deletes the Cinder. The step
+  # cleanup runs at the end of the test and removes a release that a failed
+  # step left installed, so it cannot outlive this suite.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install cinder-operator-ns-scoped \
+            ${GITHUB_WORKSPACE:-.}/operators/cinder/helm/cinder-operator/ \
+            --namespace openstack \
+            --set rbac.namespaceScoped=true \
+            --set webhook.enabled=false \
+            --set replicas=1 \
+            --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/cinder-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status cinder-operator-ns-scoped -n openstack 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        content: |
+          helm uninstall cinder-operator-ns-scoped -n openstack 2>&1 || true
+  # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: cinder-operator-ns-scoped
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: cinder-operator-ns-scoped
+            namespace: openstack
+    - script:
+        content: |
+          # Verify no ClusterRole was created for this release
+          if kubectl get clusterrole cinder-operator-ns-scoped 2>/dev/null; then
+            echo "FAIL: ClusterRole should not exist for namespace-scoped deployment"
+            exit 1
+          fi
+          echo "OK: No ClusterRole found (expected)"
+  # ── Step 3: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-ns-scoped cinder-ns-scoped-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-ns-scoped || true
+  # ── Step 4: Assert successful reconciliation ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-ns-scoped
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-ns-scoped
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: ns-scoped-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-ns-scoped -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=cinder-operator-ns-scoped
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 5: Prove the namespace-scoped operator reconciled the Cinder ──
+  # The header of ../../lib/assert-namespace-scoped-operator.sh lists the
+  # checks it runs against the release's single pod. The second call runs
+  # them for the CinderBackend controller, whose CR the cluster-wide operator
+  # drives to Ready as well.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../lib/assert-namespace-scoped-operator.sh openstack cinder-operator-ns-scoped cinder cinders.cinder.openstack.c5c3.io
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../lib/assert-namespace-scoped-operator.sh openstack cinder-operator-ns-scoped cinderbackend cinderbackends.cinder.openstack.c5c3.io
+    catch:
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=cinder-operator-ns-scoped
+        tail: 200
+  # ── Step 6: Cleanup Helm release ───────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          helm uninstall cinder-operator-ns-scoped -n openstack 2>&1 || true

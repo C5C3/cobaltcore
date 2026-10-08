@@ -159,6 +159,7 @@ deletions.
 | [backup-nfs](#backup-nfs) | `cinder-backup` | Backup round trip on an NFS target: the two backup conditions, the `cinder-backup` Deployment, backup, restore, delete, detach |
 | [scale](#scale) | `cinder-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, scheduler and volume service left at one replica |
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile of the Cinder and of its backend |
 | [httproute](#httproute) | `cinder-route` | `spec.gateway` lifecycle: HTTPRoute created, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec block |
 | [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete |
 | [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent; the `CinderBackend` releases its finalizer on `ServiceRemoveSkipped`, the `CinderBackupBackend` holds none |
@@ -413,6 +414,44 @@ message bus.
 **Design note:** Cinder writes the internal URL into `status.endpoint` whenever
 `spec.gateway` is unset, and this CR sets none, so the probe target and the
 advertised endpoint coincide.
+
+---
+
+### namespace-scoped-rbac
+
+**File:** `tests/e2e/cinder/namespace-scoped-rbac/chainsaw-test.yaml`
+
+**Purpose:** A second cinder-operator release, installed into `openstack` with
+`rbac.namespaceScoped=true` and `webhook.enabled=false`, reconciles a Cinder in
+its own namespace. Once the CR is Ready, the suite reads that release's pod: it
+never restarted, it logged the namespace-scoped startup line for `openstack` and
+no forbidden `Failed to watch` line, and its metrics endpoint counts a
+successful reconcile of the `cinder` and the `cinderbackend` controller.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Deploy operator with namespace-scoped RBAC | `script` (120s) | `helm install cinder-operator-ns-scoped` into `openstack` with `rbac.namespaceScoped=true`, `webhook.enabled=false` and one replica |
+| 2 | Assert Role and RoleBinding exist (not ClusterRole) | `assert` + `script` | Role and RoleBinding `cinder-operator-ns-scoped` in `openstack`, and no ClusterRole of that name |
+| 3 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-ns-scoped …`, then `00-cinder-cr.yaml` (`cinder-ns-scoped` on the `openbao-tenant-store` SecretStore) and `01-cinderbackend-cr.yaml` (`ns-scoped-nfs1`) |
+| 4 | Assert successful reconciliation | `assert` (5m) | `Ready=True/AllReady` |
+| 5 | Prove the namespace-scoped operator reconciled the Cinder | `script` (2m) + `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh` for the `cinder` controller, then for the `cinderbackend` controller: one pod, no restart, the only Cinder or CinderBackend in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count of at least 1 within 60 s |
+| 6 | Cleanup Helm release | `script` | `helm uninstall cinder-operator-ns-scoped` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`
+
+**Design note:** The cluster-wide cinder-operator in `cinder-system` watches
+every namespace and drives the same CR to Ready, and a status condition does not
+say which operator wrote it. Step 5 takes the evidence from the namespace-scoped
+pod instead: a forbidden cluster-scoped watch logs `Failed to watch` within
+seconds of the pod starting, and a manager blocked in its cache sync records no
+reconcile. The release runs one replica, because the chart's second replica
+would stand by behind the same release label with no reconcile on its metrics.
+The suite sets `spec.concurrent: false`. Because it runs alone, before the
+concurrent suites start, its Cinder is the only one in `openstack` while Step 5
+counts reconciles, and the second operator touches no other suite's CR. The
+cluster-wide release's webhook admits the CRs, since this release runs none.
 
 ---
 
@@ -827,6 +866,10 @@ tests/e2e/cinder/
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-multi
 │   ├── 01-cinderbackend-a-cr.yaml      Backend multi-nfs-a on /volumes
 │   └── 02-cinderbackend-b-cr.yaml      Backend multi-nfs-b on /volumes-b
+├── namespace-scoped-rbac/
+│   ├── chainsaw-test.yaml              A namespace-scoped cinder-operator release reconciles
+│   ├── 00-cinder-cr.yaml               Cinder CR cinder-ns-scoped on the tenant SecretStore
+│   └── 01-cinderbackend-cr.yaml        Backend ns-scoped-nfs1
 ├── network-policy/
 │   ├── chainsaw-test.yaml              NetworkPolicy create, update and delete
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-netpol

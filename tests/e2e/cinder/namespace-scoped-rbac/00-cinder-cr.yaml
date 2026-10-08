@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the namespace-scoped RBAC E2E test, the healthcheck fixture
+# under the cinder-ns-scoped names.
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_ns_scoped, with the bus on the vhost the suite's first step writes
+# into cinder-ns-scoped-messaging. spec.secretStoreRef selects the namespaced
+# SecretStore: a namespace-scoped operator refuses the default
+# ClusterSecretStore with SecretsReady=False/ClusterSecretStoreUnsupported.
+#
+# One API replica. The suite asserts Ready and reads the operator, so a second
+# pod would only lengthen the bring-up.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-ns-scoped
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_ns_scoped
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-ns-scoped-messaging
