@@ -630,11 +630,21 @@ namespace, so two ControlPlanes already get two instances.
 
 ## Tested by
 
-The namespace-scoped install beside a standalone webhook release, and the
-two-ControlPlanes-in-two-namespaces tenancy this guide describes, are asserted
-on the CI e2e kind cluster by these chainsaw suites:
+The namespace-scoped install of the seven operators whose charts accept the
+mode, and the two-ControlPlanes-in-two-namespaces tenancy this guide describes,
+are asserted on the CI e2e kind cluster by these chainsaw suites. The keystone
+suite also installs the standalone webhook release. Each `namespace-scoped-rbac`
+suite reads the namespace-scoped operator's own log and metrics after its CR is
+Ready, because the cluster-wide operator of the same chart reconciles that CR
+too.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/barbican/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/cinder/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/glance/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/horizon/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/nova/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/placement/namespace-scoped-rbac
 chainsaw test --test-dir tests/e2e/c5c3/multi-controlplane
 ```
