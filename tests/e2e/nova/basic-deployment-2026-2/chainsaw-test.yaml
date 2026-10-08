@@ -662,6 +662,18 @@ spec:
           grep -Fxq 'discover_hosts_in_cells_interval = 300' /tmp/nova-basic-2026-2.conf
           echo "OK: $CM renders the 300s host-discovery periodic"
 
+          # The failed-build weigher is off and hosts of equal weight are
+          # shuffled, so one failed or aborted build does not take a
+          # hypervisor out of scheduling. Nova reads both keys only under
+          # [filter_scheduler], so the section is cut out before they are
+          # matched.
+          awk '/^\[filter_scheduler\]$/{f=1;next} /^\[/{f=0} f' /tmp/nova-basic-2026-2.conf \
+            > /tmp/nova-basic-2026-2-filter-scheduler.conf
+          test -s /tmp/nova-basic-2026-2-filter-scheduler.conf
+          grep -Fxq 'build_failure_weight_multiplier = 0' /tmp/nova-basic-2026-2-filter-scheduler.conf
+          grep -Fxq 'shuffle_best_same_weighed_hosts = true' /tmp/nova-basic-2026-2-filter-scheduler.conf
+          echo "OK: [filter_scheduler] switches the failed-build weigher off"
+
           # Instance lifecycle notifications are dropped at the source: nothing
           # this deployment runs drains that queue.
           grep -Fxq 'driver = noop' /tmp/nova-basic-2026-2.conf

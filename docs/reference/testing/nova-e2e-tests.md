@@ -312,7 +312,10 @@ the `openstack` client.
 
 The two config scripts in step 5 resolve the content-hashed ConfigMap through
 the API Deployment's `config` volume and match
-`discover_hosts_in_cells_interval = 300`, `driver = noop`,
+`discover_hosts_in_cells_interval = 300`,
+`build_failure_weight_multiplier = 0` and
+`shuffle_best_same_weighed_hosts = true` inside `[filter_scheduler]`,
+`driver = noop`,
 `local_metadata_per_cell = false`, the suite's one `extraConfig` override
 `allow_resize_to_same_host = true`, the `novncproxy_base_url` pointing at the
 proxy Service and `valid_interfaces = internal` inside `[placement]`, and they
