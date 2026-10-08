@@ -195,7 +195,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     # The shared message bus. The webhook fills clusterRef.name with
     # openstack-rabbitmq, the RabbitmqCluster this ControlPlane then owns.
@@ -485,7 +485,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   region: RegionOne
   infrastructure:
     database:
