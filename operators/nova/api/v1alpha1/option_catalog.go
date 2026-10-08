@@ -52,6 +52,7 @@ var RenderedSections = []string{
 	"upgrade_levels",
 	"cache",
 	"scheduler",
+	"filter_scheduler",
 	"conductor",
 	"vnc",
 }
