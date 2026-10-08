@@ -21,7 +21,7 @@
 # controller, and neither sees Keystone, OpenBao, ESO or cert-manager. This suite
 # is the only place the three meet.
 #
-# ── Three legs ───────────────────────────────────────────────────────────────
+# ── Four legs ────────────────────────────────────────────────────────────────
 #   POSITIVE  an allowlisted namespace registers a catalog entry and an account,
 #             its tenant store appears, its consumer Secret is materialized, and
 #             a Job in that namespace authenticates with it.
@@ -31,6 +31,11 @@
 #   FREEZE    de-listing an admitted namespace freezes its registration instead
 #             of tearing it down (decision D9): the Secret, the Keystone user and
 #             the tenant store all survive, and re-listing recovers.
+#   ROLES     a namespace assignment that does not list the account's role
+#             refuses the account and freezes it while the catalog keeps
+#             reconciling, listing the role recovers, an assignment naming an
+#             unregistered cluster turns the plane's Ready False, and removing
+#             the assignments lifts the limit.
 #
 # ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
 # The suite brings up a Keystone-only plane in chainsaw's ephemeral namespace
@@ -504,6 +509,59 @@ spec:
           wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
           wait_cp_reason RegistrationTenantStoresReady RegistrationTenantStoresReady 600
           echo "OK: re-listing recovered the registration."
+
+          # ══ LEG 4 — a namespace assignment limits the roles ═══════════════
+          # The registration requests "service". An assignment that lists only
+          # "member" refuses the account and freezes it: the catalog block keeps
+          # reconciling, and nothing the account already holds is reaped.
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"namespaceAssignments\":[{\"namespace\":\"${TENANT_NS}\",\"allowedRoles\":[\"member\"]}]}}"
+          wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady RoleNotAllowed 300
+          if ! grep -q "spec.namespaceAssignments" \
+               <<<"$(condition_message keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady)"; then
+            echo "ERROR: the refusal message does not name the field that limits the roles"; exit 1
+          fi
+          assert_eq "the catalog block keeps reconciling" "True" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='CatalogReady')].status}")"
+          kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null
+          assert_eq "the Keystone user survives the refusal" "1" \
+            "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${KS_SELECTOR}")"
+          wait_cp_reason NamespaceAssignmentsReady NamespaceAssignmentsReady 300
+          for field in namespaceExists clusterReachable; do
+            assert_eq "the assignment status reports ${field}" "true" \
+              "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+                -o "jsonpath={.status.namespaceAssignments[0].${field}}")"
+          done
+          assert_eq "the assignment status echoes the roles" "member" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o 'jsonpath={.status.namespaceAssignments[0].allowedRoles[*]}')"
+          echo "OK: the role allowlist refused the account and froze it."
+
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"namespaceAssignments\":[{\"namespace\":\"${TENANT_NS}\",\"allowedRoles\":[\"service\",\"member\"]}]}}"
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
+          wait_cp_condition Ready 300
+          echo "OK: listing the role recovered the registration."
+
+          # A cluster that does not resolve is refused in status, not at
+          # admission, and it turns the plane's Ready False. The management
+          # entry narrows back to "member", so the account is refused again and
+          # the removal below has a refusal to lift.
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"namespaceAssignments\":[{\"namespace\":\"${TENANT_NS}\",\"allowedRoles\":[\"member\"]},{\"namespace\":\"${TENANT_NS}\",\"targetClusterRef\":{\"name\":\"e2e-no-such-cluster\"}}]}}"
+          wait_cp_reason NamespaceAssignmentsReady TargetClusterUnavailable 300
+          wait_condition controlplane "${CP_NAME}" "${CP_NS}" Ready False 120
+          wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady RoleNotAllowed 300
+          echo "OK: an assignment naming an unregistered cluster turns the plane's Ready False."
+
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p '{"spec":{"namespaceAssignments":null}}'
+          wait_cp_reason NamespaceAssignmentsReady NoNamespaceAssignments 300
+          wait_cp_condition Ready 300
+          wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady AccountProvisioned 600
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
+          echo "OK: removing the assignments lifted the limit."
 
           # ══ Teardown ══════════════════════════════════════════════════════
           kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found
