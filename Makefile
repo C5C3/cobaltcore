@@ -743,7 +743,7 @@ e2e-operator-upgrade:
 #
 # The suite also runs an OVN chassis and a metadata agent on the management
 # cluster, so bring the target up with WITH_OVN_KERNEL_MODULES=true (the host
-# kernel serves both kind clusters) and `kind load` the ovn and neutron:2025.2
+# kernel serves both kind clusters) and `kind load` the ovn and neutron:2026.1
 # images into the management cluster as well, as the CI job does.
 #
 # The two preflights are kept separate so a kubectl/cluster reachability failure
