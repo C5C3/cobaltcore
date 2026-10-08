@@ -374,11 +374,11 @@ cluster-scoped `namespaces` verbs as well, which is why the markers add
 
 ## Reconciliation Flow
 
-A pass runs a blocking prefix of seven steps and then one group of fourteen
+A pass runs a blocking prefix of seven steps and then one group of fifteen
 members that all run. The figure draws an arrow only where one condition gates
 another.
 
-![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fifteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](../../diagrams/controlplane-gate-graph.svg)
 
 One pass, in order:
 
@@ -393,14 +393,14 @@ One pass, in order:
    resolves. A pass that installs one ends with a requeue.
 5. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
    step that returns a requeue or an error ends the pass.
-6. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
+6. Runs the tail group through `RunSequentialGroup`, rows 8 to 22. Every member
    runs. Member requeues collapse to the shortest (`ShortestRequeue`), member
    errors are joined (`errors.Join`).
 7. Calls `updateStatus()` on every exit path of steps 5 and 6: it recomputes the
    aggregate `Ready` as `AllTrue(subConditionTypes)`, writes `status.services`,
    stamps `status.observedGeneration`, and skips the write when nothing changed.
 
-The 21 sub-reconcilers, in call order. The Gate column names the conditions a
+The 22 sub-reconcilers, in call order. The Gate column names the conditions a
 step checks itself and, after them, what else it waits for. A prefix step also
 runs only after the step before it has converged.
 
@@ -427,6 +427,7 @@ runs only after the step before it has converged.
 | 19 | `reconcileServiceAccounts` | `ServiceAccountsReady` | nothing | Folds the `Ready` of the registrations the legs projected, up to eight | 10s while one is not Ready |
 | 20 | `reconcileKORCCatalogRefresh` | none | `ServiceAccountsReady`, and every registration settled | Records the catalog epoch on the K-ORC pod template. A change rolls the pod | none |
 | 21 | `reconcileRegistrationTenantStores` | `RegistrationTenantStoresReady` | nothing | Provisions the tenant-store trio in each allowlisted namespace that holds a registration. `True/NoRegistrationNamespaces` when there is none | 10s while a store is not Ready |
+| 22 | `reconcileNamespaceAssignments` | `NamespaceAssignmentsReady` | nothing | Reports every `spec.namespaceAssignments` entry in `status.namespaceAssignments`. `True/NoNamespaceAssignments` when there is none | 1m while an entry is not `Assigned` |
 
 A service whose block is not set reports its condition `True` with a
 `NotManaged` reason, so the aggregate is not blocked: `KeystoneNotManaged`,
@@ -452,8 +453,8 @@ error counter are emitted under a stable `sub_reconciler` label.
 
 **Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog, Glance,
 Placement, Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
-KORCCatalogRefresh and RegistrationTenantStores are the fourteen named members of
-one `commonreconcile.RunSequentialGroup`,
+KORCCatalogRefresh, RegistrationTenantStores and NamespaceAssignments are the
+fifteen named members of one `commonreconcile.RunSequentialGroup`,
 embedded as the pipeline's final **bare (unnamed)** `Step`. The group members
 self-instrument through `instrumenter.Instrument` — following the keystone
 self-instrumenting-group convention — which is why the enclosing group step
@@ -473,7 +474,8 @@ the shared message bus to be delivered into their namespace. Neutron gates on
 none, because the `OVNCentral` it mirrors is deployed outside the plane and
 nothing this chain produces can converge it.
 
-The three members that close the group depend on their order in it.
+Of the four members that close the group, the first three depend on their
+order in it.
 ServiceAccounts carries **no** gate: it only folds the registration children the
 service legs wrote earlier in the same pass, so it must run after them and has
 nothing to defer. KORCCatalogRefresh is gated on the `ServiceAccountsReady` that
@@ -483,7 +485,8 @@ RegistrationTenantStores carries no gate either. It consumes no condition this
 chain produces — the trio it writes depends on cert-manager and OpenBao alone, exactly
 like its blocking-prefix twin — and sits in the group rather than in that prefix
 so a namespace the control plane does not own can never park DBCredentials,
-AdminPassword and Keystone behind it.
+AdminPassword and Keystone behind it. NamespaceAssignments carries no gate and
+only reads (see [reconcileNamespaceAssignments](#reconcilenamespaceassignments)).
 
 ```go
 pipeline := []commonreconcile.Step{
@@ -504,7 +507,8 @@ pipeline := []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
                 // KORC, AdminCredential, Catalog, Glance, Placement,
                 // Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
-                // KORCCatalogRefresh, RegistrationTenantStores
+                // KORCCatalogRefresh, RegistrationTenantStores,
+                // NamespaceAssignments
             })
     }},
 }
@@ -522,7 +526,7 @@ This guarantees:
    result or error prevents a later member from running, so a still-converging
    or failing Horizon no longer parks KORC, the AdminCredential/Catalog
    identity bootstrap, Glance, Placement, Barbican, OVN, Neutron, Cinder,
-   Nova, or the three members that close the group. Each member's condition
+   Nova, or the four members that close the group. Each member's condition
    therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
@@ -585,7 +589,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, CinderReady, NovaReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
+SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, OVNReady, NeutronReady, CinderReady, NovaReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady, NamespaceAssignmentsReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -3619,6 +3623,59 @@ on. See [ServiceRegistrationsSpec](./controlplane-crd.md#serviceregistrationsspe
 | a store is written but not yet Ready | False | `SecretStoreNotReady` | requeue 10s, naming the namespace; the delivery leg gates on exactly this, so reporting True early would claim a path that does not carry yet. A failed readiness read returns the error with no condition written, leaving the previous value standing |
 | every store Ready | True | `RegistrationTenantStoresReady` | the message counts the namespaces |
 
+### reconcileNamespaceAssignments
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_namespace_assignments.go` |
+| Condition | `NamespaceAssignmentsReady` |
+| Gate | none. It only reads |
+| Projects / Owns | nothing. It writes `status.namespaceAssignments`, one entry per `spec.namespaceAssignments` entry, in spec order |
+| Requeue | `namespaceAssignmentRequeueAfter` = **1m** while an entry is not `Assigned` |
+
+Per entry the step resolves the entry's cluster through `ResolveChildrenClient`
+and reads the assigned namespace there with one GET. A target cluster is read
+through its uncached reader, the management cluster through the cache. A pass
+costs at most 32 GETs and no LIST. The step never creates, labels or deletes an
+assigned namespace and writes nothing on any cluster, so the remote-children
+finalizer is not involved.
+
+Each GET times out after `namespaceAssignmentReadTimeout` = **10s**. A cluster
+that fails a GET with a transport error is not read again in the same pass: its
+later entries report `ClusterUnreachable` with the message `namespace "<ns>" not
+read: <cluster> did not answer an earlier read in this pass: <err>`. A cluster
+that accepts no connection therefore costs the pass one timeout in total. An API
+error such as `Forbidden` is read per entry, because the answer may differ per
+namespace.
+
+No watch reaches an assigned namespace. The local Namespace watch filters on the
+ControlPlane's ownership labels, and a target cluster has no Namespace watch. A
+namespace created later, or a cluster registered later, shows up through the 1m
+requeue.
+
+The step never returns an error. Each entry gets one of five reasons:
+
+| Entry reason | `clusterReachable` | `namespaceExists` | When |
+| --- | --- | --- | --- |
+| `Assigned` | true | true | the namespace exists |
+| `NamespaceNotFound` | true | false | the cluster answers NotFound |
+| `NamespaceTerminating` | true | true | the namespace carries a deletion timestamp |
+| `TargetClusterUnavailable` | false | false | the cluster name does not resolve. The message is the resolver's text |
+| `ClusterUnreachable` | false | false | the GET fails with any other error, for example `Forbidden`. The message is `getting namespace "<ns>": <err>` |
+
+The condition is decided over all entries:
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| no entry | True | `NoNamespaceAssignments` | clears `status.namespaceAssignments` |
+| any entry `TargetClusterUnavailable` | False | `TargetClusterUnavailable` | the message lists every unresolved and unreachable entry as `<namespace> on <cluster>` and says that orders from these namespaces are refused until the cluster resolves or the entry is removed |
+| else any entry `ClusterUnreachable` | False | `ClusterUnreachable` | the same listing |
+| otherwise | True | `NamespaceAssignmentsReady` | the message counts the entries and, when one or more namespaces are missing, how many do not exist yet. An assignment may precede its namespace |
+
+A False condition turns the aggregate `Ready` False, also when the cluster only
+serves tenants. See
+[NamespaceAssignmentsReady](./controlplane-crd.md#namespaceassignmentsready).
+
 ### CredentialRotation reconciler
 
 | Aspect | Value |
@@ -4465,6 +4522,7 @@ The `condition_type` label is resolved from the package-private
 | `ServiceAccounts` | `ServiceAccountsReady` |
 | `KORCCatalogRefresh` | `KORCReady` |
 | `RegistrationTenantStores` | `RegistrationTenantStoresReady` |
+| `NamespaceAssignments` | `NamespaceAssignmentsReady` |
 
 The map carries two further entries, `KeystoneServiceCatalog` and
 `KeystoneServiceAccount`, which belong to the `KeystoneService` controller rather

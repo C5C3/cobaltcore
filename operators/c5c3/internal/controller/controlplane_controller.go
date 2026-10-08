@@ -122,7 +122,10 @@ const (
 	// that one gates the blocking prefix, and a namespace the control plane does not
 	// occupy must never park the plane's own credential material behind it.
 	conditionTypeRegistrationTenantStoresReady = "RegistrationTenantStoresReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
-	conditionTypeReady                         = "Ready"
+	// conditionTypeNamespaceAssignmentsReady reports whether every
+	// spec.namespaceAssignments entry names a cluster that resolves and answers.
+	conditionTypeNamespaceAssignmentsReady = "NamespaceAssignmentsReady"
+	conditionTypeReady                     = "Ready"
 )
 
 // controlPlaneORCFinalizer blocks the ControlPlane CR from leaving etcd until
@@ -158,6 +161,7 @@ var subConditionTypes = []string{
 	conditionTypeCatalogReady,
 	conditionTypeServiceAccountsReady,
 	conditionTypeRegistrationTenantStoresReady,
+	conditionTypeNamespaceAssignmentsReady,
 }
 
 // ControlPlaneReconciler reconciles a ControlPlane object.
@@ -573,9 +577,10 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of fourteen members (Horizon, KORC,
+	// The tail is a RunSequentialGroup of fifteen members (Horizon, KORC,
 	// AdminCredential, Catalog, Glance, Placement, Barbican, OVN, Neutron, Cinder,
-	// Nova, ServiceAccounts, KORCCatalogRefresh, RegistrationTenantStores).
+	// Nova, ServiceAccounts, KORCCatalogRefresh, RegistrationTenantStores,
+	// NamespaceAssignments).
 	// Running every member on every pass is safe: every member runs each pass, its
 	// condition always persists, the members' requeues aggregate to the shortest
 	// member interval, and one member's failure no longer suppresses its peers
@@ -587,12 +592,15 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// consumes rather than on its position in the chain — the prefix's
 	// short-circuit is gone, so a member that assumed an unreachable peer had
 	// blocked it would now run against unverified state. Every member except
-	// KORC, ServiceAccounts and RegistrationTenantStores opens with an in-memory
-	// conditions.AllTrue gate and returns before touching the API; those three have
-	// no condition gate and run their full body every pass, which is what dominates
-	// the group's steady-state API cost. ServiceAccounts is ungated because it only
-	// reads the KeystoneService children the service legs applied earlier in the
-	// same pass, so there is no projection it could defer.
+	// KORC, ServiceAccounts, RegistrationTenantStores and NamespaceAssignments
+	// opens with an in-memory conditions.AllTrue gate and returns before touching
+	// the API; those four have no condition gate and run their full body every
+	// pass, which is what dominates the group's steady-state API cost.
+	// ServiceAccounts is ungated because it only reads the KeystoneService
+	// children the service legs applied earlier in the same pass, so there is no
+	// projection it could defer. NamespaceAssignments is ungated because no
+	// condition covers its input: it projects nothing and only reads one
+	// namespace per assignment on that entry's cluster.
 	//
 	// Two members depend on their position all the same. ServiceAccounts runs
 	// after the service legs, for the reason above. KORCCatalogRefresh runs after
@@ -772,6 +780,13 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// DBCredentials, AdminPassword and Keystone behind it.
 				{Name: "RegistrationTenantStores", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileRegistrationTenantStores(ctx, &cp)
+				}},
+				// NamespaceAssignments reports what each
+				// spec.namespaceAssignments entry resolves to. It carries no
+				// condition gate because it only reads: one namespace GET per
+				// entry, on the entry's cluster, and nothing is written there.
+				{Name: "NamespaceAssignments", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileNamespaceAssignments(ctx, &cp)
 				}},
 			})
 		}},

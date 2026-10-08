@@ -660,13 +660,13 @@ is the override for a store you manage yourself. See the
 
 ## Step 6 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 20 sub-conditions are met. They
+The aggregate `Ready` flips to `True` once all 21 sub-conditions are met. They
 do not form one line. The first seven are a blocking prefix, and each waits for
 the one before it. The others belong to steps that all run on every pass, so
 several of them can be `False` at once, and each waits only for what the figure
 draws an arrow from.
 
-![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](./diagrams/controlplane-gate-graph.svg)
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fifteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](./diagrams/controlplane-gate-graph.svg)
 
 The conditions in call order, with what each waits for on this devstack:
 
@@ -692,6 +692,7 @@ The conditions in call order, with what each waits for on this devstack:
 | `NovaReady` | `KeystoneReady`, `PlacementReady`, its registration and the message bus |
 | `ServiceAccountsReady` | The registrations of glance, placement, barbican, neutron, neutron-nova, cinder when present, and nova |
 | `RegistrationTenantStoresReady` | Nothing. Reads `True/NoRegistrationNamespaces` here: no other namespace registers a service against this ControlPlane |
+| `NamespaceAssignmentsReady` | Nothing. Reads `True/NoNamespaceAssignments` here: no namespace is assigned to a service owner |
 
 Each of the six services registers through a `KeystoneService`, and a
 registration waits for `AdminCredentialReady`, so the six service conditions

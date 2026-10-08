@@ -2489,6 +2489,7 @@ the kind/name and applies it.
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, `cinder`, then `nova` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
+| `namespaceAssignments` | [`[]NamespaceAssignmentStatus`](#namespaceassignmentstatus) | What each `spec.namespaceAssignments` entry resolves to, one entry per spec entry and in spec order. A `listType=atomic` list, empty when the spec assigns no namespace. See [NamespaceAssignmentsReady](#namespaceassignmentsready). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
 > intentionally distinct: `ControlPlane.status.updatePhase` is the control-plane
@@ -2553,6 +2554,21 @@ import is reported as `resolved: false` rather than omitted.
 | `interface` | `string` (`public` \| `internal` \| `admin`) | No | The catalog interface of an imported `Endpoint`; empty for the `Service` import. |
 | `resolved` | `bool` | Yes | Whether K-ORC matched this import against a live catalog entry (its `Available` condition is `True` for the CR's current generation). |
 | `id` | `string` | No | The OpenStack id K-ORC resolved the import to. Empty while the import is unresolved. |
+
+### NamespaceAssignmentStatus
+
+Reports the observed state of one `spec.namespaceAssignments` entry.
+`reconcileNamespaceAssignments` rebuilds the list on every pass.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `namespace` | `string` | Yes | The assigned namespace, copied from the spec entry. |
+| `targetClusterRef` | `*commonv1.TargetClusterRefSpec` | No | The spec entry's cluster reference. Absent means the management cluster. |
+| `allowedRoles` | `[]string` | No | The spec entry's role allowlist, echoed. |
+| `clusterReachable` | `bool` | Yes | Whether the cluster resolved and answered the namespace GET. |
+| `namespaceExists` | `bool` | Yes | Whether the namespace exists on that cluster. |
+| `reason` | `string` (`Assigned` \| `NamespaceNotFound` \| `NamespaceTerminating` \| `TargetClusterUnavailable` \| `ClusterUnreachable`) | Yes | The entry's outcome. `NamespaceNotFound` and `NamespaceTerminating` keep [`NamespaceAssignmentsReady`](#namespaceassignmentsready) `True`. The last two fail it. |
+| `message` | `string` | No | Explains a reason other than `Assigned`: the resolver's text for `TargetClusterUnavailable`, `getting namespace "<ns>": <err>` for `ClusterUnreachable`. A later entry on a cluster that did not answer an earlier GET in the same pass is not read and carries `namespace "<ns>" not read: <cluster> did not answer an earlier read in this pass: <err>`. At most 32768 bytes. |
 
 ### UpdatePhase
 
@@ -3417,14 +3433,14 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by twenty-one sub-reconcilers. Twenty own one
-condition type each; `reconcileKORCCatalogRefresh` owns none. An aggregate
+The ControlPlane status is driven by twenty-two sub-reconcilers. Twenty-one own
+one condition type each; `reconcileKORCCatalogRefresh` owns none. An aggregate
 `Ready` condition comes on top. The condition-type constants in
 `controlplane_controller.go` (`subConditionTypes`) are the single source of
 truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in two phases. The first seven are a blocking prefix: a
-step that has not converged requeues and ends the pass. The other fourteen run
+step that has not converged requeues and ends the pass. The other fifteen run
 as one group on every pass, and none of them stops another. Eleven steps gate
 **explicitly** on an earlier condition being `True` (`reconcileKeystone` on
 `InfrastructureReady`, `reconcileHorizon` on `KeystoneReady`, `reconcileGlance`,
@@ -3441,14 +3457,15 @@ The figure shows which condition waits for which.
 [Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow) lists
 every step with its gate and its requeue interval.
 
-![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady has no gate.](../../diagrams/controlplane-gate-graph.svg)
+![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fifteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations and gates the KORCCatalogRefresh step, which sets no condition. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](../../diagrams/controlplane-gate-graph.svg)
 
 In call order the condition types are `SizingReady`, `NamespacesReady`,
 `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`,
 `AdminPasswordReady`, `KeystoneReady`, `HorizonReady`, `KORCReady`,
 `AdminCredentialReady`, `CatalogReady`, `GlanceReady`, `PlacementReady`,
 `BarbicanReady`, `OVNReady`, `NeutronReady`, `CinderReady`, `NovaReady`,
-`ServiceAccountsReady` and `RegistrationTenantStoresReady`.
+`ServiceAccountsReady`, `RegistrationTenantStoresReady` and
+`NamespaceAssignmentsReady`.
 
 `SizingReady` runs first because every later stage projects its children from
 the resolved sizing: a `SizingProfile` that cannot be read stops the pass before
@@ -3462,14 +3479,16 @@ it), so both `ESOTenantStoreReady` and `HorizonReady` appear on an External-mode
 CR's status — the latter as `HorizonNotManaged`, since the dashboard is forbidden
 in External mode.
 
-`ServiceAccountsReady` and `RegistrationTenantStoresReady` run **last** and carry
-no gate of their own. The first only reads the `KeystoneService` registrations
-the Glance, Placement, Barbican, Neutron, Cinder and Nova legs wrote earlier in
-the same pass, so there is no projection it could defer. The second writes into
-namespaces the control plane does not own, which is why it sits at the end of
-the chain rather than beside `ESOTenantStoreReady`: a namespace someone else
-administers must never park this control plane's own credential material behind
-it.
+`ServiceAccountsReady`, `RegistrationTenantStoresReady` and
+`NamespaceAssignmentsReady` run **last** and carry no gate of their own. The
+first only reads the `KeystoneService` registrations the Glance, Placement,
+Barbican, Neutron, Cinder and Nova legs wrote earlier in the same pass, so there
+is no projection it could defer. The second writes into namespaces the control
+plane does not own, which is why it sits at the end of the chain rather than
+beside `ESOTenantStoreReady`: a namespace someone else administers must never
+park this control plane's own credential material behind it. The third only
+reads: one namespace per `spec.namespaceAssignments` entry, on the cluster the
+entry names.
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
@@ -3938,13 +3957,35 @@ store under a running service would destroy credentials it depends on (see
 | `False` | `ProvisioningError` | Writing or collecting a trio failed. Every namespace is attempted before the failures are reported together, so one broken namespace cannot starve its peers, and the message names the failing namespaces and the joined error. It **requeues** (10s) instead of returning an error: the cause is usually a tenant-side one no backoff resolves, such as a foreign object holding the store's name, and returning an error would put the whole ControlPlane reconcile into exponential backoff for it. Listing the provisioned namespaces or counting the registrations is the one arm that does return the error as well. |
 | `False` | `SecretStoreNotReady` | A store is written but not yet Ready, naming the namespace. A registration's delivery leg gates on exactly this, so reporting `True` while a store is still issuing its client certificate would claim a delivery path that does not carry yet. Requeue 10s. A failed readiness **read** returns the error with no condition written, leaving the previous value standing until the retry. |
 
+### NamespaceAssignmentsReady
+
+Set by `reconcileNamespaceAssignments`. It reports every
+`spec.namespaceAssignments` entry in `status.namespaceAssignments` (see
+[NamespaceAssignmentStatus](#namespaceassignmentstatus)) and decides the
+condition over all of them. The step only reads: one namespace GET per entry, on
+the cluster the entry names. It never creates, labels or deletes an assigned
+namespace.
+
+An entry whose cluster does not resolve is refused here, not at admission. The
+False condition turns the aggregate `Ready` False, also when the cluster only
+serves tenants. A missing namespace keeps the condition `True`, because an
+assignment may precede its namespace. While any entry is not `Assigned` the step
+requeues after one minute, because no watch reaches an assigned namespace.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `NoNamespaceAssignments` | The spec assigns no namespace. `status.namespaceAssignments` is cleared. |
+| `True` | `NamespaceAssignmentsReady` | Every entry resolves to a cluster that answers. The message counts the entries and, when one or more namespaces do not exist yet, how many. |
+| `False` | `TargetClusterUnavailable` | At least one entry names a cluster that does not resolve. The message lists every unresolved and unreachable entry as `<namespace> on <cluster>`: orders from these namespaces are refused until the cluster resolves or the entry is removed. Requeue 1m. |
+| `False` | `ClusterUnreachable` | No entry is unresolved, but at least one cluster answered the namespace GET with an error other than NotFound, for example `Forbidden`. The same listing. Requeue 1m. |
+
 ### Ready (aggregate)
 
 Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All twenty sub-conditions are `True`. |
+| `True` | `AllReady` | All twenty-one sub-conditions are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
