@@ -986,7 +986,7 @@ read:
 
 | Workload | Default | Source |
 | --- | --- | --- |
-| `lab-nova-compute` | none: no request, no limit | `buildNovaComputeDaemonSet` copies `spec.resources` alone, `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
+| `lab-nova-compute` | CPU request `150m`, memory `768Mi` as request and limit; none at the recorded run | `novaComputeCPU`, `novaComputeMemory` and `effectiveNovaComputeResources`, `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
 | `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go` |
 | `lab-metadata-agent-metadata-agent` | CPU request `230m`, memory `2Gi` as request and limit; the CPU request was `70m` at the recorded run | `metadataAgentCPU`, `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go` |
 | `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | the `libvirtd` container's `resources`, `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
@@ -1042,10 +1042,14 @@ files of the run are in the
 | `lab-nova-compute` | `nova-compute` | 143 | 455 | none | none | 11 to 93 m, 175 MiB, on the fake driver | no default; no default |
 | `libvirt` | `libvirtd` | 11 | 11 | `100m` | `256Mi` | none | confirmed; confirmed |
 
-`lab-nova-compute` renders no request, so its targets of `143m` and `455Mi`
-under KVM stand without a default; on the fake driver CI read up to `93m` and
-`175Mi`. The two chassis DaemonSets render no request either, and their three
-containers read 11 to 23 m and 11 to 23 MiB, at or below what CI read. The
+`lab-nova-compute` rendered no request at the recorded run, so its targets of
+`143m` and `455Mi` under KVM stood without a default; on the fake driver CI
+read up to `93m` and `175Mi`.
+[#1312](https://github.com/C5C3/cobaltcore/issues/1312) has since set the
+pool's default from these readings and the six-hour soak, `150m` and `768Mi`
+(see [Resources](../nova/novacompute-crd.md#resources)). The two chassis
+DaemonSets render no request, and their three containers read 11 to 23 m and
+11 to 23 MiB, at or below what CI read. The
 metadata agent's CPU request of `70m` is contradicted by its target of `126m`
 ([#1259](https://github.com/C5C3/cobaltcore/issues/1259)), and
 [Metadata agent CPU](#metadata-agent-cpu) has raised it to `230m` since. Its memory of

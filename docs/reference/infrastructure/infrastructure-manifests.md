@@ -4837,6 +4837,20 @@ on its own before the [node port check](#node-port-check).
 | `hypervisor/hvo-release.yaml` | `HelmRelease/openstack-hypervisor-operator` in `openstack` |
 | `hypervisor/kna-release.yaml` | `HelmRelease/kvm-node-agent` in `hypervisor-system` |
 
+The pods the overlay puts on a hypervisor node in `openstack` take their
+requests and limits from these sources:
+
+| Pod | Containers | Requests and limits |
+| --- | --- | --- |
+| `lab-nova-compute` | `nova-compute`, `create-instances-dir`, `wait-for-chassis` | the Nova operator's default, `150m` CPU request and `768Mi` memory request and limit ([Resources](../nova/novacompute-crd.md#resources)) |
+| `lab-metadata-agent-metadata-agent` | `metadata-agent`, `wait-for-chassis` | the Neutron operator's default, `230m` CPU request and `2Gi` memory request and limit ([Memory sizing](../neutron/neutron-metadata-agent-crd.md#memory-sizing)) |
+| `libvirt` | `libvirtd`, `host-prepare` | the DaemonSet's own: `100m`/`256Mi` request and `512Mi` limit for `libvirtd`, `10m`/`16Mi` request and `64Mi` limit for `host-prepare` |
+| `lab-chassis-ovs`, `lab-chassis-ovn-controller` | `ovsdb-server`, `ovs-vswitchd`, `host-prepare`; `ovn-controller`, `apply-node` | none of their own: the tenant LimitRange of `openstack` ([OpenBao Proving Instance](#openbao-proving-instance), Tenant) fills in a `100m` CPU and `128Mi` memory request and a `512Mi` memory limit; the lab read 11 to 23 MiB per container ([Recorded lab run](../testing/sizing-calibration.md#recorded-lab-run)) |
+
+`OVNChassis` renders no resources by design
+([OVNChassis CRD](../ovn/ovn-chassis-crd.md)), so a lab that changes the
+tenant LimitRange changes the chassis pods with it.
+
 The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` (see
 [libvirt](../ci-cd/container-images.md#libvirt)) on the nodes labelled
 `openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, privileged
