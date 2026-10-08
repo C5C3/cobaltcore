@@ -164,12 +164,15 @@ spec:
     # blocks .well-known discovery against the in-cluster Keycloak — see
     # [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) Step 4 for the
     # full worked example (mappings, groups, and why introspection is https).
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
+    issuer: http://keycloak.openstack:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: keycloak-cobaltcore-client
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      # The browser opens this endpoint, so it uses the issuer's host: Keycloak
+      # posts the login form to that host, and a session cookie set on the FQDN
+      # would not be sent along (400, cookie_not_found).
+      authorizationEndpoint: http://keycloak.openstack:8080/realms/cobaltcore/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
       jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
       userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
@@ -262,7 +265,7 @@ and no call from the proxy to the provider follows.
 ::: warning The fixture IdP is not reachable from a host browser
 On the kind devstack the fixture Keycloak issuer is a cluster-internal Service
 name, so a browser on your workstation cannot complete the login form: it is
-redirected to `http://keycloak.openstack.svc.cluster.local:8080/...`, which the
+redirected to `http://keycloak.openstack:8080/...`, which the
 host cannot resolve. Clicking the SSO button through to a session needs an
 **externally reachable** IdP (your production Keycloak, or a fixture published
 through the gateway with matching redirect URIs and a host-resolvable issuer).
