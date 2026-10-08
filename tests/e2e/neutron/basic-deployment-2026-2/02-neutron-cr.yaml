@@ -6,7 +6,7 @@
 #
 # The per-release twin of tests/e2e/neutron/basic-deployment/02-neutron-cr.yaml:
 # same managed-mode wiring, same replica counts, a schema of its own
-# (neutron_basic_2026_2) so the three suites can run in parallel against the one
+# (neutron_basic_2026_2) so the two suites can run in parallel against the one
 # MariaDB cluster.
 apiVersion: neutron.openstack.c5c3.io/v1alpha1
 kind: Neutron

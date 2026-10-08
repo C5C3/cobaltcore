@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for a happy-path Neutron deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. The config step
+# The per-release twin of the plain basic-deployment suite. The config step
 # renders the same files for every release. The deployment step reads
 # spec.openStackRelease from 2026.2 on and adds the /tmp volume and the
 # marker-cleanup hook to the API pod, so this suite asserts the 2026.2 uWSGI
 # command and pod shape, the same ML2/OVN driver set and the same neutron.conf
 # shape against the 2026.2 image, and an API pod without the volume or the hook
 # is the failure it exists to catch. It pins the container image as well, so a
-# release bump that forgot the tag shows up here rather than in a passing 2025.2
+# release bump that forgot the tag shows up here rather than in a passing 2026.1
 # run.
 #
 # Validates the full reconciliation cycle:
