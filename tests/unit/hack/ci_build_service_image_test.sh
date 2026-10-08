@@ -25,7 +25,10 @@
 #     the extra-packages key, the Dockerfile directory and the tag, the
 #     service the source ref, the clone and the build-context name; an unset
 #     IMAGE renders the service image as before, and a malformed one fails
-#     before anything runs.
+#     before anything runs;
+#   - an unset or empty RELEASE builds the 2026.1 tag and a set one wins; a
+#     release without releases/<release>/upper-constraints.txt fails before
+#     docker runs.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
 # mirroring tests/unit/hack/ci_build_ovn_image_test.sh.
@@ -58,8 +61,8 @@ YQ_LOG="$TMP_DIR/yq.log"
 # one file that script insists on and no overrides: the repository's own
 # constraints file is never touched.
 WORK_DIR="$TMP_DIR/work"
-mkdir -p "$WORK_DIR/releases/2025.2"
-: >"$WORK_DIR/releases/2025.2/upper-constraints.txt"
+mkdir -p "$WORK_DIR/releases/2026.1"
+: >"$WORK_DIR/releases/2026.1/upper-constraints.txt"
 
 GITHUB_URL="https://github.com/openstack/barbican.git"
 OPENDEV_URL="https://opendev.org/openstack/barbican.git"
@@ -132,8 +135,8 @@ STUB
 # run_build [VAR=value ...]
 # Runs the builder with the stubs first on PATH and fresh logs, for barbican
 # unless an OPERATOR=... argument names another service. GITHUB_TOKEN,
-# GIT_CONFIG_*, GIT_STUB_FAIL and IMAGE start out unset; the arguments are
-# exported on top of that. Stores the combined stdout/stderr in OUTPUT, the
+# GIT_CONFIG_*, GIT_STUB_FAIL, IMAGE and RELEASE start out unset; the
+# arguments are exported on top of that. Stores the combined stdout/stderr in OUTPUT, the
 # exit status in RC, and the recorded git, docker and yq calls in GIT_CALLS,
 # DOCKER_CALLS and YQ_CALLS.
 run_build() {
@@ -141,7 +144,7 @@ run_build() {
   rm -f "$GIT_LOG" "$DOCKER_LOG" "$YQ_LOG"
   OUTPUT="$(
     cd "$WORK_DIR" || exit 99
-    unset GITHUB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_STUB_FAIL IMAGE
+    unset GITHUB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_STUB_FAIL IMAGE RELEASE
     export OPERATOR=barbican
     for assignment in "$@"; do
       export "${assignment?}"
@@ -199,7 +202,7 @@ test_anonymous_without_token() {
   assert_contains "no auth header is configured without a token" "$clone" "GIT_CONFIG_COUNT=unset"
   assert_not_contains "no extraheader reaches git without a token" "$GIT_CALLS" "extraheader"
   assert_contains "the service image is built from the clone" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2025.2"
+    "docker build -t ghcr.io/c5c3/barbican:2026.1"
   assert_not_contains "no BuildKit secret is mounted without a token" "$DOCKER_CALLS" "--secret"
 }
 
@@ -278,7 +281,7 @@ test_github_rejection_falls_back_to_opendev() {
   assert_contains "the handover is announced" "$OUTPUT" \
     "::warning::${GITHUB_URL} did not serve 21.0.0 after 3 attempts"
   assert_contains "the image is still built" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2025.2"
+    "docker build -t ghcr.io/c5c3/barbican:2026.1"
 }
 
 # ---------------------------------------------------------------------------
@@ -311,7 +314,7 @@ test_image_builds_a_derived_image() {
   assert_not_contains "no package lookup goes to nova's key" "$YQ_CALLS" '."nova".pip_packages'
   assert_contains "the clone is nova's" "$(clone_calls)" "https://github.com/openstack/nova.git"
   assert_contains "the image is tagged nova-compute" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/nova-compute:2025.2"
+    "docker build -t ghcr.io/c5c3/nova-compute:2026.1"
   assert_contains "the source is handed over as the nova build context" "$DOCKER_CALLS" "--build-context nova="
   assert_contains "the Dockerfile is images/nova-compute/" "$DOCKER_CALLS" "/images/nova-compute/"
 }
@@ -349,6 +352,44 @@ test_bad_image_name_fails() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 9: RELEASE falls back to 2026.1 when empty, and a set one wins
+# ---------------------------------------------------------------------------
+test_release_fallback_and_override() {
+  echo "Test: an empty RELEASE builds the 2026.1 tag, RELEASE=2026.2 the 2026.2 one"
+
+  run_build "RELEASE="
+
+  assert_eq "builder exits 0 with an empty RELEASE" "0" "$RC"
+  assert_contains "an empty RELEASE falls back to 2026.1" "$DOCKER_CALLS" \
+    "docker build -t ghcr.io/c5c3/barbican:2026.1"
+
+  mkdir -p "$WORK_DIR/releases/2026.2"
+  : >"$WORK_DIR/releases/2026.2/upper-constraints.txt"
+  run_build RELEASE=2026.2
+
+  assert_eq "builder exits 0 with RELEASE=2026.2" "0" "$RC"
+  assert_contains "the release that was set names the tag" "$DOCKER_CALLS" \
+    "docker build -t ghcr.io/c5c3/barbican:2026.2"
+  assert_not_contains "the fallback release is not built" "$DOCKER_CALLS" "barbican:2026.1"
+  assert_contains "the source ref is read from the release that was set" "$YQ_CALLS" \
+    "releases/2026.2/source-refs.yaml"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: a release without upper-constraints.txt fails before docker runs
+# ---------------------------------------------------------------------------
+test_release_without_constraints_fails() {
+  echo "Test: RELEASE=2027.1 without releases/2027.1/upper-constraints.txt fails before docker runs"
+
+  run_build RELEASE=2027.1
+
+  assert_eq "builder exits 1" "1" "$RC"
+  assert_contains "the error names the missing constraints file" "$OUTPUT" \
+    "Error: 'releases/2027.1/upper-constraints.txt' not found."
+  assert_eq "docker never runs" "" "$DOCKER_CALLS"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_anonymous_without_token
@@ -359,6 +400,8 @@ test_no_source_fails_before_docker
 test_image_builds_a_derived_image
 test_unset_image_keeps_the_operator_command
 test_bad_image_name_fails
+test_release_fallback_and_override
+test_release_without_constraints_fails
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -28,7 +28,7 @@
 #   DB_CLUSTER_REF      managed MariaDB cluster name           (default openstack-db)
 #   CACHE_CLUSTER_REF   managed memcached cluster name         (default openstack-memcached)
 #   IMAGE_REPOSITORY    keystone image repository   (default ghcr.io/c5c3/keystone)
-#   IMAGE_TAG           keystone image tag                     (default 2025.2)
+#   IMAGE_TAG           keystone image tag                     (default 2026.1)
 #   GATE_P95_SECONDS    if set, exit non-zero when the steady-state end-to-end
 #                       p95 exceeds this many seconds (the D3 SLO as a gate)
 
@@ -44,7 +44,7 @@ READY_TIMEOUT="${READY_TIMEOUT:-600s}"
 DB_CLUSTER_REF="${DB_CLUSTER_REF:-openstack-db}"
 CACHE_CLUSTER_REF="${CACHE_CLUSTER_REF:-openstack-memcached}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/c5c3/keystone}"
-IMAGE_TAG="${IMAGE_TAG:-2025.2}"
+IMAGE_TAG="${IMAGE_TAG:-2026.1}"
 GATE_P95_SECONDS="${GATE_P95_SECONDS:-}"
 
 CR_PREFIX="keystone-perf"

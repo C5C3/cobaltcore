@@ -19,7 +19,7 @@
 #                   OPERATOR names the service (source ref, clone, patches,
 #                   the --build-context name), IMAGE the image (its
 #                   extra-packages key, images/<IMAGE>/ and the tag)
-#   RELEASE       — Release directory name (default: 2025.2)
+#   RELEASE       — Release directory name (default: 2026.1)
 #   GITHUB_TOKEN  — Authenticates the clone from github.com, and is mounted
 #                   as the github_token BuildKit secret for a Dockerfile that
 #                   fetches from github.com itself (today
@@ -48,7 +48,7 @@ if [[ ! "${IMAGE}" =~ ^[a-z][a-z0-9-]*$ ]]; then
   exit 1
 fi
 IMAGE_PREFIX="${IMAGE_PREFIX:?IMAGE_PREFIX is required (e.g. ghcr.io/c5c3)}"
-RELEASE="${RELEASE:-2025.2}"
+RELEASE="${RELEASE:-2026.1}"
 
 # ---------------------------------------------------------------------------
 # 1. Resolve upstream source ref
