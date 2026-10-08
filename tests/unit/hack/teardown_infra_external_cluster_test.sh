@@ -1007,7 +1007,7 @@ test_external_teardown_order() {
     'kubectl delete -k deploy/lab/metal-stack/hypervisor' \
     'kubectl delete deployment,poddisruptionbudget maint-lab-a maint-lab-b -n kube-system' \
     "kubectl label nodes --all ${HYPERVISOR_LABELS_REMOVED}" \
-    'kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits-' \
+    'kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- nova.openstack.cloud.sap/aggregates-' \
     'kubectl delete controlplane --all -n openstack' \
     'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
     'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \

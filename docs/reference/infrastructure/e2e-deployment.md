@@ -136,8 +136,9 @@ before its delete. Then:
    6. the labels `openstack.c5c3.io/chassis`,
       `openstack.c5c3.io/nova-compute-pool`,
       `nova.openstack.cloud.sap/virt-driver` and
-      `cobaltcore.cloud.sap/node-hypervisor-lifecycle`, and the annotation
-      `nova.openstack.cloud.sap/custom-traits`, from every node.
+      `cobaltcore.cloud.sap/node-hypervisor-lifecycle`, and the annotations
+      `nova.openstack.cloud.sap/custom-traits` and
+      `nova.openstack.cloud.sap/aggregates`, from every node.
 
    What the hypervisors left on the nodes, under `/var/lib/nova`,
    `/var/lib/libvirt` and `/etc/pki`, stays, and so do the reserved ports in

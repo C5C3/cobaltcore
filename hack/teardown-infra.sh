@@ -519,7 +519,8 @@ teardown_dizzy_soak() {
 #   5. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
 #      operator leaves in kube-system for every node. Its lifecycle controller
 #      recreates them while it runs, hence after step 4;
-#   6. the four node labels and the annotation the lab sets by hand.
+#   6. the four node labels and the aggregates annotation the lab sets by
+#      hand, and the custom-traits annotation an older lab still carries.
 # Node state under /var/lib/nova, /var/lib/libvirt and /etc/pki stays, and so
 # does the reservation in net.ipv4.ip_local_reserved_ports until the node
 # reboots.
@@ -592,11 +593,12 @@ teardown_hypervisors() {
       deployment,poddisruptionbudget "${names[@]}" -n kube-system
   fi
 
-  # 6. The node labels and the annotation.
-  log "Removing the hypervisor labels and annotation from every node..."
+  # 6. The node labels and the annotations.
+  log "Removing the hypervisor labels and annotations from every node..."
   kubectl label nodes --all openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
     nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle- >/dev/null
-  kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- >/dev/null
+  kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- \
+    nova.openstack.cloud.sap/aggregates- >/dev/null
 }
 
 # ---------------------------------------------------------------------------

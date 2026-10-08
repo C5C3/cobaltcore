@@ -5058,9 +5058,10 @@ trait in Placement. Onboarding also waits for `HaEnabled=True` while
 condition. Upstream hvo creates every `Hypervisor` with the field `true`;
 patch 0002's flag, which the release sets to `false`, makes it create the field
 `false`. hvo reads the flag on create only, so a `Hypervisor` that exists keeps
-its value. `EXTERNAL_CLUSTER=true make teardown-infra` still removes the
-annotation, which a lab deployed from an older version of the quick start
-carries.
+its value. `EXTERNAL_CLUSTER=true make teardown-infra` removes both
+annotations: `nova.openstack.cloud.sap/aggregates`, and
+`nova.openstack.cloud.sap/custom-traits`, which a lab deployed from an older
+version of the quick start carries.
 
 [Part 2](../../quick-start-metal-stack.md#hypervisors) of the Quick Start
 (metal-stack) runs the sequence, from the node network to an Eviction with a
