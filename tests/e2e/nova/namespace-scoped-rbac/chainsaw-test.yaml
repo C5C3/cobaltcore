@@ -1,0 +1,183 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for namespace-scoped RBAC deployment.
+# Validates the install the Multi-Tenant Deployment guide recommends for a
+# single namespace: a nova-operator release with rbac.namespaceScoped=true
+# and webhook.enabled=false in the namespace it reconciles:
+#   - Operator deployed via Helm with namespace-scoped RBAC
+#   - Role/RoleBinding created (not ClusterRole/ClusterRoleBinding)
+#   - Nova CR reconciled to Ready=True
+#   - The namespace-scoped operator's own pod reconciled the CR, as its log
+#     and metrics show
+#
+# The cluster-wide nova-operator in "nova-system" watches every namespace and
+# drives this Nova to Ready on its own, so the Ready condition of Step 4 does
+# not show that the namespace-scoped operator did any work. Step 5 reads the
+# namespace-scoped pod's own log and metrics instead, through
+# ../../lib/assert-namespace-scoped-operator.sh. A cluster-scoped watch or
+# cached read fails it on the log within seconds of the pod starting, and a
+# manager blocked in its cache sync records no reconcile. The cluster-wide
+# release also keeps its in-process webhook, which admits this suite's CRs.
+#
+# The test runs in the "openstack" namespace where the shared infrastructure
+# (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
+# works exactly as in all other E2E tests. A namespace-scoped operator only
+# watches its own release namespace, so its release is installed there too.
+#
+# The namespace-scoped release runs one replica instead of the chart's two.
+# With two, one pod leads and the other stands by behind the same release
+# label, and the standby's metrics count no reconcile.
+#
+# The suite takes a RabbitMQ vhost of its own, as every nova suite does (see
+# ../../cinder/broker-vhost.sh): nova's RPC topics are named after the service
+# rather than after the CR, so two suites on one vhost would share the
+# scheduler and conductor queues.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# The namespace-scoped operator reconciles every Nova in "openstack" beside the
+# cluster-wide one, and every other nova suite puts its Nova there. Two
+# operators would drive another suite's Nova at once, so this suite runs alone,
+# before the concurrent suites start. Running alone also keeps this Nova the
+# only one in "openstack" while Step 5 counts reconciles.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-namespace-scoped-rbac
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The healthcheck suite's bound: the eight MariaDB CRs and the db-sync put
+    # Ready roughly 8 minutes after the apply.
+    assert: 10m
+  steps:
+  # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
+  # One replica, because Step 5 reads one pod's log and metrics. Step 6
+  # uninstalls the release before chainsaw deletes the Nova. The step
+  # cleanup runs at the end of the test and removes a release that a failed
+  # step left installed, so it cannot outlive this suite.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install nova-operator-ns-scoped \
+            ${GITHUB_WORKSPACE:-.}/operators/nova/helm/nova-operator/ \
+            --namespace openstack \
+            --set rbac.namespaceScoped=true \
+            --set webhook.enabled=false \
+            --set replicas=1 \
+            --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/nova-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status nova-operator-ns-scoped -n openstack 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        content: |
+          helm uninstall nova-operator-ns-scoped -n openstack 2>&1 || true
+  # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: nova-operator-ns-scoped
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: nova-operator-ns-scoped
+            namespace: openstack
+    - script:
+        content: |
+          # Verify no ClusterRole was created for this release
+          if kubectl get clusterrole nova-operator-ns-scoped 2>/dev/null; then
+            echo "FAIL: ClusterRole should not exist for namespace-scoped deployment"
+            exit 1
+          fi
+          echo "OK: No ClusterRole found (expected)"
+  # ── Step 3: Give the suite its vhost, then apply the CR ────────────────
+  # One vhost per suite; see ../../cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh create nova-ns-scoped nova-ns-scoped-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../cinder/broker-vhost.sh delete nova-ns-scoped || true
+  # ── Step 4: Assert successful reconciliation ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-ns-scoped
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - get:
+        apiVersion: nova.openstack.c5c3.io/v1alpha1
+        kind: Nova
+        name: nova-ns-scoped
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Nova pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-ns-scoped -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=nova-operator-ns-scoped
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 5: Prove the namespace-scoped operator reconciled the Nova ────
+  # The header of ../../lib/assert-namespace-scoped-operator.sh lists the
+  # checks it runs against the release's single pod.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../lib/assert-namespace-scoped-operator.sh openstack nova-operator-ns-scoped nova novas.nova.openstack.c5c3.io
+    catch:
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=nova-operator-ns-scoped
+        tail: 200
+  # ── Step 6: Cleanup Helm release ───────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          helm uninstall nova-operator-ns-scoped -n openstack 2>&1 || true
