@@ -1168,9 +1168,10 @@ func TestOperatorDefaults_ImportPluginsRendering(t *testing.T) {
 // operatorDefaults to glancev1alpha1.OwnedConfigKeys: every key the operator
 // renders must be registered (forward) and every registered key must be
 // rendered (reverse), so the registry and the renderer cannot drift apart.
-// Both checks run against the union of a 2026.1 (uWSGI) and a 2025.2 (eventlet)
-// render, because some keys render in one launch mode only: [database]
-// max_pool_size and max_overflow render only in the eventlet fixture.
+// Both checks run against the union of a 2026.2 and a 2026.1 (uWSGI) render and
+// a 2025.2 (eventlet) render, because some keys render in one launch mode or
+// release only: [database] max_pool_size and max_overflow render only in the
+// eventlet fixture, and [DEFAULT] workers only below 2026.2.
 func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	render := func(release string) map[string]map[string]string {
 		glance := glanceForConfig()
@@ -1202,7 +1203,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	}
 
 	defaults := map[string]map[string]string{}
-	for _, release := range []string{"2026.1", "2025.2"} {
+	for _, release := range []string{"2026.2", "2026.1", "2025.2"} {
 		for section, kvs := range render(release) {
 			if defaults[section] == nil {
 				defaults[section] = map[string]string{}

@@ -224,7 +224,7 @@ novncproxy_base_url = http://nova-novncproxy.openstack.svc.cluster.local:6080/vn
 `
 
 // TestPinNovaConf_ReleasesRenderIdentically pins the rendered nova.conf of both
-// fixtures at both supported releases and asserts the two renders are
+// fixtures at every supported release and asserts the renders are
 // byte-identical. The identity is the point: a release bump must not rotate the
 // ConfigMap, so upgrading a Nova never rolls its pods for a config change that
 // is not there.
@@ -238,8 +238,8 @@ func TestPinNovaConf_ReleasesRenderIdentically(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			rendered := make(map[string]string, 2)
-			for _, openStackRelease := range []string{"2025.2", "2026.1"} {
+			rendered := map[string]string{}
+			for _, openStackRelease := range []string{"2025.2", "2026.1", "2026.2"} {
 				t.Run(openStackRelease, func(t *testing.T) {
 					nova := tc.fixture()
 					nova.Spec.OpenStackRelease = openStackRelease
@@ -249,7 +249,9 @@ func TestPinNovaConf_ReleasesRenderIdentically(t *testing.T) {
 					expectGolden(t, conf, tc.golden)
 				})
 			}
-			expectGolden(t, rendered["2026.1"], rendered["2025.2"])
+			for _, conf := range rendered {
+				expectGolden(t, conf, rendered["2025.2"])
+			}
 		})
 	}
 }

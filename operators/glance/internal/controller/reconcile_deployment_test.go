@@ -671,24 +671,26 @@ func TestBuildGlanceDeployment_HashAnnotations(t *testing.T) {
 }
 
 func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
-	g := NewGomegaWithT(t)
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+		t.Run(release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
 
-	for _, release := range []string{"2025.2", "2026.1"} {
-		deploy := buildGlanceDeployment(deployGlance(release), testArtifacts(), "", "")
-		c := deploy.Spec.Template.Spec.Containers[0]
-		g.Expect(c.Name).To(Equal("glance-api"))
-		g.Expect(c.Ports[0].ContainerPort).To(Equal(glanceAPIPort))
+			deploy := buildGlanceDeployment(deployGlance(release), testArtifacts(), "", "")
+			c := deploy.Spec.Template.Spec.Containers[0]
+			g.Expect(c.Name).To(Equal("glance-api"))
+			g.Expect(c.Ports[0].ContainerPort).To(Equal(glanceAPIPort))
 
-		g.Expect(c.ReadinessProbe).NotTo(BeNil())
-		g.Expect(c.ReadinessProbe.HTTPGet).NotTo(BeNil())
-		g.Expect(c.ReadinessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
-		g.Expect(c.ReadinessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
+			g.Expect(c.ReadinessProbe).NotTo(BeNil())
+			g.Expect(c.ReadinessProbe.HTTPGet).NotTo(BeNil())
+			g.Expect(c.ReadinessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
+			g.Expect(c.ReadinessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
 
-		g.Expect(c.LivenessProbe).NotTo(BeNil())
-		g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
-		g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
-		g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
-		g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
+			g.Expect(c.LivenessProbe).NotTo(BeNil())
+			g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
+			g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
+			g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
+			g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
+		})
 	}
 }
 
@@ -698,7 +700,7 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 // uWSGI (measured in a kind pod at 120m CPU). The liveness probe alone restarts
 // the container 55 seconds after it started, so the startup probe holds it back.
 func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
-	for _, release := range []string{"2025.2", "2026.1"} {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 
