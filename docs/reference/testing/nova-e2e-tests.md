@@ -131,7 +131,7 @@ runs. Chainsaw runs with
 `--parallel 2` rather than the shared config's four, under a 150-minute wall
 instead of the 68 the other legs take: a full-stack Nova suite is a Keystone, an
 OVNCentral, a Neutron, a Placement, a Glance and the five Nova workloads. Beside
-the operator and service images the leg loads `tempest:2025.2`, which is where
+the operator and service images the leg loads `tempest:2026.1`, which is where
 the catalog, seed and verify Jobs get their `openstack` client, and
 `nova-compute` at both nova releases, the image a NovaCompute pool runs.
 
@@ -201,7 +201,7 @@ and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | Gateway | `GatewayClass/envoy` and `Gateway/openstack-gw` with the `https-nova`, `https-nova-metadata` and `https-nova-console` listeners, for the two suites that curl them |
-| Service images | `ghcr.io/c5c3/nova:2026.1` for every suite but `basic-deployment-2026-2` (`release-upgrade` starts on it), `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
+| Service images | `ghcr.io/c5c3/nova:2026.1` for every suite but `basic-deployment-2026-2` (`release-upgrade` starts on it), `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2026.1` for the catalog, seed and verify Jobs |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
@@ -695,7 +695,7 @@ for the gate the pod waits on.
 | --- | --- | --- | --- |
 | 1 | Label the node | `script` | `openstack.c5c3.io/chassis=true`, `topology.kubernetes.io/zone=nova-pool-az1` and `openstack.c5c3.io/nova-compute-pool=a`, and the ConfigMap `nova-pool-verify` naming the node. The step cleanup removes all three labels |
 | 2 | Bring up the stack and the chassis | `script` (25m) | The vhost, `keystone-nova-pool`, the catalog Job, the four sibling CRs, the image seed, `nova-pool` up to `Ready`, and `nova-pool-chassis` up to `Ready`. The step cleanup tears the stack down |
-| 3 | Apply pool-a | `script`, `assert`, `script` | `17-state-dir-owner-job.yaml` hands `/var/lib/nova` on the node to `42424:42424` before the pool is applied. `Ready=True/AllReady`; `AggregatesReady` reads `True` under `NodesOutsideZoneAggregate` and its message names the node as `<node> (nova-pool-az1)`, because no hypervisor operator adds the host to the zone aggregate; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2025.2`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; `create-instances-dir` exited 0 and `/var/lib/nova/instances` is a `root:root` 0755 directory, which root creates below another user's directory only with `DAC_OVERRIDE`; the Job `nova-pool-discover-hosts` completed and its log shows it created the node's host mapping; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools, strips the drain finalizer from a survivor and hands `/var/lib/nova` back to `root:root` |
+| 3 | Apply pool-a | `script`, `assert`, `script` | `17-state-dir-owner-job.yaml` hands `/var/lib/nova` on the node to `42424:42424` before the pool is applied. `Ready=True/AllReady`; `AggregatesReady` reads `True` under `NodesOutsideZoneAggregate` and its message names the node as `<node> (nova-pool-az1)`, because no hypervisor operator adds the host to the zone aggregate; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2026.1`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; `create-instances-dir` exited 0 and `/var/lib/nova/instances` is a `root:root` 0755 directory, which root creates below another user's directory only with `DAC_OVERRIDE`; the Job `nova-pool-discover-hosts` completed and its log shows it created the node's host mapping; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools, strips the drain finalizer from a survivor and hands `/var/lib/nova` back to `root:root` |
 | 4 | A second pool on the same node | `script`, `assert` | `pool-b` selects the chassis label: `NodesReady=False/NodeConflict`, `status.nodes[0]` in `Conflict` with `pool-a`, no pod scheduled while the DaemonSet template gives `nova-compute` and both init containers the operator's resource default (`150m` CPU request and no CPU limit, `768Mi` memory request and limit), and `pool-a` still Active. `pool-b` is then deleted, so `pool-a` is the last pool of the Nova |
 | 5, 6 | Boot a server | `script` (10m) | No helper: the pool's `Ready` in step 3 means Nova mapped the host. `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
 | 7 | Remove the pool label | `script`, `assert` | `status.nodes[0]` goes `Draining` with `instances: 1`, the service `disabled` with the reason `c5c3.io: leaving NovaCompute openstack/pool-a`, `ServicesReady=True/Draining`, and the pod still runs |
@@ -1020,7 +1020,7 @@ periodic did the work.
 ### A verify Job on the tempest image (`script`)
 
 Everything that drives the `openstack` client runs as a Job on
-`ghcr.io/c5c3/tempest:2025.2` with `backoffLimit: 0` and
+`ghcr.io/c5c3/tempest:2026.1` with `backoffLimit: 0` and
 `restartPolicy: Never`: the scripts are not idempotent, so a retry would find
 the server the first attempt created and fail on the name, and the failed pod is
 the one whose log carries the verdict. Inside,

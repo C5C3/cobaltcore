@@ -750,7 +750,7 @@ test_nova_leg_deploys_the_sibling_operators() {
     "$refs" "ghcr.io/c5c3/ovn:$(cd "$PROJECT_ROOT" &&
       hack/ci-resolve-ovn-version.sh)"
   assert_contains "the tempest image the functional suites' Jobs run" \
-    "$refs" "ghcr.io/c5c3/tempest:2025.2"
+    "$refs" "ghcr.io/c5c3/tempest:2026.1"
 
   # And the branch still gates: the neutron leg keeps the refs it had.
   : >"$output"
@@ -965,7 +965,7 @@ test_nova_leg_loads_the_tempest_image() {
   # Every functional Nova suite drives its fixture through the `openstack`
   # client, and the client comes out of the tempest image: the catalog setup
   # Jobs, the image seed Jobs and the verify Jobs all name
-  # ghcr.io/c5c3/tempest:2025.2, the 2026.1 suites included. kind pulls nothing
+  # ghcr.io/c5c3/tempest:2026.1, the 2026.2 suites included. kind pulls nothing
   # the run did not load, so a missing ref here is an ImagePullBackOff in the
   # first Job of every suite. The ref sits inside the nova branch: no other leg
   # of this job runs the client, and the ControlPlane suites that do sit in
@@ -983,7 +983,7 @@ test_nova_leg_loads_the_tempest_image() {
   assert_not_empty "the nova branch of the resolve step is readable" \
     "$nova_block"
   assert_contains "the tempest ref is resolved inside it" "$nova_block" \
-    '${IMAGE_PREFIX}/tempest:2025.2'
+    '${IMAGE_PREFIX}/tempest:2026.1'
 
   # Where the line sits is not the same claim as what the step publishes: the
   # list is built by concatenation and read back out of GITHUB_OUTPUT, so run
@@ -1008,7 +1008,7 @@ test_nova_leg_loads_the_tempest_image() {
     in_b { print }' "$output")
 
   assert_eq "the tempest image is the last ref the nova leg resolves" \
-    "ghcr.io/c5c3/tempest:2025.2" "$(printf '%s\n' "$refs" | tail -1)"
+    "ghcr.io/c5c3/tempest:2026.1" "$(printf '%s\n' "$refs" | tail -1)"
   # Twenty-six: the leg's own four (the operator and the nova image of each
   # release), the five siblings' seventeen (five operators and, per release, the
   # images of the four that ship one), the nova-compute image of each nova

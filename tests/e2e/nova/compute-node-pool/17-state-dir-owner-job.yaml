@@ -36,7 +36,7 @@ spec:
         openstack.c5c3.io/chassis: "true"
       containers:
         - name: state-dir-owner
-          image: ghcr.io/c5c3/nova-compute:2025.2
+          image: ghcr.io/c5c3/nova-compute:2026.1
           imagePullPolicy: IfNotPresent
           env:
             - name: OWNER

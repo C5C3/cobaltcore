@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a NovaCompute node pool (2025.2 release). One pool runs
+# Chainsaw E2E test for a NovaCompute node pool (2026.1 release). One pool runs
 # nova-compute on the kind node through the fake driver, and the suite walks the
 # pool's whole lifecycle against a real Nova:
 #   - the pool reaches Ready=True/AllReady, its node is Active with the compute
@@ -11,7 +11,7 @@
 #     proves the Job did), the pod's create-instances-dir init container
 #     created /var/lib/nova/instances on the node, below a /var/lib/nova the
 #     suite gave to another user, the pod passed its wait-for-chassis gate and
-#     runs ghcr.io/c5c3/nova-compute:2025.2 as uid 0, and Nova carries the zone
+#     runs ghcr.io/c5c3/nova-compute:2026.1 as uid 0, and Nova carries the zone
 #     aggregate nova-pool-az1 and tenant_filter_tests, both marked; no
 #     hypervisor operator adds the host to nova-pool-az1 on kind, so
 #     AggregatesReady reads True under NodesOutsideZoneAggregate and names the
@@ -259,7 +259,7 @@ spec:
               zone: nova-pool-az1
               serviceStatus: enabled
               serviceState: up
-            installedImage: ghcr.io/c5c3/nova-compute:2025.2
+            installedImage: ghcr.io/c5c3/nova-compute:2026.1
     # The node's name comes from the ConfigMap, so a script checks that the
     # message names it with its zone.
     - script:
@@ -300,7 +300,7 @@ spec:
           spec:
             containers:
             - name: nova-compute
-              image: ghcr.io/c5c3/nova-compute:2025.2
+              image: ghcr.io/c5c3/nova-compute:2026.1
               securityContext:
                 runAsUser: 0
                 privileged: true

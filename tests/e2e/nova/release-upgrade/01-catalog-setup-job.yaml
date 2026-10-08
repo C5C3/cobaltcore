@@ -22,7 +22,7 @@
 #
 # It authenticates as the bootstrap admin (keystone-admin Secret) and every step
 # is idempotent, so a Job retry converges rather than erroring on a duplicate.
-# The client image is the 2025.2 tempest one the sibling nova suites run, which
+# The client image is the 2026.1 tempest one the sibling nova suites run, which
 # is the tag the leg loads; it talks to the identity API both releases serve.
 apiVersion: batch/v1
 kind: Job
@@ -36,7 +36,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: setup
-          image: ghcr.io/c5c3/tempest:2025.2
+          image: ghcr.io/c5c3/tempest:2026.1
           imagePullPolicy: IfNotPresent
           env:
             - name: OS_AUTH_URL

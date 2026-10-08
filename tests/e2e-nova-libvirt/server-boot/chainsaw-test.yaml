@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a NovaCompute pool on Nova's libvirt driver (2025.2
+# Chainsaw E2E test for a NovaCompute pool on Nova's libvirt driver (2026.1
 # release). libvirtd runs on the one kind node from ghcr.io/c5c3/libvirt:latest,
 # the pool runs nova-compute beside it with virtType: qemu, and a server boots
 # there under QEMU's TCG emulation:
@@ -269,7 +269,7 @@ spec:
               zone: nova-pool-az1
               serviceStatus: enabled
               serviceState: up
-            installedImage: ghcr.io/c5c3/nova-compute:2025.2
+            installedImage: ghcr.io/c5c3/nova-compute:2026.1
     - script:
         shell: bash
         content: |

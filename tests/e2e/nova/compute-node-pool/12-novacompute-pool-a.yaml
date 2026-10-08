@@ -11,7 +11,7 @@
 # the pod takes from spec.nodeName, so the compute service, the hypervisor and
 # the resource provider all carry the node's name. vif plugging is switched off
 # because no ML2 agent runs here to report a port as bound; the server carries
-# no NIC either way. All three options are in the 2025.2 catalog, so the
+# no NIC either way. All three options are in the 2026.1 catalog, so the
 # webhook's catalog check admits them.
 #
 # The resources are the ones the fake compute of ../basic-deployment runs on.
