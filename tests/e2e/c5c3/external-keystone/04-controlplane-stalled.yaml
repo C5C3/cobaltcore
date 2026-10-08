@@ -36,7 +36,7 @@ metadata:
   name: controlplane-stalled
   namespace: brownfield-stalled
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   services:
     keystone:
       mode: External

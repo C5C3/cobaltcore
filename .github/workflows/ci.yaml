@@ -3215,15 +3215,15 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
-            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # CONTROLPLANE_NAME is left at its default: the OpenBao bootstrap only seeds
       # bootstrap/openstack/<name>-keystone/admin (the managed-mode admin-password
       # path), which the External ControlPlanes here — in their own namespaces,
