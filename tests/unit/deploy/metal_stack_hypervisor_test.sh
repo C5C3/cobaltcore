@@ -453,9 +453,9 @@ test_ca_and_compute() {
       (.spec | has("gateway") | tostring) + " " + (.spec | has("image") | tostring)')"
 
   local agent='.spec'
-  assert_eq "the metadata agent runs 2025.2" "2025.2" \
+  assert_eq "the metadata agent runs 2026.1" "2026.1" \
     "$(val NeutronMetadataAgent lab-metadata-agent "$agent.openStackRelease")"
-  assert_eq "the metadata agent runs ghcr.io/c5c3/neutron:2025.2" "ghcr.io/c5c3/neutron:2025.2" \
+  assert_eq "the metadata agent runs ghcr.io/c5c3/neutron:2026.1" "ghcr.io/c5c3/neutron:2026.1" \
     "$(val NeutronMetadataAgent lab-metadata-agent "$agent.image.repository + \":\" + $agent.image.tag")"
   assert_eq "the metadata agent runs beside lab-chassis" "lab-chassis" \
     "$(val NeutronMetadataAgent lab-metadata-agent "$agent.chassisRef.name")"
