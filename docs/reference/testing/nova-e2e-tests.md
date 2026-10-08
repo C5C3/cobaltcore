@@ -48,9 +48,9 @@ the two compute contracts the ComputeConfig step publishes, and that step runs
 before the Database step, so no step it waits on dials a backend. Every address
 in its CR is a placeholder, and its Nova never reaches `Ready`.
 
-The five suites that boot a server carry the whole stack a boot touches:
-`basic-deployment`, `basic-deployment-2026-1`, `basic-deployment-2026-2`,
-`db-archive` and `console-proxy` each bring their own Keystone and a catalog
+The four suites that boot a server carry the whole stack a boot touches:
+`basic-deployment`, `basic-deployment-2026-2`, `db-archive` and
+`console-proxy` each bring their own Keystone and a catalog
 Job that writes the compute, placement, image and network rows, an OVNCentral
 and the Neutron that programs it, a Placement the scheduler claims from, a
 Glance with an S3 backend and a seeded image, the Nova, and a fake-driver
@@ -111,7 +111,7 @@ NovaCompute pool runs the discovery itself and reports `Ready` only once the
 host is mapped, and the suite turns the scheduler's periodic off so that only
 the pool's discovery Job can map the host.
 
-The three `basic-deployment` suites do not. They wait out the scheduler's own
+The two `basic-deployment` suites do not. They wait out the scheduler's own
 periodic instead, which is what says the periodic runs:
 `discover_hosts_in_cells_interval` renders as 300 seconds, the scan runs at
 scheduler start and then once an interval, and the compute registers after that
@@ -137,9 +137,8 @@ the catalog, seed and verify Jobs get their `openstack` client, and
 
 The leg runs as two shards, each on a kind cluster of its own and under its own
 150-minute wall. Shard 2 runs `compute-node-pool`, `invalid-novacompute-cr`,
-`basic-deployment-2026-1`, `basic-deployment-2026-2`, `release-upgrade`,
-`healthcheck`, `deletion-cleanup`, `pod-security-restricted` and
-`namespace-scoped-rbac`. Shard 1 runs every other suite, so a new suite runs
+`basic-deployment-2026-2`, `release-upgrade`, `healthcheck`,
+`deletion-cleanup`, `pod-security-restricted` and `namespace-scoped-rbac`. Shard 1 runs every other suite, so a new suite runs
 there until the `Run E2E tests` step in
 `.github/workflows/ci.yaml` names it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
@@ -202,7 +201,7 @@ and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` |
 | Message broker | `shared-rabbitmq` RabbitmqCluster in `openstack` (`WITH_MESSAGING=true`) |
 | Gateway | `GatewayClass/envoy` and `Gateway/openstack-gw` with the `https-nova`, `https-nova-metadata` and `https-nova-console` listeners, for the two suites that curl them |
-| Service images | `ghcr.io/c5c3/nova:2025.2` for every suite except the two `basic-deployment-2026-*` variants and `release-upgrade`, `ghcr.io/c5c3/nova:2026.1` for `basic-deployment-2026-1` and the start half of `release-upgrade`, `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
+| Service images | `ghcr.io/c5c3/nova:2026.1` for every suite but `basic-deployment-2026-2` (`release-upgrade` starts on it), `ghcr.io/c5c3/nova:2026.2` for `basic-deployment-2026-2` and the target half of `release-upgrade`, and `ghcr.io/c5c3/tempest:2025.2` for the catalog, seed and verify Jobs |
 | Chainsaw | the `CHAINSAW_VERSION` pinned in `hack/install-test-deps.sh` |
 
 ## Running the Tests
@@ -243,7 +242,7 @@ nova-manage invocations of the db-sync about 3 more. `release-upgrade` keeps
 the same 10 for the three phase Jobs and the five-Deployment rollout behind the
 patch, `gateway-quick-start-smoke` takes 15, and the chart-level `metrics`
 suite, which brings no Nova, keeps 5. The script envelope is raised with it:
-`timeouts.exec` is 12 minutes in the three `basic-deployment` suites and
+`timeouts.exec` is 12 minutes in the two `basic-deployment` suites and
 `db-archive`, 15 in `gateway-quick-start-smoke`, and 25 in `console-proxy`,
 whose bring-up and boot run in one script. `deletion-cleanup` also raises
 `timeouts.error` to 3 minutes, because a Nova brings eight MariaDB CRs rather
@@ -263,9 +262,8 @@ a labelled namespace of its own.
 
 | Suite | CR Name | Reconciler Behavior Validated |
 | --- | --- | --- |
-| [basic-deployment](#basic-deployment) | `nova-basic` | Happy path on 2025.2: fifteen sub-conditions, the five Deployments and their owned children, the rendered `nova.conf` and the compute contract, a server booted, resized and deleted on a fake-driver compute |
-| [basic-deployment-2026-1](#basic-deployment-2026-1) | `nova-basic-2026-1` | The same assertions against the 2026.1 image, with the API container image pinned, so a difference between 2025.2 and 2026.1 fails here |
-| [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between the three releases fails here |
+| [basic-deployment](#basic-deployment) | `nova-basic` | Happy path on 2026.1: fifteen sub-conditions, the five Deployments and their owned children, the rendered `nova.conf` and the compute contract, a server booted, resized and deleted on a fake-driver compute |
+| [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between 2026.1 and 2026.2 fails here |
 | [scale](#scale) | `nova-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, the other four Deployments left at the counts their own spec fields give them |
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile |
@@ -292,7 +290,7 @@ a labelled namespace of its own.
 
 **File:** `tests/e2e/nova/basic-deployment/chainsaw-test.yaml`
 
-**Purpose:** The full reconciliation cycle of a Nova on the 2025.2 release
+**Purpose:** The full reconciliation cycle of a Nova on the 2026.1 release
 against real pods, a real broker vhost and a fake-driver compute. All fifteen
 sub-conditions reach True with their reasons, status publishes what a client and
 a compute cluster read off the CR, the five workloads carry the commands and
@@ -307,7 +305,7 @@ the `openstack` client.
 | 2 | Register the four services in the catalog | `script` + `assert` | Deletes any leftover Job, applies `01-catalog-setup-job.yaml` and waits 5m for completion; `succeeded: 1` |
 | 3 | Bring up the four services the boot path depends on | `apply` + `assert` | `02-messaging-secret.yaml`, then `nova-basic-ovn`, `neutron-nova-basic`, `placement-nova-basic`, `glance-nova-basic` and `glance-nova-basic-s3`, each asserted `Ready=True/AllReady` |
 | 4 | Seed the image the server boots from | `script` + `assert` | `08-image-seed-job.yaml`, waited 5m, `succeeded: 1` |
-| 5 | Assert the conditions, the children and the config | `apply` + `assert` + `script` | The fifteen sub-conditions with their reasons (`SecretsAvailable`, `ComputeConfigPublished`, `DatabaseSynced`, `ConductorReady`, `SchedulerReady`, `MetadataReady`, `ConsoleProxyReady`, `DeploymentReady`, `DBArchiveScheduled`, `APIHealthy`, `HPANotRequired`, `NetworkPolicyNotRequired`, three times `HTTPRouteNotRequired`, `NoOwnedKeysOverridden`) and `Ready=True/AllReady`; `status.endpoint`, `installedRelease: "2025.2"`, `computeConfigSecretRef`, cell0 under the all-zero uuid and one cell1. The API Deployment runs `--module nova.wsgi.osapi_compute:application` with no `--pyargv`, reads `OS_NOVA_CONFIG_DIR` and `OS_NOVA_CONFIG_FILES`, sources both database URLs and the transport URL from Secrets, and has `availableReplicas: 2`; the metadata API adds `metadata.conf` and the shared secret; the scheduler and the conductor take readiness off `/var/lib/openstack/bin/nova-amqp-ready`, carry no `livenessProbe` and terminate on a 200-second grace period; the console proxy reads `/vnc_lite.html` on 6080. Three Services (8774, 8775, 6080), a PDB with `minAvailable: 1` excluding Job pods, the `@daily` archive CronJob on `archive_deleted_rows --all-cells` without `--purge` or `--until-complete`, the db-sync Job, and the compute-config Secret with its five keys and no `ca.crt`. Two scripts read the rendered documents (see below) |
+| 5 | Assert the conditions, the children and the config | `apply` + `assert` + `script` | The fifteen sub-conditions with their reasons (`SecretsAvailable`, `ComputeConfigPublished`, `DatabaseSynced`, `ConductorReady`, `SchedulerReady`, `MetadataReady`, `ConsoleProxyReady`, `DeploymentReady`, `DBArchiveScheduled`, `APIHealthy`, `HPANotRequired`, `NetworkPolicyNotRequired`, three times `HTTPRouteNotRequired`, `NoOwnedKeysOverridden`) and `Ready=True/AllReady`; `status.endpoint`, `installedRelease: "2026.1"`, `computeConfigSecretRef`, cell0 under the all-zero uuid and one cell1. The API Deployment runs `--module nova.wsgi.osapi_compute:application` with no `--pyargv`, reads `OS_NOVA_CONFIG_DIR` and `OS_NOVA_CONFIG_FILES`, sources both database URLs and the transport URL from Secrets, and has `availableReplicas: 2`; the metadata API adds `metadata.conf` and the shared secret; the scheduler and the conductor take readiness off `/var/lib/openstack/bin/nova-amqp-ready`, carry no `livenessProbe` and terminate on a 200-second grace period; the console proxy reads `/vnc_lite.html` on 6080. Three Services (8774, 8775, 6080), a PDB with `minAvailable: 1` excluding Job pods, the `@daily` archive CronJob on `archive_deleted_rows --all-cells` without `--purge` or `--until-complete`, the db-sync Job, and the compute-config Secret with its five keys and no `ca.crt`. Two scripts read the rendered documents (see below) |
 | 6 | Start the fake-driver compute | `apply` + `assert` | `11-fake-compute.yaml`, applied only now because it mounts the compute-contract Secret; `nova-basic-fake-compute` reaches `availableReplicas: 1` |
 | 7 | Wait for the scheduler to map the compute into cell1 | `script` (10m) | Polls `nova-manage cell_v2 list_hosts` in the conductor for `fake-1`, 84 times 5 s apart, then greps `Discovered 1 new hosts` out of the scheduler log |
 | 8 | Boot, resize and delete a server | `script` + `assert` | `12-verify-job.yaml`, waited 10m; the log is read once and `NOVA-VERIFY-OK` grepped out of it; `succeeded: 1` |
@@ -334,37 +332,6 @@ and `[api_database]` are not, and `cell_name` is `cell1`.
 
 ---
 
-### basic-deployment-2026-1
-
-**File:** `tests/e2e/nova/basic-deployment-2026-1/chainsaw-test.yaml`
-
-**Purpose:** The per-release twin of `basic-deployment`. Nothing the config step
-renders reads `spec.openStackRelease`, so the suite asserts the same conditions,
-the same workload shapes and the same `nova.conf` against the 2026.1 image, and
-a difference between this suite and basic-deployment is the failure it exists
-to catch.
-
-**Steps:**
-
-| # | Step Name | Type | Details |
-| --- | --- | --- | --- |
-| 1 | Give the suite its vhost, then bring up Keystone | `script` (2m) + `apply` + `assert` | `broker-vhost.sh create nova-basic-2026-1 nova-basic-2026-1-messaging openstack` and `keystone-nova-basic-2026-1` Ready |
-| 2 | Register the four services in the catalog | `script` + `assert` | `01-catalog-setup-job.yaml`, `succeeded: 1` |
-| 3 | Bring up the four services the boot path depends on | `apply` + `assert` | `nova-basic-2026-1-ovn`, `neutron-nova-basic-2026-1`, `placement-nova-basic-2026-1`, `glance-nova-basic-2026-1` and `glance-nova-basic-2026-1-s3`, each Ready |
-| 4 | Seed the image the server boots from | `script` + `assert` | `08-image-seed-job.yaml`, `succeeded: 1` |
-| 5 | Assert the conditions, the children and the config | `apply` + `assert` (10m) + `script` | The same fifteen sub-conditions and children as `basic-deployment`, with `installedRelease: "2026.1"` and the API container pinned to `ghcr.io/c5c3/nova:2026.1`, so a release bump that forgot the tag shows up here rather than in a passing 2025.2 run |
-| 6 | Start the fake-driver compute | `apply` + `assert` | `nova-basic-2026-1-fake-compute` at one available replica |
-| 7 | Wait for the scheduler to map the compute into cell1 | `script` (10m) | The same 300-second periodic, which nova 33.0.0 also runs with `run_immediately=True` |
-| 8 | Boot, resize and delete a server | `script` + `assert` | `12-verify-job.yaml` to `NOVA-VERIFY-OK` |
-
-**Fixtures:** `00-keystone-cr.yaml`, `01-catalog-setup-job.yaml`,
-`02-messaging-secret.yaml`, `03-ovncentral-cr.yaml`, `04-neutron-cr.yaml`,
-`05-placement-cr.yaml`, `06-glance-cr.yaml`, `07-glancebackend-cr.yaml`,
-`08-image-seed-job.yaml`, `09-metadata-secret.yaml`, `10-nova-cr.yaml`,
-`11-fake-compute.yaml`, `12-verify-job.yaml`
-
----
-
 ### basic-deployment-2026-2
 
 **File:** `tests/e2e/nova/basic-deployment-2026-2/chainsaw-test.yaml`
@@ -372,8 +339,8 @@ to catch.
 **Purpose:** The 2026.2 twin of `basic-deployment`. Nothing the config step
 renders reads `spec.openStackRelease`, so the suite asserts the same conditions,
 the same workload shapes and the same `nova.conf` against the 2026.2 image, and
-a difference between the three suites is the failure it exists to catch. The
-three suites are hand-maintained copies, and the helper CRs of this one run at
+a difference between the two suites is the failure it exists to catch. The
+two suites are hand-maintained copies, and the helper CRs of this one run at
 2026.2 as well. Its catalog Job also grants the bootstrap admin the `service`
 role: Nova sends a service token on every call to Neutron and Glance, and
 keystonemiddleware 13.0.1, the 2026.2 pin, answers 401 to a service token
@@ -977,7 +944,7 @@ existence.
             name: nova-basic
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (cells[?name == 'cell0'] || `[]`):
             - uuid: 00000000-0000-0000-0000-000000000000
             (conditions[?type == 'Ready']):
@@ -1045,7 +1012,7 @@ paths are kept apart, since a `discover_hosts` that exits non-zero means the
 command never reached the databases while an empty `list_hosts` means the
 compute never registered.
 
-The three `basic-deployment` suites use neither the helper nor a hand-run
+The two `basic-deployment` suites use neither the helper nor a hand-run
 discovery. They poll the same table for up to 420 seconds and then grep
 `Discovered 1 new hosts` out of the scheduler log, which is what says the
 periodic did the work.
@@ -1081,7 +1048,7 @@ server and `DELETE-OK` in the console-proxy teardown Job, and
 tests/e2e/nova/
 ├── discover-hosts.sh                  Map a compute into cell1 and wait for the mapping
 ├── basic-deployment/
-│   ├── chainsaw-test.yaml             Happy path on 2025.2 with a booted server
+│   ├── chainsaw-test.yaml             Happy path on 2026.1 with a booted server
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-basic
 │   ├── 01-catalog-setup-job.yaml      Compute, placement, image and network catalog rows
 │   ├── 02-messaging-secret.yaml       Transport URL for the Neutron beside the Nova
@@ -1095,21 +1062,6 @@ tests/e2e/nova/
 │   ├── 10-nova-cr.yaml                Nova CR nova-basic
 │   ├── 11-fake-compute.yaml           nova-compute on the fake driver, host fake-1
 │   └── 12-verify-job.yaml             Boot, resize and delete a server (NOVA-VERIFY-OK)
-├── basic-deployment-2026-1/
-│   ├── chainsaw-test.yaml             The same run on 2026.1
-│   ├── 00-keystone-cr.yaml            Keystone keystone-nova-basic-2026-1
-│   ├── 01-catalog-setup-job.yaml      Catalog rows for this suite's services
-│   ├── 02-messaging-secret.yaml       Transport URL for the Neutron beside the Nova
-│   ├── 03-ovncentral-cr.yaml          OVNCentral nova-basic-2026-1-ovn
-│   ├── 04-neutron-cr.yaml             Neutron neutron-nova-basic-2026-1
-│   ├── 05-placement-cr.yaml           Placement placement-nova-basic-2026-1
-│   ├── 06-glance-cr.yaml              Glance glance-nova-basic-2026-1
-│   ├── 07-glancebackend-cr.yaml       S3 backend glance-nova-basic-2026-1-s3
-│   ├── 08-image-seed-job.yaml         The seed image of this suite
-│   ├── 09-metadata-secret.yaml        The metadata shared secret
-│   ├── 10-nova-cr.yaml                Nova CR nova-basic-2026-1 on 2026.1
-│   ├── 11-fake-compute.yaml           Fake-driver compute for this suite
-│   └── 12-verify-job.yaml             Boot, resize and delete a server
 ├── basic-deployment-2026-2/
 │   ├── chainsaw-test.yaml             The same run on 2026.2
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-basic-2026-2

@@ -28,9 +28,9 @@
 # creates the role but assigns it to nobody, and the ControlPlane grants it to
 # every service account it registers
 # (operators/c5c3/internal/controller/builtin_registrations.go), so the suite
-# mirrors that grant, as tests/tempest/nova-2026-2 does. The two older suites
-# run keystonemiddleware 10 and 12, whose default is false, and keep the plain
-# catalog Job.
+# mirrors that grant, as tests/tempest/nova-2026-2 does. The plain suite runs
+# keystonemiddleware 12, the 2026.1 pin, whose default is false, and keeps the
+# plain catalog Job.
 #
 # It authenticates as the bootstrap admin (keystone-admin Secret) and every step
 # is idempotent, so a Job retry converges rather than erroring on a duplicate.

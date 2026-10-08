@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for a happy-path Nova deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. Nothing the config
+# The per-release twin of the plain basic-deployment suite. Nothing the config
 # step renders reads spec.openStackRelease, so this suite asserts the same
 # conditions, the same workload shapes and the same nova.conf against the
-# 2026.2 image, and a difference between the three suites is the failure it
+# 2026.2 image, and a difference between the two suites is the failure it
 # exists to catch. It pins the API container image too, so a release bump that
-# forgot the tag shows up here rather than in a passing 2025.2 run. The three
-# suites are hand-maintained copies: a change to one belongs in the others.
+# forgot the tag shows up here rather than in a passing 2026.1 run. The two
+# suites are hand-maintained copies: a change to one belongs in the other.
 # The one fixture this copy keeps apart is the service role grant in
 # 01-catalog-setup-job.yaml, which keystonemiddleware 13, the 2026.2 pin,
 # requires of the service token Nova sends.

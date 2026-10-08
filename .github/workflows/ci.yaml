@@ -1659,15 +1659,17 @@ jobs:
           # suites that run 24 to 30 minutes, compute-node-pool among shard 2's,
           # and shard 1 takes gateway-quick-start-smoke and scale, the two other
           # suites that run alone (concurrent: false). The NovaCompute suites
-          # stay together in shard 2. Measured again on 2026-10-07 with three
-          # releases loaded (run 37593527630), shard 1 took 66 minutes and
-          # shard 2 59, 16.3 of them for basic-deployment-2026-1, so its
-          # 2026.2 twin joins it in the shorter shard 2. The
+          # stay together in shard 2. Shard 1 runs the plain basic-deployment,
+          # so basic-deployment-2026-2 runs in shard 2. The last measurement,
+          # run 37593527630 on 2026-10-07 with three releases loaded, took 66
+          # minutes for shard 1 and 59 for shard 2, 16.3 of them for a 2026.1
+          # copy of basic-deployment that the plain suite covers, so measure
+          # both shards again before moving a suite between them. The
           # namespace-scoped-rbac suite runs alone for about 10 minutes, so it
           # joins shard 2 as well. The suites are passed as directories
           # because chainsaw's include/exclude regex filters are no-ops.
           if [ "${OPERATOR}" = "nova" ]; then
-            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-1 basic-deployment-2026-2 release-upgrade healthcheck deletion-cleanup pod-security-restricted namespace-scoped-rbac"
+            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-2 release-upgrade healthcheck deletion-cleanup pod-security-restricted namespace-scoped-rbac"
             test_dirs=()
             for dir in tests/e2e/nova/*/ tests/e2e/nova-operator/*/; do
               case " ${shard_two} " in
