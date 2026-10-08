@@ -219,7 +219,7 @@ spec:
     - script:
         timeout: 90s
         content: |
-          kubectl run curl-test-basic --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+          kubectl run curl-test-basic --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
             --command -- python3 -c "
           import time, urllib.error, urllib.request
           last = None
