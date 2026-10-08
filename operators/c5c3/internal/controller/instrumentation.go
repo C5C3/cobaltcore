@@ -49,6 +49,8 @@ var subReconcilerConditionTypes = map[string]string{
 	// come from, kept apart from ESOTenantStore's own series because the two carry
 	// different blast radii and one alert should not read as the other.
 	"RegistrationTenantStores": conditionTypeRegistrationTenantStoresReady,
+	// The read-only report of spec.namespaceAssignments.
+	"NamespaceAssignments": conditionTypeNamespaceAssignmentsReady,
 	// The KeystoneService controller's two block legs. The names carry the CR
 	// kind as a prefix because "Catalog" and "ServiceAccounts" already label the
 	// ControlPlane's own legs (the identity row and the registration

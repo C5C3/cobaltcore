@@ -108,6 +108,11 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcUnknownKeystoneNS = "mc-unknown-identity"
 		mcUnknownCluster    = "does-not-exist"
 
+		// The two namespaces assigned on the target cluster: the first exists
+		// there only, the second exists nowhere.
+		mcAssignedNamespace        = "mc-tenant"
+		mcMissingAssignedNamespace = "mc-tenant-missing"
+
 		// The cleartext admin password reconcileKORC reads across the cluster
 		// boundary, and the decoy of the same shape planted on the management
 		// cluster to prove it is not the one being read.
@@ -1031,6 +1036,85 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			ig.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 			"the compute service parks on the account its registration has not provisioned")
+	})
+
+	t.Run("a namespace assignment on the target cluster reports its namespace", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The assigned namespace exists on the target cluster alone, so a read
+		// against the management cluster would report it missing.
+		mcEnsureNamespace(t, ctx, targetClient, mcAssignedNamespace)
+
+		target := &commonv1.TargetClusterRefSpec{Name: mcTargetCluster}
+		setAssignments := func(entries []c5c3v1alpha1.NamespaceAssignmentSpec, what string) {
+			t.Helper()
+			g.Eventually(func() error {
+				live := &c5c3v1alpha1.ControlPlane{}
+				if err := mgmtClient.Get(ctx, cpKey, live); err != nil {
+					return err
+				}
+				live.Spec.NamespaceAssignments = entries
+				return mgmtClient.Update(ctx, live)
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), what)
+		}
+		setAssignments([]c5c3v1alpha1.NamespaceAssignmentSpec{
+			{Namespace: mcAssignedNamespace, TargetClusterRef: target, AllowedRoles: []string{"member"}},
+			{Namespace: mcMissingAssignedNamespace, TargetClusterRef: target},
+		}, "assign two namespaces on the target cluster")
+
+		// Read back from the API server, not from the in-memory CR.
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			ig.Expect(live.Status.NamespaceAssignments).To(HaveLen(2))
+
+			present := live.Status.NamespaceAssignments[0]
+			ig.Expect(present.Namespace).To(Equal(mcAssignedNamespace))
+			ig.Expect(present.TargetClusterRef).To(Equal(target))
+			ig.Expect(present.AllowedRoles).To(Equal([]string{"member"}))
+			ig.Expect(present.ClusterReachable).To(BeTrue())
+			ig.Expect(present.NamespaceExists).To(BeTrue())
+			ig.Expect(present.Reason).To(Equal(c5c3v1alpha1.NamespaceAssignmentAssigned))
+
+			missing := live.Status.NamespaceAssignments[1]
+			ig.Expect(missing.Namespace).To(Equal(mcMissingAssignedNamespace))
+			ig.Expect(missing.ClusterReachable).To(BeTrue())
+			ig.Expect(missing.NamespaceExists).To(BeFalse())
+			ig.Expect(missing.Reason).To(Equal(c5c3v1alpha1.NamespaceAssignmentNamespaceNotFound))
+
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeNamespaceAssignmentsReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"both entries report what the target cluster holds")
+
+		// The step only reads: neither namespace appears where it was missing.
+		mcExpectAbsent(t, ctx, targetClient, client.ObjectKey{Name: mcMissingAssignedNamespace},
+			&corev1.Namespace{}, "missing assigned namespace")
+		mcExpectAbsent(t, ctx, mgmtClient, client.ObjectKey{Name: mcAssignedNamespace},
+			&corev1.Namespace{}, "assigned namespace")
+
+		// An entry naming an unregistered cluster is refused in status.
+		setAssignments([]c5c3v1alpha1.NamespaceAssignmentSpec{
+			{Namespace: mcAssignedNamespace, TargetClusterRef: target},
+			{Namespace: mcAssignedNamespace, TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: mcUnknownCluster}},
+		}, "assign a namespace on an unregistered cluster")
+		cond := waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypeNamespaceAssignmentsReady, metav1.ConditionFalse, itEventuallyTimeout)
+		g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+		g.Expect(cond.Message).To(ContainSubstring(mcAssignedNamespace + ` on target cluster "` + mcUnknownCluster + `"`))
+
+		// Removing the field returns the condition to its default.
+		setAssignments(nil, "remove every namespace assignment")
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			ig.Expect(live.Status.NamespaceAssignments).To(BeEmpty())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeNamespaceAssignmentsReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Reason).To(Equal("NoNamespaceAssignments"))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"removing every entry clears the status")
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {

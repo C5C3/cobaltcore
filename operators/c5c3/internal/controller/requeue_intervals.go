@@ -18,6 +18,15 @@ const (
 	// condition, not the requeue rate, is what tells the operator what to do.
 	namespaceRequeueAfter = 15 * time.Second
 
+	// namespaceAssignmentRequeueAfter is the cadence the NamespaceAssignments
+	// sub-reconciler re-reads its entries at while one of them is not Assigned.
+	// No watch reaches an assigned namespace: the local Namespace watch filters on
+	// the ControlPlane's ownership labels, which an assigned namespace never
+	// carries, and a target cluster has no Namespace watch at all. The requeue is
+	// therefore how a namespace created later, or a cluster registered later,
+	// shows up in status.
+	namespaceAssignmentRequeueAfter = time.Minute
+
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second
