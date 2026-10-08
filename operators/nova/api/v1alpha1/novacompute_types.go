@@ -294,8 +294,11 @@ type NovaComputeNodeStatus struct {
 	// Phase is where the node stands in the pool's lifecycle.
 	Phase NovaComputeNodePhase `json:"phase"`
 
-	// Zone is the node's topology.kubernetes.io/zone label, the availability
-	// zone its host aggregate carries.
+	// Zone is the node's topology.kubernetes.io/zone label, read from the Node
+	// and not from Nova: the availability zone of the aggregate the pool
+	// ensures for it. Nova places the host in that zone only while the host is
+	// in an aggregate of the zone; AggregatesReady reports
+	// NodesOutsideZoneAggregate otherwise.
 	// +optional
 	Zone string `json:"zone,omitempty"`
 

@@ -278,7 +278,7 @@ deleted, so the record of a drain outlives the selection.
 | --- | --- | --- |
 | `name` | `string` | The node's name, which is also the host of its compute service |
 | `phase` | `string` | One of the [node phases](#node-phases) |
-| `zone` | `string` | The node's `topology.kubernetes.io/zone` label, the availability zone of its aggregate |
+| `zone` | `string` | The node's `topology.kubernetes.io/zone` label, read from the Node and not from Nova: the availability zone of the aggregate the pool ensures for it. Nova places the host in that zone only while the host is in an aggregate of the zone; `AggregatesReady` reports `NodesOutsideZoneAggregate` otherwise |
 | `serviceID` | `string` | The UUID of the `nova-compute` service registered under the node name |
 | `serviceStatus` | `string` | `enabled` or `disabled`, as Nova reports it |
 | `serviceState` | `string` | `up` or `down`, as Nova reports it |
