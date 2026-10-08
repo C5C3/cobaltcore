@@ -31,10 +31,10 @@ owns a `nova-pss` namespace labelled with the restricted profile, and
 
 ### Fixture tiers
 
-Eight suites run a Nova with nothing beside it but the broker: `scale`,
-`healthcheck`, `httproute`, `network-policy`, `deletion-cleanup`,
-`maintenance-endpoint-isolation`, `pod-security-restricted` and
-`gateway-quick-start-smoke`. `SecretsReady` reads Secrets, the API and metadata
+Nine suites run a Nova with nothing beside it but the broker: `scale`,
+`healthcheck`, `namespace-scoped-rbac`, `httproute`, `network-policy`,
+`deletion-cleanup`, `maintenance-endpoint-isolation`, `pod-security-restricted`
+and `gateway-quick-start-smoke`. `SecretsReady` reads Secrets, the API and metadata
 probes GET the API root, and the scheduler and conductor probes read the broker
 socket, so the CR reaches `Ready=True/AllReady` with no Keystone, Placement,
 Neutron or Glance in the cluster. The CRD requires `spec.keystoneEndpoint` and
@@ -138,8 +138,9 @@ the catalog, seed and verify Jobs get their `openstack` client, and
 The leg runs as two shards, each on a kind cluster of its own and under its own
 150-minute wall. Shard 2 runs `compute-node-pool`, `invalid-novacompute-cr`,
 `basic-deployment-2026-1`, `basic-deployment-2026-2`, `release-upgrade`,
-`healthcheck`, `deletion-cleanup` and `pod-security-restricted`. Shard 1 runs
-every other suite, so a new suite runs there until the `Run E2E tests` step in
+`healthcheck`, `deletion-cleanup`, `pod-security-restricted` and
+`namespace-scoped-rbac`. Shard 1 runs every other suite, so a new suite runs
+there until the `Run E2E tests` step in
 `.github/workflows/ci.yaml` names it for shard 2. See [CI Workflow](../ci-cd/ci-workflow.md#e2e-operator).
 
 ### The libvirt leg
@@ -267,6 +268,7 @@ a labelled namespace of its own.
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between the three releases fails here |
 | [scale](#scale) | `nova-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, the other four Deployments left at the counts their own spec fields give them |
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile |
 | [httproute](#httproute) | `nova-route` | The three gateway blocks: routes for the API on 8774, the metadata API on 8775 and the console proxy on 6080, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec blocks |
 | [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted |
 | [deletion-cleanup](#deletion-cleanup) | `nova-cleanup` | Finalizer cleanup of every owned child and of the eight MariaDB CRs, the two cell0 objects included |
@@ -440,6 +442,46 @@ sibling services.
 | 2 | Assert NovaAPIReady and the endpoint | `assert` (10m) | `status.endpoint: http://nova-health.openstack.svc.cluster.local:8774`, `DeploymentReady=True`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` |
 
 **Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`
+
+---
+
+### namespace-scoped-rbac
+
+**File:** `tests/e2e/nova/namespace-scoped-rbac/chainsaw-test.yaml`
+
+**Purpose:** A second nova-operator release, installed into `openstack` with
+`rbac.namespaceScoped=true` and `webhook.enabled=false`, reconciles a Nova in
+its own namespace. Once the CR is Ready, the suite reads that release's pod: it
+never restarted, it logged the namespace-scoped startup line for `openstack` and
+no forbidden `Failed to watch` line, and its metrics endpoint counts a
+successful reconcile of the `nova` controller.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Deploy operator with namespace-scoped RBAC | `script` (120s) | `helm install nova-operator-ns-scoped` into `openstack` with `rbac.namespaceScoped=true`, `webhook.enabled=false` and one replica |
+| 2 | Assert Role and RoleBinding exist (not ClusterRole) | `assert` + `script` | Role and RoleBinding `nova-operator-ns-scoped` in `openstack`, and no ClusterRole of that name |
+| 3 | Give the suite its vhost, then apply the CR | `script` (2m) + `apply` | `broker-vhost.sh create nova-ns-scoped nova-ns-scoped-messaging openstack`, then the metadata Secret and `nova-ns-scoped` on the `openbao-tenant-store` SecretStore at one API replica |
+| 4 | Assert successful reconciliation | `assert` (10m) | `Ready=True/AllReady` |
+| 5 | Prove the namespace-scoped operator reconciled the Nova | `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh`: one pod, no restart, the only Nova in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count of at least 1 within 60 s |
+| 6 | Cleanup Helm release | `script` | `helm uninstall nova-operator-ns-scoped` |
+
+**Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`
+
+**Design note:** The cluster-wide nova-operator in `nova-system` watches every
+namespace and drives the same CR to Ready, and a status condition does not say
+which operator wrote it. Step 5 takes the evidence from the namespace-scoped pod
+instead: a forbidden cluster-scoped watch logs `Failed to watch` within seconds
+of the pod starting, and a manager blocked in its cache sync records no
+reconcile. The release runs one replica, because the chart's second replica
+would stand by behind the same release label with no reconcile on its metrics.
+The suite sets `spec.concurrent: false`. Because it runs alone, before the
+concurrent suites start, its Nova is the only one in `openstack` while Step 5
+counts reconciles, and the second operator touches no other suite's CR. The
+cluster-wide release's webhook admits the CRs, since this release runs none. The
+suite runs alone for about 10 minutes, so the shard 2 list names it: on
+2026-10-07 shard 2 was the shorter shard, at 59 minutes against 66.
 
 ---
 
@@ -1156,6 +1198,10 @@ tests/e2e/nova/
 │   ├── chainsaw-test.yaml             The archive pod stays out of the three EndpointSlices
 │   ├── 00-metadata-secret.yaml        The metadata shared secret
 │   └── 01-nova-cr.yaml                Nova CR nova-isolation with two API replicas
+├── namespace-scoped-rbac/
+│   ├── chainsaw-test.yaml             A namespace-scoped nova-operator release reconciles
+│   ├── 00-metadata-secret.yaml        The metadata shared secret
+│   └── 01-nova-cr.yaml                Nova CR nova-ns-scoped on the tenant SecretStore
 ├── network-policy/
 │   ├── chainsaw-test.yaml             The two policies, created, updated and deleted
 │   ├── 00-metadata-secret.yaml        The metadata shared secret
