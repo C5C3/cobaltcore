@@ -5,8 +5,8 @@
 # Patch to upgrade Keystone image tag.
 # DECISION: upgrade tag value
 # Ambiguity: which image tag to use for the upgrade target.
-# Chose: "2025.2-upgraded" because the CI pipeline must pre-load this tag
-# into kind alongside "2025.2" for the E2E test to pass.
+# Chose: "2026.1-upgraded" because the CI pipeline must pre-load this tag
+# into kind alongside "2026.1" for the E2E test to pass.
 # Reviewer: please verify this tag is available in the test environment.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
@@ -15,4 +15,4 @@ metadata:
   namespace: openstack
 spec:
   image:
-    tag: "2025.2-upgraded"
+    tag: "2026.1-upgraded"

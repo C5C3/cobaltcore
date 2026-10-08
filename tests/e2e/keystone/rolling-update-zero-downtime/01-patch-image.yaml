@@ -5,13 +5,13 @@
 # Patch that bumps spec.image.tag to trigger a rolling update for the
 # rolling-update-zero-downtime E2E test.
 #
-# DECISION: reuse the '2025.2-upgraded' tag already pre-loaded by CI for the
+# DECISION: reuse the '2026.1-upgraded' tag already pre-loaded by CI for the
 # image-upgrade test (see tests/e2e/keystone/image-upgrade/01-patch-image.yaml).
 # This keeps a single pre-load responsibility in the CI pipeline rather than
 # introducing a second alias.
-# The '2025.2-upgraded' tag is pre-loaded into kind by the "Load images into kind"
+# The '2026.1-upgraded' tag is pre-loaded into kind by the "Load images into kind"
 # step within the `e2e-operator` job in .github/workflows/ci.yaml alongside
-# 2025.2, enabling the image-tag patch without an external pull.
+# 2026.1, enabling the image-tag patch without an external pull.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -19,4 +19,4 @@ metadata:
   namespace: openstack
 spec:
   image:
-    tag: "2025.2-upgraded"
+    tag: "2026.1-upgraded"
