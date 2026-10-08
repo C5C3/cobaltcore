@@ -5,6 +5,9 @@
 package v1alpha1
 
 import (
+	"fmt"
+	"slices"
+
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -174,6 +177,16 @@ type ControlPlaneSpec struct {
 	// to bootstrap and rotate the admin application credential and any declared
 	// bootstrap resources.
 	KORC KORCSpec `json:"korc"`
+
+	// NamespaceAssignments assigns namespaces on the management cluster or on a
+	// registered target cluster to the owners of services this control plane does
+	// not manage, each with the Keystone roles an order from that namespace may
+	// request. See NamespaceAssignmentSpec. The field sits beside korc rather than
+	// inside it because the consent also covers database and message-bus orders.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=32
+	NamespaceAssignments []NamespaceAssignmentSpec `json:"namespaceAssignments,omitempty"`
 }
 
 // InfrastructureSpec declares the shared backing services for the control
@@ -2487,6 +2500,72 @@ type ServiceRegistrationsSpec struct {
 	AllowedNamespaces []string `json:"allowedNamespaces,omitempty"`
 }
 
+// NamespaceAssignmentSpec assigns one namespace, on the management cluster or on
+// a registered target cluster, to the owner of a service the control plane does
+// not manage. It is the consent the order kinds check before they act on an
+// order from that namespace, and it lists the Keystone roles such an order may
+// request.
+//
+// The pair (namespace, targetClusterRef.name) is unique across the list: the same
+// namespace name on two clusters is two entries. The validating webhook enforces
+// the uniqueness; no schema rule does.
+//
+// A role matches only its own case-sensitive name. Keystone's implied roles still
+// apply to what an allowed role grants: member implies reader, and admin implies
+// both. An empty allowedRoles is legal and allows no role, while the namespace
+// may still order a database or a message-bus vhost.
+//
+// An entry for a management-cluster namespace that
+// spec.korc.serviceRegistrations.allowedNamespaces admits also binds the
+// KeystoneService CRs there: an account role outside allowedRoles reports
+// AccountReady=False/RoleNotAllowed, and a CredentialRotation of that account
+// refuses the same way. Without an entry such a namespace stays unlimited.
+// Removing the entry lifts the limit again. The control plane's own namespace and
+// its dedicated service namespaces are never bound. An entry never admits a
+// KeystoneService and never provisions a tenant store.
+//
+// Removing an entry freezes the orders from its namespace. They report refused
+// and are no longer reconciled: nothing is rotated or delivered again, and
+// nothing they created is revoked or deleted, so the Secrets already delivered
+// stay. Deleting an order still tears down what it created, and credentials that
+// live on renewal (MariaDB dynamic leases) lapse at their TTL. A KeystoneService
+// refused for a role freezes the same way: a role assignment that already exists
+// in Keystone stays until the owner drops the role from spec.account.roles or
+// deletes the CR.
+//
+// Admission never checks that the named cluster is registered. An entry whose
+// cluster does not resolve is refused in status instead
+// (NamespaceAssignmentsReady=False/TargetClusterUnavailable), which turns the
+// control plane's Ready False, and so does an outage of a cluster that only
+// tenants use.
+type NamespaceAssignmentSpec struct {
+	// Namespace is the assigned namespace's name, an RFC-1123 label. The operator
+	// only reads it: it never creates, labels or deletes the namespace, and the
+	// entry may precede the namespace.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Namespace string `json:"namespace"`
+
+	// TargetClusterRef names the registered target cluster the namespace lives on.
+	// Absent means the management cluster. Admission does not check that the
+	// cluster is registered, and the ref may be edited: a changed ref is one entry
+	// removed and another added.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+
+	// AllowedRoles lists the Keystone role names an order from this namespace may
+	// request, each matched by its case-sensitive name. The item markers mirror
+	// KeystoneServiceAccountSpec.Roles.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=255
+	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
+	AllowedRoles []string `json:"allowedRoles,omitempty"`
+}
+
 // ServiceAccountProjectSpec declares the OpenStack project a service account is
 // associated with.
 type ServiceAccountProjectSpec struct {
@@ -2773,6 +2852,68 @@ type ControlPlaneStatus struct {
 	// rather than importing them.
 	// +optional
 	Catalog *CatalogStatus `json:"catalog,omitempty"`
+
+	// NamespaceAssignments reports what each spec.namespaceAssignments entry
+	// resolves to, one entry per spec entry and in spec order. It is empty when
+	// the spec assigns no namespace.
+	// +optional
+	// +listType=atomic
+	NamespaceAssignments []NamespaceAssignmentStatus `json:"namespaceAssignments,omitempty"`
+}
+
+// NamespaceAssignmentReason is the machine-readable outcome of one namespace
+// assignment.
+type NamespaceAssignmentReason string
+
+const (
+	// NamespaceAssignmentAssigned reports a namespace that exists on a reachable
+	// cluster.
+	NamespaceAssignmentAssigned NamespaceAssignmentReason = "Assigned"
+	// NamespaceAssignmentNamespaceNotFound reports a reachable cluster without the
+	// namespace. An assignment may precede its namespace, so this does not fail
+	// NamespaceAssignmentsReady.
+	NamespaceAssignmentNamespaceNotFound NamespaceAssignmentReason = "NamespaceNotFound"
+	// NamespaceAssignmentNamespaceTerminating reports a namespace that is being
+	// deleted.
+	NamespaceAssignmentNamespaceTerminating NamespaceAssignmentReason = "NamespaceTerminating"
+	// NamespaceAssignmentTargetClusterUnavailable reports a target cluster name
+	// that does not resolve to a registered cluster.
+	NamespaceAssignmentTargetClusterUnavailable NamespaceAssignmentReason = "TargetClusterUnavailable"
+	// NamespaceAssignmentClusterUnreachable reports a cluster that resolves but
+	// answered the namespace read with an error other than NotFound.
+	NamespaceAssignmentClusterUnreachable NamespaceAssignmentReason = "ClusterUnreachable"
+)
+
+// NamespaceAssignmentStatus reports the observed state of one
+// spec.namespaceAssignments entry.
+type NamespaceAssignmentStatus struct {
+	// Namespace is the assigned namespace, copied from the spec entry.
+	Namespace string `json:"namespace"`
+
+	// TargetClusterRef is the spec entry's cluster reference. Absent means the
+	// management cluster.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+
+	// AllowedRoles echoes the spec entry's role allowlist.
+	// +optional
+	AllowedRoles []string `json:"allowedRoles,omitempty"`
+
+	// ClusterReachable reports whether the cluster resolved and answered the
+	// namespace read.
+	ClusterReachable bool `json:"clusterReachable"`
+
+	// NamespaceExists reports whether the namespace exists on that cluster.
+	NamespaceExists bool `json:"namespaceExists"`
+
+	// Reason is the entry's outcome.
+	// +kubebuilder:validation:Enum=Assigned;NamespaceNotFound;NamespaceTerminating;TargetClusterUnavailable;ClusterUnreachable
+	Reason NamespaceAssignmentReason `json:"reason"`
+
+	// Message explains a reason other than Assigned in human-readable form.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32768
+	Message string `json:"message,omitempty"`
 }
 
 // CatalogStatus reports how the External-mode identity catalog imports resolved.
@@ -3234,6 +3375,64 @@ func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 		}
 		seen[ns.Name] = struct{}{}
 		out = append(out, *ns)
+	}
+	return out
+}
+
+// ManagementCluster is the cluster name of the management cluster: the
+// TargetClusterName of an entry without a ref, and the cluster
+// NamespaceAssignmentFor takes for it.
+const ManagementCluster = ""
+
+// TargetClusterName returns the name of the cluster the assigned namespace lives
+// on, or ManagementCluster.
+func (a *NamespaceAssignmentSpec) TargetClusterName() string {
+	if a.TargetClusterRef == nil {
+		return ManagementCluster
+	}
+	return a.TargetClusterRef.Name
+}
+
+// Location names the cluster the assigned namespace lives on, as the phrase the
+// webhook, the NamespaceAssignmentsReady condition and the role refusal message
+// share: "the management cluster" or `target cluster "<name>"`.
+func (a *NamespaceAssignmentSpec) Location() string {
+	if name := a.TargetClusterName(); name != ManagementCluster {
+		return fmt.Sprintf("target cluster %q", name)
+	}
+	return "the management cluster"
+}
+
+// Describe names the entry as "<namespace> on <Location()>", the phrase the
+// webhook's duplicate error and the NamespaceAssignmentsReady message share.
+func (a *NamespaceAssignmentSpec) Describe() string {
+	return a.Namespace + " on " + a.Location()
+}
+
+// NamespaceAssignmentFor returns the spec.namespaceAssignments entry for
+// namespace on cluster (ManagementCluster for the management cluster), or nil
+// when there is none. It is the consent lookup the KeystoneService role binding
+// and the order kinds call. The pointer addresses the stored entry; the webhook
+// keeps the pair unique, and a webhook-bypassed duplicate yields its first entry.
+func (cp *ControlPlane) NamespaceAssignmentFor(namespace, cluster string) *NamespaceAssignmentSpec {
+	for i := range cp.Spec.NamespaceAssignments {
+		a := &cp.Spec.NamespaceAssignments[i]
+		if a.Namespace == namespace && a.TargetClusterName() == cluster {
+			return a
+		}
+	}
+	return nil
+}
+
+// RolesOutside returns the roles not on the entry's allowedRoles, deduplicated
+// and in first-seen order, or nil when every role is allowed or roles is empty.
+// The match is exact and case-sensitive.
+func (a *NamespaceAssignmentSpec) RolesOutside(roles []string) []string {
+	var out []string
+	for _, role := range roles {
+		if !slices.Contains(a.AllowedRoles, role) && !slices.Contains(out, role) {
+			out = append(out, role)
+		}
 	}
 	return out
 }

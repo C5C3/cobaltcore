@@ -1930,3 +1930,130 @@ func TestTargetClusterNames(t *testing.T) {
 		})
 	}
 }
+
+// assignmentPlane returns a ControlPlane whose spec.namespaceAssignments holds
+// the given entries.
+func assignmentPlane(entries ...NamespaceAssignmentSpec) *ControlPlane {
+	return &ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec:       ControlPlaneSpec{NamespaceAssignments: entries},
+	}
+}
+
+// TestNamespaceAssignmentFor pins the consent lookup the order kinds call: the
+// pair (namespace, cluster) selects one entry, the management cluster is
+// ManagementCluster, no entry means nil, and a webhook-bypassed duplicate yields
+// its first entry.
+func TestNamespaceAssignmentFor(t *testing.T) {
+	edge := &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	cp := assignmentPlane(
+		NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"member"}},
+		NamespaceAssignmentSpec{Namespace: "tenant-a", TargetClusterRef: edge},
+	)
+
+	tests := []struct {
+		name               string
+		cp                 *ControlPlane
+		namespace, cluster string
+		wantIndex          int // -1 for nil
+	}{
+		{name: "the management entry", cp: cp, namespace: "tenant-a", cluster: ManagementCluster, wantIndex: 0},
+		{name: "the target entry of the same namespace", cp: cp, namespace: "tenant-a", cluster: "edge-1", wantIndex: 1},
+		{name: "an unassigned namespace", cp: cp, namespace: "tenant-b", cluster: ManagementCluster, wantIndex: -1},
+		{name: "an unassigned cluster", cp: cp, namespace: "tenant-a", cluster: "edge-2", wantIndex: -1},
+		{name: "a nil list", cp: assignmentPlane(), namespace: "tenant-a", cluster: ManagementCluster, wantIndex: -1},
+		{name: "an empty list", cp: assignmentPlane([]NamespaceAssignmentSpec{}...), namespace: "tenant-a", cluster: ManagementCluster, wantIndex: -1},
+		{name: "a webhook-bypassed duplicate yields its first entry", cp: assignmentPlane(
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"member"}},
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"admin"}},
+		), namespace: "tenant-a", cluster: ManagementCluster, wantIndex: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.cp.NamespaceAssignmentFor(tc.namespace, tc.cluster)
+			if tc.wantIndex < 0 {
+				if got != nil {
+					t.Fatalf("NamespaceAssignmentFor(%q, %q) = %+v, want nil", tc.namespace, tc.cluster, *got)
+				}
+				return
+			}
+			// The pointer addresses the stored entry, not a copy of it.
+			if want := &tc.cp.Spec.NamespaceAssignments[tc.wantIndex]; got != want {
+				t.Fatalf("NamespaceAssignmentFor(%q, %q) = %p, want entry %d at %p", tc.namespace, tc.cluster, got, tc.wantIndex, want)
+			}
+		})
+	}
+}
+
+// TestNamespaceAssignmentRolesOutside pins the role check: exact,
+// case-sensitive, deduplicated in first-seen order, and nil when nothing is
+// refused.
+func TestNamespaceAssignmentRolesOutside(t *testing.T) {
+	member := NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"member"}}
+	none := NamespaceAssignmentSpec{Namespace: "tenant-a"}
+
+	tests := []struct {
+		name  string
+		entry NamespaceAssignmentSpec
+		roles []string
+		want  []string
+	}{
+		{name: "nil roles", entry: member, roles: nil, want: nil},
+		{name: "empty roles", entry: member, roles: []string{}, want: nil},
+		{name: "every role allowed", entry: member, roles: []string{"member"}, want: nil},
+		{name: "an empty allowlist refuses every role", entry: none, roles: []string{"member"}, want: []string{"member"}},
+		{name: "a refused role is reported once", entry: member, roles: []string{"admin", "member", "admin"}, want: []string{"admin"}},
+		{name: "the match is case-sensitive", entry: member, roles: []string{"Member"}, want: []string{"Member"}},
+		{name: "first-seen order", entry: member, roles: []string{"service", "admin", "service"}, want: []string{"service", "admin"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.entry.RolesOutside(tc.roles)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("RolesOutside(%q) = %#v, want nil", tc.roles, got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("RolesOutside(%q) = %q, want %q", tc.roles, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNamespaceAssignmentLocation pins the cluster phrase the webhook, the
+// NamespaceAssignmentsReady condition and the role refusal message share, and
+// the entry phrase built on it.
+func TestNamespaceAssignmentLocation(t *testing.T) {
+	tests := []struct {
+		name         string
+		ref          *commonv1.TargetClusterRefSpec
+		wantCluster  string
+		wantLocation string
+		wantDescribe string
+	}{
+		{
+			name: "a nil ref is the management cluster", ref: nil, wantCluster: ManagementCluster,
+			wantLocation: "the management cluster", wantDescribe: "tenant-a on the management cluster",
+		},
+		{
+			name: "a named ref is that target cluster", ref: &commonv1.TargetClusterRefSpec{Name: "edge-1"},
+			wantCluster: "edge-1", wantLocation: `target cluster "edge-1"`, wantDescribe: `tenant-a on target cluster "edge-1"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NamespaceAssignmentSpec{Namespace: "tenant-a", TargetClusterRef: tc.ref}
+			if got := a.TargetClusterName(); got != tc.wantCluster {
+				t.Errorf("TargetClusterName() = %q, want %q", got, tc.wantCluster)
+			}
+			if got := a.Location(); got != tc.wantLocation {
+				t.Errorf("Location() = %q, want %q", got, tc.wantLocation)
+			}
+			if got := a.Describe(); got != tc.wantDescribe {
+				t.Errorf("Describe() = %q, want %q", got, tc.wantDescribe)
+			}
+		})
+	}
+}

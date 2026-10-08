@@ -441,6 +441,87 @@ func validateServiceRegistrations(cp *ControlPlane) field.ErrorList {
 	return allErrs
 }
 
+const (
+	// maxNamespaceAssignments mirrors the MaxItems marker on
+	// ControlPlaneSpec.NamespaceAssignments.
+	maxNamespaceAssignments = 32
+	// maxNamespaceAssignmentRoles mirrors the MaxItems marker on
+	// NamespaceAssignmentSpec.AllowedRoles.
+	maxNamespaceAssignmentRoles = 16
+	// maxNamespaceAssignmentRoleBytes mirrors the items:MaxLength marker on
+	// NamespaceAssignmentSpec.AllowedRoles.
+	maxNamespaceAssignmentRoleBytes = 255
+)
+
+// validateNamespaceAssignments mirrors the declarative constraints on
+// spec.namespaceAssignments as defense-in-depth for callers that bypass CRD
+// schema admission: the list and role caps, the RFC-1123 namespace shape, a
+// non-empty cluster name, and the item shape and listType=set duplicate rejection
+// of allowedRoles.
+//
+// It adds one rule no schema carries: the pair (namespace, cluster) is unique. A
+// CEL twin would compare TargetClusterRefSpec.Name, which has no MaxLength, so
+// its cost estimate is unbounded.
+//
+// It never looks up whether the named cluster is registered: an unresolvable
+// entry is refused in status (NamespaceAssignmentsReady) instead. It accepts the
+// same namespace on two clusters, the field in both Keystone modes, and an entry
+// naming a namespace the control plane occupies, which is never bound.
+func validateNamespaceAssignments(cp *ControlPlane) field.ErrorList {
+	assignments := cp.Spec.NamespaceAssignments
+	if len(assignments) == 0 {
+		return nil
+	}
+	var allErrs field.ErrorList
+	basePath := field.NewPath("spec", "namespaceAssignments")
+
+	if len(assignments) > maxNamespaceAssignments {
+		allErrs = append(allErrs, field.TooMany(basePath, len(assignments), maxNamespaceAssignments))
+	}
+
+	type assignmentKey struct{ namespace, cluster string }
+	seen := make(map[assignmentKey]struct{}, len(assignments))
+	for i := range assignments {
+		a := &assignments[i]
+		entryPath := basePath.Index(i)
+		if !namespaceNamePattern.MatchString(a.Namespace) {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("namespace"), a.Namespace,
+				"must be a lowercase alphanumeric RFC-1123 label (it names a Kubernetes namespace)"))
+		}
+		allErrs = append(allErrs, validation.TargetClusterRef(entryPath.Child("targetClusterRef"), a.TargetClusterRef)...)
+
+		key := assignmentKey{a.Namespace, a.TargetClusterName()}
+		if _, dup := seen[key]; dup {
+			allErrs = append(allErrs, field.Duplicate(entryPath, a.Describe()))
+		}
+		seen[key] = struct{}{}
+
+		rolesPath := entryPath.Child("allowedRoles")
+		if len(a.AllowedRoles) > maxNamespaceAssignmentRoles {
+			allErrs = append(allErrs, field.TooMany(rolesPath, len(a.AllowedRoles), maxNamespaceAssignmentRoles))
+		}
+		seenRoles := make(map[string]struct{}, len(a.AllowedRoles))
+		for j, role := range a.AllowedRoles {
+			rolePath := rolesPath.Index(j)
+			switch {
+			case role == "":
+				allErrs = append(allErrs, field.Invalid(rolePath, role, "must not be empty"))
+			case len(role) > maxNamespaceAssignmentRoleBytes:
+				allErrs = append(allErrs, field.Invalid(rolePath, role,
+					fmt.Sprintf("must be at most %d bytes", maxNamespaceAssignmentRoleBytes)))
+			case strings.Contains(role, ","):
+				allErrs = append(allErrs, field.Invalid(rolePath, role, korcOpenStackNameCommaMessage))
+			}
+			if _, dup := seenRoles[role]; dup {
+				allErrs = append(allErrs, field.Duplicate(rolePath, role))
+			}
+			seenRoles[role] = struct{}{}
+		}
+	}
+
+	return allErrs
+}
+
 // glanceBackendChildNameInfix is the infix of a projected GlanceBackend child CR
 // name, "{cp}-glance-{name}", i.e. the part between the ControlPlane name and
 // the backend entry name. It mirrors identityImportChildNameOverhead one level
@@ -3150,6 +3231,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateMessagingConsumers(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
+	allErrs = append(allErrs, validateNamespaceAssignments(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
 	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
 	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
