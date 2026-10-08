@@ -226,6 +226,34 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --health-probe-bind-address=:8081
 
+  # Standalone webhook tests: the same Deployment without controllers.
+  - it: should render the standalone webhook arguments when webhook.standalone is true
+    set:
+      webhook:
+        standalone: true
+    asserts:
+      # No --leader-elect although leaderElection.enabled stays true: a
+      # standalone webhook holds no lease.
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --enable-controllers=false
+            - --max-concurrent-reconciles=2
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook
+            containerPort: 9443
+            protocol: TCP
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: webhook-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].name
+          value: webhook-certs
+
   # Controller concurrency (--max-concurrent-reconciles) tests.
   - it: should render --max-concurrent-reconciles=2 with default values
     asserts:

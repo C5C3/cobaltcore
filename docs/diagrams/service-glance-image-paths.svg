@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1420" viewBox="0 0 1808 1420" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Glance: image byte paths and the node-local volumes">
+<title>Glance: image byte paths and the node-local volumes</title>
+<rect width="1808" height="1420" fill="#F6F5F1"/>
+<rect x="40" y="50" width="410" height="210" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="84.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Client</text>
+<text x="245" y="111.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the openstack CLI or another API client</text>
+<rect x="40" y="300" width="1020" height="908" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="339.36" font-size="26" font-weight="700" fill="#2B3440">pod of {glance}</text>
+<text x="59" y="373.2" font-size="20" font-weight="400" fill="#55606E">one per replica; read-only root file system</text>
+<text x="59" y="399.2" font-size="20" font-weight="400" fill="#55606E">the Gateway reaches it through the HTTPRoute {glance},</text>
+<text x="59" y="425.2" font-size="20" font-weight="400" fill="#55606E">request timeout 4h</text>
+<rect x="790" y="440" width="246" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="913" y="472.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">glance-api</text>
+<rect x="560" y="540" width="290" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="705" y="572.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">emptyDir tasks-work</text>
+<text x="560" y="613.2" font-size="20" font-weight="400" fill="#55606E">/var/lib/glance/tasks-work, os_glance_tasks_store</text>
+<text x="560" y="639.2" font-size="20" font-weight="400" fill="#55606E">eviction threshold: the same sizeLimit</text>
+<text x="560" y="665.2" font-size="20" font-weight="400" fill="#55606E">no import writes image bytes here</text>
+<rect x="560" y="700" width="260" height="76" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="690" y="746.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">emptyDir staging</text>
+<text x="560" y="801.2" font-size="20" font-weight="400" fill="#55606E">/var/lib/glance/staging, os_glance_staging_store</text>
+<text x="560" y="827.2" font-size="20" font-weight="400" fill="#55606E">eviction threshold: spec.staging.sizeLimit,</text>
+<text x="560" y="853.2" font-size="20" font-weight="400" fill="#55606E">10Gi by default</text>
+<text x="560" y="879.2" font-size="20" font-weight="400" fill="#55606E">a conversion writes a second file beside the first</text>
+<rect x="560" y="914" width="310" height="136" fill="#E9ECEF" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="715" y="990.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">emptyDir image-cache</text>
+<text x="560" y="1075.2" font-size="20" font-weight="400" fill="#55606E">/var/lib/glance/image-cache,</text>
+<text x="560" y="1101.2" font-size="20" font-weight="400" fill="#55606E">only with spec.imageCache</text>
+<text x="560" y="1127.2" font-size="20" font-weight="400" fill="#55606E">eviction threshold: spec.imageCache.sizeLimit,</text>
+<text x="560" y="1153.2" font-size="20" font-weight="400" fill="#55606E">10Gi by default</text>
+<text x="560" y="1179.2" font-size="20" font-weight="400" fill="#55606E">pruned down to 80 % of it</text>
+<rect x="64" y="1008" width="270" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="199" y="1040.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">cache-maintenance</text>
+<text x="64" y="1081.2" font-size="20" font-weight="400" fill="#55606E">runs glance-cache-pruner and</text>
+<text x="64" y="1107.2" font-size="20" font-weight="400" fill="#55606E">glance-cache-cleaner</text>
+<rect x="1430" y="430" width="300" height="68" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1580" y="472.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">S3 store</text>
+<text x="1430" y="523.2" font-size="20" font-weight="400" fill="#55606E">the default GlanceBackend;</text>
+<text x="1430" y="549.2" font-size="20" font-weight="400" fill="#55606E">S3 is the only type</text>
+<rect x="1494" y="724" width="266" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1627" y="758.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Web server</text>
+<text x="1627" y="785.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the URI of an import</text>
+<polyline points="450,240 810,240 810,429.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="810,440 802.8,425 817.2,425" fill="#2457C5"/>
+<polyline points="450,120 1010,120 1010,429.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1010,440 1002.8,425 1017.2,425" fill="#2457C5"/>
+<polyline points="870,440 870,195 460.5,195" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="450,195 465,187.8 465,202.2" fill="#2457C5"/>
+<polyline points="1036,452 1419.5,452" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1430,452 1415,459.2 1415,444.8" fill="#2457C5"/>
+<polyline points="1430,476 1046.5,476" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1036,476 1051,468.8 1051,483.2" fill="#2457C5"/>
+<polyline points="1494,762 830.5,762" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="820,762 835,754.8 835,769.2" fill="#2457C5"/>
+<polyline points="820,712 1715,712 1715,508.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1715,498 1722.2,513 1707.8,513" fill="#2457C5"/>
+<polyline points="560,970 230,970 230,450 779.5,450" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="790,450 775,457.2 775,442.8" fill="#2457C5"/>
+<polyline points="790,464 250,464 250,932 549.5,932" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="560,932 545,939.2 545,924.8" fill="#2457C5"/>
+<polyline points="790,478 420,478 420,738 560,738" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="820,488 820,540" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="334,1032 560,1032" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="462" y="109.2" font-size="20" font-weight="400" fill="#2B3440">B import: POST /v2/images/{id}/import, web-download</text>
+<text x="462" y="147.2" font-size="20" font-weight="400" fill="#55606E">answers 202 at once</text>
+<text x="462" y="184.2" font-size="20" font-weight="400" fill="#2B3440">C download: GET /v2/images/{id}/file</text>
+<text x="462" y="229.2" font-size="20" font-weight="400" fill="#2B3440">A upload: PUT /v2/images/{id}/file</text>
+<text x="1070" y="441.2" font-size="20" font-weight="400" fill="#2B3440">A: streamed to the store, no volume</text>
+<text x="1070" y="501.2" font-size="20" font-weight="400" fill="#2B3440">C: a miss reads the store</text>
+<text x="1070" y="701.2" font-size="20" font-weight="400" fill="#2B3440">B: to the store after the last byte</text>
+<text x="1070" y="751.2" font-size="20" font-weight="400" fill="#2B3440">B: glance-api fetches the whole image</text>
+<text x="1070" y="787.2" font-size="20" font-weight="400" fill="#55606E">only a URI that spec.importFiltering admits</text>
+<text x="262" y="921.2" font-size="20" font-weight="400" fill="#2B3440">C: a miss also fills the cache</text>
+<text x="242" y="995.2" font-size="20" font-weight="400" fill="#2B3440">C: a hit is served from here</text>
+<text x="40" y="1269.2" font-size="20" font-weight="400" fill="#55606E">{glance}: the Glance resource, {cp}-glance under a ControlPlane. {id}: an image. Dashed: only with spec.imageCache.</text>
+<text x="40" y="1295.2" font-size="20" font-weight="400" fill="#55606E">The three volumes are emptyDirs on the disk of the node. A sizeLimit is no quota: once a volume grows past it, the kubelet evicts the pod</text>
+<text x="40" y="1321.2" font-size="20" font-weight="400" fill="#55606E">with every transfer on it. spec.staging.unbounded removes the limit of staging and tasks-work.</text>
+<text x="40" y="1347.2" font-size="20" font-weight="400" fill="#55606E">The operator enables the import methods web-download and copy-image. glance-direct is off, so no client upload is staged.</text>
+<text x="40" y="1373.2" font-size="20" font-weight="400" fill="#55606E">tasks-work takes the working copy of the Tasks API, POST /v2/tasks, which is open to admins only.</text>
+</svg>

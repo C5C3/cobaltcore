@@ -253,6 +253,7 @@ func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
 	g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/"))
 	g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
+	g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 
 	g.Expect(c.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
 	g.Expect(deploy.Spec.Template.Spec.SecurityContext).NotTo(BeNil())

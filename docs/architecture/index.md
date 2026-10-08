@@ -30,13 +30,20 @@ target clusters.
 
 The stack is built in three declarative layers.
 
-**Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance` syncs
-the repository, and HelmReleases install cert-manager, the External Secrets
+**Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance`
+installs the Flux controllers, and HelmReleases install cert-manager, the External Secrets
 Operator, OpenBao, and the infrastructure and service operators along an
 explicit `dependsOn` graph; K-ORC and the RabbitMQ Cluster Operator are
 applied by Flux `Kustomization`s of their own. The full stack, its namespaces,
 and the dependency order are documented in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md).
+
+The figure draws that graph: four layers of HelmReleases, and the two
+dependencies that cross to a Flux `Kustomization` and are declared nowhere.
+[Dependency Order](../reference/infrastructure/infrastructure-manifests.md#dependency-order)
+lists every `dependsOn` entry.
+
+![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../diagrams/deploy-flux-dependencies.svg)
 
 **Service operators** (`operators/`). One operator per OpenStack service, each
 projecting the service's Deployments, Jobs, configuration, and Secrets from
@@ -85,6 +92,14 @@ Service CRs opt into external exposure through the Gateway API: when
 public endpoint. The kind overlay installs Envoy Gateway as the demo
 implementation; production overlays do not ship a Gateway controller, and
 platform owners bring their own implementation.
+
+The figure follows a request on the kind devstack. What `spec.gateway`
+configures is the part inside the cluster, from the Gateway to the pods, and
+the port mapping in front of it exists on kind only.
+[The request path, hop by hop](../quick-start-extended.md#request-path) names
+each hop.
+
+![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](../diagrams/quickstart-request-path.svg)
 
 ## Multi-cluster placement
 

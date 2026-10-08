@@ -18,9 +18,10 @@ import (
 func TestOptionCatalogs_EmbeddedReleasesParse(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(optionCatalogs).To(HaveLen(2))
+	g.Expect(optionCatalogs).To(HaveLen(3))
 	g.Expect(optionCatalogs).To(HaveKey("2025.2"))
 	g.Expect(optionCatalogs).To(HaveKey("2026.1"))
+	g.Expect(optionCatalogs).To(HaveKey("2026.2"))
 
 	for rel, catalog := range optionCatalogs {
 		g.Expect(catalog.Sections).To(HaveKey("DEFAULT"), "release %s must have a DEFAULT section", rel)

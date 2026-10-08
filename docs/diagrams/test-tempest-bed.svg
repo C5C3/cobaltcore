@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1489" viewBox="0 0 1808 1489" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Test bed of a Tempest job">
+<title>Test bed of a Tempest job</title>
+<rect width="1808" height="1489" fill="#F6F5F1"/>
+<rect x="40" y="40" width="760" height="824" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Runner host</text>
+<text x="59" y="114.2" font-size="20" font-weight="400" fill="#55606E">the self-hosted runner of one tempest job</text>
+<rect x="64" y="186" width="300" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="214" y="221.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Run Tempest API tests</text>
+<text x="214" y="252.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">hack/ci-run-tempest.sh</text>
+<rect x="346" y="290" width="430" height="135" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="365" y="329.36" font-size="26" font-weight="700" fill="#2B3440">kubectl port-forward</text>
+<text x="365" y="364.2" font-size="20" font-weight="400" fill="#55606E">one process per Service, bound to localhost</text>
+<text x="365" y="392.2" font-size="20" font-weight="400" fill="#55606E">the port of the Service on both sides</text>
+<rect x="516" y="640" width="260" height="44" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="646" y="670.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Tempest container</text>
+<text x="516" y="709.2" font-size="20" font-weight="400" fill="#55606E">docker run --network host</text>
+<text x="516" y="737.2" font-size="20" font-weight="400" fill="#55606E">image tempest:{release}</text>
+<rect x="64" y="640" width="300" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="214" y="672.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">_output/tempest/config</text>
+<text x="64" y="713.2" font-size="20" font-weight="400" fill="#55606E">tempest.conf, the test lists, run-tests.sh</text>
+<rect x="64" y="760" width="220" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="174" y="792.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">_output/tempest</text>
+<text x="64" y="833.2" font-size="20" font-weight="400" fill="#55606E">the JUnit report, the logs of the forwards</text>
+<rect x="868" y="40" width="900" height="1283" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="894.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="932.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="984.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">kind cluster</text>
+<rect x="892" y="110" width="852" height="1189" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="910" y="127" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="936" y="149.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="976" y="150.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<path d="M916 188 H1110 L1126 204 V232 H916 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1110,188 1110,204 1126,204" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1021" y="218.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">keystone-admin</text>
+<text x="1142" y="217.2" font-size="20" font-weight="400" fill="#55606E">the admin password</text>
+<rect x="1240" y="298" width="260" height="44" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1370" y="328.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {keystone}</text>
+<text x="1370" y="367.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">port 5000</text>
+<rect x="1240" y="392" width="432" height="377" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1259" y="431.36" font-size="26" font-weight="700" fill="#2B3440">By service</text>
+<rect x="1264" y="455" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="480.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {glance}</text>
+<text x="1606" y="479.2" font-size="20" font-weight="400" fill="#55606E">9292</text>
+<rect x="1264" y="499" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="524.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {barbican}</text>
+<text x="1606" y="523.2" font-size="20" font-weight="400" fill="#55606E">9311</text>
+<rect x="1264" y="543" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="568.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {neutron}</text>
+<text x="1606" y="567.2" font-size="20" font-weight="400" fill="#55606E">9696</text>
+<rect x="1264" y="587" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="612.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {cinder}</text>
+<text x="1606" y="611.2" font-size="20" font-weight="400" fill="#55606E">8776</text>
+<rect x="1264" y="631" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="656.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {nova}</text>
+<text x="1606" y="655.2" font-size="20" font-weight="400" fill="#55606E">8774</text>
+<rect x="1264" y="675" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="700.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {nova}-novncproxy</text>
+<text x="1606" y="699.2" font-size="20" font-weight="400" fill="#55606E">6080</text>
+<rect x="1264" y="719" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1429" y="744.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {placement}</text>
+<text x="1606" y="743.2" font-size="20" font-weight="400" fill="#55606E">8778</text>
+<rect x="916" y="820" width="804" height="455" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="935" y="859.36" font-size="26" font-weight="700" fill="#2B3440">Seed Jobs</text>
+<text x="935" y="888.2" font-size="20" font-weight="400" fill="#55606E">image tempest:{release}, by service</text>
+<rect x="940" y="921" width="504" height="44" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<path d="M980.32 921 V965 M1403.68 921 V965" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1192" y="951.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Job {service}-tempest-catalog-setup</text>
+<text x="940" y="990.2" font-size="20" font-weight="400" fill="#55606E">services, endpoints and roles in Keystone</text>
+<rect x="940" y="1007" width="504" height="44" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<path d="M980.32 1007 V1051 M1403.68 1007 V1051" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1192" y="1037.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Job {service}-tempest-image-seed</text>
+<text x="940" y="1076.2" font-size="20" font-weight="400" fill="#55606E">the images tempest.conf pins</text>
+<rect x="940" y="1093" width="504" height="44" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<path d="M980.32 1093 V1137 M1403.68 1093 V1137" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1192" y="1123.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Job {service}-tempest-flavor-seed</text>
+<text x="940" y="1162.2" font-size="20" font-weight="400" fill="#55606E">the flavors m1.nano and m1.micro</text>
+<rect x="940" y="1179" width="504" height="44" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<path d="M980.32 1179 V1223 M1403.68 1179 V1223" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="1192" y="1209.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Job barbican-tempest-policy-check</text>
+<text x="940" y="1248.2" font-size="20" font-weight="400" fill="#55606E">the policy defaults of Barbican</text>
+<polyline points="916,210 374.5,210" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="364,210 379,202.8 379,217.2" fill="#B0387F"/>
+<text x="500" y="195.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">kubectl get secret</text>
+<polyline points="364,250 560,250 560,279.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,290 552.8,275 567.2,275" fill="#3A4452"/>
+<text x="572" y="275.2" font-size="20" font-weight="400" fill="#2B3440">starts</text>
+<polyline points="100,270 100,590 560,590 560,629.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,640 552.8,625 567.2,625" fill="#3A4452"/>
+<text x="116" y="575.2" font-size="20" font-weight="400" fill="#2B3440">starts it once every port answers</text>
+<polyline points="700,640 700,435.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="700,425 707.2,440 692.8,440" fill="#2457C5"/>
+<text x="688" y="485.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">http to the name of a Service</text>
+<text x="688" y="511.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">--add-host points both DNS names at 127.0.0.1</text>
+<polyline points="364,652 516,652" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="380" y="641.2" font-size="20" font-weight="400" fill="#2B3440">/etc/tempest</text>
+<polyline points="284,784 470,784 470,674 516,674" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="300" y="773.2" font-size="20" font-weight="400" fill="#2B3440">/output</text>
+<polyline points="776,320 1229.5,320" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1240,320 1225,327.2 1225,312.8" fill="#2457C5"/>
+<text x="920" y="309.2" font-size="20" font-weight="400" fill="#2B3440">every job</text>
+<polyline points="776,410 1229.5,410" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1240,410 1225,417.2 1225,402.8" fill="#2457C5"/>
+<text x="920" y="399.2" font-size="20" font-weight="400" fill="#2B3440">one forward per further Service</text>
+<polyline points="1700,820 1700,320 1510.5,320" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1500,320 1515,312.8 1515,327.2" fill="#2457C5"/>
+<text x="1688" y="798.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">http to the cluster DNS names</text>
+<text x="40" y="1374.2" font-size="20" font-weight="400" fill="#55606E">{keystone}, {glance} and so on: the service resource of that kind, which names its Service. {service}: the service under test. {release}: its release.</text>
+<text x="40" y="1408.2" font-size="20" font-weight="400" fill="#55606E">A forward binds to localhost and stays with one pod of its Service. No hop uses TLS, and none passes the Gateway.</text>
+<text x="40" y="1442.2" font-size="20" font-weight="400" fill="#55606E">A dashed part exists where the job deploys that service. A keystone job forwards port 5000 only and runs no seed Job.</text>
+</svg>

@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Pinned version — bumped by Renovate via a regex custom manager that matches
 # this line literally, so it must stay verbatim and appear exactly once.
 # ---------------------------------------------------------------------------
-DIZZY_VERSION="${DIZZY_VERSION:-v0.1.0}"
+DIZZY_VERSION="${DIZZY_VERSION:-v0.5.0}"
 
 # Extracted-source cache and the generated clouds.yaml both live under the
 # git-ignored _output/ tree.

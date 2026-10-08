@@ -68,6 +68,41 @@ shared secret both sides carry.
 | `sharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `shared_secret` | The Secret holding the value the agent signs forwarded requests with. Nova rejects an unsigned request when it carries a secret of its own, so the two values have to match. The value reaches the process as `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` and never enters the rendered ConfigMap; its digest rides the pod template as `neutron.c5c3.io/metadata-secret-hash`, so a changed value rolls the pods. The Secret a ControlPlane generates for its compute service (`{controlplane.Name}-nova-metadata-secret`) carries the value under `shared_secret`, so naming that Secret alone is enough. An agent on a compute cluster names the copy the ControlPlane delivers there instead, `{controlplane.Name}-nova-metadata-agent-secret` (see [On a compute cluster](#on-a-compute-cluster)) |
 | `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | no | `nil`; `key` webhook-defaulted to `ca.crt` | A Secret in the agent's namespace, on the cluster its pods run on, holding the PEM bundle that signs the Nova metadata API's certificate: for an agent on a compute cluster, the issuer of the metadata Gateway listener's certificate. The operator mounts it into the agent container and renders its path as `[DEFAULT] auth_ca_cert = /etc/nova-metadata-ca/ca.crt`. Requires `protocol: https`. Without it, an `https` agent verifies the certificate against the image's default CA bundle |
 
+#### The path of a request {#metadata-path}
+
+The figure follows a request from an instance to the Nova metadata API. Its
+numbers are the hops below.
+
+![The path of a metadata request in six numbered hops. Hop 1: an instance calls http://169.254.169.254, an address OVN answers on the chassis of its node. Hop 2: Open vSwitch hands the request to a haproxy in the network namespace of the instance's network; the metadata agent creates one such namespace per network under /run/netns and starts one haproxy in each. Hop 3: haproxy passes the request to the metadata agent over the socket metadata_proxy. Hop 4: the agent finds the port that is asking in the Southbound database. Hop 5: the agent forwards the request to the Nova metadata API {nova}-metadata on port 8775 and signs it with the shared secret, as the header X-Instance-ID-Signature. Hop 6: the metadata API checks the signature with the same secret and resolves the instance from the mappings in the API database. One Secret, {cp}-nova-metadata-secret, carries the shared secret to both ends, as an environment variable on each. For an agent on a compute cluster two things change: it reads a copy of the secret that the c5c3-operator writes there, and it reaches the metadata API over https through the metadata Gateway.](../../diagrams/compute-metadata-path.svg)
+
+1. The instance calls `http://169.254.169.254`. Neutron runs with
+   `[ovn] ovn_metadata_enabled = true`, so OVN answers that address on the
+   chassis of the instance's node.
+2. Open vSwitch hands the request to a haproxy in a network namespace of its
+   own. The agent creates one namespace per network under `/run/netns` and
+   starts one haproxy in each, which is why its container is privileged and
+   mounts `/run/netns` with bidirectional propagation.
+3. haproxy passes the request to the agent over the socket
+   `/var/lib/neutron/metadata_proxy`. The readiness probe of the agent tests
+   for that socket.
+4. The agent finds the port that is asking. It reads the local Open vSwitch
+   database (`[ovs] ovsdb_connection`) and the Southbound database
+   (`[ovn] ovn_sb_connection`).
+5. The agent forwards the request to `nova_metadata_host` on
+   `nova_metadata_port` and signs it with the shared secret. Nova checks the
+   header `X-Instance-ID-Signature` against an HMAC keyed with the same value.
+6. The metadata API runs with `[neutron] service_metadata_proxy = true`. It
+   verifies the signature and resolves the instance from the mappings in the
+   API database, which is why one metadata front end serves every cell.
+
+The shared secret reaches both ends as an environment variable and never
+enters a ConfigMap: `OS_DEFAULT__METADATA_PROXY_SHARED_SECRET` on the agent,
+`OS_NEUTRON__METADATA_PROXY_SHARED_SECRET` on the metadata pods. Under a
+ControlPlane both read `{controlplane.Name}-nova-metadata-secret`, which an
+External Secrets `Password` generator fills once. The dashed parts of the
+figure are the two differences of an agent on a compute cluster, which the
+next section covers.
+
 ### On a compute cluster
 
 An agent whose pods run on a compute cluster reaches the Nova metadata API of
@@ -291,7 +326,7 @@ metadata keys the API never writes. Six of its entries are refused in
 
 | Key | Owned by | Why the override is refused |
 | --- | --- | --- |
-| `[DEFAULT] metadata_proxy_shared_secret` | `spec.novaMetadata.sharedSecretRef` | The shared secret is env-injected from the referenced Secret, so a file override is ignored at runtime and copies credential material into the rendered config Secret |
+| `[DEFAULT] metadata_proxy_shared_secret` | `spec.novaMetadata.sharedSecretRef` | The shared secret is env-injected from the referenced Secret, so a file override is ignored at runtime and copies credential material into the rendered ConfigMap |
 | `[ovs] ovsdb_connection` | `spec.chassisRef` | The agent reads the local Open vSwitch database over the socket the chassis pods share; another address points it at a node whose ports it is not answering for |
 | `[ovn] ovn_sb_connection` | `spec.chassisRef` | The connection string is the Southbound address the `OVNCentral` the referenced chassis registers with publishes for the chassis's cluster: the internal one on the central's cluster, the node-port one from another; another address points the agent at a logical model it does not serve |
 | `[ovn] ovn_sb_private_key` | operator-computed | The operator mounts the client keypair the chassis publishes in `status.clientSecretName`, signed by the `OVNCentral` issuer; another path names a file the pod does not carry, and the connection falls back to no client identity |
@@ -382,7 +417,7 @@ set on every pass: the agent runs no optional step. The aggregate `Ready` is
 | `DaemonSetReady` | True | `DaemonSetReady` | The DaemonSet runs a ready pod on every node it schedules. The message counts the nodes |
 | `DaemonSetReady` | False | `DaemonSetProgressing` | Fewer nodes run a ready pod than the DaemonSet schedules. The message counts both |
 | `DaemonSetReady` | False | `DaemonSetError` | The DaemonSet could not be applied or read |
-| `Ready` | True | `AllReady` | All three sub-conditions are True |
+| `Ready` | True | `AllReady` | All four sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
@@ -423,6 +458,12 @@ agent lands on the set of nodes the chassis programs and nowhere else. Both are
 deep-copied, and `spec.chassisRef` is resolved in the CR's own namespace through
 the management-cluster client, since every CR of this control plane is written
 there whatever cluster the children land on.
+
+The figure shows the agent's pod beside the three other pods of such a node.
+Its init container is the only one that waits for the chassis to be registered
+in the Southbound database.
+
+![One hypervisor node with the four pods three resources put on it. An OVNChassis creates two DaemonSets: the pod {chassis}-ovs with the init container host-prepare and the containers ovsdb-server and ovs-vswitchd, and the pod {chassis}-ovn-controller with the init container apply-node and the container ovn-controller. A NeutronMetadataAgent creates the pod {agent}-metadata-agent, a NovaCompute the pod {pool}-nova-compute. All four run in the network namespace of the node, beside a libvirtd that no operator runs. Three gates order the start. The operator creates the ovn-controller DaemonSet only once every OVS pod is Ready. The init container wait-for-chassis of nova-compute waits until apply-node has written a system-id into the local Open vSwitch database. The init container wait-for-chassis of the metadata agent waits until ovn-controller has registered the chassis in the Southbound database. The pods share host paths: /run/openvswitch is mounted by all four, /run/ovn by the two chassis pods, /run/netns by the metadata agent, /run/libvirt and /var/lib/nova by nova-compute and libvirtd. A gateway node has no further pod: it also matches spec.gateway.nodeSelector, and apply-node sets ovn-cms-options=enable-chassis-as-gw.](../../diagrams/compute-node-anatomy.svg)
 
 The pod runs with `hostNetwork: true`: it answers the 169.254.169.254 requests
 arriving on the node's own interfaces. Two host paths are mounted, both

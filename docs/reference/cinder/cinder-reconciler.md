@@ -7,7 +7,7 @@ quadrant: operator
 
 The Cinder controller runs the shared table-driven pipeline
 (`internal/common/reconcile`) with twelve sequential sub-reconcilers and a
-parallel group of four. Every step is instrumented under the `cinder_operator`
+parallel group of five. Every step is instrumented under the `cinder_operator`
 metrics prefix, and the first step to return a non-zero result or an error
 short-circuits the chain. Conditions and the requeue are persisted on every exit
 path through the shared status skeleton.
@@ -34,8 +34,14 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► Back
 Database ──► Scheduler ──► VolumeServices ──► BackupService ──► Deployment ──► DBPurge ──► ┬─ HTTPRoute
                                                                                            ├─ HealthCheck
                                                                                            ├─ HPA
+                                                                                           ├─ VPA
                                                                                            └─ NetworkPolicy  (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -63,13 +69,13 @@ that gate the same downstream graph, so a distinct `sub_reconciler` label on the
 error counter disambiguates them during triage while the status contract stays
 minimal.
 
-The four members of the parallel group have no inter-dependency. Each operates
+The five members of the parallel group have no inter-dependency. Each operates
 on its own copy of the CR and sets exactly one condition, and the group merges
 the conditions back before the status write.
 
 ## Conditions
 
-The aggregate `Ready` is True (reason `AllReady`) exactly when all thirteen
+The aggregate `Ready` is True (reason `AllReady`) exactly when all fourteen
 sub-conditions are True; otherwise False (`NotAllReady`). `ExtraConfigHealthy`
 is deliberately outside the aggregate: it reports on an overlay the user owns
 and must not depool a Cinder whose API serves fine.

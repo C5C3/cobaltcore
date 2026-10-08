@@ -65,7 +65,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ with .Values.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            {{- if .Values.leaderElection.enabled }}
+            {{- if and .Values.leaderElection.enabled (not .Values.webhook.standalone) }}
             - --leader-elect
             {{- end }}
             {{- if .Values.rbac.namespaceScoped }}
@@ -77,6 +77,12 @@ spec:
             # namespace the operator has no grant for, the cache would never
             # sync, and the manager would fail to start.
             - --clusters-namespace=
+            {{- end }}
+            {{- if .Values.webhook.standalone }}
+            # Standalone admission webhook: this release reconciles nothing and
+            # holds no lease, so the manager serves the webhooks only and its
+            # ClusterRole carries no leases grant.
+            - --enable-controllers=false
             {{- end }}
             {{- if not .Values.webhook.enabled }}
             - --enable-webhooks=false

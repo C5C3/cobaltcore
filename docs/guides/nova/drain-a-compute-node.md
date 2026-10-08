@@ -16,6 +16,12 @@ while Nova counts servers on the host. When none is left, the pool releases the
 pod and deletes the service, which removes the host mapping, the resource
 provider and the aggregate membership. The pool never migrates an instance.
 
+The figure shows the phases a node of a pool passes through. This guide walks
+the path from `Active` through `Draining` and `Releasing` until the entry is
+dropped.
+
+![The five phases of a node in a NovaCompute pool as a state machine. A node the selector matches starts in Pending and turns Active once its compute service is registered and its host is mapped; it falls back to Pending when the service disappears from Nova. A node another pool of the same Nova holds starts in Conflict and becomes Pending when that pool drops its entry. A selected node goes Draining when its label is removed, its Node is deleted or the pool is deleted, and the pool disables its compute service once. It goes Releasing when Nova counts no server on the host, or at once and without a disable when another pool selects it. From Releasing the pool releases the pod and deletes the compute service, which drops the entry from status.nodes and cannot be undone; a delete Nova refuses returns the node to Draining. A node selected again while Draining or Releasing goes back to Active with its service still disabled. The pool never moves a server, never enables a service and never times a drain out.](../../diagrams/compute-node-phases.svg)
+
 This guide drains the node of the ControlPlane devstack through a pool on
 nova's fake driver. It then gives the order on a compute cluster that runs
 [openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
@@ -47,7 +53,8 @@ describes.
    names.
 2. The `OVNChassis` `controlplane-chassis` `Ready` on the node, as that guide
    leaves it. The pool's `wait-for-chassis` init container waits until the
-   node's chassis has registered, so a pool on a node without one never starts.
+   chassis has written its `system-id` into the node's Open vSwitch database,
+   so a pool on a node without one never starts.
 
 ## Set up a pool to drain
 
@@ -254,6 +261,13 @@ cluster; the `novacompute` reads stay on the management cluster. hvo keeps one
 cluster-scoped `Hypervisor` (short name `hv`) per hypervisor Node, named after
 it.
 
+The figure shows the order below with what hvo and the pool do after each
+command. [The drain](../../reference/nova/novacompute-crd.md#the-drain) lists
+the seven steps. Step 1 of this section is steps 1 to 3 of the figure, step 2
+waits for step 3 to finish, and step 3 is steps 4 to 7.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](../../diagrams/compute-node-drain.svg)
+
 1. Put the node into manual maintenance:
 
    ```bash
@@ -359,7 +373,7 @@ kubectl --context "$COMPUTE_CONTEXT" label node "$NODE" openstack.c5c3.io/nova-c
 ```
 
 The entry goes `Draining`, finds no service and no server, goes `Releasing`, and
-is dropped without a call to Nova. Take the node out of the chassis as well, as
+is dropped without a service delete. Take the node out of the chassis as well, as
 [Drain a Chassis Node](../ovn/drain-a-chassis-node.md) describes, or its
 Southbound `Chassis` row stays.
 

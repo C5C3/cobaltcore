@@ -38,6 +38,12 @@ Their readiness probe is `cinder-amqp-ready`, which reports whether a process of
 the container holds a socket established to the broker port (see
 [Container Images](../ci-cd/container-images.md#cinder)).
 
+The figure shows the four processes with what each mounts. A `cinder-volume`
+holds the export of its one backend, and the backup pod holds every volume
+export beside its own target.
+
+![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
+
 ## Design decisions
 
 The decision record lives in meta issue
@@ -97,6 +103,11 @@ this operator implements, together with the choices the CRD carries.
 
 ## Owned resources
 
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
+
 For a `Cinder` named `{name}`, with `{backend}` and `{backupBackend}` the names
 of the attached satellites:
 
@@ -106,7 +117,7 @@ of the attached satellites:
 | Service | `{name}` | ClusterIP in front of the API pods on port 8776 |
 | PodDisruptionBudget | `{name}` | `minAvailable: 1` above a lower replica bound of one, `maxUnavailable: 1` at one (the bound is the HPA's `minReplicas` while `spec.autoscaling` is set); selects the API component and excludes Job pods |
 | HorizontalPodAutoscaler | `{name}` | Only while `spec.autoscaling` is set; the API is the only autoscaled Deployment |
-| NetworkPolicy | `{name}` | Only while `spec.networkPolicy` is set; one policy covers all four workloads and the Job pods |
+| NetworkPolicy | `{name}` | Only while `spec.networkPolicy` is set; one policy covers every workload and the Job pods |
 | HTTPRoute | `{name}` | Only while `spec.gateway` is set |
 | Deployment | `{name}-scheduler` | `cinder-scheduler` |
 | Deployment | `{name}-volume-{backend}` | The `cinder-volume` of one attached backend |

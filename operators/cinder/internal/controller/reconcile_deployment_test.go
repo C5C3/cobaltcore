@@ -445,6 +445,22 @@ func TestAPIContainerCarriesAStartupProbe(t *testing.T) {
 		"a loading WSGI app holds a GET past the kubelet's 1s default")
 }
 
+// TestAPIContainerCarriesALivenessTimeout covers a busy running API. One
+// request in flight on a single-worker API holds the probe's GET, and three
+// such probes 20 seconds apart restarted nova-api twice in 20 minutes under
+// the #1274 soak. The timeout stays below the period so probes never overlap.
+func TestAPIContainerCarriesALivenessTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	deploy := buildCinderDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{})
+
+	probe := deploy.Spec.Template.Spec.Containers[0].LivenessProbe
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)),
+		"one slow request on a single-worker API must not restart it")
+	g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
+		"liveness timeout below its period")
+}
+
 // TestBuildCinderService_And_PDB covers the selectors: one Cinder owns four
 // kinds of Deployment, so the API Service and its budget must reach the API pods
 // and nothing else.

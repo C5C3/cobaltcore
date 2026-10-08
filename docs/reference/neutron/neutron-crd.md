@@ -558,7 +558,7 @@ replacement.
 registry per kind. An entry is honored-and-reported unless honoring the override
 would already have done the damage by the time `ExtraConfigHealthy` could
 surface it, which is the case for a credential the rendering copies into the
-config Secret every pod mounts, a path or connection string that points a
+ConfigMap every pod mounts, a path or connection string that points a
 process somewhere the operator did not provision, and a switch that selects a
 security control. Those fifteen are refused at admission for the `Neutron`
 kind:
@@ -567,10 +567,10 @@ kind:
 | --- | --- | --- |
 | `[DEFAULT] auth_strategy` | operator-computed | It names the WSGI pipeline `api-paste.ini` serves the API through, and `keystone` is the only one that runs keystonemiddleware. Anything else serves every request unauthenticated, reachable from outside the cluster while `spec.gateway` is set |
 | `[DEFAULT] api_paste_config` | operator-computed | It names the pipeline definition. A path the pod does not carry fails the API on start; one it does carry can drop the auth filter |
-| `[DEFAULT] transport_url` | `spec.messaging` | The runtime value arrives through `OS_DEFAULT__TRANSPORT_URL`, so a file value is inert and only copies the broker credentials into the rendered config Secret |
-| `[database] connection` | `spec.database` | The runtime value arrives through `OS_DATABASE__CONNECTION`, so a file value is inert and only copies the database password into the rendered config Secret |
-| `[keystone_authtoken] password` | `spec.serviceUser.secretRef` | The middleware reads the password from `OS_KEYSTONE_AUTHTOKEN__PASSWORD`, so a file value is inert and only copies the service password into the rendered config Secret |
-| `[nova] password` | `spec.nova.serviceUser.secretRef` | The notifier reads the password from `OS_NOVA__PASSWORD`, so a file value is inert and only copies the notifier password into the rendered config Secret |
+| `[DEFAULT] transport_url` | `spec.messaging` | The runtime value arrives through `OS_DEFAULT__TRANSPORT_URL`, so a file value is inert and only copies the broker credentials into the rendered ConfigMap |
+| `[database] connection` | `spec.database` | The runtime value arrives through `OS_DATABASE__CONNECTION`, so a file value is inert and only copies the database password into the rendered ConfigMap |
+| `[keystone_authtoken] password` | `spec.serviceUser.secretRef` | The middleware reads the password from `OS_KEYSTONE_AUTHTOKEN__PASSWORD`, so a file value is inert and only copies the service password into the rendered ConfigMap |
+| `[nova] password` | `spec.nova.serviceUser.secretRef` | The notifier reads the password from `OS_NOVA__PASSWORD`, so a file value is inert and only copies the notifier password into the rendered ConfigMap |
 | `[securitygroup] enable_security_group` | operator-computed | It is what makes the ML2/OVN mechanism driver program the ACLs a port's security groups describe. Disabling it leaves every instance port reachable from every other |
 | `[ovn] ovn_nb_connection` | `spec.ovn.centralRef` | The connection string is resolved from the referenced `OVNCentral`; another address points the mechanism driver at a logical model it does not own |
 | `[ovn] ovn_sb_connection` | `spec.ovn.centralRef` | The Southbound half of the same rule |
@@ -679,7 +679,7 @@ see the [reconciler reference](./neutron-reconciler.md).
 | `HPAReady` | True | `HPANotRequired` | `spec.autoscaling` is unset, so any previous HPA was deleted |
 | `NetworkPolicyReady` | True | `NetworkPolicyReady` | The NetworkPolicy matches the desired state |
 | `NetworkPolicyReady` | True | `NetworkPolicyNotRequired` | `spec.networkPolicy` is unset, so any previous policy was deleted and traffic flows unrestricted |
-| `Ready` | True | `AllReady` | All ten sub-conditions are True |
+| `Ready` | True | `AllReady` | All eleven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |

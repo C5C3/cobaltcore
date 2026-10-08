@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Keystone deployment.
+# Validates the full reconciliation cycle in managed mode:
+#   - All 5 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - All owned resources exist (Deployment, Service, CronJob, Secret,
+#     RBAC, PushSecret)
+#   - ConfigMap with keystone-basic-2026-2-config- prefix exists
+#   - Keystone API at /v3 is accessible via curl
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-basic-deployment-2026-2
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-basic-2026-2
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+              reason: FernetKeysAvailable
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -40 || true
+          done
+          echo "=== Terminated container statuses ==="
+          kubectl get pods -n $NAMESPACE -o json 2>/dev/null | jq -r '.items[] | select(.status.containerStatuses) | .metadata.name + ": " + (.status.containerStatuses[] | .state | tostring)' || true
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert Deployment and Service ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-basic-2026-2
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-basic-2026-2
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: keystone-basic-2026-2
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone
+              app.kubernetes.io/instance: keystone-basic-2026-2
+              app.kubernetes.io/managed-by: keystone-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: keystone
+                app.kubernetes.io/instance: keystone-basic-2026-2
+  # ── Step 4: Assert Fernet resources ────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-basic-2026-2-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-basic-2026-2-fernet-keys
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: keystone-basic-2026-2-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: keystone-basic-2026-2-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: keystone-basic-2026-2-fernet-rotate
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-basic-2026-2-fernet-keys-backup
+            namespace: openstack
+  # ── Step 5: Assert ConfigMap exists ────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          kubectl get cm -n openstack -o name | grep keystone-basic-2026-2-config-
+  # ── Step 6: Assert API accessibility ───────────────────────────────────
+  # The probe retries connection-level failures inside the pod: kube-proxy's
+  # endpoint programming can trail the CR's Ready flip by a second or two, so
+  # a single-shot request races it (seen in CI). HTTP errors still fail hard.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run curl-test-basic-2026-2 --image=ghcr.io/c5c3/keystone:2026.2 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  print(urllib.request.urlopen('http://keystone-basic-2026-2.openstack.svc:5000/v3').read().decode())
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /v3 -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('GET /v3 retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('GET /v3 never answered after retries: %r' % last)
+          "

@@ -2,25 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a cross-release Neutron upgrade from 2025.2 to 2026.1.
+# Chainsaw E2E test for a cross-release Neutron upgrade from 2026.1 to 2026.2.
 #
 # Every other Neutron suite installs a release into a fresh, empty schema and so
 # only ever runs neutronDBSyncCommand; none of them enters the four-phase
 # machine of operators/neutron/internal/controller/reconcile_database.go. This
-# suite is the one that does, against a schema the 2025.2 db-sync already
+# suite is the one that does, against a schema the 2026.1 db-sync already
 # populated. Verifies:
-#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
-#       installedRelease=2025.2 on the :2025.2 image
-#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#   (1) Fresh deployment at 2026.1 reaches Ready=True/AllReady with
+#       installedRelease=2026.1 on the :2026.1 image
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.2 walks
 #       status.upgradePhase Expanding -> Migrating -> RollingUpdate ->
 #       Contracting -> "" via the db-expand/-db-migrate/-db-contract phase Jobs
-#   (3) installedRelease is promoted to 2026.1 only after the contract phase,
+#   (3) installedRelease is promoted to 2026.2 only after the contract phase,
 #       and status.upgradePhase is cleared
 #   (4) The three phase Jobs are left in place after the upgrade succeeds, and
-#       each carries the :2026.1 image the new release's migration tree ships
-#   (5) The API Deployment flips to the :2026.1 image and the single-replica
+#       each carries the :2026.2 image the new release's migration tree ships
+#   (5) The API Deployment flips to the :2026.2 image and the single-replica
 #       rollout converges
-#   (6) The steady-state db-sync Job re-runs on the :2026.1 image
+#   (6) The steady-state db-sync Job re-runs on the :2026.2 image
 #
 # The db-migrate phase is asserted like the other two even though Neutron has no
 # data-migration command: the operator runs neutron-db-manage current there so
@@ -35,7 +35,7 @@ spec:
   namespace: openstack
   timeouts:
     # The OVNCentral issues three certificates and bootstraps two Raft databases
-    # before the Neutron reconciler renders anything, the 2025.2 schema
+    # before the Neutron reconciler renders anything, the 2026.1 schema
     # migration and the API cold start follow, and the upgrade then runs three
     # more Jobs and a rollout. That does not fit the 120s the shared config
     # allows, nor the 5m the single-release suites use.
@@ -49,7 +49,7 @@ spec:
         file: 01-ovncentral-cr.yaml
     - apply:
         file: 02-neutron-cr.yaml
-  # ── Step 2: Assert the pre-upgrade steady state on :2025.2 ──────────────
+  # ── Step 2: Assert the pre-upgrade steady state on :2026.1 ──────────────
   - try:
     - assert:
         resource:
@@ -59,7 +59,7 @@ spec:
             name: neutron-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -75,7 +75,7 @@ spec:
               spec:
                 containers:
                 - name: neutron-api
-                  image: ghcr.io/c5c3/neutron:2025.2
+                  image: ghcr.io/c5c3/neutron:2026.1
           status:
             (availableReplicas > `0`): true
     # No phase Job exists before the release moves. Asserting their absence here
@@ -120,7 +120,7 @@ spec:
   # ── Step 4: Assert the upgrade completes through expand-migrate-contract ─
   - try:
     # Gate on the settled end state first: installedRelease is promoted to
-    # 2026.1 only after the contract phase, and the fresh post-upgrade db-sync
+    # 2026.2 only after the contract phase, and the fresh post-upgrade db-sync
     # flips DatabaseReady (and so Ready) back False until it completes, so a
     # stable Ready=True/AllReady here means the whole flow has drained.
     - assert:
@@ -131,7 +131,7 @@ spec:
             name: neutron-release-upgrade
             namespace: openstack
           status:
-            installedRelease: "2026.1"
+            installedRelease: "2026.2"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -153,7 +153,7 @@ spec:
           # The operator leaves the phase Jobs in place, and each runs
           # spec.image: the contract is that the image moves with
           # spec.openStackRelease, so the new release's migration tree owns both
-          # schema deltas. A Job left on :2025.2 would mean the flow migrated
+          # schema deltas. A Job left on :2026.1 would mean the flow migrated
           # with the old tree and promoted installedRelease anyway.
           for phase in expand migrate contract; do
             JOB="neutron-release-upgrade-db-${phase}"
@@ -164,14 +164,14 @@ spec:
               exit 1
             fi
             case "$IMG" in
-            *:2026.1) echo "OK: Job $JOB ran on $IMG" ;;
+            *:2026.2) echo "OK: Job $JOB ran on $IMG" ;;
             *)
-              echo "ERROR: Job $JOB ran on $IMG, want the :2026.1 image"
+              echo "ERROR: Job $JOB ran on $IMG, want the :2026.2 image"
               exit 1
               ;;
             esac
           done
-    # The Deployment now runs the :2026.1 image and the single-replica rollout
+    # The Deployment now runs the :2026.2 image and the single-replica rollout
     # has fully converged (updatedReplicas == replicas).
     - assert:
         resource:
@@ -185,7 +185,7 @@ spec:
               spec:
                 containers:
                 - name: neutron-api
-                  image: ghcr.io/c5c3/neutron:2026.1
+                  image: ghcr.io/c5c3/neutron:2026.2
           status:
             (availableReplicas > `0`): true
             (updatedReplicas == replicas): true
@@ -194,12 +194,12 @@ spec:
         content: |
           set -eu
           JOB=neutron-release-upgrade-db-sync
-          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.2 ==="
           # RunJob deletes and re-creates a completed Job in place when its
           # pod-spec-hash changes, so the same-named db-sync Job is replaced on
-          # the :2026.1 image after the contract phase promotes installedRelease.
+          # the :2026.2 image after the contract phase promotes installedRelease.
           # Poll to ride out the brief delete/re-create window right after the
-          # upgrade settles, then assert the current Job carries :2026.1 and
+          # upgrade settles, then assert the current Job carries :2026.2 and
           # succeeded. The bound is a wall-clock deadline rather than a round
           # count: each round issues two kubectl calls of unbounded duration, so
           # a fixed count of rounds cannot keep the loop inside the 5m step
@@ -212,7 +212,7 @@ spec:
             SUCC=$(kubectl get job "$JOB" -n openstack \
               -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
             case "$IMG" in
-            *:2026.1)
+            *:2026.2)
               if [ "$SUCC" = "1" ]; then
                 echo "OK: $JOB at $IMG succeeded=$SUCC"
                 exit 0
@@ -221,7 +221,7 @@ spec:
             esac
             sleep 5
           done
-          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          echo "ERROR: $JOB did not reach :2026.2 succeeded=1 (image=$IMG succeeded=$SUCC)"
           exit 1
     catch:
     - script:

@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Placement CR for the release-upgrade E2E test (2026.1 release).
+# Placement CR for the release-upgrade E2E test (2026.2 release).
 #
 # The expand phase runs nova-status upgrade check before it migrates, and
 # several of its checks read Placement. Without a service behind the catalog row
 # the check exits above 1 and the script stops the phase rather than migrating
 # (operators/nova/internal/controller/reconcile_database.go).
 #
-# It sits at 2026.1, the release the Nova is upgraded to, for the whole run: a
-# check run by 2026.1 nova against an older Placement is not a pairing this
+# It sits at 2026.2, the release the Nova is upgraded to, for the whole run: a
+# check run by 2026.2 nova against an older Placement is not a pairing this
 # repository proves, and Placement is upgraded ahead of the computes anyway.
 #
 # One replica on the schema placement_nova_upgrade. The suite issues a handful
@@ -22,12 +22,12 @@ metadata:
   name: placement-nova-upgrade
   namespace: openstack
 spec:
-  openStackRelease: "2026.1"
+  openStackRelease: "2026.2"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2026.1"
+    tag: "2026.2"
   database:
     clusterRef:
       name: openstack-db

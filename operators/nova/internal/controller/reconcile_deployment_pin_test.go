@@ -128,6 +128,7 @@ spec:
             port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: nova-api
         ports:
         - containerPort: 8774
@@ -321,6 +322,7 @@ spec:
             port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: nova-api
         ports:
         - containerPort: 8774
@@ -510,6 +512,7 @@ spec:
             port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: nova-api
         ports:
         - containerPort: 8774

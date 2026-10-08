@@ -320,7 +320,7 @@ checks and the priority-class lookup.
 | `northbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Northbound database |
 | `southbound` | [`OVNDatabaseStatus`](#ovndatabasestatus) | The observed state of the Southbound database |
 | `relayAddress` | `string` | The Southbound relay Service, `ssl:<clusterIP>:6642`. Set while `spec.relay` is set and cleared when the relay is removed |
-| `relayDbAddress` | `string` | The relay for clients outside the cluster, `ssl:<node InternalIP>:<nodePort>` per node a relay pod runs on, comma-separated. Empty unless `spec.relay.externallyReachable` is set. An `OVNChassis` on another cluster dials it (see [Address computation](#address-computation)) |
+| `relayDbAddress` | `string` | The relay for clients outside the cluster, `ssl:<hostIP>:<nodePort>` per node a relay pod runs on, from the pod's `status.hostIP`, comma-separated. Empty unless `spec.relay.externallyReachable` is set. An `OVNChassis` on another cluster dials it (see [Address computation](#address-computation)) |
 | `clientSecretName` | `string` | The Secret holding the client certificate every OVN client authenticates with (`tls.crt`, `tls.key`, `ca.crt`). An `OVNChassis` mounts it, so this is the field that connects the two kinds |
 | `installedImage` | `string` | The image reference the running control plane was projected from, recorded once northd runs on it. It tells a rollout that has not reached the pods from one that has |
 
@@ -355,6 +355,10 @@ the flag and with `spec.relay`.
 Both are IP literals, never DNS names. `ovsdb-server` resolves a remote once at
 startup and never again, so a name whose address changes leaves the client
 wedged against the old one.
+
+The figure shows which client dials which of these addresses.
+
+![What one OVNCentral runs and who talks to it. The Northbound database {central}-nb and the Southbound database {central}-sb are Raft clusters of three members each by default. northd reads the Northbound database and writes the flows into the Southbound database. A relay in front of the Southbound database exists only with spec.relay. A CronJob backs both databases up, and cert-manager issues a server certificate per database, one for the relay and one client certificate from the ClusterIssuer that spec.tls.issuerRef names. On the Neutron side the API with its ML2/OVN driver, the maintenance worker and the periodic workers hold both connections, and the optional CronJob {neutron}-ovn-db-sync compares the Northbound database with the Neutron database or rewrites it. On every chassis node ovn-controller registers the chassis in the Southbound database and reads its flows there, and the metadata agent watches the Southbound database and writes its Chassis_Private row. Two Jobs of an OVNChassis write as well: the evacuation removes gateway bindings from the Northbound database, and the chassis deletion removes the chassis row from the Southbound database. Only ovn-controller is pointed at the relay; every other client dials the database members.](../../diagrams/compute-ovn-control-plane.svg)
 
 A member whose pod is gone is skipped in the node-facing list: a rescheduling
 member has no node to name, while the members beside it are still reachable. A
@@ -400,7 +404,7 @@ Eight sub-reconcilers each own one condition type. The aggregate `Ready` is
 | `BackupReady` | False | `BackupPVCInvalid` | The API server rejected the snapshot claim, which is what lowering `spec.backup.storage.size` produces. No error is returned: only a spec edit can undo it |
 | `BackupReady` | False | `BackupError` | The claim, the CronJob, or the Job listing failed |
 | `BackupReady` | False | `WaitingForEndpoints` | Both database addresses reach the run as environment variables, and one is not published yet |
-| `Ready` | True | `AllReady` | All seven sub-conditions are True |
+| `Ready` | True | `AllReady` | All eight sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (every `verticalAutoscaling` block unset); a VPA the CR created before is deleted |

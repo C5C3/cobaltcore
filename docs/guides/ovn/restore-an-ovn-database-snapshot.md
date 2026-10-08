@@ -20,6 +20,11 @@ This guide takes a snapshot of the `controlplane-ovn` central on demand as the
 way back from a wrong replay, picks the snapshot to go back to off the volume,
 and replays its Northbound half into the running database with `ovsdb-client`.
 
+The figure shows the backup CronJob beside the two databases, and northd, which
+compiles a replayed Northbound model into the Southbound database again.
+
+![What one OVNCentral runs and who talks to it. The Northbound database {central}-nb and the Southbound database {central}-sb are Raft clusters of three members each by default. northd reads the Northbound database and writes the flows into the Southbound database. A relay in front of the Southbound database exists only with spec.relay. A CronJob backs both databases up, and cert-manager issues a server certificate per database, one for the relay and one client certificate from the ClusterIssuer that spec.tls.issuerRef names. On the Neutron side the API with its ML2/OVN driver, the maintenance worker and the periodic workers hold both connections, and the optional CronJob {neutron}-ovn-db-sync compares the Northbound database with the Neutron database or rewrites it. On every chassis node ovn-controller registers the chassis in the Southbound database and reads its flows there, and the metadata agent watches the Southbound database and writes its Chassis_Private row. Two Jobs of an OVNChassis write as well: the evacuation removes gateway bindings from the Northbound database, and the chassis deletion removes the chassis row from the Southbound database. Only ovn-controller is pointed at the relay; every other client dials the database members.](../../diagrams/compute-ovn-control-plane.svg)
+
 ## Prerequisites
 
 ::: info Devstack

@@ -27,6 +27,26 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
+// SetupOptions carries the resolved flags SetupFunc registers against.
+type SetupOptions struct {
+	// Controllers is false under --enable-controllers=false, the standalone
+	// webhook deployment: SetupFunc registers no reconciler and no watch, so
+	// the manager starts no informer, and the ServiceAccount needs only what
+	// the webhooks read.
+	Controllers bool
+	// Webhooks is the resolved --enable-webhooks flag.
+	Webhooks bool
+	// MaxConcurrentReconciles is the resolved --max-concurrent-reconciles
+	// value; controllers that do not tune concurrency ignore it.
+	MaxConcurrentReconciles int
+	// Namespace is the resolved --namespace flag: empty for a cluster-wide
+	// operator, the watched namespace otherwise. It is neither
+	// --clusters-namespace nor the namespace the operator Pod runs in. A
+	// controller uses it to leave out what a namespaced Role cannot grant,
+	// such as a watch on a cluster-scoped kind.
+	Namespace string
+}
+
 // ManagerConfig holds per-operator configuration for the shared manager
 // bootstrap. Every operator provides its own Scheme (with custom API types
 // registered) and a unique LeaderElectionID.
@@ -54,15 +74,9 @@ type ManagerConfig struct {
 	// +kubebuilder:scaffold:builder marker in a standard kubebuilder project.
 	// It receives the multicluster manager, because only that manager can hand
 	// out a client for a cluster other than the local one; operators that talk
-	// to the management cluster only take its GetLocalManager. The third
-	// argument is the resolved --max-concurrent-reconciles value; controllers
-	// that do not tune concurrency may ignore it. The fourth argument is the
-	// resolved --namespace value: empty for a cluster-wide operator, the
-	// watched namespace otherwise. It is neither --clusters-namespace nor the
-	// namespace the operator Pod runs in. A controller uses it to leave out
-	// what a namespaced Role cannot grant, such as a watch on a cluster-scoped
-	// kind.
-	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error
+	// to the management cluster only take its GetLocalManager. The resolved
+	// flags arrive as SetupOptions.
+	SetupFunc func(mgr mcmanager.Manager, opts SetupOptions) error
 
 	// RegisterFlags is an optional, nil-safe hook for registering
 	// operator-specific flags on the shared flag set. It is invoked after the
@@ -156,12 +170,26 @@ func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration) []cluster.
 // spec.targetClusterRef, and for an install that clears --clusters-namespace. A
 // namespace-scoped deployment does exactly that: its Role grants nothing
 // outside its own namespace, so a widened Secret informer would never sync and
-// the manager would fail to start.
+// the manager would fail to start. It is empty under --enable-controllers=false
+// as well: no reconciler resolves a target cluster there, and the provider's
+// registration-Secret watch would need a grant the standalone webhook's
+// ClusterRole does not carry.
 func targetClustersNamespace(cfg ManagerConfig, opts runOptions) string {
+	if !opts.enableControllers {
+		return ""
+	}
 	if !cfg.TargetClusters {
 		return ""
 	}
 	return opts.clustersNamespace
+}
+
+// leaderElectionEnabled reports whether the manager competes for the leader
+// lease. A manager without controllers never does: every replica serves the
+// webhook server regardless of leadership, and the lease would need a leases
+// grant the standalone webhook's ClusterRole does not carry.
+func leaderElectionEnabled(opts runOptions) bool {
+	return opts.enableLeaderElection && opts.enableControllers
 }
 
 // zapOptions returns the base zap logging options shared by all operators.
@@ -184,6 +212,7 @@ type runOptions struct {
 	probeAddr               string
 	enableLeaderElection    bool
 	enableWebhooks          bool
+	enableControllers       bool
 	syncPeriod              time.Duration
 	namespace               string
 	clustersNamespace       string
@@ -212,6 +241,10 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 	fs.BoolVar(&o.enableWebhooks, "enable-webhooks", true,
 		"Enable admission webhooks. Set to false for namespace-scoped "+
 			"deployments where webhook infrastructure is not available.")
+	fs.BoolVar(&o.enableControllers, "enable-controllers", true,
+		"Register the controllers. Set to false for a standalone admission "+
+			"webhook deployment: the manager then serves the webhooks only, "+
+			"elects no leader and engages no target cluster.")
 	fs.DurationVar(&o.syncPeriod, "sync-period", 10*time.Minute,
 		"The minimum frequency at which watched resources are reconciled "+
 			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
@@ -251,6 +284,12 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 		err := fmt.Errorf("invalid --default-image-pull-policy %q: must be one of Always, IfNotPresent, Never", v)
 		// The caller's logger does not exist yet, so print the error the way
 		// the flag package prints its own parse errors.
+		_, _ = fmt.Fprintln(fs.Output(), err)
+		return runOptions{}, err
+	}
+	if !o.enableControllers && !o.enableWebhooks {
+		err := errors.New("--enable-controllers=false requires --enable-webhooks=true: " +
+			"a manager with neither controllers nor webhooks has nothing to run")
 		_, _ = fmt.Fprintln(fs.Output(), err)
 		return runOptions{}, err
 	}
@@ -313,7 +352,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 			BindAddress: opts.metricsAddr,
 		},
 		HealthProbeBindAddress: opts.probeAddr,
-		LeaderElection:         opts.enableLeaderElection,
+		LeaderElection:         leaderElectionEnabled(opts),
 		LeaderElectionID:       cfg.LeaderElectionID,
 	})
 	if err != nil {
@@ -329,8 +368,23 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles, opts.namespace); err != nil {
+		if err := cfg.SetupFunc(mgr, SetupOptions{
+			Controllers:             opts.enableControllers,
+			Webhooks:                opts.enableWebhooks,
+			MaxConcurrentReconciles: opts.maxConcurrentReconciles,
+			Namespace:               opts.namespace,
+		}); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
+		}
+	}
+	// The API server is the only client of the webhook server and retries
+	// nothing: under failurePolicy Fail, a pod that reports Ready before its TLS
+	// listener is up rejects every CR write routed to it. Every SetupFunc
+	// registers at least one webhook when webhooks are enabled; one that
+	// registered none would start an empty server here.
+	if opts.enableWebhooks {
+		if err := mgr.AddReadyzCheck("webhook", mgr.GetLocalManager().GetWebhookServer().StartedChecker()); err != nil {
+			return fmt.Errorf("unable to set up webhook ready check: %w", err)
 		}
 	}
 
@@ -343,6 +397,9 @@ func run(cfg ManagerConfig, opts runOptions) error {
 
 	if opts.namespace != "" {
 		setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)
+	}
+	if !opts.enableControllers {
+		setupLog.Info("standalone webhook mode enabled: no controllers registered")
 	}
 	if clustersNamespace != "" {
 		setupLog.Info("target clusters enabled", "clustersNamespace", clustersNamespace)

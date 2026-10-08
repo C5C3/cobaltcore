@@ -86,7 +86,7 @@ WORKERS_BY_JOB = {"e2e-controlplane": 1, "e2e-controlplane-sso": 1, TEMPEST_JOB:
 BACKING = {
     "MariaDB": ("minimalDatabase", 1024),
     "Memcached": ("minimalCache", 96),
-    "RabbitmqCluster": ("minimalMessaging", 512),
+    "RabbitmqCluster": ("minimalMessaging", 1024),
     "OpenBaoCluster": ("minimalSecretStore", 64),
 }
 # The shared kind broker keeps its overlay figure on the measured cluster, so

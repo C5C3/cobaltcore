@@ -248,3 +248,21 @@ rules:
   - get
   - list
   - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keystone-webhook
+rules:
+- apiGroups:
+  - keystone.openstack.c5c3.io
+  resources:
+  - keystoneidentitybackends
+  verbs:
+  - list
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get

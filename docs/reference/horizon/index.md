@@ -28,6 +28,17 @@ The v1 operator resolves the onboarding decisions as follows:
   neither logs users out nor flips any condition. The operator therefore has
   no database sub-reconcilers at all. DB-backed sessions are revisited only
   if signed cookies plus Memcached prove insufficient.
+- **Cache keys: scoped per image.** The operator derives
+  `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
+  first 12 hex characters of the SHA-256 of the image reference. Horizon
+  keeps its Angular template-cache preload in the Django fragment cache, and
+  django-compressor hashes that fragment against the offline manifest built
+  into each image. A fragment written by another release has no entry in
+  that manifest, so every page render raises `OfflineGenerationError` and
+  the dashboard answers HTTP 500, the login page included. With the prefix,
+  Horizon CRs on different images never read each other's entries. An image
+  change starts with a cold cache, and two CRs on one image share a warm one
+  ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)).
 - **Keystone endpoint: a plain URL field.** `spec.keystoneEndpoint` keeps the
   operator decoupled from the keystone-operator. The c5c3 ControlPlane
   operator derives the value top-down from its Keystone child's naming
@@ -46,6 +57,15 @@ The v1 operator resolves the onboarding decisions as follows:
 - **WSGI server: uWSGI.** Already pinned in the shared venv-builder image and
   operationally identical to the keystone deployment; uWSGI loads
   `openstack_dashboard.wsgi` directly. No per-CR uWSGI knobs in v1.
+- **Login-page probes.** The readiness and startup probes GET `/auth/login/`
+  with a fixed `Host: localhost` header, which satisfies Django's
+  `ALLOWED_HOSTS` check without allow-listing the pod IP; rendering the page
+  exercises Django's URL routing, the templates and the offline-compression
+  manifest without a live Keystone. The liveness probe only opens a TCP
+  connection to port 8080. The startup probe allows 300 seconds (30 probes
+  10 seconds apart, each with an 8-second timeout) before the liveness probe
+  takes over, so a cold start slowed by a CPU limit set on the container or
+  a contended node does not restart the container.
 - **The `horizon===` constraint pin is stripped.** Unlike keystone, horizon
   is pinned in `upper-constraints.txt`; `overrides/<release>/constraints.txt`
   removes the pin so the source install builds the ref from
@@ -57,6 +77,11 @@ The v1 operator resolves the onboarding decisions as follows:
   event lands.
 
 ## Owned resources
+
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
 
 For a Horizon CR named `{name}` the operator manages:
 

@@ -136,6 +136,7 @@ spec:
             port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: nova-metadata
         ports:
         - containerPort: 8775
@@ -340,6 +341,7 @@ spec:
             port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: nova-metadata
         ports:
         - containerPort: 8775

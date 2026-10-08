@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1384" viewBox="0 0 1808 1384" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Request path from the workstation to an OpenStack API">
+<title>Request path from the workstation to an OpenStack API</title>
+<rect width="1808" height="1384" fill="#F6F5F1"/>
+<rect x="40" y="40" width="260" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="170" y="74.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">nip.io</text>
+<text x="170" y="101.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">public wildcard DNS</text>
+<rect x="40" y="220" width="440" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="260" y="254.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Workstation</text>
+<text x="260" y="281.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">curl, the openstack CLI, a browser</text>
+<text x="40" y="323.2" font-size="20" font-weight="400" fill="#55606E">calls https://{svc}.127-0-0-1.nip.io:{port}</text>
+<polyline points="90,116 90,209.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="90,220 82.8,205 97.2,205" fill="#3A4452"/>
+<circle cx="90" cy="142" r="18" fill="#17202B"/>
+<text x="90" y="149.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="120" y="179.2" font-size="20" font-weight="400" fill="#2B3440">{svc}.127-0-0-1.nip.io is 127.0.0.1</text>
+<rect x="770" y="180" width="500" height="136" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="789" y="219.36" font-size="26" font-weight="700" fill="#2B3440">kind port mapping</text>
+<rect x="1136" y="194" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1195" y="215.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<text x="789" y="261.2" font-size="20" font-weight="400" fill="#55606E">extraPortMappings in hack/kind-config.yaml</text>
+<text x="789" y="287.2" font-size="20" font-weight="400" fill="#55606E">127.0.0.1:{port} to port 31443 of the kind node</text>
+<polyline points="480,248 759.5,248" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="770,248 755,255.2 755,240.8" fill="#2457C5"/>
+<circle cx="506" cy="248" r="18" fill="#17202B"/>
+<text x="506" y="255.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="647" y="231.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">https to 127.0.0.1:{port}</text>
+<rect x="40" y="460" width="1697" height="800" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="480.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="507.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="509.3" font-size="30" font-weight="700" fill="#17202B">Cluster</text>
+<text x="1336" y="505.7" font-size="20" font-weight="400" fill="#55606E">kind: cobaltcore. Lab: the Gardener shoot.</text>
+<rect x="64" y="530" width="1649" height="210" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="547" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="569.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="570.64" font-size="24" font-weight="700" fill="#2B3440">envoy-gateway-system</text>
+<rect x="500" y="610" width="320" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="642.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Envoy proxy Service</text>
+<text x="500" y="685.2" font-size="20" font-weight="400" fill="#55606E">type NodePort: port 443, nodePort 31443</text>
+<text x="500" y="711.2" font-size="20" font-weight="400" fill="#55606E">label gateway.envoyproxy.io/owning-gateway-name: openstack-gw</text>
+<rect x="1100" y="610" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1200" y="642.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Envoy proxy</text>
+<text x="1316" y="628.2" font-size="20" font-weight="400" fill="#55606E">ends TLS, picks the listener by server name</text>
+<text x="1316" y="654.2" font-size="20" font-weight="400" fill="#55606E">routes by hostname and path</text>
+<polyline points="800,316 800,599.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="800,610 792.8,595 807.2,595" fill="#2457C5"/>
+<circle cx="800" cy="342" r="18" fill="#17202B"/>
+<text x="800" y="349.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<text x="822" y="389.2" font-size="20" font-weight="400" fill="#2B3440">NodePort 31443</text>
+<polyline points="820,634 1089.5,634" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1100,634 1085,641.2 1085,626.8" fill="#2457C5"/>
+<circle cx="846" cy="634" r="18" fill="#17202B"/>
+<text x="846" y="641.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<text x="982" y="619.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">port 443</text>
+<polyline points="450,296 450,634 489.5,634" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="500,634 485,641.2 485,626.8" fill="#2457C5"/>
+<rect x="214" y="344" width="108" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="268" y="365.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">lab only</text>
+<rect x="330" y="344" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="382" y="365.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="434" y="403.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="end">kubectl port-forward 8443:443</text>
+<text x="434" y="428.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">in place of hops 2 and 3</text>
+<rect x="64" y="764" width="1649" height="472" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="781" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="803.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="804.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<path d="M88 884 H272 L288 900 V932 H88 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="272,884 272,900 288,900" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="188" y="916.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{svc}-nip-io-tls</text>
+<text x="88" y="959.2" font-size="20" font-weight="400" fill="#55606E">issued by selfsigned-cluster-issuer</text>
+<rect x="440" y="884" width="290" height="48" rx="20" fill="#2B3440"/>
+<text x="585" y="916.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Gateway openstack-gw</text>
+<text x="440" y="959.2" font-size="20" font-weight="400" fill="#55606E">one HTTPS listener per hostname, port 443</text>
+<polyline points="288,908 429.5,908" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="440,908 425,915.2 425,900.8" fill="#B0387F"/>
+<text x="364" y="897.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="middle">certificateRefs</text>
+<polyline points="600,884 600,844 1130,844 1130,668.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1130,658 1137.2,673 1122.8,673" fill="#2F8A57"/>
+<text x="865" y="833.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">Envoy Gateway programs the proxy</text>
+<rect x="88" y="1034" width="310" height="48" rx="20" fill="#1D47A6"/>
+<text x="243" y="1066.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">service resource {name}</text>
+<text x="88" y="1109.2" font-size="20" font-weight="400" fill="#55606E">spec.gateway: parentRef, hostname, path</text>
+<text x="88" y="1135.2" font-size="20" font-weight="400" fill="#55606E">publicEndpoint: the public URL in the catalog, with :{port}</text>
+<rect x="760" y="1034" width="250" height="48" rx="20" fill="#1D47A6"/>
+<text x="885" y="1066.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">HTTPRoute {name}</text>
+<text x="760" y="1109.2" font-size="20" font-weight="400" fill="#55606E">hostname {svc}.127-0-0-1.nip.io, path prefix</text>
+<text x="760" y="1135.2" font-size="20" font-weight="400" fill="#55606E">backend: Service {name}</text>
+<polyline points="398,1058 749.5,1058" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="760,1058 745,1065.2 745,1050.8" fill="#2F8A57"/>
+<text x="579" y="1047.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">the service operator renders it</text>
+<polyline points="730,908 880,908 880,1023.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="880,1034 872.8,1019 887.2,1019" fill="#3A4452"/>
+<text x="900" y="995.2" font-size="20" font-weight="400" fill="#2B3440">parentRef: accepts the route</text>
+<rect x="1170" y="1034" width="240" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1290" y="1066.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {name}</text>
+<polyline points="1270,658 1270,1023.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1270,1034 1262.8,1019 1277.2,1019" fill="#2457C5"/>
+<circle cx="1270" cy="684" r="18" fill="#17202B"/>
+<text x="1270" y="691.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<text x="1292" y="915.2" font-size="20" font-weight="400" fill="#2B3440">http, as HTTPRoute {name} says</text>
+<rect x="1110" y="1164" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1210" y="1196.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">pods of {name}</text>
+<polyline points="1200,1082 1200,1153.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1200,1164 1192.8,1149 1207.2,1149" fill="#2457C5"/>
+<circle cx="1200" cy="1108" r="18" fill="#17202B"/>
+<text x="1200" y="1115.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<text x="1236" y="1109.2" font-size="20" font-weight="400" fill="#55606E">Keystone: port 5000</text>
+<polyline points="460,220 460,156 1758,156 1758,1058 1420.5,1058" fill="none" stroke="#2457C5" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1410,1058 1425,1050.8 1425,1065.2" fill="#2457C5"/>
+<text x="560" y="119.64" font-size="24" font-weight="400" fill="#2B3440">kubectl port-forward to the Service</text>
+<text x="560" y="144.2" font-size="20" font-weight="400" fill="#55606E">http on localhost, without hops 1 to 5</text>
+<rect x="953" y="96" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1005" y="117.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="40" y="1311.2" font-size="20" font-weight="400" fill="#55606E">{svc}: the service in the hostname, keystone for one. {port}: 443, or the value of KIND_HOST_PORT.</text>
+<text x="40" y="1337.2" font-size="20" font-weight="400" fill="#55606E">{name}: the service resource. The HTTPRoute and the Service of its main API carry the same name.</text>
+</svg>

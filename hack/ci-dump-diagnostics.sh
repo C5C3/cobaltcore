@@ -118,6 +118,30 @@ if [[ -z "${OPERATOR_ONLY}" ]]; then
     echo "SKIP: docker not installed"
   fi
 
+  # Every image an e2e job loads into kind lands under /var/lib/containerd on
+  # the node, which shares the runner's disk, and each release under releases/
+  # adds one image per service to the e2e-operator legs (#1276 D6). df shows how
+  # full the filesystem is, du how much of it containerd holds. stdout passes
+  # through and only stderr is captured: du exits 1 when a file vanishes under
+  # it on the live node, and still prints its total before the reason. du walks
+  # every unpacked image layer, and this dump shares the cancellation grace
+  # window `Delete kind cluster` needs, so timeout stops it after 30 s and
+  # names the signal it sent as the reason.
+  echo "=== Disk use on the kind node(s) ==="
+  if command -v docker >/dev/null 2>&1; then
+    found=0
+    for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=${KIND_CLUSTER}" --format '{{.Names}}' 2>/dev/null); do
+      found=1
+      echo "--- ${node} ---"
+      if ! { err="$(docker exec "${node}" sh -c 'df -h /var/lib/containerd && timeout --verbose 30 du -sh /var/lib/containerd' 2>&1 >&3)"; } 3>&1; then
+        echo "(disk use unavailable in ${node}: ${err})"
+      fi
+    done
+    [ "${found}" -eq 1 ] || echo "SKIP: no kind node container for cluster '${KIND_CLUSTER}' on this host"
+  else
+    echo "SKIP: docker not installed"
+  fi
+
   # Chaos Mesh is opt-in in the kind Quick Start the chaos-mesh
   # namespace only exists when the cluster was deployed with
   # WITH_CHAOS_MESH=true. Guard the describe so the log emits an explicit

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1793" viewBox="0 0 1808 1793" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Chaos test bed and the life of a fault">
+<title>Chaos test bed and the life of a fault</title>
+<rect width="1808" height="1793" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="866" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Test bed and the six steps of a suite</text>
+<rect x="64" y="103" width="458" height="739" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="83" y="142.36" font-size="26" font-weight="700" fill="#2B3440">Chainsaw on the runner</text>
+<text x="83" y="171.2" font-size="20" font-weight="400" fill="#55606E">one suite at a time</text>
+<rect x="88" y="226" width="410" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="261.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Apply the service resources</text>
+<text x="293" y="292.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">and assert the baseline</text>
+<circle cx="88" cy="226" r="18" fill="#17202B"/>
+<text x="88" y="233.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<rect x="88" y="342" width="410" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="374.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Apply the chaos resource</text>
+<circle cx="88" cy="342" r="18" fill="#17202B"/>
+<text x="88" y="349.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<rect x="88" y="422" width="410" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="457.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Wait for the injection</text>
+<text x="293" y="488.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AllInjected, or a victim that is gone</text>
+<circle cx="88" cy="422" r="18" fill="#17202B"/>
+<text x="88" y="429.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<rect x="88" y="538" width="410" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="573.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Assert under the fault</text>
+<text x="293" y="604.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the expected degradation, or no regression</text>
+<circle cx="88" cy="538" r="18" fill="#17202B"/>
+<text x="88" y="545.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<rect x="88" y="654" width="410" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="689.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Delete the chaos resource</text>
+<text x="293" y="720.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">duration is only a safety net</text>
+<circle cx="88" cy="654" r="18" fill="#17202B"/>
+<text x="88" y="661.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<rect x="88" y="770" width="410" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="293" y="802.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Assert recovery</text>
+<circle cx="88" cy="770" r="18" fill="#17202B"/>
+<text x="88" y="777.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<rect x="562" y="103" width="1182" height="779" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="588.5" y="123.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="626.5" y="150.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="678.5" y="152.3" font-size="30" font-weight="700" fill="#17202B">kind cluster</text>
+<rect x="586" y="180" width="1134" height="300" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="604" y="197" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="630" y="219.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="670" y="220.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<rect x="586" y="504" width="1134" height="186" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="604" y="521" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="630" y="543.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="670" y="544.64" font-size="24" font-weight="700" fill="#2B3440">chaos-mesh</text>
+<text x="826.05" y="543.2" font-size="20" font-weight="400" fill="#55606E">privileged</text>
+<rect x="586" y="714" width="1134" height="144" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="604" y="731" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="630" y="753.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="670" y="754.64" font-size="24" font-weight="700" fill="#2B3440">{other-ns}</text>
+<text x="800.68" y="753.2" font-size="20" font-weight="400" fill="#55606E">shared-services, or the namespace of an operator</text>
+<rect x="610" y="246" width="260" height="44" rx="20" fill="#1D47A6"/>
+<text x="740" y="276.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">service resource</text>
+<text x="610" y="315.2" font-size="20" font-weight="400" fill="#55606E">a Keystone, a Nova and so on</text>
+<rect x="610" y="344" width="360" height="44" rx="20" fill="#2B3440"/>
+<text x="790" y="374.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PodChaos or NetworkChaos</text>
+<text x="986" y="373.2" font-size="20" font-weight="400" fill="#55606E">selector: the namespaces and labels of the victims</text>
+<rect x="1500" y="246" width="180" height="44" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1590" y="276.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">victim pods</text>
+<text x="1484" y="275.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">a database, a cache, a broker, an API</text>
+<rect x="780" y="590" width="330" height="44" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="945" y="620.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">chaos-controller-manager</text>
+<rect x="1504" y="590" width="196" height="44" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1602" y="620.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">chaos-daemon</text>
+<text x="1504" y="659.2" font-size="20" font-weight="400" fill="#55606E">one per node</text>
+<rect x="1520" y="790" width="180" height="44" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1610" y="820.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">victim pods</text>
+<text x="1504" y="819.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">OpenBao, Garage, an operator</text>
+<polyline points="293,310 293,331.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="293,342 285.8,327 300.2,327" fill="#3A4452"/>
+<polyline points="293,390 293,411.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="293,422 285.8,407 300.2,407" fill="#3A4452"/>
+<polyline points="293,506 293,527.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="293,538 285.8,523 300.2,523" fill="#3A4452"/>
+<polyline points="293,622 293,643.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="293,654 285.8,639 300.2,639" fill="#3A4452"/>
+<polyline points="293,738 293,759.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="293,770 285.8,755 300.2,755" fill="#3A4452"/>
+<polyline points="498,268 599.5,268" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="610,268 595,275.2 595,260.8" fill="#3A4452"/>
+<polyline points="498,366 599.5,366" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="610,366 595,373.2 595,358.8" fill="#3A4452"/>
+<polyline points="940,590 940,398.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="940,388 947.2,403 932.8,403" fill="#2F8A57"/>
+<text x="952" y="429.2" font-size="20" font-weight="400" fill="#2B3440">reconciles</text>
+<polyline points="1110,612 1493.5,612" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1504,612 1489,619.2 1489,604.8" fill="#3A4452"/>
+<text x="1307" y="595.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">calls the daemon on the node of a victim</text>
+<polyline points="1610,590 1610,300.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1610,290 1617.2,305 1602.8,305" fill="#3A4452"/>
+<text x="1598" y="423.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">kills the pod or a container,</text>
+<text x="1598" y="449.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">or sets rules in its network namespace</text>
+<polyline points="1680,634 1680,779.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1680,790 1672.8,775 1687.2,775" fill="#3A4452"/>
+<rect x="40" y="930" width="1728" height="697" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="969.36" font-size="26" font-weight="700" fill="#2B3440">Why a partition rule sits on the server pods</text>
+<text x="64" y="1017.64" font-size="24" font-weight="700" fill="#2B3440">A rule on the client pods never matches</text>
+<rect x="64" y="1033" width="340" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="83" y="1072.36" font-size="26" font-weight="700" fill="#2B3440">Client pod</text>
+<text x="83" y="1101.2" font-size="20" font-weight="400" fill="#55606E">{client-ip}</text>
+<rect x="574" y="1033" width="500" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="593" y="1072.36" font-size="26" font-weight="700" fill="#2B3440">Root network namespace of the node</text>
+<text x="593" y="1101.2" font-size="20" font-weight="400" fill="#55606E">kube-proxy rewrites {cluster-ip} to {server-ip}</text>
+<rect x="1386" y="1033" width="358" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1405" y="1072.36" font-size="26" font-weight="700" fill="#2B3440">Server pod</text>
+<text x="1405" y="1101.2" font-size="20" font-weight="400" fill="#55606E">{server-ip}</text>
+<rect x="88" y="1118" width="292" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="234" y="1153.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">drop rule</text>
+<text x="234" y="1184.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">selector: the client pods</text>
+<text x="234" y="1212.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">matches packets to {server-ip}</text>
+<polyline points="404,1174 563.5,1174" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="574,1174 559,1181.2 559,1166.8" fill="#3A4452"/>
+<text x="489" y="1159.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">to {cluster-ip}</text>
+<polyline points="1074,1174 1375.5,1174" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1386,1174 1371,1181.2 1371,1166.8" fill="#3A4452"/>
+<text x="1230" y="1159.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">to {server-ip}, from {client-ip}</text>
+<text x="64" y="1279.2" font-size="20" font-weight="400" fill="#55606E">The packet leaves the client pod with the ClusterIP as its destination. The rule never sees {server-ip}, and the partition does nothing.</text>
+<text x="64" y="1334.64" font-size="24" font-weight="700" fill="#2B3440">A rule on the server pods matches</text>
+<rect x="64" y="1350" width="340" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="83" y="1389.36" font-size="26" font-weight="700" fill="#2B3440">Client pod</text>
+<text x="83" y="1418.2" font-size="20" font-weight="400" fill="#55606E">{client-ip}</text>
+<rect x="574" y="1350" width="500" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="593" y="1389.36" font-size="26" font-weight="700" fill="#2B3440">Root network namespace of the node</text>
+<text x="593" y="1418.2" font-size="20" font-weight="400" fill="#55606E">kube-proxy rewrites {cluster-ip} to {server-ip}</text>
+<rect x="1386" y="1350" width="358" height="217" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1405" y="1389.36" font-size="26" font-weight="700" fill="#2B3440">Server pod</text>
+<text x="1405" y="1418.2" font-size="20" font-weight="400" fill="#55606E">{server-ip}</text>
+<rect x="1410" y="1435" width="310" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1565" y="1470.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">drop rule</text>
+<text x="1565" y="1501.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">selector: the server pods</text>
+<text x="1565" y="1529.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">matches packets from {client-ip}</text>
+<polyline points="404,1491 563.5,1491" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="574,1491 559,1498.2 559,1483.8" fill="#3A4452"/>
+<text x="489" y="1476.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">to {cluster-ip}</text>
+<polyline points="1074,1491 1399.5,1491" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1410,1491 1395,1498.2 1395,1483.8" fill="#3A4452"/>
+<text x="1230" y="1476.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">to {server-ip}, from {client-ip}</text>
+<text x="64" y="1596.2" font-size="20" font-weight="400" fill="#55606E">The packet arrives with its destination rewritten and with the address of the client pod as its source. The rule matches and drops it.</text>
+<text x="40" y="1678.2" font-size="20" font-weight="400" fill="#55606E">A numbered box is a step of a suite, in the order chainsaw runs them. The list on the page describes every step under its number.</text>
+<text x="40" y="1712.2" font-size="20" font-weight="400" fill="#55606E">{cluster-ip}: the ClusterIP of the Service the client dials. {server-ip}, {client-ip}: pod addresses. Chaos Mesh puts a rule into the pods of selector and matches the pods of target by address.</text>
+<text x="40" y="1746.2" font-size="20" font-weight="400" fill="#55606E">The partition suites select the server pods and name the client pods as target, with direction both.</text>
+</svg>

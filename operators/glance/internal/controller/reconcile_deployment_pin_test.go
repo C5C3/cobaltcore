@@ -99,6 +99,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292
@@ -240,6 +241,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292
@@ -399,6 +401,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292
@@ -626,6 +629,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292
@@ -806,6 +810,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292
@@ -965,6 +970,7 @@ spec:
             port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
         name: glance-api
         ports:
         - containerPort: 9292

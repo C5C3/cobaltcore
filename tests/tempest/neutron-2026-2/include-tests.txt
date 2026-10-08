@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest include list for Neutron network API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Only network tests are included: no other service is deployed on this leg.
+#
+# The router, floating-IP and provider-network suites stay out until the
+# devstack has an external provider network (D6). What remains is the
+# authenticated CRUD the OVN mechanism driver writes into the Northbound
+# database: networks, subnets, ports, security groups and subnet pools.
+
+# Core Tempest network API tests
+tempest.api.network.test_networks
+tempest.api.network.test_ports
+tempest.api.network.test_security_groups
+tempest.api.network.test_subnetpools_extensions
+
+# Neutron-specific plugin tests
+neutron_tempest_plugin.api.test_networks
+neutron_tempest_plugin.api.test_subnets
+neutron_tempest_plugin.api.test_ports
+neutron_tempest_plugin.api.test_security_groups
+neutron_tempest_plugin.api.test_subnetpools
+neutron_tempest_plugin.api.test_extensions

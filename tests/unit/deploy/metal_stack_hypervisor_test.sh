@@ -34,7 +34,10 @@
 #      values set no argument list. The ServiceMonitor and the
 #      PrometheusRules are on, the dashboards and the custom-resource metrics
 #      off, and a third patch gives the ServiceMonitor's one endpoint the pod's
-#      ServiceAccount token file.
+#      ServiceAccount token file. A fourth patch replaces the version label of
+#      both PrometheusRules with the chart's ref.tag, a value the API server
+#      accepts, where the version helm-controller renders from ref.tag and
+#      ref.digest, with its '+', is not.
 #   9. The kna release runs the image ghcr.io/c5c3/kvm-node-agent without a
 #      tag, sets the libvirt URI, the node label field path, DAC_OVERRIDE
 #      alone without a runAsUser or runAsGroup, NAMESPACE, and the pull
@@ -58,10 +61,15 @@
 #      script, run against a directory, adds the range to the reserved
 #      ports, keeps what is there, names the sockets that hold a port of the
 #      range, and fails without the sysctl file.
+#  16. hvo's pinned chart, rendered with the release's values, gives both
+#      PrometheusRules a version label the API server rejects, and after the
+#      release's post-renderer patches both carry ref.tag and no label value
+#      is rejected (SKIP when ghcr.io cannot be reached).
 #
-# Checks 2 to 5, 7 to 10, 12, 13 and 15 are counted as SKIP when kustomize or
-# yq is not on PATH. A failing kustomize build counts them as FAIL and prints the
-# build's error. Checks 1, 6 and 11 read the files and need neither tool.
+# Checks 2 to 5, 7 to 10, 12, 13, 15 and 16 are counted as SKIP when kustomize
+# or yq is not on PATH, and 16 also without helm. A failing kustomize build
+# counts them as FAIL and prints the build's error. Checks 1, 6 and 11 read the
+# files and need neither tool.
 #
 # Usage: bash tests/unit/deploy/metal_stack_hypervisor_test.sh
 
@@ -101,6 +109,10 @@ MIGRATION_PORTS_FILES="namespace.yaml
 reservation-daemonset.yaml"
 
 AUTH_SECRET="controlplane-nova-hypervisor-operator-auth"
+
+# A label value the API server accepts: empty, or at most 63 alphanumerics,
+# '-', '_' and '.', alphanumeric at both ends.
+LABEL_VALUE_RE='^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$'
 
 RENDERED=""
 
@@ -485,7 +497,7 @@ test_ca_and_compute() {
 test_hvo_release() {
   echo "Test: the openstack-hypervisor-operator release"
 
-  render "$HYPERVISOR_DIR" 25 || return
+  render "$HYPERVISOR_DIR" 29 || return
 
   local release=openstack-hypervisor-operator env='.spec.values.controllerManager.manager.env'
   assert_eq "the release lives in openstack" "openstack" \
@@ -549,7 +561,7 @@ test_hvo_release() {
 
   # The chart has no value for patch 0002's flag, so a second patch appends
   # it and the chart's own argument list stays as it renders.
-  assert_eq "the post-renderer holds three patches" "3" \
+  assert_eq "the post-renderer holds four patches" "4" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches | length')"
   assert_eq "the second patch targets the Deployment" "Deployment" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[1].target.kind')"
@@ -568,6 +580,27 @@ test_hvo_release() {
     "1 add /spec/endpoints/0/bearerTokenFile /var/run/secrets/kubernetes.io/serviceaccount/token" \
     "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[2].patch | from_yaml |
       (length | tostring) + " " + .[0].op + " " + .[0].path + " " + .[0].value')"
+
+  # The chart writes its version into the version label of its
+  # PrometheusRules. helm-controller sets the build metadata of a chart
+  # pinned by digest to the digest's first 12 characters, so the label reads
+  # <version>+<12 characters>, and a '+' is no label value.
+  local tag digest rendered
+  tag="$(chart_ref openstack-hypervisor-operator tag)"
+  digest="$(chart_ref openstack-hypervisor-operator digest)"
+  digest="${digest#*:}"
+  rendered="${tag%%_*}+${digest:0:12}"
+  assert_eq "the fourth patch targets the PrometheusRules" "PrometheusRule" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[3].target.kind')"
+  assert_eq "the fourth patch replaces app.kubernetes.io/version with the chart's ref.tag" \
+    "1 replace /metadata/labels/app.kubernetes.io~1version ${tag}" \
+    "$(val HelmRelease "$release" '.spec.postRenderers[0].kustomize.patches[3].patch | from_yaml |
+      (length | tostring) + " " + .[0].op + " " + .[0].path + " " + .[0].value')"
+  assert_eq "its value is a label value the API server accepts" "true" \
+    "$(val HelmRelease "$release" ".spec.postRenderers[0].kustomize.patches[3].patch | from_yaml |
+      .[0].value | test(\"${LABEL_VALUE_RE}\")")"
+  assert_eq "and the version helm-controller renders from ref.tag and ref.digest, ${rendered}, is not one" "false" \
+    "$(yq -n "\"${rendered}\" | test(\"${LABEL_VALUE_RE}\")")"
 }
 
 # --- Test 9: the kna release ---
@@ -1186,6 +1219,78 @@ test_migration_port_reservation() {
   fi
 }
 
+# --- Test 16: hvo's chart through the release's post-renderer ---
+#
+# Renders the pinned chart with the release's values, the six values of the
+# auth Secret stubbed, and runs the post-renderer's patches over it with
+# kustomize, as helm-controller does. It pulls the chart by ref.tag, which
+# Test 14 ties to ref.digest, and skips like Test 14 when the chart cannot be
+# pulled. The first check fails once the chart writes a valid version label
+# on its own, and the version-label patch goes then.
+
+# pull_hvo_chart <version> <dir> pulls hvo's chart into <dir>, bounded by
+# timeout(1) when it is installed: helm pull has no timeout of its own.
+pull_hvo_chart() {
+  local chart=oci://ghcr.io/cobaltcore-dev/charts/openstack-hypervisor-operator
+  if have timeout; then
+    timeout 60 helm pull "$chart" --version "$1" -d "$2" >/dev/null 2>&1
+  else
+    helm pull "$chart" --version "$1" -d "$2" >/dev/null 2>&1
+  fi
+}
+
+test_hvo_post_render() {
+  echo "Test: hvo's chart, run through the release's post-renderer, carries only valid label values"
+
+  if ! have helm || ! have kustomize || ! have yq; then
+    echo "  SKIP: helm, kustomize or yq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  local tmp tag out release="$HYPERVISOR_DIR/hvo-release.yaml"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  tag="$(chart_ref openstack-hypervisor-operator tag)"
+
+  # helm pulls the tag <version>_<build> by the version <version>+<build>.
+  if ! pull_hvo_chart "${tag//_/+}" "$tmp"; then
+    echo "  SKIP: ghcr.io unreachable, cannot pull the hvo chart ${tag} (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  yq '.spec.values as $values | .spec.valuesFrom[] as $from
+    ireduce ($values; setpath($from.targetPath | split("."); "stub"))' "$release" >"$tmp/values.yaml"
+  mkdir "$tmp/post"
+  if ! out="$(helm template openstack-hypervisor-operator "$tmp"/*.tgz -n openstack \
+    -f "$tmp/values.yaml" 2>&1 >"$tmp/post/raw.yaml")"; then
+    echo "  FAIL: helm template rejects the release's values:"
+    printf '%s\n' "$out" | head -20
+    FAIL=$((FAIL + 3))
+    return
+  fi
+  yq '{"resources": ["raw.yaml"], "patches": .spec.postRenderers[0].kustomize.patches}' \
+    "$release" >"$tmp/post/kustomization.yaml"
+  if ! out="$(kustomize build "$tmp/post" 2>&1 >"$tmp/patched.yaml")"; then
+    echo "  FAIL: the post-renderer's patches do not apply to the chart:"
+    printf '%s\n' "$out" | head -20
+    FAIL=$((FAIL + 3))
+    return
+  fi
+
+  local version='select(.kind == "PrometheusRule") | .metadata.labels["app.kubernetes.io/version"]'
+  assert_eq "without the patches, both PrometheusRules carry a version label the API server rejects" "2" \
+    "$(yq -N "$version | select(test(\"${LABEL_VALUE_RE}\") | not)" "$tmp/post/raw.yaml" | grep -c .)"
+  assert_eq "with them, both carry the ref.tag ${tag}" "2" \
+    "$(yq -N "$version | select(. == \"${tag}\")" "$tmp/patched.yaml" | grep -c .)"
+  # yq's test stops at a label value that is not a string, one the API server
+  # rejects as well, so its error and exit status fail the check.
+  assert_eq "and no label value of the render is one the API server rejects" "" \
+    "$(yq -N "(.metadata.labels, .spec.template.metadata.labels) | select(.) | .[] |
+      select(test(\"${LABEL_VALUE_RE}\") | not)" "$tmp/patched.yaml" 2>&1 || echo "yq failed")"
+}
+
 # --- Run ---
 test_files_spdx_and_resources
 test_fixtures_render
@@ -1202,6 +1307,7 @@ test_scripts_lint
 test_libvirtd_exits
 test_chart_tag_and_digest_agree_upstream
 test_migration_port_reservation
+test_hvo_post_render
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

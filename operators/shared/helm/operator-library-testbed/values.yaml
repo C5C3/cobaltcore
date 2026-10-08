@@ -58,6 +58,12 @@ controller:
 
 webhook:
   enabled: true
+  # Renders the operator-library standalone webhook mode:
+  # --enable-controllers=false, no --leader-elect, and the ClusterRole from the
+  # hand-written "operator-library-testbed.webhookRbacRules" in
+  # templates/_helpers.tpl. Requires webhook.enabled=true and
+  # rbac.namespaceScoped=false.
+  standalone: false
 
 metrics:
   port: 8080

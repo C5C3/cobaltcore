@@ -105,6 +105,7 @@ func TestBuildHorizonDeployment_Shape(t *testing.T) {
 	g.Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/auth/login/"))
 	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/auth/login/"))
 	g.Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 
 	// The HTTP probes pin the Host header to a fixed value so the requests
 	// satisfy Django's ALLOWED_HOSTS allow-list without the operator having to
@@ -131,6 +132,34 @@ func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
 	deploy := buildHorizonDeployment(h, "cm", "")
 
 	g.Expect(deploy.Spec.Template.Annotations).NotTo(HaveKey(secretKeyHashAnnotation))
+}
+
+// The first render of the login page after a start loads Django's URL routing,
+// the templates and the offline-compression manifest on two uWSGI processes of
+// one thread each, and on a contended node or under a CPU limit it can take
+// longer than the kubelet's 1s default probe timeout. Every attempt then times
+// out, and after 30 failures the kubelet restarts a container that was about
+// to come up. The startup probe carries the sibling operators' 30x10s budget
+// with an 8s timeout. The timeout stays below the 10s period: the kubelet runs
+// one attempt at a time, so a longer timeout would push the attempt after
+// every timed-out one past the period and the budget past the 300 seconds the
+// reference page states. The invariant is checked before the exact values, so
+// a changed timeout or period reports this reason.
+func TestBuildHorizonDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildHorizonDeployment(testHorizon(), "cm", "")
+	container := findContainer(t, deploy.Spec.Template.Spec.Containers, "horizon")
+
+	g.Expect(container.StartupProbe).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal(dashboardLoginPath))
+	g.Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(int(horizonAPIPort)))
+	g.Expect(container.StartupProbe.TimeoutSeconds).To(BeNumerically("<", container.StartupProbe.PeriodSeconds),
+		"a timeout at or above the period spaces the attempts after timed-out ones by the timeout and stretches the budget past FailureThreshold x PeriodSeconds")
+	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
+	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
+	g.Expect(container.StartupProbe.TimeoutSeconds).To(Equal(int32(8)))
 }
 
 func TestBuildHorizonDeployment_AutoscalingLeavesReplicasUnmanaged(t *testing.T) {

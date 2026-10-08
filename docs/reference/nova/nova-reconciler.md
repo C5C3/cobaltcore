@@ -7,7 +7,7 @@ quadrant: operator
 
 The Nova controller runs the shared table-driven pipeline
 (`internal/common/reconcile`) with twelve sequential sub-reconcilers and a
-parallel group of six. Every step is instrumented under the `nova_operator`
+parallel group of seven. Every step is instrumented under the `nova_operator`
 metrics prefix, and the first step to return a non-zero result or an error
 short-circuits the chain. Conditions and the requeue are persisted on every exit
 path through the shared status skeleton.
@@ -37,8 +37,14 @@ Database ──► Conductor ──► Scheduler ──► Metadata ──► Co
                                                                                                     ├─ ConsoleHTTPRoute
                                                                                                     ├─ HealthCheck
                                                                                                     ├─ HPA
+                                                                                                    ├─ VPA
                                                                                                     └─ NetworkPolicy  (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -75,7 +81,7 @@ on a workload that is still starting: each sets its condition and returns a zero
 result, so a metadata API mid-rollout does not keep the API step from running,
 and the `Owns(Deployment)` watch re-enqueues the CR as the rollout progresses.
 
-The six members of the parallel group have no inter-dependency. Each operates on
+The seven members of the parallel group have no inter-dependency. Each operates on
 its own copy of the CR and sets exactly one condition, and the group merges the
 conditions back before the status write.
 
@@ -393,8 +399,8 @@ reference, so Kubernetes garbage collection reclaims it.
 
 A [NovaCompute](./novacompute-crd.md) runs `nova-compute` on one node pool. Its
 controller (`novacompute_controller.go`, recorder `novacompute-controller`)
-runs six sequential steps under the same `nova_operator` instrumenter. Each
-owns one condition, and the aggregate `Ready` is True only when all six are.
+runs seven sequential steps under the same `nova_operator` instrumenter. Each
+owns one condition, and the aggregate `Ready` is True only when all seven are.
 `ExtraConfigHealthy` stays out of it, as it does for the Nova.
 
 ### NovaCompute pipeline

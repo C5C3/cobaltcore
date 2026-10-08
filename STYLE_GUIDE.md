@@ -3,9 +3,11 @@
 A guide for writing docs (`docs/`) so they read as if a person wrote them:
 varied, plain where it can be, with no filler.
 
-**Scope.** This file governs rhetorical style: em-dash/italics/
-antithesis/callout/aphorism budgets, filler vocabulary, and quality
-self-labels. It is not a completeness check.
+Write at college graduate level. Formulate sentences active, direct, simple and
+avoid excessive referential pronouns.
+
+**Scope.** This file governs prose style and clarity: rhetorical budgets,
+plain language, and concrete actors. It is not a completeness check.
 
 ## The one principle
 
@@ -30,6 +32,10 @@ Checkable limits:
 | Antithesis ("not X, but Y" / "rather than") | ≤ 1 per page |
 | `:::` callout boxes | ≤ 1–2 per page |
 | Aphoristic one-liner close | ≤ 1 per page |
+
+The expression audit also counts bold spans and scores the house-slang list at
+zero. Bold counts are informational; bold lead-ins that act as headings and
+one-item numbered lists are review candidates, not budget limits.
 
 ## Do / Don't
 
@@ -69,7 +75,31 @@ Recurring abstractions that turn from style into template by their sixth use:
 `precisely`, `exactly`, `deliberately`. Use concrete wording instead, and delete
 `precisely`/`exactly` outright — they rarely strengthen anything.
 
-### 9. Sentences you can read in one breath
+The expression audit also scores these house-slang terms at zero:
+`knob`, `materialize`/`materialise`, `re-key`, `park`/`parks`, `stamp`, `mint`,
+`land`, `leg`, `as it stands`, `survives`, `unsplit`, and `wiring`.
+
+### 9. Prefer plain words
+| Avoid | Prefer |
+|---|---|
+| knob | option |
+| materialize | create |
+| park | wait / stay |
+| stamp | set |
+| mint | create |
+| survives | is not deleted |
+
+### 10. Name the actor
+Name the component that performs the action, and check it against the owning
+code. Do not credit metadata or lifecycle hooks with work a controller does.
+
+- **Don't:** "The finalizer deletes the namespace." "Labels connect the Pod
+  to the Service."
+- **Do:** "The controller issues the delete; the finalizer keeps the object
+  until cleanup finishes." "The EndpointSlice controller records Pods that
+  match the Service selector."
+
+### 11. Sentences you can read in one breath
 - **Don't:** 3–5 subordinate clauses and asides packed into one sentence (overview paragraphs and bullet lists are the worst offenders).
 - **Do:** split at the colon or semicolon. If you run out of breath reading it aloud, break it.
 
@@ -77,6 +107,7 @@ Recurring abstractions that turn from style into template by their sixth use:
 
 - **Frontmatter** (`title`, `quadrant`) and the page's structure.
 - **Tables, diagrams, and code blocks.** Structure is fine unless you are explicitly tasked to restructure the docs.
+- **Diagram alt text must be factually correct.** It describes what the diagram actually shows.
 - **Cross-links between pages.** They do real orienting work; don't replace them with prose recaps.
 
 ## Pre-commit check

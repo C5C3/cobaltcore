@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Keystone CR fixture for the release-upgrade E2E test.
-# Managed mode with initial image tag 2025.2.
+# Managed mode with initial image tag 2026.1.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -17,7 +17,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

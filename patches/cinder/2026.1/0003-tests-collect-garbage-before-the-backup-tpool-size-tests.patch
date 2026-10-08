@@ -52,6 +52,8 @@ The 2025.2 twin is
 patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch;
 it differs in the index line and the hunk offsets. The numbers differ
 because 2025.2 carries the NetApp fakes backport as 0003.
+No 2026.2 twin: 29.0.0 carries upstream commit c07c49c586, which
+replaced both tests.
 
 Applies to cinder 28.0.0 (2026.1).
 

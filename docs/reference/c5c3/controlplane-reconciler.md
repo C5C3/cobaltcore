@@ -63,24 +63,26 @@ bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
     TargetClusters:   true,
-    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, _ string) error {
+    SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
         mgr := mcMgr.GetLocalManager()
-        if err := (&controller.ControlPlaneReconciler{
-            Client:   mgr.GetClient(),
-            Scheme:   mgr.GetScheme(),
-            Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
-            Resolver: mcMgr,
-        }).SetupWithManager(mcMgr); err != nil {
-            return err
+        if opts.Controllers {
+            if err := (&controller.ControlPlaneReconciler{
+                Client:   mgr.GetClient(),
+                Scheme:   mgr.GetScheme(),
+                Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
+                Resolver: mcMgr,
+            }).SetupWithManager(mcMgr); err != nil {
+                return err
+            }
+            if err := (&controller.CredentialRotationReconciler{
+                Client:   mgr.GetClient(),
+                Scheme:   mgr.GetScheme(),
+                Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"),
+            }).SetupWithManager(mgr); err != nil {
+                return err
+            }
         }
-        if err := (&controller.CredentialRotationReconciler{
-            Client:   mgr.GetClient(),
-            Scheme:   mgr.GetScheme(),
-            Recorder: mgr.GetEventRecorderFor("credentialrotation-controller"),
-        }).SetupWithManager(mgr); err != nil {
-            return err
-        }
-        if webhooks {
+        if opts.Webhooks {
             return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).
                 SetupWebhookWithManager(mgr)
         }
@@ -95,7 +97,7 @@ bootstrap.Run(bootstrap.ManagerConfig{
 | Primary reconciler | `ControlPlaneReconciler` (event recorder `controlplane-controller`), completed through the **multicluster** builder: it takes `mcMgr`, and its `Resolver` turns a service's [`targetClusterRef`](../target-clusters.md) into the client that service's children are written with |
 | Secondary reconciler | `CredentialRotationReconciler` (event recorder `credentialrotation-controller`), on the local manager: it only ever touches the management cluster |
 | `TargetClusters` | `true`: the binary engages the clusters registered in `--clusters-namespace`. The provider engages nothing while that namespace holds no registration Secret, which is the single-cluster default every existing install keeps |
-| Webhook | `ControlPlaneWebhook`, registered **only** when `bootstrap.Run` passes `webhooks == true` to `SetupFunc` (the bool is resolved once by the bootstrap layer from the manager environment) |
+| Webhook | `ControlPlaneWebhook`, registered **only** when `bootstrap.Run` passes `opts.Webhooks == true` to `SetupFunc` (the bootstrap layer resolves `bootstrap.SetupOptions` once from the flags). The reconcilers are registered only when `opts.Controllers` is true, which `--enable-controllers=false` clears for a standalone webhook deployment |
 
 ### Scheme Registration
 
@@ -1372,8 +1374,8 @@ RBAC is **read-only** (`get;list;watch`) in both the kubebuilder marker and the
 shared Helm rules helper: the reconciler never writes a backend.
 
 Attaching, detaching, or a backend reaching `Ready` re-projects the Horizon
-websso choices and the Keystone `trusted_dashboard` immediately, without waiting
-for a periodic resync.
+websso choices immediately, without waiting for a periodic resync. The Keystone
+`trusted_dashboard` does not depend on the backends.
 
 ### reconcileKeystone
 
@@ -2746,6 +2748,11 @@ target that cannot be served parks `NovaReady` rather than failing the pass: the
 control plane is up, but a compute cluster that never receives the contract
 registers no hypervisor.
 
+The figure shows the mirror beside the other Secrets a compute cluster
+receives, and the addresses its components dial.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../../diagrams/compute-cluster-wiring.svg)
+
 The plane records nothing in its status about what it mirrored, because
 `reconcileNova` runs in the parallel group, which keeps only conditions and
 metadata. A mirror left behind by the last pool of a cluster is reaped by that
@@ -2806,7 +2813,8 @@ ControlPlane's ownership labels and
 bus URL and service password never reach the agent's privileged namespace, and
 a rotated value is rewritten on the next pass. A target that fails holds back
 none sorted after it: each of those still receives its copy, and `NovaReady`
-reports the first failed write, or else the first cluster that did not resolve.
+lists every failed target: `NovaMetadataAgentSecretError` when a write failed,
+`TargetClusterUnavailable` when clusters only did not resolve.
 A `NeutronMetadataAgent` watch wakes the plane, narrowed to agents arriving,
 leaving or re-pointing their shared secret.
 

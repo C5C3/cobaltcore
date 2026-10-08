@@ -70,6 +70,8 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Job` | `Owns()` | Triggers reconciliation when owned Job changes |
 | `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
+| `NetworkPolicy` | `Owns()` | Triggers reconciliation when the owned NetworkPolicy changes |
+| `VerticalPodAutoscaler` | `Owns()` (optional) | Registered only when the cluster serves the VerticalPodAutoscaler kind; reacts to changes of its spec |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
 | `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. That detection gates the local watch leg and answers for Keystone CRs whose children stay on the management cluster; a CR naming a target cluster is probed against that cluster's `RESTMapper` on every pass. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
 | `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
@@ -305,114 +307,57 @@ Fernet and credential sub-reconciler sections for the full contract.
 
 ## Reconciliation Flow
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                       KEYSTONE RECONCILIATION FLOW                           │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Keystone CR changed (or requeue timer fires)                                │
-│         │                                                                    │
-│         ▼                                                                    │
-│  Fetch Keystone CR (return empty result if NotFound)                         │
-│         │                                                                    │
-│         ▼                                    ┌─────────────────────────────┐ │
-│  ┌──────────────────┐                        │         LEGEND              │ │
-│  │ reconcileSecrets │  Check ESO synced      │  ───── Sequential           │ │
-│  │                  │  Sets: SecretsReady    │  ═════ Parallel             │ │
-│  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌────────────────────────────┐                                              │
-│  │ reconcileIdentityBackends  │  Project DomainReady backends                │
-│  │                            │  Sets: IdentityBackendsReady                 │
-│  └────────┬───────────────────┘  Returns: domainsSecretName (never requeues) │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────┐                                                        │
-│  │ reconcileConfig  │  Render keystone.conf + api-paste.ini                  │
-│  │                  │  Create immutable ConfigMap                            │
-│  └────────┬─────────┘  Returns: configMapName                                │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ╔═════════════════════════════════════════════════════════════════════════╗ │
-│  ║  reconcileParallelGroup                                                 ║ │
-│  ║                                                                         ║ │
-│  ║  errgroup.WithContext — each goroutine receives a DeepCopy of the CR    ║ │
-│  ║                                                                         ║ │
-│  ║  ┌──────────────────────┐  ┌──────────────────────────┐                 ║ │
-│  ║  │ reconcileFernetKeys  │  │ reconcileCredentialKeys  │  (concurrent)   ║ │
-│  ║  │ + script ConfigMap   │  │ + script ConfigMap       │                 ║ │
-│  ║  │ Sets: FernetKeysReady│  │ Sets: CredentialKeysReady│                 ║ │
-│  ║  └──────────────────────┘  └──────────────────────────┘                 ║ │
-│  ║  ┌─────────────────────────┐                                            ║ │
-│  ║  │ reconcileNetworkPolicy  │  (concurrent)                              ║ │
-│  ║  │ Sets: NetworkPolicyReady│                                            ║ │
-│  ║  └─────────────────────────┘                                            ║ │
-│  ║                                                                         ║ │
-│  ║  g.Wait() → MergeCondition → ShortestRequeue                   ║ │
-│  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
-│                                  │                                           │
-│           ┌──────────────────────┘                                           │
-│           ▼                                                                  │
-│  ┌───────────────────┐                                                       │
-│  │ reconcileDatabase │  Managed mode: verify MariaDB cluster health first,   │
-│  │                   │  then ensure Database/User/Grant CRs + run db_sync    │
-│  │                   │  Job + run schema-check Job                           │
-│  │                   │  Sets: DatabaseReady                                  │
-│  └────────┬──────────┘  Requeue: 30s                                         │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌─────────────────────────────────┐                                         │
-│  │ reconcilePolicyValidation       │  Validate oslo.policy overrides         │
-│  │                                 │  via oslopolicy-validator Job           │
-│  │                                 │  Sets: PolicyValidReady                 │
-│  └────────┬────────────────────────┘  Requeue: 15s                           │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────┐                                                    │
-│  │ reconcileDeployment  │  Ensure Deployment + Service                       │
-│  │                      │  Sets: DeploymentReady, status.endpoint            │
-│  └────────┬─────────────┘  Requeue: 10s                                      │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌─────────────────────────┐                                                 │
-│  │ pruneStaleConfigMaps    │  Delete old {name}-config-{hash} ConfigMaps     │
-│  │                         │  Retain 3 historical + current                  │
-│  └────────┬────────────────┘  No condition, no requeue                       │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ╔═════════════════════════════════════════════════════════════════════════╗ │
-│  ║  reconcileParallelGroup (second group)                                  ║ │
-│  ║                                                                         ║ │
-│  ║  ┌──────────────────────┐  ┌────────────────────────┐                   ║ │
-│  ║  │ reconcileHTTPRoute   │  │ reconcileHealthCheck   │  (concurrent)     ║ │
-│  ║  │ Sets: HTTPRouteReady │  │ Sets: KeystoneAPIReady │                   ║ │
-│  ║  └──────────────────────┘  └────────────────────────┘                   ║ │
-│  ║  ┌──────────────┐  ┌─────────────────────┐  ┌────────────────────────┐  ║ │
-│  ║  │ reconcileHPA │  │ reconcileBootstrap  │  │ reconcileTrustFlush    │  ║ │
-│  ║  │ Sets:HPAReady│  │ Sets: BootstrapReady│  │ Sets: TrustFlushReady  │  ║ │
-│  ║  └──────────────┘  └─────────────────────┘  └────────────────────────┘  ║ │
-│  ║  ┌──────────────┐                                                       ║ │
-│  ║  │ reconcileVPA │                                                       ║ │
-│  ║  │ Sets:VPAReady│                                                       ║ │
-│  ║  └──────────────┘                                                       ║ │
-│  ║                                                                         ║ │
-│  ║  g.Wait() → MergeCondition → ShortestRequeue                   ║ │
-│  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
-│           ┌──────────────────────┘                                           │
-│           ▼                                                                  │
-│  ┌────────────────────────────┐                                              │
-│  │ reconcilePasswordRotation  │  Ensure admin-password rotation CronJob      │
-│  │                            │  (Model B); apply staged rotation            │
-│  │                            │  Sets: PasswordRotationReady                 │
-│  └────────┬───────────────────┘  Requeue: on apply only                      │
-│           │                                                                  │
-│           ▼                                                                  │
-│  setReadyCondition() — aggregate Ready from all sub-conditions               │
-│  updateStatus() — persist to API server                                      │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+A pass runs the pipeline one entry after another. The figure draws the order,
+the two groups whose members all run, and the one exit every pass takes to the
+status write.
+
+![The sub-reconciler pipeline of the Keystone operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DatabaseTLS, DBConnectionSecret, IdentityBackends, Config, a parallel group of FernetKeys, CredentialKeys and NetworkPolicy, then Database, PolicyValidation, Deployment, an unnamed prune step, a second parallel group of HTTPRoute, HealthCheck, HPA, VPA, Bootstrap and TrustFlush, and PasswordRotation. Every member of a group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady, and the prune step has none of its own. DBConnectionSecret hands the hash of the database connection to Deployment, IdentityBackends hands on the name of the domains Secret and the federation projection, Config hands on the name of the ConfigMap, and Deployment sets status.endpoint, which HealthCheck waits for. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-reconciler-pipeline.svg)
+
+One pass, in order:
+
+1. Fetches the Keystone. `NotFound` ends the pass with an empty result.
+2. Hands a Keystone that carries a deletion timestamp to the deletion path:
+   `reconcileDelete`, `reconcileDeleteOpenBao`, then the sweep of the children
+   on a target cluster (see [Finalizer](#finalizer) and
+   [OpenBao Finalizer](#openbao-finalizer)).
+3. Resolves the client its children are written with. A
+   `spec.targetClusterRef` that does not resolve sets
+   `SecretsReady=False/TargetClusterUnavailable` and requeues after 15s, and no
+   finalizer is added.
+4. Installs the finalizers `keystone.openstack.c5c3.io/finalizer` and
+   `keystone.openstack.c5c3.io/openbao-finalizer`, and
+   `openstack.c5c3.io/remote-children` while `spec.targetClusterRef` is set. A
+   pass that installs one ends with a requeue after 1s.
+5. Runs the pipeline through `RunPipeline`, the rows below. The first entry
+   that returns a requeue or an error ends the pass.
+6. Calls `updateStatus()` on every exit path of steps 3 and 5: it recomputes
+   the aggregate `Ready`, stamps `status.observedGeneration`, and skips the
+   write when nothing changed.
+
+The entries in call order. A member of a parallel group never stops another
+member, and the group returns the shortest requeue of its members.
+
+| Step | Function | Runs | Sets | Hands on | Requeue |
+| --- | --- | --- | --- | --- | --- |
+| `Secrets` | `reconcileSecrets` | in order | `SecretsReady` | nothing | 15s while the secret store or a credential Secret is not ready |
+| `DatabaseTLS` | `reconcileDatabaseTLS` | in order | `DatabaseTLSReady` | nothing | 15s while the client Certificate is pending |
+| `DBConnectionSecret` | `reconcileDBConnectionSecret` | in order | `SecretsReady` | `dbConnectionHash`, the SHA-256 of the DSN, to `Deployment` | 15s while the database credentials are not synced |
+| `IdentityBackends` | `reconcileIdentityBackends` | in order | `IdentityBackendsReady` | `domainsSecretName` and `federation` to `Config` and to every later entry that builds a pod | never |
+| `Config` | `reconcileConfig` | in order | `SecretsReady`, only on failure (`ConfigError`) | `configMapName` to every later entry that builds a pod | never |
+| `FernetKeys` | `reconcileFernetKeys` | parallel group 1 | `FernetKeysReady` | nothing | 15s after the first key generation and after an applied rotation |
+| `CredentialKeys` | `reconcileCredentialKeys` | parallel group 1 | `CredentialKeysReady` | nothing | 15s after the first key generation and after an applied rotation |
+| `NetworkPolicy` | `reconcileNetworkPolicy` | parallel group 1 | `NetworkPolicyReady` | nothing | never |
+| `Database` | `reconcileDatabase` | in order | `DatabaseReady` | `status.upgradePhase` to `Deployment` | 30s while MariaDB, a db_sync Job or an upgrade phase Job is not done; 1s between two upgrade phases |
+| `PolicyValidation` | `reconcilePolicyValidation` | in order | `PolicyValidReady` | nothing | 15s while the validation Job runs |
+| `Deployment` | `reconcileDeployment` | in order | `DeploymentReady` | `status.endpoint` to `HealthCheck` | 10s while the Deployment is not available; 1s after it ends the `RollingUpdate` phase |
+| `(prune)` | `pruneStaleConfigMaps`, `pruneStaleDomainsSecrets`, `pruneStaleFederationSecrets` | in order | `SecretsReady`, only on failure | nothing | never |
+| `HTTPRoute` | `reconcileHTTPRoute` | parallel group 2 | `HTTPRouteReady` | nothing | 10s until the Gateway accepts the route |
+| `HealthCheck` | `reconcileHealthCheck` | parallel group 2 | `KeystoneAPIReady` | nothing | 10s while the API does not answer |
+| `HPA` | `reconcileHPA` | parallel group 2 | `HPAReady` | nothing | never |
+| `VPA` | `reconcileVPA` | parallel group 2 | `VPAReady` | nothing | never |
+| `Bootstrap` | `reconcileBootstrap` | parallel group 2 | `BootstrapReady` | nothing | 60s while the bootstrap Job runs |
+| `TrustFlush` | `reconcileTrustFlush` | parallel group 2 | `TrustFlushReady` | nothing | never |
+| `PasswordRotation` | `reconcilePasswordRotation` | in order | `PasswordRotationReady` | nothing | 1s after it applied a staged rotation |
 
 ### Execution Model
 
@@ -424,7 +369,7 @@ Sub-reconcilers execute in a defined order using two execution modes:
    concurrently via `errgroup.WithContext`. Each goroutine operates on a `DeepCopy` of
    the Keystone CR to prevent data races. There are two groups: the first (after
    Config) runs FernetKeys / CredentialKeys / NetworkPolicy; the second (after
-   Deployment and config pruning) runs HTTPRoute / HealthCheck / HPA / Bootstrap /
+   Deployment and config pruning) runs HTTPRoute / HealthCheck / HPA / VPA / Bootstrap /
    TrustFlush, which share no inter-dependency once the Deployment/Service/Config
    outputs exist. `reconcilePasswordRotation` stays sequential after the second
    group because it depends on Bootstrap having seeded the initial admin
@@ -458,7 +403,7 @@ on failure. Without that, `setReadyCondition` would re-aggregate the still-True
 sub-conditions and persist a stale `Ready=True` at the new generation — the
 failure would be visible only in logs and the error counter.
 
-The parallel group follows a different contract: all three sub-reconcilers run
+A parallel group follows a different contract: all its members run
 simultaneously, errors cancel the errgroup context, and conditions from completed
 sub-reconcilers are merged even on partial failure.
 
@@ -496,8 +441,8 @@ joined error containing only the status update error.
 
 ### Ready Condition Aggregation
 
-After all sub-reconcilers succeed, `setReadyCondition()` evaluates whether all
-sub-condition types are `True` using `conditions.AllTrue()`:
+On every status write, including a pass that ends early,
+`setReadyCondition()` evaluates whether all sub-condition types are `True` using `conditions.AllTrue()`:
 
 | All Sub-Conditions True | Ready Condition | Reason |
 | --- | --- | --- |
@@ -517,9 +462,9 @@ The pipeline uses two parallel groups, each driven by `reconcileParallelGroup`:
   `reconcileNetworkPolicy` — runs after `reconcileConfig` completes and before
   `reconcileDatabase` begins.
 - **Group 2** — `reconcileHTTPRoute`, `reconcileHealthCheck`, `reconcileHPA`,
-  `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
+  `reconcileVPA`, `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
   `reconcileDeployment` and config pruning. Once the Deployment/Service and the
-  config ConfigMap exist, these five share no data dependency on each other.
+  config ConfigMap exist, these six share no data dependency on each other.
 
 Both groups' members are eligible for parallelization because they have no data
 dependencies on each other (see [Dependency Graph](#dependency-graph) below).
@@ -564,14 +509,16 @@ output (other than conditions merged after the group completes).
 | Sub-Reconciler | Inputs | Condition Type | Dependencies | Parallel |
 | --- | --- | --- | --- | --- |
 | `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
+| `reconcileDatabaseTLS` | CR spec | `DatabaseTLSReady` | Secrets | no |
+| `reconcileDBConnectionSecret` | database credentials Secret | `SecretsReady` (*returns dbConnectionHash*) | Secrets, DatabaseTLS | no |
+| `reconcileIdentityBackends` | backend CRs + bind/client Secrets + provider metadata | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
 | `reconcileConfig` | CR spec, DB secret | `SecretsReady` (False on failure; *returns configMapName*) | Secrets | no (produces configMapName) |
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
-| `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes (group 1)** |
-| `reconcileIdentityBackends` | backend CRs + bind/client Secrets + provider metadata | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
+| `reconcileNetworkPolicy` | CR spec, federation projection | `NetworkPolicyReady` | IdentityBackends | **yes (group 1)** |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
-| `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
+| `reconcileDeployment` | configMapName, dbConnectionHash, domainsSecretName, federation projection | `DeploymentReady` | Database (implicit) | no |
 | `pruneStaleConfigMaps` | configMapName | `SecretsReady` (False on failure) | Deployment (must be ready) | no |
 | `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | **yes (group 2)** |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | **yes (group 2)** |
@@ -1479,8 +1426,9 @@ after a full reconcile loop, every condition in the status carries the correct
 
 | Condition Type | Set By | Description |
 | --- | --- | --- |
-| `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
+| `SecretsReady` | `reconcileSecrets`, `reconcileDBConnectionSecret`, and on failure `reconcileConfig` and the prune step | ESO-provided credentials are synced |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
+| `DatabaseTLSReady` | `reconcileDatabaseTLS` | Client certificate for the database issued (`CertificateIssued`), supplied by the user (`ExternallyManaged`) or not required (`NotRequired`) |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required |
@@ -1596,7 +1544,7 @@ validation answers HTTP 500.
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-db-sync` |
+| Name | `{name}-db-sync` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `keystone-manage db_sync` |
 | BackoffLimit | 4 |
@@ -2307,17 +2255,22 @@ preserving the no-rollout behavior.
 
 | Probe | Type | Target | InitialDelay | Period | Timeout |
 | --- | --- | --- | --- | --- | --- |
-| Liveness | TCPSocket 5000; with federation active an exec-form localhost connect (uWSGI binds `127.0.0.1` only) | uWSGI accepting connections | 15s | 20s | kubelet default (1s); 8s for the federation exec variant |
+| Liveness | TCPSocket 5000; with federation active an exec-form localhost connect (uWSGI binds `127.0.0.1` only) | uWSGI accepting connections | 15s | 20s | 10s (both variants) |
 | Readiness | Exec | TCP connect to the host/port parsed from `OS_DATABASE__CONNECTION` (inner connect timeout 20s) | 10s | 30s | 25s |
 | Startup | HTTPGet `/v3` port 5000; with federation active an exec-form localhost fetch (inner timeout 5s) | WSGI app answering | — | 10s | 8s (FailureThreshold 30) |
 
 The exec-form probes fork a shell plus a Python interpreter, which alone can
 consume the kubelet's 1-second default timeout — every exec probe therefore
 carries an explicit `timeoutSeconds` sitting above its inner connect/fetch
-timeout and below its own period. The liveness and readiness probes are
-intentionally separated. The liveness probe only verifies uWSGI is accepting
-connections, without exercising the database code path, so the kubelet does
-not kill pods during transient database outages (e.g., MariaDB maintenance).
+timeout and below its own period. The liveness probe carries 10 seconds in
+both variants, the liveness timeout of every API front end: a single-worker
+uWSGI holds an HTTP check for the whole request in flight, and the kubelet's
+1-second default would restart a busy API. A TCP connect does not wait on the
+worker, so keystone takes the value to stay in line with the other front ends.
+The liveness and readiness probes are intentionally separated. The liveness
+probe only verifies uWSGI is accepting connections, without exercising the
+database code path, so the kubelet does not kill pods during transient
+database outages (e.g., MariaDB maintenance).
 The readiness probe TCP-connects to the database endpoint from inside the
 pod — `/v3` is served without touching the database and cannot observe a lost
 connection — so a keystone-side database outage depools the pod from the
@@ -2946,7 +2899,7 @@ project, roles, and service catalog entries.
 
 | Field | Value |
 | --- | --- |
-| Name | `keystone-bootstrap` |
+| Name | `{name}-bootstrap` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Command | `keystone-manage bootstrap` |
 | BackoffLimit | 4 |
@@ -3507,6 +3460,9 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
 | --- | --- | --- | --- |
 | `reconcileSecrets` | ESO not synced | 15s | API error → exponential backoff |
+| `reconcileDatabaseTLS` | Client Certificate pending | 15s | Missing certificate refs set `DatabaseTLSReady=False/MissingCertificateRefs` and return an error |
+| `reconcileDBConnectionSecret` | Database credentials not synced | 15s | API error → exponential backoff |
+| `reconcileIdentityBackends` | None: waiting states never requeue | — | List, render or create failure → exponential backoff |
 | `reconcileDatabase` | MariaDB CRs not ready | 30s | `ErrJobFailed` from db_sync |
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
 | `reconcileFernetKeys` | Initial key generation / rotation applied | 15s | API error → exponential backoff |
@@ -3519,6 +3475,7 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff |
 | `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
+| `reconcileVPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
 | `reconcilePasswordRotation` | Rotation applied (short-circuit) | `RequeueNextPass` (1s) | API error → exponential backoff |
@@ -3531,48 +3488,79 @@ returned directly to controller-runtime, which applies exponential backoff with 
 
 ## Owned Resources
 
-All resources created by the reconciler carry an owner reference pointing to the
-Keystone CR via `controllerutil.SetControllerReference()`. This enables:
+On the cluster of the Keystone CR every object the reconciler creates carries a
+controller owner reference to it, so deleting the CR garbage-collects them.
+With `spec.targetClusterRef` the children live on another cluster, where no
+owner reference can point at the CR: they carry ownership labels, and the
+`openstack.c5c3.io/remote-children` finalizer sweeps them. The figure groups
+the objects and draws who mounts what.
 
-- **Automatic garbage collection** — Deleting the Keystone CR cascades to all owned
-  resources.
-- **Watch-based reconciliation** — Changes to owned resources trigger re-reconciliation
-  of the owning Keystone CR.
+![What one Keystone resource creates, in four groups inside a frame of owned objects, and what it only reads. Serving: the Deployment, the Service and the PodDisruptionBudget, and with their spec fields a HorizontalPodAutoscaler, a VerticalPodAutoscaler, a NetworkPolicy and an HTTPRoute. Config and Secrets: the immutable config ConfigMap, the Fernet and credential key Secrets with a PushSecret each, the db-connection Secret, and with their spec fields the domains Secret, the federation Secret, the database client Certificate with its Secret, and the MariaDB Database, User and Grant. One-shot Jobs: db-sync, schema-check and bootstrap, the policy validation Job, and the three Jobs of a release upgrade. CronJobs: the two key rotations with a ServiceAccount, a Role, a RoleBinding and a staging Secret each, the trust flush, and with its spec field the admin password rotation with its staging Secret, its push source Secret and its PushSecret. The Deployment mounts the ConfigMap and the key Secrets and reads the database URL from the db-connection Secret. Every Job mounts the ConfigMap, the keystone-manage CronJobs mount the ConfigMap and the key Secrets, and each rotation CronJob patches only its staging Secret. Read and not owned: the database credentials Secret, the admin password Secret, the policy ConfigMap, the MariaDB cluster, the secret store, the Gateway, the ClusterIssuer of the database CA and the identity backends. Every owned object carries an owner reference to the Keystone; on a target cluster ownership labels take its place.](../../diagrams/service-owned-resources.svg)
 
-| Resource | Name | Owner |
+For a Keystone CR named `{name}` the operator manages:
+
+| Resource | Name | Exists |
 | --- | --- | --- |
-| Secret | `{name}-fernet-keys` | Keystone CR |
-| Secret | `{name}-fernet-keys-rotation` | Keystone CR (rotation staging) |
-| CronJob | `{name}-fernet-rotate` | Keystone CR |
-| PushSecret | `{name}-fernet-keys-backup` | Keystone CR |
-| Secret | `{name}-credential-keys` | Keystone CR |
-| Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging) |
-| CronJob | `{name}-credential-rotate` | Keystone CR |
-| PushSecret | `{name}-credential-keys-backup` | Keystone CR |
-| ConfigMap | `{name}-config-{hash}` | Keystone CR |
-| Secret | `{name}-domains-{hash}` | Keystone CR (only while at least one KeystoneIdentityBackend is projected) |
-| Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
-| Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
-| Deployment | `{name}` | Keystone CR (bare CR name) |
-| Service | `{name}` | Keystone CR (bare CR name) |
-| PodDisruptionBudget | `{name}` | Keystone CR (bare CR name) |
-| HorizontalPodAutoscaler | `{name}` | Keystone CR (only when `spec.autoscaling` is set; bare CR name) |
-| HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set; bare CR name) |
-| Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
-| CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
-| Secret | `{name}-admin-password-rotation` | Keystone CR (rotation staging; only when `spec.passwordRotation.enabled`) |
-| Secret | `{name}-admin-password-next` | Keystone CR (rotation push-source; only when `spec.passwordRotation.enabled`) |
-| CronJob | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| PushSecret | `{name}-admin-password-backup` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ServiceAccount | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| Role | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| RoleBinding | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Keystone CR (only when `spec.passwordRotation.enabled`) |
-| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR |
-| ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR |
-| Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
-| User | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
-| Grant | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |
+| Deployment | `{name}` | Always |
+| Service | `{name}` | Always |
+| PodDisruptionBudget | `{name}` | Always |
+| HorizontalPodAutoscaler | `{name}` | Only with `spec.autoscaling` |
+| VerticalPodAutoscaler | `{name}` | Only with `spec.deployment.verticalAutoscaling`, on a cluster that serves the kind |
+| NetworkPolicy | `{name}` | Only with `spec.networkPolicy` |
+| HTTPRoute | `{name}` | Only with `spec.gateway`, on a cluster that serves the Gateway API |
+| ConfigMap | `{name}-config-{hash}` | Always. Immutable; the current one and the three newest before it are kept |
+| Secret | `{name}-db-connection` | Always |
+| Secret | `{name}-fernet-keys` | Always |
+| Secret | `{name}-credential-keys` | Always |
+| PushSecret | `{name}-fernet-keys-backup` | Always |
+| PushSecret | `{name}-credential-keys-backup` | Always |
+| Secret | `{name}-domains-{hash}` | Only while at least one KeystoneIdentityBackend is projected |
+| Secret | `{name}-federation-{hash}` | Only while an OIDC or SAML backend is projected and `spec.federation.proxyImage` is set |
+| Secret | `{name}-oidc-crypto-passphrase` | Created with the first OIDC backend and kept afterwards |
+| Secret | `{name}-saml-sp` | Created with a SAML backend that names no certificate Secret of its own, and kept afterwards |
+| Secret | `{name}-saml-sp-metadata` | Only while a SAML backend is projected |
+| Certificate | `{name}-db-client` | Only with `spec.database.tls` and `spec.database.clusterRef`. cert-manager writes the Secret of the same name |
+| Database | `{name}` | Only with `spec.database.clusterRef`; additionally cleaned up by the finalizer |
+| User | `{name}` | Only with `spec.database.clusterRef` and a credentials mode other than `Dynamic`; additionally cleaned up by the finalizer |
+| Grant | `{name}` | Only with `spec.database.clusterRef` and a credentials mode other than `Dynamic`; additionally cleaned up by the finalizer |
+| Job | `{name}-db-sync` | Always |
+| Job | `{name}-schema-check` | Always, after db-sync |
+| Job | `{name}-db-expand` | Only during a release upgrade |
+| Job | `{name}-db-migrate` | Only during a release upgrade |
+| Job | `{name}-db-contract` | Only during a release upgrade |
+| Job | `{name}-bootstrap` | Always |
+| Job | `{name}-policy-validation` | Only with `spec.policyOverrides` |
+| CronJob | `{name}-fernet-rotate` | Always |
+| ServiceAccount, Role, RoleBinding | `{name}-fernet-rotate` | Always |
+| Secret | `{name}-fernet-keys-rotation` | Always (rotation staging) |
+| ConfigMap | `{name}-fernet-rotate-script-{hash}` | Always |
+| CronJob | `{name}-credential-rotate` | Always |
+| ServiceAccount, Role, RoleBinding | `{name}-credential-rotate` | Always |
+| Secret | `{name}-credential-keys-rotation` | Always (rotation staging) |
+| ConfigMap | `{name}-credential-rotate-script-{hash}` | Always |
+| CronJob | `{name}-trust-flush` | Only with `spec.trustFlush`, which the defaulting webhook sets |
+| CronJob | `{name}-admin-password-rotate` | Only with `spec.passwordRotation.enabled` |
+| ServiceAccount, Role, RoleBinding | `{name}-admin-password-rotate` | Only with `spec.passwordRotation.enabled` |
+| Secret | `{name}-admin-password-rotation` | Only with `spec.passwordRotation.enabled` (rotation staging) |
+| Secret | `{name}-admin-password-next` | Only with `spec.passwordRotation.enabled` (push source) |
+| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Only with `spec.passwordRotation.enabled` |
+| PushSecret | `{name}-admin-password-backup` | Only with `spec.passwordRotation.enabled`, once the push source holds a valid password |
+
+### Who mounts what
+
+Every workload reads the database URL from the env var `OS_DATABASE__CONNECTION`,
+which comes from `{name}-db-connection`, unless the table says otherwise.
+
+| Workload | Mounts | Reads through env | Writes through the API |
+| --- | --- | --- | --- |
+| Deployment `{name}`, container `keystone` | The config ConfigMap, `{name}-fernet-keys`, `{name}-credential-keys`; the domains Secret and the database TLS Secrets when they exist | The database URL | Nothing |
+| Deployment `{name}`, sidecar `federation-proxy` | `{name}-federation-{hash}` | Nothing | Nothing |
+| Jobs `-db-sync`, `-schema-check`, `-db-expand`, `-db-migrate`, `-db-contract` | The config ConfigMap; the domains Secret and the database TLS Secrets when they exist | The database URL | Nothing |
+| Job `-bootstrap` | The config ConfigMap, `{name}-fernet-keys`; the domains Secret and the database TLS Secrets when they exist | The database URL, and `BOOTSTRAP_PASSWORD` from the admin password Secret | Nothing |
+| Job `-policy-validation` | The config ConfigMap; the domains Secret when it exists | No Secret | Nothing |
+| CronJobs `-fernet-rotate`, `-credential-rotate` | The config ConfigMap, both key Secrets, the script ConfigMap; the domains Secret when it exists | The database URL | Patches its staging Secret |
+| CronJob `-trust-flush` | The config ConfigMap, both key Secrets; the domains Secret when it exists | The database URL | Nothing |
+| CronJob `-admin-password-rotate` | Its script ConfigMap | No Secret | Patches `{name}-admin-password-rotation` |
 
 ---
 
@@ -3677,7 +3665,7 @@ operator. Containers that use the env var include:
 | --- | --- | --- |
 | `Deployment` | `buildKeystoneDeployment` (`reconcile_deployment.go`) | Keystone API pods |
 | `Job` `{name}-bootstrap` | `buildBootstrapJob` (`reconcile_bootstrap.go`) | Initial bootstrap of admin user/project/roles |
-| `Job` `keystone-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`reconcile_database.go`) | Database schema provisioning and drift checks |
+| `Job` `{name}-db-sync` and variants (expand, migrate, contract, schema-check) | `buildDBJob` (`database_jobs.go`) | Database schema provisioning and drift checks |
 | `CronJob` `{name}-trust-flush` | `trustFlushCronJob` (`reconcile_trustflush.go`) | Periodic expired trust cleanup — default-on hourly via webhook materialization |
 | `CronJob` `{name}-fernet-rotate` | `fernetRotationCronJob` (`reconcile_fernet.go`) | Fernet key rotation — appended alongside the pre-existing `OS_fernet_tokens__max_active_keys` override |
 | `CronJob` `{name}-credential-rotate` | `credentialRotationCronJob` (`reconcile_credential.go`) | Credential key rotation |
@@ -3848,10 +3836,12 @@ responsible for driving:
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
 | `Secrets`, `DBConnectionSecret`, `Config` | `SecretsReady` |
+| `IdentityBackends` | `IdentityBackendsReady` |
 | `FernetKeys` | `FernetKeysReady` |
 | `CredentialKeys` | `CredentialKeysReady` |
 | `NetworkPolicy` | `NetworkPolicyReady` |
 | `Database` | `DatabaseReady` |
+| `DatabaseTLS` | `DatabaseTLSReady` |
 | `PolicyValidation` | `PolicyValidReady` |
 | `Deployment` | `DeploymentReady` |
 | `HTTPRoute` | `HTTPRouteReady` |
@@ -3860,6 +3850,7 @@ responsible for driving:
 | `VPA` | `VPAReady` |
 | `Bootstrap` | `BootstrapReady` |
 | `TrustFlush` | `TrustFlushReady` |
+| `PasswordRotation` | `PasswordRotationReady` |
 
 The collapsed `SecretsReady` mapping for `Secrets`, `DBConnectionSecret`,
 and `Config` is intentional — those three sub-reconcilers form the

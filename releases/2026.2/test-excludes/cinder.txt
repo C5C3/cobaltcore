@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# stestr exclude-list for Cinder 2026.2
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+#
+# A run of the cinder 29.0.0 suite in the venv-builder container, with the two
+# patches of patches/cinder/2026.2/ and the one pattern below (local, arm64,
+# 2026-10-06), counted 19003 tests and passed with no failure: 18984 passed,
+# 19 skipped.
+
+# The test sets backup_create_containers=False with override_config after
+# setUp built the driver, but ChunkedBackupDriver.__init__ copies
+# CONF.backup_create_containers into the driver at construction
+# (cinder/backup/chunkeddriver.py, line 149), so put_container calls
+# os.makedirs on the fake container path
+# /fake/mount-point-base/fake/export/path/fake/container_new. Upstream tox
+# runs unprivileged, so that makedirs raises PermissionError, an OSError,
+# and the test passes by accident. As root in the venv-builder container
+# the directory is created. The test and that line are unchanged at 29.0.0.
+cinder\.tests\.unit\.backup\.drivers\.test_backup_posix\.PosixBackupDriverTestCase\.test_put_container_disabled$
+
+# Record a future environment failure here as one escaped regex with a
+# comment above it stating the reason.

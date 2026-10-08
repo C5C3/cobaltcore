@@ -248,6 +248,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.LivenessProbe.HTTPGet).To(BeNil(), "liveness probe must not use HTTPGet")
 	g.Expect(container.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
 	g.Expect(container.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
+	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 
 	// Verify readiness probe (SC-CHAOS-006): a database-aware exec probe that
 	// TCP-connects to the DB endpoint from inside the keystone pod, so a
@@ -2571,10 +2572,11 @@ func TestBuildKeystoneDeployment_FederationSidecar(t *testing.T) {
 
 // TestProbeTimeouts pins the explicit probe timeouts: every probe that forks
 // a process (the exec variants) or traverses the proxy chain carries a
-// timeout above its inner timeout and below its period, while the plain
-// TCPSocket checks keep the kubelet default — the kubelet's 1-second default
-// would otherwise kill the shell+python exec probes before their inner
-// timeout ever applies.
+// timeout above its inner timeout and below its period — the kubelet's
+// 1-second default would otherwise kill the shell+python exec probes before
+// their inner timeout ever applies. The keystone liveness probe carries 10s
+// in both variants, while the sidecar's plain TCPSocket checks keep the
+// kubelet default.
 func TestProbeTimeouts(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -2582,10 +2584,11 @@ func TestProbeTimeouts(t *testing.T) {
 	g.Expect(keystoneStartupProbe(false).TimeoutSeconds).To(Equal(int32(8)))
 	g.Expect(keystoneStartupProbe(true).TimeoutSeconds).To(Equal(int32(8)))
 
-	// Liveness: only the federation exec variant needs one; the TCPSocket
-	// variant keeps the kubelet default.
-	g.Expect(keystoneLivenessProbe(true).TimeoutSeconds).To(Equal(int32(8)))
-	g.Expect(keystoneLivenessProbe(false).TimeoutSeconds).To(Equal(int32(0)))
+	// Liveness: both variants carry 10s, the liveness timeout of every API
+	// front end (#1294); the exec variant's value still sits above its inner
+	// 5s connect timeout and below the 20s period.
+	g.Expect(keystoneLivenessProbe(true).TimeoutSeconds).To(Equal(int32(10)))
+	g.Expect(keystoneLivenessProbe(false).TimeoutSeconds).To(Equal(int32(10)))
 
 	// Sidecar: readiness goes through Apache and uWSGI and gets 5s; the TCP
 	// startup/liveness probes fork no process and keep the default, with

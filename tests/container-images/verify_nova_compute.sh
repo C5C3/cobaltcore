@@ -139,13 +139,16 @@ test_libvirt_binding_pin() {
 test_driver_imports() {
   echo "Test: the libvirt driver and the host libraries import cleanly"
   # The libvirt driver, the os-brick connectors for iSCSI and NVMe, the LUKS
-  # encryptor and the ovsdbapp IDL os-vif plugs OVS ports through. The last
-  # one is the Open vSwitch client this image carries: os-vif's default
-  # [os_vif_ovs] ovsdb_interface is native, so no OVS apt package is needed.
-  # Stderr is echoed on failure so the module that went missing is named.
+  # encryptor, os-vif's ovs plugin and the ovsdbapp IDL that plugin plugs OVS
+  # ports through. The IDL is the Open vSwitch client this image carries:
+  # os-vif's default [os_vif_ovs] ovsdb_interface is native, so no OVS apt
+  # package is needed. The plugin module imports pyroute2, which os-vif 5.2.1
+  # (2026.2) leaves out of its wheel metadata; without it os-vif loads only its
+  # noop plugin. Stderr is echoed on failure so the module that went missing is
+  # named.
   local exit_code=0 err=""
   err=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
-    "import nova.virt.libvirt.driver, os_brick.initiator.connectors.iscsi, os_brick.initiator.connectors.nvmeof, os_brick.encryptors.luks, vif_plug_ovs.ovsdb.impl_idl" \
+    "import nova.virt.libvirt.driver, os_brick.initiator.connectors.iscsi, os_brick.initiator.connectors.nvmeof, os_brick.encryptors.luks, vif_plug_ovs.ovs, vif_plug_ovs.ovsdb.impl_idl" \
     2>&1 > /dev/null) || exit_code=$?
   [ "$exit_code" -eq 0 ] || echo "    $err"
 

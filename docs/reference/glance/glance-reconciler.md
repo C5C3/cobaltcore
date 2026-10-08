@@ -6,7 +6,7 @@ quadrant: operator
 # Glance Reconciler Architecture
 
 The Glance controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with nine sub-reconcilers. Every step is
+(`internal/common/reconcile`) with twelve sub-reconcilers. Every step is
 instrumented under the `glance_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain — conditions and
 the requeue are persisted on every exit path through the shared status skeleton.
@@ -26,9 +26,15 @@ collectors cover the recurring purge (`glance_operator_db_purge_total`,
 Secrets ──► DBConnectionSecret ──► Backends ──► Config ──► Database ──► Deployment ──► ┬─ HTTPRoute
                                                                                        ├─ HealthCheck
                                                                                        ├─ HPA
+                                                                                       ├─ VPA
                                                                                        ├─ NetworkPolicy
                                                                                        └─ DBPurge        (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -54,7 +60,7 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
+ten sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |

@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1458" viewBox="0 0 1808 1458" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="From release configuration to a service image">
+<title>From release configuration to a service image</title>
+<rect width="1808" height="1458" fill="#F6F5F1"/>
+<text x="40" y="66.36" font-size="26" font-weight="700" fill="#2B3440">Repository</text>
+<text x="40" y="95.2" font-size="20" font-weight="400" fill="#55606E">files of this checkout</text>
+<text x="606" y="66.36" font-size="26" font-weight="700" fill="#2B3440">Before the build</text>
+<text x="606" y="95.2" font-size="20" font-weight="400" fill="#55606E">steps of the job build-service-images</text>
+<text x="1066" y="66.36" font-size="26" font-weight="700" fill="#2B3440">docker build</text>
+<text x="1066" y="95.2" font-size="20" font-weight="400" fill="#55606E">the two stages of the Dockerfile</text>
+<rect x="40" y="120" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="152.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">releases/{release}/source-refs.yaml</text>
+<text x="40" y="193.2" font-size="20" font-weight="400" fill="#55606E">one git ref per service</text>
+<rect x="40" y="320" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="352.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">patches/{service}/{release}/*.patch</text>
+<text x="40" y="393.2" font-size="20" font-weight="400" fill="#55606E">optional</text>
+<rect x="40" y="520" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="552.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">overrides/{release}/constraints.txt</text>
+<text x="40" y="593.2" font-size="20" font-weight="400" fill="#55606E">optional: pins to set or to drop</text>
+<rect x="40" y="620" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="652.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">releases/{release}/upper-constraints.txt</text>
+<text x="40" y="693.2" font-size="20" font-weight="400" fill="#55606E">the pins of OpenStack requirements</text>
+<rect x="40" y="720" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="752.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">releases/{release}/extra-packages.yaml</text>
+<text x="40" y="793.2" font-size="20" font-weight="400" fill="#55606E">pip extras, pip and apt packages per image</text>
+<rect x="40" y="960" width="470" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="275" y="992.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">images/{service}/Dockerfile</text>
+<text x="40" y="1033.2" font-size="20" font-weight="400" fill="#55606E">the same file for every release</text>
+<rect x="606" y="120" width="340" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="776" y="152.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Resolve source ref</text>
+<rect x="606" y="220" width="340" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="776" y="252.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Checkout upstream source</text>
+<text x="606" y="293.2" font-size="20" font-weight="400" fill="#55606E">openstack/{service} at that ref</text>
+<rect x="606" y="320" width="340" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="776" y="352.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Apply patches</text>
+<text x="606" y="393.2" font-size="20" font-weight="400" fill="#55606E">git apply</text>
+<rect x="606" y="420" width="340" height="48" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="776" y="452.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">src/{service}</text>
+<text x="606" y="493.2" font-size="20" font-weight="400" fill="#55606E">the source tree, patched</text>
+<rect x="606" y="520" width="340" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="776" y="552.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Apply constraint overrides</text>
+<text x="606" y="593.2" font-size="20" font-weight="400" fill="#55606E">scripts/apply-constraint-overrides.sh</text>
+<rect x="606" y="720" width="340" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="776" y="752.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Resolve extra packages</text>
+<text x="606" y="793.2" font-size="20" font-weight="400" fill="#55606E">hack/ci-resolve-extra-packages.sh</text>
+<polygon points="1588,120 1732,120 1748,142 1732,164 1588,164 1572,142" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1660" y="150.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">python-base</text>
+<text x="1556" y="149.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">on ubuntu:noble: Python, the user openstack</text>
+<polygon points="1392,192 1536,192 1552,214 1536,236 1392,236 1376,214" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1464" y="222.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">venv-builder</text>
+<text x="1480" y="261.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="end">on python-base: compilers, uv, a virtualenv</text>
+<rect x="1066" y="290" width="702" height="726" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1085" y="329.36" font-size="26" font-weight="700" fill="#2B3440">docker build images/{service}</text>
+<rect x="1090" y="352" width="570" height="438" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1109" y="386.64" font-size="24" font-weight="700" fill="#2B3440">Stage build</text>
+<text x="1109" y="423.2" font-size="20" font-weight="400" fill="#55606E">FROM venv-builder</text>
+<text x="1109" y="451.2" font-size="20" font-weight="400" fill="#55606E">context {service}: the source tree</text>
+<text x="1109" y="663.2" font-size="20" font-weight="400" fill="#55606E">context upper-constraints: the constraints file</text>
+<text x="1109" y="739.2" font-size="20" font-weight="400" fill="#55606E">build args PIP_EXTRAS, PIP_PACKAGES</text>
+<text x="1109" y="767.2" font-size="20" font-weight="400" fill="#55606E">uv pip install into /var/lib/openstack</text>
+<rect x="1090" y="830" width="654" height="146" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1109" y="864.64" font-size="24" font-weight="700" fill="#2B3440">Runtime stage</text>
+<text x="1109" y="897.2" font-size="20" font-weight="400" fill="#55606E">FROM python-base</text>
+<text x="1109" y="925.2" font-size="20" font-weight="400" fill="#55606E">copies /var/lib/openstack from the build stage</text>
+<text x="1109" y="953.2" font-size="20" font-weight="400" fill="#55606E">build arg EXTRA_APT_PACKAGES: apt-get install</text>
+<polygon points="1634,1046 1742,1046 1758,1068 1742,1090 1634,1090 1618,1068" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1688" y="1076.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">{service}</text>
+<text x="1688" y="1115.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the service image</text>
+<rect x="1066" y="1046" width="534" height="212" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1085" y="1085.36" font-size="26" font-weight="700" fill="#2B3440">A second build for nova</text>
+<polygon points="1106,1106 1267,1106 1283,1128 1267,1150 1106,1150 1090,1128" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1186.5" y="1136.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">nova-compute</text>
+<text x="1085" y="1179.2" font-size="20" font-weight="400" fill="#55606E">images/nova-compute/Dockerfile: the same two stages</text>
+<text x="1085" y="1207.2" font-size="20" font-weight="400" fill="#55606E">the same source tree, patches and constraints</text>
+<text x="1085" y="1235.2" font-size="20" font-weight="400" fill="#55606E">the block nova-compute of extra-packages.yaml</text>
+<polyline points="510,144 595.5,144" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="606,144 591,151.2 591,136.8" fill="#3A4452"/>
+<polyline points="900,168 900,209.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="900,220 892.8,205 907.2,205" fill="#3A4452"/>
+<polyline points="900,268 900,309.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="900,320 892.8,305 907.2,305" fill="#3A4452"/>
+<polyline points="510,344 595.5,344" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="606,344 591,351.2 591,336.8" fill="#3A4452"/>
+<polyline points="900,368 900,409.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="900,420 892.8,405 907.2,405" fill="#3A4452"/>
+<polyline points="946,444 1079.5,444" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,444 1075,451.2 1075,436.8" fill="#3A4452"/>
+<polyline points="510,532 595.5,532" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="606,532 591,539.2 591,524.8" fill="#3A4452"/>
+<polyline points="606,556 558,556 558,632 520.5,632" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="510,632 525,624.8 525,639.2" fill="#3A4452"/>
+<text x="574" y="625.2" font-size="20" font-weight="400" fill="#2B3440">rewrites it in place</text>
+<polyline points="510,656 1079.5,656" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,656 1075,663.2 1075,648.8" fill="#3A4452"/>
+<polyline points="510,744 595.5,744" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="606,744 591,751.2 591,736.8" fill="#3A4452"/>
+<polyline points="946,732 1079.5,732" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,732 1075,739.2 1075,724.8" fill="#3A4452"/>
+<polyline points="946,758 1010,758 1010,946 1079.5,946" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1090,946 1075,953.2 1075,938.8" fill="#3A4452"/>
+<polyline points="510,984 1055.5,984" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1066,984 1051,991.2 1051,976.8" fill="#3A4452"/>
+<polyline points="1600,164 1600,214 1562.5,214" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1552,214 1567,206.8 1567,221.2" fill="#3A4452"/>
+<polyline points="1500,236 1500,341.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,352 1492.8,337 1507.2,337" fill="#3A4452"/>
+<polyline points="1712,164 1712,819.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1712,830 1704.8,815 1719.2,815" fill="#3A4452"/>
+<polyline points="1375,790 1375,819.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1375,830 1367.8,815 1382.2,815" fill="#3A4452"/>
+<polyline points="1688,976 1688,1035.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1688,1046 1680.8,1031 1695.2,1031" fill="#3A4452"/>
+<text x="40" y="1309.2" font-size="20" font-weight="400" fill="#55606E">{service}: an image directory under images/ with a key in source-refs.yaml. {release}: a directory under releases/.</text>
+<text x="40" y="1343.2" font-size="20" font-weight="400" fill="#55606E">A grey box with square corners is a file or a directory. An arrow runs from what is read to the step or stage that reads it.</text>
+<text x="40" y="1377.2" font-size="20" font-weight="400" fill="#55606E">The Dockerfile reads no file of releases/, patches/ or overrides/ by path. The two contexts and the three build args carry them in.</text>
+<text x="40" y="1411.2" font-size="20" font-weight="400" fill="#55606E">nova has a third stage, novnc, on python-base. It fetches the pinned noVNC tree, and the runtime stage copies it.</text>
+</svg>

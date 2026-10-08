@@ -65,6 +65,13 @@ NAME    READY   TYPE   CINDER                AGE
 nfsbk   True    NFS    controlplane-cinder   9m
 ```
 
+`READY` turns `True` only after the backup Deployment mounts the Secret
+rendered for this backend. The figure shows the steps in between, and
+[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists them with what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 Two conditions on the Cinder child cover the two halves. `BackupBackendReady` is
 True under the reason `BackupBackendProjected` once the attached target is
 rendered, and `BackupServiceReady` is True under `BackupServiceReady` once the
@@ -113,6 +120,11 @@ admitted without a warning, the backup Deployment rolls, and
 pre-existing backup fails to restore: its chunks are on the export that was left
 behind. No condition and no event reports that. Treat a change of server or path
 as a migration, and move the chunks with it.
+
+The figure shows the backup pod beside the volume services, with the exports
+each of them mounts.
+
+![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
 
 The pod mounts more than its own target. It carries every volume backend's export
 under `/var/lib/cinder/mnt/<md5>` beside `/var/lib/cinder/backup_mount/<md5>`,
@@ -192,11 +204,11 @@ a 1 GiB volume, which is more than the chunk arithmetic alone accounts for.
 Treat `2Gi` as the budget for volumes of roughly that size, and raise it before
 a backup target takes larger ones.
 
-The ControlPlane exposes no pod-level knob for the backup Deployment, so the
-raise is a standalone-CR change. It goes on `spec.backup.deployment.resources` of
-a `Cinder` CR you own, where `replicas: 1` has to be spelled out beside it: the
-shared schema default of three lands on any present `deployment` block before the
-webhook runs, and a CEL rule pins this Deployment at one replica.
+On a ControlPlane the raise goes on `spec.sizing.cinder.backup.resources`, and
+the operator pins the replica count. On a `Cinder` CR you own it goes on
+`spec.backup.deployment.resources`, where `replicas: 1` has to be spelled out
+beside it: the shared schema default of three lands on any present `deployment`
+block before the webhook runs, and a CEL rule pins this Deployment at one replica.
 
 ```yaml
 spec:

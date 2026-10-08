@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# stestr exclude-list for Nova 2026.2
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+#
+# No pattern. hack/ci-run-unit-tests.sh sets
+# OS_NOVA_DISABLE_EVENTLET_PATCHING=False for every release, the way nova's
+# own tox py3 env runs the suite; releases/2026.1/test-excludes/nova.txt
+# records why stestr discovery needs it. A run of the nova 34.0.0 suite in the
+# venv-builder container (local, arm64, 2026-10-06) counted 16613 tests and
+# passed with no failure: 16544 passed, 67 skipped, 2 expected failures.
+#
+# Record a future environment failure here as one escaped regex with a
+# comment above it stating the reason.

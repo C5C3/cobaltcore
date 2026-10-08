@@ -71,13 +71,19 @@ does not arrive from the instance: the Neutron metadata agent proxies it and
 signs it with a shared secret, which is what tells this API which instance
 asked.
 
+The figure follows such a request from the instance to this API.
+[The path of a request](../neutron/neutron-metadata-agent-crd.md#metadata-path)
+lists the hops.
+
+![The path of a metadata request in six numbered hops. Hop 1: an instance calls http://169.254.169.254, an address OVN answers on the chassis of its node. Hop 2: Open vSwitch hands the request to a haproxy in the network namespace of the instance's network; the metadata agent creates one such namespace per network under /run/netns and starts one haproxy in each. Hop 3: haproxy passes the request to the metadata agent over the socket metadata_proxy. Hop 4: the agent finds the port that is asking in the Southbound database. Hop 5: the agent forwards the request to the Nova metadata API {nova}-metadata on port 8775 and signs it with the shared secret, as the header X-Instance-ID-Signature. Hop 6: the metadata API checks the signature with the same secret and resolves the instance from the mappings in the API database. One Secret, {cp}-nova-metadata-secret, carries the shared secret to both ends, as an environment variable on each. For an agent on a compute cluster two things change: it reads a copy of the secret that the c5c3-operator writes there, and it reaches the metadata API over https through the metadata Gateway.](../../diagrams/compute-metadata-path.svg)
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | `DeploymentSpec` | no | `replicas: 1` | The same pod-level knobs, node placement included, with memory sized from `spec.metadata.uwsgi` (720Mi at its defaults). The front end holds no state between requests, so the count may be raised |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the metadata Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `uwsgi` | `UWSGISpec` | no | materialized | The same uWSGI parameters as the API's |
 | `sharedSecretRef` | `SecretRefSpec` | yes | `key` to `shared_secret` | The Secret holding the value the Neutron metadata agent signs proxied requests with. The operator reads it rather than generating one: the same value has to reach the `NeutronMetadataAgent`, and a value only this side knows leaves every metadata request rejected |
-| `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. Rarely wanted: the metadata agent dials the Service from inside the cluster |
+| `gateway` | `GatewaySpec` | no | | External exposure of the metadata API on a hostname of its own. An agent on this Nova's cluster dials the Service; an agent on a compute cluster dials this hostname over https |
 
 ### NovaSchedulerSpec
 
@@ -193,7 +199,7 @@ because honoring them does the damage before any condition could report it.
 | `[DEFAULT]` | `web` | The directory the console proxy serves the noVNC client from. The operator mounts the client the image ships at this path; another path either is empty or is not that client, and the browser gets a blank page with no error from the proxy |
 | `[database]`, `[api_database]` | `connection` | Env-injected via `OS_DATABASE__CONNECTION` and `OS_API_DATABASE__CONNECTION`, same reasoning as `transport_url` |
 | `[keystone_authtoken]`, `[service_user]`, `[placement]`, `[neutron]`, `[cinder]` | `password` | Each is env-injected through its own `OS_<SECTION>__PASSWORD` override |
-| `[neutron]` | `metadata_proxy_shared_secret` | Env-injected; a file value would copy the value a proxied request's signature is verified with into the config Secret every pod mounts |
+| `[neutron]` | `metadata_proxy_shared_secret` | Env-injected; a file value would copy the value a proxied request's signature is verified with into the ConfigMap every pod mounts |
 | `[oslo_messaging_rabbit]` | `ssl`, `ssl_ca_file` | The first selects whether the bus that carries every RPC call is encrypted; the second points the verification at a file the operator mounts |
 | `[vnc]` | `novncproxy_host`, `novncproxy_port` | The proxy's Service routes to this address and port. Another one leaves the Service with a port nothing listens on while the pod stays Ready |
 
@@ -487,13 +493,14 @@ byte-identical to the live one and no workload rolls on a reordered slice.
 | `OS_NEUTRON__METADATA_PROXY_SHARED_SECRET` | `spec.metadata.sharedSecretRef` | `[neutron] metadata_proxy_shared_secret` | The metadata API alone |
 | `NOVA_AMQP_PORT` | the resolved transport URL | nothing; the readiness probe reads it | The scheduler and the conductor |
 
-"Every role" includes the migration Jobs and the archive CronJob. They read
-neither the bus nor Keystone, but an override is inert without the section that
-consumes it, and one environment for every process is what keeps a Job from
-migrating a different database than the API serves. The console proxy is the one
-exception: it reads console tokens out of the cell schema and opens no
-`nova_api` connection, so an override for a section it does not configure would
-only be an unused Secret reference.
+"Every role" includes the migration Jobs and the archive CronJob. They connect
+to neither the bus nor Keystone (the db-sync Job reads `[DEFAULT] transport_url`
+only to fill the cell mapping of `cell1`), but an override is inert without the
+section that consumes it, and one environment for every process is what keeps a
+Job from migrating a different database than the API serves. The console proxy
+is the one exception: it reads console tokens out of the cell schema and opens
+no `nova_api` connection, so an override for a section it does not configure
+would only be an unused Secret reference.
 
 `NOVA_AMQP_PORT` is a plain shell variable rather than an oslo.config override.
 The `nova-amqp-ready` probe reads it, and the port travels in the environment so
@@ -617,6 +624,12 @@ is set, the ComputeConfig step also publishes `{name}-remote-compute-config` for
 such a compute, and names it in `status.remoteComputeConfigSecretRef`. The
 in-cluster contract keeps its bytes, so a compute beside this Nova keeps reading
 it.
+
+The figure shows where the remote contract goes: the ControlPlane mirrors it
+onto the compute cluster under the in-cluster name, and `nova-compute` there
+dials the addresses it carries.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../../diagrams/compute-cluster-wiring.svg)
 
 The remote contract carries the same six keys. `password`,
 `metadata_proxy_shared_secret`, `cell_name` and `ca.crt` hold the same values,

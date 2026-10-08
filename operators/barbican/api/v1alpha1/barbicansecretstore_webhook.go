@@ -61,6 +61,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-barbican-openstack-c5c3-io-v1alpha1-barbicansecretstore,mutating=true,failurePolicy=fail,sideEffects=None,groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=create;update,versions=v1alpha1,name=mbarbicansecretstore.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-barbican-openstack-c5c3-io-v1alpha1-barbicansecretstore,mutating=false,failurePolicy=fail,sideEffects=None,groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=create;update,versions=v1alpha1,name=vbarbicansecretstore.kb.io,admissionReviewVersions=v1
+// The validating webhook lists the stores in the namespace
+// (validation.AttachedSiblings).
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=list,roleName=barbican-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with
 // the manager.

@@ -553,8 +553,8 @@ its fields carry per-field External-mode forbid-rules.
 > produces an origin Keystone will reject, so whenever a `gateway` is configured
 > the validating webhook rejects the ControlPlane instead. The **port** may still
 > differ, since Gateway API hostnames carry none. Behind a gateway the scheme
-> must be `https`: the listener terminates TLS, and Keystone POSTs the unscoped
-> WebSSO token to this origin. See the
+> must be `https`: the listener terminates TLS, and the browser posts the
+> unscoped WebSSO token to this origin. See the
 > [End-to-End SSO guide](../../guides/end-to-end-sso.md).
 
 ---
@@ -1212,7 +1212,7 @@ per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Nova API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the API is reachable in-cluster only. A configured gateway needs a non-empty `hostname` that is a usable DNS name (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Nova endpoint URL (e.g. `https://nova.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public compute catalog Endpoint, the URL every client resolves to boot, list, and delete its instances; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v2.1` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and `novaCatalogURL` trims it before appending `/v2.1`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every compute call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `metadataGateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected metadata API on a hostname of its own (`nova-metadata.<domain>`), the listener a Neutron metadata agent dials from the compute cluster it runs on. It is separate from `gateway` because the two endpoints serve different callers: users reach the API, and only the metadata agents reach this one. When `nil` the metadata API is reachable in-cluster only, which is enough while the computes share the cluster the control plane runs on. It enters no catalog row. Its `path` must be empty or `/`, because the agent addresses the metadata API by scheme, host and port alone, and its `hostname` must not share a Gateway listener with `gateway` or `consoleProxy.gateway` (see [Three gateways, one catalog row](#three-gateways-one-catalog-row)). |
-| `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, rendered as `[neutron] metadata_proxy_shared_secret` on the compute service and carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. Whichever Secret it names, an agent on a compute cluster reads the value from the copy `{controlplane.Name}-nova-metadata-agent-secret` the ControlPlane delivers there. The shared type rejects an empty `name`. |
+| `metadataSharedSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` (the ControlPlane generates the value) | References a Secret holding the value the Neutron metadata agent signs proxied requests with, which reaches the metadata API of the compute service as `[neutron] metadata_proxy_shared_secret` through an environment variable and is carried by every agent that proxies to it. Leaving it `nil` has the ControlPlane generate the secret and hand it to the child (see [The generated metadata shared secret](#the-generated-metadata-shared-secret)). Supply one when the value has to be seeded from outside this ControlPlane's reach: a metadata request signed with a value only one side knows is rejected, so both sides have to resolve the same Secret. Naming the generated Secret `{controlplane.Name}-nova-metadata-secret` itself keeps it generated. Whichever Secret it names, an agent on a compute cluster reads the value from the copy `{controlplane.Name}-nova-metadata-agent-secret` the ControlPlane delivers there. The shared type rejects an empty `name`. |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Nova on one mode while another service stays on the other. It applies to **both** database blocks the compute service holds: the Nova CRD rejects a child whose `apiDatabase` and `database` carry different modes, so one value covers both. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Nova declares a [dedicated](#novadedicatedbackingservicesspec) database (dedicated is `Static`-only) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
 | `dbArchive` | [`*ServiceNovaDBArchiveSpec`](#servicenovadbarchivespec) | No | `nil` | Tunes the recurring archive of the compute service's soft-deleted rows, projected onto the child's `spec.dbArchive`. A nil block resolves exactly like an empty one, so the archive runs on every projected Nova. |
 | `hypervisorOperator` | [`*ServiceNovaHypervisorOperatorSpec`](#servicenovahypervisoroperatorspec) | No | `nil` | Opt-in marker with no fields. `{}` provisions the Keystone account openstack-hypervisor-operator authenticates as (user `hypervisor-operator`, role `admin`) and delivers its credentials as `{controlplane.Name}-nova-hypervisor-operator-auth` beside the Nova and on every compute cluster a `NovaCompute` of it runs on. Removing the block deletes the account. |
@@ -1694,8 +1694,23 @@ the `e2e-controlplane` job checks.
 | `<service>.jobs` | none | requests.cpu 15m |
 | `database` | replicas 3, storageSize 100Gi | replicas 1, storageSize 512Mi, requests cpu 65m / memory 1Gi, limits memory 1Gi |
 | `cache` | replicas 3 | replicas 1, requests cpu 15m / memory 96Mi, limits memory 96Mi |
-| `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 512Mi, limits memory 512Mi |
+| `messaging` | replicas 3 | replicas 1, requests cpu 815m / memory 1Gi, limits memory 1Gi |
 | `secretStore` | none | requests cpu 35m / memory 64Mi, limits memory 64Mi |
+
+The `Minimal` broker figure follows from the broker's memory alarm. For a
+RabbitmqCluster with a memory limit, the RabbitMQ Cluster Operator sets
+`total_memory_available_override_value` to the limit minus a fifth, and
+RabbitMQ 4.3.4 raises its memory alarm at 0.6 of that value. At `1Gi` the alarm
+sits at 491.5 MiB, about twice the 236 MiB a broker uses with every queue
+empty. At `512Mi` it sat at 245.8 MiB, so an idle broker alarmed and blocked
+every publisher without a backlog (#1298). A `Minimal` broker provisioned with
+the older figure is re-projected on the operator's next pass, and the Cluster
+Operator rolls its StatefulSet, which restarts a single-replica broker once. A
+node that cannot fit the extra 512Mi leaves the broker pod `Pending`, and the
+ControlPlane reports `InfrastructureReady=False` with reason
+`WaitingForMessaging` until the pod schedules. A site that wants another figure
+sets `spec.sizing.messaging.resources` on the ControlPlane or in a
+[`SizingProfile`](#sizingprofile).
 
 A profile sizes service pods by counts and CPU requests only. Service memory
 stays with the child's per-process formula, so a lower process count lowers the
@@ -1704,7 +1719,22 @@ memory the child renders.
 The resolved sizing is validated as a whole, so a `Minimal` request must not
 exceed a limit the ControlPlane sets on the same component. A ControlPlane that
 sets a `messaging` CPU limit below `815m` under `Minimal` is rejected on its next
-update until the limit rises or the request is overridden.
+update of `spec.sizing` until the limit rises or the request is overridden. The
+same holds for memory: a `messaging` memory limit below `1Gi` under `Minimal`,
+without a lower memory request beside it, fails the requests-within-limits
+check. The operator does not repeat that check when it resolves the sizing, so a
+limit between `512Mi` and `1Gi` admitted while the `Minimal` broker requested
+`512Mi` resolves to a `1Gi` request above it after the upgrade. The API server
+rejects a broker StatefulSet with that pair, so the broker keeps its running
+pod at the old figures, but the `RabbitmqCluster` reports
+`ReconcileSuccess=False` while the ControlPlane keeps `InfrastructureReady=True`:
+readiness follows `AllReplicasReady`, and the running StatefulSet still has
+every replica ready. Until the pair is fixed, no later broker change reaches the
+StatefulSet, including a `messaging.replicas` grow. After upgrading,
+`kubectl get rabbitmqcluster -A` lists such a broker with `ReconcileSuccess`
+`False`. Before upgrading, raise such a limit to `1Gi` or set
+`messaging.resources.requests.memory` no higher than it, on the ControlPlane or
+in a `SizingProfile` with `base: Minimal`.
 
 ### Merge rules
 
@@ -2797,7 +2827,7 @@ short-circuit on the first error.
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
 | Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
 | Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
-| Dashboard public endpoint agrees with the gateway | `spec.services.horizon.publicEndpoint` | `field.Invalid` | With `services.horizon.gateway` set: the scheme is not `https` (the listener terminates TLS, and Keystone POSTs the unscoped WebSSO token to this origin), or its host differs from `gateway.hostname` (Django derives the origin it sends from the request `Host` header). The port may differ. **Cross-field, webhook-only.** |
+| Dashboard public endpoint agrees with the gateway | `spec.services.horizon.publicEndpoint` | `field.Invalid` | With `services.horizon.gateway` set: the scheme is not `https` (the listener terminates TLS, and the browser posts the unscoped WebSSO token to this origin), or its host differs from `gateway.hostname` (Django derives the origin it sends from the request `Host` header). The port may differ. **Cross-field, webhook-only.** |
 | Gateway hostname is a usable DNS name | `spec.services.{keystone,horizon}.gateway.hostname` | `field.Invalid` | A wildcard, an embedded port, a path, a scheme, a control character, or over 253 characters. Each shape either breaks the browser-facing origins derived from the hostname or overruns the children's own `MaxLength` markers on those origins. |
 | External block forbidden in non-External mode | `spec.services.keystone.external` | `field.Forbidden` | `external` set while `mode` is not `External`. Defense-in-depth mirror of the CEL rule. |
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |

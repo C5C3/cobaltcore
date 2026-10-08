@@ -42,6 +42,9 @@ var (
 
 // +kubebuilder:webhook:path=/mutate-glance-openstack-c5c3-io-v1alpha1-glancebackend,mutating=true,failurePolicy=fail,sideEffects=None,groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=create;update,versions=v1alpha1,name=mglancebackend.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-glance-openstack-c5c3-io-v1alpha1-glancebackend,mutating=false,failurePolicy=fail,sideEffects=None,groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=create;update,versions=v1alpha1,name=vglancebackend.kb.io,admissionReviewVersions=v1
+// The validating webhook lists the backends in the namespace
+// (validation.AttachedSiblings).
+// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=list,roleName=glance-webhook
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with
 // the manager.

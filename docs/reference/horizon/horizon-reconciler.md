@@ -6,7 +6,7 @@ quadrant: operator
 # Horizon Reconciler Architecture
 
 The Horizon controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with seven sub-reconcilers. Every step is
+(`internal/common/reconcile`) with eight sub-reconcilers and one unnamed prune step. Every step is
 instrumented under the `horizon_operator` metrics prefix
 (`horizon_operator_reconcile_duration_seconds`,
 `horizon_operator_reconcile_errors_total`), and the first step to return a
@@ -19,13 +19,19 @@ requeue are persisted on every exit path.
 Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─ HTTPRoute
                                                   ├─ HealthCheck
                                                   ├─ HPA
+                                                  ├─ VPA
                                                   └─ NetworkPolicy  (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Secrets | Gates on the secret store the Horizon selected via `spec.secretStoreRef` (a `ClusterSecretStore`, default `openbao-cluster-store`, or a namespaced `SecretStore` resolved in the Horizon's own namespace — via `secrets.GateStoreReady`) and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
-| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
+| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES` with an image-scoped `KEY_PREFIX`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
 | Deployment | Ensures the uWSGI Deployment (login-page readiness/startup probes, `HORIZON_SECRET_KEY` env var, secret-key-hash pod annotation), the Service (port 8080), and the PDB; sets `status.endpoint` | `DeploymentReady` |
 | (prune) | Uninstrumented retention sweep of historical config ConfigMaps (retain 3 + current); failures flip `ConfigReady` |  |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
@@ -37,7 +43,7 @@ Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when
-all seven sub-conditions are `True`:
+all eight sub-conditions are `True`:
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |

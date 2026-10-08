@@ -6,7 +6,7 @@ quadrant: operator
 # Placement Reconciler Architecture
 
 The Placement controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with nine sub-reconcilers. Every step is
+(`internal/common/reconcile`) with ten sub-reconcilers. Every step is
 instrumented under the `placement_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain. Conditions and the
 requeue are persisted on every exit path through the shared status skeleton,
@@ -29,8 +29,14 @@ that CR's finalizer completes.
 Secrets ──► DBConnectionSecret ──► Config ──► Database ──► Deployment ──► ┬─ HTTPRoute
                                                                           ├─ HealthCheck
                                                                           ├─ HPA
+                                                                          ├─ VPA
                                                                           └─ NetworkPolicy   (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -51,14 +57,14 @@ Secret and ConfigMap artefacts that gate the same downstream graph, so a distinc
 `sub_reconciler` label on the error counter disambiguates them during triage
 while the status contract stays minimal.
 
-The four members of the parallel group have no inter-dependency once the
+The five members of the parallel group have no inter-dependency once the
 Deployment and Service exist. Each works on its own copy of the CR, sets one
 condition type, and always sets it, so a cluster without Gateway API or without
 autoscaling still resolves the aggregate through the `NotRequired` reasons.
 
 ## Conditions
 
-The aggregate `Ready` condition is `True` (reason `AllReady`) when all seven
+The aggregate `Ready` condition is `True` (reason `AllReady`) when all eight
 sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
@@ -155,6 +161,9 @@ An accepted bump stamps `status.targetRelease`, the db-sync Job runs on the new
 image, the Deployment rolls onto it, and the sync flow promotes
 `status.installedRelease` on Job success, at which point `targetRelease` is
 cleared and `status.installedImage` records the image that ran the migration.
+The second panel of the figure under
+[Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
+draws this single pass beside the phase machine it does without.
 
 Two guards keep the release marker honest, one per pinning style. A tag-pinned
 image whose tag names a different release than `spec.openStackRelease` sets

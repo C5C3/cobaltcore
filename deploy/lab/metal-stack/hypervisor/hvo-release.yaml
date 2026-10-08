@@ -31,11 +31,14 @@
 #   - The ServiceMonitor and the PrometheusRules are on, with or without
 #     Prometheus on the cluster. Without a Prometheus Operator they are inert
 #     objects; the Prometheus of ../prometheus (WITH_PROMETHEUS=true) picks
-#     them up without a second apply. This directory is applied by hand after
-#     the deploy, so a switch that followed WITH_PROMETHEUS would need a
-#     second variant of it. The objects the chart renders, its alerts and
-#     which of them have data on the lab: the hvo rows of `### Lab
-#     hypervisors` in docs/reference/infrastructure/infrastructure-manifests.md.
+#     them up without a second apply. The prometheus-operator-crds release of
+#     the base stack installs the PrometheusRule CRD, so the API server
+#     checks both rules on every lab, and they need the fourth patch below.
+#     This directory is applied by hand after the deploy, so a switch that
+#     followed WITH_PROMETHEUS would need a second variant of it. The objects
+#     the chart renders, its alerts and which of them have data on the lab:
+#     the hvo rows of `### Lab hypervisors` in
+#     docs/reference/infrastructure/infrastructure-manifests.md.
 #   - The dashboards and the custom-resource metrics ConfigMaps stay off. The
 #     chart's dashboard is a Perses dashboard, which Grafana cannot load;
 #     ../prometheus/hypervisor-operator.json carries its four
@@ -73,6 +76,27 @@
 # a token Secret in openstack. The endpoint keeps the chart's
 # insecureSkipVerify, so Prometheus sends the token to a certificate it does
 # not verify.
+#
+# The fourth patch replaces the app.kubernetes.io/version label of both
+# PrometheusRules. The chart's monitoringLabels helper writes .Chart.Version
+# into it unsanitized, where its labels helper writes .Chart.AppVersion.
+# Upstream publishes the chart of every main commit as
+# <last tag>+sha-<commit>, and helm-controller sets the build metadata of a
+# chart pinned by digest to the digest's first 12 characters, so the label
+# reads <version>+<first 12 characters of ref.digest>; a tagged chart would
+# carry a '+' too. A label value may not: the API server rejects both rules,
+# and the install stalls (Stalled=True, RetriesExceeded) after the Deployment
+# and the RBAC exist. The hypervisors onboard, so the failure shows only when
+# the quick start's wait for the release runs out (#1302). The chart's
+# prometheusRules.labels value cannot help, since it adds a second key of the
+# same name. The patch writes the ref.tag of sources.yaml, the version with
+# its '+' replaced by '_' as the chart's own chart helper does. The value
+# moves with the pin, and tests/unit/deploy/metal_stack_hypervisor_test.sh
+# fails while the two differ. The dashboards use the same helper and stay
+# off. Reported upstream as
+# https://github.com/cobaltcore-dev/openstack-hypervisor-operator/issues/361;
+# the patch goes once the pinned chart carries the fix, and the test's render
+# of the chart fails then.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -168,3 +192,11 @@ spec:
               - op: add
                 path: /spec/endpoints/0/bearerTokenFile
                 value: /var/run/secrets/kubernetes.io/serviceaccount/token
+          # The chart writes its version, with a '+', into this label of both
+          # PrometheusRules; the value is the ref.tag of sources.yaml.
+          - target:
+              kind: PrometheusRule
+            patch: |
+              - op: replace
+                path: /metadata/labels/app.kubernetes.io~1version
+                value: 1.2.3_sha-a2baf3f

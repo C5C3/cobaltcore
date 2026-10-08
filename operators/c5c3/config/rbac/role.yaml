@@ -388,3 +388,27 @@ rules:
   - priorityclasses
   verbs:
   - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: c5c3-webhook
+rules:
+- apiGroups:
+  - c5c3.io
+  resources:
+  - controlplanes
+  verbs:
+  - list
+- apiGroups:
+  - c5c3.io
+  resources:
+  - sizingprofiles
+  verbs:
+  - get
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get

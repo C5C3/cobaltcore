@@ -361,9 +361,9 @@ evict the one pod the HPA may leave running; above one it keeps
 (enforced by CEL XValidation).
 
 The HPA measures a utilization target against the summed requests of every
-container in the API pod: the `keystone` container and, while `spec.federation`
-is set, the federation proxy sidecar. While a target is set, the webhook
-rejects a zero or negative request for the resource it measures, in
+container in the API pod: the `keystone` container and, while a federation
+backend is projected, the federation proxy sidecar. While a target is set, the
+webhook rejects a zero or negative request for the resource it measures, in
 `spec.deployment.resources` or `spec.federation.proxyResources`. A block that
 names only a limit is checked on the limit, because the API server copies it
 into the request. A block that names neither passes: the operator's
@@ -464,7 +464,7 @@ The VPA created from this spec has the following shape:
 | `ownerReferences` | Points to the Keystone CR (controller: true). A VPA on a target cluster carries the ownership labels instead. |
 
 The `"*"` policy covers every container of the pod: the `keystone` container
-and, while `spec.federation` is set, the federation proxy sidecar. Init
+and, while a federation backend is projected, the federation proxy sidecar. Init
 containers are outside the VPA's reach. The VPA controls requests only, so the
 limits stay as the operator renders them, and two consequences follow:
 
@@ -1008,9 +1008,9 @@ port 5000. Removing the field deletes the existing HTTPRoute.
 The operator plays the **application-developer** role in the Gateway API model: it
 manages only the `HTTPRoute`. The referenced `Gateway` (and its `GatewayClass`) are
 **platform-team** concerns and must be pre-provisioned — this operator does not
-create or reconcile them. Cross-namespace `parentRef` references additionally
-require a `ReferenceGrant` in the target namespace, which is out of scope for this
-operator.
+create or reconcile them. A cross-namespace `parentRef` attaches only when the
+Gateway listener's `allowedRoutes` admits the CR's namespace; no `ReferenceGrant`
+is involved, and configuring the Gateway is out of scope for this operator.
 
 **Gateway API CRD prerequisite:** the `gateway.networking.k8s.io/v1` `HTTPRoute`
 CRD must be installed in the cluster before the Keystone operator starts. The
@@ -1055,7 +1055,7 @@ aliases `commonv1.GatewayParentRefSpec`.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | `string` | Yes | — | Gateway resource name. Minimum length: 1. |
-| `namespace` | `string` | No | CR namespace | Namespace of the referenced Gateway. When empty, the Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace references require a `ReferenceGrant`. |
+| `namespace` | `string` | No | CR namespace | Namespace of the referenced Gateway. When empty, the Gateway is assumed to live in the Keystone CR's namespace. A cross-namespace reference attaches only when the Gateway listener's `allowedRoutes` admits the CR's namespace. |
 | `sectionName` | `string` | No | `""` | Targets a specific listener on the Gateway (e.g., `"https"`) when the Gateway defines multiple listeners. When empty, the HTTPRoute attaches to all compatible listeners. |
 
 ### HTTPRoute Resource Mapping
@@ -1269,18 +1269,17 @@ API pods; `spec.jobs.priorityClassName` runs them below the API. See
 
 Carries the Keystone-side federation knobs. Federation itself is activated by
 attaching a federation-typed
-[`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC`) — **not**
-by this block: when at least one OIDC backend is projected, the operator
-injects the `mod_auth_openidc` reverse-proxy sidecar, binds uWSGI to
-localhost (with the federation-sized `--buffer-size`), and switches the
-Service targetPort to the proxy. This spec only configures how that sidecar
-runs.
+[`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC` or `SAML`)
+— **not** by this block: when at least one federation backend is projected, the
+operator injects the `federation-proxy` reverse-proxy sidecar, binds uWSGI to
+localhost (with the federation-sized `--buffer-size`), and switches the Service
+targetPort to the proxy. This spec only configures how that sidecar runs.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `proxyImage` | `*ImageSpec` | No | `nil` | The Apache/`mod_auth_openidc` sidecar image. Standalone Keystone installations must set it (mirroring the required `spec.image`); the managed ControlPlane path projects the `ghcr.io/c5c3/keystone-federation-proxy` default. When a federation backend is attached and no proxy image is configured, the backends stay pending with a `FederationProxyImageMissing` Warning — no hidden default is assumed. The webhook rejects a set `proxyImage` without a repository. |
 | `proxyResources` | `*corev1.ResourceRequirements` | No | `nil` | CPU and memory requests and limits of the `federation-proxy` sidecar, resolved per resource like [`spec.deployment.resources`](#resource-defaults): a CPU the block leaves out gets a `25m` request and no limit, a memory it leaves out gets `256Mi` as request and limit. The webhook rejects a request above its limit. |
-| `trustedDashboards` | `[]string` | No | `nil` | Dashboard origins Keystone will POST a WebSSO token back to after a successful federated login. Keystone matches the origin the dashboard sends **verbatim**, so each entry must reproduce it exactly — scheme, host, non-default port, and the trailing slash (e.g. `https://horizon.example.com/auth/websso/`). Rendered as repeated `[federation] trusted_dashboard` lines, one per origin (an oslo `MultiStrOpt`). Unlike `proxyImage` it is independent of an attached backend: the `[federation]` section renders as soon as an origin is declared. The managed ControlPlane path projects its Horizon child's origin; standalone installations set it directly. Max 8 entries, each matching `^https?://[^\s]*$` — the pattern is anchored at both ends because entries render into `keystone.conf` unescaped, and RE2 anchors `^` at start-of-text, so a prefix-only pattern would let an embedded newline inject a second INI option. The webhook rejects duplicates and rejects declaring `trusted_dashboard` in both this field and `spec.extraConfig` (extraConfig wins the merge, which would silently drop the typed list). An `http://` origin is accepted but raises an **admission warning**: Keystone POSTs the unscoped WebSSO token — a bearer token good for the user's full API privileges — to this origin, so cleartext hands it to any on-path observer. |
+| `trustedDashboards` | `[]string` | No | `nil` | Dashboard origins Keystone hands a WebSSO token to after a successful federated login: it answers with a form the browser posts there. Keystone matches the origin the dashboard sends **verbatim**, so each entry must reproduce it exactly — scheme, host, non-default port, and the trailing slash (e.g. `https://horizon.example.com/auth/websso/`). Rendered as repeated `[federation] trusted_dashboard` lines, one per origin (an oslo `MultiStrOpt`). Unlike `proxyImage` it is independent of an attached backend: the `[federation]` section renders as soon as an origin is declared. The managed ControlPlane path projects its Horizon child's origin; standalone installations set it directly. Max 8 entries, each matching `^https?://[^\s]*$` — the pattern is anchored at both ends because entries render into `keystone.conf` unescaped, and RE2 anchors `^` at start-of-text, so a prefix-only pattern would let an embedded newline inject a second INI option. The webhook rejects duplicates and rejects declaring `trusted_dashboard` in both this field and `spec.extraConfig` (the typed list is written after the extraConfig merge, which would silently drop the extraConfig value). An `http://` origin is accepted but raises an **admission warning**: the browser posts the unscoped WebSSO token, a bearer token good for the user's full API privileges, to this origin, so cleartext hands it to any on-path observer. |
 
 LDAP/AD-backed domains are **not** part of this block: they ship as
 `KeystoneIdentityBackend` CRs too (`type: LDAP`), where one CR per domain

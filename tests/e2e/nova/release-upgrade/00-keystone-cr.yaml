@@ -18,7 +18,7 @@ spec:
   replicas: 1
   image: memcached:1.6
 ---
-# Keystone CR fixture for the release-upgrade E2E test (2026.1 release).
+# Keystone CR fixture for the release-upgrade E2E test (2026.2 release).
 #
 # The suite needs a live identity service because the expand phase runs
 # nova-status upgrade check, and that check reads Placement as an authenticated
@@ -26,9 +26,9 @@ spec:
 # projects carries the CR name, which is what keeps the catalog rows and the
 # service users of parallel suites apart.
 #
-# It stays at 2026.1 for the whole run, the release the Nova is upgraded to.
-# Identity moves ahead of the services that authenticate against it, so a 2025.2
-# Nova against a 2026.1 Keystone is a pairing an upgrade passes through anyway.
+# It stays at 2026.2 for the whole run, the release the Nova is upgraded to.
+# Identity moves ahead of the services that authenticate against it, so a 2026.1
+# Nova against a 2026.2 Keystone is a pairing an upgrade passes through anyway.
 #
 # One replica and the database keystone_nova_upgrade. The bootstrap admin
 # password comes from the pre-seeded keystone-admin Secret
@@ -44,7 +44,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2026.1"
+    tag: "2026.2"
   database:
     clusterRef:
       name: openstack-db

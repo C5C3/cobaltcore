@@ -30,6 +30,12 @@ chassis reads the addresses the central publishes on node ports and copies the
 Secret onto its own cluster, as `<chassis>-ovn-client`. That link is the whole
 coupling.
 
+The figure shows what one `OVNCentral` runs and which client talks to which
+database. Only `ovn-controller` is pointed at the relay; every other client
+dials the database members.
+
+![What one OVNCentral runs and who talks to it. The Northbound database {central}-nb and the Southbound database {central}-sb are Raft clusters of three members each by default. northd reads the Northbound database and writes the flows into the Southbound database. A relay in front of the Southbound database exists only with spec.relay. A CronJob backs both databases up, and cert-manager issues a server certificate per database, one for the relay and one client certificate from the ClusterIssuer that spec.tls.issuerRef names. On the Neutron side the API with its ML2/OVN driver, the maintenance worker and the periodic workers hold both connections, and the optional CronJob {neutron}-ovn-db-sync compares the Northbound database with the Neutron database or rewrites it. On every chassis node ovn-controller registers the chassis in the Southbound database and reads its flows there, and the metadata agent watches the Southbound database and writes its Chassis_Private row. Two Jobs of an OVNChassis write as well: the evacuation removes gateway bindings from the Northbound database, and the chassis deletion removes the chassis row from the Southbound database. Only ovn-controller is pointed at the relay; every other client dials the database members.](../../diagrams/compute-ovn-control-plane.svg)
+
 ## Design decisions
 
 The Phase-0 decision record lives in meta issue
@@ -78,6 +84,11 @@ BGP itself is tracked in its own meta,
 
 ## Owned resources
 
+The figure under
+[Owned Resources](../keystone/keystone-reconciler.md#owned-resources) of the
+Keystone operator draws the baseline this list follows: serving objects, config
+and Secrets, Jobs and CronJobs.
+
 For an `OVNCentral` named `{name}` the operator manages:
 
 | Resource | Name | Purpose |
@@ -90,7 +101,7 @@ For an `OVNCentral` named `{name}` the operator manages:
 | ConfigMap | `{name}-central-scripts` | The run, set-connection, and backup scripts both databases share |
 | Deployment | `{name}-northd` | `ovn-northd`; one replica is active and the rest wait on the Southbound lock |
 | Deployment | `{name}-sb-relay` | Only while `spec.relay` is set |
-| Service | `{name}-sb-relay` | ClusterIP in front of the relays, published as `status.relayAddress` |
+| Service | `{name}-sb-relay` | ClusterIP in front of the relays, published as `status.relayAddress`. `NodePort` under `spec.relay.externallyReachable`, then also published as `status.relayDbAddress` |
 | Certificate + Secret | `{name}-nb-server`, `{name}-sb-server`, `{name}-client`, and `{name}-sb-relay` with a relay | cert-manager issues them; each Secret takes its Certificate's name |
 | PersistentVolumeClaim | `{name}-backup` | The snapshot volume |
 | CronJob | `{name}-backup` | Snapshots both databases and prunes the window |
@@ -100,7 +111,7 @@ For an `OVNChassis` named `{name}`:
 | Resource | Name | Purpose |
 | --- | --- | --- |
 | DaemonSet | `{name}-ovs` | The `ovsdb-server` and `ovs-vswitchd` containers on the selected nodes, in the node's network namespace |
-| DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the Southbound address the central published |
+| DaemonSet | `{name}-ovn-controller` | `ovn-controller`, connected to the relay address the central published, or to its Southbound address when it runs no relay the chassis can reach |
 | ConfigMap | `{name}-nodes` | One key per selected node, carrying that node's `external_ids` values |
 | ConfigMap | `{name}-chassis-scripts` | The scripts both DaemonSets and the maintenance Jobs run |
 | Job | `{name}-apply-<hash>`, `{name}-evacuate-<hash>`, `{name}-chassis-del-<hash>` | Per node; the node name is hashed to eight hex characters because a Job name has 63 and a node name up to 253 |

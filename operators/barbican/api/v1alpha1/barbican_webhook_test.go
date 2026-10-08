@@ -591,11 +591,14 @@ func TestBarbicanValidate_ExtraConfigPerStoreSectionExempt(t *testing.T) {
 }
 
 // [oslo_policy] enforce_new_defaults is a Reported owned key, so the Rejected
-// loop in validate does not match it, and enforce_scope is a plain option both
-// release catalogs list. Neither override blocks admission or draws a warning on
-// either release.
+// loop in validate does not match it, and enforce_scope is a plain option the
+// 2025.2 and 2026.1 catalogs list. Neither override blocks admission or draws a
+// warning on any release that knows the option. oslo.policy 6.0 (2026.2)
+// removed enforce_scope and always enforces scope, so from 2026.2 on only the
+// enforce_new_defaults override is admitted and an enforce_scope override is
+// rejected as an unknown option.
 func TestBarbicanValidate_ExtraConfigPolicyDefaultsOverrideAdmitted(t *testing.T) {
-	for _, release := range []string{"2025.2", "2026.1"} {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 			w := &BarbicanWebhook{}
@@ -603,13 +606,30 @@ func TestBarbicanValidate_ExtraConfigPolicyDefaultsOverrideAdmitted(t *testing.T
 			obj := validBarbican()
 			obj.Spec.OpenStackRelease = release
 			obj.Spec.ExtraConfig = map[string]map[string]string{
-				"oslo_policy": {"enforce_new_defaults": "false", "enforce_scope": "true"},
+				"oslo_policy": {"enforce_new_defaults": "false"},
+			}
+			if release != "2026.2" {
+				obj.Spec.ExtraConfig["oslo_policy"]["enforce_scope"] = "true"
 			}
 			warnings, err := w.ValidateCreate(context.Background(), obj)
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 			g.Expect(warnings).To(gomega.BeEmpty())
 		})
 	}
+
+	t.Run("2026.2 rejects enforce_scope", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &BarbicanWebhook{}
+
+		obj := validBarbican()
+		obj.Spec.OpenStackRelease = "2026.2"
+		obj.Spec.ExtraConfig = map[string]map[string]string{
+			"oslo_policy": {"enforce_scope": "true"},
+		}
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the barbican 2026.2 option catalog"))
+	})
 }
 
 // A release the build ships no catalog for must not block admission: the check

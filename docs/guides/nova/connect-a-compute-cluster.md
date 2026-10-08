@@ -84,6 +84,14 @@ arrives in the Nova namespace under the in-cluster name,
 `controlplane-nova-metadata-agent-secret` arrives in the OVN central namespace,
 which on the devstack is `openstack` as well.
 
+The figure shows the three Secrets with their writers, the two Secrets the
+owners provide, and the address every component on the compute cluster dials.
+`{cp}` is `controlplane`, `{ns}` is `openstack`, `{central}` is
+`controlplane-ovn`, `{chassis}` is `controlplane-compute-chassis`, `{agent}` is
+`controlplane-compute-metadata` and `{pool}` is `controlplane-compute-a` here.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../../diagrams/compute-cluster-wiring.svg)
+
 On the management cluster the contract is `controlplane-nova-compute-config` in
 `openstack`, and the child names it in `status.computeConfigSecretRef`. It
 keeps that name for the lifetime of the Nova and is updated in place. The

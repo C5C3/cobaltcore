@@ -44,7 +44,13 @@ separate compute cluster is the follow-on
 - **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
   full ControlPlane through the c5c3-operator.
 - **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
-  ControlPlane on a metal-stack cluster, with servers on two KVM hypervisors.
+  ControlPlane on a metal-stack cluster, where every worker is a KVM hypervisor
+  and runs a server.
+
+The map shows what each quick start deploys, what it ends with, and how the
+four relate. Each one begins at `git clone` and is complete in itself.
+
+![A map of the four quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other two run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Each quick start begins at git clone and is complete in itself.](./diagrams/quickstart-map.svg)
 
 ## What's inside
 

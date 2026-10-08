@@ -124,8 +124,8 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 	g.Expect(leaves).To(HaveKeyWithValue("cache/resources/limits/memory", "96Mi"))
 	g.Expect(leaves).To(HaveKeyWithValue("messaging/replicas", float64(1)))
 	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/cpu", "815m"))
-	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/memory", "512Mi"))
-	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/limits/memory", "512Mi"))
+	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/requests/memory", "1Gi"))
+	g.Expect(leaves).To(HaveKeyWithValue("messaging/resources/limits/memory", "1Gi"))
 	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/cpu", "35m"))
 	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/requests/memory", "64Mi"))
 	g.Expect(leaves).To(HaveKeyWithValue("secretStore/resources/limits/memory", "64Mi"))
@@ -141,6 +141,44 @@ func TestBuiltinSizing_MinimalCarriesTable(t *testing.T) {
 		g.Expect(key).NotTo(ContainSubstring("verticalAutoscaling"))
 		g.Expect(key).NotTo(ContainSubstring("federationProxy"))
 	}
+}
+
+// minimalBrokerIdleFootprint is the Minimal broker's mem_used with all 32 of
+// its queues empty, measured on the lab on 2026-10-07 (#1298).
+const minimalBrokerIdleFootprint int64 = 236 * 1024 * 1024
+
+// brokerWatermark returns the memory high watermark, in bytes, of a RabbitMQ
+// broker limited to limit bytes: the Cluster Operator (v2.23.0,
+// removeHeadroom) sets total_memory_available_override_value to
+// limit - limit/5, and RabbitMQ 4.3.4 alarms at 0.6 of that value.
+func brokerWatermark(limit int64) int64 {
+	override := limit - limit/5
+	return override * 6 / 10
+}
+
+func TestBuiltinSizing_MinimalBrokerHeadroom(t *testing.T) {
+	g := NewWithT(t)
+
+	// At the 512Mi limit the lab ran, the formula gives the threshold the
+	// broker logged ("vm_memory_high_watermark set. ... allowed:257698038"),
+	// which the idle footprint alone nearly filled.
+	labLimit := resource.MustParse("512Mi")
+	labWatermark := brokerWatermark(labLimit.Value())
+	g.Expect(labWatermark).To(Equal(int64(257698038)))
+	g.Expect(labWatermark).To(BeNumerically("<", 2*minimalBrokerIdleFootprint))
+
+	res := BuiltinSizing(SizingProfileMinimal).Messaging.Resources
+	g.Expect(res).NotTo(BeNil())
+	request := res.Requests[corev1.ResourceMemory]
+	limit := res.Limits[corev1.ResourceMemory]
+	// The scheduler reserves the whole limit the watermark is derived from.
+	g.Expect(request.Equal(limit)).To(BeTrue(),
+		"memory request %s must equal the memory limit %s", request.String(), limit.String())
+
+	watermark := brokerWatermark(limit.Value())
+	g.Expect(watermark).To(BeNumerically(">", 2*minimalBrokerIdleFootprint),
+		"watermark (limit - limit/5) * 6 / 10 = %d bytes at limit %s must exceed twice the idle footprint (2 * %d bytes)",
+		watermark, limit.String(), minimalBrokerIdleFootprint)
 }
 
 // Neither built-in profile opts a component into a VerticalPodAutoscaler: the

@@ -13,6 +13,8 @@
 #   - the operator patches keep the production values they merge into;
 #   - OpenBao renders a 100m CPU request and keeps its memory request, its
 #     memory limit and standalone mode;
+#   - Headlamp, the demo UI CI never opens, requests 50m CPU and 64Mi memory
+#     under a 512Mi memory limit;
 #   - FluxInstance/flux carries one spec.kustomize.patches entry per Flux
 #     controller, each a JSON6902 add of 25m at the CPU request;
 #   - deploy/flux-system/ (production) keeps two operator replicas, OpenBao's
@@ -108,7 +110,25 @@ test_openbao_cpu() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: FluxInstance/flux lowers each controller's CPU request to 25m
+# Test 3: Headlamp requests 50m CPU and 64Mi memory under a 512Mi limit
+# ---------------------------------------------------------------------------
+test_headlamp_requests() {
+  local file="$1" sel
+  sel="$(helmrelease headlamp)"
+  echo "Test: the kind base sizes the Headlamp request for the node budget"
+
+  assert_eq "Headlamp requests 50m CPU" \
+    "50m" "$(field "$file" "$sel" '.spec.values.resources.requests.cpu')"
+  assert_eq "Headlamp requests 64Mi memory" \
+    "64Mi" "$(field "$file" "$sel" '.spec.values.resources.requests.memory')"
+  assert_eq "Headlamp keeps its 512Mi memory limit" \
+    "512Mi" "$(field "$file" "$sel" '.spec.values.resources.limits.memory')"
+  assert_eq "Headlamp has no CPU limit" \
+    "null" "$(field "$file" "$sel" '.spec.values.resources.limits.cpu')"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: FluxInstance/flux lowers each controller's CPU request to 25m
 # ---------------------------------------------------------------------------
 test_flux_controllers() {
   local file="$1" sel ctrl patch
@@ -138,7 +158,7 @@ test_flux_controllers() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: the production overlay keeps its own sizing
+# Test 5: the production overlay keeps its own sizing
 # ---------------------------------------------------------------------------
 test_production_unchanged() {
   local file="$1"
@@ -166,6 +186,7 @@ else
   if render "$KIND_BASE_DIR" "$tmp/kind.yaml"; then
     test_operator_replicas "$tmp/kind.yaml"
     test_openbao_cpu "$tmp/kind.yaml"
+    test_headlamp_requests "$tmp/kind.yaml"
     test_flux_controllers "$tmp/kind.yaml"
   else
     FAIL=$((FAIL + 1))

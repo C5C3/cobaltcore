@@ -51,6 +51,8 @@ tests/container-images/verify_cinder.sh needs no assertion.
 The 2026.1 twin is
 patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch;
 it differs in the index line and the hunk offsets.
+No 2026.2 twin: 29.0.0 carries upstream commit c07c49c586, which
+replaced both tests.
 
 Applies to cinder 27.0.0 (2025.2).
 

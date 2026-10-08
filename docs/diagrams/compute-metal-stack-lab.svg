@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1662" viewBox="0 0 1808 1662" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The metal-stack lab: what you have built">
+<title>The metal-stack lab: what you have built</title>
+<rect width="1808" height="1662" fill="#F6F5F1"/>
+<rect x="40" y="40" width="380" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="230" y="74.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Workstation</text>
+<text x="230" y="101.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">kubectl, the openstack CLI, a browser</text>
+<rect x="41.5" y="171.5" width="1725" height="1366.5" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="68" y="192" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="106" y="218.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="158" y="220.8" font-size="30" font-weight="700" fill="#17202B">Gardener shoot on metal-stack</text>
+<text x="616" y="215.2" font-size="20" font-weight="400" fill="#55606E">two or more workers; cluster-wide pods are scheduled onto the same workers</text>
+<rect x="64" y="260" width="1680" height="334" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="83" y="299.36" font-size="26" font-weight="700" fill="#2B3440">Cluster-wide</text>
+<text x="83" y="331.2" font-size="20" font-weight="400" fill="#55606E">built by Part 1, once per cluster</text>
+<rect x="88" y="353" width="320" height="48" rx="20" fill="#1E6B40"/>
+<text x="248" y="385.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane controlplane</text>
+<text x="88" y="428.2" font-size="20" font-weight="400" fill="#55606E">namespace openstack</text>
+<rect x="700" y="360" width="260" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="830" y="385.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">OpenStack services</text>
+<text x="700" y="421.2" font-size="20" font-weight="400" fill="#55606E">Keystone, Horizon, Glance, Placement,</text>
+<text x="700" y="447.2" font-size="20" font-weight="400" fill="#55606E">Barbican, Neutron, Cinder, Nova</text>
+<rect x="1330" y="360" width="170" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1415" y="385.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Envoy proxy</text>
+<text x="1330" y="421.2" font-size="20" font-weight="400" fill="#55606E">Gateway openstack-gw</text>
+<polyline points="1330,377 970.5,377" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="960,377 975,369.8 975,384.2" fill="#2457C5"/>
+<text x="1145" y="366.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">one HTTPS listener per hostname</text>
+<rect x="88" y="483" width="356" height="48" rx="20" fill="#6F5600"/>
+<text x="266" y="515.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OVNCentral controlplane-ovn</text>
+<text x="88" y="558.2" font-size="20" font-weight="400" fill="#55606E">one member per database, one northd</text>
+<rect x="520" y="490" width="220" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="630" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">backing services</text>
+<text x="520" y="551.2" font-size="20" font-weight="400" fill="#55606E">MariaDB, Memcached, RabbitMQ, OpenBao, Garage</text>
+<rect x="1040" y="490" width="150" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1115" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">nfs-server</text>
+<text x="1040" y="551.2" font-size="20" font-weight="400" fill="#55606E">Cinder volumes and backups</text>
+<rect x="1320" y="490" width="250" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1445" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">hypervisor operator</text>
+<text x="1320" y="551.2" font-size="20" font-weight="400" fill="#55606E">HelmRelease openstack-hypervisor-operator</text>
+<polyline points="420,78 1400,78 1400,349.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1400,360 1392.8,345 1407.2,345" fill="#2457C5"/>
+<rect x="444" y="90" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="496" y="111.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="560" y="107.2" font-size="20" font-weight="400" fill="#2B3440">kubectl port-forward 8443:443</text>
+<text x="560" y="133.2" font-size="20" font-weight="400" fill="#2B3440">the only way in</text>
+<rect x="100" y="654" width="580" height="270" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="693.36" font-size="26" font-weight="700" fill="#2B3440">Node layer</text>
+<text x="119" y="725.2" font-size="20" font-weight="400" fill="#55606E">built by Part 2; the labelled workers are selected</text>
+<rect x="124" y="750" width="300" height="48" rx="20" fill="#6F5600"/>
+<text x="274" y="782.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OVNChassis lab-chassis</text>
+<rect x="124" y="808" width="520" height="48" rx="20" fill="#1D47A6"/>
+<text x="384" y="840.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NeutronMetadataAgent lab-metadata-agent</text>
+<rect x="124" y="866" width="230" height="48" rx="20" fill="#A3262E"/>
+<text x="239" y="898.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NovaCompute lab</text>
+<rect x="65.5" y="994" width="517" height="458" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="92" y="1012.5" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="134" y="1039.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="190" y="1039.14" font-size="24" font-weight="700" fill="#17202B">worker 1</text>
+<rect x="88" y="1074" width="210" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="193" y="1099.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">lab-chassis-ovs</text>
+<rect x="88" y="1120" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="253" y="1145.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">lab-chassis-ovn-controller</text>
+<rect x="88" y="1166" width="444" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="310" y="1191.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">lab-metadata-agent-metadata-agent</text>
+<rect x="88" y="1212" width="236" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="206" y="1237.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">lab-nova-compute</text>
+<rect x="88" y="1258" width="110" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="143" y="1283.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">libvirt</text>
+<text x="214" y="1282.2" font-size="20" font-weight="400" fill="#55606E">libvirtd and QEMU</text>
+<rect x="88" y="1304" width="215" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="195.5" y="1329.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">kvm-node-agent</text>
+<rect x="88" y="1350" width="331" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="253.5" y="1375.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">migration-port-reservation</text>
+<rect x="88" y="1396" width="115" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="145.5" y="1421.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">servers</text>
+<text x="219" y="1420.2" font-size="20" font-weight="400" fill="#55606E">instances on KVM</text>
+<rect x="1061.5" y="994" width="517" height="458" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="1088" y="1012.5" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="1130" y="1039.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="1186" y="1039.14" font-size="24" font-weight="700" fill="#17202B">worker N</text>
+<rect x="1084" y="1074" width="210" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1189" y="1099.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">lab-chassis-ovs</text>
+<rect x="1084" y="1120" width="330" height="34" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1249" y="1145.64" font-size="24" font-weight="600" fill="#6F5600" text-anchor="middle">lab-chassis-ovn-controller</text>
+<rect x="1084" y="1166" width="444" height="34" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1306" y="1191.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">lab-metadata-agent-metadata-agent</text>
+<rect x="1084" y="1212" width="236" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1202" y="1237.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">lab-nova-compute</text>
+<rect x="1084" y="1258" width="110" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1139" y="1283.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">libvirt</text>
+<text x="1210" y="1282.2" font-size="20" font-weight="400" fill="#55606E">libvirtd and QEMU</text>
+<rect x="1084" y="1304" width="215" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1191.5" y="1329.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">kvm-node-agent</text>
+<rect x="1084" y="1350" width="331" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1249.5" y="1375.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">migration-port-reservation</text>
+<rect x="1084" y="1396" width="115" height="34" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1141.5" y="1421.64" font-size="24" font-weight="600" fill="#A3262E" text-anchor="middle">servers</text>
+<text x="1215" y="1420.2" font-size="20" font-weight="400" fill="#55606E">instances on KVM</text>
+<rect x="1610" y="1196" width="134" height="54" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1677" y="1231.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">+ more</text>
+<polyline points="300,924 300,983.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="300,994 292.8,979 307.2,979" fill="#2F8A57"/>
+<text x="316" y="961.2" font-size="20" font-weight="400" fill="#2B3440">one pod of each DaemonSet per worker</text>
+<polyline points="680,884 1120,884 1120,983.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1120,994 1112.8,979 1127.2,979" fill="#2F8A57"/>
+<polyline points="80,994 80,604.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="80,594 87.2,609 72.8,609" fill="#2457C5"/>
+<text x="96" y="631.2" font-size="20" font-weight="400" fill="#2B3440">bus, Southbound database, metadata API, NFS</text>
+<polyline points="1500,994 1500,604.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1500,594 1507.2,609 1492.8,609" fill="#2457C5"/>
+<polyline points="594.5,1134 1049.5,1134" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="1060,1134 1045,1141.2 1045,1126.8" fill="#B38A00"/>
+<polygon points="584,1134 599,1126.8 599,1141.2" fill="#B38A00"/>
+<text x="822" y="1119.2" font-size="20" font-weight="400" fill="#6F5600" text-anchor="middle">Geneve, UDP 6081</text>
+<polyline points="594.5,1244 1049.5,1244" fill="none" stroke="#C6343C" stroke-width="3"/>
+<polygon points="1060,1244 1045,1251.2 1045,1236.8" fill="#C6343C"/>
+<polygon points="584,1244 599,1236.8 599,1251.2" fill="#C6343C"/>
+<text x="822" y="1229.2" font-size="20" font-weight="400" fill="#A3262E" text-anchor="middle">libvirt, TLS on TCP 16514</text>
+<polyline points="594.5,1354 1049.5,1354" fill="none" stroke="#C6343C" stroke-width="3"/>
+<polygon points="1060,1354 1045,1361.2 1045,1346.8" fill="#C6343C"/>
+<polygon points="584,1354 599,1346.8 599,1361.2" fill="#C6343C"/>
+<text x="822" y="1339.2" font-size="20" font-weight="400" fill="#A3262E" text-anchor="middle">QEMU migration, TLS on TCP 49152 to 49215</text>
+<rect x="64" y="1478" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="116" y="1499.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<text x="180" y="1500.2" font-size="20" font-weight="400" fill="#55606E">labels openstack.c5c3.io/chassis, openstack.c5c3.io/nova-compute-pool, nova.openstack.cloud.sap/virt-driver</text>
+<text x="40" y="1589.2" font-size="20" font-weight="400" fill="#55606E">Drawn for two workers. Every further labelled worker carries the same pods and the same three kinds of traffic to every other worker.</text>
+<text x="40" y="1615.2" font-size="20" font-weight="400" fill="#55606E">The pods of a worker run in the namespace openstack, kvm-node-agent and migration-port-reservation in hypervisor-system.</text>
+</svg>

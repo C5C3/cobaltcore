@@ -6,7 +6,9 @@
 # Validates the full reconciliation cycle:
 #   - All 7 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
-#   - Owned resources exist (Deployment, Service, PDB, ConfigMap)
+#   - Owned resources exist (Deployment, Service, PDB, ConfigMap), and the
+#     ConfigMap the Deployment mounts carries the image-scoped cache
+#     KEY_PREFIX
 #   - The dashboard login page renders (HTTP 200) — this exercises Django
 #     URL routing, templates, and the offline-compression manifest without
 #     a live Keystone
@@ -112,11 +114,22 @@ spec:
               matchLabels:
                 app.kubernetes.io/name: horizon
                 app.kubernetes.io/instance: horizon-basic
-  # ── Step 4: Assert the rendered settings ConfigMap exists ──────────────
+  # ── Step 4: Assert the rendered ConfigMap and its cache KEY_PREFIX ─────
+  # The prefix is "horizon-" plus the first 12 hex characters of
+  # sha256("ghcr.io/c5c3/horizon:2025.2"); basic-deployment-2026-1 pins its
+  # own, so the leg shows two releases on one Memcached render two prefixes
+  # (#1305). The script reads the ConfigMap the Deployment mounts, because
+  # the retention sweep keeps up to three historical ones beside it. Plain
+  # grep -F, no -q: an early exit would break the pipe under pipefail.
   - try:
     - script:
+        shell: bash
         content: |
+          set -euo pipefail
           kubectl get cm -n openstack -o name | grep horizon-basic-config-
+          cm=$(kubectl get deploy horizon-basic -n openstack -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$cm"
+          kubectl get cm -n openstack "$cm" -o jsonpath='{.data.local_settings\.py}' | grep -F '"KEY_PREFIX": "horizon-cb859537a8dc"'
   # ── Step 5: Assert the login page renders over HTTP ────────────────────
   # HTTP-level dashboard coverage: tempest-horizon is retired upstream, so
   # the login-page fetch is the Chainsaw-level substitute for a tempest run.

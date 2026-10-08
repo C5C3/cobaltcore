@@ -397,6 +397,10 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
+				// A single-worker API holds the probe's GET for the whole request in
+				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
+				// is the readiness probe's timeout, below the 20s period.
+				TimeoutSeconds: 10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
@@ -727,6 +731,18 @@ func glanceReleaseUsesUWSGI(openStackRelease string) bool {
 		return false
 	}
 	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
+}
+
+// glanceReleaseDropsWorkersOption reports whether the Glance of the given
+// OpenStack release no longer registers [DEFAULT] workers: true from 2026.2
+// onward, where glance 33.0.0 removed the option with the standalone glance-api
+// server, false below it and for an empty or unparseable release.
+func glanceReleaseDropsWorkersOption(openStackRelease string) bool {
+	rel, err := release.ParseRelease(openStackRelease)
+	if err != nil {
+		return false
+	}
+	return rel.AtLeast(2026, 2)
 }
 
 // glanceUWSGIChunkedInputLimit is the --chunked-input-limit the uWSGI launch

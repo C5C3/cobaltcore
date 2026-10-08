@@ -37,6 +37,14 @@ func TestParseRelease(t *testing.T) {
 			wantRaw:   "2026.1",
 		},
 		{
+			name:      "valid base release 2026.2",
+			input:     "2026.2",
+			wantYear:  2026,
+			wantMinor: 2,
+			wantPatch: "",
+			wantRaw:   "2026.2",
+		},
+		{
 			name:      "valid release with patch suffix",
 			input:     "2025.2-p1",
 			wantYear:  2025,
@@ -139,6 +147,18 @@ func TestIsSequentialUpgrade(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "same year minor increment 2026.1 to 2026.2",
+			from: Release{Year: 2026, Minor: 1},
+			to:   Release{Year: 2026, Minor: 2},
+			want: true,
+		},
+		{
+			name: "year rollover 2026.2 to 2027.1",
+			from: Release{Year: 2026, Minor: 2},
+			to:   Release{Year: 2027, Minor: 1},
+			want: true,
+		},
+		{
 			name: "same version is not sequential",
 			from: Release{Year: 2025, Minor: 1},
 			to:   Release{Year: 2025, Minor: 1},
@@ -166,6 +186,18 @@ func TestIsSequentialUpgrade(t *testing.T) {
 			name: "skipping two steps is not sequential",
 			from: Release{Year: 2025, Minor: 1},
 			to:   Release{Year: 2026, Minor: 2},
+			want: false,
+		},
+		{
+			name: "skipping 2026.1 is not sequential",
+			from: Release{Year: 2025, Minor: 2},
+			to:   Release{Year: 2026, Minor: 2},
+			want: false,
+		},
+		{
+			name: "skip-level from 2026.2",
+			from: Release{Year: 2026, Minor: 2},
+			to:   Release{Year: 2027, Minor: 2},
 			want: false,
 		},
 		{
@@ -207,6 +239,12 @@ func TestIsDowngrade(t *testing.T) {
 			name: "earlier year same minor is downgrade",
 			from: Release{Year: 2026, Minor: 1},
 			to:   Release{Year: 2025, Minor: 1},
+			want: true,
+		},
+		{
+			name: "same year 2026.2 back to 2026.1 is downgrade",
+			from: Release{Year: 2026, Minor: 2},
+			to:   Release{Year: 2026, Minor: 1},
 			want: true,
 		},
 		{
@@ -275,6 +313,12 @@ func TestIsPatchOnly(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "minor bump 2026.1 to 2026.2 is not patch only",
+			from: Release{Year: 2026, Minor: 1},
+			to:   Release{Year: 2026, Minor: 2},
+			want: false,
+		},
+		{
 			name: "different year is not patch only",
 			from: Release{Year: 2025, Minor: 2},
 			to:   Release{Year: 2026, Minor: 1},
@@ -286,6 +330,47 @@ func TestIsPatchOnly(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			g.Expect(IsPatchOnly(tt.from, tt.to)).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestAtLeast(t *testing.T) {
+	tests := []struct {
+		name string
+		rel  Release
+		want bool
+	}{
+		{
+			name: "earlier year is not at least",
+			rel:  Release{Year: 2025, Minor: 2},
+			want: false,
+		},
+		{
+			name: "same year lower minor is not at least",
+			rel:  Release{Year: 2026, Minor: 1},
+			want: false,
+		},
+		{
+			name: "same version is at least",
+			rel:  Release{Year: 2026, Minor: 2},
+			want: true,
+		},
+		{
+			name: "patch suffix ignored",
+			rel:  Release{Year: 2026, Minor: 2, Patch: "p1"},
+			want: true,
+		},
+		{
+			name: "later year lower minor is at least",
+			rel:  Release{Year: 2027, Minor: 1},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(tt.rel.AtLeast(2026, 2)).To(Equal(tt.want))
 		})
 	}
 }

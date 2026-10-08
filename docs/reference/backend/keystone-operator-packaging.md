@@ -28,6 +28,7 @@ operators/keystone/
 │       └── templates/
 │           ├── _helpers.tpl            Chart-specific helpers: the operator-library.chart.* hook overrides
 │           ├── _rbac-rules.tpl         RBAC rules, generated from config/rbac/role.yaml (make sync-helm-rbac)
+│           ├── _webhook-rbac-rules.tpl RBAC rules of the standalone webhook, generated from the same file
 │           ├── serviceaccount.yaml     ServiceAccount (conditional)
 │           ├── clusterrole.yaml        ClusterRole (cluster-scoped RBAC, default)
 │           ├── clusterrolebinding.yaml ClusterRoleBinding (default)
@@ -251,7 +252,7 @@ All configurable parameters with their types, defaults, and descriptions:
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `rbac.namespaceScoped` | `boolean` | `false` | When `true`, renders a namespace-scoped Role/RoleBinding instead of the ClusterRole/ClusterRoleBinding, restricting the operator to its release namespace. Requires `webhook.enabled=false` (template renders a hard `fail` otherwise). See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md) |
+| `rbac.namespaceScoped` | `boolean` | `false` | When `true`, renders a namespace-scoped Role/RoleBinding instead of the ClusterRole/ClusterRoleBinding, restricting the operator to its release namespace. See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md) |
 
 #### Leader Election
 
@@ -268,10 +269,24 @@ concurrently. Disable only for single-replica development deployments.
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `webhook.enabled` | `boolean` | `true` | Enable admission webhooks (MutatingWebhookConfiguration and ValidatingWebhookConfiguration). Requires cert-manager for TLS certificate injection |
+| `webhook.standalone` | `boolean` | `false` | Run the release as a standalone admission webhook for the namespace-scoped installs of the chart. Requires `webhook.enabled=true` and `rbac.namespaceScoped=false` |
 
 When disabled, the webhook container port (9443) is omitted from the Deployment and no
 webhook configuration resources are created. The operator continues to function without
 admission validation — CRs are not validated or defaulted at admission time.
+A namespace-scoped install sets `webhook.enabled=false`, which the values schema
+requires beside `rbac.namespaceScoped=true`.
+
+With `webhook.standalone=true` the release reconciles nothing. The Deployment
+passes `--enable-controllers=false` and no `--leader-elect`, so the manager
+registers no controller, elects no leader and serves only the admission
+webhooks. The ClusterRole renders the
+[standalone webhook rule set](#standalone-webhook-rule-set). The Service,
+Issuer, Certificate and both webhook configurations render as with
+`webhook.enabled=true`, and the configurations admit the `Keystone` and
+`KeystoneIdentityBackend` CRs of every namespace. One such release per cluster
+admits the CRs of every namespace-scoped install of the chart; see
+[Multi-Tenant Deployment → Admission webhooks](../../guides/multi-tenant-deployment.md#admission-webhooks-the-standalone-webhook-release).
 
 #### Metrics
 
@@ -335,7 +350,7 @@ The chart renders the following Kubernetes resources with default values:
 | Resource | Kind | Name Pattern | Conditional |
 | --- | --- | --- | --- |
 | ServiceAccount | `v1/ServiceAccount` | `{fullname}` | `serviceAccount.create` |
-| ClusterRole | `rbac.authorization.k8s.io/v1/ClusterRole` | `{fullname}` | `rbac.namespaceScoped=false` (default) |
+| ClusterRole | `rbac.authorization.k8s.io/v1/ClusterRole` | `{fullname}` | `rbac.namespaceScoped=false` (default); carries the standalone webhook rule set instead of the manager rules under `webhook.standalone=true` |
 | ClusterRoleBinding | `rbac.authorization.k8s.io/v1/ClusterRoleBinding` | `{fullname}` | `rbac.namespaceScoped=false` (default) |
 | Role | `rbac.authorization.k8s.io/v1/Role` | `{fullname}` | `rbac.namespaceScoped=true` |
 | RoleBinding | `rbac.authorization.k8s.io/v1/RoleBinding` | `{fullname}` | `rbac.namespaceScoped=true` |
@@ -501,6 +516,33 @@ them: it registers no `ClusterSecretStore` watch and refuses a Keystone whose
 effective store is cluster-scoped, and only the webhook, which this mode
 disables, reads PriorityClasses.
 
+#### Standalone webhook rule set
+
+Under `webhook.standalone=true` the ClusterRole carries only what the admission
+webhooks read through their uncached API reader:
+
+| API Group | Resources | Verbs | Read by |
+| --- | --- | --- | --- |
+| `scheduling.k8s.io` | `priorityclasses` | get | The validating `Keystone` webhook, for `spec.deployment.priorityClassName` and the Job priority classes |
+| `keystone.openstack.c5c3.io` | `keystoneidentitybackends` | list | The validating `KeystoneIdentityBackend` webhook, for the backends in the namespace |
+
+It grants nothing on `secrets`, `rolebindings` or `leases`. Each read is
+declared with a `+kubebuilder:rbac` marker ending in `roleName=keystone-webhook`
+beside the `+kubebuilder:webhook` markers of the file that performs it
+(`operators/keystone/api/v1alpha1/keystone_webhook.go`,
+`keystoneidentitybackend_webhook.go`). controller-gen writes those markers into
+a second ClusterRole of `config/rbac/role.yaml`, `keystone-webhook`, and
+`make sync-helm-rbac` copies its rules into `templates/_webhook-rbac-rules.tpl`
+as the `keystone-operator.webhookRbacRules` template, without a leases rule.
+
+The generator also guards coverage: every `(apiGroup, resource, verb)` the
+`keystone-webhook` ClusterRole grants must be granted by the manager rules too,
+and `make sync-helm-rbac` and `make verify-helm-rbac` exit 1 otherwise. The
+in-process webhook of a cluster-wide release runs under the manager identity, so
+a read declared for the webhook role alone would fail there. The manager rules
+keep `priorityclasses` at `get, list, watch`; controller-gen merges the verbs of
+markers per resource.
+
 ### Webhook Configuration
 
 Two webhook configurations are rendered when `webhook.enabled=true`:
@@ -534,8 +576,9 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 | Admission review versions | `v1` |
 
 Neither configuration intercepts `DELETE`: the webhook is served in-process by
-the operator, so with `failurePolicy: Fail` a `DELETE` rule would let a down
-operator block CR — and thereby namespace — deletion.
+the operator, or by the standalone webhook release, so with `failurePolicy: Fail`
+a `DELETE` rule would let a down webhook pod block CR — and thereby namespace —
+deletion.
 
 Both configurations include the annotation:
 

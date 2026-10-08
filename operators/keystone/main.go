@@ -64,7 +64,7 @@ func main() {
 					"link-local (cloud IMDS), multicast, and unspecified addresses stay blocked "+
 					"even when covered. Empty (default) keeps all non-public addresses blocked.")
 		},
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -79,34 +79,36 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("parsing --federation-metadata-allow-cidrs: %w", err)
 			}
-			// +kubebuilder:scaffold:builder — register controllers here
-			if err := (&controller.KeystoneReconciler{
-				Client:                       mgr.GetClient(),
-				Scheme:                       mgr.GetScheme(),
-				Recorder:                     mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				OperatorNamespace:            bootstrap.DetectOperatorNamespace(),
-				NamespaceScoped:              namespace != "",
-				MaxConcurrentReconciles:      maxConcurrentReconciles,
-				FederationMetadataAllowCIDRs: allowCIDRs,
-				Resolver:                     mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
+			if opts.Controllers {
+				// +kubebuilder:scaffold:builder — register controllers here
+				if err := (&controller.KeystoneReconciler{
+					Client:                       mgr.GetClient(),
+					Scheme:                       mgr.GetScheme(),
+					Recorder:                     mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					OperatorNamespace:            bootstrap.DetectOperatorNamespace(),
+					NamespaceScoped:              opts.Namespace != "",
+					MaxConcurrentReconciles:      opts.MaxConcurrentReconciles,
+					FederationMetadataAllowCIDRs: allowCIDRs,
+					Resolver:                     mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
+				// The dedicated identity-backend controller runs in the same
+				// manager (a second reconciler, not a second binary). It MUST be
+				// registered after KeystoneReconciler: that reconciler's
+				// SetupWithManager is the single registration site for the
+				// KeystoneIdentityBackend field indexes both controllers use.
+				if err := (&controller.KeystoneIdentityBackendReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("keystoneidentitybackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mgr); err != nil {
+					return err
+				}
 			}
-			// The dedicated identity-backend controller runs in the same
-			// manager (a second reconciler, not a second binary). It MUST be
-			// registered after KeystoneReconciler: that reconciler's
-			// SetupWithManager is the single registration site for the
-			// KeystoneIdentityBackend field indexes both controllers use.
-			if err := (&controller.KeystoneIdentityBackendReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("keystoneidentitybackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
-				return err
-			}
-			if webhooks {
+			if opts.Webhooks {
 				// DECISION: the webhook reads through mgr.GetAPIReader() (direct,
 				// uncached) rather than mgr.GetClient(). The PriorityClass existence
 				// check must not reject a just-created PriorityClass from a stale

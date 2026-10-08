@@ -94,3 +94,10 @@ func IsDowngrade(from, to Release) bool {
 func IsPatchOnly(from, to Release) bool {
 	return from.Year == to.Year && from.Minor == to.Minor
 }
+
+// AtLeast reports whether r is the release year.minor or a later one, e.g.
+// AtLeast(2026, 2) is true for 2026.2, 2026.2-p1 and 2027.1.
+// Patch suffix is ignored for comparison.
+func (r Release) AtLeast(year, minor int) bool {
+	return r.Year > year || (r.Year == year && r.Minor >= minor)
+}

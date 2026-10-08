@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1354" viewBox="0 0 1808 1354" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Federated login through Horizon">
+<title>Federated login through Horizon</title>
+<rect width="1808" height="1354" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1000" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="540" y="74.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Browser</text>
+<text x="540" y="101.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">of the person who logs in</text>
+<rect x="1400" y="40" width="368" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1584" y="74.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Identity provider</text>
+<text x="1584" y="101.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">an OIDC issuer</text>
+<text x="1400" y="141.2" font-size="20" font-weight="400" fill="#55606E">the fixture Keycloak of</text>
+<text x="1400" y="167.2" font-size="20" font-weight="400" fill="#55606E">the devstack runs inside</text>
+<text x="1400" y="193.2" font-size="20" font-weight="400" fill="#55606E">the cluster</text>
+<rect x="40" y="384" width="1728" height="732" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="404.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="431.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="433.3" font-size="30" font-weight="700" fill="#17202B">Cluster</text>
+<rect x="640" y="810" width="1104" height="276" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="659" y="849.36" font-size="26" font-weight="700" fill="#2B3440">pod of {keystone}</text>
+<text x="659" y="883.2" font-size="20" font-weight="400" fill="#55606E">while a federation backend is attached</text>
+<rect x="560" y="474" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="660" y="506.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Envoy proxy</text>
+<text x="560" y="547.2" font-size="20" font-weight="400" fill="#55606E">Gateway {gateway}: one HTTPS</text>
+<text x="560" y="573.2" font-size="20" font-weight="400" fill="#55606E">listener per hostname</text>
+<text x="560" y="599.2" font-size="20" font-weight="400" fill="#55606E">hops 1, 2, 4 and 7 enter here</text>
+<rect x="330" y="650" width="200" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="430" y="682.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">{horizon}</text>
+<text x="330" y="723.2" font-size="20" font-weight="400" fill="#55606E">the dashboard, port 8080</text>
+<text x="330" y="749.2" font-size="20" font-weight="400" fill="#55606E">WEBSSO_KEYSTONE_URL: the public Keystone URL</text>
+<text x="330" y="775.2" font-size="20" font-weight="400" fill="#55606E">OPENSTACK_KEYSTONE_URL: the cluster-local Keystone URL</text>
+<rect x="1000" y="650" width="270" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1135" y="682.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service {keystone}</text>
+<text x="1000" y="723.2" font-size="20" font-weight="400" fill="#55606E">port 5000, targetPort 5050</text>
+<rect x="70" y="810" width="480" height="48" rx="20" fill="#1D47A6"/>
+<text x="310" y="842.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">KeystoneIdentityBackend {backend}</text>
+<text x="70" y="883.2" font-size="20" font-weight="400" fill="#55606E">type OIDC, Ready: one choice on the login page</text>
+<rect x="664" y="930" width="180" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="754" y="962.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">keystone</text>
+<text x="664" y="1003.2" font-size="20" font-weight="400" fill="#55606E">uWSGI on 127.0.0.1:5000</text>
+<text x="664" y="1029.2" font-size="20" font-weight="400" fill="#55606E">trusted_dashboard = {origin}</text>
+<rect x="1374" y="930" width="250" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1499" y="962.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">federation-proxy</text>
+<text x="1374" y="1003.2" font-size="20" font-weight="400" fill="#55606E">Apache with mod_auth_openidc and</text>
+<text x="1374" y="1029.2" font-size="20" font-weight="400" fill="#55606E">mod_auth_mellon, port 5050</text>
+<text x="1374" y="1055.2" font-size="20" font-weight="400" fill="#55606E">unsets claim headers a client sent</text>
+<polyline points="390,116 390,650" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="383,636 390,650 397,636" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1050,116 1050,650" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1043,636 1050,650 1057,636" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1040,78 1400,78" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1386,85 1400,78 1386,71" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1130,116 1130,650" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1123,636 1130,650 1137,636" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1624,954 1700,954 1700,126.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1700,116 1707.2,131 1692.8,131" fill="#2457C5"/>
+<polyline points="1374,944 854.5,944" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="844,944 859,936.8 859,951.2" fill="#2457C5"/>
+<polyline points="470,116 470,650" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="463,636 470,650 477,636" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="530,664 989.5,664" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1000,664 985,671.2 985,656.8" fill="#2457C5"/>
+<polyline points="1270,674 1500,674 1500,919.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1500,930 1492.8,915 1507.2,915" fill="#2457C5"/>
+<circle cx="390" cy="142" r="18" fill="#17202B"/>
+<text x="390" y="149.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<circle cx="1050" cy="142" r="18" fill="#17202B"/>
+<text x="1050" y="149.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<circle cx="1066" cy="78" r="18" fill="#17202B"/>
+<text x="1066" y="85.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<circle cx="1130" cy="142" r="18" fill="#17202B"/>
+<text x="1130" y="149.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<circle cx="1650" cy="954" r="18" fill="#17202B"/>
+<text x="1650" y="961.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<circle cx="1348" cy="944" r="18" fill="#17202B"/>
+<text x="1348" y="951.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<circle cx="470" cy="142" r="18" fill="#17202B"/>
+<text x="470" y="149.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<circle cx="556" cy="664" r="18" fill="#17202B"/>
+<text x="556" y="671.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">8</text>
+<text x="51.13" y="195.2" font-size="20" font-weight="400" fill="#2B3440">opens /auth/login/ and picks {idp}</text>
+<text x="67.14" y="223.2" font-size="20" font-weight="400" fill="#55606E">Horizon answers with a redirect</text>
+<text x="482" y="195.2" font-size="20" font-weight="400" fill="#2B3440">posts the form to {origin}</text>
+<text x="606.58" y="269.2" font-size="20" font-weight="400" fill="#2B3440">the websso path of {idp}, with origin={origin}</text>
+<text x="761.31" y="297.2" font-size="20" font-weight="400" fill="#55606E">on the public Keystone URL</text>
+<text x="1096" y="67.2" font-size="20" font-weight="400" fill="#2B3440">the authorization endpoint</text>
+<text x="1096" y="105.2" font-size="20" font-weight="400" fill="#55606E">the user logs in</text>
+<text x="1142" y="341.2" font-size="20" font-weight="400" fill="#2B3440">/v3/OS-FEDERATION/redirect_uri with the code</text>
+<text x="1275.5" y="269.2" font-size="20" font-weight="400" fill="#2B3440">exchanges the code at the token endpoint</text>
+<text x="1293.92" y="297.2" font-size="20" font-weight="400" fill="#55606E">the pod resolves and reaches the issuer</text>
+<text x="960" y="933.2" font-size="20" font-weight="400" fill="#2B3440">claims as OIDC- request headers</text>
+<text x="960" y="971.2" font-size="20" font-weight="400" fill="#55606E">Keystone answers with a form</text>
+<text x="960" y="997.2" font-size="20" font-weight="400" fill="#55606E">that carries the token</text>
+<text x="586" y="653.2" font-size="20" font-weight="400" fill="#2B3440">validates the token</text>
+<text x="586" y="691.2" font-size="20" font-weight="400" fill="#55606E">on the cluster-local URL</text>
+<text x="1282" y="663.2" font-size="20" font-weight="400" fill="#2B3440">every request passes the proxy</text>
+<text x="40" y="1177.2" font-size="20" font-weight="400" fill="#55606E">{horizon}, {keystone}: the Horizon and the Keystone resource, {cp}-horizon and {cp}-keystone under a ControlPlane.</text>
+<text x="40" y="1203.2" font-size="20" font-weight="400" fill="#55606E">{idp}, {backend}: the identity provider and its KeystoneIdentityBackend. {gateway}: openstack-gw on the devstack.</text>
+<text x="40" y="1229.2" font-size="20" font-weight="400" fill="#55606E">{origin}: the public dashboard URL plus /auth/websso/. The ControlPlane writes it to spec.federation.trustedDashboards of Keystone,</text>
+<text x="40" y="1255.2" font-size="20" font-weight="400" fill="#55606E">and the public Keystone URL to spec.websso.keystoneURL of Horizon.</text>
+<text x="40" y="1281.2" font-size="20" font-weight="400" fill="#55606E">Open arrowhead: a request the browser sends, on a name the browser resolves. Filled arrowhead: a call between servers, on a name the pod resolves.</text>
+<text x="40" y="1307.2" font-size="20" font-weight="400" fill="#55606E">A SAML backend differs in hops 4 and 5: the browser posts the assertion to the proxy at .../auth/mellon/postResponse, and no call to the identity provider follows.</text>
+</svg>

@@ -28,10 +28,10 @@ run against the same database while the schema moves forward:
    longer needs.
 
 Glance was the second operator to adopt this machine. The phase choreography
-lives in `internal/common/database` (`upgrade.go`) and is shared with Keystone;
-the Glance controller supplies the service-specific parts: the
-`spec.openStackRelease` seam, the `glance-manage` phase commands, and the
-`DatabaseReady` condition it reports on. Keystone's own behaviour is documented
+lives in `internal/common/database` (`upgrade.go`) and is shared with Keystone,
+Cinder, Nova and Neutron; the Glance controller supplies the service-specific
+parts: the `spec.openStackRelease` seam, the `glance-manage` phase commands,
+and the `DatabaseReady` condition it reports on. Keystone's own behaviour is documented
 in [Keystone Upgrade Flow](../keystone/keystone-upgrade-flow.md).
 
 The flow is driven by two sub-reconcilers. `reconcileDatabase` runs the expand,
@@ -77,6 +77,7 @@ single sequential step forward. Everything else is refused:
 | --- | --- | --- | --- |
 | `2025.1` | `2025.2` | Yes | Same year, minor +1 |
 | `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2026.2` | Yes | Same year, minor +1 |
 | `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
 | `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
 | `2026.1` | `2025.2` | No | Downgrade |
@@ -112,26 +113,7 @@ of four values while an upgrade is active:
 ## Phases
 
 The upgrade walks a fixed sequence. Each transition is driven by a phase Job
-completing or by the Deployment reporting ready.
-
-```text
-spec.openStackRelease bumped (e.g. 2025.2 -> 2026.1, image in lockstep)
-        |
-        v
-  Expanding  --- <name>-db-expand: glance-manage db expand --- Job complete
-        |
-        v
-  Migrating  --- <name>-db-migrate: glance-manage db migrate --- Job complete
-        |
-        v
-  RollingUpdate --- Deployment rolls to the new image, waits for readiness
-        |
-        v
-  Contracting --- <name>-db-contract: glance-manage db contract --- Job complete
-        |
-        v
-  installedRelease = "2026.1", targetRelease = "", upgradePhase = ""
-```
+completing or by the Deployment finishing its rollout.
 
 Each job-running phase creates one distinctly named Job on `spec.image` (the new
 release image) with `backoffLimit: 4`:
@@ -140,11 +122,18 @@ release image) with `backoffLimit: 4`:
 | --- | --- | --- |
 | Expanding | `<name>-db-expand` | `glance-manage --config-dir /etc/glance/glance-api.conf.d/ db expand` |
 | Migrating | `<name>-db-migrate` | `glance-manage --config-dir /etc/glance/glance-api.conf.d/ db migrate` |
+| RollingUpdate | none | No Job. The Deployment rolls onto the new image |
 | Contracting | `<name>-db-contract` | `glance-manage --config-dir /etc/glance/glance-api.conf.d/ db contract` |
 
 Expand and migrate run with the new image because the target release's migration
 tree owns the schema deltas: running expand with the old binary would leave the
 contract step ahead of expand and fail the service's upgrade-order check.
+
+The figure draws the same four phases with what the table leaves out: the gate
+in front of them, the state a failed Job leaves, the hold on a changed target,
+and the abort.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### Rolling Update and the Launch-Mode Flip
 
@@ -156,7 +145,11 @@ their readiness checks, so the API stays available.
 The launch mode derives from `spec.openStackRelease`: the eventlet `glance-api`
 server below `2026.1`, uWSGI from `2026.1` onward. A `2025.2` to `2026.1`
 upgrade therefore switches the container command from eventlet to uWSGI during
-this rollout. Both modes load the same two `--config-dir` roots; the reconciler
+this rollout. A `2026.1` to `2026.2` upgrade, the transition
+`tests/e2e/glance/release-upgrade/` runs, keeps uWSGI on both sides. A
+`spec.apiServer.workers` value renders `[DEFAULT] workers` under `2026.1` and
+stops rendering at `2026.2`, because glance 33.0.0 no longer registers the
+option. Both modes load the same two `--config-dir` roots; the reconciler
 reference covers the [launch modes](./glance-reconciler.md#launch-modes) in
 detail.
 
@@ -210,7 +203,8 @@ to abort.
 ## Events
 
 The upgrade path emits these events on the Glance CR. The reasons come from
-`internal/common/database` and are shared with Keystone.
+`internal/common/database` and are shared with every operator that runs the
+phase machine.
 
 | Type | Reason | Trigger |
 | --- | --- | --- |

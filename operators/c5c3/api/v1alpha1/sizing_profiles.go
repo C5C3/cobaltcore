@@ -85,7 +85,7 @@ func standardSizing() SizingSpec {
 // thread per component, the measured Minimal CPU request for the service pods,
 // and the measured CPU and memory of the backing services, never below the
 // memory floor each one's configuration depends on (1Gi database, 96Mi cache,
-// 512Mi broker, 64Mi secret store). Service memory stays with the child
+// 1Gi broker, 64Mi secret store). Service memory stays with the child
 // operators' per-process formula, so a lower process count lowers it.
 func minimalSizing() SizingSpec {
 	api := func() *APISizingSpec {
@@ -114,9 +114,18 @@ func minimalSizing() SizingSpec {
 			Replicas:            ptr.To[int32](1),
 			ContainerSizingSpec: memoryBound("15m", "96Mi"),
 		},
+		// The RabbitMQ Cluster Operator (v2.23.0, removeHeadroom) writes
+		// total_memory_available_override_value = limit - limit/5 for a
+		// broker with a memory limit, and RabbitMQ 4.3.4 raises its memory
+		// alarm at 0.6 of that value. 512Mi gave a 245.8 MiB watermark against
+		// an idle footprint of 236 MiB (lab, 2026-10-07, 32 empty queues) and
+		// blocked every publisher without a backlog (#1298). 1Gi gives
+		// 491.5 MiB, twice the idle footprint. The figure must keep the
+		// watermark above twice the idle footprint
+		// (TestBuiltinSizing_MinimalBrokerHeadroom).
 		Messaging: &ScaledSizingSpec{
 			Replicas:         ptr.To[int32](1),
-			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("815m", "512Mi")},
+			PinnedSizingSpec: PinnedSizingSpec{ContainerSizingSpec: memoryBound("815m", "1Gi")},
 		},
 		SecretStore: ptr.To(memoryBound("35m", "64Mi")),
 		Keystone:    &KeystoneSizingSpec{API: api(), Jobs: jobs()},

@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Glance the Cinder Tempest leg (2026.2 release) creates volumes from and
+# uploads volumes back to. tempest.api.volume boots its volumes from an image
+# (CONF.compute.image_ref, seeded by 07-image-seed-job.yaml), so the leg carries
+# an image service of its own next to the Cinder.
+#
+# Uses a separate database (glance_cinder_tempest_2026_2) to avoid stale state
+# from prior Chainsaw E2E tests that reuse the same kind cluster, and
+# authenticates against the leg's own keystone-cinder-tempest-2026-2 identity
+# service with the real admin credentials. The database credentials come from
+# the ESO-synced glance-db Secret and the service-user password from the
+# pre-seeded keystone-admin Secret. glance-api cannot start without a default
+# image store, so 03-glancebackend-cr.yaml attaches one before Ready can settle.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-cinder-tempest-2026-2
+  namespace: openstack
+spec:
+  openStackRelease: "2026.2"
+  deployment:
+    replicas: 1
+    # The operator sets no CPU limit, so this block exists for its memory.
+    #
+    # The memory limit is sized for test_volume_upload, which runs since the leg
+    # has a Neutron (VolumesActionsTest skips without one). Cinder uploads the
+    # 1 GiB volume with no size, and the S3 store sends an upload smaller than
+    # s3_store_large_object_size (unknown counts as 0) as one part, holding the
+    # whole body in memory (glance_store/_drivers/s3.py, _add_singlepart). At
+    # 1Gi the kernel killed glance-api at 945 MB RSS, and the restart took the
+    # runner's port-forward down with it.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 3Gi
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_cinder_tempest_2026_2
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-cinder-tempest-2026-2.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

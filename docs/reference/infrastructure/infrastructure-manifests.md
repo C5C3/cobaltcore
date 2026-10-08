@@ -19,18 +19,18 @@ deploy/
     ├── kustomization.yaml                Base kustomize overlay (namespaces, FluxInstance, sources, releases)
     ├── namespaces.yaml                   Namespace resources for all components
     ├── fluxinstance.yaml                 FluxInstance CR driving the flux-operator
-    ├── sources/                          FluxCD HelmRepository CRs
+    ├── sources/                          Flux sources (HelmRepository, OCIRepository, GitRepository)
     │   ├── cert-manager.yaml             Jetstack Helm chart registry
     │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
     │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
     │   ├── openbao.yaml                  OpenBao Helm chart registry
     │   ├── openbao-operator.yaml         OpenBao Operator OCI chart artifact (digest-pinned OCIRepository)
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
-    │   ├── k-orc.yaml                    K-ORC (OpenStack Resource Controller) Helm chart registry
+    │   ├── k-orc.yaml                    K-ORC GitRepository (commit pinned)
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator GitRepository (tag + commit pinned)
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
-    │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry (kind-only addon — see "Kind Overlay Demo Addons")
-    ├── releases/                         FluxCD HelmRelease CRs
+    │   └── garage-operator.yaml          Garage Operator OCI chart registry
+    ├── releases/                         HelmRelease CRs and two Flux Kustomizations
     │   ├── cert-manager.yaml             cert-manager
     │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
     │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
@@ -39,24 +39,30 @@ deploy/
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
     │   ├── openbao-operator.yaml         OpenBao Operator (per-service OpenBao instances)
+    │   ├── garage-operator.yaml          Garage Operator
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
+    │   ├── horizon-operator.yaml         Horizon Operator (from c5c3-charts)
     │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
     │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
+    │   ├── barbican-operator.yaml        Barbican Operator (from c5c3-charts)
     │   ├── ovn-operator.yaml             OVN Operator (from c5c3-charts)
     │   ├── neutron-operator.yaml         Neutron Operator (from c5c3-charts)
     │   ├── cinder-operator.yaml          Cinder Operator (from c5c3-charts)
     │   ├── nova-operator.yaml            Nova Operator (from c5c3-charts)
-    │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
+    │   ├── k-orc.yaml                    K-ORC (Flux Kustomization over config/default)
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
-    │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
-    │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
+    │   └── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
     └── infrastructure/                   CRD-dependent infrastructure resources
-        ├── kustomization.yaml            Infrastructure kustomize overlay
+        ├── kustomization.yaml            Infrastructure kustomization, also lists ../../eso
         ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
         ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer
         ├── ovn-ca-issuer.yaml            OVN CA Certificate + ClusterIssuer
         ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
-        └── memcached.yaml                Memcached cluster for OpenStack
+        ├── memcached.yaml                Memcached cluster for OpenStack
+        ├── garage.yaml                   Garage object store (GarageCluster, GarageBuckets, GarageKey)
+        ├── openbao-ca-issuer.yaml        OpenBao CA Certificate + ClusterIssuer
+        ├── openbao-tls-cert.yaml         OpenBao server Certificate
+        └── openbao-client-tls-cert.yaml  OpenBao client Certificates
 ```
 
 The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
@@ -197,10 +203,10 @@ carry a `GitRepository` sync. Production overlays that want continuous reconcili
 from Git add a `spec.sync` block on top of this base, with the overlay technique
 that [Sizing and placement overrides](#sizing-and-placement-overrides) uses.
 
-**Kustomize ordering.** Kustomize applies `Namespace` resources first by default, so
-`flux-system` exists before the `FluxInstance` is created. The flux-operator itself is
-installed out-of-band by `hack/deploy-infra.sh` (pinned `FLUX_OPERATOR_VERSION`,
-applied via `kubectl apply -f install.yaml`) before this kustomization is applied.
+**Namespace.** `namespaces.yaml` does not declare `flux-system`: the `install.yaml` of
+the flux-operator creates it. `hack/deploy-infra.sh` applies that file (pinned
+`FLUX_OPERATOR_VERSION`, `kubectl apply -f install.yaml`) before this kustomization, so
+the namespace exists when the `FluxInstance` is created.
 
 ## HelmRepository Sources
 
@@ -246,7 +252,7 @@ It is applied by a Flux `Kustomization`, not a HelmRelease; see
 **The RabbitMQ Cluster Operator is sourced from Git too.** Upstream publishes no
 chart, so `sources/rabbitmq-cluster-operator.yaml` is a second `GitRepository` in
 `flux-system` at `interval: 1h`, scoped to `/config` via `spec.ignore`. It pins
-both halves of the ref: `ref.tag: "v2.22.5"` as the readable version and as
+both halves of the ref: `ref.tag: "v2.23.0"` as the readable version and as
 Renovate's lookup handle, and `ref.commit` as the content pin. Flux's gogit
 client evaluates `commit` ahead of every other ref field, so a re-pushed tag
 cannot hand different bytes to a controller that runs with cluster-wide RBAC.
@@ -270,8 +276,8 @@ artifact. All other repositories use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Fifteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC and the
-RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization` — see
+Nineteen HelmRelease CRs deploy the CRD charts, the infrastructure operators and the
+CobaltCore operators (K-ORC and the RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization` — see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller) and
 [RabbitMQ Cluster Operator](#rabbitmq-cluster-operator)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
@@ -286,35 +292,45 @@ RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization
 
 ### Dependency Order
 
-cert-manager is the base layer (no `dependsOn`). The CRD-only charts
-(prometheus-operator-crds, mariadb-operator-crds) also have no dependencies. All other
-operators depend on cert-manager because they require TLS certificates for webhook
-servers. Some operators have additional dependencies on CRD charts or other operators:
+cert-manager, prometheus-operator-crds and mariadb-operator-crds declare no
+`dependsOn`. Every other release waits for cert-manager: `c5c3-operator`
+through `keystone-operator`, every other one by naming it. Most of them need a
+certificate for a webhook server, `ovn-operator` needs the certificates of the
+OVN databases, and `openbao` mounts Secrets that cert-manager issues. Some
+releases also wait for a CRD chart or for another operator.
 
-```text
-cert-manager              (base — no dependencies)
-prometheus-operator-crds  (no dependencies)
-mariadb-operator-crds     (no dependencies)
-├── mariadb-operator      dependsOn: cert-manager, mariadb-operator-crds
-├── external-secrets      dependsOn: cert-manager
-├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
-├── garage-operator       dependsOn: cert-manager
-├── openbao-operator      dependsOn: cert-manager
-├── openbao               dependsOn: cert-manager
-├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
-├── horizon-operator      dependsOn: cert-manager, memcached-operator, external-secrets, keystone-operator
-├── glance-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
-├── placement-operator    dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
-├── barbican-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, openbao-operator
-├── ovn-operator          dependsOn: cert-manager
-├── neutron-operator      dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, ovn-operator
-├── cinder-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
-├── nova-operator         dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
-└── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
-```
+The figure draws the releases in four layers. A solid arrow is a `dependsOn`
+entry, and the two dotted arrows are dependencies that no manifest can
+declare. The table lists every entry of every release, in the order of the
+layers.
 
-K-ORC is **not** in this graph: it is applied by a Flux `Kustomization`, not a
-HelmRelease, and a HelmRelease `dependsOn` can only reference other HelmReleases. The
+![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+
+| Release | `dependsOn` |
+| --- | --- |
+| `cert-manager` | none |
+| `mariadb-operator-crds` | none |
+| `prometheus-operator-crds` | none |
+| `mariadb-operator` | `cert-manager`, `mariadb-operator-crds` |
+| `memcached-operator` | `cert-manager`, `prometheus-operator-crds` |
+| `external-secrets` | `cert-manager` |
+| `garage-operator` | `cert-manager` |
+| `openbao` | `cert-manager` |
+| `openbao-operator` | `cert-manager` |
+| `ovn-operator` | `cert-manager` |
+| `keystone-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets` |
+| `horizon-operator` | `cert-manager`, `memcached-operator`, `external-secrets`, `keystone-operator` |
+| `glance-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
+| `placement-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
+| `cinder-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
+| `nova-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator` |
+| `barbican-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator`, `openbao-operator` |
+| `neutron-operator` | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets`, `keystone-operator`, `ovn-operator` |
+| `c5c3-operator` | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
+
+K-ORC is **not** in the table and has no solid arrow: it is applied by a Flux
+`Kustomization`, not a HelmRelease, and a HelmRelease `dependsOn` can only
+reference other HelmReleases. The
 c5c3-operator therefore does **not** `dependsOn` K-ORC even though K-ORC is a **hard
 dependency**: `SetupWithManager` `Owns` the K-ORC kinds, so the manager only starts
 once those CRDs are installed (until then the pod restarts), and converges once they
@@ -342,8 +358,8 @@ no edge to it: the Neutron agents, the Cinder services and every Nova process
 talk over the shared message bus, but a HelmRelease cannot depend on a
 Kustomization.
 
-The `c5c3-operator` HelmRelease sits at the top of this graph: it
-`dependsOn` the four operators whose CRs it projects (keystone-operator,
+The `c5c3-operator` HelmRelease is in the last layer: it `dependsOn`
+four of the operators whose CRs it projects (keystone-operator,
 external-secrets, mariadb-operator, memcached-operator). It also drives K-ORC's
 ApplicationCredential / Service / Endpoint CRDs, but K-ORC is applied by the separate
 Flux `Kustomization` above, so it cannot be a `dependsOn` edge — the c5c3-operator's
@@ -378,8 +394,8 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 | `startupapicheck.enabled` | `true` | Run the startup API check Job, so the release is Ready only once the webhook admits a request |
 
 The production release sets `startupapicheck.enabled`, and the kind and the
-metal-stack lab base renders inherit it. Every release that depends on
-cert-manager creates an `Issuer` or a `Certificate`. Without the check the
+metal-stack lab base renders inherit it. A dependent release can create an
+`Issuer` or a `Certificate` as soon as cert-manager reports Ready. Without the check the
 release turns `Ready` before the webhook admits, and a dependent release can
 use up its install retries and stay `Stalled`.
 
@@ -462,7 +478,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | --- | --- |
 | Target namespace | `external-secrets` |
 | Chart | `external-secrets` |
-| Version constraint | `>=0.10.0 <1.0.0` |
+| Version constraint | `>=0.10.0 <3.0.0` |
 | Source | `external-secrets` HelmRepository |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
@@ -539,7 +555,7 @@ are on by default — hence the `dependsOn: cert-manager` edge.
 **Accepted risk (decided 2026-07-15):** garage-operator is a young, single-maintainer,
 pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** — never a
 production dependency of the operators — and the consuming surface is deliberately thin
-(three instance CRs plus three ExternalSecrets), so a later provider swap stays local to
+(four instance CRs plus three ExternalSecrets), so a later provider swap stays local to
 this layer.
 
 ### OpenBao Operator
@@ -795,7 +811,7 @@ itself remains because the K-ORC installer's own resources land there. See
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `rabbitmq-system` (the upstream base self-namespaces) |
-| Source | `rabbitmq-cluster-operator` `GitRepository` (tag `v2.22.5`, commit `17dd297f71de40a722baf69167b8af511072175e`) |
+| Source | `rabbitmq-cluster-operator` `GitRepository` (tag `v2.23.0`, commit `3ad2b0ec0b43dbeb4b57c1142fc5c813a5716033`) |
 | Path | `./config/installation` |
 | Image | `ghcr.io/rabbitmq/cluster-operator`, `newTag: "2.22.5"`, `digest: "sha256:2727b84b835ada97247bbb65ebfa6998168b4e8ee11b0e6cece56ac2c9c4f0fb"` |
 | Dependencies | None declared; cert-manager is an implicit one |
@@ -867,13 +883,15 @@ double-quoted), which
 | Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
 
 The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
-control plane end-to-end. It depends on the four operators whose CRs
+control plane end-to-end. It depends on four of the operators whose CRs
 it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
 `mariadb-operator` and `memcached-operator` for the supporting platform services. It
 also drives K-ORC's `ApplicationCredential` / `Service` / `Endpoint` CRDs to register
 the catalog and rotate the admin credential, but K-ORC is the separate Flux
-`Kustomization` above, not a `dependsOn` edge (so K-ORC, like the other CRD providers,
-is a hard dependency the manager requires at startup rather than tolerating). The
+`Kustomization` above, not a `dependsOn` edge (so K-ORC is a hard dependency: the
+manager does not start without its CRDs, as without those of MariaDB, Memcached,
+cert-manager and ESO, while the kinds of the service operators and `RabbitmqCluster`
+are optional watches). The
 operator child CRs are created
 in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
 contract see the [`ControlPlane` reconciler reference](../c5c3/controlplane-reconciler.md).
@@ -913,6 +931,11 @@ OCIRepository.
 | `horizon-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `glance-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `placement-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `barbican-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `ovn-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `neutron-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `cinder-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `nova-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 
 `k-orc` and `rabbitmq-cluster-operator` are not in this table: each is a Flux
@@ -984,8 +1007,8 @@ the OpenStack DB trust domain:
   matched in the operator.
 
 **Apply ordering.** This manifest is also applied out-of-band from the infrastructure
-kustomization by `hack/deploy-infra.sh` (Phase 2, alongside `cluster-issuer.yaml` and
-`openbao-tls-cert.yaml`) so that MariaDB has the issuer available the moment it tries
+kustomization by `hack/deploy-infra.sh` (Phase 2 of its Step 4, alongside
+`cluster-issuer.yaml`, `openbao-ca-issuer.yaml` and `openbao-tls-cert.yaml`) so that MariaDB has the issuer available the moment it tries
 to render its server certificate. The infrastructure kustomization still references
 `db-ca-issuer.yaml` so subsequent `kubectl apply -k` runs are idempotent.
 
@@ -1493,20 +1516,22 @@ CRD-dependent infrastructure resources:
 
 The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and includes
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
-These resources do not depend on any custom CRDs.
+These resources depend on no CRD that an operator of this stack installs. The Flux
+kinds among them need the flux-operator, which registers the `FluxInstance` kind and,
+once it has reconciled the instance, the Flux toolkit kinds.
 
-**Resource count:** 26 files producing 40 Kubernetes resources.
+**Resource count:** 33 files producing 53 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 15 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, shared-services, openbao-operator-system, c5c3-system, orc-system |
+| Namespace | 21 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, openstack, shared-services, keystone-system, horizon-system, glance-system, placement-system, barbican-system, ovn-system, neutron-system, cinder-system, nova-system, c5c3-system, garage-system, orc-system, openbao-operator-system, rabbitmq-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | OCIRepository | 1 | openbao-operator |
-| GitRepository | 1 | k-orc |
-| HelmRelease | 14 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, openbao-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, c5c3-operator |
-| Kustomization | 1 | k-orc |
-| **Total** | **40** | |
+| GitRepository | 2 | k-orc, rabbitmq-cluster-operator |
+| HelmRelease | 19 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator, c5c3-operator |
+| Kustomization | 2 | k-orc, rabbitmq-cluster-operator |
+| **Total** | **53** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -1520,33 +1545,39 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 7 manifests producing 13 Kubernetes resources (the
-`db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and `openbao-ca-issuer.yaml` manifests declare
-two resources each: a CA Certificate and the CA-type ClusterIssuer that signs from it;
-`garage.yaml` declares four).
+**Resource count:** 9 manifests and the `../../eso` kustomization, producing 17
+Kubernetes resources (the `db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and
+`openbao-ca-issuer.yaml` manifests declare two resources each: a CA Certificate and the
+CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
+`openbao-client-tls-cert.yaml` declares two).
 
 | Category | Count | Resources |
 | --- | --- | --- |
 | ClusterIssuer | 4 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openstack-ovn-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
 | Certificate (CA keypairs) | 3 | `openstack-db-ca`, `openstack-ovn-ca`, `openbao-ca` — all three CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
+| Certificate (OpenBao TLS) | 3 | `openbao-tls`, `openbao-client-tls`, `eso-openbao-client-tls` in `shared-services` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | GarageCluster / GarageBucket / GarageKey | 4 | `garage`, `glance-images`, `glance-images-2`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
-| **Total** | **13** | |
+| ClusterSecretStore | 1 | `openbao-cluster-store`, from `deploy/eso/` |
+| **Total** | **17** | |
 
 The proving instance's own five resources (two Certificates, a ServiceAccount, a
 ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the kind
 overlay — see [OpenBao Proving Instance](#openbao-proving-instance).
 
-<!-- NOTE: count excludes openbao-tls-cert.yaml, openbao-client-tls-cert.yaml,
-and the ../../eso overlay that
-the infrastructure kustomization also references. Those resources are documented
-in their own reference pages (reference/infrastructure/openbao-bootstrap.md and
-the ESO reference docs); a full audit of the kustomization resource list is out
-of scope here. -->
-
 
 ## Deployment
+
+The two steps below apply the two kustomizations by hand. `make deploy-infra`
+applies the same two phases, on the kind or the lab overlay, as its Step 3 and
+Step 5, and runs the waits and the OpenBao bootstrap around them. The figure
+shows that run. [Deployment Sequence](e2e-deployment.md#deployment-sequence)
+describes each numbered step, and
+[Steps and phases](e2e-deployment.md#steps-and-phases) maps the step and phase
+numbers of the two pages.
+
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
 ### Step 1: Apply base resources
 
@@ -1554,9 +1585,15 @@ of scope here. -->
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 40 resources: 15 namespaces, 1 FluxInstance, 9 sources
-(8 HelmRepository + 1 GitRepository for K-ORC), 14 HelmRelease operators, and
-1 Kustomization (K-ORC). FluxCD resolves the dependency graph between
+On a cluster where `FluxInstance/flux` is not Ready yet, the sources and releases
+fail with `no matches for kind "HelmRepository"`: the flux-operator registers the
+Flux toolkit CRDs only when it reconciles the instance. Apply `namespaces.yaml` and
+`fluxinstance.yaml` first and wait for the instance, as Step 2 of
+`hack/deploy-infra.sh` does.
+
+This applies 53 resources: 21 namespaces, 1 FluxInstance, 10 sources
+(7 HelmRepository, 1 OCIRepository, 2 GitRepository), 19 HelmReleases and
+2 Flux Kustomizations (K-ORC and the RabbitMQ Cluster Operator). FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
 
@@ -1577,8 +1614,9 @@ by the operator HelmReleases in step 1. If CRDs are not yet available, the apply
 fail — wait for the operators to finish installing and retry.
 
 > **`hack/deploy-infra.sh` ordering.** The end-to-end deploy script applies the
-> three TLS-prerequisite manifests (`cluster-issuer.yaml`, `openbao-tls-cert.yaml`,
-> `db-ca-issuer.yaml`) directly in its **Phase 2**, before the main infrastructure
+> four TLS-prerequisite manifests (`cluster-issuer.yaml`, `openbao-ca-issuer.yaml`,
+> `openbao-tls-cert.yaml`, `db-ca-issuer.yaml`) directly in **Phase 2** of its
+> Step 4, before the main infrastructure
 > kustomization, so that MariaDB has `openstack-db-ca-issuer` available the moment
 > it tries to render its server certificate. The kustomization apply that follows
 > is idempotent — the same manifests are listed in
@@ -1605,7 +1643,9 @@ syntax and resource inclusion before deployment.
 
 ### Prerequisites
 
-- A Kubernetes cluster with FluxCD installed (source-controller and helm-controller)
+- A Kubernetes cluster with the flux-operator installed. The `FluxInstance` of the base
+  installs the Flux controllers, among them the kustomize-controller that the two Flux
+  Kustomizations need
 - `kubectl` configured with cluster access
 - For local validation only: `kustomize` CLI
 
@@ -2540,8 +2580,8 @@ Production ships no equivalent object. A production `ControlPlane` declares
 | Target namespace | `openstack` (pre-existing; the overlay ships no inline `Namespace`) |
 | API version | `rabbitmq.com/v1beta1` |
 | Replicas | `1` |
-| Requests | `100m` CPU, `512Mi` memory |
-| Limits | `512Mi` memory, no CPU limit |
+| Requests | `100m` CPU, `1Gi` memory |
+| Limits | `1Gi` memory, no CPU limit |
 | Dependencies | the RabbitMQ Cluster Operator (Phase 3b) and the `rabbitmqclusters.rabbitmq.com` CRD (the Step 5 `wait_for_crds` list) |
 
 **Sizing.** The cluster operator requests 1 CPU and 2Gi per pod by default.
@@ -2549,7 +2589,11 @@ That request does not fit beside the rest of the stack on the self-hosted
 runner's kind node: it takes the last schedulable CPU and the next pod stays `Pending` on
 `Insufficient cpu`. `tests/e2e-chaos/neutron-broker-outage` records the same
 finding for its own broker. The e2e suites push little traffic through the
-bus, so `100m` and `512Mi` carry them. Memory is limited at the request.
+bus, so `100m` CPU carries them. The memory figure follows from the broker's
+alarm: the cluster operator alarms the broker at 0.6 of the limit minus a
+fifth, so `512Mi` alarmed at 245.8 MiB against an idle footprint of about
+236 MiB ([#1298](https://github.com/c5c3/cobaltcore/issues/1298)) and `1Gi`
+alarms at 491.5 MiB. Memory is limited at the request.
 There is no CPU limit, so a busy moment goes unthrottled.
 
 **One vhost per suite.** Every standalone Cinder e2e suite creates its own
@@ -2622,7 +2666,8 @@ well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
 [Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
 is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 `WITH_PROMETHEUS=true` is set (see
-[Lab Prometheus stack](#lab-prometheus-stack)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
+[Lab Prometheus stack](#lab-prometheus-stack)); `make dizzy-soak-start` applies
+its `dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
 [Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
@@ -2631,6 +2676,12 @@ autoscaling blocks use the VPA and the metrics-server of the platform (see
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
 walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
+
+The figure shows what those manifests add up to: the cluster-wide parts of
+`base/`, `infrastructure/`, `nfs/` and `controlplane/`, and the parts
+`hypervisor/` and `migration-ports/` put on every worker.
+
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, an NFS server for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the NFS server inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../../diagrams/compute-metal-stack-lab.svg)
 
 ### Node probe
 
@@ -2791,6 +2842,13 @@ overlay patches:
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
 
+The figure shows that chain from the production manifests over the kind
+overlay to the lab, and who applies each directory.
+[Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
+lists every directory with its base.
+
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+
 The patches remove the kind pin `standard` from the OpenBao, MariaDB and
 Garage volumes. The lab has a `standard` class too, so the pin would bind to it
 by coincidence. These volumes and the proving `OpenBaoCluster` name no class
@@ -2831,8 +2889,11 @@ EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
 The deploy runs against the current kubeconfig context and never switches it.
-It refuses the kind-only opt-ins (`WITH_NFS`, `WITH_CHAOS_MESH` and
-`WITH_DIZZY` aside, which apply `nfs/`, `chaos-mesh/` and `dizzy/`),
+It refuses four opt-ins that are bound to kind, `WITH_VPA`,
+`WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`
+(`WITH_MESSAGING`, which applies `deploy/kind/messaging` unchanged, and
+`WITH_NFS`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply `nfs/`,
+`chaos-mesh/` and `dizzy/`),
 checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
@@ -3894,6 +3955,72 @@ HTTPRoute and the ConfigMap. A HelmRelease delete that outlives
 `TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any claim is
 deleted.
 
+#### Lab dizzy soak
+
+**Files:** `deploy/lab/metal-stack/dizzy-soak/kustomization.yaml`,
+`identity.yaml`, `rbac.yaml`, `reports-pvc.yaml`, `job.yaml`, `scenario.yaml`
+
+The long-running dizzy soak of the lab
+([#1274](https://github.com/c5c3/cobaltcore/issues/1274)): a Job in `dizzy`
+that runs `dizzy mix chaos` in the OpenStack project `dizzy-soak` and samples
+the platform beside it. `make dizzy-soak-start` applies the directory;
+`hack/deploy-infra.sh` never does. The soak needs the dizzy stack above, which
+declares the namespace `dizzy`, a Ready ControlPlane and the fixtures of
+[Lab hypervisors](#lab-hypervisors).
+[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md#in-cluster-soak)
+describes the commands, the settings, the report and the verdict.
+
+The kustomization renders the first nine objects below. `start` writes the
+Secrets and ConfigMaps and creates the Job from `job.yaml`, which the
+kustomization does not list; `scenario.yaml` is the default scenario, which
+`start` ships as a ConfigMap.
+
+| Object | Namespace | From | Purpose |
+| --- | --- | --- | --- |
+| K-ORC Domain `dizzy-soak-domain` | `openstack` | `identity.yaml` | Imports the domain `Default`, which stays on deletion |
+| K-ORC Project `dizzy-soak` | `openstack` | `identity.yaml` | The project of the run, with the services' default quotas |
+| K-ORC User `dizzy-soak` | `openstack` | `identity.yaml` | The run's Keystone user, its password from the Secret `dizzy-soak-user-password` |
+| K-ORC Role `dizzy-soak-admin-role` | `openstack` | `identity.yaml` | Imports the role `admin` |
+| K-ORC RoleAssignment `dizzy-soak-admin` | `openstack` | `identity.yaml` | `admin` for the user on the project, which the migration pre-check of dizzy's Legacy persona needs |
+| ServiceAccount `dizzy-soak` | `dizzy` | `rbac.yaml` | The runner's identity in the cluster |
+| ClusterRole and ClusterRoleBinding `dizzy-soak-platform-reader` | cluster | `rbac.yaml` | `get` and `list` on pods, namespaces, the pods of `metrics.k8s.io`, the ControlPlanes and the twelve service kinds |
+| PersistentVolumeClaim `dizzy-soak-reports` | `dizzy` | `reports-pvc.yaml` | 5Gi, `ReadWriteOnce`, on the default class; one report directory per run |
+| Secret `dizzy-soak-user-password` | `openstack` | `start`, once | The key `password`, 32 characters |
+| Secret `dizzy-soak-clouds` | `dizzy` | `start` | The `clouds.yaml` of the user, with `interface: internal` |
+| ConfigMaps `dizzy-soak-runner`, `dizzy-soak-scenario`, `dizzy-soak-config` | `dizzy` | `start` | `hack/dizzy-soak-runner.sh`, the scenario and the settings |
+| Job `dizzy-soak` | `dizzy` | `job.yaml`, by `start` | Its init container copies dizzy out of `ghcr.io/b42labs/dizzy` at the pin of `hack/dizzy.sh`; its container `runner` runs the runner on the digest-pinned `docker.io/alpine/k8s` |
+| Pod `dizzy-soak-reader` | `dizzy` | `report`, for one copy | Mounts the claim read-only to copy a finished run |
+
+**Reaching the APIs.** The public endpoints of the lab's catalog resolve to
+`127.0.0.1`, which leads nowhere from a pod. The co-located services also
+register an `internal` endpoint on their Service name, and Keystone answers in
+the cluster at `http://controlplane-keystone.openstack.svc:5000/v3`. The
+soak's `clouds.yaml` names that URL and `interface: internal`, so the run
+needs no CA file and no Gateway. The personas of `dizzy mix` build compute,
+network, block-storage and image clients, and each of the four services has an
+internal endpoint. dizzy exports its metrics to
+`http://dizzy-victoria-metrics-server.dizzy.svc:8428/opentelemetry/v1/metrics`.
+
+**Posture.** The ClusterRole reads across the cluster with `get` and `list`
+alone and reads no Secret. The Keystone user holds `admin` on its own project,
+because dizzy's Legacy persona skips live migration without it. Its password
+lives in the Secret `dizzy-soak-user-password`, never in Git, an argument or a
+ConfigMap, and reaches Keystone over plain HTTP inside the cluster. The pods
+run as 65534 without privilege escalation or capabilities, and the reader pod
+mounts no ServiceAccount token.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the soak
+after the Chaos Mesh step and before the hypervisors (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)). It first deletes the
+Job and the reader pod in the foreground, which ends a running soak with its
+report, then the render of the directory, while K-ORC still deletes the
+project and the user in Keystone. Its step 7 deletes the Secrets and
+ConfigMaps with their namespaces. A Job delete that outlives
+`TEARDOWN_TIMEOUT` stops the teardown with exit 1 before any hypervisor is
+touched.
+
+**Pinned by:** `tests/unit/deploy/metal_stack_dizzy_soak_test.sh`.
+
 #### Lab dizzy run
 
 The run starts from a bare lab, where
@@ -4042,7 +4169,11 @@ exports. The file
 sits in the overlay directory, so the generator reads it without a staging
 step. The panels stay empty until [Lab hypervisors](#lab-hypervisors) are
 applied; hvo's release turns on its ServiceMonitor and its PrometheusRules on
-every lab.
+every lab. The pinned chart writes its version, which carries a `+`, into the
+label `app.kubernetes.io/version` of both rules, and the API server rejects
+that value. The release's post-renderer replaces the label (see the hvo rows
+of [Lab hypervisors](#lab-hypervisors)), so the rules exist and Prometheus
+loads the 10 alerts that step 4 of the run lists.
 
 In this mode the deploy script's preflight accepts `WITH_PROMETHEUS=true` only
 for an overlay with `prometheus/kustomization.yaml` and refuses any other
@@ -4678,8 +4809,8 @@ exited 0 and left the platform's namespaces alone and no VPA outside
 it lists, `deploy/lab/metal-stack/migration-ports/kustomization.yaml` and the
 two manifests it lists
 
-`hypervisor-fixtures/` and `hypervisor/` turn the lab's two workers into KVM
-hypervisors of the [Lab ControlPlane](#lab-controlplane), planned in
+`hypervisor-fixtures/` and `hypervisor/` turn every labelled worker of the lab
+into a KVM hypervisor of the [Lab ControlPlane](#lab-controlplane), planned in
 [#1142](https://github.com/c5c3/cobaltcore/issues/1142). They add libvirt in a
 DaemonSet, the OVN chassis, the metadata agent and a `NovaCompute` pool, and
 run openstack-hypervisor-operator (hvo) and kvm-node-agent (kna) from upstream
@@ -4858,13 +4989,14 @@ root on its node's libvirtd (see
 | hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
 | hvo | `env.certificateNamespace` | `hypervisor-system` | The Issuer's namespace |
 | hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
-| hvo | `serviceMonitor.enabled`, `prometheusRules.create` | `true` | On every lab, with or without Prometheus: chart `1.2.3_sha-a2baf3f` renders the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` (7 alerts) and `openstack-hypervisor-operator-eviction-alerts` (3 alerts) in `openstack`. Without a Prometheus Operator they are inert objects, and the [Lab Prometheus stack](#lab-prometheus-stack) picks them up without a second apply. Two alerts have data, `HypervisorOperatorReconcileErrors` and `HypervisorOperatorDown`. The other 8 read `kube_customresource_*` series, which the lab never has: `HypervisorOnboardingStuck`, `HypervisorEvictionStuck`, `HypervisorEvictedTooLong`, `HypervisorTraitSyncFailed`, `HypervisorAggregateSyncFailed`, `EvictionFailed`, `EvictionMigrationFailing` and `EvictionOutstandingRamHigh` |
+| hvo | `serviceMonitor.enabled`, `prometheusRules.create` | `true` | On every lab, with or without Prometheus: chart `1.2.3_sha-a2baf3f` renders the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` (7 alerts) and `openstack-hypervisor-operator-eviction-alerts` (3 alerts) in `openstack`. Without a Prometheus Operator they are inert objects, and the [Lab Prometheus stack](#lab-prometheus-stack) picks them up without a second apply. The API server accepts the two rules only with the version-label patch below. Two alerts have data, `HypervisorOperatorReconcileErrors` and `HypervisorOperatorDown`. The other 8 read `kube_customresource_*` series, which the lab never has: `HypervisorOnboardingStuck`, `HypervisorEvictionStuck`, `HypervisorEvictedTooLong`, `HypervisorTraitSyncFailed`, `HypervisorAggregateSyncFailed`, `EvictionFailed`, `EvictionMigrationFailing` and `EvictionOutstandingRamHigh` |
 | hvo | `customResourceMetrics.create` | `false` | Its ConfigMaps configure a kube-state-metrics to export the `kube_customresource_*` series of the `Hypervisor` and `Eviction` CRs, and the lab runs no kube-state-metrics |
 | hvo | `dashboards.create` | `false` | The chart's dashboard is a Perses dashboard, which Grafana cannot load. The Lab Prometheus stack loads a Grafana dashboard with its four controller-runtime panels instead |
 | hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the gateway certificates. Without the variable hvo reads the `public` endpoints, the `*.127-0-0-1.nip.io:8443` URLs, which resolve to the pod itself |
 | hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does. An image built before patch 0002 refuses the flag below, and one built before patch 0004 ignores `OS_INTERFACE` |
 | hvo | post-renderer | `--default-high-availability=false` appended to the manager's `args` | The flag of the image's patch 0002: hvo creates each `Hypervisor` with `spec.highAvailability: false`. While the field is `true`, onboarding waits for `HaEnabled=True`, which only SAP's kvm-ha-service sets. The chart has no value for the flag, so a JSON patch appends it to the argument list the chart renders, and `controllerManager.manager.args` stays unset |
 | hvo | post-renderer | `bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token` on the ServiceMonitor's one endpoint | hvo defaults `--metrics-secure` to `true` and serves its metrics behind controller-runtime's authentication and authorization filter, and the chart's ServiceMonitor sends no token, so every scrape would answer 401. With the JSON patch Prometheus presents its own ServiceAccount token, and the chart's ClusterRole `kube-prometheus-stack-prometheus` grants `get` on `/metrics`, which the filter asks the API server about. The ServiceMonitor CRD marks the field deprecated in favour of `authorization`, which would need a token Secret in `openstack`. The endpoint keeps the chart's `insecureSkipVerify` |
+| hvo | post-renderer | `app.kubernetes.io/version: 1.2.3_sha-a2baf3f` on both PrometheusRules | The chart's `monitoringLabels` helper writes `.Chart.Version` into this label unsanitized, where its `labels` helper writes `.Chart.AppVersion`. Upstream publishes the chart of every `main` commit as `<last tag>+sha-<commit>`, and helm-controller sets the build metadata of a chart pinned by digest to the digest's first 12 characters, so the label reads `1.2.3+a2442e53f92d`. A label value may not contain `+`. The API server rejects both rules, and the install ends `Stalled=True` with `RetriesExceeded` after the Deployment and the RBAC exist. The hypervisors onboard, and the release wait of [Part 2, Step 3](../../quick-start-metal-stack.md#hv-apply) runs out ([#1302](https://github.com/c5c3/cobaltcore/issues/1302)). The base stack installs the PrometheusRule CRD, so this happens with or without the Lab Prometheus stack. The JSON patch writes the chart's `ref.tag`, the version with its `+` replaced by `_` as the chart's own `chart` helper does, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the two differ. The patch goes once the pinned chart carries the fix of [cobaltcore-dev/openstack-hypervisor-operator#361](https://github.com/cobaltcore-dev/openstack-hypervisor-operator/issues/361) |
 | kna | chart | `0.2.0_sha-1e4e4b8` | The upstream chart of the pinned kna commit, the `ARG KNA_COMMIT` line of `images/kvm-node-agent/Dockerfile`. Its `appVersion`, `sha-<commit>`, is the image tag. Upstream publishes no image under that tag, and the tag `0.2.0` would leave the private keys at 0644 |
 | kna | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/kvm-node-agent` | The image built from that commit with the key mode patch, which writes the private keys with mode 0600 (see [kvm-node-agent](../ci-cd/container-images.md#kvm-node-agent)) |
 | kna | `controllerManager.manager.env.libvirtDefaultUri` | `qemu:///system` | The chart's default `ch:///system` is Cloud Hypervisor |
@@ -4872,6 +5004,13 @@ root on its node's libvirtd (see
 | kna | `controllerManager.manager.containerSecurityContext` | every capability dropped but `DAC_OVERRIDE`, no `runAsUser` or `runAsGroup` | The image runs as `0:0`: upstream's uid 42438 has no passwd entry on the host, and the host's dbus-daemon closes the connection of a uid it cannot resolve. Starting a unit over the system bus needs root too. The chart's init container hands the PKI directories to 42438, and root needs `DAC_OVERRIDE` to write there |
 | kna | post-renderer | `NAMESPACE=hypervisor-system` | kna falls back to `monsoon3` without it, and the chart sets none |
 | kna | post-renderer | `imagePullPolicy: Always` on the manager | The chart has no value for the pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build |
+
+A lab whose hypervisors were applied with the PrometheusRules on but without
+the version-label patch carries the release `Stalled=True` with
+`RetriesExceeded` and no PrometheusRule in `openstack`. Applying
+`deploy/lab/metal-stack/hypervisor` again is enough: the release's new
+generation clears helm-controller's failure count, and helm-controller
+upgrades the failed release, which creates both rules.
 
 `Hypervisor.spec.createCertManagerCertificate` stays at its default `false`, so
 each node's certificate is hvo's alone.

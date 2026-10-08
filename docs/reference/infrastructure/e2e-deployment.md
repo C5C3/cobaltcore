@@ -16,7 +16,7 @@ Four make targets drive the deployment:
 
 | Target | What it does |
 | --- | --- |
-| `make install-test-deps` | Installs chainsaw, flux, kind and kubectl |
+| `make install-test-deps` | Installs chainsaw, kind and kubectl, and flux under `WITH_FLUX_CLI=true` |
 | `make deploy-infra` | Runs the 8-step deployment into the kind cluster |
 | `make e2e` | Runs the Chainsaw E2E tests against the cluster |
 | `make teardown-infra` | Deletes the kind cluster |
@@ -41,7 +41,8 @@ is applied.
 | chainsaw | Kyverno Chainsaw for E2E test execution |
 | jq | JSON processor used by deployment scripts |
 
-All CLI tools except Docker can be installed via `make install-test-deps`.
+`make install-test-deps` installs chainsaw, kind and kubectl, and flux on request;
+Docker and jq come from the package manager of the system.
 
 ## Makefile Targets
 
@@ -89,7 +90,22 @@ deletes it. A CRD read that fails exits 1 with
 before any delete, and a render that fails exits 1 with
 `ERROR: cannot render <overlay>/chaos-mesh (kustomize's error is above).`
 before the overlay delete. The NetworkChaos modules the loader put on the
-nodes stay until a node reboots. Then:
+nodes stay until a node reboots.
+
+When the overlay has a `dizzy-soak/` kustomization (see
+[Lab dizzy soak](infrastructure-manifests.md#lab-dizzy-soak)), the dizzy soak
+goes next, before the hypervisors: its servers would keep a `NovaCompute`
+from being finalized. The teardown deletes the Job `dizzy-soak` and the pod
+`dizzy-soak-reader` in `dizzy` in the foreground. The runner gets TERM, dizzy
+removes the run's servers, volumes, ports and networks, and the runner writes
+its report, within the pod's grace period of 540 seconds. Then the teardown
+deletes the render of `<overlay>/dizzy-soak`: the K-ORC identity of the soak,
+while K-ORC and Keystone still run, its ServiceAccount, ClusterRole and
+ClusterRoleBinding, and the claim `dizzy-soak-reports` with the reports. A
+delete that runs out exits 1 with kubectl's error before step 0, and a render
+that fails exits 1 with
+`ERROR: cannot render <overlay>/dizzy-soak (kustomize's error is above).`
+before its delete. Then:
 
 0. The lab hypervisors, when the overlay has a `hypervisor/` kustomization
    (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
@@ -97,8 +113,9 @@ nodes stay until a node reboots. Then:
    where its CRD exists:
    1. every `NovaCompute`, `NeutronMetadataAgent` and `OVNChassis` in
       `openstack`. A `NovaCompute` keeps its finalizer
-      `nova.openstack.c5c3.io/compute-drain` until Nova counts no server on its
-      nodes, so a pool that still holds servers outlives the wait: the teardown
+      `nova.openstack.c5c3.io/compute-drain` until every one of its nodes is
+      released: no server on it, its pod gone and its compute service deleted,
+      so a pool that still holds servers outlives the wait: the teardown
       exits 1 with the delete's error and the line
       `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`;
    2. the `Hypervisor`, `Eviction` and `Migration` objects of `kvm.cloud.sap`,
@@ -207,9 +224,9 @@ nodes stay until a node reboots. Then:
    `dizzy-grafana` in `dizzy`, whose finalizer has the helm-controller
    uninstall both charts, then the HelmRepositories `victoria-metrics` and
    `grafana` in `flux-system`, then the PVCs in `dizzy`, which Helm leaves
-   behind. Where the default class has the reclaim policy `Delete`, the
-   VictoriaMetrics volume goes with its claim. A HelmRelease delete that runs
-   out exits 1 before any claim is deleted.
+   behind; the soak's claim went before step 0. Where the default class has the
+   reclaim policy `Delete`, the VictoriaMetrics volume goes with its claim. A
+   HelmRelease delete that runs out exits 1 before any claim is deleted.
 4. The PVCs in `shared-services` and `openstack`. The openbao-operator chart's
    admission policy denies deleting its managed PVCs until step 3 has
    uninstalled the chart.
@@ -287,129 +304,168 @@ Produces JUnit XML reports in `_output/reports/`.
 
 ## Deployment Sequence
 
-`hack/deploy-infra.sh` implements the following 8-step sequence:
+`hack/deploy-infra.sh` runs eight steps and logs each as
+`=== Step n/8: ... ===`. The figure shows them with the waits between them,
+the two cluster modes and the step each opt-in changes. The list under the
+figure describes every step under its number.
 
-```text
-Step 1 ── Create kind cluster (hack/kind-config.yaml)
-     │         (EXTERNAL_CLUSTER=true: none is created; the current context
-     │         is checked for a default StorageClass, no node-local-dns
-     │         DaemonSet and a Ready node, and under WITH_NFS=true for no
-     │         CSIDriver nfs.csi.k8s.io of another installer and for a node
-     │         network that holds every node)
-     │
-Step 2 ── Install flux-operator + apply FluxInstance
-     │         kubectl apply -f flux-operator install.yaml
-     │         kubectl apply -f deploy/flux-system/fluxinstance.yaml
-     │         wait_for_fluxinstance polls Ready condition
-     │
-     ├── Install Gateway API standard CRDs
-     │         kubectl apply --server-side -f <upstream standard-install.yaml>
-     │         Required by the keystone-operator HTTPRoute watch; version
-     │         pinned via GATEWAY_API_VERSION, default matches go.mod.
-     │         Skipped when all ten standard-channel CRDs of the pinned
-     │         bundle already exist at that bundle version, or at a newer
-     │         or unversioned one (this step never downgrades); a complete
-     │         live set OLDER than the pin is upgraded in place with the
-     │         same server-side apply. The bundle also ships the
-     │         safe-upgrades ValidatingAdmissionPolicy, which denies
-     │         applying experimental-channel CRDs over the standard
-     │         channel.
-     │
-     ├── Install Envoy Gateway CRDs (gateway.envoyproxy.io)
-     │         kubectl apply --server-side -f <upstream envoy-gateway-crds.yaml>
-     │         Version pinned via ENVOY_GATEWAY_VERSION, kept inside the
-     │         envoy-gateway chart's SemVer range. The `envoy-gateway`
-     │         HelmRelease runs with `crds.enabled: false` — its bundled
-     │         CRD copy carries the experimental Gateway API channel,
-     │         which the safe-upgrades policy above refuses over the
-     │         standard pin — so this step is the only owner of the
-     │         gateway.envoyproxy.io group. Skipped when all eight CRDs
-     │         already exist (they carry no comparable version
-     │         annotation, so present sets are never re-asserted).
-     │
-     ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only)
-     │         Installed as part of the deploy/kind/base/ overlay applied
-     │         in Step 3: the `envoy-gateway` HelmRelease brings up the
-     │         control plane, and deploy/kind/base/openstack-gateway.yaml
-     │         creates GatewayClass/envoy (parametersRef → EnvoyProxy with
-     │         NodePort 31443), a cert-manager Certificate for
-     │         keystone.127-0-0-1.nip.io signed by selfsigned-cluster-issuer,
-     │         and Gateway/openstack-gw on :443. wait_for_gateway_programmed
-     │         polls Programmed=True after Phase 3.
-     │         The production deploy/flux-system/ overlay does NOT ship
-     │         these resources — operators pick their own Gateway
-     │         implementation in production.
-     │
-Step 3 ── Apply base kustomize overlay (deploy/kind/base/)
-     │         Namespaces, HelmRepositories, HelmReleases
-     │         WITH_CHAOS_MESH=true: the overlay root's chaos-mesh/
-     │         (deploy/kind/chaos-mesh/ on kind); under
-     │         EXTERNAL_CLUSTER=true, wait for the rollout of the
-     │         DaemonSet chaos-mesh-modules
-     │
-Step 4 ── Wait for HelmReleases Ready
-     │         cert-manager, openbao, mariadb-operator,
-     │         external-secrets, memcached-operator
-     │
-     ├── Phase 1 → 2: cert-manager webhook admits a dry-run
-     │         On an install, the release's startup API check holds
-     │         Ready until the webhook admits a request. A server-side
-     │         dry-run of cluster-issuer.yaml (WEBHOOK_TIMEOUT) is the
-     │         script's own gate in front of the TLS-prerequisite
-     │         applies, for an upgrade, which runs no hook, and for an
-     │         overlay that turns the check off.
-     │
-     ├── Phase 3b: kustomization/rabbitmq-cluster-operator Ready
-     │         The RabbitMQ Cluster Operator arrives as a Flux
-     │         Kustomization, which the HelmRelease wait above cannot
-     │         see. This wait hard-fails: a ControlPlane projects a
-     │         RabbitmqCluster for spec.infrastructure.messaging, so
-     │         the operator belongs on every cluster this script
-     │         provisions.
-     │
-Step 5 ── Apply infrastructure kustomize overlay (deploy/kind/infrastructure/)
-     │         ClusterIssuer, MariaDB CR, Memcached CR,
-     │         OpenBao TLS cert, ESO resources
-     │         Gated by wait_for_crds on the operator CRDs: memcacheds,
-     │         externalsecrets, clustersecretstores, mariadbs,
-     │         envoyproxies, the three garage kinds, openbaoclusters,
-     │         rabbitmqclusters.rabbitmq.com
-     │
-Step 6 ── Wait for OpenBao pods Ready
-     │
-Step 7 ── OpenBao bootstrap
-     │         init-unseal → setup-secret-engines →
-     │         setup-auth → setup-policies →
-     │         write-bootstrap-secrets
-     │
-Step 8 ── Wait for ExternalSecrets synced
-     │         keystone-admin, keystone-db,
-     │         mariadb-root-password
-     │
-     └── WITH_CONTROLPLANE=true: ControlPlane admission
-              On the flux path, unless INFRA_ONLY=true: the ten operator
-              HelmReleases Ready (HELMRELEASE_TIMEOUT), then one CRD per
-              operator registered (POD_TIMEOUT). Then a server-side
-              dry-run of the ControlPlane manifests (WEBHOOK_TIMEOUT)
-              until the API server admits or denies it:
-              the bundled CR before its one apply under
-              WITH_CONTROLPLANE_CR=true, otherwise, after the two waits,
-              the render of the overlay's controlplane/ directory or the
-              kind controlplane.yaml before the by-hand hint.
-```
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
-**kind-only ExternalSecret shims.** The `keystone-admin`, `keystone-db`, and
-`mariadb-root-password` ExternalSecrets shown above are **kind-overlay shims**
-(`deploy/kind/infrastructure/`), not part of the production base. The production
-`deploy/eso/` stack ships only the `ClusterSecretStore`: in a ControlPlane-based
-deployment the admin password is projected per ControlPlane by the c5c3-operator, and a
-non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself.
+Before Step 1 the script runs its preflight checks: the tools on the `PATH`
+(`docker`, `kind`, `kubectl` and `jq`, under `EXTERNAL_CLUSTER=true` only
+`kubectl` and `jq`), the flag combinations it refuses, and under
+`EXTERNAL_CLUSTER=true` the directories of the overlay. In kind mode it then
+runs `modprobe` on the host for `WITH_CHAOS_MESH`, `WITH_OVN_KERNEL_MODULES`
+and `WITH_NFS`.
 
-**Why two-phase kustomize?** The base kustomization contains only built-in Kubernetes
-types (Namespaces, HelmRepository, HelmRelease). The infrastructure kustomization
-contains CRD-dependent resources (ClusterIssuer, MariaDB CR, Memcached CR) that require
-operator CRDs to be installed first. Applying them in two phases prevents
-`kubectl apply` failures on fresh clusters where CRDs do not yet exist.
+1. **Create or check the cluster.** In kind mode the script creates the
+   cluster from `hack/kind-config.yaml`, or keeps a cluster of that name, and
+   then caps the `RLIMIT_NOFILE` of containerd on every node. Under
+   `EXTERNAL_CLUSTER=true` it creates none and checks the current context for
+   a default StorageClass, a Ready node and no `node-local-dns` DaemonSet.
+   Under `WITH_NFS=true` it also checks for no `CSIDriver` `nfs.csi.k8s.io` of
+   another installer and for a node network that holds every node. Before
+   Step 2 the script refuses a cluster deployed before the relocation to
+   `shared-services`, and under `WITH_REGISTRY_CACHE=true` it starts the
+   pull-through caches.
+2. **Install Flux.** `kubectl apply -f` of the flux-operator `install.yaml`,
+   of `deploy/flux-system/namespaces.yaml` and of
+   `deploy/flux-system/fluxinstance.yaml`. `wait_for_fluxinstance` polls the
+   `Ready` condition for `HELMRELEASE_TIMEOUT` seconds. Two CRD installs
+   follow, each a `kubectl apply --server-side` of an upstream file:
+   - Install Gateway API standard CRDs, from `standard-install.yaml` of
+     `GATEWAY_API_VERSION`, whose default matches `go.mod`. The
+     keystone-operator watches `HTTPRoute`. The install is skipped when all
+     ten standard-channel CRDs of the pinned bundle exist at that version, a
+     newer one or an unversioned one. It never downgrades, and it upgrades a
+     complete set that is older than the pin in place. The bundle also ships
+     the `safe-upgrades` ValidatingAdmissionPolicy, which denies applying
+     experimental-channel CRDs over the standard channel.
+   - Install Envoy Gateway CRDs (`gateway.envoyproxy.io`), from
+     `envoy-gateway-crds.yaml` of `ENVOY_GATEWAY_VERSION`, which stays inside
+     the SemVer range of the `envoy-gateway` chart. The HelmRelease runs with
+     `crds.enabled: false`: its bundled CRD copy carries the experimental
+     Gateway API channel, which the policy above refuses. This install is
+     therefore the only owner of the group. It is skipped when all eight CRDs
+     exist, because they carry no version annotation to compare.
+3. **Apply the base overlay**, `deploy/kind/base/` or `base/` of
+   `EXTERNAL_OVERLAY`: the Namespaces, the Flux sources, the HelmReleases and
+   the two Flux Kustomizations of `deploy/flux-system/`, and what the kind
+   overlay adds, among it the `envoy-gateway` HelmRelease, `GatewayClass/envoy`
+   and `Gateway/openstack-gw` on port 443. The production
+   `deploy/flux-system/` ships no Gateway, and the lab overlay inherits this
+   one. Still in Step 3:
+   - Each of `WITH_CHAOS_MESH`, `WITH_PROMETHEUS`, `WITH_DIZZY` and `WITH_NFS`
+     applies the directory of its name under `deploy/kind/` or under
+     `EXTERNAL_OVERLAY`. `WITH_METRICS_SERVER` and `WITH_VPA` apply
+     `deploy/kind/metrics-server` and `deploy/kind/vpa`. Under
+     `EXTERNAL_CLUSTER=true` the script waits for the rollout of the
+     DaemonSets `chaos-mesh-modules` and `nfs-client-modules`, and under
+     `WITH_NFS=true` in both modes for the rollout of `nfs-server`.
+   - `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=flux` resumes the
+     nine service-operator HelmReleases. Every other run suspends the
+     `c5c3-operator` HelmRelease and the `k-orc` Kustomization with their
+     sources. `INFRA_ONLY=true` suspends all ten operator HelmReleases and
+     scales their Deployments to zero.
+4. **Wait for the releases**, in four phases:
+   - Phase 1: `cert-manager` is Ready (`HELMRELEASE_TIMEOUT`). Then the
+     cert-manager webhook has to admit a server-side dry-run of
+     `cluster-issuer.yaml` (`WEBHOOK_TIMEOUT`). On an install the startup API
+     check of the release already holds Ready until the webhook admits a
+     request. The dry-run is the script's own gate for an upgrade, which runs
+     no hook, and for an overlay that turns the check off.
+   - Phase 2: `kubectl apply -f` of the four TLS prerequisites
+     `cluster-issuer.yaml`, `openbao-ca-issuer.yaml`, `openbao-tls-cert.yaml`
+     and `db-ca-issuer.yaml` from `deploy/flux-system/infrastructure/`.
+     OpenBao and MariaDB cannot start without them.
+   - Phase 3: `prometheus-operator-crds`, `openbao`, `mariadb-operator-crds`,
+     `mariadb-operator`, `external-secrets`, `memcached-operator`,
+     `envoy-gateway`, `garage-operator` and `openbao-operator` are Ready
+     (`HELMRELEASE_TIMEOUT`), and with them the release of every opt-in
+     overlay of Step 3. `WITH_PROMETHEUS=true` raises the wait to at least
+     1200 seconds.
+   - Phase 3b: `kustomization/rabbitmq-cluster-operator` is Ready. The
+     RabbitMQ Cluster Operator arrives as a Flux Kustomization, which the
+     HelmRelease wait cannot see. This wait fails the run on every cluster,
+     because a ControlPlane projects a `RabbitmqCluster` for
+     `spec.infrastructure.messaging`. The script then requires every image in
+     `rabbitmq-system` to be pinned by digest. Under `WITH_PROMETHEUS=true` it
+     turns on the ServiceMonitor of the nine service operators.
+5. **Apply the infrastructure overlay**, `deploy/kind/infrastructure/` or
+   `infrastructure/` of `EXTERNAL_OVERLAY`. The step starts with
+   `wait_for_crds` (`POD_TIMEOUT`) on ten operator CRDs: `memcacheds`,
+   `externalsecrets`, `clustersecretstores`, `mariadbs`, `envoyproxies`, the
+   three Garage kinds, `openbaoclusters` and `rabbitmqclusters.rabbitmq.com`.
+   The overlay holds the ClusterIssuers, the CA certificates, the Gateway
+   certificates that `selfsigned-cluster-issuer` signs (the one for
+   `keystone.127-0-0-1.nip.io` among them), the NodePort `EnvoyProxy` on
+   31443, the MariaDB, Memcached and Garage CRs, the proving `OpenBaoCluster`
+   and the ESO resources. Under `WITH_CONTROLPLANE=true` the script applies
+   the render without `MariaDB`, `Memcached` and the three ExternalSecrets of
+   Step 8. Under `WITH_MESSAGING=true` it then applies `deploy/kind/messaging`
+   and waits for `rabbitmqcluster/shared-rabbitmq`. The step ends with
+   `wait_for_gateway_programmed`, which polls `Programmed=True` on
+   `Gateway/openstack-gw` (`HELMRELEASE_TIMEOUT`): the Gateway is programmed
+   only once the `EnvoyProxy` of this overlay exists.
+6. **Wait for the OpenBao pods** to reach the phase `Running`
+   (`POD_TIMEOUT`). A sealed pod is not Ready yet.
+7. **Bootstrap OpenBao.** `openbao_init_unseal` initialises and unseals it.
+   `openbao_bootstrap` then runs `setup-secret-engines.sh`, `setup-auth.sh`,
+   `setup-policies.sh` and `write-bootstrap-secrets.sh` from
+   `deploy/openbao/bootstrap/`. Under `WITH_CONTROLPLANE=true` the last one
+   seeds the paths of `openstack/<CONTROLPLANE_NAME>`. The step ends when the
+   OpenBao pods are Ready (`POD_TIMEOUT`), and the script asks ESO to validate
+   `openbao-cluster-store` again.
+8. **Wait for the ExternalSecrets** `keystone-admin`, `keystone-db` and
+   `mariadb-root-password` to sync (`EXTERNALSECRET_TIMEOUT`). The script
+   first provisions the tenant store of the `openstack` namespace with
+   `setup-eso-tenant.sh`. Under `WITH_CONTROLPLANE=true` the step waits for
+   nothing: Step 5 left the three out, and the c5c3-operator projects the
+   credentials of each ControlPlane.
+
+After Step 8 the script un-pauses the proving `OpenBaoCluster` and waits for
+it to be `Available`, and it waits for the Garage ExternalSecrets and for
+`garagecluster/garage` to reach the phase `Running`. A standalone run ends
+when `mariadb/openstack-db` is Ready.
+
+A run under `WITH_CONTROLPLANE=true` ends with the ControlPlane admission
+instead. On the `flux` path, unless `INFRA_ONLY=true`, it waits for
+`kustomization/k-orc`, for the ten operator HelmReleases
+(`HELMRELEASE_TIMEOUT`) and for one CRD per operator (`POD_TIMEOUT`). Then a
+server-side dry-run of the ControlPlane manifests has to be admitted or
+denied by the API server (`WEBHOOK_TIMEOUT`). Under `WITH_CONTROLPLANE_CR=true`
+the script probes the bundled CR and applies it once. Otherwise it probes the
+render of the overlay's `controlplane/` directory, or the kind
+`controlplane.yaml`, and prints the command that applies it by hand.
+
+**ExternalSecret shims of the kind overlay.** The `keystone-admin`,
+`keystone-db` and `mariadb-root-password` ExternalSecrets of Step 8 come from
+`deploy/kind/infrastructure/`, and the lab overlay inherits them. The
+production base has none of them. The production `deploy/eso/` stack ships only
+the `ClusterSecretStore`: in a ControlPlane-based deployment the admin password
+is projected per ControlPlane by the c5c3-operator, and a non-kind Flux MariaDB
+baseline provides the `mariadb-root-password` Secret itself.
+
+**Why two-phase kustomize?** The base kustomization holds Namespaces and
+resources whose CRDs Step 2 has registered: the Flux sources, the HelmReleases,
+the two Flux Kustomizations, and on kind the GatewayClass and the Gateway. The
+infrastructure kustomization holds resources of the operators those releases
+install (ClusterIssuer, MariaDB CR, Memcached CR). Applying them in two phases
+prevents `kubectl apply` failures on fresh clusters where the operator CRDs do
+not yet exist.
+
+### Steps and phases
+
+This page and [Infrastructure Manifests](infrastructure-manifests.md) count
+in five ways:
+
+| Term | Where | Means | In the run above |
+| --- | --- | --- | --- |
+| Step 1 to Step 8 | this page, the log of the script | the steps of `make deploy-infra` | the numbered boxes |
+| Phase 1, 2, 3 and 3b | this page, the log of the script | the four parts of the release wait | inside Step 4 |
+| base phase and infrastructure phase, "two-phase kustomize" | both pages | the two kustomize applies | Step 3 and Step 5 |
+| "Step 1: Apply base resources", "Step 2: Apply infrastructure resources" | [Deployment](infrastructure-manifests.md#deployment) | the same two applies, by hand on `deploy/flux-system/` | Step 3 and Step 5 |
+| step 0 to step 8, lower case | [`make teardown-infra`](#make-teardown-infra) | the order of the teardown | not part of the run |
 
 ### Idempotent Re-runs
 
@@ -422,7 +478,7 @@ failing — each step detects the work it already completed and skips it:
   containerd reports both already match. Checking the drop-in alone would
   permanently skip a node whose write landed but whose restart failed, leaving
   containerd uncapped behind a clean-looking deploy.
-- **Gateway API CRDs** are skipped when all five standard-channel CRDs are
+- **Gateway API CRDs** are skipped when all ten standard-channel CRDs are
   present (see the sequence above).
 - The **kustomize overlays** and **TLS prerequisites** re-apply convergently
   (`kubectl apply` / upserts).
@@ -441,18 +497,44 @@ failing — each step detects the work it already completed and skips it:
 
 ## Kustomize Overlay Structure
 
-```text
-deploy/kind/
-├── base/
-│   └── kustomization.yaml          References ../../flux-system/
-│                                    Patches OpenBao HelmRelease → standalone mode, 100m CPU
-│                                    Patches operator HelmReleases → 1 replica
-│                                    Patches FluxInstance → 25m CPU per Flux controller
-└── infrastructure/
-    └── kustomization.yaml          References ../../flux-system/infrastructure/
-                                     Patches MariaDB CR → 1 replica, no Galera, 1Gi memory
-                                     Patches Memcached CR → 1 replica
-```
+The lab overlay takes the kind overlay as its base, and the kind overlay takes
+the production manifests. The figure shows that chain and who applies each
+directory. The table lists every directory under `deploy/` that holds a
+`kustomization.yaml`, with the bases it lists under `resources`.
+
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak and hypervisor under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+
+| Directory | Base | Applied by |
+| --- | --- | --- |
+| `deploy/flux-system` | none | a person, with `kubectl apply -k` ([Deployment](infrastructure-manifests.md#deployment)) |
+| `deploy/flux-system/infrastructure` | `deploy/eso` | a person, once the operators have installed their CRDs |
+| `deploy/eso` | none | nothing on its own |
+| `deploy/examples/sizing-overlay` | `deploy/flux-system` | nothing: a template to copy ([Sizing and placement overrides](infrastructure-manifests.md#sizing-and-placement-overrides)) |
+| `deploy/examples/sizing-overlay/infrastructure` | `deploy/flux-system/infrastructure` | nothing: the second phase of that template |
+| `deploy/kind/base` | `deploy/flux-system` | `make deploy-infra`, Step 3 |
+| `deploy/kind/infrastructure` | `deploy/flux-system/infrastructure` | `make deploy-infra`, Step 5 |
+| `deploy/kind/chaos-mesh` | none | Step 3 under `WITH_CHAOS_MESH=true` |
+| `deploy/kind/dizzy` | none | Step 3 under `WITH_DIZZY=true` |
+| `deploy/kind/nfs` | none | Step 3 under `WITH_NFS=true` |
+| `deploy/kind/prometheus` | none | Step 3 under `WITH_PROMETHEUS=true` |
+| `deploy/kind/metrics-server` | none | Step 3 under `WITH_METRICS_SERVER=true` or `WITH_VPA=true`, in kind mode only |
+| `deploy/kind/vpa` | none | Step 3 under `WITH_VPA=true`, in kind mode only |
+| `deploy/kind/messaging` | none | after the apply of Step 5 under `WITH_MESSAGING=true`, in both cluster modes |
+| `deploy/kind/controlplane` | none | a person, as the file `controlplane.yaml` ([Quick Start (ControlPlane)](../../quick-start-controlplane.md)), or the script under `WITH_CONTROLPLANE_CR=true` |
+| `deploy/kind/fake-compute` | none | a person ([Run a Fake Compute for Testing](../../guides/nova/run-a-fake-compute-for-testing.md)) |
+| `deploy/kind/hypervisor-operator-fixtures` | none | a person ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md)) |
+| `deploy/lab/metal-stack/base` | `deploy/kind/base` | Step 3 under `EXTERNAL_CLUSTER=true` |
+| `deploy/lab/metal-stack/infrastructure` | `deploy/kind/infrastructure` | Step 5 under `EXTERNAL_CLUSTER=true` |
+| `deploy/lab/metal-stack/chaos-mesh` | `deploy/kind/chaos-mesh` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CHAOS_MESH=true` |
+| `deploy/lab/metal-stack/dizzy` | `deploy/kind/dizzy` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_DIZZY=true` |
+| `deploy/lab/metal-stack/nfs` | `deploy/kind/nfs` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_NFS=true` |
+| `deploy/lab/metal-stack/prometheus` | `deploy/kind/prometheus` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_PROMETHEUS=true` |
+| `deploy/lab/metal-stack/controlplane` | none | a person ([Quick Start (metal-stack)](../../quick-start-metal-stack.md)) |
+| `deploy/lab/metal-stack/hypervisor-fixtures` | `deploy/kind/hypervisor-operator-fixtures` | a person, after the ControlPlane |
+| `deploy/lab/metal-stack/hypervisor` | `deploy/lab/metal-stack/migration-ports` | a person, after the ControlPlane |
+| `deploy/lab/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
+| `deploy/lab/metal-stack/probe` | none | a person ([Node probe](infrastructure-manifests.md#node-probe)) |
+| `deploy/lab/metal-stack/dizzy-soak` | none | `make dizzy-soak-start` ([Lab dizzy soak](infrastructure-manifests.md#lab-dizzy-soak)) |
 
 The overlays reference the production FluxCD manifests as their base and apply
 strategic merge patches to reduce resource requirements for a single-node kind
@@ -491,7 +573,7 @@ relies on it. The patches lower requests and change no limit.
 | Replicas | 3 | 1 |
 | Galera | enabled | disabled |
 | MaxScale | enabled | disabled |
-| Storage class | default | `standard` |
+| Storage class | `ceph-rbd` | `standard` |
 | Resources | operator defaults (none) | memory request and limit `1Gi`, no CPU |
 
 The memory request takes the single database out of the BestEffort class, which
@@ -507,8 +589,9 @@ stay unset on purpose: a 500m request left pods Pending on the keystone leg
 | --- | --- | --- |
 | Replicas | 3 | 1 |
 
-Other operators (cert-manager, mariadb-operator, ESO, memcached-operator) are not
-patched — they are single-replica or stateless by default.
+cert-manager, mariadb-operator and ESO are not patched — they are single-replica or
+stateless by default. The memcached-operator release gets one patch,
+`webhook.enabled: false`.
 
 ### Lab Overlay Patches
 
@@ -532,6 +615,13 @@ deploy/lab/metal-stack/
 │   └── kustomization.yaml          References ../../../kind/dizzy/
 │                                    Patches the Namespace → Gardener opt-out label,
 │                                    VictoriaMetrics HelmRelease → 10Gi volume, ClusterIP Service
+├── dizzy-soak/                     The dizzy soak (#1274), applied by make dizzy-soak-start
+│   ├── kustomization.yaml          Lists the three manifests below
+│   ├── identity.yaml               K-ORC Domain, Project, User, Role and RoleAssignment of the user dizzy-soak
+│   ├── rbac.yaml                   ServiceAccount, read-only ClusterRole and ClusterRoleBinding
+│   ├── reports-pvc.yaml            Claim dizzy-soak-reports, 5Gi, no storage class
+│   ├── job.yaml                    Job dizzy-soak, outside the kustomization, created by start
+│   └── scenario.yaml               dizzy's mix small profile with the lab's names, outside the kustomization
 ├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
 │   ├── kustomization.yaml          Lists ../migration-ports and the seven manifests below; the apply order and node labels in its header
 │   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
@@ -584,10 +674,11 @@ volume, turns off four scrape jobs and adds the hvo dashboard. It changes
 nothing else. The script never applies
 `controlplane/`; the completion hint of
 `WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
-`hypervisor-fixtures/`, which follow the ControlPlane by hand. Every volume of
+`hypervisor-fixtures/`, which follow the ControlPlane by hand, or
+`dizzy-soak/`, which `make dizzy-soak-start` applies. Every volume of
 the lab, the proving `OpenBaoCluster`'s, the NFS export claim, the dizzy
-VictoriaMetrics claim and the Prometheus claim included, binds to the
-cluster's default class, which Step 1 checks exists.
+VictoriaMetrics claim, the soak's report claim and the Prometheus claim
+included, binds to the cluster's default class, which Step 1 checks exists.
 
 | Setting | Kind | Lab |
 | --- | --- | --- |

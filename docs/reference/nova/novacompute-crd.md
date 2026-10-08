@@ -294,6 +294,11 @@ deleted, so the record of a drain outlives the selection.
 | `Releasing` | No instance is left, or another pool took the node over. The pod is released, and the service is deleted once the pod is gone |
 | `Conflict` | Selected, but another NovaCompute of the same Nova on the same cluster holds the node. No pod of this CR runs there |
 
+The figure draws the five phases with what triggers each change and who drives
+it. The rules below decide the cases the arrows leave out.
+
+![The five phases of a node in a NovaCompute pool as a state machine. A node the selector matches starts in Pending and turns Active once its compute service is registered and its host is mapped; it falls back to Pending when the service disappears from Nova. A node another pool of the same Nova holds starts in Conflict and becomes Pending when that pool drops its entry. A selected node goes Draining when its label is removed, its Node is deleted or the pool is deleted, and the pool disables its compute service once. It goes Releasing when Nova counts no server on the host, or at once and without a disable when another pool selects it. From Releasing the pool releases the pod and deletes the compute service, which drops the entry from status.nodes and cannot be undone; a delete Nova refuses returns the node to Draining. A node selected again while Draining or Releasing goes back to Active with its service still disabled. The pool never moves a server, never enables a service and never times a drain out.](../../diagrams/compute-node-phases.svg)
+
 A `Pending` node with a registered service turns `Active` once Nova lists its
 host as a hypervisor, which Nova does only for a host with a host mapping.
 Until then the pool runs the host discovery (see [Reaching Nova](#reaching-nova)).
@@ -312,7 +317,8 @@ but `Conflict`. The rules, in order:
    name): `Conflict`. Otherwise this CR takes it as `Pending`.
 2. A held node that is no longer selected, is gone from the cluster, or belongs
    to a CR being deleted: `Releasing` without a disable when a pool that is not
-   being deleted selects it (a handover), `Draining` otherwise.
+   being deleted selects it (a handover). Otherwise `Draining`, except that an
+   entry already `Releasing` stays `Releasing`.
 3. A `Conflict` entry that is no longer selected is dropped.
 
 Pools of different Novas, or on different clusters, never conflict.
@@ -359,7 +365,7 @@ stays out of the aggregate. For the pipeline see
 | `ServicesReady` | False | `ServicesDown` | Nova reports an Active node's service down |
 | `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds at most: a failed hypervisor list keeps a `Releasing` node's 10-second poll |
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
-| `Ready` | True | `AllReady` | All six sub-conditions are True |
+| `Ready` | True | `AllReady` | All seven sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
@@ -381,6 +387,12 @@ ControlPlane mirrors it. Neither is the host discovery Job
 labels instead of an owner reference, and the teardown sweeps them.
 
 ## Node contract
+
+The figure shows one node that all three node-level resources select: the four
+pods, the host paths they share, and the order their init containers enforce.
+The sections below cover the part a `NovaCompute` owns.
+
+![One hypervisor node with the four pods three resources put on it. An OVNChassis creates two DaemonSets: the pod {chassis}-ovs with the init container host-prepare and the containers ovsdb-server and ovs-vswitchd, and the pod {chassis}-ovn-controller with the init container apply-node and the container ovn-controller. A NeutronMetadataAgent creates the pod {agent}-metadata-agent, a NovaCompute the pod {pool}-nova-compute. All four run in the network namespace of the node, beside a libvirtd that no operator runs. Three gates order the start. The operator creates the ovn-controller DaemonSet only once every OVS pod is Ready. The init container wait-for-chassis of nova-compute waits until apply-node has written a system-id into the local Open vSwitch database. The init container wait-for-chassis of the metadata agent waits until ovn-controller has registered the chassis in the Southbound database. The pods share host paths: /run/openvswitch is mounted by all four, /run/ovn by the two chassis pods, /run/netns by the metadata agent, /run/libvirt and /var/lib/nova by nova-compute and libvirtd. A gateway node has no further pod: it also matches spec.gateway.nodeSelector, and apply-node sets ovn-cms-options=enable-chassis-as-gw.](../../diagrams/compute-node-anatomy.svg)
 
 ### The pod
 
@@ -657,14 +669,44 @@ deleted, or for every node when the CR is deleted:
 2. The pool never migrates an instance. On a compute cluster,
    openstack-hypervisor-operator's Eviction, started through
    `Hypervisor.spec.maintenance`, empties the host; without it the owner does.
-   The Eviction live-migrates an ACTIVE server without block migration, which
-   needs [Live migration](#live-migration).
+   The Eviction live-migrates an ACTIVE server, which needs
+   [Live migration](#live-migration). The hvo image this repository builds
+   leaves the choice of block migration to Nova.
 3. When Nova counts no server on the host, the node goes `Releasing` and its pod
    is released.
 4. Once the pod is gone the pool deletes the compute service. Nova removes the
    host from every aggregate, deletes its resource providers and destroys its
    host mapping. A delete Nova refuses because instances came back returns the
    node to `Draining`.
+
+On a compute cluster openstack-hypervisor-operator (hvo) empties the host
+before the pool label comes off. The figure draws that order, and its numbers
+are the steps below. The statements about hvo are as read at `a2baf3f`, the
+commit `images/openstack-hypervisor-operator/Dockerfile` pins.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](../../diagrams/compute-node-drain.svg)
+
+1. A person sets `spec.maintenance: manual` on the node's `Hypervisor`.
+2. hvo disables the compute service, with the reason
+   `Hypervisor CRD: spec.maintenance=manual`.
+3. hvo creates an `Eviction` named after the node. It migrates every server
+   away, and hvo sets `status.evicted` to `true`. Up to here clearing
+   `spec.maintenance` makes hvo enable the service and delete the Eviction.
+4. The person removes the pool label from the Node. The node goes `Draining`.
+   From here on `spec.maintenance` stays set: the pool never enables a
+   service, and hvo would enable it under a node that is leaving.
+5. The pool counts the servers on the host and finds none. The service is
+   disabled already, so the pool disables nothing and hvo's reason stays.
+6. The node goes `Releasing`. The pool releases its pod and waits until the
+   pod is gone, polling every 10 seconds.
+7. The pool deletes the compute service. Nova drops the host mapping, the
+   resource providers and the aggregate membership with it. This is the point
+   of no return: a node labelled again afterwards starts as a new `Pending`
+   entry and registers a new service.
+
+Without hvo the order starts at step 4: the pool disables the service itself,
+with the reason `c5c3.io: leaving NovaCompute <namespace>/<name>`, and whoever
+owns the servers moves them.
 
 The pool never enables a service. A node selected again mid-drain goes back to
 `Active` with its service still disabled, and so does a node another pool takes

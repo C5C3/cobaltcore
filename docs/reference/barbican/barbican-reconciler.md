@@ -6,7 +6,7 @@ quadrant: operator
 # Barbican Reconciler Architecture
 
 The Barbican controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with eleven sub-reconcilers. Every step is
+(`internal/common/reconcile`) with twelve sub-reconcilers. Every step is
 instrumented under the `barbican_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain. Conditions and
 the requeue are persisted on every exit path through the shared status skeleton,
@@ -36,8 +36,14 @@ controller drops it on the pass that observes that store's deletion.
 Secrets ─► DBConnectionSecret ─► SecretStores ─► Config ─► DBClean ─► Database ─► Deployment ─► ┬─ HTTPRoute
                                                                                                 ├─ HealthCheck
                                                                                                 ├─ HPA
+                                                                                                ├─ VPA
                                                                                                 └─ NetworkPolicy  (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -76,14 +82,14 @@ Two orderings in that chain are decisions rather than data dependencies:
   parent through the `BarbicanSecretStore` watch, which is a faster signal than
   any requeue interval.
 
-The four members of the parallel group have no inter-dependency once the
+The five members of the parallel group have no inter-dependency once the
 Deployment and Service exist. Each works on its own copy of the CR, sets one
 condition type, and always sets it, so a cluster without Gateway API or without
 autoscaling still resolves the aggregate through the `NotRequired` reasons.
 
 ## Conditions
 
-The aggregate `Ready` condition is `True` (reason `AllReady`) when all nine
+The aggregate `Ready` condition is `True` (reason `AllReady`) when all ten
 sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
@@ -209,6 +215,9 @@ An accepted bump stamps `status.targetRelease`, the db-sync Job runs on the new
 image, the Deployment rolls onto it, and the sync flow promotes
 `status.installedRelease` on Job success, at which point `targetRelease` is
 cleared and `status.installedImage` records the image that ran the migration.
+The second panel of the figure under
+[Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
+draws this single pass beside the phase machine it does without.
 
 Two guards keep the release marker honest, one per pinning style. A tag-pinned
 image whose tag names a different release than `spec.openStackRelease` sets
@@ -235,8 +244,8 @@ the rollout that follows.
 | Interval | Used by |
 | --- | --- |
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
-| 15s | ESO secret-gate polling (Secrets, DBConnectionSecret) |
-| 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every waiting or failure state of the store controller |
+| 15s | ESO secret-gate polling (Secrets, DBConnectionSecret), the store controller's `WaitingForParent` and `TargetClusterUnavailable` states, and its remote-children finalizer hold while a deleted store's target cluster does not resolve or nothing names it |
+| 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every other waiting or failure state of the store controller |
 | 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL) |
 | 15m | Store credential revalidation: every pass for a brownfield store, and for a managed store whose secret ID carries no TTL and has no re-mint timer to ride on |
 
@@ -272,7 +281,9 @@ while the credential in the pods is still valid.
   `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
   leaves etcd instead of hanging in Terminating. See
   [Target Clusters](../target-clusters.md).
-  A `BarbicanSecretStore` carries no finalizer at all; see
+  A `BarbicanSecretStore` carries no finalizer while its parent is on the
+  management cluster, and the remote-children finalizer while its parent names
+  `spec.targetClusterRef`; see
   [Retained Artefacts](./barbican-secret-store-crd.md#retained-artefacts).
 
 ## Watches
@@ -313,8 +324,9 @@ Beyond the owned set it watches:
   only by its own. The `ClusterSecretStore` leg is not registered when the
   operator runs with `--namespace`.
 
-The store controller watches two objects of its own, both without a generation
-predicate for the same reason: the parent `Barbican`, whose status flips carry
+The store controller watches three objects of its own. The third is its
+credentials Secret on a target cluster. The other two carry no generation
+predicate, for the same reason: the parent `Barbican`, whose status flips carry
 the projection landing in the Deployment, and the `OpenBaoCluster` a managed
 store names, whose Available condition is what unblocks a store waiting on it.
 Both resolve through field indexes registered by the Barbican controller's

@@ -562,6 +562,51 @@ func TestReconcileConfig_OsloPolicyEnforceScopeDefaults(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("enforce_new_defaults = true"))
 }
 
+// TestReconcileConfig_OsloPolicyEnforceScopeByRelease pins the release gate on
+// [oslo_policy] enforce_scope: oslo.policy 6.0 (2026.2) removed the option and
+// always enforces scope, so keystone.conf carries it below 2026.2 and for a tag
+// that names no release, and not from 2026.2 on. enforce_new_defaults renders
+// on every release.
+func TestReconcileConfig_OsloPolicyEnforceScopeByRelease(t *testing.T) {
+	tests := []struct {
+		tag              string
+		wantEnforceScope bool
+	}{
+		{tag: "2025.2", wantEnforceScope: true},
+		{tag: "2026.1", wantEnforceScope: true},
+		{tag: "2026.2", wantEnforceScope: false},
+		{tag: "2026.2-p1", wantEnforceScope: false},
+		{tag: "2027.1", wantEnforceScope: false},
+		{tag: "latest", wantEnforceScope: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.tag, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := configTestScheme()
+
+			ks := configTestKeystone()
+			ks.Spec.Image.Tag = tc.tag
+			secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+			r := newConfigTestReconciler(s, ks, secret)
+
+			configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			keystoneConf := cm.Data["keystone.conf"]
+			g.Expect(keystoneConf).To(ContainSubstring("[oslo_policy]\n"))
+			g.Expect(keystoneConf).To(ContainSubstring("enforce_new_defaults = true"))
+			if tc.wantEnforceScope {
+				g.Expect(keystoneConf).To(ContainSubstring("enforce_scope = true"))
+			} else {
+				g.Expect(keystoneConf).NotTo(ContainSubstring("enforce_scope"))
+			}
+		})
+	}
+}
+
 func TestResolveDatabaseHost(t *testing.T) {
 	tests := []struct {
 		name     string

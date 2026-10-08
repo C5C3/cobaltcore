@@ -18,6 +18,11 @@ actually runs, widening it for a mirror that is not HTTPS on port 443, pinning
 imports to the mirrors they are supposed to use, and what the filter still
 cannot see.
 
+The figure shows where the filter acts: on path B, before the pod fetches the
+URI onto its staging volume.
+
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
+
 ## Prerequisites
 
 ::: info Devstack
@@ -262,9 +267,10 @@ the denylist cannot:
 - **`allowedHosts`** turns the question around — an allow-list refuses every
   host it does not name, including the spellings nobody thought to deny.
 - **`spec.networkPolicy.additionalEgress`** bounds where the API pods may
-  connect at all. The auto-derived egress covers DNS, the database, the cache,
-  and the backends' S3 hosts only, so a per-CR NetworkPolicy without an explicit
-  rule blocks every `web-download` mirror — and grants nothing else. See
+  connect at all. The auto-derived egress opens the ports of DNS, the database,
+  the cache and the S3 backends, to any destination. A per-CR NetworkPolicy
+  without an explicit rule therefore blocks a `web-download` mirror on any other
+  port, and lets one on those ports through. See
   [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md).
 
 Neither of these is reachable through `spec.extraConfig`: all six

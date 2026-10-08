@@ -23,16 +23,22 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2025-2/` | Keystone 2025.2 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration |
+| `tests/tempest/keystone-2026-2/` | Keystone 2026.2 Tempest configuration |
 | `tests/tempest/glance-2025-2/` | Glance 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2025-2`, and four extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (default GlanceBackend CR), `04-glancebackend2-cr.yaml` (second, non-default store so the copy-image import test has a copy target) |
 | `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-1`) |
+| `tests/tempest/glance-2026-2/` | Glance 2026.2 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-2`) |
 | `tests/tempest/barbican-2025-2/` | Barbican 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-barbican-tempest-2025-2`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the key-manager catalog bootstrap Job; `02-barbican-cr.yaml`, the Barbican CR; `03-barbicansecretstore-cr.yaml`, the default BarbicanSecretStore the job waits on before the Barbican CR; `04-policy-check-job.yaml`, the Job that checks Barbican enforces its secure-RBAC policy defaults) |
 | `tests/tempest/barbican-2026-1/` | Barbican 2026.1 Tempest configuration (same file set; identity CR `keystone-barbican-tempest-2026-1`) |
+| `tests/tempest/barbican-2026-2/` | Barbican 2026.2 Tempest configuration (same file set; identity CR `keystone-barbican-tempest-2026-2`) |
 | `tests/tempest/neutron-2025-2/` | Neutron 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-neutron-tempest-2025-2`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the network catalog bootstrap Job; `02-messaging-secret.yaml`, the RabbitMQ credentials the Neutron mounts; `03-ovncentral-cr.yaml`, the OVNCentral the job waits on before the Neutron CR; `04-neutron-cr.yaml`, the Neutron CR) |
 | `tests/tempest/neutron-2026-1/` | Neutron 2026.1 Tempest configuration (same file set; identity CR `keystone-neutron-tempest-2026-1`) |
+| `tests/tempest/neutron-2026-2/` | Neutron 2026.2 Tempest configuration (same file set; identity CR `keystone-neutron-tempest-2026-2`) |
 | `tests/tempest/cinder-2025-2/` | Cinder 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-cinder-tempest-2025-2`, and fifteen extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the catalog bootstrap Job for the five services this leg registers: block-storage, image, compute, placement and network; `02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, the image service the volume tests create volumes from and its default S3 store; `04-cinderbackend-cr.yaml` and `05-cinderbackupbackend-cr.yaml`, the NFS volume backend and backup target; `06-cinder-cr.yaml`, the Cinder CR; `07-image-seed-job.yaml`, the Job that uploads the image `[compute] image_ref` points at; `08-messaging-secret.yaml` through `13-nova-cr.yaml`, the compute stack the compute-tagged volume tests boot a server on (the Neutron's transport-URL Secret, an OVNCentral, a Neutron, a Placement, the metadata shared secret and the Nova); `14-fake-compute.yaml`, one fake-driver `nova-compute` registered under the host name `fake-1`; `15-flavor-seed-job.yaml`, the Job that creates the two flavors `tempest.conf` pins) |
 | `tests/tempest/cinder-2026-1/` | Cinder 2026.1 Tempest configuration (same file set; identity CR `keystone-cinder-tempest-2026-1`) |
+| `tests/tempest/cinder-2026-2/` | Cinder 2026.2 Tempest configuration (same file set; identity CR `keystone-cinder-tempest-2026-2`) |
 | `tests/tempest/nova-2025-2/` | Nova 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-nova-tempest-2025-2`, and fourteen extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the compute, placement, image and network catalog bootstrap Job; `02-messaging-secret.yaml`, the transport-URL Secret the Neutron's messaging step reads; `03-ovncentral-cr.yaml`, the OVN databases the Neutron reads its addresses off; `04-neutron-cr.yaml`, the network service every server binds its port on; `05-placement-cr.yaml`, the inventory the compute publishes; `06-glance-cr.yaml` and `07-glancebackend-cr.yaml`, the image service the servers boot from and its default S3 store; `08-image-seed-job.yaml`, the Job that uploads the two 1 MiB raw images `[compute] image_ref` and `image_ref_alt` point at; `09-metadata-secret.yaml` and `10-nova-cr.yaml`, the metadata shared secret and the Nova CR; `11-fake-compute.yaml`, one fake-driver `nova-compute` whose `[DEFAULT] host` is the kind node's name; `12-ovnchassis-cr.yaml`, the chassis a port binds to; `13-neutronmetadataagent-cr.yaml`, the agent that answers 169.254.169.254; `14-flavor-seed-job.yaml`, the Job that creates `m1.nano` and `m1.micro`) |
 | `tests/tempest/nova-2026-1/` | Nova 2026.1 Tempest configuration (same file set; identity CR `keystone-nova-tempest-2026-1`) |
+| `tests/tempest/nova-2026-2/` | Nova 2026.2 Tempest configuration (same file set; identity CR `keystone-nova-tempest-2026-2`) |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
 | `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation |
@@ -47,8 +53,8 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 ## Architecture
 
 ```text
-releases/<release>/test-refs.yaml       Version pins (tempest, barbican-tempest-plugin, keystone-tempest-plugin)
-        │
+releases/<release>/test-refs.yaml       Version pins (tempest and the barbican, keystone, neutron and
+        │                               cinder Tempest plugins)
         ▼ (yq resolution)
 images/tempest/Dockerfile               2-stage build: venv-builder → python-base
         │
@@ -57,13 +63,14 @@ images/tempest/Dockerfile               2-stage build: venv-builder → python-b
         │       build-tempest job        Per-release × per-platform builds (amd64, arm64)
         │       merge-tempest-image job  Per-release multi-arch manifest + SBOM + Grype + cosign
         │
-        └──▶ ci.yaml                    Build locally, run tests per release
-                tempest job (matrix)      Per-release: build image → run Tempest → upload JUnit
+        └──▶ ci.yaml                    build-e2e-images job builds, tempest job runs per service and release
+                build-e2e-images job      Per-release: hack/ci-build-tempest-image.sh builds the image
+                tempest job (matrix)      Per leg: load image → deploy services → run Tempest → upload JUnit
                                          │
-tests/tempest/<config-dir>/              │ mounted into container (per-release config)
-  tempest.conf                    ──────▶│
-  include-tests.txt               ──────▶│
-  exclude-tests.txt               ──────▶│
+tests/tempest/<config-dir>/              │ prepared in _output/tempest/config, mounted at /etc/tempest
+  tempest.conf                    ──────▶│ rendered copy (localhost URI, admin password)
+  include-tests.txt               ──────▶│ split into phases/phase-1-core.txt and phases/phase-2-plugin.txt
+  exclude-tests.txt               ──────▶│ copied
                                          ▼
                               _output/tempest/tempest-results.xml (JUnit XML artifact)
 ```
@@ -83,7 +90,7 @@ tooling versions can evolve independently.
 
 ```yaml
 tempest: "46.3.0"
-keystone-tempest-plugin: "0.21.0"
+keystone-tempest-plugin: "0.22.0"
 ```
 
 The tempest pin may run ahead of the release line a directory represents:
@@ -129,12 +136,13 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | Package | Purpose |
 | --- | --- |
 | `tempest` | OpenStack Tempest testing framework |
-| `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release in `test-refs.yaml` (both releases pin `4.5.0`) |
+| `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release in `test-refs.yaml` (every release pins `4.6.0`) |
 | `keystone-tempest-plugin` | Keystone-specific Tempest test plugins |
-| `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.0.0` for 2025.2, `3.2.0` for 2026.1). Version 3.1.0 and later need `testtools>=2.8.4`, and 2025.2's `upper-constraints.txt` pins `testtools===2.7.2`, so `3.0.0` is the newest version that resolves there |
-| `cinder-tempest-plugin` | Cinder-specific Tempest test plugins; both releases pin `1.22.0`, since the plugin needs only `pbr`, `oslo.config`, `oslo.serialization` and `tempest>=40.0.0` and no release's `upper-constraints.txt` narrows those |
+| `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.0.0` for 2025.2, `3.2.0` for 2026.1, `3.3.0` for 2026.2). Version 3.1.0 and later need `testtools>=2.8.4`, and 2025.2's `upper-constraints.txt` pins `testtools===2.7.2`, so `3.0.0` is the newest version that resolves there. Version 3.3.0 imports `neutron_lib.services.pvlan`, which the neutron-lib 2026.2 constrains (`5.0.1`) ships and the one 2026.1 constrains (`3.24.0`) does not |
+| `cinder-tempest-plugin` | Cinder-specific Tempest test plugins; every release pins `1.23.0`, since the plugin needs only `pbr`, `oslo.config`, `oslo.serialization` and `tempest>=40.0.0` and no release's `upper-constraints.txt` narrows those |
 | `python-openstackclient` | `openstack` CLI, used by the full-chain ControlPlane E2E verify Job (`token issue` / `catalog list`); version pinned by `upper-constraints.txt` |
 | `osc-placement` | `openstack` CLI placement plugin, used by the full-chain ControlPlane E2E placement round-trip (`resource class list`); version pinned by `upper-constraints.txt` |
+| `python-barbicanclient` | `openstack secret` commands, used by the full-chain ControlPlane E2E verify Job round-trip; version pinned by `upper-constraints.txt` |
 | `python-subunit` | Subunit test result streaming protocol |
 | `junitxml` | Subunit-to-JUnit XML conversion (`subunit2junitxml`) |
 | `defusedxml` | Hardened XML parsing for the result-processing tooling |
@@ -220,26 +228,27 @@ Keystone service:
 | Section | Key | Value | Purpose |
 | --- | --- | --- | --- |
 | `[DEFAULT]` | `log_dir` | `/tmp/tempest-logs` | Log output directory inside container |
-| `[identity]` | `uri_v3` | `http://keystone-tempest-api.openstack.svc:5000/v3` | Keystone v3 API endpoint (in-cluster DNS) |
-| `[auth]` | `use_dynamic_credentials` | `false` | Use static admin credentials (no tenant creation) |
+| `[identity]` | `uri_v3` | `http://keystone-tempest-<slug>.openstack.svc:5000/v3` | Keystone v3 API endpoint (in-cluster DNS) |
+| `[auth]` | `use_dynamic_credentials` | `true` | Use dynamic credentials (Tempest creates the projects and users of its tests) |
 | `[auth]` | `admin_username` | `admin` | Admin user for API authentication |
 | `[auth]` | `admin_password` | `${KEYSTONE_ADMIN_PASSWORD}` | Injected at runtime from K8s secret |
 | `[auth]` | `admin_project_name` | `admin` | Admin project scope |
 | `[auth]` | `admin_domain_name` | `Default` | Admin domain scope |
 | `[identity-feature-enabled]` | `api_v3` | `true` | Enable v3 identity API tests |
-| `[service_available]` | `identity` | `true` | Identity service is deployed |
-| `[service_available]` | `compute` | `false` / `true` | Nova is deployed on the nova and cinder legs; the keystone, glance, barbican and neutron legs set `false` |
-| `[service_available]` | `network` | `false` / `true` | Neutron is deployed on the neutron, nova and cinder legs; the keystone, glance and barbican legs set `false` |
-| `[service_available]` | `volume` | `false` / `true` | Cinder is deployed on the cinder legs; the keystone, glance, barbican, neutron and nova legs set `false` |
-| `[service_available]` | `image` | `false` / `true` | Glance is deployed on the glance, cinder and nova legs; the keystone, barbican and neutron legs set `false` |
+| `[service_available]` | `nova` | `false` / `true` | Nova is deployed on the nova and cinder legs; the keystone, glance, barbican and neutron legs set `false` |
+| `[service_available]` | `neutron` | `false` / `true` | Neutron is deployed on the neutron, nova and cinder legs; the keystone, glance and barbican legs set `false` |
+| `[service_available]` | `cinder` | `false` / `true` | Cinder is deployed on the cinder legs; the keystone, glance, barbican, neutron and nova legs set `false` |
+| `[service_available]` | `glance` | `false` / `true` | Glance is deployed on the glance, cinder and nova legs; the keystone, barbican and neutron legs set `false` |
 | `[service_available]` | `placement` | `true` | Placement is deployed on the nova and cinder legs; no other leg writes the key |
-| `[service_available]` | `object-storage` | `false` | Swift is not deployed |
+| `[service_available]` | `barbican` | `false` / `true` | Barbican is deployed on the barbican legs; the neutron, cinder and nova legs set `false`; the keystone and glance legs do not write the key |
+| `[service_available]` | `swift` | `false` | Swift is not deployed |
+| `[service_available]` | `horizon` | `false` | Every leg sets `false` |
 
 The `admin_password` placeholder `${KEYSTONE_ADMIN_PASSWORD}` is resolved at runtime:
 - **Local execution:** `hack/run-tempest.sh` extracts it from the `keystone-admin` K8s
-  secret and passes it as an environment variable to the container
-- **CI execution:** `ci.yaml` extracts it via `kubectl get secret` and substitutes it
-  into a generated copy of `tempest.conf` using `sed`
+  secret and substitutes it into a generated copy of `tempest.conf` using `sed`
+- **CI execution:** `hack/ci-run-tempest.sh` extracts it via `kubectl get secret` and
+  substitutes it into a generated copy of `tempest.conf` using `sed`
 
 ### include-tests.txt
 
@@ -352,9 +361,10 @@ original stestr exit code rather than aborting the whole Tempest run.
 
 The final exit code is derived from the (possibly retry-adjusted) JUnit
 report: any remaining failures or errors fail the job. If the retry
-resolved every failure the runner exits 0. If the initial `stestr` process
-crashed hard enough that no JUnit report was produced, the runner still
-exits non-zero via the captured phase exit code.
+resolved every failure the runner exits 0. If the initial `stestr` process crashed hard
+enough that no test was recorded, the runner exits 1 at its zero-test checks. The
+captured phase exit code decides the result only when the report lists tests, no
+failures or errors remain, and no retry was merged.
 
 ### exclude-tests.txt
 
@@ -383,22 +393,23 @@ carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 ```
 
 On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
-the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on`
-version is per-release (`> 0.19.0` for 2025.2, `> 0.20.0` for 2026.1), matching
-the plugin pinned in that release's `test-refs.yaml`.
+the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on` version is
+per group and per release: two groups carry `> 0.19.0` for 2025.2 and `> 0.20.0` for
+2026.1, and the third carries `> 0.22.0` for both. Both releases' `test-refs.yaml` pin
+`0.22.0`.
 
 The RBAC suite runs only when the plugin sees scope enforcement. From 0.22.0 on
-it reads `[identity-feature-enabled] enforce_scope`, which both keystone
-`tempest.conf` files set to `true`. Plugin 0.21.0 read only Tempest's
+it reads `[identity-feature-enabled] enforce_scope`, which every keystone
+`tempest.conf` sets to `true`. Plugin 0.21.0 read only Tempest's
 `[enforce_scope] keystone`, which they leave unset, and skipped all 325 RBAC
 classes. The first 0.22.0 run failed three tests the release's default policy
 answers differently from the plugin, and a group tracked by
 [#1127](https://github.com/C5C3/cobaltcore/issues/1127) excludes them:
-`test_ec2_credential` on both releases, where a reader persona gets `201`
+`test_ec2_credential` on 2025.2 and 2026.1, where a reader persona gets `201`
 creating its own EC2 credential and the plugin expects `403`, and on 2025.2
 `test_limit.DomainAdminTests.test_identity_list_limits`, where a domain admin
 listing limits sees one of the two limits the test created. The group carries
-`re-evaluate-on: keystone-tempest-plugin > 0.22.0` in both release lists. The barbican legs follow
+`re-evaluate-on: keystone-tempest-plugin > 0.22.0` in those two release lists. The barbican legs follow
 the same convention for their one exclude,
 `barbican_tempest_plugin\.tests\.api\.test_quotas\.ProjectQuotasTest\.test_manage_project_quotas`.
 The plugin runs that test with a credential that holds only
@@ -406,9 +417,14 @@ The plugin runs that test with a credential that holds only
 [new policy defaults](../barbican/index.md#design-decisions) refuse for project
 quotas. The exclude is tracked by
 [#991](https://github.com/C5C3/cobaltcore/issues/991) and carries
-`re-evaluate-on: barbican-tempest-plugin > 4.5.0` on both releases. The excluded
+`re-evaluate-on: barbican-tempest-plugin > 4.5.0` on 2025.2 and 2026.1 and
+`re-evaluate-on: barbican-tempest-plugin > 4.6.0` on 2026.2. The excluded
 test was the leg's only runtime sign of that policy posture, so the leg's
-`04-policy-check-job.yaml` Job asserts the posture before Tempest runs.
+`04-policy-check-job.yaml` Job asserts the posture before Tempest runs. The
+2026.2 keystone list carries neither the #1127 group nor the
+[#480](https://github.com/C5C3/cobaltcore/issues/480) RBAC groups of the older
+releases, so the 2026.2 keystone leg runs those tests until a 2026.2 run shows
+their outcome.
 
 ### Compute configuration of the nova legs
 
@@ -452,7 +468,7 @@ servers carry no NIC, which is what lets `test_incremental_backup` run there:
 that test boots a server between its full and its incremental backup and has no
 compute guard.
 
-Two compute-tagged volume tests are excluded on both cinder legs, as their own
+Two compute-tagged volume tests are excluded on every cinder leg, as their own
 group under the same convention and tracked by
 [#1014](https://github.com/C5C3/cobaltcore/issues/1014):
 `test_volumes_backup.VolumesBackupsTest.test_backup_create_attached_volume` and
@@ -478,14 +494,13 @@ add another service:
 1. Create a `tests/tempest/<service>-<slug>/` directory for each release (e.g.
    `<service>-2025-2` and `<service>-2026-1`), each with `tempest.conf`,
    `include-tests.txt`, `exclude-tests.txt`, and the `00-keystone-cr.yaml`
-   identity CR the job waits on. The `tempest` job hard-fails if a release is
-   missing the directory. A service with its own operator payload also ships the
-   CRs the job applies before Tempest runs — glance carries
-   `01-catalog-setup-job.yaml` (registers the image service + endpoints in
+   identity CR the job waits on. The matrix generator fails the `changes` job if a
+   release is missing the directory, so no `tempest` leg starts. A service with its own
+   operator payload also ships the CRs the job applies before Tempest runs — glance
+   carries `01-catalog-setup-job.yaml` (registers the image service + endpoints in
    Keystone), `02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and
-   `04-glancebackend2-cr.yaml` (a second, non-default store: the copy-image
-   import test only executes a real copy when there is a store the image is
-   not already in).
+   `04-glancebackend2-cr.yaml` (a second, non-default store: the copy-image import test
+   only executes a real copy when there is a store the image is not already in).
 2. Set `[service_available]` flags to match the deployed services and point
    `[identity]` `uri_v3` at the leg's identity CR (glance authenticates against
    its own `keystone-glance-tempest-<slug>` CR, not the shared keystone leg's CR).
@@ -540,7 +555,10 @@ bash tests/container-images/verify_tempest.sh [image_name]
 | `test_barbican_tempest_plugin_importable` | `python3 -c 'import barbican_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_neutron_tempest_plugin_importable` | `python3 -c 'import neutron_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_cinder_tempest_plugin_importable` | `python3 -c 'import cinder_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
+| `test_barbicanclient_importable` | `python3 -c 'import barbicanclient'` exits 0 | python-barbicanclient is installed in the virtualenv |
 | `test_subunit2junitxml_available` | `which subunit2junitxml` exits 0 with non-empty path | JUnit XML converter is on PATH |
+| `test_openstack_cli_available` | `openstack --version` exits 0 with non-empty output | `openstack` CLI is installed and functional |
+| `test_osc_placement_cli_registered` | `openstack resource class list --help` exits 0 and prints `usage: openstack resource class list` | osc-placement registers its `openstack` CLI commands |
 | `test_runs_as_openstack_user` | `whoami` outputs `openstack` | Container runs as non-root user |
 | `test_no_build_tools_in_final_image` | `which gcc`, `dpkg -s python3-dev`, `which uv` all fail | Build tools are not in the runtime image |
 
@@ -597,9 +615,10 @@ SERVICE=keystone hack/run-tempest.sh
 
 The script exits non-zero if the retry-adjusted JUnit report still lists
 failures or errors, and otherwise exits zero. Both phases always run, so a
-failure in phase 1 does not short-circuit phase 2. If the initial `stestr`
-invocations crashed hard enough that no JUnit report was produced, the
-captured phase exit code is used as a fallback so infra failures are still
+failure in phase 1 does not short-circuit phase 2. If the initial `stestr` invocations
+crashed hard enough that no test was recorded, the script exits 1 at its zero-test
+checks. The captured phase exit code is used as a fallback when the report lists tests,
+no failures or errors remain, and no retry was merged, so infra failures are still
 reported.
 
 ### make tempest-test
@@ -641,19 +660,19 @@ port. "Compute stack" names those two legs everywhere below.
 **Release matrix:**
 
 The generator scans `releases/*/` and emits one `keystone`, one `glance`, one
-`barbican`, one `neutron`, one `cinder` and one `nova` leg per release, twelve
-entries across the two releases in the tree; each service requires a matching
-`tests/tempest/<service>-<slug>` directory or the job hard-fails.
-`service-k8s-name` always equals `cr-name` (the Keystone identity CR the job
-waits on and port-forwards on 5000). The glance legs additionally carry
-`glance-cr-name` (the Glance CR the job waits on and port-forwards on 9292),
-the barbican legs `barbican-cr-name` (the Barbican CR, waited on and
-port-forwarded on 9311) and the neutron legs `neutron-cr-name` (the Neutron CR,
-waited on and port-forwarded on 9696) plus `ovn-cr-name` (the OVNCentral the
-Neutron needs Ready before it renders `ml2_conf.ini`, waited on but not
-port-forwarded). The cinder legs carry `cinder-cr-name` (the Cinder CR, waited
-on and port-forwarded on 8776) and a `glance-cr-name` of their own, for the
-image service their volume tests create volumes from.
+`barbican`, one `neutron`, one `cinder` and one `nova` leg per release, eighteen
+entries across the three releases in the tree; each service requires a matching
+`tests/tempest/<service>-<slug>` directory or the generator fails the `changes` job.
+`service-k8s-name` always equals `cr-name` (the Keystone identity CR the job waits on
+and port-forwards on 5000). The glance legs additionally carry `glance-cr-name` (the
+Glance CR the job waits on and port-forwards on 9292), the barbican legs
+`barbican-cr-name` (the Barbican CR, waited on and port-forwarded on 9311) and the
+neutron legs `neutron-cr-name` (the Neutron CR, waited on and port-forwarded on 9696)
+plus `ovn-cr-name` (the OVNCentral the Neutron needs Ready before it renders
+`ml2_conf.ini`, waited on but not port-forwarded). The cinder legs carry
+`cinder-cr-name` (the Cinder CR, waited on and port-forwarded on 8776) and a
+`glance-cr-name` of their own, for the image service their volume tests create volumes
+from.
 
 Both compute-stack legs add `nova-cr-name` (the Nova CR, waited on and
 port-forwarded on 8774), a `neutron-cr-name` (waited on and port-forwarded on
@@ -675,45 +694,52 @@ only legs that reach a console: the run step derives
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `keystone` | `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | — | — | — | — | — | — | — |
 | `keystone` | `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | — | — | — | — | — | — | — |
+| `keystone` | `2026.2` | `tests/tempest/keystone-2026-2` | `keystone-tempest-2026-2` | — | — | — | — | — | — | — |
 | `glance` | `2025.2` | `tests/tempest/glance-2025-2` | `keystone-glance-tempest-2025-2` | `glance-tempest-2025-2` | — | — | — | — | — | — |
 | `glance` | `2026.1` | `tests/tempest/glance-2026-1` | `keystone-glance-tempest-2026-1` | `glance-tempest-2026-1` | — | — | — | — | — | — |
+| `glance` | `2026.2` | `tests/tempest/glance-2026-2` | `keystone-glance-tempest-2026-2` | `glance-tempest-2026-2` | — | — | — | — | — | — |
 | `barbican` | `2025.2` | `tests/tempest/barbican-2025-2` | `keystone-barbican-tempest-2025-2` | — | `barbican-tempest-2025-2` | — | — | — | — | — |
 | `barbican` | `2026.1` | `tests/tempest/barbican-2026-1` | `keystone-barbican-tempest-2026-1` | — | `barbican-tempest-2026-1` | — | — | — | — | — |
+| `barbican` | `2026.2` | `tests/tempest/barbican-2026-2` | `keystone-barbican-tempest-2026-2` | — | `barbican-tempest-2026-2` | — | — | — | — | — |
 | `neutron` | `2025.2` | `tests/tempest/neutron-2025-2` | `keystone-neutron-tempest-2025-2` | — | — | `neutron-tempest-2025-2` | — | — | `ovn-neutron-tempest-2025-2` | — |
 | `neutron` | `2026.1` | `tests/tempest/neutron-2026-1` | `keystone-neutron-tempest-2026-1` | — | — | `neutron-tempest-2026-1` | — | — | `ovn-neutron-tempest-2026-1` | — |
+| `neutron` | `2026.2` | `tests/tempest/neutron-2026-2` | `keystone-neutron-tempest-2026-2` | — | — | `neutron-tempest-2026-2` | — | — | `ovn-neutron-tempest-2026-2` | — |
 | `cinder` | `2025.2` | `tests/tempest/cinder-2025-2` | `keystone-cinder-tempest-2025-2` | `glance-cinder-tempest-2025-2` | — | `neutron-cinder-tempest-2025-2` | `cinder-tempest-2025-2` | `nova-cinder-tempest-2025-2` | `ovn-cinder-tempest-2025-2` | `placement-cinder-tempest-2025-2` |
 | `cinder` | `2026.1` | `tests/tempest/cinder-2026-1` | `keystone-cinder-tempest-2026-1` | `glance-cinder-tempest-2026-1` | — | `neutron-cinder-tempest-2026-1` | `cinder-tempest-2026-1` | `nova-cinder-tempest-2026-1` | `ovn-cinder-tempest-2026-1` | `placement-cinder-tempest-2026-1` |
+| `cinder` | `2026.2` | `tests/tempest/cinder-2026-2` | `keystone-cinder-tempest-2026-2` | `glance-cinder-tempest-2026-2` | — | `neutron-cinder-tempest-2026-2` | `cinder-tempest-2026-2` | `nova-cinder-tempest-2026-2` | `ovn-cinder-tempest-2026-2` | `placement-cinder-tempest-2026-2` |
 | `nova` | `2025.2` | `tests/tempest/nova-2025-2` | `keystone-nova-tempest-2025-2` | `glance-nova-tempest-2025-2` | — | `neutron-nova-tempest-2025-2` | — | `nova-tempest-2025-2` | `ovn-nova-tempest-2025-2` | `placement-nova-tempest-2025-2` |
 | `nova` | `2026.1` | `tests/tempest/nova-2026-1` | `keystone-nova-tempest-2026-1` | `glance-nova-tempest-2026-1` | — | `neutron-nova-tempest-2026-1` | — | `nova-tempest-2026-1` | `ovn-nova-tempest-2026-1` | `placement-nova-tempest-2026-1` |
+| `nova` | `2026.2` | `tests/tempest/nova-2026-2` | `keystone-nova-tempest-2026-2` | `glance-nova-tempest-2026-2` | — | `neutron-nova-tempest-2026-2` | — | `nova-tempest-2026-2` | `ovn-nova-tempest-2026-2` | `placement-nova-tempest-2026-2` |
 
 **Step sequence:**
 
 | Step | Description |
 | --- | --- |
-| Build service image | `hack/ci-build-service-image.sh` with `RELEASE=matrix.release` |
-| Build Tempest image | `hack/ci-build-tempest-image.sh` with `RELEASE=matrix.release`, image tagged `c5c3/tempest:<release>` |
+| Load E2E images | The `load-e2e-images` action pulls the images the `build-e2e-images` job pushed and re-tags them to their local references: the keystone-operator, `keystone:<release>` and the Tempest image, `ghcr.io/c5c3/tempest:<release>`, plus the operator and service images of the neutron, cinder and nova legs |
 | Load images into kind | Loads operator and release-specific service images |
-| Deploy Glance operator *(glance, cinder and nova legs)* | `hack/ci-deploy-operator.sh` with `OPERATOR=glance`, `NAMESPACE=glance-system` (before the Keystone CR reconciles). The cinder leg needs it for the image service its volume tests create volumes from, the nova leg for the one its servers boot from |
-| Deploy Barbican operator *(barbican leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=barbican`, `NAMESPACE=barbican-system`, and `BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner` (the managed store lives in `openstack`, and the operator mints its provisioner token only where the chart granted it a TokenRequest Role — restricted to that one account, because `openstack` also hosts the accounts that read credentials out of OpenBao) |
-| Deploy Cinder operator *(cinder leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=cinder`, `NAMESPACE=cinder-system`. The `Setup E2E infrastructure` step ahead of it sets `WITH_NFS` on this leg alone and `WITH_MESSAGING` on it and the nova leg, which is what puts the NFS export and the `shared-rabbitmq` broker on the cluster the CinderBackend, the Cinder and both legs' Nova need. `WITH_OVN_KERNEL_MODULES` is set on the nova leg alone, where a real OVN chassis opens a Geneve tunnel off the kind node |
-| Deploy OVN and Neutron operators *(neutron, nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs: `OPERATOR=ovn`, `NAMESPACE=ovn-system` and `OPERATOR=neutron`, `NAMESPACE=neutron-system`. A Neutron never reaches Ready without a live OVNCentral, whose published database addresses its controller reads before it renders `ml2_conf.ini`. Both compute-stack legs run a Neutron of their own, so the same two runs cover them |
 | Load compute stack images into kind *(nova and cinder legs)* | One `kind load docker-image` call for the four compute-stack operator images, the `neutron`, `placement` and `nova` service images, and the `ovn` daemon image at the resolved pin. One call rather than eight: each is a `docker save` piped into the node's containerd, and the three service images share their whole `python-base` while the four operator images share theirs. Each leg's glance pair and tempest image — the latter for the catalog-setup, image-seed and flavor-seed Jobs that run in-cluster — come from a step above: the cinder leg's from its own, the nova leg's from the one it shares with the glance leg |
-| Deploy placement and nova operators *(nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs, into `placement-system` and `nova-system`. A Nova claims its inventory in a Placement, so both watch before the CRs below are applied. The glance-, ovn- and neutron-operator these legs also need come from the rows above, whose conditions cover them |
-| Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
+| Setup E2E infrastructure | The `setup-e2e-infra` action runs `make deploy-infra`. The `Deploy cinder operator` row names the `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` switches it sets per leg |
+| Deploy operator (keystone) | `hack/ci-deploy-operator.sh` with `OPERATOR=keystone` |
+| Deploy glance operator *(glance, cinder and nova legs)* | `hack/ci-deploy-operator.sh` with `OPERATOR=glance`, `NAMESPACE=glance-system` (before the Keystone CR reconciles). The cinder leg needs it for the image service its volume tests create volumes from, the nova leg for the one its servers boot from |
+| Deploy barbican operator *(barbican leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=barbican`, `NAMESPACE=barbican-system`, and `BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner` (the managed store lives in `openstack`, and the operator mints its provisioner token only where the chart granted it a TokenRequest Role — restricted to that one account, because `openstack` also hosts the accounts that read credentials out of OpenBao) |
+| Deploy ovn operator, Deploy neutron operator *(neutron, nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs: `OPERATOR=ovn`, `NAMESPACE=ovn-system` and `OPERATOR=neutron`, `NAMESPACE=neutron-system`. A Neutron never reaches Ready without a live OVNCentral, whose published database addresses its controller reads before it renders `ml2_conf.ini`. Both compute-stack legs run a Neutron of their own, so the same two runs cover them |
+| Deploy cinder operator *(cinder leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=cinder`, `NAMESPACE=cinder-system`. The `Setup E2E infrastructure` step ahead of it sets `WITH_NFS` on this leg alone and `WITH_MESSAGING` on it and the nova leg, which is what puts the NFS export and the `shared-rabbitmq` broker on the cluster the CinderBackend, the Cinder and both legs' Nova need. `WITH_OVN_KERNEL_MODULES` is set on the nova leg alone, where a real OVN chassis opens a Geneve tunnel off the kind node |
+| Deploy placement operator, Deploy nova operator *(nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs, into `placement-system` and `nova-system`. A Nova claims its inventory in a Placement, so both watch before the CRs below are applied. The glance-, ovn- and neutron-operator these legs also need come from the rows above, whose conditions cover them |
+| Deploy Keystone CR for Tempest | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
 | Bootstrap image catalog *(glance leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `glance-tempest-catalog-setup` Job to complete (registers the image service + endpoints in Keystone that the Glance CR needs to reconcile) |
-| Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
+| Deploy Glance CR for Tempest *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
 | Bootstrap key-manager catalog *(barbican leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `barbican-tempest-catalog-setup` Job to complete (registers the key-manager service + endpoints in Keystone that the Barbican CR needs to reconcile, plus the `key-manager:service-admin` role the plugin's quota tests assign via dynamic credentials) |
-| Deploy Barbican CR *(barbican leg only)* | Applies `matrix.config-dir/02-barbican-cr.yaml` and `03-barbicansecretstore-cr.yaml`, waits for `barbicansecretstore/<barbican-cr-name>-store` Ready first, then for `matrix.barbican-cr-name` Ready. Barbican renders no config and never starts without a credential-ready default store, so the separate wait keeps a store-side failure from surfacing as an opaque Barbican timeout |
+| Deploy Barbican CR for Tempest *(barbican leg only)* | Applies `matrix.config-dir/02-barbican-cr.yaml` and `03-barbicansecretstore-cr.yaml`, waits for `barbicansecretstore/<barbican-cr-name>-store` Ready first, then for `matrix.barbican-cr-name` Ready. Barbican renders no config and never starts without a credential-ready default store, so the separate wait keeps a store-side failure from surfacing as an opaque Barbican timeout |
 | Verify key-manager policy defaults *(barbican leg only)* | Applies `matrix.config-dir/04-policy-check-job.yaml`, waits 300 s for the `barbican-tempest-policy-check` Job to complete. A user holding only `member` on a probe project must get 201 creating a secret and 204 deleting it, and a user holding only `key-manager:service-admin` must get 403 listing project quotas. Every plugin API test runs as `project_admin`, which the legacy and the secure-RBAC rules both accept, so the Tempest run alone cannot show that `enforce_new_defaults` took effect |
 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `neutron-tempest-catalog-setup` Job to complete (registers the network service + endpoints in Keystone that the Neutron CR authenticates against) |
-| Deploy OVNCentral *(neutron leg only)* | Applies `matrix.config-dir/02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. `ovn-cr-name` is emitted by the matrix generator, like every other CR name this job waits on |
-| Deploy Neutron CR *(neutron leg only)* | Applies `matrix.config-dir/04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api and rpc-worker Deployments |
+| Deploy OVNCentral for Tempest *(neutron leg only)* | Applies `matrix.config-dir/02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. `ovn-cr-name` is emitted by the matrix generator, like every other CR name this job waits on |
+| Deploy Neutron CR for Tempest *(neutron leg only)* | Applies `matrix.config-dir/04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api and rpc-worker Deployments |
 | Bootstrap block-storage catalog *(cinder leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `cinder-tempest-catalog-setup` Job to complete. It registers the block-storage, image, compute, placement and network services with their endpoints: the Cinder authenticates against the first and resolves Glance from the second, and the compute stack resolves its siblings from the rest. It also grants the `service` role to the bootstrap admin the leg's CRs use as their service user, because cinder accepts nova-compute's `attachment_delete` on server delete only from a service token carrying one of its `service_token_roles` (a caller without it gets `409 ConflictNovaUsingAttachment` and the volume stays `in-use`); the ControlPlane grants the same role to every service account it registers |
-| Bootstrap compute catalog *(nova leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `nova-tempest-catalog-setup` Job to complete. It registers the compute, placement, image and network services with a public and an internal endpoint each: the Nova resolves its siblings on the internal interface, and tempest reads the public rows |
+| Bootstrap compute catalog *(nova leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `nova-tempest-catalog-setup` Job to complete. It registers the compute, placement, image and network services with a public and an internal endpoint each: the Nova resolves its siblings on the internal interface, and tempest reads the public rows. From 2026.2 on the Job also grants the `service` role to the bootstrap admin the leg's CRs use as their service user: keystonemiddleware 13.0.0 defaults `service_token_roles_required` to true, and nova sends a service token beside the user token on every call to Neutron and Glance, so without the grant every server show and delete fails with 401 |
 | Apply the independent compute-stack CRs *(nova and cinder legs)* | Applies `*-messaging-secret.yaml`, `*-ovncentral-cr.yaml` and `*-placement-cr.yaml` and waits on nothing. Neither CR has an upstream in this set, so both reconcile while the cinder leg brings up its Glance, its Cinder and its seed image and while the nova leg waits out its OVNCentral and its Neutron, instead of after them. The steps below re-apply the same manifests, which is a no-op, and then wait. The Neutron is deliberately not applied here: its controller error-requeues until the OVNCentral publishes its database addresses |
-| Deploy Glance CR *(cinder leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready. The seed image below is uploaded to it |
-| Deploy Cinder CR *(cinder leg only)* | Applies `matrix.config-dir/04-cinderbackend-cr.yaml`, `05-cinderbackupbackend-cr.yaml` and `06-cinder-cr.yaml`, waits 600 s for `matrix.cinder-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api, scheduler, volume and backup Deployments |
-| Seed the volume test image *(cinder leg only)* | Applies `matrix.config-dir/07-image-seed-job.yaml`, waits 300 s for the `cinder-tempest-image-seed` Job to complete. It uploads the 16 MiB raw image whose fixed UUID `tempest.conf` pins as `[compute] image_ref`, which every create-volume-from-image case reads |
+| Deploy Glance CR for the cinder leg *(cinder leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits 300 s for `matrix.glance-cr-name` Ready. The seed image below is uploaded to it |
+| Deploy Cinder CR for Tempest *(cinder leg only)* | Applies `matrix.config-dir/04-cinderbackend-cr.yaml`, `05-cinderbackupbackend-cr.yaml` and `06-cinder-cr.yaml`, waits 600 s for `matrix.cinder-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api, scheduler, volume and backup Deployments |
+| Seed the image the volume tests boot from *(cinder leg only)* | Applies `matrix.config-dir/07-image-seed-job.yaml`, waits 300 s for the `cinder-tempest-image-seed` Job to complete. It uploads the 16 MiB raw image whose fixed UUID `tempest.conf` pins as `[compute] image_ref`, which every create-volume-from-image case reads |
 | Deploy OVNCentral for the compute stack *(nova and cinder legs)* | Applies `*-messaging-secret.yaml` and `*-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. The Neutron renders no `ml2_conf.ini` without the published database addresses, so an OVN-side failure surfaces here rather than as an opaque Neutron timeout |
 | Deploy Neutron CR for the compute stack *(nova and cinder legs)* | Applies `*-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready, the timeout the neutron leg's own step uses for the same db-sync Job |
 | Deploy Placement CR *(nova and cinder legs)* | Applies `*-placement-cr.yaml`, waits 300 s for `matrix.placement-cr-name` Ready. The Placement holds the inventory the compute publishes and the scheduler reads, so it is Ready before the Nova is applied |
@@ -746,7 +772,7 @@ re-derive each from the first green run of its leg.
 
 | Aspect | Local (`hack/run-tempest.sh`) | CI (`hack/ci-run-tempest.sh`) |
 | --- | --- | --- |
-| Service endpoint | In-cluster DNS (`<service-k8s-name>.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
+| Service endpoint | Port-forwarded to `localhost:5000` (reuses a forward that already answers there; `host.docker.internal` on macOS) | Port-forwarded to `localhost:5000` |
 | Glance endpoint | Not supported (local runs are keystone-only) | When `GLANCE_K8S_NAME` is set (glance, cinder and nova legs), additionally forwards `svc/<glance-cr-name>` on 9292, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's image endpoint resolves to the forwarded port |
 | Barbican endpoint | Not supported (local runs are keystone-only) | When `BARBICAN_K8S_NAME` is set (barbican legs), additionally forwards `svc/<barbican-cr-name>` on 9311, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's key-manager endpoint resolves to the forwarded port |
 | Neutron endpoint | Not supported (local runs are keystone-only) | When `NEUTRON_K8S_NAME` is set (neutron, cinder and nova legs), the script also forwards `svc/<neutron-cr-name>` on 9696, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's network endpoint resolves to the forwarded port |
@@ -754,8 +780,8 @@ re-derive each from the first green run of its leg.
 | Nova endpoint | Not supported (local runs are keystone-only) | When `NOVA_K8S_NAME` is set (nova and cinder legs), the script also forwards `svc/<nova-cr-name>` on 8774, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's compute endpoint resolves to the forwarded port. Nova registers no healthcheck middleware, so the poll asks for `/`, the path the operator probes |
 | Nova console endpoint | Not supported (local runs are keystone-only) | When `NOVA_CONSOLE_K8S_NAME` is set (nova legs), the script also forwards `svc/<nova-cr-name>-novncproxy` on 6080, polls its `/vnc_lite.html`, and add-hosts its cluster DNS names to `127.0.0.1`. `test_novnc_bad_token` dials the `novncproxy_base_url` nova hands out, which the operator renders as the cluster-local Service URL when no gateway is set. That name is in no catalog |
 | Placement endpoint | Not supported (local runs are keystone-only) | When `PLACEMENT_K8S_NAME` is set (nova and cinder legs), the script also forwards `svc/<placement-cr-name>` on 8778, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's placement endpoint resolves to the forwarded port. Placement registers no healthcheck middleware either, so the poll asks for `/`, the path the operator probes |
-| Credential injection | Environment variable passed to container | `sed` substitution into generated config copy |
-| Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built locally in prior CI steps (no `--build-context` for bases) |
+| Credential injection | `sed` substitution into generated config copy | `sed` substitution into generated config copy |
+| Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built by the `Build base images` step of the `build-e2e-images` job (no `--build-context` for bases) |
 | Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |
 
 **Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2025.2-results`, `tempest-glance-2026.1-results`)
@@ -767,7 +793,7 @@ Builds the Tempest container image per release and per platform, runs verificati
 and pushes by digest on push events. The job is parameterized by release via the
 `generate-matrix` job, which discovers all releases from `releases/*/` directories.
 
-**Dependencies:** `needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]`
+**Dependencies:** `needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]`
 
 **Condition:** `needs.changes.outputs.build-tempest == 'true'`. On a pull request the
 job runs when `images/tempest/**`, `tests/container-images/verify_tempest.sh`, or one
@@ -804,7 +830,7 @@ See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 Assembles per-platform digests into a multi-arch manifest list with full supply chain
 security. The job is parameterized by release via the `generate-matrix` job.
 
-**Dependencies:** `needs: [build-tempest, generate-matrix]`
+**Dependencies:** `needs: [build-tempest, generate-matrix, prepare]`
 **Condition:** `if: github.event_name != 'pull_request'`
 **Matrix strategy:** `release` (from `generate-matrix.tempest-release-matrix`)
 
@@ -847,7 +873,9 @@ strategy:
       - images/python-base/Dockerfile
       - images/venv-builder/Dockerfile
       - images/keystone/Dockerfile
+      # ...
       - images/tempest/Dockerfile
+      # ...
 ```
 
 Hadolint runs with `failure-threshold: warning` and the project's `.hadolint.yaml`
@@ -857,32 +885,48 @@ the base image at build time.
 
 ## Data Flow (CI End-to-End)
 
+The figure shows where the parts of one job run: the Tempest container on the
+runner host, the port-forwards and host aliases that take it to the Services,
+and the seed Jobs inside the cluster. The block below lists the commands in the
+order the job runs them.
+
+![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
+
 ```text
-releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_TEMPEST_PLUGIN_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSION
-                         │
-                         ▼
+releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_TEMPEST_PLUGIN_VERSION +
+                         │                KEYSTONE_TEMPEST_PLUGIN_VERSION + NEUTRON_TEMPEST_PLUGIN_VERSION +
+                         │                CINDER_TEMPEST_PLUGIN_VERSION
+                         ▼ (build-e2e-images job, per release: hack/ci-build-tempest-image.sh)
          docker build --build-arg TEMPEST_VERSION=... \
                       --build-arg BARBICAN_TEMPEST_PLUGIN_VERSION=... \
                       --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=... \
+                      --build-arg NEUTRON_TEMPEST_PLUGIN_VERSION=... \
+                      --build-arg CINDER_TEMPEST_PLUGIN_VERSION=... \
                       --build-context upper-constraints=releases/<release>/ \
                       images/tempest/
                          │
-                         ▼ (tempest job, per matrix.release)
-         kubectl port-forward svc/<service-k8s-name> 5000:5000
+                         ▼ (tempest job, per matrix.service and matrix.release)
+         hack/ci-run-tempest.sh, in this order:
+           1. kubectl get secret keystone-admin -n openstack (admin password)
+           2. kubectl port-forward svc/<service-k8s-name> -n openstack 5000:5000, plus one forward per
+              <SERVICE>_K8S_NAME the leg sets (9292, 9311, 9696, 8776, 8774, 6080, 8778); each forward
+              is polled on localhost, up to 10 attempts
+           3. sed renders tempest.conf (localhost:5000 URI + admin password) into
+              _output/tempest/config; exclude-tests.txt and the runner scripts are copied there
+           4. include-tests.txt is split into phases/phase-1-core.txt and phases/phase-2-plugin.txt
                          │
                          ▼
-         hack/ci-run-tempest.sh (resolve localhost URI + admin password)
-                         │
-                         ▼
-         docker run --network host \
-           -v tempest.conf:/etc/tempest/tempest.conf \
-           -v phases/phase-1-core.txt:/etc/tempest/phases/phase-1-core.txt \
-           -v phases/phase-2-plugin.txt:/etc/tempest/phases/phase-2-plugin.txt \
-           -v exclude-tests.txt:/etc/tempest/exclude-tests.txt \
-           -v extract-failed.py:/etc/tempest/extract-failed.py \
-           -v merge-retry-junit.py:/etc/tempest/merge-retry-junit.py \
-           -v run-tests.sh:/etc/tempest/run-tests.sh \
-           c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
+         docker run --rm --network host \
+           --add-host <service-k8s-name>.openstack.svc.cluster.local:127.0.0.1 \
+           --add-host <service-k8s-name>.openstack.svc:127.0.0.1 \
+           (the same two --add-host flags for every other forwarded Service) \
+           -v <workspace>/_output/tempest/config:/etc/tempest:ro \
+           -v <workspace>/_output/tempest:/output \
+           -e TEMPEST_CONCURRENCY=... \
+           -e TEMPEST_GROUP_START=::group:: \
+           -e TEMPEST_GROUP_END=::endgroup:: \
+           -e TEMPEST_ERROR_PREFIX=::error:: \
+           ghcr.io/c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
          #
          # Internal logic of run-tests.sh (kept here for reference; the runner
          # scripts never invoke these steps inline — they always `bash

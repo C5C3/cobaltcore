@@ -953,6 +953,24 @@ jobs:
               echo "::error::$chart does not render the placement keys into its Deployment (got: $placed)"
               exit 1
             fi
+            # Renders the standalone webhook release, then checks that its
+            # ClusterRole is the generated webhook rule set, which names no
+            # secrets, and that the Deployment runs without controllers and
+            # without a lease. yq ea reads every document at once, and the
+            # resources and args are matched element by element: contains()
+            # matches substrings, so barbicansecretstores would read as
+            # secrets. The helm call stays alone on its line for the cinder
+            # and nova matrix tests.
+            echo "--- Scenario 7: standalone webhook ---"
+            out=$(
+              helm template test "$chart" --set webhook.standalone=true
+            )
+            grants_secrets=$(yq ea '[select(.kind == "ClusterRole") | .rules[].resources[]] | any_c(. == "secrets")' <<<"$out")
+            standalone_args=$(yq ea '[select(.kind == "Deployment") | .spec.template.spec.containers[0].args[]] | (any_c(. == "--enable-controllers=false") and all_c(. != "--leader-elect"))' <<<"$out")
+            if [ "$grants_secrets" != "false" ] || [ "$standalone_args" != "true" ]; then
+              echo "::error::$chart grants secrets to the standalone webhook or renders its arguments wrong (secrets: $grants_secrets, args: $standalone_args)"
+              exit 1
+            fi
           done
       - name: Helm unittest
         run: |
@@ -1631,10 +1649,14 @@ jobs:
           # suites that run 24 to 30 minutes, compute-node-pool among shard 2's,
           # and shard 1 takes gateway-quick-start-smoke and scale, the two other
           # suites that run alone (concurrent: false). The NovaCompute suites
-          # stay together in shard 2. The suites are passed as directories
-          # because chainsaw's include/exclude regex filters are no-ops.
+          # stay together in shard 2. Measured again on 2026-10-07 with three
+          # releases loaded (run 37593527630), shard 1 took 66 minutes and
+          # shard 2 59, 16.3 of them for basic-deployment-2026-1, so its
+          # 2026.2 twin joins it in the shorter shard 2. The suites are passed
+          # as directories because chainsaw's include/exclude regex filters
+          # are no-ops.
           if [ "${OPERATOR}" = "nova" ]; then
-            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-1 release-upgrade healthcheck deletion-cleanup pod-security-restricted"
+            shard_two="compute-node-pool invalid-novacompute-cr basic-deployment-2026-1 basic-deployment-2026-2 release-upgrade healthcheck deletion-cleanup pod-security-restricted"
             test_dirs=()
             for dir in tests/e2e/nova/*/ tests/e2e/nova-operator/*/; do
               case " ${shard_two} " in

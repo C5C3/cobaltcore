@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1098" viewBox="0 0 1808 1098" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Satellite resource handshake">
+<title>Satellite resource handshake</title>
+<rect width="1808" height="1098" fill="#F6F5F1"/>
+<rect x="40" y="40" width="680" height="940" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Satellite controller</text>
+<rect x="1080" y="40" width="688" height="940" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1099" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Service controller</text>
+<rect x="70" y="110" width="230" height="48" rx="20" fill="#1D47A6"/>
+<text x="185" y="142.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">satellite {sat}</text>
+<path d="M70 190 H294 L310 206 V246 H70 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="294,190 294,206 310,206" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="190" y="226.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">credentials Secret</text>
+<text x="70" y="275.2" font-size="20" font-weight="400" fill="#55606E">what the satellite needs for its work</text>
+<rect x="440" y="300" width="230" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="555" y="336.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CredentialsReady</text>
+<rect x="440" y="672" width="230" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="555" y="708.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ConfigProjected</text>
+<rect x="440" y="838" width="230" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="555" y="874.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Ready</text>
+<rect x="1140" y="300" width="250" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1265" y="336.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">aggregation step</text>
+<text x="1406" y="335.2" font-size="20" font-weight="400" fill="#55606E">a step in the pipeline of {svc}</text>
+<path d="M1140 486 H1374 L1390 502 V542 H1140 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1374,486 1374,502 1390,502" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1265" y="522.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">rendered Secret</text>
+<text x="1406" y="509.2" font-size="20" font-weight="400" fill="#55606E">one section per satellite that passed</text>
+<text x="1406" y="535.2" font-size="20" font-weight="400" fill="#55606E">its name carries a hash of its content</text>
+<rect x="1140" y="672" width="250" height="56" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="1265" y="708.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Deployment of {svc}</text>
+<text x="1406" y="695.2" font-size="20" font-weight="400" fill="#55606E">the pod template mounts</text>
+<text x="1406" y="721.2" font-size="20" font-weight="400" fill="#55606E">the rendered Secret</text>
+<polyline points="310,218 555,218 555,289.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="555,300 562.2,285 547.8,285" fill="#3A4452"/>
+<circle cx="336" cy="218" r="18" fill="#17202B"/>
+<text x="336" y="225.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="362" y="207.2" font-size="20" font-weight="400" fill="#2B3440">the controller checks them</text>
+<polyline points="670,328 1129.5,328" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1140,328 1125,320.8 1125,335.2" fill="#3A4452"/>
+<circle cx="696" cy="328" r="18" fill="#17202B"/>
+<text x="696" y="335.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="736" y="317.2" font-size="20" font-weight="400" fill="#2B3440">reads only this condition</text>
+<polyline points="1265,356 1265,475.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1265,486 1272.2,471 1257.8,471" fill="#2F8A57"/>
+<circle cx="1265" cy="382" r="18" fill="#17202B"/>
+<text x="1265" y="389.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<text x="1281" y="444.2" font-size="20" font-weight="400" fill="#2B3440">renders</text>
+<polyline points="1265,542 1265,661.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1265,672 1272.2,657 1257.8,657" fill="#B0387F"/>
+<circle cx="1265" cy="568" r="18" fill="#17202B"/>
+<text x="1265" y="575.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<text x="1291" y="616.2" font-size="20" font-weight="400" fill="#8A2B63">mount</text>
+<text x="1291" y="642.2" font-size="20" font-weight="400" fill="#55606E">a new name rolls the pods</text>
+<polyline points="1140,700 680.5,700" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="670,700 685,707.2 685,692.8" fill="#3A4452"/>
+<circle cx="1114" cy="700" r="18" fill="#17202B"/>
+<text x="1114" y="707.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<text x="1068" y="689.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">finds its section in the mounted Secret</text>
+<polyline points="440,340 400,340 400,866 429.5,866" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="440,866 425,858.8 425,873.2" fill="#3A4452"/>
+<polyline points="555,728 555,827.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="555,838 562.2,823 547.8,823" fill="#3A4452"/>
+<polyline points="670,866 1752,866 1752,266 1325,266 1325,289.5" fill="none" stroke="#C6343C" stroke-width="3"/>
+<polygon points="1325,300 1332.2,285 1317.8,285" fill="#C6343C"/>
+<rect x="1378" y="851" width="84" height="30" rx="15" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1420" y="872.48" font-size="18" font-weight="700" fill="#A3262E" text-anchor="middle">never</text>
+<text x="1420" y="910.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">would deadlock: Ready needs ConfigProjected,</text>
+<text x="1420" y="936.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">which needs this step</text>
+<text x="40" y="1025.2" font-size="20" font-weight="400" fill="#55606E">{sat}: a GlanceBackend, CinderBackend, CinderBackupBackend, BarbicanSecretStore or KeystoneIdentityBackend. {svc}: the service resource it names.</text>
+<text x="40" y="1051.2" font-size="20" font-weight="400" fill="#55606E">On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.</text>
+</svg>

@@ -188,6 +188,13 @@ kubectl get keystoneidentitybackend corp-saml \
 `DomainReady`, `FederationObjectsReady`, `MappingsReady`, `ConfigProjected`,
 and the aggregate `Ready` all reach `True`.
 
+The figure shows that order for every satellite kind. Its gate,
+`CredentialsReady`, is `DomainReady` on an identity backend.
+[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists the five steps and what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 ## Step 6 — Export the SP metadata and register it at the IdP
 
 Once the SP material resolves, the operator writes the SP metadata to a
@@ -203,9 +210,9 @@ kubectl get secret keystone-saml-sp-metadata \
 
 Register that SP metadata with your IdP out of band (in Keycloak: create a
 SAML client, import the SP metadata, and confirm the client's `clientId`
-equals the SP `entityID` from the Secret). The export is written even before
-the IdP metadata resolves, so you can register the SP first and supply the
-IdP metadata afterward.
+equals the SP `entityID` from the Secret). The export is written once the
+backend renders, and a backend whose IdP metadata does not resolve is skipped.
+Supply the IdP metadata first, then register the SP.
 
 ## Step 7 — Log in via WebSSO
 
@@ -218,6 +225,13 @@ Point the dashboard's WebSSO choice at the per-IdP path
 The proxy redirects the browser to the IdP, the IdP posts the signed
 assertion back to `<endpoint>/postResponse`, and `mod_auth_mellon`
 establishes the session and forwards the mapped attributes to Keystone.
+
+The figure draws the login for an OIDC backend. A SAML login differs in hops 4
+and 5: the browser posts the assertion to the proxy, and no call from the proxy
+to the identity provider follows.
+[The hops of a login](../end-to-end-sso.md#login-hops) lists all eight.
+
+![A federated login through Horizon in eight numbered hops. Hop 1: the browser opens the login page of Horizon through the Gateway and picks an identity provider, and Horizon answers with a redirect. Hop 2: the browser follows it to the websso path of that provider on the public Keystone URL and passes the dashboard origin. The Service of Keystone sends every request to the federation-proxy container of the Keystone pod on port 5050, which redirects a browser without a session to the identity provider. Hop 3: the browser opens the authorization endpoint of the identity provider, and the user logs in there. Hop 4: the identity provider sends the browser back to /v3/OS-FEDERATION/redirect_uri on the public Keystone URL, with a code. Hop 5: the proxy exchanges the code at the token endpoint of the identity provider, a call that leaves the pod. Hop 6: the proxy passes the request to Keystone on 127.0.0.1:5000 with the claims as request headers, and Keystone answers with a form that carries a token, if the origin is a trusted dashboard. Hop 7: the browser posts that form to the origin, the path /auth/websso/ of Horizon. Hop 8: Horizon validates the token against the cluster-local Keystone URL and starts the session. Hops 1 to 4 and 7 are requests of the browser and use public names; hops 5 and 8 are calls between servers and use names a pod resolves. A SAML backend differs in hops 4 and 5: the browser posts the assertion to the proxy, and no call to the identity provider follows.](../../diagrams/service-federated-login.svg)
 
 ## Coexistence with OIDC
 
@@ -266,9 +280,10 @@ the last federation backend restores the plain uWSGI-only pod.
 
 ## Tested by
 
-Attaching the SAML backend, watching the conditions converge, exporting the SP
-metadata, and a WebSSO login are asserted end-to-end on the CI e2e kind cluster
-by this chainsaw suite:
+Attaching the SAML backend, watching the conditions converge, and exporting the
+SP metadata are asserted on the CI e2e kind cluster by this chainsaw suite. It
+runs no WebSSO login: the SAML round trip through a browser is left to a check
+by hand.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/saml-federation

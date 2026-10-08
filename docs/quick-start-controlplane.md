@@ -19,6 +19,14 @@ credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
 
+On the map of the four quick starts this page is the box Quick Start
+(ControlPlane). It needs a fresh cluster: where a cluster already runs the
+standalone Keystone of the other two kind pages, run `make teardown-infra`
+first, because `WITH_CONTROLPLANE=true` changes the mode of the stack and the
+ControlPlane provisions its own MariaDB and Memcached.
+
+![A map of the four quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other two run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Each quick start begins at git clone and is complete in itself.](./diagrams/quickstart-map.svg)
+
 The figure shows the cluster this page builds, from the one `ControlPlane` CR
 to the running services. Target clusters, the dashed box, are not part of this
 page. [Architecture](./architecture/index.md#implemented-topology) describes
@@ -706,6 +714,14 @@ kubectl wait controlplane/controlplane -n openstack \
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
 at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the per-service
 [Quick Start](./quick-start.md), and no port-forward is needed.
+
+The figure follows that path. Every service block with a `gateway` has a
+listener and a route of its own, and the `publicEndpoint` lines of the CR in
+Step 4 put the host port into the catalog.
+[The request path, hop by hop](./quick-start-extended.md#request-path) names
+each hop and where a first run stops.
+
+![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](./diagrams/quickstart-request-path.svg)
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3

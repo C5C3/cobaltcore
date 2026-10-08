@@ -153,6 +153,13 @@ controlplane-glance-default     True    S3     true      controlplane-glance   6
 controlplane-glance-secondary   True    S3     false     controlplane-glance   20s
 ```
 
+`READY` turns `True` only after the Glance Deployment mounts the section of the
+backend. The figure shows the steps in between, and
+[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists them with what differs per kind.
+
+![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
+
 The Glance CR aggregates them through its `BackendsReady` condition — `True`
 with reason `AllBackendsProjected` once every attached backend is
 credential-ready and projected:
@@ -185,15 +192,15 @@ Both store ids appear, with the default flagged:
 ```json
 {
   "stores": [
-    { "id": "default", "default": true },
-    { "id": "secondary" }
+    { "id": "controlplane-glance-default", "default": true },
+    { "id": "controlplane-glance-secondary" }
   ]
 }
 ```
 
 A client selects the non-default store per upload with the
-`X-Image-Meta-Store: secondary` header; without it, image data lands in the
-default store.
+`X-Image-Meta-Store: controlplane-glance-secondary` header; without it, image
+data lands in the default store.
 
 The token is **piped into the pod's stdin**, never passed with `--env`. An
 `--env=TOKEN=...` would write the bearer token as a literal into the Pod spec,
@@ -231,8 +238,8 @@ kubectl get deploy controlplane-glance -n openstack -o jsonpath='config={.spec.t
 Re-running it after the switch shows a new `controlplane-glance-config-<hash>`
 name and an unchanged `controlplane-glance-backends-<hash>` name.
 
-Re-run the `/v2/info/stores` probe from Step 2: `secondary` now carries
-`"default": true`.
+Re-run the `/v2/info/stores` probe from Step 2:
+`controlplane-glance-secondary` now carries `"default": true`.
 
 ::: tip No valid default means last-good is retained
 If a switch ever leaves zero credential-ready defaults (for example a

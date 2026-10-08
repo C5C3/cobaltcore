@@ -21,6 +21,18 @@ of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
 block-storage block and three lab settings; read Steps 3 and 4 there for its
 anatomy.
 
+On the map of the four quick starts this page is the box Quick Start
+(metal-stack): the ControlPlane of the Quick Start (ControlPlane) on a cluster
+you bring, with servers on KVM.
+
+![A map of the four quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other two run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Each quick start begins at git clone and is complete in itself.](./diagrams/quickstart-map.svg)
+
+The figure shows the lab after both parts: what runs once per cluster, what
+runs on every worker, the port-forward as the only way in, and the traffic
+between the workers.
+
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, an NFS server for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the NFS server inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](./diagrams/compute-metal-stack-lab.svg)
+
 ## Prerequisites
 
 The lab assumes a cluster of this shape:
@@ -130,6 +142,9 @@ chaos soak: VictoriaMetrics, which keeps the metrics on a volume, and Grafana
 with dizzy's dashboards. A soak reaches them through the port-forward of
 Step 6 and a second one to VictoriaMetrics; see
 [Lab dizzy stack](./reference/infrastructure/infrastructure-manifests.md#lab-dizzy-stack).
+Once Part 2 has run, `make dizzy-soak-start` starts a six-hour soak inside the
+cluster that needs no port-forward and ends with a report and a verdict; see
+[In-cluster soak](./reference/testing/dizzy-chaos-testing.md#in-cluster-soak).
 
 `WITH_PROMETHEUS=true` is optional as well. Added to the deploy command, it
 deploys Prometheus and Grafana. Prometheus keeps its metrics on a volume and
@@ -462,6 +477,14 @@ of ICMP and IPv4 headers fill the network's MTU of 1402. The 1375-byte ping
 fails, because the packet does not fit and `-M do` forbids fragmenting it.
 Leave the console with `Ctrl+]`.
 
+The figure follows the metadata call of this step. The lab's agent runs on the
+cluster of its Nova, so the call takes the solid path, to the Service
+`controlplane-nova-metadata` over plain HTTP.
+[The path of a request](./reference/neutron/neutron-metadata-agent-crd.md#metadata-path)
+lists the hops.
+
+![The path of a metadata request in six numbered hops. Hop 1: an instance calls http://169.254.169.254, an address OVN answers on the chassis of its node. Hop 2: Open vSwitch hands the request to a haproxy in the network namespace of the instance's network; the metadata agent creates one such namespace per network under /run/netns and starts one haproxy in each. Hop 3: haproxy passes the request to the metadata agent over the socket metadata_proxy. Hop 4: the agent finds the port that is asking in the Southbound database. Hop 5: the agent forwards the request to the Nova metadata API {nova}-metadata on port 8775 and signs it with the shared secret, as the header X-Instance-ID-Signature. Hop 6: the metadata API checks the signature with the same secret and resolves the instance from the mappings in the API database. One Secret, {cp}-nova-metadata-secret, carries the shared secret to both ends, as an environment variable on each. For an agent on a compute cluster two things change: it reads a copy of the secret that the c5c3-operator writes there, and it reaches the metadata API over https through the metadata Gateway.](./diagrams/compute-metadata-path.svg)
+
 ### Step 7: Attach a volume {#hv-volume}
 
 Create a 1 GiB volume, which the scheduler places on the backend `nfs1`, and
@@ -489,6 +512,12 @@ pods carried the mount through the host into the libvirt pod. The file keeps
 Cinder's owner and mode, so libvirt changed no owner on the attach (see
 `dynamic_ownership` in
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+
+The figure shows the mounts behind this step. The volume service
+`controlplane-cinder-volume-nfs1` and `nova-compute` on the node of `lab-0`
+mount the same export, each below its own state directory.
+
+![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](./diagrams/service-cinder-nfs-mounts.svg)
 
 Open the console of `lab-0` as in Step 6:
 
@@ -557,7 +586,12 @@ mount. Leave the console with `Ctrl+]`.
 
 The step evicts the node that holds `lab-0`, which `host` names since Step 8.
 Manual maintenance makes the hypervisor operator create an `Eviction` that
-live-migrates every server off the node, `lab-0` with its volume:
+live-migrates every server off the node, `lab-0` with its volume.
+
+The figure shows a whole drain. This step runs its steps 1 to 3 and then clears
+`maintenance` again, so the pool label stays on and the node stays `Active`.
+
+![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](./diagrams/compute-node-drain.svg)
 
 ```bash
 kubectl patch hypervisor "${host}" --type merge \
@@ -640,7 +674,10 @@ and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
 `/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
 node reboots. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
 the hypervisors: its experiments are released while its controller still runs,
-and its kernel modules stay loaded until a node reboots as well. A dizzy stack
+and its kernel modules stay loaded until a node reboots as well. A dizzy soak
+started with `make dizzy-soak-start` ends before the hypervisors go, and its
+project, Keystone user and report claim go with it, so fetch its reports with
+`make dizzy-soak-report` first. A dizzy stack
 deployed with `WITH_DIZZY=true` goes in the teardown's step 3, and its claim
 with it. Where the default class has the reclaim policy `Delete`, the metrics
 on its volume go too. A Prometheus deployed with `WITH_PROMETHEUS=true` goes in

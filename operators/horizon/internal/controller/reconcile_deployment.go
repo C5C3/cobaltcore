@@ -209,6 +209,9 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
+				// A TCP connect does not wait on the worker; the explicit value keeps
+				// the liveness timeout of every API front end the same (#1294).
+				TimeoutSeconds: 10,
 			},
 			// Readiness renders the login page: Django URL routing,
 			// templates, and the offline-compression manifest are all
@@ -226,6 +229,14 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 				TimeoutSeconds:      10,
 				FailureThreshold:    3,
 			},
+			// The startup probe carries the cold-start window: the first render of
+			// the login page after a start loads Django's URL routing, the
+			// templates and the offline-compression manifest, on two uWSGI
+			// processes of one thread each. The timings are the sibling
+			// operators' (#1083): 30x10s of startup budget, and an 8s timeout
+			// because a cold-starting WSGI app can hold even a plain HTTP GET past
+			// the kubelet's 1s default, and an attempt that times out counts as a
+			// failure.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
@@ -236,6 +247,7 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 				},
 				FailureThreshold: 30,
 				PeriodSeconds:    10,
+				TimeoutSeconds:   8,
 			},
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      "config",

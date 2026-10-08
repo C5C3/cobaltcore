@@ -31,8 +31,8 @@ coexist during the transition:
 The Keystone operator implements this as a state machine within the `reconcileDatabase`
 sub-reconciler, coordinated with `reconcileDeployment` for the rolling update phase
 between migrate and contract. The phase machine itself lives in
-`internal/common/database` and is shared with the Glance operator; Keystone
-supplies the image-tag seam and the `keystone-manage` phase commands.
+`internal/common/database` and is shared with the Glance, Cinder, Nova and
+Neutron operators; Keystone supplies the image-tag seam and the `keystone-manage` phase commands.
 
 ---
 
@@ -119,40 +119,15 @@ An enum with four valid values during an upgrade:
 
 ## Phase Transitions
 
-The upgrade proceeds through a fixed sequence of phases. Each phase transition is
-driven by Job completion or Deployment readiness.
+The upgrade proceeds through a fixed sequence of phases. A phase ends when its
+Job completes, and `RollingUpdate` ends when the Deployment has finished rolling
+out.
 
-```text
-spec.image.tag changed (e.g., 2025.2 -> 2026.1)
-         |
-         v
-  validateUpgradePath()
-  - ParseRelease(installedRelease)
-  - ParseRelease(spec.image.tag)
-  - IsSequentialUpgrade(from, to)
-         |
-    +----v-----+
-    | Expanding |--- db_sync --expand (NEW image: 2026.1) --- Job complete
-    +----------+                                                  |
-         +--------------------------------------------------------+
-    +----v------+
-    | Migrating |--- db_sync --migrate (NEW image: 2026.1) --- Job complete
-    +-----------+                                                  |
-         +-----------------------------------------------------   +
-    +----v-----------+
-    | RollingUpdate   |--- Deployment updates to NEW image (2026.1)
-    +----------------+    waits for rollout --- rollout complete
-                                                        |
-         +----------------------------------------------+
-    +----v---------+
-    | Contracting  |--- db_sync --contract (NEW image: 2026.1) --- Job complete
-    +--------------+                                                    |
-         +--------------------------------------------------------------+
-         v
-  installedRelease = "2026.1"
-  targetRelease    = ""
-  upgradePhase     = ""
-```
+The figure draws the four phases with the gate in front of them, the state each
+failure leaves, and the two ways out of an upgrade in flight.
+[Phase Details](#phase-details) has the command of each phase.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### Phase Details
 
@@ -180,9 +155,9 @@ spec.image.tag changed (e.g., 2025.2 -> 2026.1)
   (empty result), allowing the reconciler chain to continue to `reconcileDeployment`.
 - `reconcileDeployment` ensures the Deployment is configured with `spec.image.tag` (the NEW image).
   Kubernetes performs a rolling update of the pods.
-- **On Deployment ready:** `reconcileDeployment` transitions the phase to
-  `Contracting` and requeues.
-- **While not ready:** Requeues with `RequeueDeploymentPolling` (10s).
+- **On a finished rollout:** once every replica is updated, ready and counted,
+  `reconcileDeployment` transitions the phase to `Contracting` and requeues.
+- **Until then:** Requeues with `RequeueDeploymentPolling` (10s).
 - The Keystone API remains available throughout because old pods continue serving
   traffic until new pods pass readiness checks.
 
@@ -231,8 +206,9 @@ The `DatabaseReady` condition reflects upgrade state with specific reasons:
 | Reason | Phase | Description |
 | --- | --- | --- |
 | `VersionParseError` | Pre-upgrade | `installedRelease` or `spec.image.tag` is not a valid `YYYY.N` format |
+| `DowngradeNotSupported` | Pre-upgrade | The target release is older than `installedRelease` |
 | `UpgradePathInvalid` | Pre-upgrade | Upgrade is not sequential (e.g., skip-level) |
-| `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value different from `targetRelease` |
+| `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value that is neither `targetRelease` nor `installedRelease` |
 
 All condition messages include the source and target release version strings for
 operator visibility (e.g., `"Expand phase running: 2025.2 -> 2026.1"`).
@@ -253,7 +229,7 @@ reconcileDatabase (called first in reconciler chain)
   |  +- Delegate to reconcileUpgrade() -> dispatch by phase
   |
   +- isUpgrade()? (installedRelease != "" && tag != installedRelease && !patchOnly)
-  |  +- No: simple db_sync -> on completion: set installedRelease if empty
+  |  +- No: simple db_sync -> on completion: set installedRelease to the tag
   |  +- Yes: initiateUpgrade() -> validate path -> set targetRelease + Expanding -> requeue
   |
   +--- continues to reconcileDeployment (only if result is zero-value) ---+
@@ -261,7 +237,7 @@ reconcileDatabase (called first in reconciler chain)
 reconcileDeployment                                                       |
   |                                                                       |
   +- EnsureDeployment(spec.image.tag)  <----------------------------------+
-  +- If upgradePhase == RollingUpdate && Deployment ready:
+  +- If upgradePhase == RollingUpdate && Deployment fully rolled out:
   |    -> upgradePhase = Contracting -> requeue (back to reconcileDatabase)
   +- Normal: set DeploymentReady, Endpoint
 ```
@@ -583,7 +559,7 @@ below).
 **Symptom:** `DatabaseReady=False`, reason `UpgradeTargetChanged`.
 
 **Cause:** `spec.image.tag` was changed during an active upgrade to a value
-different from the current `targetRelease`.
+that is neither the current `targetRelease` nor `installedRelease`.
 
 **Resolution:** Choose one of:
 

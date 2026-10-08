@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1489" viewBox="0 0 1808 1489" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Image publish pipeline: pull request and push">
+<title>Image publish pipeline: pull request and push</title>
+<rect width="1808" height="1489" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="229" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Every run</text>
+<text x="59" y="114.2" font-size="20" font-weight="400" fill="#55606E">the base images are built, pushed and merged on both paths</text>
+<rect x="64" y="133" width="360" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="244" y="168.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">build-base-images</text>
+<text x="244" y="199.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">python-base and venv-builder</text>
+<text x="244" y="227.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">amd64 and arm64, pushed by digest</text>
+<rect x="504" y="133" width="360" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="684" y="168.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">merge-base-images</text>
+<text x="684" y="199.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">one manifest per image</text>
+<text x="684" y="227.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">tags latest and the commit</text>
+<rect x="944" y="133" width="360" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1124" y="197.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">verify-base-images</text>
+<rect x="1384" y="133" width="360" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1564" y="182.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">generate-matrix</text>
+<text x="1564" y="213.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">services, releases, platforms</text>
+<polyline points="424,189 493.5,189" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="504,189 489,196.2 489,181.8" fill="#3A4452"/>
+<polyline points="864,189 933.5,189" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="944,189 929,196.2 929,181.8" fill="#3A4452"/>
+<polyline points="1304,189 1373.5,189" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1384,189 1369,196.2 1369,181.8" fill="#3A4452"/>
+<rect x="40" y="329" width="480" height="994" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="368.36" font-size="26" font-weight="700" fill="#2B3440">Pull request</text>
+<rect x="60" y="392" width="440" height="531" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="79" y="431.36" font-size="26" font-weight="700" fill="#2B3440">build-service-images</text>
+<rect x="80" y="455" width="400" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="280" y="490.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Build</text>
+<text x="280" y="521.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">linux/amd64 only</text>
+<text x="280" y="549.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">loaded into the local Docker daemon</text>
+<rect x="80" y="595" width="400" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="280" y="630.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Scan the image</text>
+<text x="280" y="661.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Grype, no report upload</text>
+<rect x="80" y="707" width="400" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="280" y="742.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Verify the image</text>
+<text x="280" y="773.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">tests/container-images/verify_{service}.sh</text>
+<rect x="80" y="819" width="400" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="280" y="854.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Verify option catalog</text>
+<text x="280" y="885.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the services with a catalog</text>
+<rect x="140" y="963" width="280" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="280" y="998.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">test-service-images</text>
+<text x="280" y="1029.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the upstream unit tests</text>
+<text x="59" y="1296.2" font-size="20" font-weight="400" fill="#55606E">The run ends here. No service image is pushed.</text>
+<rect x="600" y="329" width="868" height="994" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="619" y="368.36" font-size="26" font-weight="700" fill="#2B3440">Push to main or stable/**, or a manual run</text>
+<rect x="620" y="392" width="438" height="307" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="639" y="431.36" font-size="26" font-weight="700" fill="#2B3440">build-service-images</text>
+<rect x="640" y="455" width="398" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="839" y="490.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Build</text>
+<text x="839" y="521.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">amd64 and arm64, each on its own runner</text>
+<text x="839" y="549.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">pushed by digest</text>
+<rect x="640" y="595" width="398" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="839" y="630.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Export digest</text>
+<text x="839" y="661.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">one artifact per platform</text>
+<rect x="640" y="739" width="280" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="780" y="774.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">test-service-images</text>
+<text x="780" y="805.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">the upstream unit tests</text>
+<rect x="1088" y="532" width="360" height="619" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1107" y="571.36" font-size="26" font-weight="700" fill="#2B3440">merge-service-images</text>
+<rect x="1108" y="595" width="320" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="630.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Create and push manifest</text>
+<text x="1268" y="661.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">with the tags of the Tag Schema</text>
+<rect x="1108" y="707" width="320" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="742.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Generate SBOM</text>
+<text x="1268" y="773.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">CycloneDX</text>
+<rect x="1108" y="819" width="320" height="84" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="854.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Scan the SBOM</text>
+<text x="1268" y="885.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">Grype, report to the Security tab</text>
+<rect x="1108" y="931" width="320" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="963.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Attest SBOM</text>
+<rect x="1108" y="1007" width="320" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="1039.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Attest build provenance</text>
+<rect x="1108" y="1083" width="320" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1268" y="1115.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Sign with cosign</text>
+<rect x="700" y="1191" width="640" height="112" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1020" y="1226.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">verify-service-images</text>
+<text x="1020" y="1257.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">pulls the image from ghcr.io</text>
+<text x="1020" y="1285.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">verify_{service}.sh, option catalog</text>
+<rect x="1548" y="329" width="220" height="354" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1567" y="368.36" font-size="26" font-weight="700" fill="#2B3440">ghcr.io</text>
+<polygon points="1586,392 1730,392 1746,414 1730,436 1586,436 1570,414" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1658" y="422.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">python-base</text>
+<polygon points="1586,456 1730,456 1746,478 1730,500 1586,500 1570,478" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1658" y="486.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">venv-builder</text>
+<polygon points="1586,615 1730,615 1746,637 1730,659 1586,659 1570,637" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1658" y="645.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">{service}</text>
+<polyline points="280,269 280,318.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="280,329 272.8,314 287.2,314" fill="#3A4452"/>
+<polyline points="900,269 900,318.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="900,329 892.8,314 907.2,314" fill="#3A4452"/>
+<polyline points="280,567 280,584.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="280,595 272.8,580 287.2,580" fill="#3A4452"/>
+<polyline points="280,679 280,696.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="280,707 272.8,692 287.2,692" fill="#3A4452"/>
+<polyline points="280,791 280,808.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="280,819 272.8,804 287.2,804" fill="#3A4452"/>
+<polyline points="839,567 839,584.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="839,595 831.8,580 846.2,580" fill="#3A4452"/>
+<polyline points="1038,637 1097.5,637" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1108,637 1093,644.2 1093,629.8" fill="#3A4452"/>
+<polyline points="1268,679 1268,696.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,707 1260.8,692 1275.2,692" fill="#3A4452"/>
+<polyline points="1268,791 1268,808.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,819 1260.8,804 1275.2,804" fill="#3A4452"/>
+<polyline points="1268,903 1268,920.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,931 1260.8,916 1275.2,916" fill="#3A4452"/>
+<polyline points="1268,979 1268,996.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,1007 1260.8,992 1275.2,992" fill="#3A4452"/>
+<polyline points="1268,1055 1268,1072.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,1083 1260.8,1068 1275.2,1068" fill="#3A4452"/>
+<polyline points="1268,1151 1268,1180.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1268,1191 1260.8,1176 1275.2,1176" fill="#3A4452"/>
+<polyline points="780,823 780,1180.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="780,1191 772.8,1176 787.2,1176" fill="#3A4452"/>
+<polyline points="1658,269 1658,318.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1658,329 1650.8,314 1665.2,314" fill="#3A4452"/>
+<text x="1646" y="306.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">pushed on every run</text>
+<polyline points="1428,637 1559.5,637" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1570,637 1555,644.2 1555,629.8" fill="#3A4452"/>
+<text x="1508" y="626.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">pushed</text>
+<text x="40" y="1374.2" font-size="20" font-weight="400" fill="#55606E">A bold job key is a job of .github/workflows/build-images.yaml, a box inside its frame a step of that job. {service}: one image of the service matrix.</text>
+<text x="40" y="1408.2" font-size="20" font-weight="400" fill="#55606E">A service build reads the base images from the registry by digest. That is why a pull request pushes them too.</text>
+<text x="40" y="1442.2" font-size="20" font-weight="400" fill="#55606E">A manual run, workflow_dispatch, takes the push path. The workflow has no tag trigger.</text>
+</svg>

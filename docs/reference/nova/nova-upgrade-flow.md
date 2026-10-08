@@ -28,8 +28,8 @@ rows the old code no longer writes. The operator walks four phases in a fixed
 order: `Expanding`, `Migrating`, `RollingUpdate`, `Contracting`.
 
 The phase machine lives in `internal/common/database` (`upgrade.go`) and is
-shared with Keystone, Glance and Cinder. Nova supplies the service-specific
-parts: the `nova-status` and `nova-manage` phase commands, the five workloads
+shared with Keystone, Glance, Cinder and Neutron. Nova supplies the
+service-specific parts: the `nova-status` and `nova-manage` phase commands, the five workloads
 the rolling update has to converge, and the `DatabaseReady` condition every
 phase reports on. The sibling pages are
 [Cinder Upgrade Flow](../cinder/cinder-upgrade-flow.md),
@@ -86,6 +86,7 @@ downgrade are both refused:
 | --- | --- | --- | --- |
 | `2025.1` | `2025.2` | Yes | Same year, minor +1 |
 | `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2026.2` | Yes | Same year, minor +1 |
 | `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
 | `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
 | `2026.1` | `2025.2` | No | Downgrade |
@@ -123,37 +124,24 @@ active:
 Each transition is driven by a phase Job completing or by every rendered role
 reporting a finished rollout.
 
-```text
-spec.openStackRelease bumped (e.g. 2025.2 -> 2026.1, image in lockstep)
-        |
-        v
-  Expanding      {name}-db-expand: nova-status upgrade check,
-        |                          nova-manage api_db sync, nova-manage db sync
-        v
-  Migrating      {name}-db-migrate: nova-manage cell_v2 list_cells
-        |
-        v
-  RollingUpdate  conductor, scheduler, metadata, console proxy, API roll onto the new image
-        |
-        v
-  Contracting    {name}-db-contract: nova-manage db online_data_migrations, cell then cell0
-        |
-        v
-  installedRelease = "2026.1", targetRelease = "", upgradePhase = ""
-```
-
 | Phase | What runs | Job |
 | --- | --- | --- |
-| `Expanding` | `nova-status upgrade check`, then `nova-manage --config-dir /etc/nova/nova.conf.d api_db sync` and `nova-manage --config-dir /etc/nova/nova.conf.d db sync` on the target image, while every process still runs the installed release. Both migrations are additive, so the old release keeps running against the widened schemas. Between 2025.2 and 2026.1 neither schema takes a revision (decision D3 of [#1014](https://github.com/C5C3/cobaltcore/issues/1014), lab evidence in [#1015](https://github.com/C5C3/cobaltcore/issues/1015#issuecomment-5685726178), section (b)) | `{name}-db-expand` |
+| `Expanding` | `nova-status upgrade check`, then `nova-manage --config-dir /etc/nova/nova.conf.d api_db sync` and `nova-manage --config-dir /etc/nova/nova.conf.d db sync` on the target image, while every process still runs the installed release. Both migrations are additive, so the old release keeps running against the widened schemas. Between 2025.2 and 2026.1 neither schema takes a revision (decision D3 of [#1014](https://github.com/C5C3/cobaltcore/issues/1014), lab evidence in [#1015](https://github.com/C5C3/cobaltcore/issues/1015#issuecomment-5685726178), section (b)). Between 2026.1 and 2026.2 the api schema takes no revision and the cell schema takes `ab450ba04102` (two indexes on `migrations`, read at nova 34.0.0) | `{name}-db-expand` |
 | `Migrating` | `nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 list_cells`. Nova has no migrate verb of its own, so the phase is a read that proves the new code can address the `nova_api` schema the expand phase migrated | `{name}-db-migrate` |
 | `RollingUpdate` | No Job. The roles roll in the order `conductor -> scheduler -> metadata -> novncproxy -> api`, because that is the order the pipeline ensures them in: `{name}-conductor`, `{name}-scheduler`, `{name}-metadata`, `{name}-novncproxy` while the console proxy is enabled, then the API `{name}` | |
-| `Contracting` | `nova-manage --config-dir /etc/nova/nova.conf.d db online_data_migrations --max-count 1000` in a loop, first against the cell schema and then against cell0. Between 2025.2 and 2026.1 there is no data migration to run, so both loops finish on their first batch | `{name}-db-contract` |
+| `Contracting` | `nova-manage --config-dir /etc/nova/nova.conf.d db online_data_migrations --max-count 1000` in a loop, first against the cell schema and then against cell0. Between 2025.2 and 2026.1 there is no data migration to run, so both loops finish on their first batch. The `online_migrations` tuple is unchanged at 34.0.0, so between 2026.1 and 2026.2 both loops again finish on their first batch | `{name}-db-contract` |
 
 Every phase Job runs `spec.image`, the target-release image, with
 `backoffLimit: 4`, so a phase gets five tries before it fails. A try against a
 database the Job cannot reach is slow: `nova-manage api_db sync` retries its
 connection and exits 255 after 207 seconds (same lab evidence), so each such try
 costs about 3.5 minutes.
+
+The figure draws the same four phases with what the table leaves out: the gate
+in front of them, the state a failed Job leaves, the hold on a changed target,
+and the abort.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### The second roll
 

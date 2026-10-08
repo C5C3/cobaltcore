@@ -128,7 +128,10 @@ An install that needs no target clusters carries none of the cross-cluster
 exposure: a namespace-scoped install clears `--clusters-namespace` (see below),
 the operator engages nothing, and a `targetClusterRef` naming any cluster
 reports `TargetClusterUnavailable`. The `novacomputes` grant still reaches the
-management cluster's own nodes.
+management cluster's own nodes. A standalone webhook release
+(`webhook.standalone=true`, which starts the manager with
+`--enable-controllers=false`) engages nothing either: it runs no reconciler and
+reads no registration Secret.
 
 ## Registration does not validate credentials
 
@@ -602,6 +605,11 @@ libvirt and Open vSwitch sockets (see the
 needs the same `privilegedNamespaces` entry as the chassis.
 [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) walks
 the attachment.
+
+The figure shows what crosses between the two clusters. The table lists what
+each namespace on the compute cluster needs.
+
+![What crosses between a control-plane cluster and a compute cluster. Five Secrets exist on the compute cluster. The c5c3-operator mirrors the remote compute contract there as {cp}-nova-compute-config, copies {cp}-nova-hypervisor-operator-auth, and writes {cp}-nova-metadata-agent-secret from one key of the compute contract. The ovn-operator copies the client certificate {central}-client as {chassis}-ovn-client. The CA bundle of the metadata Gateway is not delivered: the owner of the compute cluster places it. On the control-plane cluster the nova-operator writes both compute contracts, and the bus URL in the remote one comes from a Secret a person provides. Every component on the compute cluster dials a public address. nova-compute reaches the external TLS listener of the message broker and, through the Gateway, the public Keystone endpoint and the public catalog rows. The hypervisor operator reaches Keystone through the Gateway. The metadata agent reaches the Nova metadata API over https on the hostname of services.nova.metadataGateway and the Southbound members on their node ports. ovn-controller dials the Southbound node ports, or the node port of the relay when it is published. The nova-, neutron- and ovn-operator write the DaemonSets and ConfigMaps through the registered target cluster.](../diagrams/compute-cluster-wiring.svg)
 
 | Namespace | What runs there | What the operators write there | What it needs |
 | --- | --- | --- | --- |

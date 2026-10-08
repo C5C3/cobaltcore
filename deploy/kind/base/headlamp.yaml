@@ -82,10 +82,14 @@ spec:
     volumeMounts:
       - name: headlamp-plugins
         mountPath: /build/plugins
+    # The memory request counts against the 16Gi node budget of the
+    # e2e-controlplane job (hack/ci-check-node-budget.sh). CI never opens this
+    # UI, so the request is the 64Mi the Flux controllers carry; the 512Mi
+    # limit keeps the room a browser session needs.
     resources:
       requests:
         cpu: 50m
-        memory: 128Mi
+        memory: 64Mi
       limits:
         memory: 512Mi
 ---

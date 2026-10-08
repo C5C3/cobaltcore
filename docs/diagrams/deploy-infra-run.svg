@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2341" viewBox="0 0 1808 2341" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The deploy-infra run">
+<title>The deploy-infra run</title>
+<rect width="1808" height="2341" fill="#F6F5F1"/>
+<rect x="280" y="40" width="300" height="76" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="430" y="74.64" font-size="24" font-weight="700" fill="#17202B" text-anchor="middle">Workstation</text>
+<text x="430" y="101.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">make deploy-infra</text>
+<rect x="40" y="152" width="780" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="191.36" font-size="26" font-weight="700" fill="#2B3440">Before Step 1</text>
+<text x="59" y="225.2" font-size="20" font-weight="400" fill="#55606E">Preflight: the tools, the flag combinations, the overlay directories</text>
+<text x="59" y="251.2" font-size="20" font-weight="400" fill="#55606E">kind: host kernel modules for the opt-ins that need them</text>
+<polyline points="430,116 430,141.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,152 422.8,137 437.2,137" fill="#3A4452"/>
+<rect x="908" y="152" width="860" height="174" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="191.36" font-size="26" font-weight="700" fill="#2B3440">Before the cluster exists</text>
+<text x="927" y="225.2" font-size="20" font-weight="400" fill="#55606E">kind: WITH_CHAOS_MESH, WITH_NFS and WITH_OVN_KERNEL_MODULES</text>
+<text x="927" y="251.2" font-size="20" font-weight="400" fill="#55606E">load kernel modules on the host</text>
+<text x="927" y="277.2" font-size="20" font-weight="400" fill="#55606E">external: refuses WITH_VPA, WITH_METRICS_SERVER,</text>
+<text x="927" y="303.2" font-size="20" font-weight="400" fill="#55606E">WITH_REGISTRY_CACHE and WITH_OVN_KERNEL_MODULES</text>
+<polyline points="908,239 830.5,239" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,239 835,231.8 835,246.2" fill="#3A4452"/>
+<rect x="40" y="362" width="780" height="253" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="392" r="18" fill="#17202B"/>
+<text x="77" y="399.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="107" y="401.36" font-size="26" font-weight="700" fill="#2B3440">Create or check the cluster</text>
+<rect x="59" y="422" width="320" height="174" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="78" y="461.36" font-size="26" font-weight="700" fill="#2B3440">kind</text>
+<rect x="249" y="437" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="308" y="458.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<text x="78" y="495.2" font-size="20" font-weight="400" fill="#55606E">creates the cluster from</text>
+<text x="78" y="521.2" font-size="20" font-weight="400" fill="#55606E">hack/kind-config.yaml,</text>
+<text x="78" y="547.2" font-size="20" font-weight="400" fill="#55606E">or keeps the one that exists,</text>
+<text x="78" y="573.2" font-size="20" font-weight="400" fill="#55606E">then caps the nofile limit</text>
+<rect x="398" y="422" width="403" height="174" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="417" y="461.36" font-size="26" font-weight="700" fill="#2B3440">EXTERNAL_CLUSTER=true</text>
+<text x="417" y="495.2" font-size="20" font-weight="400" fill="#55606E">creates no cluster and checks</text>
+<text x="417" y="521.2" font-size="20" font-weight="400" fill="#55606E">the current context: a default</text>
+<text x="417" y="547.2" font-size="20" font-weight="400" fill="#55606E">StorageClass, a Ready node,</text>
+<text x="417" y="573.2" font-size="20" font-weight="400" fill="#55606E">no node-local-dns</text>
+<polyline points="430,326 430,351.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,362 422.8,347 437.2,347" fill="#3A4452"/>
+<rect x="908" y="362" width="860" height="253" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="401.36" font-size="26" font-weight="700" fill="#2B3440">Cluster creation</text>
+<text x="927" y="435.2" font-size="20" font-weight="400" fill="#55606E">KIND_HOST_PORT, KIND_CONFIG: read only when kind creates the cluster</text>
+<text x="927" y="461.2" font-size="20" font-weight="400" fill="#55606E">SKIP_KIND_CREATE: the cluster exists already, as in CI</text>
+<text x="927" y="487.2" font-size="20" font-weight="400" fill="#55606E">WITH_REGISTRY_CACHE: pull-through caches, started before Step 2</text>
+<polyline points="908,488.5 830.5,488.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,488.5 835,481.3 835,495.7" fill="#3A4452"/>
+<rect x="40" y="651" width="780" height="122" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="681" r="18" fill="#17202B"/>
+<text x="77" y="688.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="107" y="690.36" font-size="26" font-weight="700" fill="#2B3440">Install Flux</text>
+<text x="59" y="724.2" font-size="20" font-weight="400" fill="#55606E">flux-operator, the Namespaces, FluxInstance flux</text>
+<text x="59" y="750.2" font-size="20" font-weight="400" fill="#55606E">then the Gateway API CRDs and the Envoy Gateway CRDs</text>
+<polyline points="430,615 430,640.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,651 422.8,636 437.2,636" fill="#3A4452"/>
+<rect x="40" y="839" width="780" height="226" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="869" r="18" fill="#17202B"/>
+<text x="77" y="876.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<text x="107" y="878.36" font-size="26" font-weight="700" fill="#2B3440">Apply the base overlay</text>
+<text x="59" y="912.2" font-size="20" font-weight="400" fill="#55606E">deploy/kind/base, or base/ of EXTERNAL_OVERLAY</text>
+<text x="59" y="938.2" font-size="20" font-weight="400" fill="#55606E">Namespaces, sources, releases, the Gateway openstack-gw</text>
+<text x="59" y="964.2" font-size="20" font-weight="400" fill="#55606E">the base phase of the Infrastructure Manifests page</text>
+<polyline points="430,773 430,828.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,839 422.8,824 437.2,824" fill="#3A4452"/>
+<text x="446" y="798.2" font-size="20" font-weight="400" fill="#2B3440">FluxInstance flux Ready</text>
+<text x="446" y="824.2" font-size="20" font-weight="400" fill="#55606E">HELMRELEASE_TIMEOUT</text>
+<rect x="908" y="839" width="860" height="226" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="878.36" font-size="26" font-weight="700" fill="#2B3440">Opt-in overlays</text>
+<text x="927" y="912.2" font-size="20" font-weight="400" fill="#55606E">WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS:</text>
+<text x="927" y="938.2" font-size="20" font-weight="400" fill="#55606E">the directory of that name under deploy/kind or EXTERNAL_OVERLAY</text>
+<text x="927" y="964.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA: deploy/kind/metrics-server, deploy/kind/vpa</text>
+<text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: resumes the service-operator releases</text>
+<text x="927" y="1016.2" font-size="20" font-weight="400" fill="#55606E">without it: suspends c5c3-operator and k-orc</text>
+<text x="927" y="1042.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore operator release</text>
+<polyline points="908,952 830.5,952" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,952 835,944.8 835,959.2" fill="#3A4452"/>
+<rect x="40" y="1101" width="780" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="1131" r="18" fill="#17202B"/>
+<text x="77" y="1138.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<text x="107" y="1140.36" font-size="26" font-weight="700" fill="#2B3440">Wait for the releases</text>
+<text x="59" y="1174.2" font-size="20" font-weight="400" fill="#55606E">Phase 1: cert-manager Ready, then its webhook admits a dry-run</text>
+<text x="59" y="1200.2" font-size="20" font-weight="400" fill="#55606E">Phase 2: applies the four TLS prerequisites</text>
+<text x="59" y="1226.2" font-size="20" font-weight="400" fill="#55606E">Phase 3: the infrastructure releases Ready</text>
+<text x="59" y="1252.2" font-size="20" font-weight="400" fill="#55606E">Phase 3b: Kustomization rabbitmq-cluster-operator Ready</text>
+<polyline points="430,1065 430,1090.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1101 422.8,1086 437.2,1086" fill="#3A4452"/>
+<rect x="908" y="1101" width="860" height="174" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="1140.36" font-size="26" font-weight="700" fill="#2B3440">More to wait for</text>
+<text x="927" y="1174.2" font-size="20" font-weight="400" fill="#55606E">Phase 3 also waits for the release of every opt-in overlay</text>
+<text x="927" y="1200.2" font-size="20" font-weight="400" fill="#55606E">WITH_PROMETHEUS: at least 1200 s, then a ServiceMonitor per operator</text>
+<polyline points="908,1188 830.5,1188" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,1188 835,1180.8 835,1195.2" fill="#3A4452"/>
+<rect x="40" y="1341" width="780" height="148" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="1371" r="18" fill="#17202B"/>
+<text x="77" y="1378.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<text x="107" y="1380.36" font-size="26" font-weight="700" fill="#2B3440">Apply the infrastructure overlay</text>
+<text x="59" y="1414.2" font-size="20" font-weight="400" fill="#55606E">deploy/kind/infrastructure, or infrastructure/ of EXTERNAL_OVERLAY</text>
+<text x="59" y="1440.2" font-size="20" font-weight="400" fill="#55606E">issuers, certificates, ExternalSecrets, MariaDB, Memcached, Garage</text>
+<text x="59" y="1466.2" font-size="20" font-weight="400" fill="#55606E">the infrastructure phase of the Infrastructure Manifests page</text>
+<polyline points="430,1275 430,1330.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1341 422.8,1326 437.2,1326" fill="#3A4452"/>
+<text x="446" y="1300.2" font-size="20" font-weight="400" fill="#2B3440">operator CRDs registered</text>
+<text x="446" y="1326.2" font-size="20" font-weight="400" fill="#55606E">POD_TIMEOUT</text>
+<rect x="908" y="1341" width="860" height="148" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="1380.36" font-size="26" font-weight="700" fill="#2B3440">A different apply</text>
+<text x="927" y="1414.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: without MariaDB, Memcached and the</text>
+<text x="927" y="1440.2" font-size="20" font-weight="400" fill="#55606E">three ExternalSecrets of Step 8</text>
+<text x="927" y="1466.2" font-size="20" font-weight="400" fill="#55606E">WITH_MESSAGING: then deploy/kind/messaging, until its broker is ready</text>
+<polyline points="908,1415 830.5,1415" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,1415 835,1407.8 835,1422.2" fill="#3A4452"/>
+<rect x="40" y="1555" width="780" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="1585" r="18" fill="#17202B"/>
+<text x="77" y="1592.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<text x="107" y="1594.36" font-size="26" font-weight="700" fill="#2B3440">Wait for the OpenBao pods</text>
+<text x="59" y="1628.2" font-size="20" font-weight="400" fill="#55606E">phase Running: a sealed pod is not Ready yet</text>
+<polyline points="430,1489 430,1544.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1555 422.8,1540 437.2,1540" fill="#3A4452"/>
+<text x="446" y="1514.2" font-size="20" font-weight="400" fill="#2B3440">Gateway openstack-gw Programmed</text>
+<text x="446" y="1540.2" font-size="20" font-weight="400" fill="#55606E">HELMRELEASE_TIMEOUT</text>
+<rect x="40" y="1687" width="780" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="1717" r="18" fill="#17202B"/>
+<text x="77" y="1724.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<text x="107" y="1726.36" font-size="26" font-weight="700" fill="#2B3440">Bootstrap OpenBao</text>
+<text x="59" y="1760.2" font-size="20" font-weight="400" fill="#55606E">init and unseal, then secret engines, auth, policies, bootstrap secrets</text>
+<polyline points="430,1651 430,1676.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1687 422.8,1672 437.2,1672" fill="#3A4452"/>
+<rect x="908" y="1687" width="860" height="96" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="1726.36" font-size="26" font-weight="700" fill="#2B3440">Per ControlPlane</text>
+<text x="927" y="1760.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: seeds the admin password path of the ControlPlane</text>
+<polyline points="908,1735 830.5,1735" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,1735 835,1727.8 835,1742.2" fill="#3A4452"/>
+<rect x="40" y="1849" width="780" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<circle cx="77" cy="1879" r="18" fill="#17202B"/>
+<text x="77" y="1886.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">8</text>
+<text x="107" y="1888.36" font-size="26" font-weight="700" fill="#2B3440">Wait for the ExternalSecrets</text>
+<text x="59" y="1922.2" font-size="20" font-weight="400" fill="#55606E">keystone-admin, keystone-db, mariadb-root-password</text>
+<polyline points="430,1783 430,1838.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1849 422.8,1834 437.2,1834" fill="#3A4452"/>
+<text x="446" y="1808.2" font-size="20" font-weight="400" fill="#2B3440">OpenBao pods Ready</text>
+<text x="446" y="1834.2" font-size="20" font-weight="400" fill="#55606E">POD_TIMEOUT</text>
+<rect x="908" y="1849" width="860" height="96" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="1888.36" font-size="26" font-weight="700" fill="#2B3440">Skipped</text>
+<text x="927" y="1922.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: waits for nothing</text>
+<polyline points="908,1897 830.5,1897" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,1897 835,1889.8 835,1904.2" fill="#3A4452"/>
+<rect x="40" y="1981" width="780" height="226" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="2020.36" font-size="26" font-weight="700" fill="#2B3440">After Step 8</text>
+<text x="59" y="2054.2" font-size="20" font-weight="400" fill="#55606E">the proving OpenBao instance Available, Garage Running</text>
+<text x="59" y="2080.2" font-size="20" font-weight="400" fill="#55606E">standalone: MariaDB openstack-db Ready</text>
+<polyline points="430,1945 430,1970.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="430,1981 422.8,1966 437.2,1966" fill="#3A4452"/>
+<rect x="908" y="1981" width="860" height="226" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="927" y="2020.36" font-size="26" font-weight="700" fill="#2B3440">The ControlPlane stack</text>
+<text x="927" y="2054.2" font-size="20" font-weight="400" fill="#55606E">Kustomization k-orc Ready, the operator releases Ready,</text>
+<text x="927" y="2080.2" font-size="20" font-weight="400" fill="#55606E">one CRD of each operator registered</text>
+<text x="927" y="2106.2" font-size="20" font-weight="400" fill="#55606E">a server-side dry-run of the ControlPlane is admitted</text>
+<text x="927" y="2132.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE_CR: applies the bundled ControlPlane</text>
+<text x="927" y="2158.2" font-size="20" font-weight="400" fill="#55606E">otherwise the ControlPlane is applied by hand</text>
+<text x="927" y="2184.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: none of these waits</text>
+<rect x="1583.43" y="2136" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="1635.43" y="2157.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<polyline points="908,2094 830.5,2094" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="820,2094 835,2086.8 835,2101.2" fill="#3A4452"/>
+<text x="40" y="2268.2" font-size="20" font-weight="400" fill="#55606E">A numbered box is one of the eight steps the script logs as Step n/8. A label on an arrow is a wait that has to pass, with the variable that bounds it.</text>
+<text x="40" y="2294.2" font-size="20" font-weight="400" fill="#55606E">A dashed box is an opt-in and changes the step its arrow points at. EXTERNAL_OVERLAY is deploy/lab/metal-stack unless it is set.</text>
+</svg>

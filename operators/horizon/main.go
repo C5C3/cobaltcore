@@ -43,7 +43,7 @@ func main() {
 		// The reconcilers resolve spec.targetClusterRef, so the binary engages
 		// the clusters registered in --clusters-namespace.
 		TargetClusters: true,
-		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int, namespace string) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -52,19 +52,21 @@ func main() {
 			if err := controller.RegisterMetrics(); err != nil {
 				return err
 			}
-			// +kubebuilder:scaffold:builder — register controllers here
-			if err := (&controller.HorizonReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("horizon-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
-				NamespaceScoped:         namespace != "",
-				MaxConcurrentReconciles: maxConcurrentReconciles,
-				Resolver:                mcMgr,
-			}).SetupWithManager(mcMgr); err != nil {
-				return err
+			if opts.Controllers {
+				// +kubebuilder:scaffold:builder — register controllers here
+				if err := (&controller.HorizonReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Recorder:                mgr.GetEventRecorderFor("horizon-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+					OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
+					NamespaceScoped:         opts.Namespace != "",
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+					Resolver:                mcMgr,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
 			}
-			if webhooks {
+			if opts.Webhooks {
 				// DECISION: the webhook reads through mgr.GetAPIReader()
 				// (direct, uncached) rather than mgr.GetClient(). The
 				// PriorityClass existence check must not reject a

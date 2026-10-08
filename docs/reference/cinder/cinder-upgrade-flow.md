@@ -28,9 +28,9 @@ rows the old code no longer writes. The operator walks four phases in a fixed
 order: `Expanding`, `Migrating`, `RollingUpdate`, `Contracting`.
 
 The phase machine lives in `internal/common/database` (`upgrade.go`) and is
-shared with Keystone and Glance. Cinder supplies the service-specific parts: the
-`spec.openStackRelease` seam, the `cinder-manage` and `cinder-status` phase
-commands, and the `DatabaseReady` condition every phase reports on. The sibling
+shared with Keystone, Glance, Nova and Neutron. Cinder supplies the
+service-specific parts: the `spec.openStackRelease` seam, the `cinder-manage`
+and `cinder-status` phase commands, and the `DatabaseReady` condition every phase reports on. The sibling
 pages are [Glance Upgrade Flow](../glance/glance-upgrade-flow.md) and
 [Keystone Upgrade Flow](../keystone/keystone-upgrade-flow.md).
 
@@ -78,6 +78,7 @@ downgrade are both refused:
 | --- | --- | --- | --- |
 | `2025.1` | `2025.2` | Yes | Same year, minor +1 |
 | `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2026.2` | Yes | Same year, minor +1 |
 | `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
 | `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
 | `2026.1` | `2025.2` | No | Downgrade |
@@ -105,7 +106,7 @@ active:
 | --- | --- |
 | `Expanding` | `cinder-manage db sync` running on the target image |
 | `Migrating` | `cinder-status upgrade check` running on the target image |
-| `RollingUpdate` | Waiting for the four Deployments to converge on the target image |
+| `RollingUpdate` | Waiting for the Deployments to converge on the target image |
 | `Contracting` | `cinder-manage db online_data_migrations` running on the target image |
 
 ---
@@ -114,25 +115,6 @@ active:
 
 Each transition is driven by a phase Job completing or by every Deployment
 reporting a finished rollout.
-
-```text
-spec.openStackRelease bumped (e.g. 2025.2 -> 2026.1, image in lockstep)
-        |
-        v
-  Expanding      <cinder>-db-expand: cinder-manage db sync
-        |
-        v
-  Migrating      <cinder>-db-migrate: cinder-status upgrade check
-        |
-        v
-  RollingUpdate  scheduler, volume services, backup, API roll onto the new image
-        |
-        v
-  Contracting    <cinder>-db-contract: cinder-manage db online_data_migrations
-        |
-        v
-  installedRelease = "2026.1", targetRelease = "", upgradePhase = ""
-```
 
 | Phase | What runs | Job |
 | --- | --- | --- |
@@ -147,6 +129,12 @@ readiness: a Deployment counts as rolled out only once every replica is updated,
 ready and counted, because the surge-tolerant readiness signal turns true while
 old-image pods still serve, and the contract phase would then run migrations
 those pods have no code for.
+
+The figure draws the same four phases with what the table leaves out: the gate
+in front of them, the state a failed Job leaves, the hold on a changed target,
+and the abort.
+
+![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../../diagrams/service-upgrade-phases.svg)
 
 ### The second roll
 
@@ -297,7 +285,7 @@ operator rejects.
 
 `spec.image` and `spec.openStackRelease` are separate fields so digest pinning
 stays possible: the release drives tracking and upgrade detection, the phase
-Jobs and the four Deployments run the image. The operator's contract is that the
+Jobs and the Deployments run the image. The operator's contract is that the
 two are bumped together, and for a tag-pinned image the reconciler enforces it.
 When `spec.image.tag` parses as an OpenStack release that differs from
 `spec.openStackRelease`, `DatabaseReady` goes `False` and neither the upgrade nor

@@ -374,6 +374,10 @@ func buildAPIDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 				ProbeHandler:        novaUWSGIProbeHandler(novaAPIPort),
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
+				// A single-worker API holds the probe's GET for the whole request in
+				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
+				// is the readiness probe's timeout, below the 20s period.
+				TimeoutSeconds: 10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        novaUWSGIProbeHandler(novaAPIPort),

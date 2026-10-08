@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Keystone identity API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as releases/2026.2/test-excludes/keystone.txt.
+
+# Exclude tests that require a live LDAP server (not available in CI kind cluster)
+keystone_tempest_plugin\.tests\..*ldap
+
+# Exclude federation tests that require an external IdP (SAML2/OAuth2 not available in CI)
+keystone_tempest_plugin\.tests\..*federation
+
+# Exclude OAuth2 tests requiring external authorization server
+keystone_tempest_plugin\.tests\..*oauth2
+
+# The RBAC groups keystone-2026-1/exclude-tests.txt carries (#480
+# test_identity_update_domain and test_endpoint, #1127 test_ec2_credential)
+# are not excluded here, so the first 2026.2 run shows what
+# keystone-tempest-plugin 0.22.0 does against keystone 30.0.0. If that run
+# fails them, copy the groups back with their tracked-by/re-evaluate-on lines.

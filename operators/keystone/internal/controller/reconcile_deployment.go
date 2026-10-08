@@ -398,11 +398,17 @@ const federationProxyTmpVolumeName = "federation-proxy-tmp"
 // plain check that uWSGI still answers on its API port. With federation
 // active uWSGI binds 127.0.0.1 only, which kubelet TCP probes (they target
 // the pod IP) can no longer reach — the probe becomes an exec-form localhost
-// connect instead, keeping identical timing and semantics.
+// connect instead, keeping identical timing and semantics. Both variants
+// carry the same explicit timeout.
 func keystoneLivenessProbe(federationActive bool) *corev1.Probe {
 	probe := &corev1.Probe{
 		InitialDelaySeconds: 15,
 		PeriodSeconds:       20,
+		// The exec variant's shell plus Python fork can eat the kubelet's 1s
+		// default, so it needs a value above the inner 5s connect timeout and
+		// below the 20s period. A TCP connect does not wait on the worker; the
+		// TCP variant takes the same value as every other API front end (#1294).
+		TimeoutSeconds: 10,
 	}
 	if federationActive {
 		probe.ProbeHandler = corev1.ProbeHandler{
@@ -411,10 +417,6 @@ func keystoneLivenessProbe(federationActive bool) *corev1.Probe {
 				`python3 -c "import socket; socket.create_connection(('127.0.0.1', 5000), 5).close()"`,
 			}},
 		}
-		// The exec forks a shell plus a Python interpreter, which alone can
-		// eat the kubelet's 1s default before the inner 5s connect timeout
-		// ever applies: sit above that inner timeout and below the 20s period.
-		probe.TimeoutSeconds = 8
 		return probe
 	}
 	probe.ProbeHandler = corev1.ProbeHandler{

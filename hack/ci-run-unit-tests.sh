@@ -141,9 +141,11 @@ PYEOF
       # pytest fallback for services without a .stestr.conf (e.g. horizon,
       # whose Django suite runs under pytest). The exclude-list mechanism
       # (EXCLUDE_LIST_ARG) is stestr-only and intentionally unused here.
-      # Services shipping tools/unit_tests.sh (horizon) drive their own
-      # pytest invocation with the correct per-project settings modules;
-      # otherwise fall back to a plain pytest run.
+      # Services shipping tools/unit_tests.sh (horizon up to 26.x) drive their
+      # own pytest invocation with the correct per-project settings modules;
+      # horizon 27.0.0+, which dropped the driver, runs the same four
+      # projects through the explicit invocations below; anything else falls
+      # back to a plain pytest run.
       # hacking mirrors the upstream tox py3 env: it is absent from
       # test-requirements.txt, but the local-hacking-rule unit tests
       # (horizon/test/unit/hacking/) import pycodestyle and fail collection
@@ -167,6 +169,24 @@ PYEOF
         if [ "$copied" -eq 0 ]; then
           echo "::warning::No JUnit XML found under test_reports/*.xml for ${SERVICE_NAME}; result collection is empty" >&2
         fi
+      elif [ "${SERVICE_NAME}" = "horizon" ]; then
+        # horizon 27.0.0 (2026.2) dropped tools/unit_tests.sh, and its tox.ini
+        # runs the four pytest invocations below itself. Each project needs its
+        # own Django settings module; a bare pytest run has none, and every
+        # test module fails collection with ImproperlyConfigured.
+        TEST_EXIT=0
+        run_pytest() {
+          local name="$1" settings="$2"
+          shift 2
+          python -m pytest -v --ds="$settings" \
+            --junitxml="/workspace/results/${name}_test_results.xml" "$@" || TEST_EXIT=1
+        }
+        run_pytest openstack_auth openstack_auth.tests.settings openstack_auth
+        run_pytest horizon horizon.test.settings horizon
+        run_pytest openstack_dashboard openstack_dashboard.test.settings \
+          -m "not selenium and not integration and not plugin_test" \
+          --ignore=openstack_dashboard/test/selenium openstack_dashboard
+        run_pytest plugin openstack_dashboard.test.settings openstack_dashboard/test/test_plugins
       else
         python -m pytest --junitxml=/workspace/results/testresults.xml; TEST_EXIT=$?
       fi

@@ -46,11 +46,18 @@ patience and by the gateway.
 
 A **`web-download` import** (`POST /v2/images/{id}/import`) hands Glance a URI
 and returns `202` at once. The API pod then fetches the whole image onto its
-`os_glance_staging_store` volume, and moves it into the backing store only after
-the last byte has arrived; the async task keeps its working copy on a second
-volume, `os_glance_tasks_store`. Both are `emptyDir`s on the node filesystem,
-and `spec.staging.sizeLimit` is what bounds them. The operator enables
+`staging` volume, the reserved `os_glance_staging_store`, and moves it into the
+backing store only after the last byte has arrived. A second volume,
+`tasks-work`, backs the reserved `os_glance_tasks_store`, to which no import
+writes image bytes. Both are `emptyDir`s on the node filesystem, and
+`spec.staging.sizeLimit` bounds each of them. The operator enables
 `web-download` and `copy-image` only, so a client upload never stages.
+
+The figure shows both paths as A and B, and the download through the image
+cache as C. The bound of the next section is the eviction threshold on the
+volume `staging`.
+
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
 
 ## Sizing the staging bound
 
@@ -227,7 +234,7 @@ not rendered by this operator.
 
 The stanza only survives if the cluster's Gateway API CRDs know the field. It
 entered the HTTPRoute schema after the versions the stack shipped earlier, so
-`hack/deploy-infra.sh` pins `v1.6.1` of the standard channel; an older CRD
+`hack/deploy-infra.sh` pins `v1.6.2` of the standard channel; an older CRD
 prunes `timeouts` silently, and the transfer is then cut at the implementation
 default with nothing logged.
 
@@ -258,9 +265,9 @@ whichever key that stack reads is yours to set.
 HTTP client of whatever URI it is handed, which is a second surface next to the
 upload path. `spec.importFiltering` decides which URIs are admissible (HTTPS on
 port 443 by default), and the per-CR NetworkPolicy decides where the pod may
-connect at all — its auto-derived egress covers DNS, the database, the cache,
-and the S3 backends only, so a mirror needs an explicit
-`additionalEgress` rule. See
+connect at all — its auto-derived egress opens the ports of DNS, the database,
+the cache and the S3 backends, to any destination, so a mirror on another port
+needs an explicit `additionalEgress` rule. See
 [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md)
 for both layers.
 
@@ -328,8 +335,8 @@ same four-hour route timeout on the HTTPRoute it creates from `spec.gateway`.
 - [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md) —
   `services.glance.staging` and the rest of the projected Glance surface.
 - [Keystone CRD API Reference](../../reference/keystone/keystone-crd.md#httproute-resource-mapping) —
-  the shared HTTPRoute mapping, including the route timeout every operator
-  renders.
+  the shared HTTPRoute mapping, including the route timeout, which only the
+  Glance operator sets.
 - [Infrastructure Manifests](../../reference/infrastructure/infrastructure-manifests.md#glance-large-upload-listener) —
   the kind stack's `https-glance-upload` listener and its certificate.
 

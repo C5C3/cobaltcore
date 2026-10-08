@@ -6,8 +6,8 @@ quadrant: operator
 # Neutron Reconciler Architecture
 
 The neutron-operator runs two controllers over the shared table-driven pipeline
-(`internal/common/reconcile`): `NeutronReconciler` with fourteen sub-reconcilers
-and `NeutronMetadataAgentReconciler` with four. In both, the first step to return
+(`internal/common/reconcile`): `NeutronReconciler` with fifteen sub-reconcilers
+and `NeutronMetadataAgentReconciler` with five. In both, the first step to return
 a non-zero result or an error short-circuits the chain, and every exit path
 persists the conditions and the requeue through the shared status skeleton, which
 skips the write when a pass left status unchanged.
@@ -42,8 +42,14 @@ Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNE
   ──► Config ──► OVNDBSync ──► Database ──► Deployment ──► Workers ──► ┬─ HTTPRoute
                                                                        ├─ HealthCheck
                                                                        ├─ HPA
+                                                                       ├─ VPA
                                                                        └─ NetworkPolicy   (parallel)
 ```
+
+The pipeline follows the pattern of the Keystone operator: a lane of steps that
+ends the pass at the first requeue or error, and a group whose members all run.
+[Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
+draws that pattern with every step of the Keystone operator.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -86,7 +92,7 @@ the one window that changes it. Its only input is the rendered config the CronJo
 mounts. Database itself comes before Deployment, so the API pods start once the
 schema they query exists, and Workers after Deployment, sharing its five digests.
 
-Once the Deployment and the Service are in place, the last four steps read none
+Once the Deployment and the Service are in place, the last five steps read none
 of each other's output and run as a parallel group. Each member works on its own
 copy of the CR and always sets its one condition type, so a cluster without a
 gateway, an autoscaler or a network policy still resolves the aggregate through
@@ -122,7 +128,7 @@ be shared by every CR reconciled concurrently.
 
 Each aggregate `Ready` is `True` with reason `AllReady` when every sub-condition
 of that kind is `True`, and `False` with `NotAllReady` otherwise. A `Neutron`
-aggregates ten, a `NeutronMetadataAgent` three.
+aggregates eleven, a `NeutronMetadataAgent` four.
 
 | Type | Kind | True reasons | False reasons |
 | --- | --- | --- | --- |
@@ -455,6 +461,8 @@ check, so the contract Jobs drop nothing the old pods still read. Fresh installs
 and patch bumps stay on the single-pass `{name}-db-sync` Job, which runs
 `neutron-db-manage upgrade head`; there is no schema-check Job, because that
 upgrade is idempotent and a second read-only run would assert nothing.
+[Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
+draws the machine with its failure states and the abort.
 
 **Condition Contract:**
 
@@ -498,6 +506,19 @@ harakiri parameters, and a trailing `--ini /etc/neutron/uwsgi.ini`. That file
 carries `start-time = %t`, which uWSGI expands while it reads it; rendering the
 same marker on the command line would pass the literal `%t` and kill neutron on
 `int('%t')`.
+
+From 2026.2 on, neutron-server ignores that marker. Neutron 29.0.0 records its
+WSGI start time and its first-worker election in files under
+`tempfile.gettempdir()`, named after the PID of the uWSGI master. The root
+filesystem is read-only, so the API pod of such a release mounts an emptyDir at
+`/tmp`; without it the OVN mechanism driver fails its post-fork initialization
+and the API answers no request. The command also carries
+`--hook-asap "exec:rm -f /tmp/neutron_start_time* /tmp/neutron_first_worker*"`.
+The emptyDir outlives a container restart and the master has the same PID in
+every container, so a container that replaces a killed one would otherwise read
+the old start time, and its workers would collide in the OVN hash ring with the
+rows the killed workers left behind. Below 2026.2 the pod renders neither the
+volume nor the hook.
 
 **Config delivery.** A uWSGI-imported application has no argv to carry
 `--config-file`, so the API container names its files in the environment instead:

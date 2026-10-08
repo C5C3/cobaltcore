@@ -678,6 +678,34 @@ func TestUWSGIFrontEndsCarryAStartupProbe(t *testing.T) {
 	}
 }
 
+// TestUWSGIFrontEndsCarryALivenessTimeout covers a busy running API. One
+// request in flight on a single-worker API holds the probe's GET, and three
+// such probes 20 seconds apart restarted nova-api twice in 20 minutes under
+// the #1274 soak. The timeout stays below the period so probes never overlap.
+func TestUWSGIFrontEndsCarryALivenessTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := validNova()
+	art := workloadArtifacts()
+	digests := workloadTestDigests()
+
+	for name, tc := range map[string]struct {
+		deploy *appsv1.Deployment
+		port   int
+	}{
+		"api":      {buildAPIDeployment(nova, art, digests), 8774},
+		"metadata": {buildMetadataDeployment(nova, art, digests), 8775},
+	} {
+		container := tc.deploy.Spec.Template.Spec.Containers[0]
+		probe := container.LivenessProbe
+		g.Expect(probe).NotTo(BeNil(), name+" liveness probe")
+		g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(tc.port), name+" liveness probe port")
+		g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)),
+			name+": one slow request on a single-worker API must not restart it")
+		g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
+			name+" liveness timeout below its period")
+	}
+}
+
 // TestBuildAPIService_And_PDB covers the selectors: one Nova owns five kinds of
 // Deployment, so the API Service and its budget must reach the API pods and
 // nothing else.

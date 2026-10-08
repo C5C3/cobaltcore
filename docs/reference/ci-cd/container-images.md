@@ -13,37 +13,35 @@ named build context patterns, constraint override tooling, and local build instr
 
 The OpenStack service images follow a three-layer hierarchy. Each layer builds on the
 previous one, separating concerns between runtime base, build tooling, and
-service-specific code:
+service-specific code.
 
-```text
-ubuntu:noble
-├── python-base          Runtime base: Python 3.12, system libs, openstack user
-│   ├── venv-builder     Build stage: compilers, uv, virtualenv with common packages
-│   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
-│   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
-│   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
-│   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
-│   │   ├── barbican     Stage 1 (build): install Barbican into virtualenv
-│   │   ├── neutron      Stage 1 (build): install Neutron into virtualenv
-│   │   ├── cinder       Stage 1 (build): install Cinder into virtualenv
-│   │   ├── nova         Stage 0 (novnc): fetch the pinned noVNC tree
-│   │   ├── nova         Stage 1 (build): install Nova into virtualenv
-│   │   └── nova-compute Stage 1 (build): install Nova + libvirt-python (built against libvirt-dev)
-│   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
-│   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   ├── nova             Stage 2 (runtime): copy virtualenv and noVNC, add runtime apt packages
-│   └── nova-compute     Stage 2 (runtime): copy virtualenv, add host tools, rootwrap posture
-```
+The figure follows one service image from the files of the repository to the
+image: which file feeds which step before the build, which stage starts from
+which base image, and what the two contexts and the three build args carry. The
+table names both stages of every image.
 
-The `venv-builder` image is used only as a build stage — it never runs in production.
-Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder`
-to install the service, then stage 2 extends `python-base` and copies only the virtualenv
-from stage 1. This ensures the final image contains no build tools.
+![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
+
+| Image | Build stage, on `venv-builder` | Runtime stage, on `python-base` |
+| --- | --- | --- |
+| `keystone` | installs Keystone into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `horizon` | installs Horizon, pre-builds the static assets | copies the virtualenv and the static assets |
+| `glance` | installs Glance, `glance_store[s3]` and `lhafile` | copies the virtualenv, adds runtime apt packages |
+| `placement` | installs Placement, writes the WSGI entry | copies the virtualenv, adds runtime apt packages |
+| `barbican` | installs Barbican into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `neutron` | installs Neutron into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `cinder` | installs Cinder into the virtualenv | copies the virtualenv, adds runtime apt packages |
+| `nova` | installs Nova into the virtualenv. A stage `novnc`, on `python-base`, fetches the pinned noVNC tree | copies the virtualenv and noVNC, adds runtime apt packages |
+| `nova-compute` | installs Nova and `libvirt-python`, built against `libvirt-dev` | copies the virtualenv, adds host tools and the rootwrap posture |
+
+The `tempest` image builds on the same pair
+([Container Image](../testing/tempest-test-infrastructure.md#container-image)).
+
+The `venv-builder` image never runs in production. It is the `FROM` target of
+the build stages and the container the service unit tests run in. Service images
+(e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder` to
+install the service, then stage 2 extends `python-base` and copies only the
+virtualenv from stage 1. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
 OpenStack code, and all but two build straight on `ubuntu:noble`:
@@ -118,13 +116,13 @@ with dynamic labels (created, revision, source, url, version) — see
 **Location:** `images/venv-builder/Dockerfile`
 
 Build-stage image that extends `python-base` with compilation tools and a prepared
-Python virtualenv. This image is never deployed — it exists only as a `FROM` target
-for multi-stage service builds.
+Python virtualenv. This image is never deployed. It is the `FROM` target of the service
+build stages and the container the service unit tests run in.
 
 | Property | Value |
 | --- | --- |
 | Base image | `python-base` (local) |
-| Package manager | `uv` 0.11.24 (copied from the digest-pinned `ghcr.io/astral-sh/uv:0.11.24`; tracked by Renovate) |
+| Package manager | `uv` 0.12.5 (copied from the digest-pinned `ghcr.io/astral-sh/uv:0.12.5`; tracked by Renovate) |
 | Virtualenv path | `/var/lib/openstack` |
 
 **Build-time packages:**
@@ -134,7 +132,9 @@ for multi-stage service builds.
 | `build-essential` | C compiler and make (for building Python C extensions) |
 | `git` | Fetching Python packages from git repositories |
 | `libffi-dev` | cffi/cryptography compilation |
+| `libldap2-dev` | OpenLDAP development headers and libraries |
 | `libpq-dev` | psycopg2 compilation (PostgreSQL client) |
+| `libsasl2-dev` | Cyrus SASL development headers and libraries |
 | `libssl-dev` | cryptography/pyOpenSSL compilation |
 | `python3-dev` | Python headers for C extensions |
 | `python3-venv` | `venv` module for virtualenv creation |
@@ -167,6 +167,14 @@ are gated for manual review, minor/patch are automerged after a three-day soak.
 licenses, and vendor are embedded in the Dockerfile for local build visibility.
 
 ## Service Images
+
+CI builds, verifies and publishes these images through the
+[Build Images Workflow](build-images-workflow.md). The figure shows that
+workflow on a pull request and on a push.
+[PR vs Push Behavior](build-images-workflow.md#pr-vs-push-behavior) lists the
+differences aspect by aspect.
+
+![The image build workflow on its two paths. On every run, build-base-images builds python-base and venv-builder for amd64 and arm64 and pushes them by digest, merge-base-images joins each pair into one manifest and pushes it to ghcr.io, verify-base-images checks both, and generate-matrix works out the services, releases and platforms to build. On a pull request, build-service-images builds each service image for linux/amd64 only and loads it into the local Docker daemon, scans it with Grype, runs its verify script and checks the option catalog. test-service-images runs the upstream unit tests. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, pushes by digest and exports the digest. merge-service-images creates and pushes the manifest with its tags, generates an SBOM, scans the SBOM with Grype and uploads the report, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check, once merge-service-images and test-service-images have passed.](../../diagrams/ci-image-publish.svg)
 
 ### keystone
 
@@ -236,8 +244,10 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 
 **Stage 2 (runtime)** — extends `python-base`:
 
-- Declares `ARG EXTRA_APT_PACKAGES` (empty for horizon today — the dashboard is pure
-  Python; the pymemcache session-cache client comes from the venv-builder base venv)
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
+  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which python-base
+  does not ship. The dashboard is otherwise pure Python; the pymemcache session-cache
+  client comes from the venv-builder base venv
 - Copies `/var/lib/openstack` (virtualenv plus pre-built static assets) from the build
   stage using `COPY --from=build --link`
 - Creates `/etc/openstack-dashboard/` and symlinks the packaged
@@ -245,6 +255,12 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
   `/etc/openstack-dashboard/local_settings.py`, where the horizon-operator mounts the
   rendered Django settings ConfigMap. The symlink dangles at build time by design
 - Sets `USER openstack` for non-root execution
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
 
 **Final image properties:**
 
@@ -258,7 +274,11 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 
 **Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
 `hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
-horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
+horizon's upstream `tools/unit_tests.sh` driver in the pytest path. Horizon
+27.0.0 (2026.2) no longer ships that driver, so for it the runner calls pytest
+four times the way that tag's `tox.ini` does, once per project with its own
+Django settings module (`openstack_auth`, `horizon`, `openstack_dashboard` and
+its plugin tests).
 
 ### glance
 
@@ -276,9 +296,11 @@ config discovery to the two mounted `--config-dir` roots instead.
 **Stage 1 (`build`)** — extends `venv-builder`:
 
 - Declares `ARG PIP_EXTRAS` (unused by glance today; kept for parity) and
-  `ARG PIP_PACKAGES`, which carries `glance_store[s3]` — the S3 store driver's
-  extra lives on `glance_store`, not `glance`, and pulls `boto3`, `botocore`,
-  and `s3transfer` (all pinned in `upper-constraints.txt`)
+  `ARG PIP_PACKAGES`, which carries two packages: `glance_store[s3]` (the S3 store
+  driver's extra lives on `glance_store`, not `glance`, and pulls `boto3`, `botocore`,
+  and `s3transfer`, all pinned in `upper-constraints.txt`) and `lhafile` (optional
+  LHA-archive support for the `image_decompression` image-import plugin, pinned in
+  `overrides/<release>/constraints.txt`)
 - Mounts `upper-constraints.txt` and the Glance source tree via named build
   contexts (`--build-context glance=...` / `--build-context upper-constraints=...`)
 - Installs Glance into the virtualenv using `uv pip install --constraint`. The
@@ -288,10 +310,11 @@ config discovery to the two mounted `--config-dir` roots instead.
 
 **Stage 2 (runtime)** — extends `python-base`:
 
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
-  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
-  python-base does not ship (the same rationale as horizon). Glance is otherwise
-  pure Python at runtime
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64` and `qemu-utils`:
+  the venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which python-base
+  does not ship (the same rationale as horizon), and the `image_conversion` image-import
+  plugin shells out to `qemu-img info` and `qemu-img convert` on the staged image.
+  Glance is otherwise pure Python at runtime
 - Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
 - Copies the `glance-wsgi-api` uWSGI entry script to
   `/var/lib/openstack/bin/glance-wsgi-api` (the path the glance-operator's
@@ -307,6 +330,7 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 | Package | Purpose |
 | --- | --- |
 | `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+| `qemu-utils` | `qemu-img`, which the `image_conversion` image-import plugin runs on the staged image (`qemu-img info`, `qemu-img convert`) |
 
 **Source patch:**
 `patches/glance/2025.2/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch`
@@ -328,12 +352,28 @@ applies to 32.0.0 at an offset. No upstream test pins the old behaviour:
 `S3CredentialUpdateTestCase` in `glance/tests/unit/common/test_utils.py` gives
 every mocked store the bare host `s3.amazonaws.com`, and the single-store S3
 tests in `glance/tests/unit/test_store_image.py` never reach
-`_construct_s3_url`. The patch therefore carries no test hunk.
-`tests/container-images/verify_glance.sh` Test 12 drives the real repair against
-the built image. A location the driver's `StoreLocation` wrote under an
-`http://` and an `https://` host has to stay unchanged while the credentials
-match, and still has to be rewritten once the access key rotates. Upstream
+`_construct_s3_url`. The patch therefore carries no test hunk. Upstream
 status: not yet proposed.
+
+Glance 33.0.0 (2026.2) carries no patch, because it removed `_construct_s3_url`
+together with the comparison it fed. Its `_update_s3_location_credentials`
+runs on every image read and strips the credentials a legacy location URL
+embeds, rewriting the location to the credential-free form the S3 driver of
+glance_store 5.7.0 writes. The rewrite is lazy: a location no 2026.2 pod reads
+keeps its embedded credentials. During a 2026.1 → 2026.2 rolling update the
+patched 2026.1 pods, whose glance_store 5.4.0 reads the credentials from the
+URL, put them back on each read and log "S3 URL mismatch", so a location can
+flip back and forth until the last 2026.1 pod is gone.
+
+`tests/container-images/verify_glance.sh` Test 12 drives the repair the built
+image carries, under an `http://` and an `https://` host. On 2025.2 and 2026.1
+it calls `_update_s3_location_and_store_id`: a location the driver's
+`StoreLocation` wrote has to stay unchanged while the credentials match, and
+still has to be rewritten once the access key rotates. On 2026.2 it calls
+`_update_s3_location_credentials`: a location the driver wrote carries no
+credentials and stays unchanged, a legacy location with embedded credentials
+becomes the driver-written URL, and a second pass changes nothing. An image
+that carries neither function fails the test.
 
 **Final image properties:**
 
@@ -348,7 +388,8 @@ runs its suite under stestr (the default path, as for keystone).
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
-Its Test 12 fails against an image built without the source patch above.
+On 2025.2 and 2026.1, its Test 12 fails against an image built without the
+source patch above.
 
 ### placement
 
@@ -640,7 +681,7 @@ those absolute paths.
 
 **Source patch:**
 `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
-and its 2026.1 twin flip the one `run_as_root=True` in
+and its 2026.1 and 2026.2 twins flip the one `run_as_root=True` in
 `NfsDriver._qemu_img_info` to `run_as_root=False`. `_qemu_img_info_base` in
 `cinder/volume/drivers/remotefs.py` then follows `nas_secure_file_operations`
 for that call, like every other file operation of the driver. Upstream forced
@@ -662,7 +703,7 @@ create-from-image, clone and extend fails. Both build paths
 apply every `patches/<service>/<release>/*.patch` before installing:
 `.github/actions/checkout-service-source/action.yaml` for the build and
 unit-test jobs, `hack/ci-build-service-image.sh` for the e2e image build. A
-local build runs `git -C src/cinder apply patches/cinder/<release>/*.patch`
+local build runs `git -C src/cinder apply "$PWD"/patches/cinder/<release>/*.patch`
 between Step 2 and Step 3 of the
 [local build instructions](#local-build-instructions). Cinder's
 `test_copy_volume_from_snapshot` keeps expecting `run_as_root=True` and stays
@@ -671,9 +712,9 @@ green, because its test driver never calls `set_nas_security_options` and
 hunk. Upstream status: not yet proposed.
 
 `patches/cinder/2025.2/0002-create-from-image-run-qemu-img-as-the-service-user.patch`
-and its 2026.1 twin flip two more forced-root `qemu-img info` calls. Both sit
-above the NFS driver on the create-from-image path and neither goes through it,
-so the flip in `0001` never reaches them.
+and its 2026.1 and 2026.2 twins flip two more forced-root `qemu-img info`
+calls. Both sit above the NFS driver on the create-from-image path and neither
+goes through it, so the flip in `0001` never reaches them.
 `CreateVolumeFromSpecTask._create_from_image_cache_or_download`
 (`cinder/volume/flows/manager/create_volume.py`) inspects the image it has just
 downloaded with `image_utils.qemu_img_info(tmp_image)`, whose `run_as_root`
@@ -702,8 +743,9 @@ second ddt variant to run in a process fails with a `KeyError`. stestr assigns
 tests to workers in per-process hash order, so the two variants shared a
 worker in about one `test-service-images (cinder, 2025.2)` run out of four.
 The patch moves the fakes inline into the test method. It changes nothing at
-runtime and has no 2026.1 twin. Upstream status: merged on master, backported
-to stable/2025.2 as `7faebca9b5`.
+runtime and has no 2026.1 and no 2026.2 twin, because cinder 28.0.0 and 29.0.0
+carry the commit. Upstream status: merged on master, backported to
+stable/2025.2 as `7faebca9b5`.
 
 `patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
 and its twin
@@ -720,7 +762,8 @@ elements", as it did once in `test-service-images (cinder, 2025.2)` on
 every such finalizer has run before the first assertion; the assertions are
 unchanged. The patch changes nothing at runtime. Upstream status: not yet
 proposed; master replaced both tests when the backup service moved to native
-threads (`c07c49c586`).
+threads (`c07c49c586`). Cinder 29.0.0 carries that commit, so 2026.2 needs no
+twin.
 
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
@@ -792,7 +835,7 @@ unprivileged and `os.makedirs` raises `PermissionError`, whereas the container
 runs it as root; the first run of the 28.0.0 suite counted 18,076 tests.
 
 **Image contract check:** `tests/container-images/verify_cinder.sh` is the
-hard gate. Its 14 tests cover `cinder-manage --version` and
+hard gate. Its 16 tests cover `cinder-manage --version` and
 `cinder-status --help`, the importability of `cinder` and of `cinder.wsgi.wsgi`
 together with the driver and backend libraries (`os_brick`, castellan's
 Barbican key manager, `boto3`, `tooz`, `taskflow`, `oslo_privsep`), the four
@@ -804,19 +847,25 @@ that names port 5672 in a bare container, that it honours
 `CINDER_AMQP_PORT=1`, that a `CINDER_AMQP_PORT` carrying a URL is refused
 without a traceback, the exit 0 against a connection the container itself
 holds, and the exit 1 against the same connection seen from a second
-container joined to its network namespace. The patch test asserts the value
-`_qemu_img_info_base` resolves rather than the source text: `run_as_root` has
-to come out `False` once `_execute_as_root` is `False`, and `True` on the
-constructor default, which is the configuration dependency the operator has
-to satisfy. The remaining tests check non-root execution, the absence of build
-tools, that uwsgi runs, and the five state directories, empty and owned by
-42424 along with their parent. The WSGI check inspects `cinder.wsgi.api` instead of
+container joined to its network namespace. The two patch tests assert
+resolved values rather than the source text. The first reads the value
+`_qemu_img_info_base` resolves: `run_as_root` has to come out `False` once
+`_execute_as_root` is `False`, and `True` on the constructor default, which
+is the configuration dependency the operator has to satisfy. The second
+covers the create-from-image path: the `run_as_root` with which the volume
+manager (`CreateVolumeFromSpecTask._create_from_image_cache_or_download`) and
+`image_utils.fetch_verify_image` inspect the downloaded image has to come out
+`False`. The remaining tests check non-root execution, the absence of build
+tools, that uwsgi runs, the five state directories, empty and owned by
+42424 along with their parent, and that `pkg_resources` imports, together
+with `os_win` where the installed cinder requires `os-win`. The WSGI check
+inspects `cinder.wsgi.api` instead of
 importing it: an import runs `initialize_application()` at module level and
 dies with `oslo_service.wsgi.ConfigNotFound` in a bare image. So it pairs
 `importlib.util.find_spec` with an `ast.parse` of the module source, and
 rejects a module whose only module-level binding of `application` is the
-`None` sentinel. Pointed at a neutron image, the script fails tests 1 to 10
-and 14, and passes only the three shared checks (non-root, no build tools,
+`None` sentinel. Pointed at a neutron image, the script fails tests 1 to 11,
+15 and 16, and passes only the three shared checks (non-root, no build tools,
 uwsgi).
 
 ### nova
@@ -1065,11 +1114,12 @@ node pool, which runs it under the tag of the Nova's installed release.
 
 The image has a directory of its own instead of a second stage in
 `images/nova/Dockerfile`. `hack/ci-generate-cleanup-matrix.sh` turns every
-`images/<name>/` directory into a package the nightly GHCR cleanup prunes, and
-knows no other packages. Every nova build takes the last stage as its default
-target, so a second stage would make the order of stages matter. And
-`verify_nova.sh` would share a Dockerfile with an image it must not describe.
-The price is one repeated install step.
+`images/<name>/` directory into a package the nightly GHCR cleanup prunes. The only
+other packages it knows are the `<name>-operator` images, one per `operators/<name>/`
+directory with a `go.mod`. Every nova build takes the last stage as its default target,
+so a second stage would make the order of stages matter. And `verify_nova.sh` would
+share a Dockerfile with an image it must not describe. The price is one repeated install
+step.
 
 **Stage 1 (`build`)** extends `venv-builder`:
 
@@ -1832,8 +1882,12 @@ Service Dockerfiles use Docker's named build context feature (`--build-context`)
 release-specific files without embedding them in the Dockerfile or using `COPY` from the
 build directory. This keeps Dockerfiles release-independent.
 
-Each service build requires two named build contexts (shown here for Keystone; the
-Horizon build is identical with `horizon` in place of `keystone`):
+A local build passes two named build contexts (shown here for Keystone; the
+Horizon build is identical with `horizon` in place of `keystone`). CI passes two
+more, `python-base` and `venv-builder`, as `docker-image://` references to the
+digests `merge-base-images` published. The figure under
+[Dockerfile Hierarchy](#dockerfile-hierarchy) shows where each context and each
+build arg enters the build.
 
 | Context name | Contents | Mounted as |
 | --- | --- | --- |
@@ -1849,7 +1903,7 @@ docker build images/keystone \
 ```
 
 Inside the Dockerfile, named build contexts are consumed via `--mount=type=bind,from=`.
-Extras are injected via `ARG PIP_EXTRAS` (comma-separated, e.g. `ldap,oauth1`)
+Extras are injected via `ARG PIP_EXTRAS` (comma-separated; keystone passes `ldap`)
 which the CI workflow reads from `extra-packages.yaml`:
 
 ```dockerfile
@@ -1857,7 +1911,7 @@ ARG PIP_EXTRAS=""
 ARG PIP_PACKAGES=""
 
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
-    --mount=type=bind,from=keystone,target=/tmp/keystone \
+    --mount=type=bind,from=keystone,target=/tmp/keystone,readwrite \
     PKG="/tmp/keystone" && \
     if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
     uv pip install --prefix /var/lib/openstack \
@@ -1936,7 +1990,6 @@ core OpenStack package.
 keystone:
   pip_extras:
     - ldap
-    - oauth1
   pip_packages: []
   apt_packages:
     - libapache2-mod-wsgi-py3
@@ -1947,7 +2000,7 @@ keystone:
 
 | Key | Purpose |
 | --- | --- |
-| `<service>.pip_extras` | Bare Python extra names combined with the service name to form install arguments (e.g. `keystone[ldap,oauth1]`). Passed as the `PIP_EXTRAS` build arg. |
+| `<service>.pip_extras` | Bare Python extra names combined with the service name to form install arguments (e.g. `keystone[ldap]`). Passed as the `PIP_EXTRAS` build arg. |
 | `<service>.pip_packages` | Additional pip packages to install alongside the service (space-separated in the build arg `PIP_PACKAGES`). Use an empty list (`[]`) when none are needed. |
 | `<service>.apt_packages` | Runtime system packages installed via `apt` in the final image. Passed as the `EXTRA_APT_PACKAGES` build arg. |
 
@@ -1972,7 +2025,7 @@ of three types:
 
 | Syntax | Action | Example |
 | --- | --- | --- |
-| `package===version` | Replace the existing pin for `package` | `cryptography===44.0.1` |
+| `package===version` | Set the pin for `package`: an existing pin is removed and the line is appended, so a package without a pin gets one | `cryptography===44.0.1` |
 | `-package` | Remove `package` from constraints entirely | `-oslo.messaging` |
 | `# comment` or blank | Skipped (no action) | `# Security fix for CVE-2025-1234` |
 
@@ -2006,7 +2059,7 @@ is built, independent of the upstream pin.
 
 | Condition | Result |
 | --- | --- |
-| `overrides/<release>/constraints.txt` exists | Each line is processed: replacements via `sed`, removals via `sed -d` |
+| `overrides/<release>/constraints.txt` exists | Each line is processed: a `package===version` line deletes any existing pin with `sed` and is appended to the file, a `-package` line deletes the pin with `sed` |
 | `overrides/<release>/constraints.txt` does not exist | Script exits with code 0, no changes made (idempotent) |
 
 The script reads `releases/<release>/upper-constraints.txt` relative to the current working
@@ -2036,7 +2089,8 @@ docker build images/venv-builder -t venv-builder
 The tag names (`python-base`, `venv-builder`) must match the `FROM` directives in
 downstream Dockerfiles. Docker resolves `FROM python-base` to the local image.
 
-To also apply canonical registry tags, add a second `-t` flag:
+To also apply the tags that `verify_python_base.sh` and `verify_venv_builder.sh` use as
+their default image, add a second `-t` flag:
 
 ```bash
 docker build images/python-base -t python-base -t c5c3/python-base:3.12-noble
@@ -2059,7 +2113,7 @@ Extras are read from `extra-packages.yaml` and passed as `--build-arg`:
 ```bash
 docker build images/keystone \
   -t c5c3/keystone:28.0.0 \
-  --build-arg PIP_EXTRAS=ldap,oauth1 \
+  --build-arg PIP_EXTRAS=ldap \
   --build-arg "EXTRA_APT_PACKAGES=libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2" \
   --build-context keystone=src/keystone \
   --build-context upper-constraints=releases/2025.2/
@@ -2083,9 +2137,10 @@ docker run --rm c5c3/keystone:28.0.0 which gcc \
 
 ### Building horizon locally
 
-The horizon build follows the same steps with two differences: the constraint
-override must be applied first (it strips the `horizon===` self-pin in-place), and
-no build args are needed today (all `extra-packages.yaml` lists are empty):
+The horizon build follows the same steps with two differences: the constraint override
+must be applied first (it strips the `horizon===` self-pin in-place), and one build arg
+is needed, `EXTRA_APT_PACKAGES=libpython3.12t64` (the other horizon lists in
+`extra-packages.yaml` are empty):
 
 ```bash
 # Strip the horizon=== pin from upper-constraints.txt (GNU sed; run on Linux/CI)
@@ -2096,6 +2151,7 @@ git clone --branch 25.5.1 --depth 1 \
 
 docker build images/horizon \
   -t c5c3/horizon:25.5.1 \
+  --build-arg EXTRA_APT_PACKAGES=libpython3.12t64 \
   --build-context horizon=src/horizon \
   --build-context upper-constraints=releases/2025.2/
 
@@ -2137,11 +2193,12 @@ binding nor the host tools, and the contract script then fails tests 2 and 4.
 
 ### Building ovn locally
 
-The ovn build needs no source checkout and no build args: the Dockerfile clones
-OVN at the pinned tag itself and derives Open vSwitch from that tag. One script
-covers it. Set `GITHUB_TOKEN` when the anonymous fetch inside the build fails
-with `could not read Username for 'https://github.com'`; the script mounts it
-as a BuildKit secret and the fetch is authenticated (CI always does).
+The ovn build needs no source checkout and no build args: the Dockerfile fetches OVN at
+the pinned commit (`OVN_COMMIT`) and Open vSwitch at the pinned commit (`OVS_COMMIT`)
+itself, and fails when the `ovs` gitlink of the OVN checkout names a different commit.
+One script covers it. Set `GITHUB_TOKEN` when the anonymous fetch inside the build fails
+with `could not read Username for 'https://github.com'`; the script mounts it as a
+BuildKit secret and the fetch is authenticated (CI always does).
 
 ```bash
 # Builds c5c3/ovn:<pinned version>

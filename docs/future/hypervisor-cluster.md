@@ -10,8 +10,8 @@ quadrant: infrastructure
 > [C5C3 architecture document](https://c5c3.github.io/C5C3/03-components/02-hypervisor).
 > What exists is the node layer: this repository has `NovaCompute`,
 > `OVNChassis` and `NeutronMetadataAgent`, and the
-> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on two
-> workers of the control-plane cluster, beside a containerized libvirt
+> [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on every
+> worker of the control-plane cluster, beside a containerized libvirt
 > DaemonSet and the upstream openstack-hypervisor-operator and kvm-node-agent.
 > Their `Hypervisor` CRs belong to the API group `kvm.cloud.sap`, not to the
 > sketched `hypervisor.c5c3.io`.
@@ -52,7 +52,8 @@ this cluster is the one labelled OpenStack Compute.
 A hypervisor cluster is a registered target cluster
 ([Target Clusters](../reference/target-clusters.md)). `nova-compute` runs there
 as a `NovaCompute` pool, beside openstack-hypervisor-operator and
-kvm-node-agent, which CobaltCore adopts from cobaltcore-dev as they are. The
+kvm-node-agent, whose upstream charts CobaltCore runs with images it builds
+from pinned commits and its own patches. The
 [Nova](../reference/nova/index.md) and [Neutron](../reference/neutron/index.md)
 control planes this cluster presumes are onboarded, and the
 [OVN operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller`
@@ -61,6 +62,12 @@ it has to provide in return, is written down in
 [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md). The
 dedicated bare-metal cluster of the original document, provisioned by IronCore
 and managed by Gardener, stays a sketch.
+
+The figure shows the node layer as the Quick Start (metal-stack) builds it
+today: on the workers of the control-plane cluster, without a dedicated compute
+cluster.
+
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, an NFS server for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the NFS server inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../diagrams/compute-metal-stack-lab.svg)
 
 ## Source
 

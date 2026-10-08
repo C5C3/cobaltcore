@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The default scenario of the dizzy soak on the metal-stack lab: a copy of
+# dizzy's mix small profile,
+# https://github.com/B42Labs/dizzy/blob/v0.5.0/scenarios/mix/small.yaml,
+# with six departures:
+#   - name: lab-soak;
+#   - image: cirros-kvm and flavor: hvo-smoke-test, the public image and
+#     flavor of the lab's hypervisor fixtures
+#     (deploy/kind/hypervisor-operator-fixtures/image.yaml and fixtures.yaml);
+#     the lab has neither cirros nor m1.tiny nor m1.small;
+#   - personas.legacy.resize_flavor: "" and personas.legacy.cold_migration:
+#     false. Nova reaches the other host of a resize or a cold migration over
+#     ssh, and the lab's compute image carries no ssh client, so both fail by
+#     construction. The Legacy persona stops and starts its server,
+#     live-migrates it, and detaches and re-attaches its volumes and ports;
+#   - chaos.duration: 6h. DIZZY_SOAK_DURATION reaches dizzy as --duration
+#     and takes precedence; 0 runs until the soak is stopped.
+# Every other value is the profile's. hack/dizzy-soak.sh start ships this
+# file as the ConfigMap dizzy-soak-scenario unless DIZZY_SCENARIO names
+# another.
+name: lab-soak
+seed: 42                        # deterministic; same seed => same plan
+
+# image and flavor are referenced by name, are shared by every persona, and must
+# already exist on the target cloud: dizzy uploads no image and creates no
+# flavor.
+image: cirros-kvm
+flavor: hvo-smoke-test
+
+services: []                    # opt-in services bound to every persona; this build supports none
+
+resources:
+  servers: 6                    # the server envelope the personas divide by their shares
+
+personas:
+  ci:                                         # short-lived servers on one network each, no lifecycle operation
+    share: 0.5                                # share of resources.servers
+    cloud: ""                                 # clouds.yaml entry of the persona's project; "" uses --os-cloud
+    networks: 2                               # networks the persona's servers are spread over
+    volumes_per_server: { min: 0, max: 1 }    # data volumes attached per server
+    volume_gib:         { min: 1, max: 2 }    # size drawn per data volume
+    interval:           { min: 100ms, max: 1s }  # random delay drawn per churn tick
+    churn_ratio: 0.5                          # create bias at steady state (0..1)
+    target_fill: 0.6                          # fraction of the persona's envelope kept populated (0..1)
+  gardener:                                   # Kubernetes clusters: workers in an anti-affinity server group, replaced one at a time
+    share: 0.3                                # share of resources.servers
+    cloud: ""                                 # clouds.yaml entry of the persona's project; "" uses --os-cloud
+    clusters: 1                               # clusters the workers are spread over, each with its own network and server group
+    policy: soft-anti-affinity                # or anti-affinity, which needs a compute host per worker of a cluster
+    volume_gib:         { min: 1, max: 2 }    # size drawn for the one data volume of each worker
+    interval:           { min: 10s, max: 1m } # random delay drawn per tick of the persona's engine
+  legacy:                                     # long-lived servers changed in place until teardown
+    share: 0.2                                # share of resources.servers
+    cloud: ""                                 # clouds.yaml entry of the persona's project; "" uses --os-cloud
+    networks: 1                               # networks the persona's servers are spread over
+    resize_flavor: ""                         # second flavor the servers alternate with; "" disables resize
+    cold_migration: false                     # false disables cold migration; live migration stays on
+    volumes_per_server: { min: 1, max: 2 }    # data volumes per server, detached and re-attached
+    volume_gib:         { min: 1, max: 2 }    # size drawn per data volume
+    ports_per_server:   { min: 0, max: 1 }    # extra ports per server, detached and re-attached
+    interval:           { min: 10s, max: 1m } # random delay drawn per tick of the persona's engine
+
+# A lane shares the quota of any persona that authenticates against its project.
+lanes:                                                    # single-service churn next to the personas; off by default
+  cinder:   { enabled: false, cloud: "", profile: small }  # volumes and snapshots; volume_type: "" uses the default type
+  glance:   { enabled: false, cloud: "", profile: small }  # image upload and lifecycle
+  keystone: { enabled: false, cloud: "", profile: small }  # projects, users, assignments; needs admin or a domain manager
+  neutron:  { enabled: false, cloud: "", profile: small }  # networks, routers, ports, floating IPs
+
+chaos:
+  duration: 6h                         # total runtime; the only hard stop besides a stop of the soak
+  parallel: { max: 4 }                 # per-tick fan-out of each persona, drawn in [1, max]; capped by --concurrency
+
+# Sized to fit the default quotas of the soak's project dizzy-soak: Nova's 10
+# instances, 10 server groups and 10 members per group, and the defaults of
+# Neutron and Cinder. A larger scenario, such as one with
+# --set resources.servers=20, needs those quotas raised by hand.

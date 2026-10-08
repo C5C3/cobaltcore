@@ -21,9 +21,13 @@
 #   5. the kind Prometheus section and the opening of `## Metal-stack lab` link
 #      #lab-prometheus-stack, `### Lab overlay` names WITH_PROMETHEUS and
 #      prometheus/, and the hvo rows of `### Lab hypervisors` name the 8
-#      alerts without data and the ServiceMonitor patch; those rows and the
-#      section name the chart the alerts and the query counts were read from,
-#      the ref.tag of hvo's chart in deploy/lab/metal-stack/hypervisor/sources.yaml
+#      alerts without data, the ServiceMonitor patch and the patch of the
+#      PrometheusRules' version label, which the section names too; those rows
+#      and the section name the chart the alerts and the query counts were
+#      read from, the ref.tag of hvo's chart in
+#      deploy/lab/metal-stack/hypervisor/sources.yaml, which is also the value
+#      of the version-label patch row; that row names the label the chart
+#      renders from ref.tag and ref.digest
 #   6. the run subsection holds either the sentence that no run is recorded
 #      or a line that starts with `The run of 20YY-MM-DD`, not both and not
 #      neither
@@ -93,10 +97,15 @@ line_of_heading() {
 STACK="$(subsection '### Lab Prometheus stack')"
 RUN="$(subsection '#### Lab Prometheus run')"
 
-# The ref.tag of the OCIRepository openstack-hypervisor-operator.
+# The ref.tag and the ref.digest of the OCIRepository
+# openstack-hypervisor-operator.
 HVO_CHART_TAG="$(awk '
   /^  name: / { inside = ($2 == "openstack-hypervisor-operator") }
   inside && /^    tag: / { gsub(/"/, "", $2); print $2; exit }
+' "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/sources.yaml")"
+HVO_CHART_DIGEST="$(awk '
+  /^  name: / { inside = ($2 == "openstack-hypervisor-operator") }
+  inside && /^    digest: / { gsub(/"/, "", $2); print $2; exit }
 ' "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/sources.yaml")"
 
 # The run block: the fenced bash code of the run subsection.
@@ -255,6 +264,17 @@ test_links() {
     "chart \`${HVO_CHART_TAG}\` renders"
   assert_contains "and the section names it beside the query counts of the chart's dashboard" "$STACK" \
     "in chart \`${HVO_CHART_TAG}\`"
+  # The chart writes its version, with a '+', into the label; the patch
+  # writes ref.tag, so a chart move that leaves the row's value fails here.
+  assert_contains "the hvo rows name the version-label patch on the PrometheusRules, with the ref.tag" "$hvo" \
+    "| hvo | post-renderer | \`app.kubernetes.io/version: ${HVO_CHART_TAG}\` on both PrometheusRules |"
+  # helm-controller sets the build metadata of a chart pinned by digest to
+  # the digest's first 12 characters, so a move of either ref moves the label.
+  local hex="${HVO_CHART_DIGEST#*:}"
+  assert_contains "and the label the chart renders from ref.tag and ref.digest" "$hvo" \
+    "so the label reads \`${HVO_CHART_TAG%%_*}+${hex:0:12}\`"
+  assert_contains "and the section says the post-renderer replaces that label of both rules" "$STACK" \
+    'label `app.kubernetes.io/version` of both rules'
 }
 
 # --- Test 6: the record ---
