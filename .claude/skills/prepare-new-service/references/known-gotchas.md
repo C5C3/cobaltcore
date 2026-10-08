@@ -35,7 +35,7 @@ run that paid for the lesson; the lesson itself is the part to carry.
   request, and the separate `verify-service-images` job is skipped on
   pull requests, so a green `build-service-images` is the proof a new
   verify test passed.
-- **Probe both releases in the image before Phase 1 closes:** the upstream
+- **Probe every release in the image before Phase 1 closes:** the upstream
   unit discovery and `hack/gen-option-catalog.sh` import the service's
   modules inside the published image, and an old release can import
   something the current toolchain dropped (cinder 27.0.0's Windows drivers
@@ -193,7 +193,7 @@ run that paid for the lesson; the lesson itself is the part to carry.
   (`API.factory` vs `API_factory`) and oslo.middleware healthcheck
   semantics (filter tolerated in 2025.2, app-only in 2026.1) differ
   between the pinned releases — pin the rendered paste config in unit
-  tests and run the e2e/tempest legs against both releases.
+  tests and run the e2e/tempest legs against every release.
 - **Budget the bring-up, not the suite:** a Nova needs about 8 minutes to
   Ready on the kind e2e leg — eight MariaDB CRs at the shared flow's 30 s
   requeue per stage plus a db-sync chaining six `nova-manage` calls at

@@ -35,8 +35,8 @@ scans `releases/*/`, services come from `source-refs.yaml` keys, the e2e
 legs load `<svc>:<release>` for every release `hack/ci-service-image-releases.sh`
 prints, and the Renovate globs cover `releases/**`) — but several touch
 points are enumerated by hand and drift silently. The repo carries eight
-services (`source-refs.yaml` keys), six Tempest legs, and seven
-`release-upgrade` suites; every table row below applies per service.
+services (`source-refs.yaml` keys), six Tempest-covered services (eighteen legs),
+and seven `release-upgrade` suites; every table row below applies per service.
 
 | Layer | Where it lives | Source of truth |
 |---|---|---|
