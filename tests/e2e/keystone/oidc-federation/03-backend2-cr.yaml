@@ -32,7 +32,7 @@ spec:
     description: Keycloak cobaltcore2 realm
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore2
+    issuer: http://keycloak.openstack:8080/realms/cobaltcore2
     clientID: keystone
     clientSecretRef:
       name: keycloak-cobaltcore2-client
@@ -40,7 +40,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore2
+      - http://keycloak.openstack:8080/realms/cobaltcore2
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     # {0}, not {1}: the HTTP_OIDC_ISS anyOneOf rule is a condition and is not

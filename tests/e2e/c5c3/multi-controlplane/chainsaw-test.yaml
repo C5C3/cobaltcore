@@ -312,7 +312,7 @@ spec:
           }
           # login_probe <ns> <mariadb-svc-ns> <user> <pass> → 0 iff auth succeeds.
           login_probe() {
-            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2025.2 \
+            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2026.1 \
               --rm -i --restart=Never -n "$1" --command -- \
               python3 -c "import pymysql; pymysql.connect(host='openstack-db.$2.svc', port=3306, user='$3', password='$4', connect_timeout=10).close()"
           }

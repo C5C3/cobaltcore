@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the Nova database archive (2025.2 release).
+# Chainsaw E2E test for the Nova database archive (2026.1 release).
 # Validates that the CronJob the operator projects moves rows rather than only
 # existing:
 #   - an archive on a minute schedule fires on its own, and a run started after
@@ -310,7 +310,7 @@ spec:
           status:
             # Promoted by the db-sync Job, which is what says the schema is at
             # the release the pods run.
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             # The Secret the fake compute of step 6 mounts.
             computeConfigSecretRef:
               name: nova-archive-compute-config

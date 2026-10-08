@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Placement CR for the db-archive E2E test (2025.2 release).
+# Placement CR for the db-archive E2E test (2026.1 release).
 #
 # The scheduler picks a host by asking Placement for allocation candidates, and
 # nova-compute publishes the resource provider its inventory hangs off. Without
@@ -18,12 +18,12 @@ metadata:
   name: placement-nova-archive
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

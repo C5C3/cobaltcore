@@ -31,6 +31,15 @@
 # PSS=restricted", which one replica per workload proves. The metadata,
 # scheduler, conductor and console-proxy blocks are absent, so the defaulting
 # webhook renders the single replica each of them resolves to anyway.
+#
+# `manager_shutdown_timeout = 0` drops the fixed sleep the nova 33.0.0 (2026.1)
+# scheduler and conductor managers take on SIGTERM (160 seconds by default)
+# after their RPC servers have drained. The suite owns the `nova-pss`
+# namespace, so its cleanup deletes the namespace and waits for every Pod to
+# go. With the sleep, the namespace controller re-checks only every 101
+# seconds (half the 200-second grace period plus one) and removes the
+# namespace after more than the shared 3-minute cleanup budget. The subject is
+# Pod admission; the services still shut down on SIGTERM.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: Nova
 metadata:
@@ -40,10 +49,10 @@ spec:
   secretStoreRef:
     kind: SecretStore
     name: openbao-tenant-store
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 1
@@ -77,3 +86,6 @@ spec:
   metadata:
     sharedSecretRef:
       name: nova-pss-metadata-secret
+  extraConfig:
+    DEFAULT:
+      manager_shutdown_timeout: "0"

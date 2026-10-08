@@ -23,14 +23,14 @@
 # Northbound database with the client certificate the OVNCentral published.
 #
 # ── ASSUMPTION under test: repair deletes the stray switch ────────────
-# In the ghcr.io/c5c3/neutron:2025.2 image (neutron 27.0.3),
+# In the ghcr.io/c5c3/neutron:2026.1 image (neutron 28.0.1),
 # neutron-ovn-db-sync-util in repair mode logs "Network found in OVN NB DB but
 # not in Neutron, network_id=<name>" followed by "Deleting network <name> from
 # OVN NB DB" and issues ls_del for every Logical_Switch carrying
 # external_ids:neutron:network_name with no Neutron row behind it
 # (ovn_db_sync.py, impl_idl_ovn.py:get_all_logical_switches_with_ports). That
-# was read off the image and off the release's sources on this branch; the first
-# CI run is what settles it against a live database. If the switch survives the
+# was read off the 28.0.1 sources; the first CI run is what settles it against
+# a live database. If the switch survives the
 # run, the log of the neutron-dbsync-repair-manual Job is the evidence, and this
 # suite is to be changed to assert the log-mode report line naming the switch
 # instead of its deletion.

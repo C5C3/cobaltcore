@@ -20,7 +20,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
@@ -40,8 +40,8 @@ spec:
       name: keystone-admin
     region: RegionOne
   # Opt this keystone out of the shared memcached keyspace. dogpile cache
-  # keys carry no per-deployment discriminator (keystone 2025.2 MEMOIZE keys
-  # are function+args only), so every parallel suite's keystone reads and
+  # keys carry no per-deployment discriminator (keystone's MEMOIZE keys are
+  # function+args only), so every parallel suite's keystone reads and
   # writes the SAME key for e.g. get_project_by_name("admin", "default").
   # This suite is the only one doing project-scoped auth by name (SRBAC);
   # when a neighboring suite's bootstrap writes that key mid-test, keystone

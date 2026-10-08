@@ -39,7 +39,7 @@ metadata:
   name: controlplane-b
   namespace: tenant-b
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   region: RegionOne
   infrastructure:
     database:

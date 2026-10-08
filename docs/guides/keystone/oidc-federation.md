@@ -77,7 +77,7 @@ This provides, all in the `openstack` namespace:
 | What | Value |
 | --- | --- |
 | Realm | `cobaltcore` |
-| Issuer | `http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore` |
+| Issuer | `http://keycloak.openstack:8080/realms/cobaltcore` |
 | Confidential client | `keystone` (direct access grants + standard flow enabled) |
 | Client secret | `keystone-cobaltcore-secret` (also shipped as Secret `keycloak-cobaltcore-client`) |
 | Test user | `fry` / `fry-password` (group `/engineers`) |
@@ -168,7 +168,7 @@ spec:
     deletionPolicy: Retain # keep the domain when this CR is deleted
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
+    issuer: http://keycloak.openstack:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: keycloak-cobaltcore-client
@@ -181,7 +181,10 @@ spec:
     # listener, and tlsVerify opts out of verifying that throwaway cert.
     # A publicly resolvable IdP can drop this block and rely on discovery.
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      # The browser opens this endpoint, so it uses the issuer's host: Keycloak
+      # posts the login form to that host, and a session cookie set on the FQDN
+      # would not be sent along (400, cookie_not_found).
+      authorizationEndpoint: http://keycloak.openstack:8080/realms/cobaltcore/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
       jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
       userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
@@ -193,7 +196,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
+      - http://keycloak.openstack:8080/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
@@ -285,7 +288,7 @@ TOKEN=$(curl -s http://localhost:8080/realms/cobaltcore/protocol/openid-connect/
 ```
 
 `KC_HOSTNAME` pins the realm issuer to
-`http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore`, so a token
+`http://keycloak.openstack:8080/realms/cobaltcore`, so a token
 minted through the port-forward still carries the cluster-internal `iss` the
 in-cluster proxy expects. Exchange the bearer for an unscoped Keystone token
 against the devstack's published Keystone endpoint (`-k` for the devstack's

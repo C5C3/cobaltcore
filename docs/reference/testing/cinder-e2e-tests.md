@@ -75,7 +75,7 @@ address project-less paths under
 hex project id, so `basic-deployment` asserts that `/v3/admin/volumes` is a 404.
 
 The probe itself runs in a pod of its own. The script step starts it with
-`kubectl run <name> --restart=Never --image=ghcr.io/c5c3/cinder:2025.2` against
+`kubectl run <name> --restart=Never --image=ghcr.io/c5c3/cinder:2026.1` against
 `/var/lib/openstack/bin/python -c`, polls `.status.phase` until `Succeeded` or
 `Failed`, reads the output back with `kubectl logs`, and greps for the sentinel
 the Python script prints as its last line. `kubectl run -i` is not used: it

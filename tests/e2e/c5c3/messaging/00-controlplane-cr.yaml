@@ -36,7 +36,7 @@ kind: ControlPlane
 metadata:
   name: cp
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: shared-db.invalid

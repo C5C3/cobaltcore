@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for the Nova console proxy behind the kind Gateway
-# (2025.2 release). It proves three things a suite without a booted instance
+# (2026.1 release). It proves three things a suite without a booted instance
 # cannot:
 #   - the console URL the API hands a client carries the gateway hostname the
 #     operator rendered into [vnc] novncproxy_base_url, so

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the Cinder backup service on an NFS target (2025.2).
+# Chainsaw E2E test for the Cinder backup service on an NFS target (2026.1).
 # One Cinder with a volume backend and a CinderBackupBackend attached, driven
 # through a full backup round trip:
 #   - the two backup conditions report the projection and the running service,
@@ -358,7 +358,7 @@ spec:
 
           # The image ships its python in a venv on PATH; the absolute path is
           # the one tests/container-images/verify_cinder.sh pins.
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-backup.openstack.svc.cluster.local:8776
 
@@ -490,7 +490,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-backup.openstack.svc.cluster.local:8776
 
@@ -649,7 +649,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-backup.openstack.svc.cluster.local:8776
 
@@ -783,7 +783,7 @@ spec:
           trap cleanup EXIT
           kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
 
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-backup.openstack.svc.cluster.local:8776
 
