@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Glance CR fixture for the scale E2E test (2025.2 release).
+# Glance CR fixture for the scale E2E test (2026.1 release).
 # Managed mode: database via clusterRef to openstack-db (schema glance_scale),
 # cache via clusterRef to openstack-memcached. Starts at replicas: 3 so the PDB
 # renders minAvailable=1; the test patches it up to 5 and down to 1. glance-api
@@ -14,12 +14,12 @@ metadata:
   name: glance-scale
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
