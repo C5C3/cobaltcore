@@ -98,7 +98,7 @@ spec:
         # record is not. state_path is an emptyDir here, so the file dies with
         # the pod: seeding a fixed uuid is what lets the pod restart.
         - name: node-identity
-          image: ghcr.io/c5c3/nova:2025.2
+          image: ghcr.io/c5c3/nova:2026.1
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c", 'printf %s "$COMPUTE_ID" > /var/lib/nova/compute_id']
           env:
@@ -116,7 +116,7 @@ spec:
               mountPath: /var/lib/nova
       containers:
         - name: nova-compute
-          image: ghcr.io/c5c3/nova:2025.2
+          image: ghcr.io/c5c3/nova:2026.1
           imagePullPolicy: IfNotPresent
           # The fragment by absolute path, the overlay as a directory: the
           # fragment is one key of a Secret whose other keys are values rather

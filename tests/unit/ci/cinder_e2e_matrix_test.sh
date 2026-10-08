@@ -949,14 +949,14 @@ test_controlplane_leg_deploys_cinder() {
   assert_contains "the leg pulls the cinder-operator image" "$load" \
     "cinder-operator:dev"
   assert_contains "the leg pulls the cinder service image" "$load" \
-    "cinder:2025.2"
+    "cinder:2026.1"
 
   local kind_load
   kind_load=$(job_step e2e-controlplane "Load images into kind")
   assert_contains "the operator image reaches the node" "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder-operator:dev"
   assert_contains "the service image reaches the node" "$kind_load" \
-    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2025.2"
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/cinder:2026.1"
 
   # The suite mounts its volume and backup shares from the kind NFS export and
   # takes a vhost on the shared broker. deploy-infra.sh installs neither by

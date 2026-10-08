@@ -47,7 +47,7 @@ metadata:
   name: controlplane-keystone
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   region: RegionOne
   # Link 5 asserts this literal on the adopted Region CR, and Link 7b reads it
   # back through `openstack region show`.

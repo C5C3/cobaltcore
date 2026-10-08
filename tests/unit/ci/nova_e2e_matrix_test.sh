@@ -2246,7 +2246,7 @@ test_controlplane_leg_deploys_nova() {
   assert_contains "the leg pulls the nova-operator image" "$load" \
     "nova-operator:dev"
   assert_contains "the leg pulls the nova service image" "$load" \
-    "nova:2025.2"
+    "nova:2026.1"
 
   # The fake compute Deployment the suite applies runs the service image, so the
   # node needs it too.
@@ -2255,7 +2255,7 @@ test_controlplane_leg_deploys_nova() {
   assert_contains "the operator image reaches the node" "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/nova-operator:dev"
   assert_contains "the service image reaches the node" "$kind_load" \
-    "kind load docker-image \${{ env.IMAGE_PREFIX }}/nova:2025.2"
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/nova:2026.1"
 
   # The suite applies an OVNChassis whose ovn-controller binds the compute's
   # port over a Geneve tunnel, and that tunnel needs the openvswitch and geneve

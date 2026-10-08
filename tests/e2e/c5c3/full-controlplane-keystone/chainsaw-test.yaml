@@ -188,7 +188,7 @@
 #
 # ── DECISION: OpenStack client image for token/catalog verification ──────────
 # `openstack token issue` / `openstack catalog list` need the OpenStack CLI. The
-# verify Job (01-openstack-verify-job.yaml) uses ghcr.io/c5c3/tempest:2025.2 —
+# verify Job (01-openstack-verify-job.yaml) uses ghcr.io/c5c3/tempest:2026.1 —
 # the repo's own image that bundles the OpenStack client. The e2e-controlplane CI
 # job loads that image into kind (mirroring the tempest job) so it need not be
 # pulled from GHCR. Behind the presence guard this never runs on a stack that
@@ -615,7 +615,7 @@ spec:
           wait_cp_condition KeystoneReady 600
           assert_eq "Keystone projected with Dynamic credentialsMode" "Dynamic" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
-          assert_eq "Keystone image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Keystone image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Keystone database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -627,7 +627,7 @@ spec:
 
           # ── Link 2b: Horizon child (gated on KeystoneReady) ────────────────
           wait_cp_condition HorizonReady 600
-          assert_eq "Horizon image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Horizon image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Horizon cache clusterRef wired to infra" "openstack-memcached" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
@@ -654,7 +654,7 @@ spec:
           echo "== Horizon login POST (expect 302 + sessionid) =="
           ADMIN_PW="$(kubectl get secret "${KEYSTONE_CR}-admin-credentials" -n "${CP_NS}" \
             -o 'jsonpath={.data.password}' | base64 -d)"
-          kubectl run cp-horizon-login --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+          kubectl run cp-horizon-login --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
             -n "${CP_NS}" \
             --env "HORIZON_BASE=http://${HORIZON_CR}.${CP_NS}.svc:8080" \
             --env "OS_PASSWORD=${ADMIN_PW}" \
@@ -812,7 +812,7 @@ spec:
           # glance-api Deployment + db-sync against MariaDB and the S3 backend —
           # this is the live end-to-end proof the envtest chain simulates.
           wait_cp_condition GlanceReady 600
-          assert_eq "Glance image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Glance image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Glance database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -934,7 +934,7 @@ spec:
           # placement-api Deployment + db-sync against MariaDB — this is the live
           # end-to-end proof the envtest chain simulates.
           wait_cp_condition PlacementReady 600
-          assert_eq "Placement image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Placement image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Placement database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1117,7 +1117,7 @@ spec:
               -o "jsonpath={.status.conditions[?(@.type=='SecretStoresReady')].reason}")"
 
           # The child itself, on the Placement child's terms.
-          assert_eq "Barbican image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Barbican image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Barbican database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1202,7 +1202,7 @@ spec:
 
           wait_cp_condition NeutronReady 900
 
-          assert_eq "Neutron image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Neutron image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Neutron database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1284,7 +1284,7 @@ spec:
           # share before they report anything.
           wait_cp_condition CinderReady 900
 
-          assert_eq "Cinder image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Cinder image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Cinder database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1418,7 +1418,7 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
 
-          assert_eq "Nova image tag derived from openStackRelease" "2025.2" \
+          assert_eq "Nova image tag derived from openStackRelease" "2026.1" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
 
           # Nova is the only service whose state lives in two logical databases:
@@ -1727,7 +1727,7 @@ spec:
           # against the tenant MariaDB. Uses the keystone image's pymysql (already
           # a dependency; no extra image to load) from a throwaway pod.
           login_probe() {
-            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2025.2 \
+            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2026.1 \
               --rm -i --restart=Never -n "${CP_NS}" --command -- \
               python3 -c "import pymysql; pymysql.connect(host='openstack-db.${CP_NS}.svc', port=3306, user='$1', password='$2', connect_timeout=10).close()"
           }
@@ -1809,7 +1809,7 @@ spec:
           # python (no extra image to load). urlopen() raises on non-200.
           KS_URL="http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3"
           echo "== curl Keystone ${KS_URL} (expect HTTP 200) =="
-          kubectl run cp-keystone-v3 --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+          kubectl run cp-keystone-v3 --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
             -n "${CP_NS}" --command -- \
             python3 -c "import sys,urllib.request; r=urllib.request.urlopen('${KS_URL}'); print('HTTP', r.status); sys.exit(0 if r.status == 200 else 1)"
           echo "OK: Keystone /v3 returned HTTP 200"
