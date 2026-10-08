@@ -39,7 +39,7 @@ compute service is deleted after the pod is gone.
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | no | `ghcr.io/c5c3/nova-compute:<Nova status.installedRelease>` | The nova-compute image. When nil the tag is the release the referenced Nova has installed, not the one it is moving to: the control plane upgrades first, and the pool follows once the schemas have moved. An unset image names no `pullPolicy` of its own, so its containers take the operator default (`--default-image-pull-policy`) or the rule: `Always` for the tag (see [pull policy resolution](../keystone/keystone-crd.md#pull-policy-resolution)) |
 | `libvirt` | [`NovaComputeLibvirtSpec`](#novacomputelibvirtspec) | no | `{}` | The `[libvirt]` options the pool renders |
 | `updateStrategy` | [`NovaComputeUpdateStrategy`](#novacomputeupdatestrategy) | no | `{}` | Paces the DaemonSet rollout |
-| `resources` | `*corev1.ResourceRequirements` | no | none | Requests and limits of the `nova-compute` container, applied to both init containers too. Nil renders none |
+| `resources` | `*corev1.ResourceRequirements` | no | `150m` CPU request; `768Mi` memory request and limit | Requests and limits of the `nova-compute` container, applied to both init containers too. The operator resolves them per resource when it renders the pod and never writes them into the field: a CPU the block names neither as request nor as limit gets a `150m` request and no limit, and a memory it names neither way gets `768Mi` as both request and limit. A resource the block names is used as written, and anything else it sets is kept; see [Resources](#resources). Before this default a nil block rendered none and a set block was used whole, so a pool whose block names no CPU or no memory changes its pod template on the operator upgrade |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the pool DaemonSet (`{name}-nova-compute`) for as long as the operator renders it into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
@@ -168,7 +168,9 @@ takes `type: OnDelete`.
 
 The mutating webhook leaves the object untouched. Every default is a
 `+kubebuilder:default` the API server applies from the schema, or a value the
-operator resolves at reconcile time: the image and the `maxUnavailable` of 1.
+operator resolves at reconcile time: the image, the `maxUnavailable` of 1, and
+the CPU request and the memory of the three containers (see
+[Resources](#resources)).
 The webhook stays registered so a default that has to be materialized later can
 be added without changing the deployed webhook configuration.
 
@@ -456,6 +458,89 @@ mode. When `mkdir` fails, the pod stays in its init phase, `nova-compute` does
 not start, and the pool reports `DaemonSetReady=False` with reason
 `DaemonSetProgressing`. A file at the path fails it with `File exists`, a
 read-only host filesystem with `Read-only file system`.
+
+### Resources
+
+`nova-compute` and both init containers, `create-instances-dir` and
+`wait-for-chassis`, carry one block that the operator resolves from
+`spec.resources` when it renders the pod. The rule works per resource. A CPU
+the block names neither as request nor as limit gets a `150m` request and no
+limit. A memory it names neither way gets `768Mi` as both request and limit. A
+resource the block names is used as written, a zero quantity included, and
+anything else it sets (ephemeral storage, hugepages, claims) is kept. The
+default is never written into the CR. The init containers add nothing to the
+pod's footprint, because a pod's effective request is the larger of its
+largest init container and the sum of its containers.
+
+The memory figure holds `nova-compute`, its privsep helpers and a live
+migration:
+
+- A = 395 MiB, the largest anonymous memory of the `nova-compute` container
+  on the two busy lab computes during the six-hour soak `20261007T180919Z` of
+  [#1274](https://github.com/C5C3/cobaltcore/issues/1274) (see
+  [Lab soak run](../testing/dizzy-chaos-testing.md#lab-soak-run)):
+  `nova-compute` at 209 to 229 MB and three `privsep-helper` processes at 69
+  to 78 MB each. The lab VPA run of 2026-10-05 agrees. Its memory target of
+  `455Mi` is 396 MiB plus the recommender's 15 %
+  ([Recorded lab run](../testing/sizing-calibration.md#recorded-lab-run)).
+- B = 120 MiB, an allowance for a live-migration burst. No burst was
+  measured. 120 MiB is the headroom
+  [#1312](https://github.com/C5C3/cobaltcore/issues/1312) found left below the
+  512Mi limit a namespace LimitRange set on the lab.
+- F = (A + B) × 1.25 = 644 MiB, rounded up to a multiple of 128 MiB, which
+  gives `768Mi`.
+
+The page cache of the hostPath `/var/lib/nova/instances`, about 105 MiB on the
+soak, is charged to the container as well, and the kernel reclaims it before
+it OOM-kills the container. The soak's highest working set, 504 MiB, read 98 %
+of 512Mi and reads 66 % of `768Mi`.
+
+The CPU request is the lab VPA target under KVM, `143m` (the run's 90th
+percentile plus 15 %), rounded up to a multiple of 50m. The block sets no CPU
+limit, so a burst above the request is throttled only by a CPU limit a
+namespace LimitRange fills in.
+
+A namespace LimitRange still fills in a default for a limit the block does not
+name. A memory the block names only as a request gets the LimitRange's
+`default` memory as its limit, and its `default` CPU becomes the CPU limit
+unless the block names one. A filled-in limit below the request rejects the
+pods. The LimitRange's `max` and `min` apply as well.
+
+`kubectl top` reports the working set, which counts the page cache of
+`/var/lib/nova/instances`. The anonymous share is `rssBytes` of the
+`nova-compute` container in the kubelet's stats summary:
+
+```bash
+kubectl get --raw /api/v1/nodes/<node>/proxy/stats/summary \
+  | jq '.pods[]
+      | select(.podRef.namespace == "<namespace>"
+          and (.podRef.name | startswith("<pool>-nova-compute-")))
+      | .containers[] | select(.name == "nova-compute")
+      | .memory | {workingSetBytes, rssBytes}'
+```
+
+A container at its limit shows `OOMKilled` as the last state of
+`nova-compute`. The kubelet restarts it, and the operations it was running on
+instances are interrupted. The remedy is a larger memory in `spec.resources`,
+set as request and as limit.
+
+A LimitRange whose `max` memory lies below `768Mi`, whose `default` CPU lies
+below the CPU request (`150m` by default) or whose `default` memory lies below
+a memory the block names only as a request rejects the pods, and so does a
+ResourceQuota without room: the DaemonSet records `FailedCreate` events, and
+the pool reports `DaemonSetReady=False` with reason `DaemonSetProgressing` and the message
+`Waiting for the nova-compute DaemonSet: <ready> of <desired> nodes run a ready pod`.
+A node without `768Mi` of unrequested allocatable memory keeps its pod
+`Pending`, with a `FailedScheduling` event naming `Insufficient memory`.
+
+Upgrading the operator changes the pod template of every pool whose block
+names no CPU or no memory. A `RollingUpdate` pool replaces its pods
+`maxUnavailable` nodes at a time (default 1), and an `OnDelete` pool replaces
+each pod when it is deleted. A pool that names both CPU and memory keeps its
+template.
+
+With `spec.verticalAutoscaling` set, the VPA controls the requests only, and
+the `768Mi` limit caps its memory recommendation.
 
 ### The namespace
 

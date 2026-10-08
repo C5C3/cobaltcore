@@ -247,8 +247,8 @@ leaves out, so a CPU-only block gains a memory request and limit, and its pods
 roll once on the upgrade. To keep the pod spec unchanged, set that resource in
 the block before you upgrade.
 
-Jobs, CronJobs, the fixed-budget sidecars and the Neutron metadata agent follow
-the same per-resource rule with their own figures:
+Jobs, CronJobs, the fixed-budget sidecars, the Neutron metadata agent and the
+NovaCompute pool follow the same per-resource rule with their own figures:
 
 | Container | Block | CPU request | Memory |
 | --- | --- | --- | --- |
@@ -257,6 +257,7 @@ the same per-resource rule with their own figures:
 | The `federation-proxy` sidecar | [`spec.federation.proxyResources`](#federationspec) | `25m` | `256Mi` request and limit |
 | The Glance `cache-maintenance` sidecar | `spec.imageCache.maintenanceResources` | `25m` | `256Mi` request and limit |
 | The Neutron metadata agent and its `wait-for-chassis` init container | [`spec.resources` of the `NeutronMetadataAgent`](../neutron/neutron-metadata-agent-crd.md#memory-sizing) | `230m`, sized for a minute of 31 servers booting on the node | `2Gi` request and limit, sized for 32 networks on the node |
+| `nova-compute` and its `create-instances-dir` and `wait-for-chassis` init containers | [`spec.resources` of the `NovaCompute`](../nova/novacompute-crd.md#resources) | `150m`, the lab's VPA target under KVM | `768Mi` request and limit, sized for `nova-compute`, its privsep helpers and a live migration |
 
 The Job memory does not follow the service formula and stays pinned at
 `368Mi`. The sizing measurement's VPA recommender samples once a minute and
