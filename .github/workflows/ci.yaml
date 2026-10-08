@@ -1331,7 +1331,7 @@ jobs:
             return 1
           }
           push_image() {
-            local local_ref="$1"     # e.g. ghcr.io/c5c3/keystone:2025.2
+            local local_ref="$1"     # e.g. ghcr.io/c5c3/keystone:2026.1
             local repo="${local_ref%:*}"
             local tag="${local_ref##*:}"
             local run_ref="${repo}:${RUN_TAG}-${tag}"

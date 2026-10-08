@@ -362,7 +362,7 @@ test_barbican_chaos_wiring() {
   assert_contains \
     "the GHCR pull step lists the barbican service image" \
     "$pull_step" \
-    "IMAGE_PREFIX }}/barbican:2025.2"
+    "IMAGE_PREFIX }}/barbican:2026.1"
 
   # Unlike placement, barbican has a suite on each keystone-stack leg, so the
   # gate above may only take the ovn leg out. A single-leg gate copied from the
@@ -393,7 +393,7 @@ test_barbican_chaos_wiring() {
   assert_contains \
     "the kind-load step loads the barbican service image" \
     "$kind_load_step" \
-    "IMAGE_PREFIX }}/barbican:2025.2"
+    "IMAGE_PREFIX }}/barbican:2026.1"
 
   deploy_step=$(extract_yaml_step "$chaos_section" "Deploy barbican operator")
 
@@ -482,7 +482,7 @@ test_barbican_controlplane_wiring() {
   assert_contains \
     "the GHCR pull step lists the barbican service image" \
     "$pull_step" \
-    "IMAGE_PREFIX }}/barbican:2025.2"
+    "IMAGE_PREFIX }}/barbican:2026.1"
 
   kind_load_step=$(extract_yaml_step "$cp_section" "Load images into kind")
 
@@ -494,7 +494,7 @@ test_barbican_controlplane_wiring() {
   assert_contains \
     "the kind-load step loads the barbican service image" \
     "$kind_load_step" \
-    "IMAGE_PREFIX }}/barbican:2025.2"
+    "IMAGE_PREFIX }}/barbican:2026.1"
 
   deploy_step=$(extract_yaml_step "$cp_section" "Deploy barbican-operator")
 
@@ -533,7 +533,7 @@ test_barbican_build_uses_the_image_map() {
     "$resolve_step" \
     "hack/ci-resolve-e2e-images.sh"
 
-  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2025.2, and
+  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2026.1, and
   # the two-cluster job places a barbican secret store. The build job no longer
   # builds barbican unless its own sources changed, so those legs get the images
   # from the map: this run's build when it built them, the digest main published
