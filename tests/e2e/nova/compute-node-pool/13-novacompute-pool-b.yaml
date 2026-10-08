@@ -6,7 +6,8 @@
 # holds (every chassis node carries openstack.c5c3.io/chassis=true). It is
 # applied after pool-a is Active, so pool-a holds the node and pool-b reports
 # the node in Conflict and schedules no pod: two nova-compute processes on one
-# node would share one libvirt.
+# node would share one libvirt. pool-b names no resources, so its DaemonSet
+# carries the operator's default, which Step 4 asserts on the template.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: NovaCompute
 metadata:

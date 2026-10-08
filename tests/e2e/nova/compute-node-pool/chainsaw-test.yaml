@@ -384,6 +384,37 @@ spec:
           metadata:
             name: pool-b-nova-compute
             namespace: openstack
+          # pool-b names no resources, so the operator renders its default on
+          # nova-compute and both init containers, with no CPU limit. The
+          # template is asserted, not a Pod: a Pod in openstack carries the
+          # tenant LimitRange's values wherever the template names none.
+          spec:
+            template:
+              spec:
+                (containers[?name == 'nova-compute']):
+                - resources:
+                    requests:
+                      cpu: 150m
+                      memory: 768Mi
+                    limits:
+                      memory: 768Mi
+                    (limits.cpu == null): true
+                (initContainers[?name == 'create-instances-dir']):
+                - resources:
+                    requests:
+                      cpu: 150m
+                      memory: 768Mi
+                    limits:
+                      memory: 768Mi
+                    (limits.cpu == null): true
+                (initContainers[?name == 'wait-for-chassis']):
+                - resources:
+                    requests:
+                      cpu: 150m
+                      memory: 768Mi
+                    limits:
+                      memory: 768Mi
+                    (limits.cpu == null): true
           # A DaemonSet serializes the zero, and JMESPath == never matches that
           # integer against the float literal `0`, so this compares the value.
           status:
