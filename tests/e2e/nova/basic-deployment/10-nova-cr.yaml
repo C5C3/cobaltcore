@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Nova CR for the basic-deployment E2E test (2025.2 release).
+# Nova CR for the basic-deployment E2E test (2026.1 release).
 #
 # Managed mode throughout: the two schemas nova_basic_api and nova_basic on the
 # openstack-db MariaDB cluster (cell0 is derived as nova_basic_cell0), the
@@ -23,7 +23,7 @@
 # allow_resize_to_same_host is the suite's only override. The resize step has
 # one compute to land on, and nova refuses to resize onto the source host
 # unless it is switched on. The option is not rendered by the operator (it is
-# listed in operators/nova/api/v1alpha1/catalogs/2025.2.json), so
+# listed in operators/nova/api/v1alpha1/catalogs/2026.1.json), so
 # ExtraConfigHealthy stays True on NoOwnedKeysOverridden.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: Nova
@@ -31,10 +31,10 @@ metadata:
   name: nova-basic
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   api:
     deployment:
       replicas: 2

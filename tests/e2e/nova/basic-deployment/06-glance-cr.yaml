@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Glance CR for the basic-deployment E2E test (2025.2 release).
+# Glance CR for the basic-deployment E2E test (2026.1 release).
 #
 # A server is booted from an image, so the suite needs an image service the
 # compute can resolve and download from. The schema is glance_nova_basic and the
@@ -16,12 +16,12 @@ metadata:
   name: glance-nova-basic
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

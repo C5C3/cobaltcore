@@ -1038,9 +1038,8 @@ full bring-up above. As a single leg it took 125 to 137 minutes, until
 `compute-node-pool`, 27 minutes that no other suite runs beside, pushed it past
 its 150-minute wall on 2026-09-24. The `Run E2E tests` step names the
 suites of shard 2 (`compute-node-pool`, `invalid-novacompute-cr`,
-`basic-deployment-2026-1`, `basic-deployment-2026-2`, `release-upgrade`,
-`healthcheck`, `deletion-cleanup`, `pod-security-restricted` and
-`namespace-scoped-rbac`) and gives shard 1 every other suite directory of
+`basic-deployment-2026-2`, `release-upgrade`, `healthcheck`,
+`deletion-cleanup`, `pod-security-restricted` and `namespace-scoped-rbac`) and gives shard 1 every other suite directory of
 `tests/e2e/nova/` and
 `tests/e2e/nova-operator/`, so a new suite runs in shard 1 until it is moved.
 Each shard takes three of the six suites that run 24 to 30 minutes, which puts

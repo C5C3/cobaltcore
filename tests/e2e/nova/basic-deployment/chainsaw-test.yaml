@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a happy-path Nova deployment (2025.2 release).
+# Chainsaw E2E test for a happy-path Nova deployment (2026.1 release).
 # Validates the full reconciliation cycle of a Nova against real pods, a real
 # broker vhost and a fake-driver nova-compute:
 #   - all fifteen sub-conditions progress to True with their expected reasons,
@@ -40,7 +40,7 @@
 #
 # Host discovery is not run by hand. nova-scheduler maps a newly registered
 # compute into cell1 from a periodic whose interval is
-# [scheduler] discover_hosts_in_cells_interval, and nova 32.0.0 runs it with
+# [scheduler] discover_hosts_in_cells_interval, and nova 33.0.0 runs it with
 # run_immediately=True, so the first scan happens at scheduler start, before the
 # compute registers, and the mapping lands on the next one. Step 7 waits that
 # interval out. The interval itself is not overridden: the key is Reported in
@@ -321,7 +321,7 @@ spec:
             endpoint: http://nova-basic.openstack.svc.cluster.local:8774
             # Promoted by the db-sync Job, which is what says the schema is at
             # the release the pods run.
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             # The Secret a compute cluster mounts. Publishing it is the whole
             # contract between this CR and a hypervisor.
             computeConfigSecretRef:
@@ -406,6 +406,7 @@ spec:
               spec:
                 containers:
                 - name: nova-api
+                  image: ghcr.io/c5c3/nova:2026.1
                   # Both probes GET the version document, the only route the
                   # compute API answers without a token.
                   readinessProbe:
