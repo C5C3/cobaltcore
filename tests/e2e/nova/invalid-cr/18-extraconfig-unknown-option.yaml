@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.extraConfig setting an unknown option in a known section is rejected
-# by the validating webhook against the embedded nova 2025.2 option
+# by the validating webhook against the embedded nova 2026.1 option
 # catalog. [DEFAULT] is a section the catalog carries, so the rejection is
 # the unknown-option one rather than the unknown-section one.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
@@ -11,10 +11,10 @@ kind: Nova
 metadata:
   name: nova-invalid
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2"
+    tag: "2026.1"
   apiDatabase:
     clusterRef:
       name: mariadb

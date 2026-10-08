@@ -82,12 +82,12 @@ spec:
 {messaging}
 {extra}"""
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
   image:
     repository: ghcr.io/c5c3/cinder
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 VALID_DATABASE = """\
   database:
@@ -159,7 +159,7 @@ FIXTURES: tuple[Fixture, ...] = (
         image=(
             "  image:\n"
             "    repository: ghcr.io/c5c3/cinder\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -384,7 +384,7 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="15-extraconfig-unknown-option.yaml",
         comment=(
             "spec.extraConfig setting an unknown option in a known section is rejected\n"
-            "by the validating webhook against the embedded cinder 2025.2 option\n"
+            "by the validating webhook against the embedded cinder 2026.1 option\n"
             "catalog. [DEFAULT] is a section the catalog carries, so the rejection is\n"
             "the unknown-option one rather than the unknown-section one."
         ),

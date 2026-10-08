@@ -4,7 +4,7 @@
 
 # spec.extraConfig setting an unknown option in the known [placement]
 # section is rejected by the validating webhook: the singular spelling is
-# absent from the placement 2025.2 option catalog, so a typo'd key can never
+# absent from the placement 2026.1 option catalog, so a typo'd key can never
 # silently reach the rendered placement.conf. The value is quoted because
 # extraConfig is a map of string to string: a bare YAML boolean would draw a
 # schema type error and never reach the catalog check.
@@ -13,12 +13,12 @@ kind: Placement
 metadata:
   name: placement-invalid-extraconfig-unknown-option
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

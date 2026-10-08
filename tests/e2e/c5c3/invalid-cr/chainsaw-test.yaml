@@ -400,23 +400,23 @@ spec:
             (contains($error, 'Dynamic requires the shared database to be managed')): true
     # spec.globalExtraConfig sets an unknown option (typo'd key) in a known
     # section: rejected by the webhook because it is absent from the keystone
-    # 2025.2 option catalog, attributed back to the global block that carried it.
+    # 2026.1 option catalog, attributed back to the global block that carried it.
     - apply:
         file: 58-global-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the keystone 2025.2 option catalog')): true
+            (contains($error, 'no such option in the keystone 2026.1 option catalog')): true
             (contains($error, 'spec.globalExtraConfig[token][providr]')): true
     # services.glance.extraConfig sets an unknown option in the known glance_store
-    # section: rejected by the webhook because it is absent from the glance 2025.2
+    # section: rejected by the webhook because it is absent from the glance 2026.1
     # option catalog.
     - apply:
         file: 59-glance-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the glance 2025.2 option catalog')): true
+            (contains($error, 'no such option in the glance 2026.1 option catalog')): true
     # services.keystone.extraConfig in External mode is rejected by the CEL rule:
     # no Keystone workload is deployed, so there is no child config to project.
     - apply:

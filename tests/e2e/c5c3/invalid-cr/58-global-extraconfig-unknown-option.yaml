@@ -4,7 +4,7 @@
 
 # spec.globalExtraConfig sets an unknown option (providr, a typo of the
 # keystone [token] provider option) in a known section: rejected by the webhook
-# because it is absent from the keystone 2025.2 option catalog. The finding is
+# because it is absent from the keystone 2026.1 option catalog. The finding is
 # attributed back to the global block that carried it, so the message names
 # spec.globalExtraConfig[token][providr].
 apiVersion: c5c3.io/v1alpha1
@@ -12,7 +12,7 @@ kind: ControlPlane
 metadata:
   name: cp-global-extraconfig-unknown
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   globalExtraConfig:
     token:
       providr: fernet

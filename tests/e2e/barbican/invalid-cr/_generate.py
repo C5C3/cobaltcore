@@ -102,13 +102,13 @@ spec:
 {service_user}
 {extra}"""
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
 VALID_DEPLOYMENT = "    replicas: 1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
     repository: ghcr.io/c5c3/barbican
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 VALID_DATABASE = """\
     clusterRef:
@@ -196,7 +196,7 @@ FIXTURES: tuple[Fixture, ...] = (
         name="barbican-invalid-image-both",
         image=(
             "    repository: ghcr.io/c5c3/barbican\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -764,7 +764,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig setting an unknown option in the known [quotas] section is\n"
             "rejected by the validating webhook: the singular spelling is absent from the\n"
-            "barbican 2025.2 option catalog, so a typo'd key can never silently reach the\n"
+            "barbican 2026.1 option catalog, so a typo'd key can never silently reach the\n"
             "rendered barbican.conf. The value is quoted because extraConfig is a map of\n"
             "string to string: a bare YAML integer would draw a schema type error and\n"
             "never reach the catalog check."
@@ -781,7 +781,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig declaring an unknown section 'quota' (a typo for [quotas])\n"
             "is rejected by the validating webhook: the section is absent from the\n"
-            "barbican 2025.2 option catalog, so a typo'd section name can never silently\n"
+            "barbican 2026.1 option catalog, so a typo'd section name can never silently\n"
             "reach the rendered barbican.conf. The name is deliberately outside the\n"
             "'secretstore:' prefix the catalog scan exempts, which the per-store sections\n"
             "take their names from."

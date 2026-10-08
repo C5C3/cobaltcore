@@ -12,7 +12,7 @@ kind: Barbican
 metadata:
   name: barbican-invalid-image-neither
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:

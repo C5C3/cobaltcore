@@ -431,23 +431,23 @@ spec:
             ($error != null): true
             (contains($error, 'extraConfig key and value must not contain a newline or carriage return')): true
   # spec.extraConfig setting an unknown option (typo'd key) in a known section
-  # must be rejected: it is absent from the barbican 2025.2 option catalog.
+  # must be rejected: it is absent from the barbican 2026.1 option catalog.
   - try:
     - apply:
         file: 39-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the barbican 2025.2 option catalog')): true
+            (contains($error, 'no such option in the barbican 2026.1 option catalog')): true
   # spec.extraConfig declaring an unknown section (typo'd section name) must be
-  # rejected: it is absent from the barbican 2025.2 option catalog.
+  # rejected: it is absent from the barbican 2026.1 option catalog.
   - try:
     - apply:
         file: 40-extraconfig-unknown-section.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such section in the barbican 2025.2 option catalog')): true
+            (contains($error, 'no such section in the barbican 2026.1 option catalog')): true
   # spec.extraConfig setting [keystone_authtoken] password must be rejected by
   # the webhook — the operator owns it via spec.serviceUser.secretRef and a file
   # value would copy the service password into the config Secret the API pods

@@ -12,14 +12,14 @@ kind: Barbican
 metadata:
   name: barbican-invalid-prestop
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
     terminationGracePeriodSeconds: 30
     preStopSleepSeconds: 30
   image:
     repository: ghcr.io/c5c3/barbican
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

@@ -71,13 +71,13 @@ spec:
       name: {secret_name}
 {extra}"""
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
 VALID_DEPLOYMENT = "    replicas: 1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 VALID_DATABASE = """\
     clusterRef:
@@ -135,7 +135,7 @@ FIXTURES: tuple[Fixture, ...] = (
         name="glance-invalid-image-both",
         image=(
             "    repository: ghcr.io/c5c3/glance\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -282,7 +282,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig setting an unknown option 'default_backend_typo' in\n"
             "the known [glance_store] section is rejected by the validating webhook:\n"
-            "the option is absent from the glance 2025.2 option catalog, so a typo'd\n"
+            "the option is absent from the glance 2026.1 option catalog, so a typo'd\n"
             "key can never silently reach the rendered glance-api.conf."
         ),
         name="glance-invalid-extraconfig-unknown-option",
@@ -297,7 +297,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig declaring an unknown section 'glance_stor' (a typo for\n"
             "[glance_store]) is rejected by the validating webhook: the section is\n"
-            "absent from the glance 2025.2 option catalog, so a typo'd section name\n"
+            "absent from the glance 2026.1 option catalog, so a typo'd section name\n"
             "can never silently reach the rendered glance-api.conf."
         ),
         name="glance-invalid-extraconfig-unknown-section",

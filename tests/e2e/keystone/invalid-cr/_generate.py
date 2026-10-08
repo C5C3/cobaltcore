@@ -165,7 +165,7 @@ BOOTSTRAP_RENAMED_REGION = """\
 # ImageSpec MinLength/Pattern markers.
 IMAGE_DEFAULT = """\
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
 """
 
 # Image with an empty tag — rejected by the ImageSpec.Tag Pattern marker
@@ -179,7 +179,7 @@ IMAGE_EMPTY_TAG = """\
 # tag/digest XOR XValidation rule (exactly one must be set).
 IMAGE_TAG_AND_DIGEST = """\
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
     digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
 """
 
@@ -187,7 +187,7 @@ IMAGE_TAG_AND_DIGEST = """\
 # the ImageSpec.PullPolicy Enum marker.
 IMAGE_PULL_POLICY_UNSUPPORTED = """\
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
     pullPolicy: Sometimes
 """
 
@@ -695,11 +695,11 @@ FIXTURES: list[Fixture] = [
         ),
         comment="""\
 # Keystone CR whose spec.extraConfig sets "providr" (a typo for "provider") in
-# the known [token] section. The option does not exist in the keystone 2025.2
+# the known [token] section. The option does not exist in the keystone 2026.1
 # option catalog, so the validating webhook rejects it — a typo'd key must
 # never silently reach the rendered keystone.conf where oslo.config would
 # ignore it. Admission must reject this CR with an $error referencing the
-# substring "no such option in the keystone 2025.2 option catalog".""",
+# substring "no such option in the keystone 2026.1 option catalog".""",
     ),
     Fixture(
         filename="25-extraconfig-unknown-section.yaml",
@@ -712,10 +712,10 @@ FIXTURES: list[Fixture] = [
         comment="""\
 # Keystone CR whose spec.extraConfig declares a "fernet_token" section
 # (singular — a typo for "fernet_tokens"). The section does not exist in the
-# keystone 2025.2 option catalog, so the validating webhook rejects it — a
+# keystone 2026.1 option catalog, so the validating webhook rejects it — a
 # typo'd section name must never silently reach the rendered keystone.conf.
 # Admission must reject this CR with an $error referencing the substring
-# "no such section in the keystone 2025.2 option catalog".""",
+# "no such section in the keystone 2026.1 option catalog".""",
     ),
     Fixture(
         filename="26-targetclusterref-empty-name.yaml",

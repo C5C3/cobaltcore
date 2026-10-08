@@ -9,7 +9,7 @@ kind: ControlPlane
 metadata:
   name: cp-sizing-vpa-min-replicas-zero
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: db.example.com

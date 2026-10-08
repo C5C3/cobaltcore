@@ -11,14 +11,14 @@ kind: Barbican
 metadata:
   name: barbican-invalid-nodeselector
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
     nodeSelector:
       "bad key": x
   image:
     repository: ghcr.io/c5c3/barbican
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

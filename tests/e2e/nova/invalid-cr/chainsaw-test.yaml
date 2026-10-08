@@ -225,14 +225,14 @@ spec:
             (contains($error, 'connection is managed via spec.database')): true
             (contains($error, 'OS_DATABASE__CONNECTION')): true
   # spec.extraConfig setting an unknown option in a known section must be
-  # rejected: it is absent from the nova 2025.2 option catalog.
+  # rejected: it is absent from the nova 2026.1 option catalog.
   - try:
     - apply:
         file: 18-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the nova 2025.2 option catalog')): true
+            (contains($error, 'no such option in the nova 2026.1 option catalog')): true
   # A metadata.name past 41 characters must be rejected by the validating
   # webhook: the {name}-db-archive CronJob would exceed the 52-character cap
   # Kubernetes puts on a CronJob name, so the CR would admit cleanly and then

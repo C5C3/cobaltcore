@@ -190,14 +190,14 @@ spec:
             (contains($error, 'auth_strategy is managed via operator-computed')): true
             (contains($error, 'anything but keystone disables token validation entirely')): true
   # spec.extraConfig setting an unknown option in a known section must be
-  # rejected: it is absent from the cinder 2025.2 option catalog.
+  # rejected: it is absent from the cinder 2026.1 option catalog.
   - try:
     - apply:
         file: 15-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the cinder 2025.2 option catalog')): true
+            (contains($error, 'no such option in the cinder 2026.1 option catalog')): true
   # A metadata.name past 43 characters must be rejected by the validating
   # webhook: the {name}-db-purge CronJob would exceed the 52-character cap
   # Kubernetes puts on a CronJob name, so the CR would admit cleanly and then

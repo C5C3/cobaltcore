@@ -13,8 +13,8 @@ kind: NeutronMetadataAgent
 metadata:
   name: neutron-metadata-agent
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
-    tag: "2025.2"
+    tag: "2026.1"
   chassisRef:
     name: ovn-chassis

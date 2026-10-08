@@ -15,7 +15,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
     pullPolicy: Sometimes
   database:
     host: db.example.com

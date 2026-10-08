@@ -83,13 +83,13 @@ spec:
 {service_user}
 {extra}"""
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
 VALID_DEPLOYMENT = "    replicas: 1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 VALID_DATABASE = """\
     clusterRef:
@@ -192,7 +192,7 @@ FIXTURES: tuple[Fixture, ...] = (
         name="placement-invalid-image-both",
         image=(
             "    repository: ghcr.io/c5c3/placement\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -592,7 +592,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig setting an unknown option in the known [placement]\n"
             "section is rejected by the validating webhook: the singular spelling is\n"
-            "absent from the placement 2025.2 option catalog, so a typo'd key can never\n"
+            "absent from the placement 2026.1 option catalog, so a typo'd key can never\n"
             "silently reach the rendered placement.conf. The value is quoted because\n"
             "extraConfig is a map of string to string: a bare YAML boolean would draw a\n"
             "schema type error and never reach the catalog check."
@@ -609,7 +609,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.extraConfig declaring an unknown section 'placemnt' (a typo for\n"
             "[placement]) is rejected by the validating webhook: the section is absent\n"
-            "from the placement 2025.2 option catalog, so a typo'd section name can\n"
+            "from the placement 2026.1 option catalog, so a typo'd section name can\n"
             "never silently reach the rendered placement.conf."
         ),
         name="placement-invalid-extraconfig-unknown-section",

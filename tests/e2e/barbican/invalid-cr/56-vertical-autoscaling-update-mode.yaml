@@ -10,14 +10,14 @@ kind: Barbican
 metadata:
   name: barbican-vpa-update-mode
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
     verticalAutoscaling:
       updateMode: Sometimes
   image:
     repository: ghcr.io/c5c3/barbican
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

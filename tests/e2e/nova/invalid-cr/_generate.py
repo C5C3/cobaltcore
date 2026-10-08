@@ -96,12 +96,12 @@ spec:
 
 VALID_NAME = "nova-invalid"
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
   image:
     repository: ghcr.io/c5c3/nova
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 # Nova splits its state across two schemas, so the scaffold carries two database
 # blocks. They name different schemas and share the default credentialsMode,
@@ -207,7 +207,7 @@ FIXTURES: tuple[Fixture, ...] = (
         image=(
             "  image:\n"
             "    repository: ghcr.io/c5c3/nova\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -467,7 +467,7 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="18-extraconfig-unknown-option.yaml",
         comment=(
             "spec.extraConfig setting an unknown option in a known section is rejected\n"
-            "by the validating webhook against the embedded nova 2025.2 option\n"
+            "by the validating webhook against the embedded nova 2026.1 option\n"
             "catalog. [DEFAULT] is a section the catalog carries, so the rejection is\n"
             "the unknown-option one rather than the unknown-section one."
         ),

@@ -12,7 +12,7 @@ kind: Placement
 metadata:
   name: placement-invalid-toleration
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
     tolerations:
@@ -20,7 +20,7 @@ spec:
       value: x
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

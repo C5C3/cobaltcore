@@ -68,7 +68,7 @@ VALID_DEPLOYMENT = "    replicas: 1"
 
 VALID_IMAGE = """\
     repository: ghcr.io/c5c3/horizon
-    tag: "2025.2\""""
+    tag: "2026.1\""""
 
 VALID_CACHE = """\
     clusterRef:
@@ -112,7 +112,7 @@ FIXTURES: tuple[Fixture, ...] = (
         name="horizon-invalid-image-both",
         image=(
             "    repository: ghcr.io/c5c3/horizon\n"
-            '    tag: "2025.2"\n'
+            '    tag: "2026.1"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),

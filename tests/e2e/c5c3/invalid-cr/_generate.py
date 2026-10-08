@@ -77,7 +77,7 @@ kind: ControlPlane
 metadata:
   name: {name}
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
 {image_pull_policy}{region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}{namespace_assignments}  korc:
@@ -459,7 +459,7 @@ FIXTURES: tuple[Fixture, ...] = (
             VALID_EXTERNAL_KEYSTONE
             + "      image:\n"
             + "        repository: ghcr.io/c5c3/keystone\n"
-            + '        tag: "2025.2"\n'
+            + '        tag: "2026.1"\n'
         ),
     ),
     Fixture(
@@ -1012,7 +1012,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "spec.globalExtraConfig sets an unknown option (providr, a typo of the\n"
             "keystone [token] provider option) in a known section: rejected by the webhook\n"
-            "because it is absent from the keystone 2025.2 option catalog. The finding is\n"
+            "because it is absent from the keystone 2026.1 option catalog. The finding is\n"
             "attributed back to the global block that carried it, so the message names\n"
             "spec.globalExtraConfig[token][providr]."
         ),
@@ -1030,7 +1030,7 @@ FIXTURES: tuple[Fixture, ...] = (
         comment=(
             "services.glance.extraConfig sets an unknown option (default_backend_typo) in\n"
             "the known [glance_store] section: rejected by the webhook because it is absent\n"
-            "from the glance 2025.2 option catalog. The rest of the glance block is valid, so\n"
+            "from the glance 2026.1 option catalog. The rest of the glance block is valid, so\n"
             "the ONLY violation is the per-service catalog check."
         ),
         name="cp-glance-extraconfig-unknown",

@@ -269,7 +269,7 @@ FIXTURES: tuple[Fixture, ...] = (
         extra=(
             "  image:\n"
             "    repository: ghcr.io/c5c3/nova-compute\n"
-            "    tag: \"2025.2\"\n"
+            "    tag: \"2026.1\"\n"
             "    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
         ),
     ),

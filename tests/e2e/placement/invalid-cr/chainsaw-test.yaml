@@ -328,23 +328,23 @@ spec:
             ($error != null): true
             (contains($error, 'extraConfig key and value must not contain a newline or carriage return')): true
   # spec.extraConfig setting an unknown option (typo'd key) in a known section
-  # must be rejected: it is absent from the placement 2025.2 option catalog.
+  # must be rejected: it is absent from the placement 2026.1 option catalog.
   - try:
     - apply:
         file: 29-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the placement 2025.2 option catalog')): true
+            (contains($error, 'no such option in the placement 2026.1 option catalog')): true
   # spec.extraConfig declaring an unknown section (typo'd section name) must be
-  # rejected: it is absent from the placement 2025.2 option catalog.
+  # rejected: it is absent from the placement 2026.1 option catalog.
   - try:
     - apply:
         file: 30-extraconfig-unknown-section.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such section in the placement 2025.2 option catalog')): true
+            (contains($error, 'no such section in the placement 2026.1 option catalog')): true
   # spec.extraConfig setting [api] auth_strategy must be rejected by the
   # webhook: extraConfig has the last word in the merge, so noauth2 would put
   # the API on the no-auth middleware the moment the pods load the file.

@@ -10,7 +10,7 @@ kind: ControlPlane
 metadata:
   name: cp-external-region-description
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   regionDescription: "Frankfurt DC2"
   services:
     keystone:
