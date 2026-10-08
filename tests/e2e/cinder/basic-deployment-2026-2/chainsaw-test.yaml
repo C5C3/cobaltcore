@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for a happy-path Cinder deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. The operator
+# The per-release twin of the plain basic-deployment suite. The operator
 # renders the same files for every release (nothing in the config step reads
 # spec.openStackRelease), so this suite asserts the SAME uWSGI command, the
 # same backend wiring and the same cinder.conf shape against the 2026.2 image,
-# and a difference between the three suites is the failure it exists to catch.
+# and a difference between the two suites is the failure it exists to catch.
 # It pins the container image as well, so a release bump that forgot the tag
-# shows up here rather than in a passing 2025.2 run.
+# shows up here rather than in a passing 2026.1 run.
 #
 # Validates the full reconciliation cycle of a Keystone-free (noauth) Cinder
 # with one NFS backend attached:

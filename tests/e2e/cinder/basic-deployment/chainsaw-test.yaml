@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for a happy-path Cinder deployment (2025.2 release).
+# Chainsaw E2E test for a happy-path Cinder deployment (2026.1 release).
 # Validates the full reconciliation cycle of a Keystone-free (noauth) Cinder
 # with one NFS backend attached:
 #   - all thirteen sub-conditions progress to True with their expected reasons,
@@ -619,7 +619,7 @@ spec:
 
           # The image ships its python in a venv on PATH; the absolute path is
           # the one tests/container-images/verify_cinder.sh pins.
-          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
             --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
             http://cinder-basic.openstack.svc.cluster.local:8776 \
             cinder-basic-scheduler cinder-basic@basic-nfs1
