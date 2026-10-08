@@ -47,7 +47,7 @@ The three jobs cover the process counts the profiles and the defaults run:
 | --- | --- | --- |
 | `e2e-controlplane` | The Minimal ControlPlane of the full-chain suite, its MariaDB, Memcached and dedicated OpenBao, and the shared kind broker | Service rows at one process, the Minimal CPU request, the backing-service figures, the budget projection |
 | `e2e-controlplane-sso` | The federated Minimal ControlPlane | The `federation-proxy` sidecar |
-| `tempest` (12 legs) | Every Tempest-covered service at its default process count, and at four processes where the fixture raises it, under Tempest API load | Service rows at two and four processes, the render-time CPU request |
+| `tempest` (18 legs) | Every Tempest-covered service at its default process count, and at four processes where the fixture raises it, under Tempest API load | Service rows at two and four processes, the render-time CPU request |
 
 The derivation produces these figures:
 
@@ -87,7 +87,7 @@ lists the steps it adds to each job.
 
 1. Add the label to the pull request. A push to the pull request while the
    run is in flight cancels it.
-2. Wait until `e2e-controlplane`, `e2e-controlplane-sso` and the twelve
+2. Wait until `e2e-controlplane`, `e2e-controlplane-sso` and the eighteen
    `tempest` legs have finished. Each uploads a `sizing-*` artifact, also when
    a suite fails. A leg whose `Collect the sizing measurement` step failed
    recorded no recommendation; run it again:

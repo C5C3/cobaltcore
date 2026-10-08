@@ -95,9 +95,11 @@ keystone-tempest-plugin: "0.22.0"
 
 The tempest pin may run ahead of the release line a directory represents:
 tempest is branchless (released tags never receive fixes) and upstream
-validates current plus recent stable releases with the latest tag. Both
-release directories currently pin tempest `46.3.0` — the glance legs need
-`>= 46.2.0`, where the web-download bad-URL negative test accepts the
+validates current plus recent stable releases with the latest tag. The
+2025.2 and 2026.1 directories pin tempest `46.3.0` and the 2026.2 directory
+`47.0.0`; `renovate.json` disables major updates under
+`releases/**/test-refs.yaml`, so the older two stay on 46.x. The glance legs
+need `>= 46.2.0`, where the web-download bad-URL negative test accepts the
 synchronous 400 that glance's DNS-based URI filtering returns.
 
 Each key is a PyPI package name. Values are quoted strings representing exact version
@@ -191,9 +193,9 @@ Build the Tempest image locally (requires `python-base` and `venv-builder` image
 docker build images/python-base -t python-base
 docker build images/venv-builder -t venv-builder
 
-# Build Tempest image for a specific release (e.g., 2025.2 or 2026.1).
+# Build Tempest image for a specific release (e.g., 2025.2, 2026.1 or 2026.2).
 # Resolve versions from the release's test-refs.yaml:
-RELEASE=2025.2   # or 2026.1
+RELEASE=2025.2   # or 2026.1, 2026.2
 TEMPEST_VERSION=$(yq -r '.tempest' releases/${RELEASE}/test-refs.yaml)
 BTP_VERSION=$(yq -r '.["barbican-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
 KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
@@ -395,8 +397,8 @@ carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
 the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on` version is
 per group and per release: two groups carry `> 0.19.0` for 2025.2 and `> 0.20.0` for
-2026.1, and the third carries `> 0.22.0` for both. Both releases' `test-refs.yaml` pin
-`0.22.0`.
+2026.1, and the third carries `> 0.22.0` for both older releases. All three
+`test-refs.yaml` pin `0.22.0`; the 2026.2 list carries no RBAC group (below).
 
 The RBAC suite runs only when the plugin sees scope enforcement. From 0.22.0 on
 it reads `[identity-feature-enabled] enforce_scope`, which every keystone
