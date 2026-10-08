@@ -9,6 +9,8 @@ package controller
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
@@ -592,6 +594,77 @@ func TestRotation_ForeignNamespaceNotAllowedIsRefused(t *testing.T) {
 		"a registration the plane does not admit must not reach the User in the plane's namespace")
 	g.Expect(got.Status.LastTriggeredGeneration).To(BeZero(),
 		"a refused rotation must not latch the generation, so admitting the namespace later does not skip it")
+}
+
+// TestRotation_RoleRefusedAccountIsNotRotated pins the role-allowlist gate on
+// the rotation path. A namespace assignment that does not list one of the
+// account's roles freezes the KeystoneService reconciler on the account, so a
+// nudge would report success and rotate nothing.
+func TestRotation_RoleRefusedAccountIsNotRotated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, ks, cr := foreignNamespaceRotation()
+	ks.Spec.Account.Roles = []string{"service"}
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+		{Namespace: "tenant", AllowedRoles: []string{"member"}},
+	}
+
+	key := types.NamespacedName{Namespace: "tenant", Name: cr.Name}
+	got, c, result := runRotationReconcileAt(t, key, cp, ks, cr, managedSAUser(ks, cp, "1"))
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+	g.Expect(cond.Message).To(ContainSubstring(`["service"] is not on that list`))
+	g.Expect(cond.Message).To(ContainSubstring("cannot rotate"))
+	g.Expect(result.RequeueAfter).To(Equal(credentialRotationRequeueAfter))
+
+	g.Expect(getSAUser(t, c, ks, cp).Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("1"),
+		"a refused account must not have its User nudged")
+	g.Expect(got.Status.LastTriggeredGeneration).To(BeZero(),
+		"a refused rotation must not latch the generation, so lifting the limit later does not skip it")
+}
+
+// TestRotation_RoleRefusalMessageIsTruncated pins that a refusal naming
+// tenant-controlled roles stays within the Condition message bound. %q escapes a
+// non-printable rune to ten characters, so 32 roles of 250 such runes, each
+// admissible, come to about 80,000 characters, and the API server would reject
+// the status write.
+func TestRotation_RoleRefusalMessageIsTruncated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, ks, cr := foreignNamespaceRotation()
+	ks.Spec.Account.Roles = nil
+	for i := range 32 {
+		ks.Spec.Account.Roles = append(ks.Spec.Account.Roles, strings.Repeat("\U000E0001", 250)+strconv.Itoa(i))
+	}
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+		{Namespace: "tenant", AllowedRoles: []string{"member"}},
+	}
+
+	key := types.NamespacedName{Namespace: "tenant", Name: cr.Name}
+	got, _, _ := runRotationReconcileAt(t, key, cp, ks, cr, managedSAUser(ks, cp, "1"))
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+	g.Expect(len(cond.Message)).To(BeNumerically("<=", maxConditionMessageBytes))
+}
+
+// TestRotation_RoleAllowedAccountIsRotated pins that the role-allowlist gate
+// refuses only a role outside the list: an account whose every role the
+// namespace assignment lists rotates like one in a namespace without an entry.
+func TestRotation_RoleAllowedAccountIsRotated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, ks, cr := foreignNamespaceRotation()
+	ks.Spec.Account.Roles = []string{"service"}
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+		{Namespace: "tenant", AllowedRoles: []string{"member", "service"}},
+	}
+
+	key := types.NamespacedName{Namespace: "tenant", Name: cr.Name}
+	got, c, _ := runRotationReconcileAt(t, key, cp, ks, cr, managedSAUser(ks, cp, "1"))
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("RotationTriggered"))
+
+	g.Expect(getSAUser(t, c, ks, cp).Annotations[serviceAccountPasswordGenerationAnnotation]).To(BeEmpty(),
+		"an account within its namespace assignment must have its User nudged")
 }
 
 // TestRotation_ServiceAccountWaitsForAdminCredential pins the third gate the

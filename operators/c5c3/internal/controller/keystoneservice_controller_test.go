@@ -399,6 +399,315 @@ func TestKeystoneService_NamespaceNotAllowedNamesTheRemedy(t *testing.T) {
 		ContainSubstring("spec.korc.serviceRegistrations.allowedNamespaces"))
 }
 
+// ksRoleLimitedPlane returns ksControlPlane admitting tenant-a through the
+// allowlist and assigning tenant-a on the management cluster with the given role
+// allowlist (none: an empty one).
+func ksRoleLimitedPlane(roles ...string) *c5c3v1alpha1.ControlPlane {
+	cp := ksControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+		{Namespace: "tenant-a", AllowedRoles: roles},
+	}
+	return cp
+}
+
+// ksForeignAccountCR returns ksForeignCR requesting the given account roles.
+func ksForeignAccountCR(cp *c5c3v1alpha1.ControlPlane, roles ...string) *c5c3v1alpha1.KeystoneService {
+	ks := ksForeignCR(cp)
+	ks.Spec.Account.Roles = roles
+	return ks
+}
+
+// TestKeystoneServiceRoleRefusal pins which registrations a namespace assignment
+// binds: an account in a namespace with a management-cluster entry, never the
+// ControlPlane's own namespace or a dedicated service namespace.
+func TestKeystoneServiceRoleRefusal(t *testing.T) {
+	entry := func(namespace string, ref *commonv1.TargetClusterRefSpec, roles ...string) c5c3v1alpha1.NamespaceAssignmentSpec {
+		return c5c3v1alpha1.NamespaceAssignmentSpec{Namespace: namespace, TargetClusterRef: ref, AllowedRoles: roles}
+	}
+	ksIn := func(namespace string, roles ...string) *c5c3v1alpha1.KeystoneService {
+		ks := keystoneServiceCR()
+		ks.Namespace = namespace
+		ks.Spec.Account = ksAccountSpec()
+		ks.Spec.Account.Roles = roles
+		return ks
+	}
+
+	cases := []struct {
+		name        string
+		entries     []c5c3v1alpha1.NamespaceAssignmentSpec
+		dedicated   string
+		ks          *c5c3v1alpha1.KeystoneService
+		wantEntry   bool
+		wantRefused []string
+	}{
+		{
+			name:    "a catalog-only registration is never bound",
+			entries: []c5c3v1alpha1.NamespaceAssignmentSpec{entry("tenant-a", nil)},
+			ks:      func() *c5c3v1alpha1.KeystoneService { ks := ksIn("tenant-a"); ks.Spec.Account = nil; return ks }(),
+		},
+		{
+			name:    "the ControlPlane's own namespace is never bound",
+			entries: []c5c3v1alpha1.NamespaceAssignmentSpec{entry(ksTestNamespace, nil)},
+			ks:      ksIn(ksTestNamespace, "admin"),
+		},
+		{
+			name:      "a dedicated service namespace is never bound",
+			entries:   []c5c3v1alpha1.NamespaceAssignmentSpec{entry("identity", nil)},
+			dedicated: "identity",
+			ks:        ksIn("identity", "admin"),
+		},
+		{
+			name: "a namespace without an entry stays unlimited",
+			ks:   ksIn("tenant-a", "admin"),
+		},
+		{
+			name:    "a target-cluster entry of the same name does not bind",
+			entries: []c5c3v1alpha1.NamespaceAssignmentSpec{entry("tenant-a", &commonv1.TargetClusterRefSpec{Name: "edge-1"})},
+			ks:      ksIn("tenant-a", "admin"),
+		},
+		{
+			name:      "every requested role allowed",
+			entries:   []c5c3v1alpha1.NamespaceAssignmentSpec{entry("tenant-a", nil, "member", "service")},
+			ks:        ksIn("tenant-a", "service"),
+			wantEntry: true,
+		},
+		{
+			name:        "a role outside the list is refused",
+			entries:     []c5c3v1alpha1.NamespaceAssignmentSpec{entry("tenant-a", nil, "member")},
+			ks:          ksIn("tenant-a", "admin", "member"),
+			wantEntry:   true,
+			wantRefused: []string{"admin"},
+		},
+		{
+			name:        "an empty list refuses every role",
+			entries:     []c5c3v1alpha1.NamespaceAssignmentSpec{entry("tenant-a", nil)},
+			ks:          ksIn("tenant-a", "member"),
+			wantEntry:   true,
+			wantRefused: []string{"member"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := ksControlPlane()
+			cp.Spec.NamespaceAssignments = tc.entries
+			if tc.dedicated != "" {
+				cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+					Name: tc.dedicated, Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+				}
+			}
+
+			got, refused := keystoneServiceRoleRefusal(cp, tc.ks)
+			if tc.wantEntry {
+				g.Expect(got).To(BeIdenticalTo(&cp.Spec.NamespaceAssignments[0]))
+			} else {
+				g.Expect(got).To(BeNil())
+			}
+			g.Expect(refused).To(Equal(tc.wantRefused))
+		})
+	}
+}
+
+// TestNamespaceAssignmentRoleMessage pins the refusal message the order kinds
+// reuse, including the empty allowlist it names as [].
+func TestNamespaceAssignmentRoleMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksControlPlane()
+
+	g.Expect(namespaceAssignmentRoleMessage(cp,
+		&c5c3v1alpha1.NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"member"}},
+		[]string{"service"},
+	)).To(Equal(`ControlPlane default/cp admits roles ["member"] from namespace "tenant-a" on the management cluster ` +
+		`(spec.namespaceAssignments); ["service"] is not on that list`))
+
+	g.Expect(namespaceAssignmentRoleMessage(cp,
+		&c5c3v1alpha1.NamespaceAssignmentSpec{
+			Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-1"},
+		},
+		[]string{"member", "admin"},
+	)).To(Equal(`ControlPlane default/cp admits roles [] from namespace "tenant-a" on target cluster "edge-1" ` +
+		`(spec.namespaceAssignments); ["member" "admin"] is not on that list`))
+}
+
+// TestKeystoneService_RoleOutsideTheAssignmentIsRefused pins D1: an allowlisted
+// registration requesting a role its namespace assignment does not list reports
+// AccountReady=False/RoleNotAllowed, projects nothing for the account, and keeps
+// reconciling its catalog block.
+func TestKeystoneService_RoleOutsideTheAssignmentIsRefused(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane("member")
+	ks := ksForeignAccountCR(cp, "service")
+
+	got, c := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	account := ksAccountCondition(got)
+	g.Expect(account.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(account.Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+	g.Expect(account.Message).To(ContainSubstring("spec.namespaceAssignments"))
+	g.Expect(account.Message).To(ContainSubstring(`["member"]`))
+	g.Expect(account.Message).To(ContainSubstring(`["service"]`))
+	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceRoleNotAllowed),
+		"the catalog block keeps reconciling")
+
+	err := c.Get(context.Background(), types.NamespacedName{
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServiceRoleAssignmentRef(ks, "service"),
+	}, &orcv1alpha1.RoleAssignment{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a refused role is never assigned")
+	var users orcv1alpha1.UserList
+	g.Expect(c.List(context.Background(), &users)).To(Succeed())
+	g.Expect(users.Items).To(BeEmpty(), "a refused account projects nothing")
+}
+
+// TestKeystoneService_EmptyRoleAllowlistNamesTheEmptyList pins that an entry
+// allowing no role refuses every role and says so.
+func TestKeystoneService_EmptyRoleAllowlistNamesTheEmptyList(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane()
+	ks := ksForeignAccountCR(cp, "member")
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+	g.Expect(ksAccountCondition(got).Message).To(ContainSubstring("admits roles []"))
+}
+
+// TestKeystoneService_RoleAllowlistAdmits covers the registrations a namespace
+// assignment does not refuse: allowed roles, a namespace without an entry, a
+// target-cluster entry of the same name, a catalog-only registration, and the
+// namespaces the ControlPlane occupies.
+func TestKeystoneService_RoleAllowlistAdmits(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService)
+	}{
+		{name: "every requested role allowed", setup: func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+			cp := ksRoleLimitedPlane("member")
+			return cp, ksForeignAccountCR(cp, "member")
+		}},
+		{name: "no entry for the namespace", setup: func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+			cp := ksRoleLimitedPlane()
+			cp.Spec.NamespaceAssignments = nil
+			return cp, ksForeignAccountCR(cp, "admin")
+		}},
+		{name: "only a target-cluster entry of the same name", setup: func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+			cp := ksRoleLimitedPlane()
+			cp.Spec.NamespaceAssignments[0].TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+			return cp, ksForeignAccountCR(cp, "admin")
+		}},
+		{name: "a catalog-only registration", setup: func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+			cp := ksRoleLimitedPlane()
+			ks := ksForeignCR(cp)
+			ks.Spec.Account = nil
+			return cp, ks
+		}},
+		{name: "a dedicated service namespace", setup: func() (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+			cp := ksRoleLimitedPlane()
+			cp.Spec.KORC.ServiceRegistrations = nil
+			cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name: "tenant-a", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			}
+			return cp, ksForeignAccountCR(cp, "admin")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp, ks := tc.setup()
+
+			got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+			for _, cond := range []*metav1.Condition{ksAccountCondition(got), ksCatalogCondition(got)} {
+				g.Expect(cond.Reason).NotTo(Equal(reasonKeystoneServiceRoleNotAllowed))
+				g.Expect(cond.Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+			}
+			if ks.Spec.Account != nil && ks.Namespace != keystoneServiceChildNamespace(cp) {
+				// Past the role gate the account leg runs and waits on the tenant
+				// store the registration's own namespace does not hold here.
+				g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonServiceAccountStoreNotReady))
+			}
+		})
+	}
+}
+
+// TestKeystoneService_OwnNamespaceIsNeverRoleBound pins that an entry naming
+// the ControlPlane's own namespace leaves its registrations unlimited, so the
+// built-in registrations are unaffected.
+func TestKeystoneService_OwnNamespaceIsNeverRoleBound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksControlPlane()
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{{Namespace: cp.Namespace}}
+	ks := keystoneServiceCR()
+	ks.Spec.Account = ksAccountSpec()
+	ks.Spec.Account.Roles = []string{"admin"}
+
+	got, _ := runKeystoneService(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceRoleNotAllowed))
+}
+
+// TestKeystoneService_AssignmentNeverAdmitsARegistration pins that an entry is no
+// consent of its own: without an allowlist entry the namespace stays refused.
+func TestKeystoneService_AssignmentNeverAdmitsARegistration(t *testing.T) {
+	cp := ksRoleLimitedPlane("member", "service")
+	cp.Spec.KORC.ServiceRegistrations = nil
+	ks := ksForeignAccountCR(cp, "service")
+
+	got, c := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+	expectNamespaceNotAllowed(t, got, c)
+}
+
+// TestKeystoneService_RoleRefusalFreezes pins D2 for a registration that was
+// Ready: adding an entry that does not list its role keeps the role import, the
+// role assignment and the consumer Secret in place.
+func TestKeystoneService_RoleRefusalFreezes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane("member")
+	ks := ksForeignAccountCR(cp, "service")
+	childNS := keystoneServiceChildNamespace(cp)
+
+	roleImport := &orcv1alpha1.Role{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneServiceRoleImportRef(ks, "service"), Namespace: childNS, Labels: keystoneServiceChildLabels(ks),
+	}}
+	assignment := &orcv1alpha1.RoleAssignment{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneServiceRoleAssignmentRef(ks, "service"), Namespace: childNS, Labels: keystoneServiceChildLabels(ks),
+	}}
+	consumer := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneServiceCredentialsSecretName(ks), Namespace: ks.Namespace,
+	}}
+
+	got, c := reconcileForeignKS(t, cp, ks, roleImport, assignment, consumer, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(roleImport), &orcv1alpha1.Role{})).To(Succeed())
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(assignment), &orcv1alpha1.RoleAssignment{})).To(Succeed(),
+		"a role granted before the refusal stays")
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(consumer), &corev1.Secret{})).To(Succeed(),
+		"the delivered credentials stay")
+}
+
+// TestKeystoneService_RoleRefusalIsNotMaskedBySweep pins that the refusal is
+// written after the sweep: an undeclared account child still being removed must
+// not leave AccountReady at WaitingForServiceAccounts.
+func TestKeystoneService_RoleRefusalIsNotMaskedBySweep(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane("member")
+	ks := ksForeignAccountCR(cp, "service")
+	undeclared := &orcv1alpha1.RoleAssignment{ObjectMeta: metav1.ObjectMeta{
+		Name:      keystoneServiceRoleAssignmentRef(ks, "admin"),
+		Namespace: keystoneServiceChildNamespace(cp),
+		Labels:    keystoneServiceChildLabels(ks),
+	}}
+
+	got, c := reconcileForeignKS(t, cp, ks, undeclared, readyTenantStoreFor(cp))
+
+	err := c.Get(context.Background(), client.ObjectKeyFromObject(undeclared), &orcv1alpha1.RoleAssignment{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the sweep still removes what the spec no longer declares")
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+}
+
 // TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted pins the widened
 // gate: a listed namespace passes and the catalog block projects. The observable
 // is the collision PROBE, not the managed Service row — ensureCatalog probes

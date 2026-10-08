@@ -243,9 +243,9 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 // rather than from the same-namespace lookup the admin path uses. Because that
 // reference crosses namespaces and is fully caller-controlled, the path repeats
 // the KeystoneService reconciler's own pre-write gates before it nudges: the
-// plane's registration consent for the CR's namespace, the plane's
-// AdminCredentialReady condition, and the ownership labels on the User it is
-// about to nudge.
+// plane's registration consent for the CR's namespace, the role allowlist of the
+// namespace assignment for it, the plane's AdminCredentialReady condition, and
+// the ownership labels on the User it is about to nudge.
 //
 // There is no auto-detect path (unlike the admin credential there is no external
 // password source to observe), so a rotation fires only on an explicit reMint,
@@ -319,6 +319,16 @@ func (r *CredentialRotationReconciler) rotateServiceAccountPassword(
 				"its KeystoneService reconciler is frozen there and cannot rotate. "+
 				"Add the namespace to its spec.korc.serviceRegistrations.allowedNamespaces to admit it",
 				cpKey, ks.Namespace))
+	}
+
+	// The role allowlist of a namespace assignment freezes the account the same
+	// way: the KeystoneService reconciler no longer projects it, so a nudge would
+	// report success and rotate nothing.
+	if entry, refused := keystoneServiceRoleRefusal(cp, ks); len(refused) > 0 {
+		return r.finish(ctx, cr, ctrl.Result{RequeueAfter: credentialRotationRequeueAfter},
+			metav1.ConditionFalse, reasonKeystoneServiceRoleNotAllowed,
+			namespaceAssignmentRoleMessage(cp, entry, refused)+
+				"; its KeystoneService reconciler is frozen on the account and cannot rotate")
 	}
 
 	// Locate the owned managed User via the keystoneservice_controller.go naming
@@ -513,7 +523,8 @@ func (r *CredentialRotationReconciler) clearPasswordHashAnnotation(
 // finish sets the Ready condition + ObservedGeneration and persists status,
 // returning the given result. It mirrors the ControlPlane reconciler's
 // updateStatus discipline so a stale status is distinguishable from a current
-// one.
+// one. The message is truncated to the Condition bound, because a role refusal
+// carries the tenant-controlled role names.
 func (r *CredentialRotationReconciler) finish(
 	ctx context.Context, cr *c5c3v1alpha1.CredentialRotation, result ctrl.Result,
 	status metav1.ConditionStatus, reason, message string,
@@ -525,7 +536,7 @@ func (r *CredentialRotationReconciler) finish(
 			Status:             status,
 			ObservedGeneration: cr.Generation,
 			Reason:             reason,
-			Message:            message,
+			Message:            truncateConditionMessage(message),
 		})
 		cr.Status.ObservedGeneration = cr.Generation
 	}, result, nil)
