@@ -689,8 +689,8 @@ status:
 
 // TestPinNovaAPIDeployment pins the API pod template in its three shapes: the
 // default one, the autoscaled one carrying every rollout digest, and the one
-// with all three TLS projections mounted. Each shape is rendered at both
-// supported releases: the second render must differ from the first in the
+// with all three TLS projections mounted. Each shape is rendered at every
+// supported release: each later render must differ from the first in the
 // release strings alone, which is what keeps a release-conditional field out of
 // the workload builders.
 func TestPinNovaAPIDeployment(t *testing.T) {
@@ -724,13 +724,14 @@ func TestPinNovaAPIDeployment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			expectGolden(t,
-				renderYAML(t, buildAPIDeployment(tc.nova(), workloadArtifacts(), tc.digests)),
-				tc.golden)
-			expectGolden(t,
-				renderYAML(t, buildAPIDeployment(atRelease(tc.nova(), "2026.1"),
-					workloadArtifacts(), tc.digests)),
-				strings.ReplaceAll(tc.golden, "2025.2", "2026.1"))
+			for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+				t.Run(release, func(t *testing.T) {
+					expectGolden(t,
+						renderYAML(t, buildAPIDeployment(atRelease(tc.nova(), release),
+							workloadArtifacts(), tc.digests)),
+						strings.ReplaceAll(tc.golden, "2025.2", release))
+				})
+			}
 		})
 	}
 }

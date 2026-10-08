@@ -415,7 +415,7 @@ status: {}
 // database connections it opens. The fixture digests go in because the hash
 // annotations are the only thing that rolls a running conductor once the
 // broker, database or service-user credential it started with is rotated. Both
-// shapes are rendered at both supported releases, and the second render must
+// shapes are rendered at every supported release, and each later render must
 // differ from the first in the release strings alone, which is what keeps a
 // release-conditional field out of the builder.
 func TestPinNovaConductorDeployment(t *testing.T) {
@@ -430,11 +430,13 @@ func TestPinNovaConductorDeployment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			expectGolden(t, renderYAML(t, buildConductorDeployment(tc.nova(), workloadArtifacts(),
-				workloadTestDigests(), testEgressPort)), tc.golden)
-			expectGolden(t, renderYAML(t, buildConductorDeployment(atRelease(tc.nova(), "2026.1"), workloadArtifacts(),
-				workloadTestDigests(), testEgressPort)),
-				strings.ReplaceAll(tc.golden, "2025.2", "2026.1"))
+			for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+				t.Run(release, func(t *testing.T) {
+					expectGolden(t, renderYAML(t, buildConductorDeployment(atRelease(tc.nova(), release), workloadArtifacts(),
+						workloadTestDigests(), testEgressPort)),
+						strings.ReplaceAll(tc.golden, "2025.2", release))
+				})
+			}
 		})
 	}
 }
