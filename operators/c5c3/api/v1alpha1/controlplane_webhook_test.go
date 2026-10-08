@@ -2211,6 +2211,179 @@ func TestValidateCreate_RejectsTooManyServiceRegistrationNamespaces(t *testing.T
 	g.Expect(err.Error()).To(ContainSubstring("must have at most 32 items"))
 }
 
+// --- Namespace assignments (spec.namespaceAssignments) ---
+
+// assignmentControlPlane returns a managed ControlPlane that assigns the entries
+// passed in, so each test mutates one aspect of a CR that is otherwise valid.
+func assignmentControlPlane(entries ...NamespaceAssignmentSpec) *ControlPlane {
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.NamespaceAssignments = entries
+	return cp
+}
+
+// TestValidateCreate_AcceptsNamespaceAssignments pins the shapes the webhook
+// admits: the same namespace on two clusters is two entries, a cluster name is
+// never looked up, and an empty or absent list assigns nothing.
+func TestValidateCreate_AcceptsNamespaceAssignments(t *testing.T) {
+	edge := &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+	}{
+		{name: "the same namespace on two clusters", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{"member"}},
+			NamespaceAssignmentSpec{Namespace: "tenant-a", TargetClusterRef: edge},
+		)},
+		{name: "an unregistered cluster name", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{
+				Namespace:        "tenant-a",
+				TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "no-such-cluster"},
+			},
+		)},
+		{name: "an empty list", cp: assignmentControlPlane([]NamespaceAssignmentSpec{}...)},
+		{name: "an absent list", cp: assignmentControlPlane()},
+		{name: "an empty role list", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{}},
+		)},
+		{name: "the control plane's own namespace", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{Namespace: "openstack"},
+		)},
+		{name: "the maximum entry and role counts", cp: func() *ControlPlane {
+			roles := make([]string, 0, maxNamespaceAssignmentRoles)
+			for j := range maxNamespaceAssignmentRoles {
+				roles = append(roles, fmt.Sprintf("role-%d", j))
+			}
+			entries := make([]NamespaceAssignmentSpec, 0, maxNamespaceAssignments)
+			for i := range maxNamespaceAssignments {
+				entries = append(entries, NamespaceAssignmentSpec{Namespace: fmt.Sprintf("tenant-%d", i), AllowedRoles: roles})
+			}
+			return assignmentControlPlane(entries...)
+		}()},
+		{name: "a 255-byte role", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{strings.Repeat("r", maxNamespaceAssignmentRoleBytes)}},
+		)},
+		{name: "External mode", cp: func() *ControlPlane {
+			cp := externalControlPlane()
+			cp.Spec.NamespaceAssignments = []NamespaceAssignmentSpec{{Namespace: "tenant-a", AllowedRoles: []string{"member"}}}
+			return cp
+		}()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+
+			_, err := w.ValidateCreate(context.Background(), tc.cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_RejectsNamespaceAssignments mirrors each schema marker on
+// spec.namespaceAssignments for webhook-bypassed callers, plus the pair
+// uniqueness only the webhook enforces.
+func TestValidateCreate_RejectsNamespaceAssignments(t *testing.T) {
+	tooManyRoles := make([]string, 0, maxNamespaceAssignmentRoles+1)
+	for j := range maxNamespaceAssignmentRoles + 1 {
+		tooManyRoles = append(tooManyRoles, fmt.Sprintf("role-%d", j))
+	}
+	tooManyEntries := make([]NamespaceAssignmentSpec, 0, maxNamespaceAssignments+1)
+	for i := range maxNamespaceAssignments + 1 {
+		tooManyEntries = append(tooManyEntries, NamespaceAssignmentSpec{Namespace: fmt.Sprintf("tenant-%d", i)})
+	}
+
+	tests := []struct {
+		name     string
+		entries  []NamespaceAssignmentSpec
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name: "33 entries", entries: tooManyEntries,
+			wantPath: "spec.namespaceAssignments", wantSub: "Too many",
+		},
+		{
+			name:     "a namespace that is no RFC-1123 label",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "Tenant_A"}},
+			wantPath: "spec.namespaceAssignments[0].namespace", wantSub: "RFC-1123 label",
+		},
+		{
+			name:     "an empty cluster name",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{}}},
+			wantPath: "spec.namespaceAssignments[0].targetClusterRef.name", wantSub: "Required value",
+		},
+		{
+			name:     "the same namespace twice on the management cluster",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a"}, {Namespace: "tenant-a"}},
+			wantPath: "spec.namespaceAssignments[1]", wantSub: `Duplicate value: "tenant-a on the management cluster"`,
+		},
+		{
+			name: "the same namespace twice on one target cluster",
+			entries: []NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-1"}},
+				{Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-1"}},
+			},
+			wantPath: "spec.namespaceAssignments[1]", wantSub: `Duplicate value: "tenant-a on target cluster \"edge-1\""`,
+		},
+		{
+			name:     "17 roles",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a", AllowedRoles: tooManyRoles}},
+			wantPath: "spec.namespaceAssignments[0].allowedRoles", wantSub: "Too many",
+		},
+		{
+			name:     "an empty role",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a", AllowedRoles: []string{""}}},
+			wantPath: "spec.namespaceAssignments[0].allowedRoles[0]", wantSub: "Invalid value",
+		},
+		{
+			name: "a 256-byte role",
+			entries: []NamespaceAssignmentSpec{{
+				Namespace:    "tenant-a",
+				AllowedRoles: []string{strings.Repeat("r", maxNamespaceAssignmentRoleBytes+1)},
+			}},
+			wantPath: "spec.namespaceAssignments[0].allowedRoles[0]", wantSub: "must be at most 255 bytes",
+		},
+		{
+			name:     "a role with a comma",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a", AllowedRoles: []string{"a,b"}}},
+			wantPath: "spec.namespaceAssignments[0].allowedRoles[0]", wantSub: "must not contain a comma",
+		},
+		{
+			name:     "a duplicate role",
+			entries:  []NamespaceAssignmentSpec{{Namespace: "tenant-a", AllowedRoles: []string{"member", "member"}}},
+			wantPath: "spec.namespaceAssignments[0].allowedRoles[1]", wantSub: "Duplicate value",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+
+			_, err := w.ValidateCreate(context.Background(), assignmentControlPlane(tc.entries...))
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestValidateNamespaceAssignments_ReportsOnlyTheRepeatedEntry pins that the
+// duplicate error names the later entry alone, on the same path the fixture
+// asserts.
+func TestValidateNamespaceAssignments_ReportsOnlyTheRepeatedEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	errs := validateNamespaceAssignments(assignmentControlPlane(
+		NamespaceAssignmentSpec{Namespace: "tenant-a"},
+		NamespaceAssignmentSpec{Namespace: "tenant-b"},
+		NamespaceAssignmentSpec{Namespace: "tenant-a"},
+	))
+	g.Expect(errs).To(HaveLen(1))
+	g.Expect(errs[0].Type).To(Equal(field.ErrorTypeDuplicate))
+	g.Expect(errs[0].Field).To(Equal("spec.namespaceAssignments[2]"))
+}
+
 // --- Per-service dedicated backing services ---
 
 // dedicatedControlPlane returns a ControlPlane whose Keystone service opts into a

@@ -5185,6 +5185,102 @@ func TestIntegration_ControlPlane_ServiceRegistrationsSchemaValidation(t *testin
 	}
 }
 
+// TestIntegration_ControlPlane_NamespaceAssignmentsSchemaValidation pins
+// spec.namespaceAssignments against the real envtest API server, the schema
+// markers and the validating webhook together: the RFC-1123 namespace pattern,
+// the listType=set role duplicate rejection, the role item pattern, and the pair
+// uniqueness only the webhook enforces. Its substrings are the ones the chainsaw
+// rejection fixtures 138 to 141 assert on.
+func TestIntegration_ControlPlane_NamespaceAssignmentsSchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	edge := &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	cases := []struct {
+		name        string
+		assignments []c5c3v1alpha1.NamespaceAssignmentSpec
+		wantErr     bool
+		wantErrSubs []string
+	}{
+		{
+			name:        "a namespace outside the RFC-1123 label shape is rejected",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{{Namespace: "Tenant_A"}},
+			wantErr:     true,
+			wantErrSubs: []string{"namespaceAssignments[0].namespace", "should match"},
+		},
+		{
+			name: "the same namespace twice on one cluster is rejected by the webhook",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a"}, {Namespace: "tenant-a"},
+			},
+			wantErr:     true,
+			wantErrSubs: []string{"namespaceAssignments[1]", "Duplicate value"},
+		},
+		{
+			name: "a duplicate role is rejected by listType=set",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", AllowedRoles: []string{"member", "member"}},
+			},
+			wantErr:     true,
+			wantErrSubs: []string{"allowedRoles", "Duplicate value"},
+		},
+		{
+			name: "a role with a comma is rejected by the item pattern",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", AllowedRoles: []string{"a,b"}},
+			},
+			wantErr:     true,
+			wantErrSubs: []string{"allowedRoles[0]", "should match"},
+		},
+		{
+			name:        "an absent list is accepted",
+			assignments: nil,
+		},
+		{
+			name:        "an empty list is accepted",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{},
+		},
+		{
+			name: "the same namespace on two clusters is accepted",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", AllowedRoles: []string{"member"}},
+				{Namespace: "tenant-a", TargetClusterRef: edge},
+			},
+		},
+		{
+			name: "an unregistered cluster name is accepted",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "no-such-cluster"}},
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			// One namespace per case: a ControlPlane is unique per namespace.
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-assignment-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationMinimalControlPlane(fmt.Sprintf("cp-assignment-%d", i), ns.Name)
+			cp.Spec.NamespaceAssignments = tc.assignments
+
+			err := c.Create(ctx, cp)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+				g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+					fmt.Sprintf("expected Invalid for %q, got: %v", tc.name, err))
+				for _, sub := range tc.wantErrSubs {
+					g.Expect(err.Error()).To(ContainSubstring(sub))
+				}
+			} else {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+			}
+		})
+	}
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on

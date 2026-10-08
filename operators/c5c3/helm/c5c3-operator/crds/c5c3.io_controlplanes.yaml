@@ -725,6 +725,100 @@ spec:
                 required:
                 - adminCredential
                 type: object
+              namespaceAssignments:
+                description: |-
+                  NamespaceAssignments assigns namespaces on the management cluster or on a
+                  registered target cluster to the owners of services this control plane does
+                  not manage, each with the Keystone roles an order from that namespace may
+                  request. See NamespaceAssignmentSpec. The field sits beside korc rather than
+                  inside it because the consent also covers database and message-bus orders.
+                items:
+                  description: |-
+                    NamespaceAssignmentSpec assigns one namespace, on the management cluster or on
+                    a registered target cluster, to the owner of a service the control plane does
+                    not manage. It is the consent the order kinds check before they act on an
+                    order from that namespace, and it lists the Keystone roles such an order may
+                    request.
+
+                    The pair (namespace, targetClusterRef.name) is unique across the list: the same
+                    namespace name on two clusters is two entries. The validating webhook enforces
+                    the uniqueness; no schema rule does.
+
+                    A role matches only its own case-sensitive name. Keystone's implied roles still
+                    apply to what an allowed role grants: member implies reader, and admin implies
+                    both. An empty allowedRoles is legal and allows no role, while the namespace
+                    may still order a database or a message-bus vhost.
+
+                    An entry for a management-cluster namespace that
+                    spec.korc.serviceRegistrations.allowedNamespaces admits also binds the
+                    KeystoneService CRs there: an account role outside allowedRoles reports
+                    AccountReady=False/RoleNotAllowed, and a CredentialRotation of that account
+                    refuses the same way. Without an entry such a namespace stays unlimited.
+                    Removing the entry lifts the limit again. The control plane's own namespace and
+                    its dedicated service namespaces are never bound. An entry never admits a
+                    KeystoneService and never provisions a tenant store.
+
+                    Removing an entry freezes the orders from its namespace. They report refused
+                    and are no longer reconciled: nothing is rotated or delivered again, and
+                    nothing they created is revoked or deleted, so the Secrets already delivered
+                    stay. Deleting an order still tears down what it created, and credentials that
+                    live on renewal (MariaDB dynamic leases) lapse at their TTL. A KeystoneService
+                    refused for a role freezes the same way: a role assignment that already exists
+                    in Keystone stays until the owner drops the role from spec.account.roles or
+                    deletes the CR.
+
+                    Admission never checks that the named cluster is registered. An entry whose
+                    cluster does not resolve is refused in status instead
+                    (NamespaceAssignmentsReady=False/TargetClusterUnavailable), which turns the
+                    control plane's Ready False, and so does an outage of a cluster that only
+                    tenants use.
+                  properties:
+                    allowedRoles:
+                      description: |-
+                        AllowedRoles lists the Keystone role names an order from this namespace may
+                        request, each matched by its case-sensitive name. The item markers mirror
+                        KeystoneServiceAccountSpec.Roles.
+                      items:
+                        maxLength: 255
+                        minLength: 1
+                        pattern: ^[^,]+$
+                        type: string
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: set
+                    namespace:
+                      description: |-
+                        Namespace is the assigned namespace's name, an RFC-1123 label. The operator
+                        only reads it: it never creates, labels or deletes the namespace, and the
+                        entry may precede the namespace.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    targetClusterRef:
+                      description: |-
+                        TargetClusterRef names the registered target cluster the namespace lives on.
+                        Absent means the management cluster. Admission does not check that the
+                        cluster is registered, and the ref may be edited: a changed ref is one entry
+                        removed and another added.
+                      properties:
+                        name:
+                          description: |-
+                            Name is the registered target cluster's name. It must be a non-empty
+                            DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                            SecretStoreRefSpec.Name.
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - namespace
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: atomic
               openStackRelease:
                 description: |-
                   OpenStackRelease is the OpenStack release the control plane targets,
@@ -12369,6 +12463,72 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              namespaceAssignments:
+                description: |-
+                  NamespaceAssignments reports what each spec.namespaceAssignments entry
+                  resolves to, one entry per spec entry and in spec order. It is empty when
+                  the spec assigns no namespace.
+                items:
+                  description: |-
+                    NamespaceAssignmentStatus reports the observed state of one
+                    spec.namespaceAssignments entry.
+                  properties:
+                    allowedRoles:
+                      description: AllowedRoles echoes the spec entry's role allowlist.
+                      items:
+                        type: string
+                      type: array
+                    clusterReachable:
+                      description: |-
+                        ClusterReachable reports whether the cluster resolved and answered the
+                        namespace read.
+                      type: boolean
+                    message:
+                      description: Message explains a reason other than Assigned in
+                        human-readable form.
+                      maxLength: 32768
+                      type: string
+                    namespace:
+                      description: Namespace is the assigned namespace, copied from
+                        the spec entry.
+                      type: string
+                    namespaceExists:
+                      description: NamespaceExists reports whether the namespace exists
+                        on that cluster.
+                      type: boolean
+                    reason:
+                      description: Reason is the entry's outcome.
+                      enum:
+                      - Assigned
+                      - NamespaceNotFound
+                      - NamespaceTerminating
+                      - TargetClusterUnavailable
+                      - ClusterUnreachable
+                      type: string
+                    targetClusterRef:
+                      description: |-
+                        TargetClusterRef is the spec entry's cluster reference. Absent means the
+                        management cluster.
+                      properties:
+                        name:
+                          description: |-
+                            Name is the registered target cluster's name. It must be a non-empty
+                            DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                            SecretStoreRefSpec.Name.
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - clusterReachable
+                  - namespace
+                  - namespaceExists
+                  - reason
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
               observedGeneration:
                 description: |-
                   ObservedGeneration is the .metadata.generation the controller last
