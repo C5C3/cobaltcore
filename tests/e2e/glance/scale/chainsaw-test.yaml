@@ -9,10 +9,11 @@
 #   - Scale up to 5 replicas — updatedReplicas proves new pods started
 #   - Scale down to 1 replica (PDB: maxUnavailable=1)
 # Each step also asserts the MariaDB User's maxUserConnections, which the
-# operator sizes from the replica count. The CR runs 2025.2 (eventlet) with
-# the default 2 workers of 5 pooled connections each: (replicas + 1) x 10 + 2,
-# so 42, 62 and 22. The plain value is asserted because chainsaw never
-# matches a serialized integer against a JMESPath number.
+# operator sizes from the replica count. The CR runs 2026.1 (uWSGI) with the
+# default 2 processes of 1 thread, plus 5 connections of each process's import
+# task pool: (replicas + 1) x 12 + 2, so 50, 74 and 26. The plain value is
+# asserted because chainsaw never matches a serialized integer against a
+# JMESPath number.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -70,7 +71,7 @@ spec:
             name: glance-scale
             namespace: openstack
           spec:
-            maxUserConnections: 42
+            maxUserConnections: 50
     catch:
     - script:
         content: |
@@ -111,7 +112,7 @@ spec:
             name: glance-scale
             namespace: openstack
           spec:
-            maxUserConnections: 62
+            maxUserConnections: 74
     catch:
     - script:
         content: |
@@ -161,7 +162,7 @@ spec:
             name: glance-scale
             namespace: openstack
           spec:
-            maxUserConnections: 22
+            maxUserConnections: 26
     catch:
     - script:
         content: |
