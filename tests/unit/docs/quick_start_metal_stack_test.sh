@@ -63,6 +63,9 @@
 #  18. Part 1, Step 3 names the optional WITH_PROMETHEUS=true with both
 #      port-forwards and links
 #      docs/reference/infrastructure/infrastructure-manifests.md#lab-prometheus-stack
+#  19. Part 2, Step 1 annotates the nodes with an empty
+#      nova.openstack.cloud.sap/aggregates after the lifecycle label, and
+#      Step 4 shows the hosts of the zone's aggregate
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page.
 #
@@ -109,6 +112,14 @@ section() {
     !fenced && /^## / { if (inside) exit; if ($0 ~ start) { inside = 1; next } }
     inside { print }
   ' "$QUICK_START_DOC"
+}
+
+# step_section prints the body of `### Step <n>:`, <n> being $2, inside the
+# `## ` section whose heading matches the extended regular expression $1, up
+# to the next `### `.
+step_section() {
+  section "$1" |
+    awk -v n="$2" '$0 ~ "^### Step " n ":" { inside = 1; next } inside && /^### / { exit } inside { print }'
 }
 
 # assert_once_in_order <label> <text> <fixed string>...
@@ -428,8 +439,7 @@ test_proven_by() {
 test_step_4_has_no_retry_instruction() {
   echo "Test: Part 1, Step 4 holds no instruction to repeat the apply"
   local step
-  step="$(section '^## Part 1: ' |
-    awk '/^### Step 4:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  step="$(step_section '^## Part 1: ' 4)"
   assert_not_empty "Part 1 holds Step 4" "$step"
   assert_not_contains "Step 4 holds no 'Repeat'" "$step" "Repeat"
   assert_not_contains "Step 4 holds no 'until it succeeds'" "$step" "until it succeeds"
@@ -576,8 +586,7 @@ test_no_array_index() {
 test_step_5_boots_every_node() {
   echo "Test: Part 2, Step 5 boots a server on every node"
   local step
-  step="$(section '^## Part 2: ' |
-    awk '/^### Step 5:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  step="$(step_section '^## Part 2: ' 5)"
   assert_not_empty "Part 2 holds Step 5" "$step"
   assert_once_in_order "the loop over nodes, the server create and its availability zone" "$step" \
     'for node in "${nodes[@]}"; do' \
@@ -608,8 +617,7 @@ test_caveats_name_the_fault_runs() {
 test_step_3_names_the_platform_autoscalers() {
   echo "Test: Part 1, Step 3 links the platform's autoscalers"
   local step
-  step="$(section '^## Part 1: ' |
-    awk '/^### Step 3:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  step="$(step_section '^## Part 1: ' 3)"
   assert_not_empty "Part 1 holds Step 3" "$step"
   assert_contains "Step 3 links infrastructure-manifests.md#lab-autoscaling" "$step" \
     'infrastructure-manifests.md#lab-autoscaling'
@@ -622,8 +630,7 @@ test_step_3_names_the_platform_autoscalers() {
 test_step_3_names_the_lab_prometheus() {
   echo "Test: Part 1, Step 3 names WITH_PROMETHEUS=true and links the Lab Prometheus stack"
   local step
-  step="$(section '^## Part 1: ' |
-    awk '/^### Step 3:/ { inside = 1; next } inside && /^### / { exit } inside { print }')"
+  step="$(step_section '^## Part 1: ' 3)"
   assert_contains "Step 3 names WITH_PROMETHEUS=true" "$step" '`WITH_PROMETHEUS=true`'
   assert_contains "and the Prometheus port-forward" "$step" \
     '`kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090`'
@@ -634,6 +641,25 @@ test_step_3_names_the_lab_prometheus() {
   # The deploy command of the page stays the one without the flag.
   assert_eq "no fenced line of the page sets WITH_PROMETHEUS" "0" \
     "$(awk '/^```/ { f = !f; next } f' "$QUICK_START_DOC" | grep -c 'WITH_PROMETHEUS' || true)"
+}
+
+# --- Test 19: the nodes stay in their zone's aggregate ---
+# openstack-hypervisor-operator keeps a host only in the aggregates the
+# annotation names plus the zone's once onboarding ends, so without it the
+# zone has no host and the zone:host boots of Step 5 fail (#1314).
+# shellcheck disable=SC2016 # the page's literal text, not expanded here
+test_part_2_keeps_the_zone_aggregate() {
+  echo "Test: Part 2 annotates the nodes and shows the zone aggregate's hosts"
+  local step
+  step="$(step_section '^## Part 2: ' 1)"
+  assert_not_empty "Part 2 holds Step 1" "$step"
+  assert_once_in_order "the lifecycle label and the aggregates annotation" "$step" \
+    'cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests' \
+    'kubectl annotate node --all nova.openstack.cloud.sap/aggregates='
+  step="$(step_section '^## Part 2: ' 4)"
+  assert_not_empty "Part 2 holds Step 4" "$step"
+  assert_contains "Step 4 shows the hosts of the zone's aggregate" "$step" \
+    'openstack aggregate show "${zone}" -c hosts -f value'
 }
 
 test_frontmatter
@@ -654,6 +680,7 @@ test_step_5_boots_every_node
 test_caveats_name_the_fault_runs
 test_step_3_names_the_platform_autoscalers
 test_step_3_names_the_lab_prometheus
+test_part_2_keeps_the_zone_aggregate
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

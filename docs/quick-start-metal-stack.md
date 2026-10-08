@@ -343,20 +343,23 @@ listen on it. The reservation's log names the process that holds the port, and
 [Migration port reservation](./reference/infrastructure/infrastructure-manifests.md#migration-port-reservation)
 says how to free it.
 
-Then label the nodes:
+Then label and annotate the nodes:
 
 ```bash
 kubectl label node --all openstack.c5c3.io/chassis=true \
   openstack.c5c3.io/nova-compute-pool=lab \
   nova.openstack.cloud.sap/virt-driver=kvm \
   cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
+kubectl annotate node --all nova.openstack.cloud.sap/aggregates=
 ```
 
 The labels select the nodes for the OVN chassis, the `NovaCompute` pool, the
-libvirt DaemonSet and the hypervisor operator.
-The label table of
+libvirt DaemonSet and the hypervisor operator. The empty
+`nova.openstack.cloud.sap/aggregates` annotation keeps each node in its zone's
+aggregate after onboarding, which the servers of Step 5 need.
+The label and annotation tables of
 [Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)
-gives the reason behind each.
+give the reason behind each.
 
 ### Step 2: Apply the fixtures {#hv-fixtures}
 
@@ -406,6 +409,7 @@ kubectl wait ovnchassis/lab-chassis neutronmetadataagent/lab-metadata-agent nova
 kubectl get hypervisor -o custom-columns='NAME:.metadata.name,LIBVIRTD:.status.conditions[?(@.type=="libvirtd.service")].status,LIBVIRT:.status.conditions[?(@.type=="LibVirtConnection")].status,TLS:.status.conditions[?(@.type=="TLSCertificateInstalled")].status'
 openstack hypervisor list
 openstack aggregate list
+openstack aggregate show "${zone}" -c hosts -f value
 ```
 
 `novacompute/lab` turns `Ready` only once Nova has mapped every host into the
@@ -414,7 +418,7 @@ cell, so the servers of Step 5 can be scheduled at once.
 Each `Hypervisor` shows `True` in the `LIBVIRTD`, `LIBVIRT` and `TLS` columns.
 The hypervisor list prints one row per node, and the aggregate list holds the
 aggregate named after the nodes' zone, the availability zone the servers of
-the next step name.
+the next step name. That aggregate lists every node as a host.
 
 ### Step 5: Boot a server on each node {#hv-boot}
 
@@ -825,6 +829,10 @@ Teardown's last line, which exited 0 and left the platform's namespaces alone.
 A script typed the console commands through `tmux send-keys`, and the
 port-forward ran in a second terminal without a restart. Nothing was done by
 hand on the cluster or the workers.
+
+Part 2, Steps 1 and 4 changed after the runs above: Step 1 annotates the
+nodes, and Step 4 shows the hosts of the zone's aggregate. The run that proves
+them is recorded on [#1314](https://github.com/c5c3/cobaltcore/issues/1314).
 
 No lab run has set `WITH_PROMETHEUS=true` yet; the
 [Lab Prometheus run](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-run)
