@@ -13,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -241,9 +242,34 @@ func novaComputeAffinity(cr *novav1alpha1.NovaCompute, excluded, keepPods []stri
 	}}
 }
 
+// novaComputeMemory is the memory of the pool's three containers, as request
+// and limit, when spec.resources names none. It holds nova-compute and its
+// three privsep helpers as read on a loaded lab node (395 MiB) plus a 120 MiB
+// live-migration allowance, with 25% headroom (644 MiB), rounded up to a
+// multiple of 128 MiB (docs/reference/nova/novacompute-crd.md, Resources).
+var novaComputeMemory = resource.MustParse("768Mi")
+
+// novaComputeCPU is the CPU request of the pool's three containers when
+// spec.resources names no CPU: the lab's VPA target under KVM, 143m, rounded
+// up (docs/reference/nova/novacompute-crd.md, Resources).
+var novaComputeCPU = resource.MustParse("150m")
+
+// effectiveNovaComputeResources resolves the requests and limits of the pool's
+// three containers through the shared per-resource rule: a CPU spec.resources
+// names neither as request nor as limit gets novaComputeCPU as request and no
+// limit, a memory it names neither way gets novaComputeMemory as request and
+// limit, and anything else it sets is kept. A nil block reads as empty. A
+// namespace LimitRange still fills in its default CPU limit where the block
+// names none, and its default memory as the limit of a memory the block names
+// only as a request.
+func effectiveNovaComputeResources(cr *novav1alpha1.NovaCompute) corev1.ResourceRequirements {
+	return commonv1.WithGivenResourceDefaults(cr.Spec.Resources, novaComputeCPU, novaComputeMemory)
+}
+
 // buildNovaComputeDaemonSet builds the pool's DaemonSet: the init container that
 // creates instances_path on the node, the gate that waits for the node's
-// chassis, and nova-compute.
+// chassis, and nova-compute. All three containers take
+// effectiveNovaComputeResources(cr).
 //
 // There is no probe. Nova's own view of the service (up or down) is what the
 // Services step reports, and a liveness probe that restarted nova-compute
@@ -253,10 +279,7 @@ func buildNovaComputeDaemonSet(cr *novav1alpha1.NovaCompute, image commonv1.Imag
 ) *appsv1.DaemonSet {
 	ref := image.Reference()
 	pullPolicy := image.EffectivePullPolicy()
-	var resources corev1.ResourceRequirements
-	if cr.Spec.Resources != nil {
-		resources = *cr.Spec.Resources.DeepCopy()
-	}
+	resources := effectiveNovaComputeResources(cr)
 
 	// create-instances-dir runs first, so a failing mkdir shows at once and not
 	// behind the chassis gate, which may wait without bound.
