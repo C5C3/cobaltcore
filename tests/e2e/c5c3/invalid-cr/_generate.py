@@ -63,6 +63,8 @@ LICENSE_HEADER = """\
 #   {cinder}              the spec.services.cinder entry (indent 4) or ""
 #   {nova}                the spec.services.nova entry (indent 4) or ""
 #   {sizing}              the whole spec.sizing block (indent 2) or ""
+#   {namespace_assignments}
+#                         the whole spec.namespaceAssignments block (indent 2) or ""
 #   {service_registrations}
 #                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
@@ -78,7 +80,7 @@ spec:
   openStackRelease: "2025.2"
 {image_pull_policy}{region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}  korc:
+{keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}{namespace_assignments}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -265,6 +267,8 @@ class Fixture:
     global_extra_config: str = ""
     # The spec.korc.serviceRegistrations block (indent 4, trailing newline) or "".
     service_registrations: str = ""
+    # The spec.namespaceAssignments block (indent 2, trailing newline) or "".
+    namespace_assignments: str = ""
 
     def render(self) -> str:
         body = SCAFFOLD.format(
@@ -283,6 +287,7 @@ class Fixture:
             cinder=self.cinder,
             nova=self.nova,
             sizing=self.sizing,
+            namespace_assignments=self.namespace_assignments,
             service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -1907,6 +1912,65 @@ FIXTURES: tuple[Fixture, ...] = (
             "      allowedNamespaces:\n"
             "      - tenant-a\n"
             "      - tenant-a\n"
+        ),
+    ),
+    # --- namespace assignments (still the create-rejection matrix) ---
+    Fixture(
+        filename="138-namespace-assignment-namespace-invalid.yaml",
+        comment=(
+            "spec.namespaceAssignments[].namespace outside the RFC-1123 label shape is\n"
+            "rejected (CRD pattern): it names the Kubernetes namespace whose orders the\n"
+            "entry consents to, so a value no namespace can carry assigns nothing."
+        ),
+        name="cp-assignment-bad-namespace",
+        namespace_assignments=(
+            "  namespaceAssignments:\n"
+            "  - namespace: Tenant_A\n"
+        ),
+    ),
+    Fixture(
+        filename="139-namespace-assignment-duplicate.yaml",
+        comment=(
+            "Two spec.namespaceAssignments entries for the same namespace on the same\n"
+            "cluster are rejected by the validating webhook (no CEL twin: the cluster\n"
+            "name carries no maxLength, so the rule's cost cannot be bounded). The\n"
+            "consent lookup would only ever see the first of the two."
+        ),
+        name="cp-assignment-duplicate",
+        namespace_assignments=(
+            "  namespaceAssignments:\n"
+            "  - namespace: tenant-a\n"
+            "  - namespace: tenant-a\n"
+        ),
+    ),
+    Fixture(
+        filename="140-namespace-assignment-role-duplicate.yaml",
+        comment=(
+            "A duplicate spec.namespaceAssignments[].allowedRoles entry is rejected by\n"
+            "the apiserver's listType=set semantics: the role allowlist is a set."
+        ),
+        name="cp-assignment-duplicate-role",
+        namespace_assignments=(
+            "  namespaceAssignments:\n"
+            "  - namespace: tenant-a\n"
+            "    allowedRoles:\n"
+            "    - member\n"
+            "    - member\n"
+        ),
+    ),
+    Fixture(
+        filename="141-namespace-assignment-role-comma.yaml",
+        comment=(
+            "A spec.namespaceAssignments[].allowedRoles entry containing a comma is\n"
+            "rejected (CRD items pattern, mirroring the KeystoneService account roles):\n"
+            "no Keystone role an order can request carries one."
+        ),
+        name="cp-assignment-role-comma",
+        namespace_assignments=(
+            "  namespaceAssignments:\n"
+            "  - namespace: tenant-a\n"
+            "    allowedRoles:\n"
+            "    - a,b\n"
         ),
     ),
     # --- transition wave F: target-cluster assignment freeze
