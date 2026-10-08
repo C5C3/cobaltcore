@@ -78,6 +78,8 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 
 A Merge patch replaces the whole list, so name every namespace you consent to in
 one patch. Admitting a second one later means repeating the first.
+Consent admits every role the registration asks for. To narrow that, see
+[Limit the roles a registration may request](#limit-the-roles-a-registration-may-request).
 
 Nothing happens in `workflow` yet. The ControlPlane provisions a secret store
 there only once a registration exists, so its `RegistrationTenantStoresReady`
@@ -193,6 +195,7 @@ Read the reason from the conditions one-liner above and match it here:
 | --- | --- | --- |
 | `WaitingForAdminCredential` | The ControlPlane has not minted its admin credential yet | Wait for the devstack's ControlPlane to go `Ready`. Nothing is wrong with the registration |
 | `NamespaceNotAllowed` | `workflow` is not on the allowlist, usually because Step 2 was skipped or a later patch replaced the list without it | Re-run Step 2, naming every namespace you want admitted |
+| `RoleNotAllowed` on `AccountReady` | The ControlPlane's `spec.namespaceAssignments` entry for `workflow` does not list a role the account requests | Add the role to the entry's `allowedRoles`, or drop it from `spec.account.roles`. See [Limit the roles a registration may request](#limit-the-roles-a-registration-may-request) |
 | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve, usually a missing `namespace: openstack` | Fix the reference. The registration recovers on its own |
 | `SecretStoreNotReady` | The tenant store in `workflow` is not ready, so the credentials cannot be delivered | Run `kubectl get secretstore openbao-tenant-store certificate eso-tenant-client-tls -n workflow`, then wait for cert-manager and External Secrets |
 | `WaitingForServiceAccounts` naming a role | A declared role does not exist in Keystone, so its import never resolves | Declare a role Keystone has, such as `service` |
@@ -325,6 +328,96 @@ openstack --insecure catalog show workflow
 openstack --insecure user show workflow
 ```
 
+## Limit the roles a registration may request
+
+Consent alone lets a registration request any role, `admin` included. A
+management-cluster entry in the ControlPlane's `spec.namespaceAssignments`
+limits the roles for an admitted namespace.
+
+The list is atomic: a merge patch replaces every entry in it, including the
+entries of other namespaces. Change it with JSON patches, which touch one entry.
+Append an entry that lists the roles `workflow` may request:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type json \
+  -p '[{"op":"add","path":"/spec/namespaceAssignments/-","value":{"namespace":"workflow","allowedRoles":["member"]}}]'
+```
+
+The append fails on a ControlPlane that assigns no namespace yet, because the
+list does not exist. Create the list there instead:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type json \
+  -p '[{"op":"add","path":"/spec/namespaceAssignments","value":[{"namespace":"workflow","allowedRoles":["member"]}]}]'
+```
+
+The registration from Step 3 requests `service`, which the entry does not list,
+so its account is refused while the catalog block keeps reconciling:
+
+```bash
+kubectl get keystoneservice workflow -n workflow \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
+```
+
+```
+CatalogReady=True (CatalogRegistered)
+AccountReady=False (RoleNotAllowed)
+Ready=False (NotAllReady)
+```
+
+The `AccountReady` message names the list and the refused roles:
+
+```
+ControlPlane openstack/controlplane admits roles ["member"] from namespace "workflow" on the management cluster (spec.namespaceAssignments); ["service"] is not on that list
+```
+
+The refusal freezes the account. Nothing is revoked: the role assignment
+Keystone already holds, the Keystone user and the consumer Secret all stay, so
+the service keeps authenticating. To take a role away, drop it from
+`spec.account.roles` or delete the CR. A role matches only its own
+case-sensitive name, and Keystone's implied roles still apply: `member` grants
+`reader` as well.
+
+The ControlPlane reports the entry, whether its namespace exists, and whether
+its cluster answers:
+
+```bash
+kubectl get controlplane controlplane -n openstack \
+  -o jsonpath='{.status.namespaceAssignments}'
+```
+
+List the role and the account recovers. Look up the index of the `workflow`
+entry first; the `test` operation rejects the patch if another entry sits at
+that index by the time it applies:
+
+```bash
+i=$(kubectl get controlplane controlplane -n openstack -o json \
+  | jq '[.spec.namespaceAssignments[] | .namespace == "workflow" and .targetClusterRef == null] | index(true)')
+kubectl patch controlplane controlplane -n openstack --type json -p "[
+  {\"op\":\"test\",\"path\":\"/spec/namespaceAssignments/${i}/namespace\",\"value\":\"workflow\"},
+  {\"op\":\"replace\",\"path\":\"/spec/namespaceAssignments/${i}/allowedRoles\",\"value\":[\"service\",\"member\"]}]"
+kubectl wait --for=condition=Ready keystoneservice/workflow -n workflow --timeout=10m
+```
+
+Removing the entry lifts the limit again, and the entries of other namespaces
+stay. The namespace stays admitted through `allowedNamespaces`:
+
+```bash
+i=$(kubectl get controlplane controlplane -n openstack -o json \
+  | jq '[.spec.namespaceAssignments[] | .namespace == "workflow" and .targetClusterRef == null] | index(true)')
+kubectl patch controlplane controlplane -n openstack --type json -p "[
+  {\"op\":\"test\",\"path\":\"/spec/namespaceAssignments/${i}/namespace\",\"value\":\"workflow\"},
+  {\"op\":\"remove\",\"path\":\"/spec/namespaceAssignments/${i}\"}]"
+```
+
+An entry never admits a namespace on its own: without an `allowedNamespaces`
+entry the registration reports `NamespaceNotAllowed` whatever `allowedRoles`
+lists. The ControlPlane's own namespace and its dedicated service namespaces are
+never limited. An entry whose `targetClusterRef` names a cluster that is not
+registered turns the ControlPlane's `Ready` False through
+`NamespaceAssignmentsReady=False/TargetClusterUnavailable`. See
+[NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec).
+
 ## Removing consent freezes the registration
 
 ::: warning The allowlist is an admission gate, not a revocation tool
@@ -439,6 +532,7 @@ entries through the identity API directly.
 - [KeystoneService CRD: Conditions](../reference/c5c3/keystoneservice-crd.md#conditions): every reason the two block conditions report.
 - [KeystoneService CRD: Deletion Semantics](../reference/c5c3/keystoneservice-crd.md#deletion-semantics): what a deletion destroys in Keystone.
 - [ControlPlane CRD: ServiceRegistrationsSpec](../reference/c5c3/controlplane-crd.md#serviceregistrationsspec): the allowlist field and its validation.
+- [ControlPlane CRD: NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec): the role allowlist, the freeze, and the unknown-cluster refusal.
 - [KeystoneService Reconciler: The shared gates](../reference/c5c3/keystoneservice-reconciler.md#the-shared-gates): where the consent check sits in the control loop.
 - [KeystoneService Reconciler: Child Naming and Placement](../reference/c5c3/keystoneservice-reconciler.md#child-naming-and-placement): why the children live beside the admin credential.
 - [Deploy Services into Dedicated Namespaces](./dedicated-service-namespaces.md#registering-a-service-in-the-dedicated-namespace): registering from a namespace the ControlPlane owns, which needs no consent.
@@ -454,11 +548,14 @@ The flow above mirrors the following end-to-end suite:
 chainsaw test --test-dir tests/e2e/c5c3/keystone-service-foreign-namespace
 ```
 
-It drives three legs on a live cluster. An admitted namespace registers, and a
+It drives four legs on a live cluster. An admitted namespace registers, and a
 Job there authenticates with the delivered Secret. A namespace the allowlist
 never carries holds at `NamespaceNotAllowed` with nothing projected anywhere.
 De-listing an admitted namespace freezes its registration without reaping the
-Secret, the Keystone user or the tenant store, and re-listing recovers it.
+Secret, the Keystone user or the tenant store, and re-listing recovers it. A
+namespace assignment that does not list `service` refuses the account with
+`RoleNotAllowed`, listing it recovers, and removing the assignments lifts the
+limit.
 Against a full ControlPlane stack, run the suite with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`.
 

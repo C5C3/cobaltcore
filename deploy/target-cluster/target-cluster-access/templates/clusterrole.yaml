@@ -17,7 +17,9 @@ rules:
   # core - namespaces (read-only)
   # The ControlPlane verifies that the namespace it places a service in exists
   # before it writes anything into it. It never creates one here: the namespaces
-  # this chart declares are the namespaces it may use.
+  # this chart declares are the namespaces it may use. It also reads the
+  # namespace of every spec.namespaceAssignments entry naming this cluster, to
+  # report whether that namespace exists.
   - apiGroups:
       - ""
     resources:

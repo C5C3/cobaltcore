@@ -79,7 +79,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
-| [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, and de-listing freezes instead of tearing down |
+| [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
@@ -806,7 +806,7 @@ K-ORC children into the ControlPlane's namespace, beside the admin credential
 K-ORC authenticates them with, and delivers only the consumer Secret into the
 registration's own namespace.
 
-The suite runs three legs against a live Keystone, OpenBao, ESO and cert-manager:
+The suite runs four legs against a live Keystone, OpenBao, ESO and cert-manager:
 
 1. **Positive**: an allowlisted namespace registers a catalog entry and an
    account. Its tenant-store trio appears, the seven projected K-ORC children
@@ -825,6 +825,19 @@ The suite runs three legs against a live Keystone, OpenBao, ESO and cert-manager
    tenant store all stay. That is decision D9: the allowlist is an admission gate,
    not a revocation tool, and an edit to it can never strand a running service.
    Re-listing the namespace recovers the registration.
+4. **Roles**: a `spec.namespaceAssignments` entry for the tenant namespace that
+   lists only `member` refuses the `service` account with
+   `AccountReady=False/RoleNotAllowed`. `CatalogReady` stays `True`, the consumer
+   Secret and the Keystone user stay, and `status.namespaceAssignments[0]`
+   reports the namespace as existing on a reachable cluster with
+   `allowedRoles: [member]`. Listing `service` returns the registration to
+   `Ready=True`. A second entry naming the unregistered cluster
+   `e2e-no-such-cluster` turns `NamespaceAssignmentsReady` to
+   `False/TargetClusterUnavailable` and the plane's `Ready` False, while the
+   tenant entry, narrowed back to `member`, refuses the account again. Removing
+   the field returns the plane to `NoNamespaceAssignments` and `Ready=True` and
+   lifts the refusal: the account returns to `AccountProvisioned` and the
+   registration to `Ready=True`.
 
 Its ControlPlane is its own. The webhook admits one ControlPlane per namespace,
 and the canonical `controlplane-keystone` belongs to the full-chain suite, so this

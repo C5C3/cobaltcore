@@ -115,8 +115,9 @@ Reconcile
        ├─ resolveControlPlane            → ControlPlaneNotFound
        ├─ namespace consent              → NamespaceNotAllowed
        ├─ AdminCredentialReady gate      → WaitingForAdminCredential
+       ├─ role allowlist (account only)  → RoleNotAllowed, after the sweep
        ├─ ensureCatalog    (instrumented: KeystoneServiceCatalog)
-       ├─ ensureAccount    (instrumented: KeystoneServiceAccount)
+       ├─ ensureAccount    (instrumented: KeystoneServiceAccount), skipped when a role is refused
        └─ sweepChildren                  prune what the spec stopped declaring
 ```
 
@@ -140,6 +141,10 @@ reaches for that block is not a failure of it.
 | `spec.controlPlaneRef` resolves | `ControlPlaneNotFound` | A status condition, not an admission error, because GitOps may apply the registration before the plane. Any read failure other than NotFound propagates instead, so the workqueue backs off instead of reporting a dangling reference it did not observe |
 | Namespace consent | `NamespaceNotAllowed` | `keystoneServiceNamespaceAllowed` admits the plane's own namespace, its dedicated service namespaces, then `spec.korc.serviceRegistrations.allowedNamespaces`. A nil block and an empty list are identical: both admit nothing beyond the implicit two. Nothing is projected |
 | `AdminCredentialReady` on the plane | `WaitingForAdminCredential` | K-ORC cannot talk to Keystone before the admin credential is minted |
+| Role allowlist | `RoleNotAllowed` | Account block only. `keystoneServiceRoleRefusal` looks up the management-cluster `spec.namespaceAssignments` entry for the CR's namespace and refuses every account role outside its `allowedRoles`. The plane's own namespace and its dedicated service namespaces are never bound, and a namespace without an entry stays unlimited. `ensureAccount` is skipped and the catalog block runs. The condition is written after the sweep, so the sweep's `WaitingForServiceAccounts` cannot mask it, and the gate adds no requeue: the ControlPlane watch brings the edit that lifts it |
+
+The role allowlist freezes the account the same way: the sweep keeps every
+child the spec still declares, so a role assignment granted earlier stays.
 
 De-listing a namespace **freezes** its registrations here instead of tearing
 them down. The gate stops the projection; it never deletes what earlier passes
