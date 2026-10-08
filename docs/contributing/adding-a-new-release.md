@@ -47,18 +47,34 @@ file:
   release pins (`keystone-`, `barbican-`, `neutron-`, and
   `cinder-tempest-plugin`), at versions current at the release date that the
   new `upper-constraints.txt` can install. `renovate.json` holds
-  `neutron-tempest-plugin` below a ceiling for each existing release because
-  newer plugin versions conflict with that release's constraints; decide
-  whether the new release needs such a rule too.
+  `neutron-tempest-plugin` for 2025.2 (`<3.1.0`, testtools) and 2026.1
+  (`<3.3.0`, `neutron_lib.services.pvlan`) because those releases'
+  constraints conflict with newer plugins (the two `packageRules` entries
+  whose `matchFileNames` name `releases/2025.2/test-refs.yaml` and
+  `releases/2026.1/test-refs.yaml`); 2026.2 needs no hold. Decide per release,
+  state the reason in a comment above the pin, and add a `packageRules` entry
+  only when a hold is needed. Major updates are disabled under
+  `releases/**/test-refs.yaml`, so older releases keep their tempest major.
 - **`extra-packages.yaml`**: per-service `pip_extras` / `pip_packages` /
-  `apt_packages`; usually carried over unchanged.
+  `apt_packages`; usually carried over unchanged. A new tag can move runtime
+  packages into extras (cinder 29.0.0 moved boto3, google-api-python-client
+  and python-swiftclient into the `s3`, `gcs` and `swift` extras) or ship a
+  wheel that omits a dependency (os-vif 5.2.1 without pyroute2);
+  `tests/container-images/verify_<svc>.sh` and `hack/gen-option-catalog.sh`
+  show both. Fix it in the new release's block only, so the older images do
+  not change.
 - **`upper-constraints.txt`**: a snapshot of the upstream `stable/<series>`
   upper constraints file.
 - **`test-excludes/<svc>.txt`**: optional stestr exclude lists, consumed by
   `hack/ci-run-unit-tests.sh`. Carry them over per service and re-triage:
   excludes that worked around bugs in the previous series may be fixed
   upstream. Every file's basename must match a `source-refs.yaml` key
-  (`tests/container-images/verify_release_config.sh` Test 7).
+  (`tests/container-images/verify_release_config.sh` Test 7). Record the
+  first run of each suite in the file header (tag, test count, outcome), as
+  `releases/2026.2/test-excludes/*.txt` do. A tag that drops the service's
+  test driver (horizon 27.0.0 removed `tools/unit_tests.sh`) needs a branch
+  in `hack/ci-run-unit-tests.sh` keyed on the missing file (the
+  `[ -f tools/unit_tests.sh ]` test) instead of on `RELEASE`.
 
 `tests/container-images/verify_release_config.sh` validates the structure of
 all of these; run it locally before pushing.
@@ -82,8 +98,17 @@ Three more per-release inputs live elsewhere in the tree:
   the service unpatched without any error, so re-triage every patch of the
   previous release against the new upstream tag: carry it over while it
   still applies and is still needed, and drop it once the fix ships
-  upstream. `test-service-images` runs the upstream unit suite against the
-  patched source. The `add-image-patch` skill covers the patch format.
+  upstream. A patch without a twin in the new release says why in its own
+  header (`No <version> twin: …`, see
+  `.claude/skills/add-image-patch/references/patch-conventions.md`). The
+  inventory script reports the service `[DONE]` once every patch of the
+  previous release has a twin of the same slug or carries that sentence; a
+  service whose patches all carry it needs no directory. The Source patch
+  paragraphs of
+  [Container Images](../reference/ci-cd/container-images.md) state the new
+  release's outcome, patch or none. `test-service-images` runs the upstream
+  unit suite against the patched source. The `add-image-patch` skill covers
+  the patch format.
 - **Option catalogs**, `operators/<op>/api/v1alpha1/catalogs/<version>.json`,
   one for every operator that has a `catalogs/` directory. The validating
   webhooks check `spec.extraConfig` against them and only warn, without
@@ -94,6 +119,23 @@ Three more per-release inputs live elsewhere in the tree:
   yet. `verify_release_config.sh` Test 8 requires the keystone and glance
   catalogs, and the build-images workflow's "Verify option catalog" step
   diffs several services' catalogs against a fresh extraction (`--check`).
+
+  The seven `…EmbeddedReleasesParse` tests in
+  `operators/<op>/api/v1alpha1/option_catalog_test.go` pin the catalog count
+  (`HaveLen(N)`) and keys (`HaveKey`); raise them. Then diff the new catalog
+  against the previous release's (run
+  `jq -r '.sections | to_entries[] | .key as $s | .value.opts[] | "[\($s)] \(.)"'`
+  on both files and compare the sorted outputs with `comm -23`) and resolve
+  every option the operator renders (registered in
+  `operators/<op>/api/v1alpha1/config_ownership.go`) that the new release
+  dropped: gate the rendering on a release predicate and add a
+  `reconcile_config` test case per release. `glanceReleaseDropsWorkersOption`
+  in `operators/glance/internal/controller/reconcile_deployment.go` and
+  `keystoneReleaseEnforcesScopeAlways` in
+  `operators/keystone/internal/controller/reconcile_config.go` are the 2026.2
+  precedents. An option the catalog dropped that the service still reads
+  stays rendered and is pinned by a golden: neutron 29.0.0 still loads
+  `[DEFAULT] api_paste_config` through `oslo_service.wsgi.Loader`.
 
 ## Tempest configuration: a hard CI dependency
 
@@ -156,6 +198,24 @@ legs load one tempest tag, and every e2e fixture's Jobs run it whatever
 release the suite deploys. A missed rename silently tests the wrong release,
 and the suite still passes.
 
+The rename reaches only names that carry the previous slug. Four 2026-1
+variants (horizon, glance, placement, barbican) name their CR
+`<svc>-basic-2026` and their database `<svc>_basic_2026`. A clone that keeps
+those names collides with the running sibling, because the suites of one
+`e2e-operator` job share the `openstack` Namespace
+(`tests/e2e/chainsaw-config.yaml` sets `parallel: 4`). Name every slugged resource `<svc>-basic-<slug>` and
+`<svc>_basic_<slug>`, and check with
+`grep -rnE 'basic[-_]<year>([^-_0-9]|$)' tests/e2e/*/basic-deployment-<slug>/`.
+Add the nova variant to `shard_two` in `.github/workflows/ci.yaml`
+(`tests/unit/ci/nova_e2e_matrix_test.sh` asserts every suite runs in one
+shard), and add the suite's row, section and tree entry to the reference
+pages that list suites
+([Keystone E2E Tests](../reference/testing/keystone-e2e-tests.md),
+[Cinder E2E Tests](../reference/testing/cinder-e2e-tests.md),
+[Nova E2E Tests](../reference/testing/nova-e2e-tests.md)) and the shard list
+in [CI Workflow](../reference/ci-cd/ci-workflow.md). A variant that fails on
+an operator defect gets its own issue and keeps its assertion.
+
 The plain `basic-deployment` suites cover the default release (their
 fixtures pin the default tag), so only non-default releases need a suffixed
 variant.
@@ -171,7 +231,18 @@ each moves to `<prev> -> <version>`:
 - the target in `NN-patch-upgrade.yaml`;
 - helper CRs pinned at the target, such as nova's Keystone and Placement;
 - the `installedRelease` and `ghcr.io/c5c3/<svc>:<v>` assertions in
-  `chainsaw-test.yaml`.
+  `chainsaw-test.yaml`;
+- assertions that encode a launch mode of the start release, once the start
+  moves past that boundary (the glance suite asserted the eventlet
+  `glance-api` command while it started below 2026.1);
+- the transition cases in `internal/common/release/release_test.go`:
+  `TestIsSequentialUpgrade` accepts `<prev> -> <version>` and
+  `<version> -> <next>` and rejects the skip from the release before
+  `<prev>`, next to the `TestIsDowngrade`, `TestIsPatchOnly` and
+  `TestParseRelease` cases.
+
+`tests/e2e/nova/release-upgrade/01-catalog-setup-job.yaml` keeps
+`ghcr.io/c5c3/tempest:<default>`, like every other e2e fixture Job.
 
 The skip-level fixture (`upgrade-flow/02-patch-skip-level.yaml`) must keep
 targeting a version that is neither under `releases/` nor the sequential
@@ -180,6 +251,44 @@ successor of the new release. That is what makes it a rejection test.
 `tests/e2e/keystone/upgrade-abort/` needs no move. Its stuck patch pulls the
 target from `registry.invalid/…`, so it wedges whatever releases exist; it
 only has to start at a release that is still under `releases/`.
+
+The testing pages
+([Keystone](../reference/testing/keystone-e2e-tests.md),
+[Cinder](../reference/testing/cinder-e2e-tests.md) and
+[Nova E2E Tests](../reference/testing/nova-e2e-tests.md)) name the tested
+transition and follow the move, as do the `Accepted Transitions` tables of
+the glance, cinder and nova upgrade-flow pages and the `Valid Upgrade Paths`
+table of [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md).
+
+## Tests and docs that count releases
+
+Some tests and pages enumerate the releases instead of discovering them, so
+each gains the new release by hand:
+
+- **Go release lists.**
+  `grep -rnE '\[\]string\{("[0-9]{4}\.[12]",?[[:space:]]*)+\}' --include='*_test.go' operators internal`
+  prints every one-line list, and the inventory script checks that each names
+  the release; each gains it. Neither sees a list that spans several lines or
+  a table row such as `{release: "2026.1", wantTag: "2026.1"}`: read the hits
+  of `grep -rnE --include='*_test.go' 'release:[[:space:]]+"<prev>"' operators internal`
+  (table rows, gofmt-aligned ones included) and
+  `grep -rnE --include='*_test.go' '^[[:space:]]+"<prev>"[,}]' operators internal`
+  (lists that span several lines), and extend the tables and lists that
+  enumerate releases.
+- **Shell suites that pin counts.**
+  `tests/unit/hack/ci_resolve_e2e_images_test.sh` pins the image-map size
+  and the per-service release lists, and `tests/unit/ci/nova_e2e_matrix_test.sh`
+  the number of images the nova e2e job loads and the number of nova Tempest
+  jobs.
+- **Prose.** Run
+  `grep -rnE -i '(both|two|three|four) (releases|tags)|either release|neither release|(twelve|eighteen|twenty-four|12|18|24) (Tempest )?legs' README.md docs --include='*.md'`
+  and read every hit, then grep for `<prev> and <version>` with the real
+  versions substituted. When a release changes the count words, add the new
+  ones to the pattern. The 2026.2 run rewrote `README.md` and these pages:
+  `docs/reference/ci-cd/{ci-workflow,build-images-workflow,container-images}.md`,
+  `docs/reference/testing/{cinder-e2e-tests,nova-e2e-tests,tempest-test-infrastructure,sizing-calibration}.md`,
+  `docs/reference/placement/index.md`, `docs/reference/neutron/index.md` and
+  `docs/reference/nova/nova-crd.md`.
 
 ## Decision points
 
@@ -197,6 +306,12 @@ None of these are mechanical; decide and record each in the PR description:
   `tests/e2e*/` fixture trees. Moving the default is one coordinated sweep;
   the inventory script prints every current value and the pin count.
 - **Retire the oldest release?** See the next section.
+- **CI budget.** The first run with the new release records the minutes of
+  `build-e2e-images`, every `e2e-operator` job and every Tempest job, and the
+  `=== Disk use on the kind node(s) ===` block that
+  `hack/ci-dump-diagnostics.sh` prints in each e2e job. A job that overruns
+  its `timeout-minutes` or its disk gets its own issue (decision D6 of
+  [#1276](https://github.com/C5C3/cobaltcore/issues/1276)).
 
 ## Removing an old release
 
@@ -228,7 +343,12 @@ orphans that must go in the same PR:
 ```bash
 bash .claude/skills/prepare-new-release/scripts/inventory-release-touchpoints.sh 2026.2
 bash .claude/skills/check-release-wiring/scripts/audit-release-wiring.sh --full
+bash .claude/skills/check-service-parity/scripts/audit-service-parity.sh
+bash .claude/skills/check-renovate-coverage/scripts/audit-renovate-coverage.sh
 make test-shell
+make chainsaw-lint
+go test ./internal/common/release/...
+npm run docs:build
 ```
 
 Two repository [Claude Code skills](./claude-skills.md) support this
