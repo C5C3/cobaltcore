@@ -22,8 +22,9 @@
 #   6. libvirtd.sh starts libvirtd in a host scope, writes both host units and
 #      starts no virtlogd, and the scripts carry their log messages.
 #   7. The CA, its Issuer and the three compute CRs carry their fields: the
-#      metadata agent names no resources, and the pool names the CPU model
-#      Nova's live-migration pre-check accepts; NovaCompute has no extraConfig.
+#      metadata agent and the pool name no resources, and the pool names the
+#      CPU model Nova's live-migration pre-check accepts; NovaCompute has no
+#      extraConfig.
 #   8. The hvo release feeds the auth Secret into the six chart values, sets
 #      the lab values and a fullnameOverride that keeps every object name
 #      within 63 characters, and its post-renderer sets OS_INTERFACE to
@@ -423,7 +424,7 @@ FIXED
 test_ca_and_compute() {
   echo "Test: the libvirt CA and the three compute CRs"
 
-  render "$HYPERVISOR_DIR" 32 || return
+  render "$HYPERVISOR_DIR" 33 || return
 
   assert_eq "the Issuer lives in hypervisor-system" "hypervisor-system" \
     "$(val Issuer nova-hypervisor-agents-ca-issuer '.metadata.namespace')"
@@ -482,6 +483,7 @@ test_ca_and_compute() {
   assert_eq "the pool has no extraConfig" "false" "$(val NovaCompute lab '.spec | has("extraConfig")')"
   assert_eq "the pool names no image" "false" "$(val NovaCompute lab '.spec | has("image")')"
   assert_eq "the pool has no tolerations" "false" "$(val NovaCompute lab '.spec | has("tolerations")')"
+  assert_eq "the pool runs the operator's resource default" "null" "$(val NovaCompute lab '.spec.resources')"
   assert_eq "the libvirt DaemonSet selects the pool's label" \
     "$(val NovaCompute lab '.spec.nodeSelector | to_json')" \
     "$(val DaemonSet libvirt '.spec.template.spec.nodeSelector | to_json')"
