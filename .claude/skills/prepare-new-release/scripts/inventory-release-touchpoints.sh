@@ -4,11 +4,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Inventory the touch points for an OpenStack release across the repo:
-# release config files, per-operator option catalogs, service patches,
+# release config files, per-operator option catalogs and the
+# HaveKey("<version>") assertion of each operator's option_catalog_test.go,
+# service patches (every patch of the release before it has a same-slug twin
+# under patches/<svc>/<version>/ or says "No <version> twin" in its header),
 # constraint overrides, the Tempest config directory of every service in
-# ALL_TEMPEST_SERVICES, the per-service basic-deployment e2e variant, and — for
-# the newest release — the upgrade-path suites, plus the global default-release
-# decision points.
+# ALL_TEMPEST_SERVICES, the per-service basic-deployment e2e variant, the README
+# release list and the one-line Go []string release lists in *_test.go, and —
+# for the newest release — the upgrade-path suites, plus the global
+# default-release decision points.
 #
 # Usage: inventory-release-touchpoints.sh [<version>]
 #
@@ -115,6 +119,35 @@ skip_target_ok() {
   [[ -n "$1" && "$1" != "$2" && "$1" != "$(next_release "$2")" && ! -d "releases/$1" ]]
 }
 
+# patches_resolved <svc> <v> <template> — true when every patch of
+# patches/<svc>/<template>/ has a twin of the same slug (any number) under
+# patches/<svc>/<v>/, or says "No <v> twin" in its header; a template with no
+# patch leaves nothing to carry.
+patches_resolved() {
+  local f slug
+  for f in "patches/$1/$3"/*.patch; do
+    [[ -f "${f}" ]] || continue
+    slug="${f##*/}"
+    slug="${slug#[0-9][0-9][0-9][0-9]-}"
+    compgen -G "patches/$1/$2/[0-9][0-9][0-9][0-9]-${slug}" >/dev/null && continue
+    grep -qF "No $2 twin" "${f}" || return 1
+  done
+  return 0
+}
+
+# release_lists_name <v> — true when every one-line []string{"YYYY.N", …}
+# literal in a *_test.go under operators/ and internal/ names <v>; no list at
+# all passes, a grep error fails. Multi-line literals and struct-table rows
+# ({release: "YYYY.N", …}) are not seen.
+release_lists_name() {
+  local lists rc=0
+  lists="$(grep -rhoE --include='*_test.go' '\[\]string\{("[0-9]{4}\.[12]",?[[:space:]]*)+\}' operators internal)" \
+    || [[ $? -eq 1 ]] || return 1
+  [[ -n "${lists}" ]] || return 0
+  printf '%s\n' "${lists}" | grep -vF "\"$1\"" > /dev/null || rc=$?
+  [[ "${rc}" -eq 1 ]]
+}
+
 # Services = union of source-refs.yaml keys across all existing releases.
 SERVICES="$(cat releases/*/source-refs.yaml 2>/dev/null \
   | grep -E '^[a-z0-9_-]+:' | cut -d: -f1 | sort -u || true)"
@@ -137,6 +170,12 @@ EXISTING="$(find releases -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's|^
 # Newest existing release (YYYY.N sorts correctly lexicographically) — the
 # template for a not-yet-created release.
 NEWEST_EXISTING="$(echo "${EXISTING}" | tail -1)"
+
+# template_release <v> — the newest existing release older than <v>, the one
+# whose patches <v> re-triages; empty for the oldest release.
+template_release() {
+  printf '%s\n' "${EXISTING}" | awk -v v="$1" '$0 < v { t = $0 } END { print t }'
+}
 
 if [[ $# -eq 1 ]]; then
   VERSIONS="$1"
@@ -199,16 +238,20 @@ for v in ${VERSIONS}; do
   header "Option catalogs (hack/gen-option-catalog.sh <op> ${v})"
   for cdir in ${CATALOG_DIRS}; do
     check "${cdir}/${v}.json" test -f "${cdir}/${v}.json"
+    check "${cdir%/catalogs}/option_catalog_test.go asserts HaveKey(\"${v}\")" \
+      grep -qF "HaveKey(\"${v}\")" "${cdir%/catalogs}/option_catalog_test.go"
   done
 
   header "Service patches (re-triage each: carry over, or drop once fixed upstream)"
+  template="$(template_release "${v}")"
   for svc in ${PATCH_SERVICES}; do
-    note=""
-    if [[ "${v}" != "${NEWEST_EXISTING}" ]]; then
-      n="$(find "patches/${svc}/${NEWEST_EXISTING}" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')"
-      note=" (${NEWEST_EXISTING} carries ${n} patch(es))"
+    if [[ -z "${template}" ]]; then
+      check "patches/${svc}/${v}/" test -d "patches/${svc}/${v}"
+    else
+      n="$(find "patches/${svc}/${template}" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ' || true)"
+      check "patches/${svc}/${v}/ (${template} carries ${n} patch(es); each has a ${v} twin or says \"No ${v} twin\")" \
+        patches_resolved "${svc}" "${v}" "${template}"
     fi
-    check "patches/${svc}/${v}/${note}" test -d "patches/${svc}/${v}"
   done
 
   header "Constraint overrides (overrides/${v}/constraints.txt)"
@@ -299,6 +342,10 @@ for v in ${VERSIONS}; do
       done
     fi
   fi
+
+  header "Docs and tests that count releases"
+  check "README.md names ${v}" grep -qF "${v}" README.md
+  check "every one-line []string release list in *_test.go names ${v}" release_lists_name "${v}"
 done
 
 header "Decision points (global — review, not per-release TODOs)"
