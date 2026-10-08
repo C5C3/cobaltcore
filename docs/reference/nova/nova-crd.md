@@ -371,11 +371,41 @@ Every process reads the same `nova.conf`. These are its sections:
 | `[upgrade_levels]` | `compute = auto`, which caps the compute RPC version at the oldest `nova-compute` still registered, so a control plane upgraded ahead of its computes keeps talking to them |
 | `[cache]` | `enabled = true`, the backend from `spec.cache.backend`, and `memcache_servers` derived from the cache block |
 | `[scheduler]` | `discover_hosts_in_cells_interval = 300`, the periodic that maps a newly registered compute node into the cell. The worker count is not here; it is the scheduler's own overlay |
+| `[filter_scheduler]` | `build_failure_weight_multiplier = 0` and `shuffle_best_same_weighed_hosts = true`. The first switches off the weigher that ranks a host by its `failed_builds` counter; the second spreads the first builds over hosts of equal weight. Only the scheduler reads the section, which stays in the shared document so `extraConfig` can override it |
 | `[vnc]` | `enabled` from `spec.consoleProxy.enabled`, and `novncproxy_base_url` while the proxy runs: the gateway hostname when one is set, the cluster-local Service URL otherwise |
 
 `[DEFAULT] host` is absent, so every process registers under its own pod name.
 No password is in the file: the identity sections are rendered without one and
 each arrives as an environment override.
+
+Nova's own `build_failure_weight_multiplier` is `1000000.0`. Nova normalizes
+the `failed_builds` counters of the candidate hosts to the range 0 to 1 before
+it multiplies, so one failed or aborted build puts a host 1000000 below every
+host without one, whatever the other weighers say. The counter resets only when a build succeeds
+on that host, and with Nova's `host_subset_size` of 1 that build never comes
+while another host has room. A server deleted while it is still scheduling
+counts as a failed build. `0` is the value Nova documents for switching the
+weigher off. At `0` nothing steers builds away from a host whose builds keep
+failing: as the emptiest host it keeps winning the ram, cpu and disk weighers,
+so unpinned builds keep landing on it until its compute service is disabled.
+The shuffle's cost is less dense packing among hosts of equal weight.
+
+The counter keeps counting and stays readable in `compute_nodes.stats`; the
+compute-cluster guide reads it, disables a failing host and resets the counter
+in [A hypervisor that receives no builds](../../guides/nova/connect-a-compute-cluster.md#a-hypervisor-that-receives-no-builds).
+A deployment that wants Nova's weigher back sets
+`build_failure_weight_multiplier: "1000000.0"` under `filter_scheduler` in
+`extraConfig`, which is honored and reported through `ExtraConfigHealthy`.
+
+The operator upgrade that brings `[filter_scheduler]` renders a new `nova.conf`
+for every Nova whose `extraConfig` does not already set both keys. The
+content-hashed config ConfigMap rotates once, and the API, the metadata API,
+the scheduler, the conductor and, while it runs, the console proxy roll. The
+db-sync Job runs once more, and the archive CronJob mounts the new ConfigMap on
+its next run. Nothing has to be set. A value for either key that a deployment
+set through `extraConfig` before the upgrade stays in force, and from then on
+it is reported with `ExtraConfigHealthy=False` and an
+`ExtraConfigOwnedKeyOverride` Warning event.
 
 Four overlays ship beside `nova.conf` in the same ConfigMap, one per role that
 owns options the others must not read. They are assembled by string formatting
