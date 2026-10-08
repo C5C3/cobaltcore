@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Barbican CR fixture for the basic-deployment E2E test (2025.2 release).
+# Barbican CR fixture for the basic-deployment E2E test (2026.1 release).
 # Managed mode: database via clusterRef to openstack-db (schema barbican_basic),
 # cache via clusterRef to openstack-memcached. The database credentials come from
 # the ESO-synced barbican-db Secret and the service-user password from the
@@ -15,12 +15,12 @@ metadata:
   name: barbican-basic
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/barbican
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

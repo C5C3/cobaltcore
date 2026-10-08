@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Barbican deployment (2025.2 release).
+# Chainsaw E2E test for happy-path Barbican deployment (2026.1 release).
 # Validates the full reconciliation cycle:
 #   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
@@ -15,8 +15,9 @@
 #     the pod template so a rotated credential rolls the pods
 #   - Owned resources exist (Deployment, Service on 9311, PDB, config Secret)
 #   - The rendered barbican.conf carries the vault plugin's approle_role_id and
-#     NOT its approle_secret_id, and the rendered paste file has the pre-2026.1
-#     shape (repoze.profile pipeline present, oslo request_id filter absent)
+#     NOT its approle_secret_id, and the rendered paste file has the
+#     2026.1-and-later shape (oslo request_id filter present, repoze.profile
+#     pipeline absent)
 #   - The rendered barbican.conf carries [oslo_policy]
 #     enforce_new_defaults = true and no enforce_scope
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
@@ -113,6 +114,7 @@ spec:
               spec:
                 containers:
                 - name: barbican-api
+                  image: ghcr.io/c5c3/barbican:2026.1
                   command:
                   - uwsgi
                   - "--http"
@@ -243,10 +245,10 @@ spec:
   # every Barbican: enforce_new_defaults = true. No enforce_scope line appears
   # because the operator leaves that option at barbican's default.
   #
-  # The paste greps pin the 2025.2 file shape: the repoze.profile pipeline that
-  # upstream dropped in 2026.1 is present, and the oslo request_id filter that
-  # arrived with it is not. The 2026-1 variant of this suite asserts the
-  # inverse, which is what makes the pair a release-boundary regression net.
+  # The paste greps pin the 2026.1-and-later file shape: upstream added the oslo
+  # request_id filter to every pipeline and dropped the repoze.profile pipeline
+  # in 2026.1, and both deltas ride on the same release boundary in
+  # reconcile_config.go. The 2026-2 variant of this suite asserts the same shape.
   - try:
     - script:
         content: |
@@ -281,12 +283,12 @@ spec:
             exit 1
           fi
           echo "OK: $SEC renders enforce_new_defaults = true in [oslo_policy] and no enforce_scope"
-          grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-paste.ini
-          if grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-paste.ini; then
-            echo "ERROR: barbican-api-paste.ini carries the 2026.1 request_id filter"
+          grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-paste.ini
+          if grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-paste.ini; then
+            echo "ERROR: barbican-api-paste.ini carries the pre-2026.1 barbican-profile pipeline"
             exit 1
           fi
-          echo "OK: $SEC renders the 2025.2 paste shape (barbican-profile pipeline, no request_id filter)"
+          echo "OK: $SEC renders the 2026.1 paste shape (request_id filter, no barbican-profile pipeline)"
   # ── Step 6: Assert the Barbican API answers /healthcheck over HTTP ──────
   # HTTP-level API coverage from inside an API pod: the paste composite routes
   # /healthcheck to the oslo healthcheck app outside the authtoken pipeline, so

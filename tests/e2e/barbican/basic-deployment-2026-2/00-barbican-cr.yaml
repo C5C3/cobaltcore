@@ -10,10 +10,10 @@
 # deploy/kind/infrastructure). Barbican exits at start-up without a secret store,
 # so 01-barbican-secretstore.yaml attaches one before Ready can settle.
 #
-# Apart from the release, the image tag, and the names, this is the 2025.2
-# fixture. Barbican 23.0.0 ships the same paste file as 22.0.0 (the oslo
-# request_id filter present, no repoze.profile pipeline), which is what the
-# suite asserts.
+# Apart from the release, the image tag, and the names, this is the plain
+# basic-deployment suite's fixture. Barbican 23.0.0 ships the same paste file
+# as 22.0.0 (the oslo request_id filter present, no repoze.profile pipeline),
+# which is what the suite asserts.
 apiVersion: barbican.openstack.c5c3.io/v1alpha1
 kind: Barbican
 metadata:
