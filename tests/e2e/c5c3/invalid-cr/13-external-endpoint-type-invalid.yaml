@@ -8,7 +8,7 @@ kind: ControlPlane
 metadata:
   name: cp-external-bad-endpoint
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   services:
     keystone:
       mode: External

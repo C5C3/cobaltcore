@@ -15,5 +15,5 @@ spec:
     openstack.c5c3.io/nova-compute-pool: a
   image:
     repository: ghcr.io/c5c3/nova-compute
-    tag: "2025.2"
+    tag: "2026.1"
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

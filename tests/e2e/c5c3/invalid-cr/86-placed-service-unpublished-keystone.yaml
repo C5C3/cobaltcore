@@ -17,7 +17,7 @@ kind: ControlPlane
 metadata:
   name: cp-glance-unpublished-keystone
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: db.example.com

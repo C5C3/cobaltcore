@@ -10,7 +10,7 @@ kind: ControlPlane
 metadata:
   name: cp-image-pull-policy-unsupported
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   imagePullPolicy: Sometimes
   services:
     keystone:

@@ -9,7 +9,7 @@ kind: ControlPlane
 metadata:
   name: cp-external-replicas
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   services:
     keystone:
       mode: External

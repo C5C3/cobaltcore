@@ -4,19 +4,19 @@
 
 # spec.extraConfig declaring an unknown section 'glance_stor' (a typo for
 # [glance_store]) is rejected by the validating webhook: the section is
-# absent from the glance 2025.2 option catalog, so a typo'd section name
+# absent from the glance 2026.1 option catalog, so a typo'd section name
 # can never silently reach the rendered glance-api.conf.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
   name: glance-invalid-extraconfig-unknown-section
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

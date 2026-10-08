@@ -78,12 +78,12 @@ spec:
 
 VALID_NAME = "neutron-metadata-agent"
 
-VALID_RELEASE = "2025.2"
+VALID_RELEASE = "2026.1"
 
-VALID_IMAGE = """\
+VALID_IMAGE = f"""\
   image:
     repository: ghcr.io/c5c3/neutron
-    tag: "2025.2\""""
+    tag: "{VALID_RELEASE}\""""
 
 VALID_CHASSIS_REF = """\
   chassisRef:
@@ -139,7 +139,7 @@ FIXTURES: tuple[Fixture, ...] = (
         image=(
             "  image:\n"
             "    repository: ghcr.io/c5c3/neutron\n"
-            '    tag: "2025.2"\n'
+            f'    tag: "{VALID_RELEASE}"\n'
             "    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
     ),
@@ -155,7 +155,7 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         image=(
             "  image:\n"
-            '    tag: "2025.2"'
+            f'    tag: "{VALID_RELEASE}"'
         ),
     ),
     Fixture(
@@ -208,7 +208,7 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="06-extraconfig-unknown-option.yaml",
         comment=(
             "spec.extraConfig setting an unknown option in a known section is rejected\n"
-            "by the validating webhook against the embedded neutron 2025.2 option\n"
+            "by the validating webhook against the embedded neutron 2026.1 option\n"
             "catalog. extraConfig is a preserve-unknown-fields map, so CEL cannot\n"
             "constrain its keys and admission is the only gate. [DEFAULT] is a section\n"
             "the catalog carries, so the rejection is the unknown-option one rather\n"

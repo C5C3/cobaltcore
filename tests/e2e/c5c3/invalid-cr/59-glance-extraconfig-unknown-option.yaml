@@ -4,14 +4,14 @@
 
 # services.glance.extraConfig sets an unknown option (default_backend_typo) in
 # the known [glance_store] section: rejected by the webhook because it is absent
-# from the glance 2025.2 option catalog. The rest of the glance block is valid, so
+# from the glance 2026.1 option catalog. The rest of the glance block is valid, so
 # the ONLY violation is the per-service catalog check.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: cp-glance-extraconfig-unknown
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: db.example.com

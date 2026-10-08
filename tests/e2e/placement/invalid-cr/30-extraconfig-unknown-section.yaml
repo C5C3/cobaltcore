@@ -4,19 +4,19 @@
 
 # spec.extraConfig declaring an unknown section 'placemnt' (a typo for
 # [placement]) is rejected by the validating webhook: the section is absent
-# from the placement 2025.2 option catalog, so a typo'd section name can
+# from the placement 2026.1 option catalog, so a typo'd section name can
 # never silently reach the rendered placement.conf.
 apiVersion: placement.openstack.c5c3.io/v1alpha1
 kind: Placement
 metadata:
   name: placement-invalid-extraconfig-unknown-section
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

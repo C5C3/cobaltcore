@@ -17,7 +17,7 @@ kind: ControlPlane
 metadata:
   name: cp-nova-cinder-override
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: db.example.com

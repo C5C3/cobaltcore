@@ -9,7 +9,7 @@ kind: ControlPlane
 metadata:
   name: cp-external-unset-mode
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   infrastructure:
     database:
       host: db.example.com

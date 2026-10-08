@@ -101,14 +101,14 @@ spec:
             (contains($error, 'novaMetadata.sharedSecretRef.name')): true
             (contains($error, 'should be at least 1 chars long')): true
   # spec.extraConfig setting an unknown option in a known section must be
-  # rejected: it is absent from the neutron 2025.2 option catalog.
+  # rejected: it is absent from the neutron 2026.1 option catalog.
   - try:
     - apply:
         file: 06-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the neutron 2025.2 option catalog')): true
+            (contains($error, 'no such option in the neutron 2026.1 option catalog')): true
   # spec.extraConfig setting [ovs] ovsdb_connection must be rejected by the
   # webhook: the agent reads the local OVS database over the socket the chassis
   # pods share, so an override points it at another node's database.

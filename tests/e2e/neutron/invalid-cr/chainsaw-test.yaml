@@ -151,14 +151,14 @@ spec:
             (contains($error, 'ovn_nb_connection is managed via spec.ovn.centralRef')): true
             (contains($error, 'points the mechanism driver at a logical model it does not own')): true
   # spec.extraConfig setting an unknown option in a known section must be
-  # rejected: it is absent from the neutron 2025.2 option catalog.
+  # rejected: it is absent from the neutron 2026.1 option catalog.
   - try:
     - apply:
         file: 11-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the neutron 2025.2 option catalog')): true
+            (contains($error, 'no such option in the neutron 2026.1 option catalog')): true
   # A metadata.name past 40 characters must be rejected by the validating
   # webhook: the {name}-ovn-db-sync CronJob would exceed the 52-character cap
   # Kubernetes puts on a CronJob name, so the CR would admit cleanly and then

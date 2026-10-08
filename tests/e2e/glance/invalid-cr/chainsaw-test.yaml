@@ -119,23 +119,23 @@ spec:
             ($error != null): true
             (contains($error, 'password is managed via spec.serviceUser.secretRef')): true
   # spec.extraConfig setting an unknown option (typo'd key) in a known section
-  # must be rejected: it is absent from the glance 2025.2 option catalog.
+  # must be rejected: it is absent from the glance 2026.1 option catalog.
   - try:
     - apply:
         file: 11-extraconfig-unknown-option.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such option in the glance 2025.2 option catalog')): true
+            (contains($error, 'no such option in the glance 2026.1 option catalog')): true
   # spec.extraConfig declaring an unknown section (typo'd section name) must be
-  # rejected: it is absent from the glance 2025.2 option catalog.
+  # rejected: it is absent from the glance 2026.1 option catalog.
   - try:
     - apply:
         file: 12-extraconfig-unknown-section.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'no such section in the glance 2025.2 option catalog')): true
+            (contains($error, 'no such section in the glance 2026.1 option catalog')): true
   # spec.importFiltering with both allowedHosts and disallowedHosts non-empty must
   # be rejected (CEL rule on ImportFilteringSpec): glance ignores the deny-list
   # whenever the matching allow-list is non-empty.

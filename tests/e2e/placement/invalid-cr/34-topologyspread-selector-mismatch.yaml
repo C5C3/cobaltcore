@@ -14,7 +14,7 @@ kind: Placement
 metadata:
   name: placement-invalid-topologyspread
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 1
     topologySpreadConstraints:
@@ -26,7 +26,7 @@ spec:
           app: placement
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
