@@ -42,7 +42,9 @@
 # To add a new operator <op>:
 #   1. Add a paths filter <op> listing operators/<op>/**
 #   2. Add a paths filter tests_e2e_<op> listing tests/e2e/<op>/** and
-#      tests/e2e/<op>-operator/**
+#      tests/e2e/<op>-operator/**, plus tests/e2e/lib/** when the operator's
+#      suites run a shared script from there (every namespace-scoped-rbac
+#      suite does)
 #   3. Add <op> to ALL_OPERATORS in the ci.yaml resolve step
 #   4. When the operator ships a service image, add a paths filter image_<op>
 #      listing images/<op>/** and patches/<op>/**, and add <op> to

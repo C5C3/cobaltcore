@@ -16,12 +16,15 @@
 #     counter that appears on a later read of the metrics
 #   - a counter printed in exponent form still counts
 #   - anything but four non-empty arguments exits 2 with the usage line
+#   - an edit to the script runs the e2e-operator jobs of the seven operators
+#     whose namespace-scoped-rbac suites call it, and no other
 # Usage: bash tests/unit/ci/assert_namespace_scoped_operator_test.sh
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -29,6 +32,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-namespace-scoped-operator.sh"
 PLURAL="keystones.keystone.openstack.c5c3.io"
@@ -464,6 +469,24 @@ test_the_script_parses() {
   assert_eq "bash -n passes" "0" "$?"
 }
 
+# --- Test 11: the path filters ---
+test_the_seven_filters_list_the_shared_scripts() {
+  echo "Test: the seven operators with a namespace-scoped-rbac suite list tests/e2e/lib/ in their filter"
+
+  local op block
+  for op in keystone horizon glance placement barbican cinder nova; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_contains "tests_e2e_$op lists the shared scripts" "$block" "'tests/e2e/lib/**'"
+  done
+  # The neutron, ovn and c5c3 charts refuse rbac.namespaceScoped=true, so
+  # these operators have no such suite, and a script edit must not run them.
+  for op in c5c3 ovn neutron; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_not_empty "tests_e2e_$op exists" "$block"
+    assert_not_contains "tests_e2e_$op leaves the shared scripts out" "$block" "tests/e2e/lib/"
+  done
+}
+
 # --- Run ---
 test_a_healthy_operator_passes_all_eight_checks
 test_a_release_without_a_pod_fails
@@ -488,6 +511,7 @@ test_a_restart_during_the_wait_fails
 test_an_exponent_success_count_passes
 test_wrong_arguments_exit_2
 test_the_script_parses
+test_the_seven_filters_list_the_shared_scripts
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

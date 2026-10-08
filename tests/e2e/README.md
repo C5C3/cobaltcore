@@ -51,6 +51,15 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   `tests/e2e/ovn/chassis-single-node/` is the model, and
   `tests/e2e/nova/compute-node-pool/` also labels the node with the zone
   and the pool label its `NovaCompute` selects.
+- **Shared scripts.** `tests/e2e/lib/` holds scripts that the suites of
+  several operators run, such as `assert-namespace-scoped-operator.sh`,
+  the proof every `namespace-scoped-rbac` suite runs against the operator
+  release it installed. Chainsaw runs script steps in the suite
+  directory, so a suite calls them by relative path
+  (`../../lib/<script>.sh`). Each script is unit-tested under
+  `tests/unit/ci/` against a stubbed `kubectl`, and `tests/e2e/lib/**`
+  is listed in the `tests_e2e_<op>` path filter of every operator whose
+  suites run one, so an edit to a script runs those `e2e-operator` jobs.
 
 ## Configuration
 

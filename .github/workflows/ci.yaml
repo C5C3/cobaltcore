@@ -229,20 +229,28 @@ jobs:
             tests_e2e_keystone:
               - 'tests/e2e/keystone/**'
               - 'tests/e2e/keystone-operator/**'
+              # The namespace-scoped-rbac suites of keystone, horizon, glance,
+              # placement, barbican, cinder and nova run the shared proof
+              # script under tests/e2e/lib/, so those seven filters list it.
+              - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
             tests_e2e_horizon:
               - 'tests/e2e/horizon/**'
               - 'tests/e2e/horizon-operator/**'
+              - 'tests/e2e/lib/**'
             tests_e2e_glance:
               - 'tests/e2e/glance/**'
               - 'tests/e2e/glance-operator/**'
+              - 'tests/e2e/lib/**'
             tests_e2e_placement:
               - 'tests/e2e/placement/**'
               - 'tests/e2e/placement-operator/**'
+              - 'tests/e2e/lib/**'
             tests_e2e_barbican:
               - 'tests/e2e/barbican/**'
               - 'tests/e2e/barbican-operator/**'
+              - 'tests/e2e/lib/**'
             tests_e2e_ovn:
               - 'tests/e2e/ovn/**'
             tests_e2e_neutron:
@@ -250,9 +258,11 @@ jobs:
             tests_e2e_cinder:
               - 'tests/e2e/cinder/**'
               - 'tests/e2e/cinder-operator/**'
+              - 'tests/e2e/lib/**'
             tests_e2e_nova:
               - 'tests/e2e/nova/**'
               - 'tests/e2e/nova-operator/**'
+              - 'tests/e2e/lib/**'
             # ---------------------------------------------------------------
             # Suites that live in a job of their own. Each filter names exactly
             # the suite its job runs, so an edit schedules that job and no
