@@ -83,9 +83,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **R2** — every `<NAME>_VERSION="…"` constant in `hack/*.sh` is
   matched by at least one customManager pattern. A constant added
   without a paired customManager is a silent pin: humans edit it but
-  Renovate ignores it. Runtime-resolved values — command substitutions
-  and `${VAR:?}` required-env passthroughs — are exempt; they are not
-  pins Renovate could bump.
+  Renovate ignores it. Runtime-resolved values — command substitutions,
+  `${VAR:?}` required-env passthroughs and empty `${VAR:-}` defaults —
+  are exempt; they are not pins Renovate could bump.
 - **R3** — every `version: "…"` literal in `deploy/kind/base/*.yaml`
   is claimed by a customManager pattern or by the native `flux`
   manager. The flux manager claims a file only when it carries a
