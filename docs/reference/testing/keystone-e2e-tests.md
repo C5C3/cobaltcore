@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **54 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **53 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -118,7 +118,6 @@ Deployment rollout, bootstrap Job).
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
 | admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
 | autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets); the API PodDisruptionBudget follows the HPA minimum: `minAvailable: 1` with `minReplicas` unset, `maxUnavailable: 1` at `minReplicas: 1`, `minAvailable: 1` again after autoscaling is removed; a CPU target of 150 and a `scaleDown` behavior reach the HPA as `averageUtilization: 150` and `spec.behavior.scaleDown` |
-| basic-deployment-2026-1 | `keystone-basic-2026-1` | Happy-path deployment pinned to the 2026.1 release image |
 | basic-deployment-2026-2 | `keystone-basic-2026-2` | Happy-path deployment pinned to the 2026.2 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
 | credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
@@ -980,9 +979,6 @@ tests/e2e/keystone/
 ├── basic-deployment/
 │   ├── chainsaw-test.yaml              Happy-path reconciliation
 │   └── 00-keystone-cr.yaml             Keystone CR in managed mode
-├── basic-deployment-2026-1/
-│   ├── chainsaw-test.yaml              Happy-path reconciliation 2026.1
-│   └── 00-keystone-cr.yaml             Keystone CR with 2026.1 image
 ├── basic-deployment-2026-2/
 │   ├── chainsaw-test.yaml              Happy-path reconciliation 2026.2
 │   └── 00-keystone-cr.yaml             Keystone CR with 2026.2 image
