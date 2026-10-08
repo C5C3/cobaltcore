@@ -10,6 +10,11 @@
 ---
 # No bridge mappings and no gateway: the lab has no provider network (#899).
 # No image, so the operator runs the OVN image of controlplane-ovn.
+# No spec.ovs or spec.controller resources. The operator renders none for the
+# chassis, and ovsdb-server has no field, so the tenant LimitRange of
+# deploy/kind/infrastructure/openbao-tenant.yaml fills in a 100m CPU and 128Mi
+# memory request and a 512Mi memory limit; the lab read 11 to 23 MiB per
+# container.
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
 kind: OVNChassis
 metadata:
@@ -44,7 +49,9 @@ spec:
       name: controlplane-nova-metadata-secret
 ---
 # KVM with a named CPU model, and qcow2 instance disks on the node's
-# /var/lib/nova. No extraConfig: the libvirt driver is Nova's default.
+# /var/lib/nova. No extraConfig: the libvirt driver is Nova's default. No
+# resources, so the pool runs the operator's default, a 150m CPU request and
+# 768Mi memory as request and limit.
 #
 # The model is the one both lab workers report (Xeon D-2141I, libvirt's
 # host-model is Skylake-Server-IBRS). With host-passthrough or host-model,
