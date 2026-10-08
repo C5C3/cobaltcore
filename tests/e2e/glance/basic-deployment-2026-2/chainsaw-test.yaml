@@ -9,9 +9,9 @@
 #   - The API Deployment launches under uWSGI (the 2026.1-and-later launch mode,
 #     `uwsgi ... --wsgi-file /var/lib/openstack/bin/glance-wsgi-api ...`; the
 #     image-shipped shim, because glance's stock WSGI module ignores --pyargv
-#     and would never see the two --config-dir mounts) — this is the one
-#     assertion that genuinely differs from the 2025.2 basic-deployment suite,
-#     where the eventlet glance-api server is launched instead
+#     and would never see the two --config-dir mounts), as in the plain
+#     basic-deployment suite; what differs from that suite is the explicit 20Gi
+#     staging and the opt-in db-purge shape this CR sets
 #   - Owned resources exist (Deployment, Service on 9292, PDB, config ConfigMap,
 #     backends Secret)
 #   - The attached default S3 backend reaches Ready=True
@@ -133,7 +133,7 @@ spec:
                 # land on BOTH scratch emptyDirs — staging holds the import
                 # download, tasks-work the async task scratch, and either one
                 # unbounded fills the node's disk. The default-path assertion
-                # (10Gi with no spec.staging) lives in the 2025.2
+                # (10Gi with no spec.staging) lives in the plain
                 # basic-deployment suite.
                 (volumes[?name == 'staging'].emptyDir.sizeLimit | [0]): 20Gi
                 (volumes[?name == 'tasks-work'].emptyDir.sizeLimit | [0]): 20Gi
