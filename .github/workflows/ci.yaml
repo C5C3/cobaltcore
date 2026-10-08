@@ -2371,11 +2371,11 @@ jobs:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to kube-prometheus-stack — required for the prometheus suite.
       - name: Setup E2E infrastructure
