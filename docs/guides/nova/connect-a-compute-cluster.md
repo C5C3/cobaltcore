@@ -539,6 +539,142 @@ hvo onboards only the nodes that carry the lifecycle label, and puts each into
 its zone's aggregate and `tenant_filter_tests`, both of which the pool creates
 (see [The aggregates](../../reference/nova/novacompute-crd.md#the-aggregates)).
 
+## A hypervisor that receives no builds
+
+`nova-compute` counts the builds that end `FAILED` or `RESCHEDULED` on a node
+in `failed_builds`, a key of the `stats` column of that node's `compute_nodes`
+row, and resets it to 0 on the next build that succeeds there. A server deleted while it
+is still scheduling counts: the build finds no instance and ends `FAILED` with
+the debug line `Instance disappeared before build.`, leaving no fault and no
+action event. A claim that fails on the host counts too, and a build that
+reaches another host after a reschedule still counts on the host that failed.
+The counter is in the database and nowhere in the API. The hypervisor views
+carry no `stats` field, so `openstack hypervisor show` cannot show it.
+
+With the operator's
+[`[filter_scheduler]` defaults](../../reference/nova/nova-crd.md#rendered-configuration)
+the counter changes no placement. Reading it matters for a deployment that
+restored Nova's weigher through `extraConfig`, where one failed build takes the
+host out of every placement until a build succeeds on it. It is also a
+diagnostic: a counter that keeps growing names a host whose builds fail for a
+reason of its own.
+
+### Read the counter
+
+On the devstack's managed MariaDB, read the cell database as root. The password
+comes from the Secret the `openstack-db` MariaDB names and reaches `mariadb`
+over stdin, never as an argument:
+
+```bash
+root_secret="$(kubectl get mariadb openstack-db -n openstack -o 'jsonpath={.spec.rootPasswordSecretKeyRef.name}')"
+root_key="$(kubectl get mariadb openstack-db -n openstack -o 'jsonpath={.spec.rootPasswordSecretKeyRef.key}')"
+kubectl get secret "${root_secret}" -n openstack -o "jsonpath={.data.${root_key:-password}}" | base64 -d \
+  | kubectl exec -i -n openstack openstack-db-0 -c mariadb -- \
+      sh -c 'export MYSQL_PWD; MYSQL_PWD="$(cat)"; exec mariadb -uroot -N nova -e "SELECT host, stats FROM compute_nodes WHERE deleted = 0"'
+```
+
+The query prints one row per hypervisor. `host` is the node name, which is
+`[DEFAULT] host` of the pool's `nova-compute` on that node. `stats` is JSON with
+string values, and `"failed_builds": "N"` is among them. `nova-compute` keeps
+the counter in memory and writes it to the row on its next
+`update_available_resource` periodic, which runs every 60 seconds, so a fresh
+failure shows within a minute. An empty result means no compute has registered
+yet.
+
+A MariaDB CR that names no `rootPasswordSecretKeyRef` prints an empty
+`root_secret`, and a brownfield database has no MariaDB CR at all. Both run the
+same `SELECT` with the cell credentials: the password is the `password` key of
+the Secret the Nova's `spec.database.secretRef` names, and the user is the
+Nova's name in static managed mode and that Secret's `username` key otherwise.
+The schema is the Nova's `spec.database.database`, `nova` on the devstack.
+
+### Take a failing host out of scheduling
+
+With the operator's defaults nothing steers builds away from a host whose
+builds keep failing. As the emptiest host it keeps winning the ram, cpu and
+disk weighers, so unpinned builds keep landing on it until its compute service
+is disabled. Disable the service while the cause is open, with `<node>` the
+`host` the query printed. The `openstack` commands below run with the admin
+`OS_*` variables of the metal-stack quick start's
+[Part 1, Step 7](../../quick-start-metal-stack.md#cp-verify), `OS_CACERT` among
+them, so the CLI verifies the Gateway:
+
+```bash
+openstack compute service set --disable --disable-reason "builds fail" <node> nova-compute
+```
+
+The pool never enables a service, and hvo writes the service's status only
+while it onboards the node and when the Hypervisor's `spec.maintenance` changes.
+Once the cause is fixed, enable the service again:
+
+```bash
+openstack compute service set --enable <node> nova-compute
+```
+
+A pinned build cannot reach a disabled service. The disable sets the
+`COMPUTE_STATUS_DISABLED` trait on the node's resource provider, and Nova's
+scheduler forbids that trait in every Placement query, the `zone:host` form
+included. Such a server ends `ERROR` with `No valid host was found`, and the
+counter does not move. The pinned build below is the reset for a host whose
+cause is fixed: enable the service as above, then pin the build, which also
+proves the fix. While the cause is open, keep the service disabled and restart
+the node's `nova-compute` pod instead, which resets the counter with the service
+disabled. Enabling the service only for a pinned build opens the host to every
+unpinned build until it is disabled again, and as the emptiest host it wins
+them.
+
+### Reset the counter
+
+The commands below take two values. `host` is the node name, which is the Nova
+host. `zone` is the node's `topology.kubernetes.io/zone` label, the
+availability zone of the aggregate the pool created for it (see
+[The aggregates](../../reference/nova/novacompute-crd.md#the-aggregates)):
+
+```bash
+host=<node>
+zone="$(kubectl --context "$COMPUTE_CONTEXT" get node "${host}" \
+  -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')"
+```
+
+The first way is one build that succeeds on the host. An admin pins a server to
+the host through the `zone:host` form of the availability zone, as Part 2,
+[Step 5](../../quick-start-metal-stack.md#hv-boot) of the metal-stack quick
+start does, with the flavor `1`, the image `cirros-kvm` and the network
+`lab-net` that quick start creates:
+
+```bash
+openstack server create unblock --image cirros-kvm --flavor 1 \
+  --network lab-net --availability-zone "${zone}:${host}" --wait
+```
+
+A pinned server that reaches `ACTIVE` resets the counter, and after the next
+periodic the row reads `"failed_builds": "0"`. A pinned server that ends
+`ERROR` raises the counter by one more. A forced host gets no reschedule, so
+the error stays on that host, and the server's fault names what the host
+cannot do:
+
+```bash
+openstack server show unblock -c fault -f value
+```
+
+Delete the server either way:
+
+```bash
+openstack server delete unblock --wait
+```
+
+The second way is a restart of the node's `nova-compute` pod. The pool's
+DaemonSet, `controlplane-compute-a-nova-compute`, recreates it, and the new
+process starts with a counter of 0 and writes it on its first periodic. The
+running servers stay untouched, because libvirt and QEMU run outside the pod,
+and the node keeps its identity through `/var/lib/nova`:
+
+```bash
+kubectl --context "$COMPUTE_CONTEXT" delete pod -n openstack \
+  -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=controlplane-compute-a,app.kubernetes.io/component=nova-compute \
+  --field-selector "spec.nodeName=${host}"
+```
+
 ## Rotation
 
 The ControlPlane rewrites the mirror and the auth copy in place whenever a
@@ -615,7 +751,12 @@ the shared secret into the agent's namespace on the compute cluster.
 
 ## Tested by
 
-The suites below cover the pieces this guide puts together:
+The counter read of
+[A hypervisor that receives no builds](#a-hypervisor-that-receives-no-builds)
+ran on the devstack against its fake compute, `cobaltcore-control-plane`, and
+printed `"failed_builds": "0"`. No run has taken a hypervisor out of scheduling
+and reset it by hand yet, and no suite does. The suites below cover the pieces
+this guide puts together:
 
 - hvo's account, its auth Secret and the fixture overlay
   (`full-controlplane-keystone`);
