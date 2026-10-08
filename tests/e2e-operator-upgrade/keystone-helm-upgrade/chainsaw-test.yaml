@@ -12,7 +12,7 @@
 # then `helm upgrade`s to the locally built chart + CRDs and asserts the
 # deployed Keystone survives the operator upgrade:
 #   - Ready stays True (AllReady),
-#   - status.installedRelease is unchanged (still 2025.2 — it tracks the
+#   - status.installedRelease is unchanged (still 2026.1 — it tracks the
 #     Keystone service image tag, not the operator version),
 #   - the bootstrap Job is NOT re-run (its UID is unchanged and exactly one
 #     bootstrap Job exists), guarding the cross-version re-bootstrap failure
@@ -42,7 +42,7 @@ spec:
             name: keystone-op-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -287,7 +287,7 @@ spec:
             name: keystone-op-upgrade
             namespace: openstack
           status:
-            installedRelease: "2025.2"
+            installedRelease: "2026.1"
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
