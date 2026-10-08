@@ -206,7 +206,18 @@ spec:
                 description: |-
                   Resources defines the CPU and memory requests and limits of the
                   nova-compute container and of its two init containers,
-                  create-instances-dir and wait-for-chassis. When nil all three carry none.
+                  create-instances-dir and wait-for-chassis. The operator never writes
+                  defaults into this field; it resolves them when it renders the pod, per
+                  resource: a CPU the block names neither as request nor as limit gets a
+                  150m request and no limit, and a memory the block names neither way gets
+                  768Mi as both request and limit, which holds nova-compute, its privsep
+                  helpers and a live migration with headroom. A resource the block names
+                  is used as written, and anything else it sets is kept. A namespace
+                  LimitRange still fills in a default for a limit the rendered block does
+                  not name: a memory the block names only as a request gets the
+                  LimitRange's default memory as its limit, and the default CPU limit
+                  becomes the CPU limit unless the block names one. A filled-in limit
+                  below the request rejects the pods.
                 properties:
                   claims:
                     description: |-

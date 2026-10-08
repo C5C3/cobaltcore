@@ -85,7 +85,7 @@ func pinNovaComputeCases() []pinNovaComputeCase {
 }
 
 // pinNovaComputeDaemonSetGolden is the defaulted pool: the selector term alone,
-// no resources, the rolling update of one node at a time.
+// the operator's resource default, the rolling update of one node at a time.
 const pinNovaComputeDaemonSetGolden = `metadata:
   labels:
     app.kubernetes.io/component: nova-compute
@@ -176,7 +176,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: nova-compute
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -227,7 +232,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: create-instances-dir
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -291,7 +301,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: wait-for-chassis
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -770,7 +785,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: nova-compute
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: true
           privileged: true
@@ -821,7 +841,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: create-instances-dir
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -885,7 +910,12 @@ spec:
         image: ghcr.io/c5c3/nova-compute:2025.2
         imagePullPolicy: Always
         name: wait-for-chassis
-        resources: {}
+        resources:
+          limits:
+            memory: 768Mi
+          requests:
+            cpu: 150m
+            memory: 768Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

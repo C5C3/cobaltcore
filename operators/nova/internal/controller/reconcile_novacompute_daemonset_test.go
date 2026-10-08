@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -270,6 +271,137 @@ func TestNovaComputeUpdateStrategy(t *testing.T) {
 	g.Expect(novaComputeUpdateStrategy(cr)).To(Equal(&appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType}))
 }
 
+// novaComputeResourceDefaults is the block the pool's three containers get when
+// spec.resources names neither CPU nor memory: a 150m CPU request, no CPU
+// limit, and 768Mi of memory as request and limit. The figures are literals on
+// purpose, so a test comparing a rendered container against them does not
+// follow a change of the operator's constants.
+func novaComputeResourceDefaults() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("768Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")},
+	}
+}
+
+// TestEffectiveNovaComputeResources pins the pool's resource default, per
+// resource: a CPU spec.resources names neither way gets a 150m request and no
+// limit, a memory it names neither way gets 768Mi as request and limit, and a
+// resource it names, the zero quantity included, is used as written beside
+// anything else it sets. The default is never written into the CR.
+func TestEffectiveNovaComputeResources(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+		want      corev1.ResourceRequirements
+	}{
+		{name: "a pool that names no block gets both defaults", resources: nil, want: novaComputeResourceDefaults()},
+		{
+			name:      "an empty block gets both defaults",
+			resources: &corev1.ResourceRequirements{},
+			want:      novaComputeResourceDefaults(),
+		},
+		{
+			name: "a memory limit alone gets the CPU default and no memory request beside its limit",
+			resources: &corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+			},
+		},
+		{
+			name: "a CPU request alone gets the memory default",
+			resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("768Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")},
+			},
+		},
+		{
+			name: "a CPU limit alone gets the memory default and no CPU request beside its limit",
+			resources: &corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("768Mi")},
+			},
+		},
+		{
+			name: "a zero memory request counts as named and gets no memory default",
+			resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("0")},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("0")},
+			},
+		},
+		{
+			name: "an ephemeral-storage limit and a claim are kept beside both defaults",
+			resources: &corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+				Claims: []corev1.ResourceClaim{{Name: "gpu"}},
+			},
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("150m"), corev1.ResourceMemory: resource.MustParse("768Mi")},
+				Limits: corev1.ResourceList{
+					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					corev1.ResourceMemory:           resource.MustParse("768Mi"),
+				},
+				Claims: []corev1.ResourceClaim{{Name: "gpu"}},
+			},
+		},
+		{
+			name:      "a block naming both CPU and memory is used as written",
+			resources: pinOnDeleteNovaCompute().Spec.Resources,
+			want:      *pinOnDeleteNovaCompute().Spec.Resources,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := validNovaCompute()
+			cr.Spec.Resources = tc.resources
+			before := cr.Spec.Resources.DeepCopy()
+
+			g.Expect(effectiveNovaComputeResources(cr)).To(Equal(tc.want))
+			g.Expect(cr.Spec.Resources).To(Equal(before), "the default must not be written into the CR")
+		})
+	}
+}
+
+// TestBuildNovaComputeDaemonSet_Resources pins that the two init containers and
+// nova-compute carry the same resolved block, for a pool that names no
+// resources and for one that names only a memory limit.
+func TestBuildNovaComputeDaemonSet_Resources(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+	}{
+		{name: "a nil block", resources: nil},
+		{name: "a block naming only limits.memory", resources: &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cr := validNovaCompute()
+			cr.Spec.Resources = tc.resources
+
+			pod := buildNovaComputeDaemonSet(cr, pinNovaComputeImage(), testContract, pinNovaComputeConfigMap,
+				pinNovaComputeHash, novaComputeAffinity(cr, nil, nil)).Spec.Template.Spec
+			want := effectiveNovaComputeResources(cr)
+			g.Expect(novaComputeContainerResources(pod)).To(Equal(map[string]corev1.ResourceRequirements{
+				"create-instances-dir": want,
+				"wait-for-chassis":     want,
+				novaComputeComponent:   want,
+			}))
+		})
+	}
+}
+
 // TestBuildNovaComputeDaemonSet_CreateInstancesDir pins the init container that
 // creates instances_path on the node: it runs before the chassis gate, as root
 // without the privileged profile, on the state directory alone, with the pool's
@@ -310,9 +442,9 @@ func TestBuildNovaComputeDaemonSet_CreateInstancesDir(t *testing.T) {
 			"one mount, writable and without propagation")
 	})
 
-	t.Run("nil spec.resources renders none", func(t *testing.T) {
+	t.Run("nil spec.resources renders the default", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		g.Expect(render(validNovaCompute()).InitContainers[0].Resources).To(Equal(corev1.ResourceRequirements{}))
+		g.Expect(render(validNovaCompute()).InitContainers[0].Resources).To(Equal(novaComputeResourceDefaults()))
 	})
 
 	t.Run("spec.resources applies to it too", func(t *testing.T) {
@@ -426,6 +558,16 @@ func TestBuildNovaComputeDaemonSet_ImagePullPolicy(t *testing.T) {
 			}))
 		})
 	}
+}
+
+// novaComputeContainerResources maps every init container and container of a
+// NovaCompute pod to its resources.
+func novaComputeContainerResources(pod corev1.PodSpec) map[string]corev1.ResourceRequirements {
+	resources := map[string]corev1.ResourceRequirements{}
+	for _, c := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
+		resources[c.Name] = c.Resources
+	}
+	return resources
 }
 
 // novaComputePullPolicies maps every init container and container of a
