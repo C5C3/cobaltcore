@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for namespace-scoped RBAC deployment.
+# Validates the install the Multi-Tenant Deployment guide recommends for a
+# single namespace: a barbican-operator release with rbac.namespaceScoped=true
+# and webhook.enabled=false in the namespace it reconciles:
+#   - Operator deployed via Helm with namespace-scoped RBAC
+#   - Role/RoleBinding created (not ClusterRole/ClusterRoleBinding)
+#   - Barbican CR and its default secret store reconciled to Ready=True
+#   - The namespace-scoped operator's own pod reconciled the CR, as its log
+#     and metrics show
+#
+# The cluster-wide barbican-operator in "barbican-system" watches every
+# namespace and drives this Barbican to Ready on its own, so the Ready
+# condition of Step 4 does not show that the namespace-scoped operator did any
+# work. Step 5 reads the namespace-scoped pod's own log and metrics instead,
+# through ../../lib/assert-namespace-scoped-operator.sh. A cluster-scoped watch
+# or cached read fails it on the log within seconds of the pod starting, and a
+# manager blocked in its cache sync records no reconcile. The cluster-wide
+# release also keeps its in-process webhook, which admits this suite's CRs.
+#
+# The test runs in the "openstack" namespace where the shared infrastructure
+# (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
+# works exactly as in all other E2E tests. A namespace-scoped operator only
+# watches its own release namespace, so its release is installed there too.
+#
+# The namespace-scoped release runs one replica instead of the chart's two.
+# With two, one pod leads and the other stands by behind the same release
+# label, and the standby's metrics count no reconcile.
+#
+# The release also carries the chart's TokenRequest grant for openstack,
+# restricted to the openbao-instance-provisioner account, as CI sets it for the
+# cluster-wide release. The suite's BarbicanSecretStore is a managed store on
+# the OpenBaoCluster openbao-instance, and the namespace-scoped operator
+# requests that account's bound token itself before the store can turn
+# credential-ready; without the grant the request is forbidden.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# The namespace-scoped operator reconciles every Barbican in "openstack" beside
+# the cluster-wide one, and every other barbican suite puts its Barbican there.
+# Two operators would drive another suite's Barbican at once, so this suite
+# runs alone, before the concurrent suites start. Running alone also keeps this
+# Barbican the only one in "openstack" while Step 5 counts reconciles.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-namespace-scoped-rbac
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Deploy operator with namespace-scoped RBAC ─────────────────
+  # One replica, because Step 5 reads one pod's log and metrics. Step 6
+  # uninstalls the release before chainsaw deletes the Barbican. The step
+  # cleanup runs at the end of the test and removes a release that a failed
+  # step left installed, so it cannot outlive this suite.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install barbican-operator-ns-scoped \
+            ${GITHUB_WORKSPACE:-.}/operators/barbican/helm/barbican-operator/ \
+            --namespace openstack \
+            --set rbac.namespaceScoped=true \
+            --set webhook.enabled=false \
+            --set replicas=1 \
+            --set 'rbac.secretStoreNamespaces.openstack={openbao-instance-provisioner}' \
+            --set image.repository=${IMAGE_PREFIX:-ghcr.io/c5c3}/barbican-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status barbican-operator-ns-scoped -n openstack 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        content: |
+          helm uninstall barbican-operator-ns-scoped -n openstack 2>&1 || true
+  # ── Step 2: Assert Role and RoleBinding exist (not ClusterRole) ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: barbican-operator-ns-scoped
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: barbican-operator-ns-scoped
+            namespace: openstack
+    - script:
+        content: |
+          # Verify no ClusterRole was created for this release
+          if kubectl get clusterrole barbican-operator-ns-scoped 2>/dev/null; then
+            echo "FAIL: ClusterRole should not exist for namespace-scoped deployment"
+            exit 1
+          fi
+          echo "OK: No ClusterRole found (expected)"
+  # ── Step 3: Apply the Barbican CR and its default secret store ─────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 4: Assert successful reconciliation ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-ns-scoped
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - get:
+        apiVersion: barbican.openstack.c5c3.io/v1alpha1
+        kind: Barbican
+        name: barbican-ns-scoped
+        namespace: openstack
+    - get:
+        apiVersion: barbican.openstack.c5c3.io/v1alpha1
+        kind: BarbicanSecretStore
+        name: barbican-ns-scoped-store
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=barbican-ns-scoped -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=barbican-operator-ns-scoped
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 5: Prove the namespace-scoped operator reconciled the Barbican ──
+  # The header of ../../lib/assert-namespace-scoped-operator.sh lists the
+  # checks it runs against the release's single pod. The BarbicanSecretStore
+  # controller gets no call: a healthy store pass ends in a revalidation
+  # requeue, which the metrics count under requeue_after, never under
+  # success.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../lib/assert-namespace-scoped-operator.sh openstack barbican-operator-ns-scoped barbican barbicans.barbican.openstack.c5c3.io
+    catch:
+    - podLogs:
+        namespace: openstack
+        selector: app.kubernetes.io/instance=barbican-operator-ns-scoped
+        tail: 200
+  # ── Step 6: Cleanup Helm release ───────────────────────────────────────
+  - try:
+    - script:
+        content: |
+          helm uninstall barbican-operator-ns-scoped -n openstack 2>&1 || true

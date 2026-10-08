@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the namespace-scoped RBAC E2E test (2025.2
+# release), the healthcheck fixture under the barbican-ns-scoped names.
+# Managed mode: database via clusterRef to openstack-db (schema
+# barbican_ns_scoped), cache via clusterRef to openstack-memcached. A single
+# replica keeps the bring-up short. spec.secretStoreRef selects the namespaced
+# SecretStore: a namespace-scoped operator refuses the default
+# ClusterSecretStore with SecretsReady=False/ClusterSecretStoreUnsupported.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-ns-scoped
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_ns_scoped
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
