@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for happy-path Barbican deployment (2026.2 release).
-# The per-release twin of the 2025.2 basic-deployment suite. Barbican has only
+# The per-release twin of the plain basic-deployment suite. Barbican has only
 # ever shipped a WSGI application, so there is no launch mode to select per
 # release. Barbican 23.0.0 ships the same paste file as 22.0.0, so this suite
 # asserts the SAME uWSGI command, the same [vault_plugin] credential split, the
 # same [oslo_policy] posture and the 2026.1-and-later paste shape against the
-# 2026.2 image; the paste assertions are the inverse of the 2025.2 leg's:
+# 2026.2 image, as the plain suite does against the 2026.1 image:
 #   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - The attached managed secret store reaches Ready=True
@@ -203,13 +203,13 @@ spec:
             - status: "True"
               reason: AllReady
   # ── Step 5: Assert the rendered config Secret ──────────────────────────
-  # The [vault_plugin] greps are identical to the 2025.2 leg's: the credential
+  # The [vault_plugin] greps are identical to the plain suite's: the credential
   # split does not move with the release, and keeping them here is what turns
   # that claim into an end-to-end one against the 2026.2 image. The
-  # [oslo_policy] greps are identical to the 2025.2 leg's as well, since the
+  # [oslo_policy] greps are identical to the plain suite's as well, since the
   # policy posture does not move with the release either.
   #
-  # The paste greps are the 2026.1 leg's, the INVERSE of the 2025.2 leg's.
+  # The paste greps are identical to the plain suite's too, which runs 2026.1.
   # Barbican 23.0.0 ships the same paste file as 22.0.0: the oslo request_id
   # filter in every pipeline and no repoze.profile pipeline. A paste assertion
   # that fails here means the operator moved the 2026.1 boundary in
