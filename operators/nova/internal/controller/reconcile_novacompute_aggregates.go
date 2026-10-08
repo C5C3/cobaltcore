@@ -24,12 +24,13 @@ import (
 // The reasons of the AggregatesReady condition. ComputeAPIError is shared with
 // ServicesReady.
 const (
-	conditionReasonAggregatesEnsured     = "AggregatesEnsured"
-	conditionReasonNodesWithoutZone      = "NodesWithoutZone"
-	conditionReasonAggregateZoneMismatch = "AggregateZoneMismatch"
-	conditionReasonWaitingForAggregate   = "WaitingForAggregate"
-	conditionReasonComputeAPIError       = "ComputeAPIError"
-	conditionReasonNovaComputeListError  = "NovaComputeListError"
+	conditionReasonAggregatesEnsured         = "AggregatesEnsured"
+	conditionReasonNodesWithoutZone          = "NodesWithoutZone"
+	conditionReasonNodesOutsideZoneAggregate = "NodesOutsideZoneAggregate"
+	conditionReasonAggregateZoneMismatch     = "AggregateZoneMismatch"
+	conditionReasonWaitingForAggregate       = "WaitingForAggregate"
+	conditionReasonComputeAPIError           = "ComputeAPIError"
+	conditionReasonNovaComputeListError      = "NovaComputeListError"
 )
 
 // aggregateMarkerKey is the metadata key the satellite stamps on an aggregate
@@ -39,8 +40,9 @@ const (
 const aggregateMarkerKey = "c5c3.io:nova"
 
 // tenantFilterTestsAggregate is the aggregate openstack-hypervisor-operator puts
-// every onboarding host into beside its zone's. It fails the onboarding when
-// the aggregate is missing and creates none itself.
+// a host into, beside its zone's, only while it onboards the host. It keeps the
+// host at the Initial onboarding phase while the aggregate is missing and
+// creates none itself.
 const tenantFilterTestsAggregate = "tenant_filter_tests"
 
 // reconcileNovaComputeAggregates keeps the host aggregates the pool's nodes are
@@ -53,7 +55,10 @@ const tenantFilterTestsAggregate = "tenant_filter_tests"
 // it is. A marked aggregate that no NovaCompute of the Nova needs any more is
 // deleted once no host is left in it, unless it carries metadata the satellite
 // did not write, such as a tenant isolation: deleting the aggregate would drop
-// that metadata for good, so it is kept.
+// that metadata for good, so it is kept. From the list it read, it reports every
+// Active node in no aggregate of its zone under NodesOutsideZoneAggregate and
+// keeps AggregatesReady True: openstack-hypervisor-operator or an admin owns
+// the membership, not the pool.
 func (r *NovaComputeReconciler) reconcileNovaComputeAggregates(ctx context.Context, cr *novav1alpha1.NovaCompute,
 	pass *novaComputePass,
 ) (ctrl.Result, error) {
@@ -167,6 +172,7 @@ func (r *NovaComputeReconciler) reconcileNovaComputeAggregates(ctx context.Conte
 			"Deleted host aggregate %s: no NovaCompute of Nova %s needs it", agg.Name, cr.Spec.NovaRef.Name)
 	}
 
+	outside := nodesOutsideZoneAggregate(cr.Status.Nodes, aggregates)
 	condition := metav1.Condition{Type: conditionTypeAggregatesReady, ObservedGeneration: cr.Generation}
 	switch {
 	case len(mismatches) > 0:
@@ -177,7 +183,13 @@ func (r *NovaComputeReconciler) reconcileNovaComputeAggregates(ctx context.Conte
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = conditionReasonNodesWithoutZone
 		condition.Message = fmt.Sprintf("Nodes without the %s label cannot be onboarded: %s",
-			zoneLabel, strings.Join(withoutZone, ", "))
+			zoneLabel, namedNodes(withoutZone))
+	case len(outside) > 0:
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = conditionReasonNodesOutsideZoneAggregate
+		condition.Message = aggregatesEnsuredMessage(ensure) +
+			"; Active nodes in no aggregate of their zone: " + namedNodes(outside)
+		pass.aggregatesEnsured = true
 	default:
 		condition.Status = metav1.ConditionTrue
 		condition.Reason = conditionReasonAggregatesEnsured
@@ -226,6 +238,44 @@ func foreignMetadataKeys(agg computeapi.Aggregate) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// nodesOutsideZoneAggregate returns "<node> (<zone>)", sorted, for every Active
+// node with a zone that no aggregate carrying that availability zone lists as
+// a host. Membership in any aggregate of the zone counts, since Nova derives a
+// host's zone from every aggregate it is in; tenant_filter_tests carries no
+// zone and counts for none. An aggregate whose hosts are null holds no host.
+// Pending nodes are skipped, as openstack-hypervisor-operator onboards only the
+// hosts Nova has mapped, and so are nodes without a zone, which
+// NodesWithoutZone names, and the Draining and Releasing ones leaving the pool.
+func nodesOutsideZoneAggregate(nodes []novav1alpha1.NovaComputeNodeStatus, aggregates []computeapi.Aggregate) []string {
+	var outside []string
+	for _, entry := range nodes {
+		if entry.Phase != novav1alpha1.NovaComputeNodeActive || entry.Zone == "" {
+			continue
+		}
+		member := slices.ContainsFunc(aggregates, func(a computeapi.Aggregate) bool {
+			return a.AvailabilityZone == entry.Zone && slices.Contains(a.Hosts, entry.Name)
+		})
+		if !member {
+			outside = append(outside, fmt.Sprintf("%s (%s)", entry.Name, entry.Zone))
+		}
+	}
+	slices.Sort(outside)
+	return outside
+}
+
+// maxNamedNodes bounds the nodes a condition message names: the CRD allows a
+// message 32768 bytes, and a pool holds any number of nodes.
+const maxNamedNodes = 20
+
+// namedNodes joins names for a condition message: the first maxNamedNodes of
+// them, then a count of the rest.
+func namedNodes(names []string) string {
+	if len(names) <= maxNamedNodes {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxNamedNodes], ", "), len(names)-maxNamedNodes)
 }
 
 func zoneSuffix(zone string) string {

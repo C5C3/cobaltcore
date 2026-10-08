@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/nova/internal/computeapi"
 	"github.com/c5c3/cobaltcore/operators/nova/internal/computeapi/computeapitest"
 )
 
@@ -77,7 +79,8 @@ func TestReconcileNovaComputeAggregates_CreatesAndMarks(t *testing.T) {
 
 	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonAggregatesEnsured))
+	g.Expect(cond.Reason).To(Equal(conditionReasonNodesOutsideZoneAggregate),
+		"the aggregates this pass created hold no host yet")
 	g.Expect(collectEvents(rec)).To(ConsistOf(
 		ContainSubstring("Normal AggregateCreated Created host aggregate az1 in availability zone az1"),
 		ContainSubstring("Normal AggregateCreated Created host aggregate tenant_filter_tests"),
@@ -87,6 +90,192 @@ func TestReconcileNovaComputeAggregates_CreatesAndMarks(t *testing.T) {
 	before := len(api.CallsTo(http.MethodPost, "/v2.1/os-aggregates"))
 	runAggregates(t, api, cr)
 	g.Expect(api.CallsTo(http.MethodPost, "/v2.1/os-aggregates")).To(HaveLen(before))
+}
+
+// TestReconcileNovaComputeAggregates_ReportsANodeOutsideItsZone pins the
+// membership report: the aggregates are in place, the Active node is in none
+// of its zone, and AggregatesReady stays True without an event, as the pool
+// does not own the membership.
+func TestReconcileNovaComputeAggregates_ReportsANodeOutsideItsZone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	api.AddAggregate(testZone, testZone, []string{}, nil)
+	api.AddAggregate(tenantFilterTestsAggregate, "", []string{}, nil)
+	cr := activePool(activeIn("node-a", testZone))
+
+	result, pass, rec := runAggregates(t, api, cr)
+
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(pass.aggregatesEnsured).To(BeTrue(), "the step's own work, the aggregates, is done")
+	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonNodesOutsideZoneAggregate))
+	g.Expect(cond.Message).To(Equal(
+		"Host aggregates in place: az1, tenant_filter_tests; Active nodes in no aggregate of their zone: node-a (az1)"))
+	g.Expect(collectEvents(rec)).To(BeEmpty())
+}
+
+func TestReconcileNovaComputeAggregates_NodeInItsZoneAggregate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	api.AddAggregate(testZone, testZone, []string{"node-a"}, nil)
+	api.AddAggregate(tenantFilterTestsAggregate, "", []string{}, nil)
+	cr := activePool(activeIn("node-a", testZone))
+
+	runAggregates(t, api, cr)
+
+	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAggregatesEnsured))
+	g.Expect(cond.Message).To(Equal("Host aggregates in place: az1, tenant_filter_tests"))
+}
+
+// TestReconcileNovaComputeAggregates_AnyAggregateOfTheZoneCounts pins that
+// Nova derives a host's zone from every aggregate it is in, so membership in
+// another aggregate carrying the zone places the node in it.
+func TestReconcileNovaComputeAggregates_AnyAggregateOfTheZoneCounts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	api.AddAggregate(testZone, testZone, []string{}, nil)
+	api.AddAggregate("az1-extra", testZone, []string{"node-a"}, nil)
+	cr := activePool(activeIn("node-a", testZone))
+
+	runAggregates(t, api, cr)
+
+	g.Expect(novaComputeCondition(cr, conditionTypeAggregatesReady).Reason).To(Equal(conditionReasonAggregatesEnsured))
+}
+
+// TestReconcileNovaComputeAggregates_TenantFilterTestsIsNoZone pins that the
+// zone-less tenant_filter_tests places a host in no availability zone.
+func TestReconcileNovaComputeAggregates_TenantFilterTestsIsNoZone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	api.AddAggregate(testZone, testZone, []string{}, nil)
+	api.AddAggregate(tenantFilterTestsAggregate, "", []string{"node-a"}, nil)
+	cr := activePool(activeIn("node-a", testZone))
+
+	runAggregates(t, api, cr)
+
+	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+	g.Expect(cond.Reason).To(Equal(conditionReasonNodesOutsideZoneAggregate))
+	g.Expect(cond.Message).To(HaveSuffix("node-a (az1)"))
+}
+
+// TestReconcileNovaComputeAggregates_SkipsPendingAndDrainingNodes pins that
+// only Active nodes are checked: openstack-hypervisor-operator onboards only
+// mapped hosts, and a Draining node is leaving the pool.
+func TestReconcileNovaComputeAggregates_SkipsPendingAndDrainingNodes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	cr := activePool(
+		novav1alpha1.NovaComputeNodeStatus{Name: "node-a", Phase: novav1alpha1.NovaComputeNodePending, Zone: testZone},
+		novav1alpha1.NovaComputeNodeStatus{Name: "node-b", Phase: novav1alpha1.NovaComputeNodeDraining, Zone: testZone},
+	)
+
+	_, pass, _ := runAggregates(t, api, cr)
+
+	g.Expect(pass.aggregatesEnsured).To(BeTrue())
+	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+	g.Expect(cond.Reason).To(Equal(conditionReasonAggregatesEnsured))
+	g.Expect(cond.Message).To(Equal("Host aggregates in place: az1, tenant_filter_tests"))
+}
+
+func TestReconcileNovaComputeAggregates_EmptyPool(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	cr := activePool()
+
+	_, pass, _ := runAggregates(t, api, cr)
+
+	g.Expect(pass.aggregatesEnsured).To(BeTrue())
+	cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAggregatesEnsured))
+	g.Expect(cond.Message).To(Equal("Host aggregates in place: tenant_filter_tests"))
+}
+
+// TestReconcileNovaComputeAggregates_BoundsTheNodesNamed pins that a message
+// names at most maxNamedNodes nodes and counts the rest, so a large pool stays
+// within the CRD's 32768 bytes for a condition message.
+func TestReconcileNovaComputeAggregates_BoundsTheNodesNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		zone string
+		want string
+	}{
+		{name: "nodes outside their zone's aggregate", zone: testZone, want: "node-19 (az1) and 1 more"},
+		{name: "nodes without a zone", want: "node-19 and 1 more"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var nodes []novav1alpha1.NovaComputeNodeStatus
+			for i := range maxNamedNodes + 1 {
+				nodes = append(nodes, activeIn(fmt.Sprintf("node-%02d", i), tc.zone))
+			}
+			cr := activePool(nodes...)
+
+			runAggregates(t, computeapitest.New(), cr)
+
+			message := novaComputeCondition(cr, conditionTypeAggregatesReady).Message
+			g.Expect(message).To(HaveSuffix(tc.want))
+			g.Expect(message).NotTo(ContainSubstring("node-20"))
+		})
+	}
+}
+
+// TestReconcileNovaComputeAggregates_EarlierReasonsWin pins the precedence: a
+// node without a zone and a zone mismatch are failures of the step's own work
+// and outrank the membership report.
+func TestReconcileNovaComputeAggregates_EarlierReasonsWin(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(api *computeapitest.Fake)
+		nodes []novav1alpha1.NovaComputeNodeStatus
+		want  string
+	}{
+		{
+			name:  "a node without a zone",
+			setup: func(*computeapitest.Fake) {},
+			nodes: []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone), activeIn("node-2", "")},
+			want:  conditionReasonNodesWithoutZone,
+		},
+		{
+			name:  "an aggregate in another zone",
+			setup: func(api *computeapitest.Fake) { api.AddAggregate(testZone, "az2", nil, nil) },
+			nodes: []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone)},
+			want:  conditionReasonAggregateZoneMismatch,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			api := computeapitest.New()
+			tc.setup(api)
+			cr := activePool(tc.nodes...)
+
+			_, pass, _ := runAggregates(t, api, cr)
+
+			g.Expect(pass.aggregatesEnsured).To(BeFalse())
+			cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileNovaComputeAggregates_ListsTheAggregatesOnce pins that the
+// membership report reads the list the step already fetched: it adds no call
+// to Nova.
+func TestReconcileNovaComputeAggregates_ListsTheAggregatesOnce(t *testing.T) {
+	g := NewGomegaWithT(t)
+	api := computeapitest.New()
+	api.AddAggregate(testZone, testZone, []string{}, nil)
+	api.AddAggregate(tenantFilterTestsAggregate, "", []string{}, nil)
+	cr := activePool(activeIn("node-a", testZone))
+
+	runAggregates(t, api, cr)
+
+	g.Expect(novaComputeCondition(cr, conditionTypeAggregatesReady).Reason).To(Equal(conditionReasonNodesOutsideZoneAggregate))
+	g.Expect(api.CallsTo(http.MethodGet, "/v2.1/os-aggregates")).To(HaveLen(1))
 }
 
 func TestReconcileNovaComputeAggregates_UsesAnUnmarkedAggregate(t *testing.T) {
@@ -334,6 +523,82 @@ func TestReconcileNovaComputeAggregates_APIErrors(t *testing.T) {
 			cond := novaComputeCondition(cr, conditionTypeAggregatesReady)
 			g.Expect(cond.Reason).To(Equal(conditionReasonComputeAPIError))
 			g.Expect(cond.Message).To(ContainSubstring(tc.want))
+		})
+	}
+}
+
+func TestNodesOutsideZoneAggregate(t *testing.T) {
+	inZone := func(hosts ...string) computeapi.Aggregate {
+		return computeapi.Aggregate{Name: testZone, AvailabilityZone: testZone, Hosts: hosts}
+	}
+	withPhase := func(name string, phase novav1alpha1.NovaComputeNodePhase) novav1alpha1.NovaComputeNodeStatus {
+		return novav1alpha1.NovaComputeNodeStatus{Name: name, Phase: phase, Zone: testZone}
+	}
+	for _, tc := range []struct {
+		name       string
+		nodes      []novav1alpha1.NovaComputeNodeStatus
+		aggregates []computeapi.Aggregate
+		want       []string
+	}{
+		{name: "no nodes and no aggregates"},
+		{
+			name:  "only Pending nodes",
+			nodes: []novav1alpha1.NovaComputeNodeStatus{withPhase("node-a", novav1alpha1.NovaComputeNodePending)},
+		},
+		{
+			name:  "an Active node without a zone",
+			nodes: []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", "")},
+		},
+		{
+			name: "Draining and Releasing nodes",
+			nodes: []novav1alpha1.NovaComputeNodeStatus{
+				withPhase("node-a", novav1alpha1.NovaComputeNodeDraining),
+				withPhase("node-b", novav1alpha1.NovaComputeNodeReleasing),
+			},
+		},
+		{
+			name:       "an Active node in its zone's aggregate",
+			nodes:      []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone)},
+			aggregates: []computeapi.Aggregate{inZone("node-a")},
+		},
+		{
+			name:       "an aggregate whose hosts are null",
+			nodes:      []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone)},
+			aggregates: []computeapi.Aggregate{inZone()},
+			want:       []string{"node-a (az1)"},
+		},
+		{
+			name:  "a member and a non-member in two zones",
+			nodes: []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone), activeIn("node-b", "az2")},
+			aggregates: []computeapi.Aggregate{
+				inZone("node-a", "node-b"),
+				{Name: "az2", AvailabilityZone: "az2", Hosts: []string{"node-c"}},
+			},
+			want: []string{"node-b (az2)"},
+		},
+		{
+			name:  "a host in an aggregate of another zone",
+			nodes: []novav1alpha1.NovaComputeNodeStatus{activeIn("node-a", testZone)},
+			aggregates: []computeapi.Aggregate{
+				{Name: "az2", AvailabilityZone: "az2", Hosts: []string{"node-a"}},
+			},
+			want: []string{"node-a (az1)"},
+		},
+		{
+			name:       "unordered nodes come back sorted",
+			nodes:      []novav1alpha1.NovaComputeNodeStatus{activeIn("node-b", testZone), activeIn("node-a", testZone)},
+			aggregates: []computeapi.Aggregate{inZone()},
+			want:       []string{"node-a (az1)", "node-b (az1)"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := nodesOutsideZoneAggregate(tc.nodes, tc.aggregates)
+			if tc.want == nil {
+				g.Expect(got).To(BeEmpty())
+				return
+			}
+			g.Expect(got).To(Equal(tc.want))
 		})
 	}
 }
