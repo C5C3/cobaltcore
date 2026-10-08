@@ -114,7 +114,7 @@ func TestPinNeutronConf_ReleasesRenderIdentically(t *testing.T) {
 		return renderedConfigMap(t, r, name).Data
 	}
 
-	rendered := make(map[string]map[string]string, 3)
+	rendered := map[string]map[string]string{}
 	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
@@ -127,8 +127,9 @@ func TestPinNeutronConf_ReleasesRenderIdentically(t *testing.T) {
 
 	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		g.Expect(rendered["2026.1"]).To(Equal(rendered["2025.2"]))
-		g.Expect(rendered["2026.2"]).To(Equal(rendered["2025.2"]))
+		for release, data := range rendered {
+			g.Expect(data).To(Equal(rendered["2025.2"]), release)
+		}
 	})
 }
 
@@ -192,8 +193,8 @@ use_queue_manager = true
 
 // TestPinNeutronConf_WithNovaNotifierRendersIdentically is the pin above for a
 // Neutron that notifies a Nova. It asserts the same release independence: the
-// [nova] credentials come from the spec alone, so neither release renders an
-// option name the other does not.
+// [nova] credentials come from the spec alone, so no release renders an option
+// name another does not.
 func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
 	renderFor := func(t *testing.T, release string) map[string]string {
 		t.Helper()
@@ -204,8 +205,8 @@ func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
 		return renderedConfigMap(t, r, name).Data
 	}
 
-	rendered := make(map[string]map[string]string, 2)
-	for _, release := range []string{"2025.2", "2026.1"} {
+	rendered := map[string]map[string]string{}
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			data := renderFor(t, release)
@@ -215,9 +216,11 @@ func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
 		})
 	}
 
-	t.Run("2025.2 and 2026.1 render identically", func(t *testing.T) {
+	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		g.Expect(rendered["2026.1"]).To(Equal(rendered["2025.2"]))
+		for release, data := range rendered {
+			g.Expect(data).To(Equal(rendered["2025.2"]), release)
+		}
 	})
 }
 

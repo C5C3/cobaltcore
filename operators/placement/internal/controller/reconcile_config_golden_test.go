@@ -45,10 +45,10 @@ max_retries = -1
 `
 
 // TestPinPlacementConf_ReleasesRenderIdentically pins the rendered
-// placement.conf for 2025.2 and 2026.1 against the golden and asserts the two
-// renders are byte-identical. The identity is the point: a release bump must not
-// rotate the ConfigMap, so upgrading a Placement never rolls its pods for a
-// config change that is not there.
+// placement.conf of every supported release against the golden and asserts
+// the renders are byte-identical. The identity is the point: a release bump
+// must not rotate the ConfigMap, so upgrading a Placement never rolls its pods
+// for a config change that is not there.
 func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 	renderFor := func(t *testing.T, release string) string {
 		t.Helper()
@@ -62,8 +62,8 @@ func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 		return renderedConfig(t, r, name)
 	}
 
-	rendered := make(map[string]string, 2)
-	for _, release := range []string{"2025.2", "2026.1"} {
+	rendered := map[string]string{}
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			conf := renderFor(t, release)
@@ -72,8 +72,10 @@ func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 		})
 	}
 
-	t.Run("2025.2 and 2026.1 render identically", func(t *testing.T) {
+	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		g.Expect(rendered["2026.1"]).To(Equal(rendered["2025.2"]))
+		for release, conf := range rendered {
+			g.Expect(conf).To(Equal(rendered["2025.2"]), release)
+		}
 	})
 }

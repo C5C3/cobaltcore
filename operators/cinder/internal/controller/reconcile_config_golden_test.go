@@ -129,7 +129,7 @@ helper_command = privsep-helper --config-dir /etc/cinder/cinder.conf.d
 `
 
 // TestPinCinderConf_ReleasesRenderIdentically pins the rendered cinder.conf of
-// both deployment shapes at both supported releases and asserts the two renders
+// both deployment shapes at every supported release and asserts the renders
 // are byte-identical. The identity is the point: a release bump must not rotate
 // the ConfigMap, so upgrading a Cinder never rolls its pods for a config change
 // that is not there.
@@ -143,8 +143,8 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			rendered := make(map[string]string, 2)
-			for _, openStackRelease := range []string{"2025.2", "2026.1"} {
+			rendered := map[string]string{}
+			for _, openStackRelease := range []string{"2025.2", "2026.1", "2026.2"} {
 				t.Run(openStackRelease, func(t *testing.T) {
 					g := NewGomegaWithT(t)
 					cinder := tc.fixture()
@@ -156,7 +156,9 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 				})
 			}
 			g := NewGomegaWithT(t)
-			g.Expect(rendered["2026.1"]).To(Equal(rendered["2025.2"]))
+			for release, conf := range rendered {
+				g.Expect(conf).To(Equal(rendered["2025.2"]), release)
+			}
 		})
 	}
 }
