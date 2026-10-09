@@ -219,7 +219,7 @@ func TestValidateExtraConfigCatalogs_ExemptsBarbicanStoreSectionsByPrefix(t *tes
 		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
 			"spec.services.barbican.extraConfig[secretstore_foo][global_default]"))
 		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
-			"no such section in the barbican 2025.2 option catalog"))
+			"no such section in the barbican 2026.1 option catalog"))
 	})
 
 	t.Run("an unknown option in a known section is rejected", func(t *testing.T) {
@@ -232,7 +232,7 @@ func TestValidateExtraConfigCatalogs_ExemptsBarbicanStoreSectionsByPrefix(t *tes
 		_, errs := validateExtraConfigCatalogs(cp)
 		g.Expect(errs.ToAggregate()).To(HaveOccurred())
 		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
-			"no such option in the barbican 2025.2 option catalog"))
+			"no such option in the barbican 2026.1 option catalog"))
 	})
 }
 
@@ -308,7 +308,7 @@ func TestValidateCreate_RejectsUnknownNeutronExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.neutron.extraConfig[ovn][ovn_l3_schedulerz]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the neutron 2026.1 option catalog"))
 	})
 
 	t.Run("in globalExtraConfig", func(t *testing.T) {
@@ -321,7 +321,7 @@ func TestValidateCreate_RejectsUnknownNeutronExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[ml2][mechanism_driverz]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the neutron 2026.1 option catalog"))
 	})
 }
 
@@ -518,7 +518,7 @@ func TestValidateCreate_RejectsUnknownCinderExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.extraConfig[DEFAULT][volume_name_templatez]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2026.1 option catalog"))
 	})
 
 	t.Run("in globalExtraConfig", func(t *testing.T) {
@@ -531,7 +531,7 @@ func TestValidateCreate_RejectsUnknownCinderExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[DEFAULT][volume_name_templatez]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the cinder 2026.1 option catalog"))
 	})
 }
 
@@ -738,7 +738,7 @@ func TestControlPlaneExtraConfigCatalogInputsChanged_Cinder(t *testing.T) {
 func TestValidateCreate_RejectsUnknownNovaExtraConfigOption(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run("in nova extraConfig on "+release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := novaControlPlane()
@@ -764,7 +764,7 @@ func TestValidateCreate_RejectsUnknownNovaExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[DEFAULT][cpu_allocation_ratioz]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the nova 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the nova 2026.1 option catalog"))
 	})
 
 	t.Run("a known option is admitted", func(t *testing.T) {
