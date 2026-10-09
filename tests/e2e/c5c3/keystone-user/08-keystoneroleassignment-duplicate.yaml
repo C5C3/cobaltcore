@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A second order of the tuple workflow-member assigns: the same user, project
+# and role. It is the younger of the two, so it reports
+# DuplicateRoleAssignment naming workflow-member and projects nothing.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: workflow-member-dup
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  role: member
