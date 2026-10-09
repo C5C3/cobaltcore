@@ -30,9 +30,9 @@ tests:
               - update
               - watch
 
-  # The KeystoneUser reconciler reads the orders and updates them to install
-  # and release its finalizer; it never creates or deletes one.
-  - it: should grant get/list/watch/update/patch on keystoneusers and nothing more
+  # The order reconcilers read the orders and update them to install and
+  # release their finalizers; they never create or delete one.
+  - it: should grant get/list/watch/update/patch on the order kinds and nothing more
     asserts:
       - contains:
           path: rules
@@ -40,6 +40,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystoneprojects
               - keystoneusers
             verbs:
               - get
@@ -55,6 +56,7 @@ tests:
             resources:
               - controlplanes/status
               - credentialrotations/status
+              - keystoneprojects/status
               - keystoneservices/status
               - keystoneusers/status
             verbs:
@@ -68,6 +70,7 @@ tests:
               - c5c3.io
             resources:
               - controlplanes/finalizers
+              - keystoneprojects/finalizers
               - keystoneservices/finalizers
               - keystoneusers/finalizers
             verbs:
@@ -78,6 +81,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystoneprojects
               - keystoneusers
             verbs:
               - create
