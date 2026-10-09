@@ -79,8 +79,8 @@ const (
 	integrationImageRepository = "ghcr.io/c5c3/cinder"
 	// integrationInitialRelease is the release the fixtures install, and
 	// integrationTargetRelease the one the upgrade suite converges to.
-	integrationInitialRelease = "2025.2"
-	integrationTargetRelease  = "2026.1"
+	integrationInitialRelease = "2026.1"
+	integrationTargetRelease  = "2026.2"
 
 	// The NFS export the volume backend serves and the one the backup service
 	// writes to. Both live on the same server, which is what a single-export
@@ -905,7 +905,7 @@ func TestIntegrationCinder_BackendLifecycle(t *testing.T) {
 }
 
 // TestIntegrationCinder_UpgradeCycle_ExpandMigrateContract drives a full release
-// upgrade (2025.2 → 2026.1) end to end against envtest. It locks the two
+// upgrade (2026.1 → 2026.2) end to end against envtest. It locks the two
 // properties no unit test observes together:
 //
 //   - the Expanding → Migrating → RollingUpdate → Contracting phase walk, with
@@ -940,7 +940,7 @@ func TestIntegrationCinder_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g.Expect(c.Create(ctx, integrationBackupBackendCR(integrationBackupBackendName, ns, integrationCinderName))).
 		To(Succeed(), "create the CinderBackupBackend CR")
 
-	// Drive the 2025.2 install to Ready, which is the state an upgrade starts
+	// Drive the 2026.1 install to Ready, which is the state an upgrade starts
 	// from: four workloads on the old image and a schema at the old release.
 	driveDatabase(t, ctx, c, integrationCinderName, ns)
 	for _, key := range cinderWorkloadKeys(integrationCinderName, ns, integrationBackendName) {
@@ -965,7 +965,7 @@ func TestIntegrationCinder_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		cur.Spec.OpenStackRelease = integrationTargetRelease
 		cur.Spec.Image.Tag = integrationTargetRelease
 		return c.Update(ctx, cur)
-	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump the Cinder to release 2026.1")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump the Cinder to release 2026.2")
 
 	// Phase 1: Expanding. Cinder has no separate expand verb, so the phase runs
 	// the same idempotent cinder-manage db sync the steady state does, with the

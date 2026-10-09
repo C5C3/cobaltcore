@@ -330,8 +330,7 @@ func TestReconcileDBClean_SuspendedReportsItsOwnReason(t *testing.T) {
 // suspension has to be projected, not merely intended.
 func TestReconcileDBClean_MigrationInFlightSuspendsTheSchedule(t *testing.T) {
 	g := NewGomegaWithT(t)
-	barbican := dbCleanBarbican()
-	barbican.Status.InstalledRelease = "2025.2" // spec asks for 2026.1
+	barbican := upgradingBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
 	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
@@ -345,8 +344,8 @@ func TestReconcileDBClean_MigrationInFlightSuspendsTheSchedule(t *testing.T) {
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "a paused clean-up is a posture, not a failure")
 	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanSuspended))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 }
 
 // A migration pause is only a posture while the convergence can still happen.
@@ -364,8 +363,7 @@ func TestReconcileDBClean_WedgedReleaseGateReportsTheBlockedPause(t *testing.T) 
 	} {
 		t.Run(reason, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			barbican := dbCleanBarbican()
-			barbican.Status.InstalledRelease = "2025.2" // spec asks for 2026.1
+			barbican := upgradingBarbican()
 			conditions.SetCondition(&barbican.Status.Conditions, metav1.Condition{
 				Type:   "DatabaseReady",
 				Status: metav1.ConditionFalse,
@@ -390,8 +388,7 @@ func TestReconcileDBClean_WedgedReleaseGateReportsTheBlockedPause(t *testing.T) 
 // behind it.
 func TestReconcileDBClean_SyncInProgressKeepsThePauseATrue(t *testing.T) {
 	g := NewGomegaWithT(t)
-	barbican := dbCleanBarbican()
-	barbican.Status.InstalledRelease = "2025.2"
+	barbican := upgradingBarbican()
 	conditions.SetCondition(&barbican.Status.Conditions, metav1.Condition{
 		Type:   "DatabaseReady",
 		Status: metav1.ConditionFalse,

@@ -97,7 +97,7 @@ enable_security_group = true
 `
 
 // TestPinNeutronConf_ReleasesRenderIdentically pins both rendered files for
-// 2025.2, 2026.1 and 2026.2 against the goldens and asserts the renders are
+// 2026.1 and 2026.2 against the goldens and asserts the renders are
 // byte-identical. The identity is the point: a release bump must not rotate the
 // ConfigMap, so upgrading a Neutron never rolls its pods for a config change
 // that is not there. [DEFAULT] api_paste_config stays in the 2026.2 render
@@ -115,7 +115,7 @@ func TestPinNeutronConf_ReleasesRenderIdentically(t *testing.T) {
 	}
 
 	rendered := map[string]map[string]string{}
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			data := renderFor(t, release)
@@ -128,7 +128,7 @@ func TestPinNeutronConf_ReleasesRenderIdentically(t *testing.T) {
 	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		for release, data := range rendered {
-			g.Expect(data).To(Equal(rendered["2025.2"]), release)
+			g.Expect(data).To(Equal(rendered["2026.1"]), release)
 		}
 	})
 }
@@ -206,7 +206,7 @@ func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
 	}
 
 	rendered := map[string]map[string]string{}
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			data := renderFor(t, release)
@@ -219,7 +219,7 @@ func TestPinNeutronConf_WithNovaNotifierRendersIdentically(t *testing.T) {
 	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		for release, data := range rendered {
-			g.Expect(data).To(Equal(rendered["2025.2"]), release)
+			g.Expect(data).To(Equal(rendered["2026.1"]), release)
 		}
 	})
 }

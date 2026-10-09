@@ -445,7 +445,7 @@ func TestAgentOperatorDefaults_RenderEveryOwnedKey(t *testing.T) {
 // metadata_workers is rendered from spec.metadataWorkers under every release,
 // and an unset field renders the default of 4 without writing it into the CR.
 func TestAgentOperatorDefaults_MetadataWorkers(t *testing.T) {
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		for _, tc := range []struct {
 			name    string
 			workers *int32

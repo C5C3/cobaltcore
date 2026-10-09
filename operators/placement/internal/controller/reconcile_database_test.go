@@ -525,21 +525,21 @@ func TestReconcileDatabase_JobFailureRecordsMetricOncePerUID(t *testing.T) {
 func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	g := NewGomegaWithT(t)
 	placement := testPlacement()
-	placement.Spec.OpenStackRelease = "2026.1"
-	placement.Spec.Image.Tag = "2026.1"
-	placement.Status.InstalledRelease = "2025.2"
+	placement.Spec.OpenStackRelease = "2026.2"
+	placement.Spec.Image.Tag = "2026.2"
+	placement.Status.InstalledRelease = "2026.1"
 	r := newPlacementTestReconciler(placement)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
-	g.Expect(placement.Status.TargetRelease).To(Equal("2026.1"))
-	g.Expect(placement.Status.InstalledRelease).To(Equal("2025.2"),
+	g.Expect(placement.Status.TargetRelease).To(Equal("2026.2"))
+	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"),
 		"the marker only moves once the schema is actually migrated")
 
 	var syncJob batchv1.Job
 	g.Expect(r.Get(context.Background(), syncJobKey, &syncJob)).To(Succeed())
-	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/placement:2026.1"),
+	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/placement:2026.2"),
 		"the migration runs the release being upgraded to")
 
 	// The Job completes.
@@ -554,7 +554,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	res, err = r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(placement.Status.TargetRelease).To(BeEmpty(),
 		"a CR that reached its target advertises no target")
 	cond := conditions.GetCondition(placement.Status.Conditions, "DatabaseReady")
@@ -564,11 +564,11 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	placement := testPlacement()
-	// Release and image tag name 2025.2 in lockstep, so the mismatch guard passes
+	// Release and image tag name 2026.1 in lockstep, so the mismatch guard passes
 	// and the downgrade is what the gate rejects.
-	placement.Spec.OpenStackRelease = "2025.2"
-	placement.Spec.Image.Tag = "2025.2"
-	placement.Status.InstalledRelease = "2026.1"
+	placement.Spec.OpenStackRelease = "2026.1"
+	placement.Spec.Image.Tag = "2026.1"
+	placement.Status.InstalledRelease = "2026.2"
 	r := newPlacementTestReconciler(placement)
 
 	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
@@ -587,9 +587,9 @@ func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 func TestReconcileDatabase_NonSequentialJumpRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	placement := testPlacement()
-	placement.Spec.OpenStackRelease = "2026.1"
-	placement.Spec.Image.Tag = "2026.1"
-	placement.Status.InstalledRelease = "2025.1" // skips 2025.2
+	placement.Spec.OpenStackRelease = "2027.1"
+	placement.Spec.Image.Tag = "2027.1"
+	placement.Status.InstalledRelease = "2026.1" // skips 2026.2
 	r := newPlacementTestReconciler(placement)
 
 	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
@@ -660,9 +660,9 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	placement := testPlacement()
 	// The release was bumped but the image tag was left behind.
-	placement.Spec.OpenStackRelease = "2026.1"
-	placement.Spec.Image.Tag = "2025.2"
-	placement.Status.InstalledRelease = "2025.2"
+	placement.Spec.OpenStackRelease = "2026.2"
+	placement.Spec.Image.Tag = "2026.1"
+	placement.Status.InstalledRelease = "2026.1"
 	r := newPlacementTestReconciler(placement)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
@@ -671,7 +671,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	g.Expect(placement.Status.TargetRelease).To(BeEmpty(),
 		"the release gate is never reached while the fields disagree")
-	g.Expect(placement.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))
 	cond := conditions.GetCondition(placement.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -715,9 +715,9 @@ func TestReconcileDatabase_ReleaseBumpWithUnchangedImageRejected(t *testing.T) {
 	placement := testPlacement()
 	placement.Spec.Image.Tag = ""
 	placement.Spec.Image.Digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	placement.Spec.OpenStackRelease = "2026.1"
-	placement.Status.InstalledRelease = "2025.2"
-	// 2025.2 was migrated by exactly the image the CR still pins.
+	placement.Spec.OpenStackRelease = "2026.2"
+	placement.Status.InstalledRelease = "2026.1"
+	// 2026.1 was migrated by exactly the image the CR still pins.
 	placement.Status.InstalledImage = placement.Spec.Image.Reference()
 	r := newPlacementTestReconciler(placement)
 
@@ -726,7 +726,7 @@ func TestReconcileDatabase_ReleaseBumpWithUnchangedImageRejected(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("leaves spec.image unchanged"))
 	g.Expect(placement.Status.TargetRelease).To(BeEmpty())
-	g.Expect(placement.Status.InstalledRelease).To(Equal("2025.2"),
+	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"),
 		"the marker must not move without a migration")
 	cond := conditions.GetCondition(placement.Status.Conditions, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -746,8 +746,8 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 	placement := testPlacement()
 	placement.Spec.Image.Tag = ""
 	placement.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	placement.Spec.OpenStackRelease = "2026.1"
-	placement.Status.InstalledRelease = "2025.2"
+	placement.Spec.OpenStackRelease = "2026.2"
+	placement.Status.InstalledRelease = "2026.1"
 	placement.Status.InstalledImage = placement.Spec.Image.Repository +
 		"@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	r := newPlacementTestReconciler(placement)
@@ -755,7 +755,7 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
-	g.Expect(placement.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(placement.Status.TargetRelease).To(Equal("2026.2"))
 
 	// The Job completes.
 	var syncJob batchv1.Job
@@ -771,7 +771,7 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 	res, err = r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(placement.Status.InstalledImage).To(Equal(placement.Spec.Image.Reference()),
 		"the image that ran the migration is recorded alongside the release it installed")
 }

@@ -184,7 +184,6 @@ func TestBuildNeutronDeployment_WSGIMarkerFilesByRelease(t *testing.T) {
 		release     string
 		markerFiles bool
 	}{
-		{release: "2025.2", markerFiles: false},
 		{release: "2026.1", markerFiles: false},
 		{release: "2026.2", markerFiles: true},
 		{release: "2027.1", markerFiles: true},
@@ -431,8 +430,10 @@ func TestReconcileDeployment_RollingUpdateHoldsUntilTheImageIsDrained(t *testing
 	ctx := context.Background()
 	upgrading := func() *neutronv1alpha1.Neutron {
 		neutron := validNeutron()
-		neutron.Status.InstalledRelease = "2025.2"
-		neutron.Status.TargetRelease = "2026.1"
+		neutron.Spec.OpenStackRelease = "2026.2"
+		neutron.Spec.Image.Tag = "2026.2"
+		neutron.Status.InstalledRelease = "2026.1"
+		neutron.Status.TargetRelease = "2026.2"
 		neutron.Status.UpgradePhase = commonv1.UpgradePhaseRollingUpdate
 		return neutron
 	}

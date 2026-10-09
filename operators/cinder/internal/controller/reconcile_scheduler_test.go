@@ -89,13 +89,15 @@ func TestBuildSchedulerDeployment_KeepsItsOwnReplicaCount(t *testing.T) {
 func TestBuildSchedulerDeployment_StampsTheInstalledRelease(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cinder := workloadCinder()
+	cinder.Spec.OpenStackRelease = "2026.2"
+	cinder.Spec.Image.Tag = "2026.2"
 
 	fresh := buildSchedulerDeployment(cinder, workloadArtifacts(), workloadDigests{}, testEgressPort)
-	g.Expect(fresh.Spec.Template.Annotations).To(HaveKeyWithValue(installedReleaseAnnotation, "2026.1"))
+	g.Expect(fresh.Spec.Template.Annotations).To(HaveKeyWithValue(installedReleaseAnnotation, "2026.2"))
 
-	cinder.Status.InstalledRelease = "2025.2"
+	cinder.Status.InstalledRelease = "2026.1"
 	installed := buildSchedulerDeployment(cinder, workloadArtifacts(), workloadDigests{}, testEgressPort)
-	g.Expect(installed.Spec.Template.Annotations).To(HaveKeyWithValue(installedReleaseAnnotation, "2025.2"))
+	g.Expect(installed.Spec.Template.Annotations).To(HaveKeyWithValue(installedReleaseAnnotation, "2026.1"))
 }
 
 // TestReconcileScheduler_ReturnsZeroOutsideAnUpgrade covers the result contract:

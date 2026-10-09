@@ -36,15 +36,15 @@ import (
 // hands the database step.
 const testConfigMapName = "cinder-config-abc12345"
 
-// upgradingCinder returns a Cinder mid-upgrade: the installed release is 2025.2,
-// the spec requests 2026.1 (both the OpenStack release and the image tag, per the
+// upgradingCinder returns a Cinder mid-upgrade: the installed release is 2026.1,
+// the spec requests 2026.2 (both the OpenStack release and the image tag, per the
 // operator's bump-in-lockstep contract), and the given phase is active.
 func upgradingCinder(phase commonv1.UpgradePhase) *cinderv1alpha1.Cinder {
 	cinder := validCinder()
-	cinder.Spec.OpenStackRelease = "2026.1"
-	cinder.Spec.Image.Tag = "2026.1"
-	cinder.Status.InstalledRelease = "2025.2"
-	cinder.Status.TargetRelease = "2026.1"
+	cinder.Spec.OpenStackRelease = "2026.2"
+	cinder.Spec.Image.Tag = "2026.2"
+	cinder.Status.InstalledRelease = "2026.1"
+	cinder.Status.TargetRelease = "2026.2"
 	cinder.Status.UpgradePhase = phase
 	return cinder
 }
@@ -174,7 +174,7 @@ func TestCheckImageReleaseMismatch(t *testing.T) {
 			because: "nothing comparable, so release tracking is left to spec.openStackRelease",
 		},
 		{
-			name: "a lagging image", tag: "2025.2", release: "2026.1", blocked: true,
+			name: "a lagging image", tag: "2026.1", release: "2026.2", blocked: true,
 			because: "the migration Jobs would run the old cinder-manage against the new schema",
 		},
 	}
@@ -374,14 +374,16 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	t.Run("a release bump initiates the upgrade", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cinder := validCinder()
-		cinder.Status.InstalledRelease = "2025.2"
+		cinder.Spec.OpenStackRelease = "2026.2"
+		cinder.Spec.Image.Tag = "2026.2"
+		cinder.Status.InstalledRelease = "2026.1"
 		r := newCinderTestReconciler(cinder)
 
 		_, err := r.reconcileDatabase(context.Background(), r.Client, cinder, testConfigMapName, 0)
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(cinder.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-		g.Expect(cinder.Status.TargetRelease).To(Equal("2026.1"))
+		g.Expect(cinder.Status.TargetRelease).To(Equal("2026.2"))
 	})
 
 	t.Run("the migrate phase completes into the rolling update", func(t *testing.T) {
@@ -407,7 +409,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	t.Run("a mid-upgrade image drift blocks", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cinder := upgradingCinder(commonv1.UpgradePhaseExpanding)
-		cinder.Spec.Image.Tag = "2025.2"
+		cinder.Spec.Image.Tag = "2026.1"
 		r := newCinderTestReconciler(cinder)
 
 		res, err := r.reconcileDatabase(context.Background(), r.Client, cinder, testConfigMapName, 0)
