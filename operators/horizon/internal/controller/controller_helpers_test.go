@@ -56,7 +56,7 @@ func testHorizon() *horizonv1alpha1.Horizon {
 		},
 		Spec: horizonv1alpha1.HorizonSpec{
 			Deployment: horizonv1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
 			Cache: commonv1.CacheSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
 				Backend:    horizonv1alpha1.DefaultCacheBackend,

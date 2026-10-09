@@ -63,7 +63,7 @@ func TestBuildHorizonDeployment_Shape(t *testing.T) {
 	g.Expect(deploy.Spec.Replicas).To(HaveValue(Equal(int32(3))))
 
 	container := findContainer(t, deploy.Spec.Template.Spec.Containers, "horizon")
-	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/horizon:2025.2"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/horizon:2026.1"))
 	expectRestrictedSecurityContext(g, container.SecurityContext)
 
 	// uWSGI loads the dashboard module directly and serves the pre-built
