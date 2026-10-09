@@ -1,0 +1,319 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: keystonecatalogentries.c5c3.io
+spec:
+  group: c5c3.io
+  names:
+    kind: KeystoneCatalogEntry
+    listKind: KeystoneCatalogEntryList
+    plural: keystonecatalogentries
+    singular: keystonecatalogentry
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.controlPlaneRef.name
+      name: ControlPlane
+      type: string
+    - jsonPath: .spec.serviceType
+      name: Type
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KeystoneCatalogEntry orders one Keystone catalog entry from a namespace the
+          referenced ControlPlane assigns to a service owner: a service row of a type
+          and name, and at most one endpoint row per interface, registered in the
+          ControlPlane's region. It reports the service and endpoint ids in status.
+
+          The order lives in the assigned namespace, on the cluster that namespace is
+          assigned on. Status and the finalizer are written there. The K-ORC Service,
+          Endpoints and Region import live in the ControlPlane's namespace on the
+          management cluster and carry ownership labels.
+
+          The spec.namespaceAssignments entry for the order's namespace and cluster is
+          the consent, and the entry must set allowCatalogEntries as well: a catalog
+          row is visible to every cloud user. Without an entry the order reports
+          NamespaceNotAssigned, and without the flag CatalogNotAllowed. Either freezes
+          the order: nothing is registered, repaired or swept, and what was created
+          stays. Deleting the order still tears it down.
+
+          Every service type but identity may be registered, the built-in ones
+          included; identity is ControlPlane-owned. A row of the same type and name
+          that the order did not create is refused with ServiceCollision and never
+          taken over.
+
+          The type and the effective name are frozen after creation, because the
+          collision probe runs only while no managed Service exists. The endpoints may
+          change: an interface the spec no longer declares is removed.
+
+          The endpoint types are KeystoneService's, reused rather than copied, so the
+          two kinds admit the same endpoint rows.
+
+          The kind has no webhook, because a target cluster runs none: every admission
+          rule is a schema rule. An empty spec.serviceName means metadata.name, and an
+          empty spec.controlPlaneRef.namespace means the order's own namespace; the
+          reconciler resolves both defaults.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: KeystoneCatalogEntrySpec defines the desired state of a KeystoneCatalogEntry.
+            properties:
+              controlPlaneRef:
+                description: |-
+                  ControlPlaneRef names the ControlPlane whose catalog the entry is
+                  registered in. An order on a target cluster sets the namespace: the
+                  ControlPlane lives on the management cluster, in a namespace the order's
+                  own namespace does not name.
+
+                  Both halves are frozen after creation. Re-pointing a live order would
+                  strand the catalog rows it created on the old plane. Delete and re-create
+                  the order to move it. The namespace rule spells the field __namespace__,
+                  the escape Kubernetes CEL requires for a property named after a CEL
+                  reserved word.
+                properties:
+                  name:
+                    description: Name is the referenced ControlPlane CR's name.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the referenced ControlPlane CR's namespace. Empty (the
+                      default) means the KeystoneService's own namespace. The referenced
+                      ControlPlane does not have to exist at admission time (GitOps ordering:
+                      the registration may be applied before the ControlPlane); a dangling
+                      reference surfaces as a status condition, not an admission error.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: controlPlaneRef.name is immutable; delete and re-create
+                    the KeystoneCatalogEntry to move it to another ControlPlane
+                  rule: self.name == oldSelf.name
+                - message: controlPlaneRef.namespace is immutable; delete and re-create
+                    the KeystoneCatalogEntry to move it to another ControlPlane
+                  rule: '(has(self.__namespace__) ? self.__namespace__ : '''') ==
+                    (has(oldSelf.__namespace__) ? oldSelf.__namespace__ : '''')'
+              endpoints:
+                description: |-
+                  Endpoints declares the endpoint rows registered for this entry, at most
+                  one per interface. An entry with no endpoints registers the service row
+                  alone. The list may change after creation.
+                items:
+                  description: |-
+                    KeystoneServiceEndpointSpec declares one endpoint row of a registered
+                    catalog entry.
+                  properties:
+                    interface:
+                      description: |-
+                        Interface is the catalog interface this endpoint is published under. It
+                        keys the listType=map Endpoints list.
+                      enum:
+                      - public
+                      - internal
+                      - admin
+                      type: string
+                    url:
+                      description: |-
+                        URL is the endpoint URL registered in the catalog. maxLength mirrors
+                        K-ORC's own EndpointResourceSpec.URL cap, so a URL admitted here can
+                        never be rejected downstream by the K-ORC CRD.
+                      maxLength: 1024
+                      pattern: ^https?://[^\s/]+
+                      type: string
+                  required:
+                  - interface
+                  - url
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - interface
+                x-kubernetes-list-type: map
+              serviceName:
+                description: |-
+                  ServiceName is the catalog service name. Empty (the default) means the
+                  order's metadata.name. The pattern and caps mirror K-ORC's OpenStackName.
+
+                  The effective name is frozen after creation by a rule on the whole object,
+                  so setting serviceName to a value other than metadata.name later is
+                  rejected as well.
+                maxLength: 255
+                minLength: 1
+                pattern: ^[^,]+$
+                type: string
+              serviceType:
+                description: |-
+                  ServiceType is the OpenStack service type (e.g. "dns"). It has the DNS-1123
+                  label shape. "identity" is rejected: the identity catalog entry is
+                  ControlPlane-owned. It is frozen after creation.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: the identity catalog entry is ControlPlane-owned and cannot
+                    be registered through a KeystoneCatalogEntry
+                  rule: self != 'identity'
+                - message: serviceType is immutable; delete and re-create the KeystoneCatalogEntry
+                    to register a different service type
+                  rule: self == oldSelf
+            required:
+            - controlPlaneRef
+            - serviceType
+            type: object
+          status:
+            description: |-
+              KeystoneCatalogEntryStatus defines the observed state of a
+              KeystoneCatalogEntry.
+            properties:
+              conditions:
+                description: Conditions are CatalogReady and the aggregate Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              endpoints:
+                description: Endpoints reports one row per declared interface.
+                items:
+                  description: |-
+                    KeystoneServiceEndpointStatus reports the observed state of one registered
+                    endpoint row.
+                  properties:
+                    id:
+                      description: |-
+                        ID is the OpenStack endpoint id K-ORC resolved (or created). Empty until
+                        the Endpoint child is Available.
+                      maxLength: 1024
+                      type: string
+                    interface:
+                      description: |-
+                        Interface is the catalog interface the endpoint is published under. It
+                        keys the listType=map Endpoints list.
+                      enum:
+                      - public
+                      - internal
+                      - admin
+                      type: string
+                  required:
+                  - interface
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - interface
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the .metadata.generation the controller last
+                  reconciled.
+                format: int64
+                type: integer
+              serviceID:
+                description: |-
+                  ServiceID is the Keystone service id. Empty until the service row is
+                  registered.
+                maxLength: 1024
+                type: string
+              serviceName:
+                description: ServiceName is the effective catalog service name.
+                maxLength: 255
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be at most 63 bytes; it is carried as a label
+            value on the order's children
+          rule: size(self.metadata.name) <= 63
+        - message: serviceName is immutable; delete and re-create the KeystoneCatalogEntry
+            to rename its catalog entry
+          rule: '(has(self.spec.serviceName) ? self.spec.serviceName : self.metadata.name)
+            == (has(oldSelf.spec.serviceName) ? oldSelf.spec.serviceName : oldSelf.metadata.name)'
+    served: true
+    storage: true
+    subresources:
+      status: {}
