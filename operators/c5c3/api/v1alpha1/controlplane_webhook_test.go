@@ -2246,6 +2246,9 @@ func TestValidateCreate_AcceptsNamespaceAssignments(t *testing.T) {
 		{name: "an empty role list", cp: assignmentControlPlane(
 			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowedRoles: []string{}},
 		)},
+		{name: "an entry that admits catalog entries", cp: assignmentControlPlane(
+			NamespaceAssignmentSpec{Namespace: "tenant-a", AllowCatalogEntries: true},
+		)},
 		{name: "the control plane's own namespace", cp: assignmentControlPlane(
 			NamespaceAssignmentSpec{Namespace: "openstack"},
 		)},
