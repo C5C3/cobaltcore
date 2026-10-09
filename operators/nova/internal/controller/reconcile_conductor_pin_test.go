@@ -43,7 +43,7 @@ spec:
         nova.c5c3.io/api-db-connection-hash: apidsn1
         nova.c5c3.io/authtoken-hash: auth3
         nova.c5c3.io/db-connection-hash: celldsn2
-        nova.c5c3.io/installed-release: "2025.2"
+        nova.c5c3.io/installed-release: "2026.1"
         nova.c5c3.io/transport-url-hash: bus4
       labels:
         app.kubernetes.io/component: conductor
@@ -101,7 +101,7 @@ spec:
               name: nova-service-user
         - name: NOVA_AMQP_PORT
           value: "5672"
-        image: ghcr.io/c5c3/nova:2025.2
+        image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -217,7 +217,7 @@ spec:
         nova.c5c3.io/api-db-connection-hash: apidsn1
         nova.c5c3.io/authtoken-hash: auth3
         nova.c5c3.io/db-connection-hash: celldsn2
-        nova.c5c3.io/installed-release: "2025.2"
+        nova.c5c3.io/installed-release: "2026.1"
         nova.c5c3.io/transport-url-hash: bus4
       labels:
         app.kubernetes.io/component: conductor
@@ -275,7 +275,7 @@ spec:
               name: nova-service-user
         - name: NOVA_AMQP_PORT
           value: "5672"
-        image: ghcr.io/c5c3/nova:2025.2
+        image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -430,11 +430,11 @@ func TestPinNovaConductorDeployment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+			for _, release := range []string{"2026.1", "2026.2"} {
 				t.Run(release, func(t *testing.T) {
 					expectGolden(t, renderYAML(t, buildConductorDeployment(atRelease(tc.nova(), release), workloadArtifacts(),
 						workloadTestDigests(), testEgressPort)),
-						strings.ReplaceAll(tc.golden, "2025.2", release))
+						strings.ReplaceAll(tc.golden, "2026.1", release))
 				})
 			}
 		})

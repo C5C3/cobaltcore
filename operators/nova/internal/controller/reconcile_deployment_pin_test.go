@@ -113,7 +113,7 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
-        image: ghcr.io/c5c3/nova:2025.2
+        image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -307,7 +307,7 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
-        image: ghcr.io/c5c3/nova:2025.2
+        image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -497,7 +497,7 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
-        image: ghcr.io/c5c3/nova:2025.2
+        image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -724,12 +724,12 @@ func TestPinNovaAPIDeployment(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+			for _, release := range []string{"2026.1", "2026.2"} {
 				t.Run(release, func(t *testing.T) {
 					expectGolden(t,
 						renderYAML(t, buildAPIDeployment(atRelease(tc.nova(), release),
 							workloadArtifacts(), tc.digests)),
-						strings.ReplaceAll(tc.golden, "2025.2", release))
+						strings.ReplaceAll(tc.golden, "2026.1", release))
 				})
 			}
 		})

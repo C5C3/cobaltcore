@@ -128,7 +128,7 @@ func TestNovaComputeReconcile_ReachesReady(t *testing.T) {
 	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "conditions: %+v", got.Status.Conditions)
 	g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
 	g.Expect(got.Status.Nodes).To(ConsistOf(HaveField("Phase", novav1alpha1.NovaComputeNodeActive)))
-	g.Expect(got.Status.InstalledImage).To(Equal("ghcr.io/c5c3/nova-compute:2025.2"))
+	g.Expect(got.Status.InstalledImage).To(Equal("ghcr.io/c5c3/nova-compute:2026.1"))
 }
 
 // TestNovaComputeReconcile_EmptySelectionStillRunsTheLaterSteps pins that

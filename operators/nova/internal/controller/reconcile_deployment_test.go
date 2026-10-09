@@ -113,7 +113,7 @@ func readyRoleDeployments(nova *novav1alpha1.Nova) []client.Object {
 // away from, which is what a role whose own step has not applied the new
 // template yet looks like.
 func onTheOldImage(deploy *appsv1.Deployment) {
-	deploy.Spec.Template.Spec.Containers[0].Image = "ghcr.io/c5c3/nova:2025.2"
+	deploy.Spec.Template.Spec.Containers[0].Image = "ghcr.io/c5c3/nova:2026.1"
 }
 
 // failingApplyReconciler builds a reconciler whose apply of the named kind and
@@ -607,7 +607,7 @@ func TestNovaRPCPodAnnotations(t *testing.T) {
 	nova := validNova()
 
 	g.Expect(novaRPCPodAnnotations(nova, workloadDigests{})).To(Equal(map[string]string{
-		installedReleaseAnnotation: "2025.2",
+		installedReleaseAnnotation: "2026.1",
 	}), "a fresh install stamps spec.openStackRelease rather than an empty value")
 
 	nova.Status.InstalledRelease = "2024.2"
@@ -645,7 +645,7 @@ func TestPodTemplateAnnotationsPerRole(t *testing.T) {
 		"novncproxy": buildConsoleProxyDeployment(nova, art, digests),
 	} {
 		g.Expect(deploy.Spec.Template.Annotations).To(
-			HaveKeyWithValue(installedReleaseAnnotation, "2025.2"), name)
+			HaveKeyWithValue(installedReleaseAnnotation, "2026.1"), name)
 	}
 }
 

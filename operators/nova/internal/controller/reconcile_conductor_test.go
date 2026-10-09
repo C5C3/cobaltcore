@@ -43,7 +43,7 @@ func TestBuildConductorDeployment(t *testing.T) {
 	g.Expect(deploy.Spec.Selector.MatchLabels).To(Equal(
 		componentSelectorLabels(nova, componentConductor)))
 	g.Expect(deploy.Spec.Template.Annotations).To(
-		HaveKeyWithValue(installedReleaseAnnotation, "2025.2"))
+		HaveKeyWithValue(installedReleaseAnnotation, "2026.1"))
 
 	g.Expect(container.Command).To(Equal([]string{
 		"nova-conductor",

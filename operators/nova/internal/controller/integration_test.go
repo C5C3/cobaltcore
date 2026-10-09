@@ -101,8 +101,8 @@ const (
 	integrationImageRepository = "ghcr.io/c5c3/nova"
 	// integrationInitialRelease is the release the fixtures install, and
 	// integrationTargetRelease the one the upgrade suite converges to.
-	integrationInitialRelease = "2025.2"
-	integrationTargetRelease  = "2026.1"
+	integrationInitialRelease = "2026.1"
+	integrationTargetRelease  = "2026.2"
 
 	// The cell map the db-sync Job reports through its pod's termination
 	// message. cell0 carries the all-zero UUID nova assigns the holding pen; the
@@ -1126,7 +1126,7 @@ func TestIntegrationNova_RemoteComputeContract(t *testing.T) {
 }
 
 // TestIntegrationNova_UpgradeCycle_ExpandMigrateContract drives a full release
-// upgrade (2025.2 to 2026.1) end to end against envtest. It locks the two
+// upgrade (2026.1 to 2026.2) end to end against envtest. It locks the two
 // properties no unit test observes together:
 //
 //   - the Expanding, Migrating, RollingUpdate, Contracting phase walk, with each
@@ -1151,7 +1151,7 @@ func TestIntegrationNova_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	g.Expect(c.Create(ctx, integrationNovaCR(integrationNovaName, ns, nil))).To(Succeed(), "create the Nova CR")
 
-	// Drive the 2025.2 install to Ready, which is the state an upgrade starts
+	// Drive the 2026.1 install to Ready, which is the state an upgrade starts
 	// from: five workloads on the old image and two schemas at the old release.
 	driveDatabaseCRs(t, ctx, c, integrationNovaName, ns)
 	completeDBSync(t, ctx, c, integrationNovaName, ns)
@@ -1177,7 +1177,7 @@ func TestIntegrationNova_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		cur.Spec.OpenStackRelease = integrationTargetRelease
 		cur.Spec.Image.Tag = integrationTargetRelease
 		return c.Update(ctx, cur)
-	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump the Nova to release 2026.1")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump the Nova to release 2026.2")
 
 	// Phase 1: Expanding. Nova's expand runs the readiness check and then both
 	// schemas' migrations: "nova-manage db sync" is additive, so the old release

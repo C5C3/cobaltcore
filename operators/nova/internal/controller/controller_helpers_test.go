@@ -116,8 +116,8 @@ func validNova() *novav1alpha1.Nova {
 			Generation: 1,
 		},
 		Spec: novav1alpha1.NovaSpec{
-			OpenStackRelease: "2025.2",
-			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2025.2"},
+			OpenStackRelease: "2026.1",
+			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2026.1"},
 			APIDatabase: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: testMariaDBName},
 				Database:   "nova_api",
@@ -179,8 +179,8 @@ func novaMinimal() *novav1alpha1.Nova {
 			Generation: 1,
 		},
 		Spec: novav1alpha1.NovaSpec{
-			OpenStackRelease: "2025.2",
-			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2025.2"},
+			OpenStackRelease: "2026.1",
+			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/nova", Tag: "2026.1"},
 			APIDatabase: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: testMariaDBName},
 				Database:   "nova_api",
@@ -414,7 +414,7 @@ func validNovaCompute() *novav1alpha1.NovaCompute {
 // plane is up: a release installed and the compute contract published.
 func readyNovaForCompute() *novav1alpha1.Nova {
 	nova := validNova()
-	nova.Status.InstalledRelease = "2025.2"
+	nova.Status.InstalledRelease = "2026.1"
 	nova.Status.ComputeConfigSecretRef = &corev1.LocalObjectReference{Name: testContract}
 	return nova
 }

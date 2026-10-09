@@ -44,7 +44,7 @@ func TestBuildMetadataDeployment(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Annotations).To(
 		HaveKeyWithValue(metadataSecretHashAnnotation, "meta5"))
 	g.Expect(deploy.Spec.Template.Annotations).To(
-		HaveKeyWithValue(installedReleaseAnnotation, "2025.2"))
+		HaveKeyWithValue(installedReleaseAnnotation, "2026.1"))
 
 	g.Expect(container.Name).To(Equal("nova-metadata"))
 	g.Expect(container.Command).To(ContainElements("--http", ":8775",

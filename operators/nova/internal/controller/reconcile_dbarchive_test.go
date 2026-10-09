@@ -247,7 +247,7 @@ func TestReconcileDBArchive_CreatesCronJobWithDefaults(t *testing.T) {
 	g.Expect(podTemplate.Spec.Containers).To(HaveLen(1))
 	container := podTemplate.Spec.Containers[0]
 	g.Expect(container.Name).To(Equal("db-archive"))
-	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/nova:2025.2"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/nova:2026.1"))
 	g.Expect(container.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
 	g.Expect(container.Command).To(Equal([]string{"/bin/sh", "-eu", "-c", dbArchiveScript}))
 

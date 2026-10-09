@@ -86,9 +86,9 @@ func TestReconcileNovaComputeNova_Waits(t *testing.T) {
 func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := readyNovaForCompute()
-	// The control plane moves to 2026.1 while it still runs 2025.2: the pool
+	// The control plane moves to 2026.2 while it still runs 2026.1: the pool
 	// stays on what is installed.
-	nova.Spec.OpenStackRelease = "2026.1"
+	nova.Spec.OpenStackRelease = "2026.2"
 	api := computeapitest.New()
 	r := newNovaComputeTestReconciler(api, nova, novaServiceUserSecret("pw"))
 	cr := validNovaCompute()
@@ -98,7 +98,7 @@ func TestReconcileNovaComputeNova_Resolves(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.IsZero()).To(BeTrue())
-	g.Expect(pass.image.Reference()).To(Equal("ghcr.io/c5c3/nova-compute:2025.2"))
+	g.Expect(pass.image.Reference()).To(Equal("ghcr.io/c5c3/nova-compute:2026.1"))
 	// spec.image is nil: the default image names no pullPolicy, so its tag
 	// resolves to Always on every container of the pool's pod.
 	pod := buildNovaComputeDaemonSet(cr, pass.image, pass.secretName, pinNovaComputeConfigMap, pinNovaComputeHash, nil).Spec.Template.Spec

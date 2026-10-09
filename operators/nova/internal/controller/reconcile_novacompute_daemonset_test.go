@@ -33,7 +33,7 @@ var novaComputeDaemonSetKey = types.NamespacedName{Namespace: testNamespace, Nam
 // daemonSetPass is a pass whose earlier steps resolved the Nova and the config.
 func daemonSetPass() *novaComputePass {
 	return &novaComputePass{
-		image:         commonv1.ImageSpec{Repository: novaComputeDefaultRepository, Tag: "2025.2"},
+		image:         commonv1.ImageSpec{Repository: novaComputeDefaultRepository, Tag: "2026.1"},
 		secretName:    testContract,
 		configMapName: testPoolName + "-config-abc",
 		configHash:    "hash-1",
@@ -173,7 +173,7 @@ func TestReconcileNovaComputeDaemonSet_ReadyRecordsTheImage(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.IsZero()).To(BeTrue())
 	g.Expect(novaComputeCondition(cr, conditionTypeDaemonSetReady).Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cr.Status.InstalledImage).To(Equal("ghcr.io/c5c3/nova-compute:2025.2"))
+	g.Expect(cr.Status.InstalledImage).To(Equal("ghcr.io/c5c3/nova-compute:2026.1"))
 }
 
 // TestReconcileNovaComputeDaemonSet_ZeroTermsDeletesTheDaemonSet pins the
