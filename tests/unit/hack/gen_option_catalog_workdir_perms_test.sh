@@ -47,7 +47,7 @@ make_stubs() {
 
   cat > "$dir/yq" <<'EOF'
 #!/bin/bash
-echo "stable/2025.2"
+echo "stable/2026.1"
 EOF
 
   cat > "$dir/docker" <<'EOF'
@@ -77,7 +77,7 @@ EOF
 }
 
 # run_script <perm-log>
-# Runs gen-option-catalog.sh for keystone 2025.2 with the stubs active and a
+# Runs gen-option-catalog.sh for keystone 2026.1 with the stubs active and a
 # local SOURCE_DIR fixture (so no curl happens). The script is expected to
 # exit non-zero because the docker stub aborts the generator run.
 run_script() {
@@ -93,7 +93,7 @@ namespace = keystone
 EOF
 
   PATH="$stub_dir:$PATH" PERM_LOG="$perm_log" SOURCE_DIR="$src_dir" \
-    bash "$GEN_CATALOG_SH" keystone 2025.2 ghcr.io/c5c3/keystone:test >/dev/null 2>&1
+    bash "$GEN_CATALOG_SH" keystone 2026.1 ghcr.io/c5c3/keystone:test >/dev/null 2>&1
   rm -rf "$stub_dir" "$src_dir"
 }
 
