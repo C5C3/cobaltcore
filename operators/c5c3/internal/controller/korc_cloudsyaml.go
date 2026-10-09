@@ -226,3 +226,27 @@ func buildServiceAccountCloudsYAML(
 		projectName, domainName, domainName,
 		korcRegion(cp), korcEndpointType(cp))
 }
+
+// buildUserCloudsYAML assembles the password clouds.yaml a KeystoneUser order
+// delivers. It is buildServiceAccountCloudsYAML's document without
+// project_name and project_domain_name: the ordered user has no project, so
+// authenticating with it yields an unscoped token. ref names the cluster the
+// order lives on, which decides the auth_url the same way, and the document
+// carries no cacert for the same reason.
+func buildUserCloudsYAML(
+	cp *c5c3v1alpha1.ControlPlane, userName, domainName, password string,
+	ref *commonv1.TargetClusterRefSpec,
+) string {
+	return fmt.Sprintf(`clouds:
+  %q:
+    auth:
+      auth_url: %q
+      username: %q
+      password: %q
+      user_domain_name: %q
+    region_name: %q
+    endpoint_type: %s
+    identity_api_version: 3
+`, korcCloudName(cp), korcAuthURL(cp, ref), userName, password, domainName,
+		korcRegion(cp), korcEndpointType(cp))
+}

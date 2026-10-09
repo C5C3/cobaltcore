@@ -540,7 +540,8 @@ type managedChildProbeInput struct {
 // answers exists/absent. proceed is true when the operator already owns the
 // managed child, adopt was requested, or the probe reports the resource absent;
 // the probe is deleted on adopt, on absent, and — only when dropProbeOnOwned — on
-// the owned path.
+// the owned path, and there only while the cache still lists it, so a pass after
+// the probe is gone sends no request.
 //
 // verdict carries the interpretation for the two proceed=false cases, so each
 // caller renders its own collision and probing messages. A Kubernetes read error
@@ -557,10 +558,14 @@ func managedChildProbeGate(
 	switch err := c.Get(ctx, types.NamespacedName{Name: in.managedName, Namespace: in.namespace}, in.managed); {
 	case err == nil:
 		// Already ours: the verdict is settled, whatever is in Keystone.
-		if in.dropProbeOnOwned {
-			return true, probeAbsent, dropProbe()
+		if !in.dropProbeOnOwned {
+			return true, probeAbsent, nil
 		}
-		return true, probeAbsent, nil
+		probeKey := types.NamespacedName{Name: in.probe.GetName(), Namespace: in.namespace}
+		if err := c.Get(ctx, probeKey, in.probe.DeepCopyObject().(client.Object)); apierrors.IsNotFound(err) {
+			return true, probeAbsent, nil
+		}
+		return true, probeAbsent, dropProbe()
 	case apierrors.IsNotFound(err):
 	default:
 		return false, probePending, fmt.Errorf("reading managed %s %q: %w", in.kind, in.managedName, err)
@@ -588,16 +593,29 @@ func managedChildProbeGate(
 // strategies that differ: how a generation-scoped password Secret is ensured, and
 // what counts as a child this owner may delete.
 type managedAccountUserInput struct {
-	name, namespace       string // the managed User child CR
-	userName              string // OpenStack user name
-	domainRef, projectRef string // sibling child CR names
+	name, namespace string // the managed User child CR
+	userName        string // OpenStack user name
+	// domainRef and projectRef name sibling child CRs. An empty projectRef
+	// projects a user without a default project, which is what a KeystoneUser
+	// order creates.
+	domainRef, projectRef string
 	managedCredRef        orcv1alpha1.CloudCredentialsReference
+	// desiredGeneration is the password generation the owner declares. Zero
+	// leaves the generation to the rotation nudge annotation, which is how a
+	// KeystoneService rotates. A positive value is the generation the User is
+	// moved to when it is above the current one, which is how a KeystoneUser's
+	// spec.passwordGeneration rotates; a lower value never moves it back.
+	desiredGeneration     int64
 	passwordSecretNameFor func(gen int64) string
 	ensurePasswordSecret  func(ctx context.Context, gen int64) error
 	// passwordSecretPrefix guards the superseded-generation prune: only Secrets
 	// named "<this account's prefix>password-v<N>" are candidates.
 	passwordSecretPrefix string
-	ownsChild            func(obj client.Object) bool
+	// passwordSecretSelector narrows the prune's List to this account's own
+	// Secrets, so a pass does not copy every Secret of the namespace out of the
+	// cache. Empty lists the whole namespace.
+	passwordSecretSelector client.MatchingLabels
+	ownsChild              func(obj client.Object) bool
 	// claim marks the managed User. The User is read-modify-written rather than
 	// applied (the mutation reads live state), so the seam is a claim on the
 	// object rather than a full apply.
@@ -606,9 +624,11 @@ type managedAccountUserInput struct {
 
 // ensureManagedAccountUser create-or-updates the managed K-ORC User with the
 // current-generation password, and flips the passwordRef to a fresh generation
-// when the CredentialRotation reconciler has cleared the generation annotation.
-// K-ORC's user actuator re-applies the password only when the passwordRef NAME
-// changes, so a rotation is a Secret-name flip, never a content edit.
+// when the CredentialRotation reconciler has cleared the generation annotation,
+// or, with a positive in.desiredGeneration, when that generation is above the
+// current one. K-ORC's user actuator re-applies the password only when the
+// passwordRef NAME changes, so a rotation is a Secret-name flip, never a content
+// edit.
 //
 // It returns the applied User, the desired generation, whether the User was
 // created this pass (the one-shot deferral event both callers emit), and the
@@ -637,19 +657,24 @@ func ensureManagedAccountUser(
 	if currentGen < 1 {
 		currentGen = 1
 	}
-	// The empty generation annotation is the CredentialRotation reconciler's
-	// rotation nudge.
 	rotating := false
-	if exists {
+	desiredGen := currentGen
+	switch {
+	case in.desiredGeneration > 0:
+		// The owner declares the generation. A fresh User starts at it, and an
+		// existing one moves up to it; a declared generation below the current one
+		// never rolls the password back.
+		desiredGen = max(in.desiredGeneration, currentGen)
+		rotating = exists && desiredGen > currentGen
+	case !exists:
+		desiredGen = 1
+	default:
+		// The empty generation annotation is the CredentialRotation reconciler's
+		// rotation nudge.
 		if v, present := existing.Annotations[serviceAccountPasswordGenerationAnnotation]; present && v == "" {
 			rotating = true
+			desiredGen = currentGen + 1
 		}
-	}
-	desiredGen := currentGen
-	if !exists {
-		desiredGen = 1
-	} else if rotating {
-		desiredGen = currentGen + 1
 	}
 
 	if err := in.ensurePasswordSecret(ctx, desiredGen); err != nil {
@@ -667,7 +692,10 @@ func ensureManagedAccountUser(
 		}
 		user.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName(in.userName))
 		user.Spec.Resource.DomainRef = ptr.To(orcv1alpha1.KubernetesNameRef(in.domainRef))
-		user.Spec.Resource.DefaultProjectRef = ptr.To(orcv1alpha1.KubernetesNameRef(in.projectRef))
+		user.Spec.Resource.DefaultProjectRef = nil
+		if in.projectRef != "" {
+			user.Spec.Resource.DefaultProjectRef = ptr.To(orcv1alpha1.KubernetesNameRef(in.projectRef))
+		}
 		user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(passwordRefName))
 		if user.Annotations == nil {
 			user.Annotations = map[string]string{}
@@ -699,7 +727,11 @@ func ensureManagedAccountUser(
 		// true, so a blind loop would issue a growing, unbounded stream of NotFound
 		// DELETE round-trips for long-gone generations that never converges.
 		var pwSecrets corev1.SecretList
-		if err := c.List(ctx, &pwSecrets, client.InNamespace(in.namespace)); err != nil {
+		listOpts := []client.ListOption{client.InNamespace(in.namespace)}
+		if len(in.passwordSecretSelector) > 0 {
+			listOpts = append(listOpts, in.passwordSecretSelector)
+		}
+		if err := c.List(ctx, &pwSecrets, listOpts...); err != nil {
 			return nil, 0, false, nil, fmt.Errorf("listing superseded password Secrets: %w", err)
 		}
 		for i := range pwSecrets.Items {

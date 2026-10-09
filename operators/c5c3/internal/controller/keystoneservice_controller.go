@@ -303,13 +303,7 @@ func (r *KeystoneServiceReconciler) setUndeclaredBlockConditions(ks *c5c3v1alpha
 // one over-long message would make the whole status write fail.
 func keystoneServiceFail(ks *c5c3v1alpha1.KeystoneService, condType string) func(reason, message string) {
 	return func(reason, message string) {
-		conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
-			Type:               condType,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: ks.Generation,
-			Reason:             reason,
-			Message:            truncateConditionMessage(message),
-		})
+		setTruncatedCondition(&ks.Status.Conditions, ks.Generation, condType, metav1.ConditionFalse, reason, message)
 	}
 }
 
@@ -318,10 +312,20 @@ func keystoneServiceFail(ks *c5c3v1alpha1.KeystoneService, condType string) func
 // spec strings that carry no length budget of their own, and one over-long
 // message makes the whole status write fail.
 func keystoneServiceSetTrue(ks *c5c3v1alpha1.KeystoneService, condType, reason, message string) {
-	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+	setTruncatedCondition(&ks.Status.Conditions, ks.Generation, condType, metav1.ConditionTrue, reason, message)
+}
+
+// setTruncatedCondition upserts condType with a message cut to the condition
+// budget, so one relayed K-ORC message cannot fail the whole status write. The
+// KeystoneService and KeystoneUser setters share it.
+func setTruncatedCondition(
+	conds *[]metav1.Condition, generation int64, condType string,
+	status metav1.ConditionStatus, reason, message string,
+) {
+	conditions.SetCondition(conds, metav1.Condition{
 		Type:               condType,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: ks.Generation,
+		Status:             status,
+		ObservedGeneration: generation,
 		Reason:             reason,
 		Message:            truncateConditionMessage(message),
 	})
@@ -1076,18 +1080,28 @@ func (r *KeystoneServiceReconciler) keystoneServiceStoreReady(
 	return ready, nil
 }
 
-// keystoneServiceWaitOrClassify writes a bounded-wait condition, PREFERRING a
-// classifiable External-mode K-ORC failure over the generic wait reason.
+// keystoneServiceWaitOrClassify writes a bounded-wait condition onto ks through
+// waitOrClassifyCondition.
+func (r *KeystoneServiceReconciler) keystoneServiceWaitOrClassify(
+	ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+	condType, waitReason, waitMessage string, pending ...orcv1alpha1.ObjectWithConditions,
+) {
+	waitOrClassifyCondition(cp, keystoneServiceFail(ks, condType), waitReason, waitMessage, pending...)
+}
+
+// waitOrClassifyCondition writes a bounded-wait condition through fail,
+// PREFERRING a classifiable External-mode K-ORC failure over the generic wait
+// reason. The KeystoneService and KeystoneUser reconcilers share it, each passing
+// the setter of its own condition.
 //
 // A K-ORC import that cannot reach the external Keystone reports a non-terminal
 // TransientError, so without this arm an authentication failure, a TLS error or a
 // catalog mismatch would all read as "registered but not yet Available" forever,
 // with nothing in the condition naming the actual cause.
-func (r *KeystoneServiceReconciler) keystoneServiceWaitOrClassify(
-	ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
-	condType, waitReason, waitMessage string, pending ...orcv1alpha1.ObjectWithConditions,
+func waitOrClassifyCondition(
+	cp *c5c3v1alpha1.ControlPlane, fail func(reason, message string),
+	waitReason, waitMessage string, pending ...orcv1alpha1.ObjectWithConditions,
 ) {
-	fail := keystoneServiceFail(ks, condType)
 	if cp.IsExternalKeystone() {
 		if reason, raw := classifyExternalKORCFailure(pending...); reason != "" {
 			message := fmt.Sprintf("external Keystone at %s: %s", externalKeystoneAuthURL(cp), raw)
