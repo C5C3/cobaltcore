@@ -676,8 +676,8 @@ test_nova_leg_deploys_the_sibling_operators() {
   # kind pulls nothing the run did not load, so the load step reads the list the
   # resolve step publishes rather than naming the images a second time: the
   # five operator images and every service image each sibling publishes (ovn
-  # publishes none). Pinning 2025.2 alone would leave a 2026.1 Nova talking to
-  # 2025.2 siblings.
+  # publishes none). Pinning 2026.1 alone would leave a 2026.2 Nova talking to
+  # 2026.1 siblings.
   local resolve load
   resolve=$(job_step e2e-operator "Resolve E2E images")
   load=$(job_step e2e-operator "Load images into kind")
@@ -740,10 +740,10 @@ test_nova_leg_deploys_the_sibling_operators() {
     assert_contains "the ${op}-operator image" "$refs" \
       "ghcr.io/c5c3/${op}-operator:dev"
   done
-  assert_contains "the 2025.2 keystone service image" "$refs" \
-    "ghcr.io/c5c3/keystone:2025.2"
-  assert_contains "and the 2026.1 one beside it" "$refs" \
+  assert_contains "the 2026.1 keystone service image" "$refs" \
     "ghcr.io/c5c3/keystone:2026.1"
+  assert_contains "and the 2026.2 one beside it" "$refs" \
+    "ghcr.io/c5c3/keystone:2026.2"
   assert_contains "every release each sibling ships" "$refs" \
     "ghcr.io/c5c3/neutron:2026.1"
   assert_contains "the OVN daemon image at the pin the scripts resolve" \
@@ -1009,14 +1009,13 @@ test_nova_leg_loads_the_tempest_image() {
 
   assert_eq "the tempest image is the last ref the nova leg resolves" \
     "ghcr.io/c5c3/tempest:2026.1" "$(printf '%s\n' "$refs" | tail -1)"
-  # Twenty-six: the leg's own four (the operator and the nova image of each
-  # release), the five siblings' seventeen (five operators and, per release, the
+  # Twenty: the leg's own three (the operator and the nova image of each
+  # release), the five siblings' thirteen (five operators and, per release, the
   # images of the four that ship one), the nova-compute image of each nova
   # release, the OVN daemon image and this one. A release added under releases/
   # moves the number.
-  assert_eq "it comes on top of the twenty-five the leg already had" "26" \
+  assert_eq "it comes on top of the nineteen the leg already had" "20" \
     "$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
-  assert_contains "the 2025.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2025.2"
   assert_contains "the 2026.1 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.1"
   assert_contains "the 2026.2 compute image is resolved" "$refs" "ghcr.io/c5c3/nova-compute:2026.2"
 
@@ -1590,7 +1589,7 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
        ."nova-cr-name", ."ovn-cr-name", ."neutron-cr-name",
        ."placement-cr-name", ."glance-cr-name", ."tempest-concurrency"]
     | @tsv')
-  assert_eq "the generator emits one nova leg per release" "3" \
+  assert_eq "the generator emits one nova leg per release" "2" \
     "$(printf '%s\n' "$legs" | grep -c .)"
 
   local dir release slug cr svc_k8s nova ovn neutron placement glance workers
@@ -1678,7 +1677,7 @@ test_matrix_cr_names_match_the_nova_tempest_fixtures() {
     # grants it; without it every server show and delete fails
     # (NeutronAdminCredentialConfigurationInvalid in the nova-compute log).
     case "$release" in
-      2025.2 | 2026.1) ;;
+      2026.1) ;;
       *)
         assert_file_contains "$dir grants the service role to the service user" \
           "$fixtures/01-catalog-setup-job.yaml" \
@@ -2011,7 +2010,7 @@ test_discover_hosts_takes_an_optional_host() {
     "OK: host fake-1 mapped into cell1"
 
   out=$(run_discover_hosts "$tmp" cobaltcore-control-plane 0 1 \
-    nova-tempest-2025-2 openstack cobaltcore-control-plane)
+    nova-tempest-2026-1 openstack cobaltcore-control-plane)
   code=$?
   assert_eq "a third argument is accepted" "0" "$code"
   assert_contains "the helper waits for the host it was handed" "$out" \
@@ -2021,7 +2020,7 @@ test_discover_hosts_takes_an_optional_host() {
   # discovery fails on the second round, so the run ends after one lookup
   # instead of polling to the helper's 150-second deadline.
   out=$(run_discover_hosts "$tmp" nodeXa 1 2 \
-    nova-tempest-2025-2 openstack node.a)
+    nova-tempest-2026-1 openstack node.a)
   code=$?
   assert_nonzero_exit "a dot in the host matches no other character" "$code"
   assert_not_contains "nodeXa does not answer for node.a" "$out" \
@@ -2079,14 +2078,14 @@ test_runner_forwards_the_nova_apis() {
   assert_not_contains "the container resolves no nova name" \
     "$(cat "$tmp/docker.log")" "--add-host nova"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy "")
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy "")
   code=$?
   pf="$(cat "$tmp/pf.log")"
   assert_eq "the nova leg reaches the container" "0" "$code"
   assert_contains "the compute API is forwarded on 8774" "$pf" \
-    "svc/nova-tempest-2025-2 -n openstack 8774:8774"
+    "svc/nova-tempest-2026-1 -n openstack 8774:8774"
   assert_contains "the console proxy on 6080" "$pf" \
-    "svc/nova-tempest-2025-2-novncproxy -n openstack 6080:6080"
+    "svc/nova-tempest-2026-1-novncproxy -n openstack 6080:6080"
 
   # Nova registers no healthcheck middleware, so the compute API is polled on
   # the path the operator probes. The console proxy answers /vnc_lite.html,
@@ -2100,31 +2099,31 @@ test_runner_forwards_the_nova_apis() {
   local docker_argv
   docker_argv="$(cat "$tmp/docker.log")"
   assert_contains "the container resolves the compute FQDN to the forward" \
-    "$docker_argv" "nova-tempest-2025-2.openstack.svc.cluster.local:127.0.0.1"
+    "$docker_argv" "nova-tempest-2026-1.openstack.svc.cluster.local:127.0.0.1"
   assert_contains "and its short form" "$docker_argv" \
-    "nova-tempest-2025-2.openstack.svc:127.0.0.1"
+    "nova-tempest-2026-1.openstack.svc:127.0.0.1"
   assert_contains "the console proxy FQDN too" "$docker_argv" \
-    "nova-tempest-2025-2-novncproxy.openstack.svc.cluster.local:127.0.0.1"
+    "nova-tempest-2026-1-novncproxy.openstack.svc.cluster.local:127.0.0.1"
   assert_contains "and its short form" "$docker_argv" \
-    "nova-tempest-2025-2-novncproxy.openstack.svc:127.0.0.1"
+    "nova-tempest-2026-1-novncproxy.openstack.svc:127.0.0.1"
 
   # A compute API that never answers stops the run before the container starts,
   # instead of handing tempest a catalog whose compute endpoint refuses.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy 8774)
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 8774)
   code=$?
   assert_eq "an unreachable compute API fails the leg" "1" "$code"
   assert_contains "the error names the API and its port" "$out" \
     "::error::Nova API at http://localhost:8774 did not become reachable after 10 attempts"
   assert_eq "and no container is started" "" "$(cat "$tmp/docker.log")"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 nova-tempest-2025-2-novncproxy 6080)
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 nova-tempest-2026-1-novncproxy 6080)
   code=$?
   assert_eq "an unreachable console proxy fails it too" "1" "$code"
   assert_contains "under its own name" "$out" \
     "::error::NovaConsole API at http://localhost:6080 did not become reachable after 10 attempts"
 
   # The cinder legs attach volumes to a server and never open a console.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "")
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "")
   code=$?
   pf="$(cat "$tmp/pf.log")"
   assert_eq "a cinder leg reaches the container" "0" "$code"
@@ -2136,7 +2135,7 @@ test_runner_forwards_placement() {
   echo "Test: ci-run-tempest.sh forwards the placement API"
 
   # Both compute-stack legs register a placement endpoint in the catalog on a
-  # cluster-internal name (tests/tempest/nova-2025-2/01-catalog-setup-job.yaml)
+  # cluster-internal name (tests/tempest/nova-2026-1/01-catalog-setup-job.yaml)
   # and set `placement = true` under [service_available]. Tempest builds its
   # clients lazily, so without the forward the break lands on the first call: a
   # name-resolution error reported as a test error, not as a skip, and the
@@ -2155,12 +2154,12 @@ test_runner_forwards_placement() {
   assert_not_contains "the container resolves no placement name" \
     "$(cat "$tmp/docker.log")" "--add-host placement"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" placement-nova-tempest-2025-2)
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" placement-nova-tempest-2026-1)
   code=$?
   pf="$(cat "$tmp/pf.log")"
   assert_eq "the compute-stack leg reaches the container" "0" "$code"
   assert_contains "the placement API is forwarded on 8778" "$pf" \
-    "svc/placement-nova-tempest-2025-2 -n openstack 8778:8778"
+    "svc/placement-nova-tempest-2026-1 -n openstack 8778:8778"
 
   # Placement registers no healthcheck middleware either, so the poll asks for
   # the root path, which is what the operator probes
@@ -2172,13 +2171,13 @@ test_runner_forwards_placement() {
   docker_argv="$(cat "$tmp/docker.log")"
   assert_contains "the container resolves the placement FQDN to the forward" \
     "$docker_argv" \
-    "placement-nova-tempest-2025-2.openstack.svc.cluster.local:127.0.0.1"
+    "placement-nova-tempest-2026-1.openstack.svc.cluster.local:127.0.0.1"
   assert_contains "and its short form" "$docker_argv" \
-    "placement-nova-tempest-2025-2.openstack.svc:127.0.0.1"
+    "placement-nova-tempest-2026-1.openstack.svc:127.0.0.1"
 
   # A placement API that never answers stops the run before the container
   # starts, the way every other optional target does.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" 8778 placement-nova-tempest-2025-2)
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" 8778 placement-nova-tempest-2026-1)
   code=$?
   assert_eq "an unreachable placement API fails the leg" "1" "$code"
   assert_contains "the error names the API and its port" "$out" \
@@ -2200,7 +2199,7 @@ test_runner_reports_a_forward_that_dropped() {
   trap 'rm -rf "$tmp"' RETURN
   make_tempest_stubs "$tmp"
 
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" "")
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" "")
   code=$?
   assert_eq "a leg whose forwards held returns the container's code" "0" "$code"
   assert_not_contains "and nothing is reported as dropped" "$out" \
@@ -2214,7 +2213,7 @@ test_runner_reports_a_forward_that_dropped() {
 
   # 8774 is forwarded, answers its readiness poll out of $STUB_PF_LOG, and is
   # gone by the time the container returns.
-  out=$(run_ci_tempest "$tmp" nova-tempest-2025-2 "" "" "" 8774)
+  out=$(run_ci_tempest "$tmp" nova-tempest-2026-1 "" "" "" 8774)
   code=$?
   assert_eq "a dropped forward does not change the leg's exit code" "0" "$code"
   assert_contains "the log names the API that went away" "$out" \

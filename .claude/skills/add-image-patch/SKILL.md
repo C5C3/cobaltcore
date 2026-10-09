@@ -21,7 +21,7 @@ A downstream patch changes the upstream source **before** it is installed
 into the service image. It is the last resort: a fix in the operator, a
 config option, or a newer upstream tag is always preferable, because every
 patch has to be carried through every Renovate tag bump until upstream ships
-it. The repository carries nine today (cinder 0001–0004, glance 0001, per
+it. The repository carries six today (cinder 0001–0003, glance 0001, per
 release); `check-image-patches.sh` lists them.
 
 ## How a patch reaches an image
@@ -53,8 +53,9 @@ bug?
 - **New fix** — write it against the newest affected release, then
   forward-port or backport it to the others.
 - **Backport of an upstream commit** — carry it only where the pinned tag
-  lacks it. Cinder 0003 exists for 2025.2 only: 28.0.0 carries upstream
-  `cc981d81b6`, 27.0.0 does not, and no 27.0.x tag exists to pin instead.
+  lacks it. The NetApp mutable-fakes backport (64754d84) was carried for
+  2025.2 only: 28.0.0 carries upstream `cc981d81b6`, 27.0.0 does not, and
+  no 27.0.x tag exists to pin instead.
   Prefer bumping `source-refs.yaml` to a tag that contains the fix whenever
   one exists.
 - **Twins** keep the same slug and, where possible, the same number. Cut each
@@ -63,13 +64,13 @@ bug?
   is not (32.0.0 rewrote `_update_s3_url`): the patched `_construct_s3_url`
   is identical, and the hunk applies to 32.0.0 at an offset. Cut from each
   tag anyway and let `git apply --check` (`--apply`) prove it.
-  A release without a twin says why in its header ("No 2026.1 twin: 28.0.0
-  already carries the commit.").
+  A release without a twin says why in its header ("No 2026.2 twin: 29.0.0
+  carries upstream commit c07c49c586, which replaced both tests.").
 
 ### 2. Cut the patch against the pinned tag
 
 ```bash
-tag=$(yq '.cinder' releases/2025.2/source-refs.yaml)
+tag=$(yq '.cinder' releases/2026.1/source-refs.yaml)
 git clone --branch "$tag" https://github.com/openstack/cinder.git /tmp/cinder-$tag
 cd /tmp/cinder-$tag
 # edit code AND the upstream tests that pin the old behaviour, then
@@ -212,8 +213,8 @@ stalls.
 - **`hack/ci-build-service-image.sh` rewrites a tracked file on Linux.**
   `scripts/apply-constraint-overrides.sh` runs `sed -i` on
   `releases/<release>/upper-constraints.txt` whenever
-  `overrides/<release>/constraints.txt` exists (it does for 2025.2 and
-  2026.1); restore the file after a local build. On macOS the same `sed -i`
+  `overrides/<release>/constraints.txt` exists (it does for 2026.1 and
+  2026.2); restore the file after a local build. On macOS the same `sed -i`
   aborts the build (BSD sed); use the manual build in the reference.
 - **The runtime image is not the test image.** `verify_<svc>.sh` runs against
   the service image; `test-service-images` installs the patched tree into the
