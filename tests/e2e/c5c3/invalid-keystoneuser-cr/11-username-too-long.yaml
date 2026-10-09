@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A 256-byte userName is rejected by the CRD maximum that mirrors K-ORC's
+# OpenStackName cap: admitted, the name would only be rejected by the K-ORC
+# CRD, which wedges the reconcile. The error carries 'Too long'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: ku-invalid-username-too-long
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userName: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
