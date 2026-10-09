@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The order under test: a Keystone user ordered from the assigned namespace.
+#
+# userName is left to default to metadata.name ("workflow"), and
+# passwordGeneration to 1; the suite raises it to 2 to rotate the password.
+# controlPlaneRef names the plane's namespace explicitly, because the order
+# lives in another one.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region keystoneuser-workflow
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: workflow
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion keystoneuser-workflow

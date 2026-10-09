@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The negative leg: an order from a namespace the plane does not assign. It is
+# refused with NamespaceNotAssigned on both conditions and nothing is created
+# for it in the plane's namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: outsider
+  namespace: "@OUTSIDER_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"

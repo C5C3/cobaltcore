@@ -273,6 +273,7 @@ jobs:
               - 'tests/e2e/c5c3/full-controlplane-keystone/**'
               - 'tests/e2e/c5c3/keystone-service/**'
               - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
+              - 'tests/e2e/c5c3/keystone-user/**'
               # The full-chain suite applies this overlay's fixtures.yaml.
               - 'deploy/kind/hypervisor-operator-fixtures/**'
             tests_controlplane_sso:
@@ -2432,24 +2433,27 @@ jobs:
   # and sequential steps also keep two identity planes from converging on one node
   # at the same time.
   #
-  # A third step runs the keystone-service suite, the own-namespace registration
-  # (round-trip, rotation, collision/adopt, deletion), against a third
-  # Keystone-only plane of its own. It stays separate for the same failFast
+  # A third step runs the keystone-user suite, the KeystoneUser order from an
+  # assigned namespace (delivery, repair, rotation, refusal, freeze, teardown),
+  # and a fourth the keystone-service suite, the own-namespace registration
+  # (round-trip, rotation, collision/adopt, deletion). Each brings up a
+  # Keystone-only plane of its own and stays separate for the same failFast
   # reason.
   #
   # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
   # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
   # with an extended timeout on the larger runner (matching tempest).
   #
-  # The three suites run in sequence against one node, so their wall clocks add
+  # The four suites run in sequence against one node, so their wall clocks add
   # rather than overlap. A suite's ceiling is NOT its exec budget alone: chainsaw
   # applies that budget to every script operation, so try, catch and finally each
-  # get one, and the cleanup runs after all three. Each of the three therefore
+  # get one, and the cleanup runs after all three. Each of the four therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
   # 65+5+5+5+2+3 = 85m (full-chain, where the compute leg added a third finally
-  # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace)
-  # and 50+5+20+15 = 90m (own-namespace). Unpinned, catch and finally would
-  # inherit the exec budget and the own-namespace ceiling alone would be 165m.
+  # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace
+  # and keystone-user each) and 50+5+20+15 = 90m (own-namespace). Unpinned, catch
+  # and finally would inherit the exec budget and the own-namespace ceiling alone
+  # would be 165m.
   #
   # timeout-minutes has to outlast the bring-up (kind create, twenty kind
   # loads, setup-e2e-infra, K-ORC and ten operator deploys) plus the suites
@@ -2464,11 +2468,14 @@ jobs:
   # still absorbs; the full-chain ceiling grew 65m -> 85m. 240m therefore covers
   # ~40m of bring-up, the 85m ceiling of the full-chain suite (at its ceiling,
   # not an observed pass: it is the suite this leg just lengthened), ~25m for the
-  # foreign-namespace pass, and the 90m ceiling of the last suite. The bring-up
-  # and foreign-namespace terms are the two estimates in that sum — confirm both
-  # against the first green run of this leg and re-derive if either overruns. The
-  # worst case holds the runner for a full four hours, which is the price of a
-  # stalled suite reporting as a failure rather than a cancellation.
+  # foreign-namespace pass, and the 90m ceiling of the last suite. The
+  # keystone-user suite added a fourth step, so the wall moved to 270m: its pass
+  # is estimated at ~25m like the foreign-namespace one, and 40+85+25+25+90 =
+  # 265m. The bring-up and the two pass terms are the estimates in that sum —
+  # confirm them against the first green run of this leg and re-derive if one
+  # overruns. The worst case holds the runner for four and a half hours, which
+  # is the price of a stalled suite reporting as a failure rather than a
+  # cancellation.
   e2e-controlplane:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -2483,7 +2490,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 240
+    timeout-minutes: 270
     continue-on-error: false
     permissions:
       contents: read
@@ -2715,9 +2722,19 @@ jobs:
             tests/e2e/c5c3/keystone-service-foreign-namespace/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
-      # The own-namespace registration suite runs third, again in its own
+      # The KeystoneUser order suite runs third, in its own invocation for the
+      # failFast reason above and under a report name of its own.
+      - name: Run keystone-user order E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-user \
+            tests/e2e/c5c3/keystone-user/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # The own-namespace registration suite runs fourth, again in its own
       # invocation for the failFast reason above, under a report name of its own
-      # so all three JUnit files survive in the uploaded artifact.
+      # so all four JUnit files survive in the uploaded artifact.
       - name: Run own-namespace registration E2E test
         run: |
           mkdir -p _output/reports
