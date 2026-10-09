@@ -77,16 +77,16 @@ func completedSyncJob(neutron *neutronv1alpha1.Neutron, configMapName, uid strin
 	return completed
 }
 
-// upgradingNeutron returns a Neutron mid-release-bump: 2025.2 is installed, the
-// spec requests 2026.1 in both the release and the image tag (the operator's
+// upgradingNeutron returns a Neutron mid-release-bump: 2026.1 is installed, the
+// spec requests 2026.2 in both the release and the image tag (the operator's
 // bump-in-lockstep contract), and the installed image records the release the
 // schema was actually migrated by.
 func upgradingNeutron() *neutronv1alpha1.Neutron {
 	neutron := validNeutron()
-	neutron.Spec.OpenStackRelease = "2026.1"
-	neutron.Spec.Image.Tag = "2026.1"
-	neutron.Status.InstalledRelease = "2025.2"
-	neutron.Status.InstalledImage = "ghcr.io/c5c3/neutron:2025.2"
+	neutron.Spec.OpenStackRelease = "2026.2"
+	neutron.Spec.Image.Tag = "2026.2"
+	neutron.Status.InstalledRelease = "2026.1"
+	neutron.Status.InstalledImage = "ghcr.io/c5c3/neutron:2026.1"
 	return neutron
 }
 
@@ -296,9 +296,9 @@ func TestReconcileDatabase_FailedJobIsAHardError(t *testing.T) {
 func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	neutron := validNeutron()
-	neutron.Spec.OpenStackRelease = "2026.1"
-	neutron.Spec.Image.Tag = "2025.2"
-	neutron.Status.InstalledRelease = "2025.2"
+	neutron.Spec.OpenStackRelease = "2026.2"
+	neutron.Spec.Image.Tag = "2026.1"
+	neutron.Status.InstalledRelease = "2026.1"
 	r := newNeutronTestReconciler(neutron)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, neutron, dbConfigMapName)
@@ -330,11 +330,11 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 		{
 			name: "downgrade",
 			mutate: func(n *neutronv1alpha1.Neutron) {
-				// Release and image tag name 2025.2 in lockstep, so the mismatch guard
+				// Release and image tag name 2026.1 in lockstep, so the mismatch guard
 				// passes and the downgrade is what the gate rejects.
-				n.Spec.OpenStackRelease = "2025.2"
-				n.Spec.Image.Tag = "2025.2"
-				n.Status.InstalledRelease = "2026.1"
+				n.Spec.OpenStackRelease = "2026.1"
+				n.Spec.Image.Tag = "2026.1"
+				n.Status.InstalledRelease = "2026.2"
 			},
 			reason:    database.ReasonDowngradeNotSupported,
 			wantCause: "downgrade",
@@ -342,9 +342,9 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 		{
 			name: "non-sequential jump",
 			mutate: func(n *neutronv1alpha1.Neutron) {
-				n.Spec.OpenStackRelease = "2026.1"
-				n.Spec.Image.Tag = "2026.1"
-				n.Status.InstalledRelease = "2025.1" // skips 2025.2
+				n.Spec.OpenStackRelease = "2027.1"
+				n.Spec.Image.Tag = "2027.1"
+				n.Status.InstalledRelease = "2026.1" // skips 2026.2
 			},
 			reason:    database.ReasonUpgradePathInvalid,
 			wantCause: "sequential",
@@ -365,8 +365,8 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 				// previous release's binary.
 				n.Spec.Image.Tag = ""
 				n.Spec.Image.Digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-				n.Spec.OpenStackRelease = "2026.1"
-				n.Status.InstalledRelease = "2025.2"
+				n.Spec.OpenStackRelease = "2026.2"
+				n.Status.InstalledRelease = "2026.1"
 				n.Status.InstalledImage = n.Spec.Image.Reference()
 			},
 			reason:    conditionReasonImageReleaseMismatch,
@@ -453,7 +453,7 @@ func TestReconcileDatabase_DBSyncMetricEmittedOncePerUID(t *testing.T) {
 	g.Expect(histogramSampleCount(t, "neutron_operator_db_sync_duration_seconds", durationLabels)).To(Equal(uint64(1)))
 }
 
-// TestReconcileDatabase_UpgradeWalk drives a 2025.2 → 2026.1 bump through every
+// TestReconcileDatabase_UpgradeWalk drives a 2026.1 → 2026.2 bump through every
 // phase the shared flow runs, asserting the command each phase Job carries. The
 // migrate phase is the neutron-specific one: neutron has no data-migration
 // command, so the phase runs neutron-db-manage current, which prints the
@@ -473,7 +473,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(neutron.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.2"))
 
 	// Pass 2: the expand Job is created and the phase waits on it.
 	res, err = r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
@@ -514,7 +514,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	_, err = r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	expectNoJob(t, r, neutron, "db-contract")
-	g.Expect(neutron.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(neutron.Status.InstalledRelease).To(Equal("2026.1"))
 
 	// The deployment step flips the phase once the rollout has drained the old
 	// image (covered by the deployment test); from there the contract Job runs.
@@ -533,7 +533,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	res, err = r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(neutron.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(neutron.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(neutron.Status.TargetRelease).To(BeEmpty())
 	g.Expect(neutron.Status.UpgradePhase).To(BeEmpty())
 	cond := neutronCondition(neutron, "DatabaseReady")
@@ -549,7 +549,7 @@ func TestReconcileDatabase_UpgradePhaseFailureIsAHardError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	neutron := upgradingNeutron()
-	neutron.Status.TargetRelease = "2026.1"
+	neutron.Status.TargetRelease = "2026.2"
 	neutron.Status.UpgradePhase = commonv1.UpgradePhaseExpanding
 	r := newNeutronTestReconciler(neutron)
 
@@ -566,7 +566,7 @@ func TestReconcileDatabase_UpgradePhaseFailureIsAHardError(t *testing.T) {
 	cond := neutronCondition(neutron, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(database.ReasonExpandFailed))
-	g.Expect(neutron.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(neutron.Status.InstalledRelease).To(Equal("2026.1"))
 	recorder, ok := r.Recorder.(*record.FakeRecorder)
 	g.Expect(ok).To(BeTrue())
 	g.Expect(collectEvents(recorder)).To(ContainElement(ContainSubstring("Warning ExpandFailed")))
@@ -582,7 +582,7 @@ func TestReconcileDatabase_AbortReachableWhileTheImageNamesTheTarget(t *testing.
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	neutron := upgradingNeutron()
-	neutron.Status.TargetRelease = "2026.1"
+	neutron.Status.TargetRelease = "2026.2"
 	neutron.Status.UpgradePhase = commonv1.UpgradePhaseExpanding
 	r := newNeutronTestReconciler(neutron)
 
@@ -594,7 +594,7 @@ func TestReconcileDatabase_AbortReachableWhileTheImageNamesTheTarget(t *testing.
 	// The abort edit: only spec.openStackRelease goes back to the installed
 	// release, while spec.image.tag still names the target the upgrade was
 	// heading for.
-	neutron.Spec.OpenStackRelease = "2025.2"
+	neutron.Spec.OpenStackRelease = "2026.1"
 
 	res, err := r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
 
@@ -602,7 +602,7 @@ func TestReconcileDatabase_AbortReachableWhileTheImageNamesTheTarget(t *testing.
 	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(neutron.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(neutron.Status.TargetRelease).To(BeEmpty())
-	g.Expect(neutron.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(neutron.Status.InstalledRelease).To(Equal("2026.1"))
 	expectNoJob(t, r, neutron, "db-expand")
 	if cond := neutronCondition(neutron, "DatabaseReady"); cond != nil {
 		g.Expect(cond.Reason).NotTo(Equal(conditionReasonImageReleaseMismatch),
@@ -622,9 +622,9 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	neutron := upgradingNeutron()
-	neutron.Status.TargetRelease = "2026.1"
+	neutron.Status.TargetRelease = "2026.2"
 	neutron.Status.UpgradePhase = commonv1.UpgradePhaseExpanding
-	neutron.Spec.Image.Tag = "2025.2"
+	neutron.Spec.Image.Tag = "2026.1"
 	r := newNeutronTestReconciler(neutron)
 
 	res, err := r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
@@ -636,7 +636,7 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
 	// The upgrade state is untouched and no phase Job was dispatched.
 	g.Expect(neutron.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.2"))
 	expectNoJob(t, r, neutron, "db-expand")
 }
 

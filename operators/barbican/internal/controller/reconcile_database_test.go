@@ -49,6 +49,17 @@ func managedBarbican() *barbicanv1alpha1.Barbican {
 	return barbican
 }
 
+// upgradingBarbican returns a Barbican mid-release-bump: 2026.1 is installed and
+// the spec requests 2026.2 in both the release and the image tag, so a schema
+// migration is in flight.
+func upgradingBarbican() *barbicanv1alpha1.Barbican {
+	barbican := testBarbican()
+	barbican.Spec.OpenStackRelease = "2026.2"
+	barbican.Spec.Image.Tag = "2026.2"
+	barbican.Status.InstalledRelease = "2026.1"
+	return barbican
+}
+
 // terminatedSyncJob returns the db-sync Job for barbican marked terminal with
 // the given condition type, carrying the desired pod-spec hash (so the runner
 // accepts it as the current Job) and a stable UID for the terminal-metric
@@ -359,22 +370,19 @@ func TestReconcileDatabase_FailedJobIsAHardError(t *testing.T) {
 // release.
 func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	g := NewGomegaWithT(t)
-	barbican := testBarbican()
-	barbican.Spec.OpenStackRelease = "2026.1"
-	barbican.Spec.Image.Tag = "2026.1"
-	barbican.Status.InstalledRelease = "2025.2"
+	barbican := upgradingBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
-	g.Expect(barbican.Status.TargetRelease).To(Equal("2026.1"))
-	g.Expect(barbican.Status.InstalledRelease).To(Equal("2025.2"),
+	g.Expect(barbican.Status.TargetRelease).To(Equal("2026.2"))
+	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"),
 		"the marker only moves once the schema is actually migrated")
 
 	var syncJob batchv1.Job
 	g.Expect(r.Get(context.Background(), syncJobKey, &syncJob)).To(Succeed())
-	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/barbican:2026.1"),
+	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/barbican:2026.2"),
 		"the migration runs the release being upgraded to")
 
 	// The Job completes.
@@ -389,7 +397,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	res, err = r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(barbican.Status.InstalledImage).To(Equal(barbican.Spec.Image.Reference()))
 	g.Expect(barbican.Status.TargetRelease).To(BeEmpty(),
 		"a CR that reached its target advertises no target")
@@ -411,11 +419,11 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 		{
 			name: "downgrade",
 			mutate: func(b *barbicanv1alpha1.Barbican) {
-				// Release and image tag name 2025.2 in lockstep, so the mismatch guard
+				// Release and image tag name 2026.1 in lockstep, so the mismatch guard
 				// passes and the downgrade is what the gate rejects.
-				b.Spec.OpenStackRelease = "2025.2"
-				b.Spec.Image.Tag = "2025.2"
-				b.Status.InstalledRelease = "2026.1"
+				b.Spec.OpenStackRelease = "2026.1"
+				b.Spec.Image.Tag = "2026.1"
+				b.Status.InstalledRelease = "2026.2"
 			},
 			reason:    database.ReasonDowngradeNotSupported,
 			wantCause: "downgrade",
@@ -423,9 +431,9 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 		{
 			name: "non-sequential jump",
 			mutate: func(b *barbicanv1alpha1.Barbican) {
-				b.Spec.OpenStackRelease = "2026.1"
-				b.Spec.Image.Tag = "2026.1"
-				b.Status.InstalledRelease = "2025.1" // skips 2025.2
+				b.Spec.OpenStackRelease = "2027.1"
+				b.Spec.Image.Tag = "2027.1"
+				b.Status.InstalledRelease = "2026.1" // skips 2026.2
 			},
 			reason:    database.ReasonUpgradePathInvalid,
 			wantCause: "sequential",
@@ -446,8 +454,8 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 				// previous release's binary.
 				b.Spec.Image.Tag = ""
 				b.Spec.Image.Digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-				b.Spec.OpenStackRelease = "2026.1"
-				b.Status.InstalledRelease = "2025.2"
+				b.Spec.OpenStackRelease = "2026.2"
+				b.Status.InstalledRelease = "2026.1"
 				b.Status.InstalledImage = b.Spec.Image.Reference()
 			},
 			reason:    conditionReasonImageReleaseMismatch,
@@ -488,9 +496,9 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()
 	// The release was bumped but the image tag was left behind.
-	barbican.Spec.OpenStackRelease = "2026.1"
-	barbican.Spec.Image.Tag = "2025.2"
-	barbican.Status.InstalledRelease = "2025.2"
+	barbican.Spec.OpenStackRelease = "2026.2"
+	barbican.Spec.Image.Tag = "2026.1"
+	barbican.Status.InstalledRelease = "2026.1"
 	r := newBarbicanTestReconciler(barbican)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
@@ -499,7 +507,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	g.Expect(barbican.Status.TargetRelease).To(BeEmpty(),
 		"the release gate is never reached while the fields disagree")
-	g.Expect(barbican.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"))
 	cond := barbicanCondition(barbican, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))

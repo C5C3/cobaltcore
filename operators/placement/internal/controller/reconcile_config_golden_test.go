@@ -63,7 +63,7 @@ func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 	}
 
 	rendered := map[string]string{}
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			conf := renderFor(t, release)
@@ -75,7 +75,7 @@ func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 	t.Run("every release renders identically", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		for release, conf := range rendered {
-			g.Expect(conf).To(Equal(rendered["2025.2"]), release)
+			g.Expect(conf).To(Equal(rendered["2026.1"]), release)
 		}
 	})
 }

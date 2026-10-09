@@ -144,7 +144,7 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			rendered := map[string]string{}
-			for _, openStackRelease := range []string{"2025.2", "2026.1", "2026.2"} {
+			for _, openStackRelease := range []string{"2026.1", "2026.2"} {
 				t.Run(openStackRelease, func(t *testing.T) {
 					g := NewGomegaWithT(t)
 					cinder := tc.fixture()
@@ -157,7 +157,7 @@ func TestPinCinderConf_ReleasesRenderIdentically(t *testing.T) {
 			}
 			g := NewGomegaWithT(t)
 			for release, conf := range rendered {
-				g.Expect(conf).To(Equal(rendered["2025.2"]), release)
+				g.Expect(conf).To(Equal(rendered["2026.1"]), release)
 			}
 		})
 	}

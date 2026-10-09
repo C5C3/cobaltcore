@@ -412,15 +412,17 @@ func TestCinderPodAnnotations(t *testing.T) {
 func TestCinderRPCPodAnnotations(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cinder := workloadCinder()
+	cinder.Spec.OpenStackRelease = "2026.2"
+	cinder.Spec.Image.Tag = "2026.2"
 
 	g.Expect(cinderRPCPodAnnotations(cinder, workloadDigests{})).To(Equal(map[string]string{
-		installedReleaseAnnotation: "2026.1",
+		installedReleaseAnnotation: "2026.2",
 	}), "a fresh install stamps spec.openStackRelease rather than an empty value")
 
-	cinder.Status.InstalledRelease = "2025.2"
+	cinder.Status.InstalledRelease = "2026.1"
 	g.Expect(cinderRPCPodAnnotations(cinder, workloadDigests{dsn: "dsn123"})).To(Equal(map[string]string{
 		dbConnectionHashAnnotation: "dsn123",
-		installedReleaseAnnotation: "2025.2",
+		installedReleaseAnnotation: "2026.1",
 	}), "once the schema is installed, the marker is what the pods run against")
 
 	g.Expect(cinderPodAnnotations(workloadDigests{})).To(BeNil(),
