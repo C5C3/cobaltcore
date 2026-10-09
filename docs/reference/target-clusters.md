@@ -270,8 +270,9 @@ The access a target cluster grants is packaged as the
 `deploy/target-cluster/target-cluster-access` chart: a ServiceAccount, a
 long-lived token Secret the registration kubeconfig carries, one Role per entry
 in `values.namespaces`, and a ClusterRole for the kinds that have no namespace.
-`values.namespaces` has to equal the registration Secret's `namespaces` key,
-because one grants what the other scopes; a namespace granted but not declared
+`values.namespaces`, together with `values.assignedNamespaces` (see
+[Assigned namespaces](#assigned-namespaces)), has to equal the registration
+Secret's `namespaces` key, because one grants what the other scopes; a namespace granted but not declared
 is never watched, and one declared but not granted answers every read with
 forbidden. `createNamespaces` decides whether the chart creates those namespaces
 or expects them to exist; they are annotated `helm.sh/resource-policy: keep`, so
@@ -324,6 +325,13 @@ Without the grant the VPA watch never syncs, which fails the cluster's
 engagement, and a forbidden list fails the teardown sweep and holds every
 placed CR in `Terminating`. Upgrade the release on every registered target
 cluster before the service operators, with the command above.
+
+The same holds for `keystoneusers` in `c5c3.io`, which the chart gained with the
+KeystoneUser order. On a target cluster that serves that kind, the c5c3-operator
+lists and watches orders in every namespace of the registration. Without read
+on it in every placed Role the order watch never syncs, which fails the
+cluster's engagement. [Assigned namespaces](#assigned-namespaces) gives the
+order in which to upgrade.
 
 The OVN chassis layer (issue #903) needs a namespace it can run a node-level
 workload in, and `privilegedNamespaces` is the one value that provides it. Every
@@ -594,6 +602,48 @@ NeutronMetadataAgent, and `NovaReady` on a NovaCompute. Nothing is created on th
 nothing it could not first read. Neither retrying nor waiting changes a cache's
 scope, so the condition holds until the registration or the CR moves.
 
+### Assigned namespaces
+
+A ControlPlane may assign a namespace on a target cluster to a service owner,
+with a `spec.namespaceAssignments` entry naming the cluster. The owner orders a
+Keystone user there with a [KeystoneUser](./c5c3/keystoneuser-crd.md), which
+lives on the target cluster, and the c5c3-operator writes the credentials
+Secret beside it. The chart serves that with three things:
+
+- `values.assignedNamespaces` lists the assigned namespaces. Each gets a Role
+  `<release>-target-cluster-access-assigned` that grants Secret writes and the
+  order verbs (`get`, `list`, `watch`, `update` and `patch` on `keystoneusers`,
+  with their `status` and `finalizers` subresources), and no workload kind. The
+  chart creates none of these namespaces, and an entry may not also be in
+  `values.namespaces`: a namespace is either placed into or assigned. The Role
+  of every placed namespace grants read on `keystoneusers` as well, because the
+  operator's order watch lists every namespace of the registration.
+- The registration Secret's `namespaces` key lists every assigned namespace
+  beside the placed ones.
+- The chart ships the KeystoneUser CRD in `crds/c5c3.io_keystoneusers.yaml`.
+  Helm installs a chart's `crds/` directory on the first install and never
+  upgrades it, so apply the file with `kubectl apply -f` on an upgrade that
+  changes it.
+
+Install the chart, CRD included, before the cluster is registered. The operator
+decides whether to watch the kind on a cluster when it engages that cluster, so
+a CRD installed afterwards is watched only once the registration Secret
+changes, which engages the cluster again.
+
+On a cluster registered before the chart shipped the CRD, keep this order:
+
+1. Run `helm upgrade`. It adds read on `keystoneusers` to every placed Role and
+   creates the Roles of the assigned namespaces.
+2. Apply the CRD with
+   `kubectl apply -f deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml`.
+3. Change the registration Secret, which engages the cluster again.
+
+A cluster that serves the kind while the Role of a registration namespace lacks
+the read fails its whole engagement, because the order watch never syncs.
+
+`values.namespaces` still has to name at least one namespace, so a cluster used
+only for assignments declares a placed namespace too.
+
 ### Namespaces on a compute cluster
 
 A compute cluster runs `nova-compute` on its hypervisor nodes, beside the OVN
@@ -705,6 +755,11 @@ is recorded in three labels the operator stamps on every remote child:
 | `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `Cinder`, `Nova`, `NovaCompute`, `OVNCentral`, `OVNChassis`, `Neutron`, `NeutronMetadataAgent`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
 | `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the twelve workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
+
+One remote child carries an owner reference: the Secret a
+[KeystoneUser](./c5c3/keystoneuser-crd.md#delivered-secret-contract) order
+delivers. The order lives on the target cluster itself, so the reference
+resolves there and the garbage collector reaps the Secret with the order.
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select

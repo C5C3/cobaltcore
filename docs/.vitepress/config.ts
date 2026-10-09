@@ -47,6 +47,7 @@ export default defineConfig({
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Deploy Services into Dedicated Namespaces', link: '/guides/dedicated-service-namespaces' },
           { text: 'Register a Service the ControlPlane Does Not Manage', link: '/guides/register-a-foreign-service' },
+          { text: 'Order a Service User', link: '/guides/order-a-service-user' },
           { text: 'End-to-End SSO', link: '/guides/end-to-end-sso' },
           { text: 'Deploy to a Target Cluster', link: '/guides/deploy-to-a-target-cluster' },
           {
@@ -283,6 +284,8 @@ export default defineConfig({
               { text: 'Reconciler Architecture', link: '/reference/c5c3/controlplane-reconciler' },
               { text: 'KeystoneService CRD', link: '/reference/c5c3/keystoneservice-crd' },
               { text: 'KeystoneService Reconciler', link: '/reference/c5c3/keystoneservice-reconciler' },
+              { text: 'KeystoneUser CRD', link: '/reference/c5c3/keystoneuser-crd' },
+              { text: 'KeystoneUser Reconciler', link: '/reference/c5c3/keystoneuser-reconciler' },
             ],
           },
           {

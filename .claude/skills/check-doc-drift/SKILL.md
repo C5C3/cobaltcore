@@ -89,6 +89,10 @@ delegate the areas to parallel sub-agents for a large corpus.
   `keystoneservice_catalog.go`, `## Account Projection` with
   `keystoneservice_account.go`, and `## Deletion and Teardown` with the
   finalizer path in `keystoneservice_controller.go`; in
+  `keystoneuser-reconciler.md` pair `## User provisioning` with
+  `keystoneuser_provision.go`, `## Credential delivery` with
+  `keystoneuser_delivery.go`, and `## Deletion and Teardown` with
+  `keystoneuser_controller.go`; in
   `controlplane-reconciler.md` pair `### Built-in service
   registrations` with `builtin_registrations.go`.
 - **CRD reference** — for each Spec field listed in
