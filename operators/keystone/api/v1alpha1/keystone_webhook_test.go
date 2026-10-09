@@ -31,7 +31,7 @@ func validKeystone() *Keystone {
 	return &Keystone{
 		Spec: KeystoneSpec{
 			Deployment: DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database:   commonv1.DatabaseSpec{Host: "db.example.com", Port: 3306, Database: "keystone", SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"}},
 			Cache:      commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
 			Fernet: FernetSpec{
@@ -3531,7 +3531,7 @@ func TestValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 }
 
 // TestValidate_ExtraConfigUnknownSectionRejected pins that an option under a
@@ -3547,13 +3547,13 @@ func TestValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("no such section in the keystone 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such section in the keystone 2026.1 option catalog"))
 }
 
 // TestValidate_ExtraConfigOwnershipRegistryPairExempt pins that an
 // operator-owned (section, key) pair is exempt even when the catalog does not
 // contain that section. [memcache] servers is a registry entry whose section is
-// deliberately absent from the 2025.2 catalog.
+// deliberately absent from the 2026.1 catalog.
 func TestValidate_ExtraConfigOwnershipRegistryPairExempt(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -3636,7 +3636,7 @@ func TestValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
 	warnings, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(warnings).To(ContainElement(ContainSubstring(
-		"deprecated option in keystone 2025.2, replaced by [DEFAULT] log_file",
+		"deprecated option in keystone 2026.1, replaced by [DEFAULT] log_file",
 	)))
 }
 
@@ -3674,18 +3674,18 @@ func TestValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 	})
 
 	t.Run("image tag edit is re-validated and rejected", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		old := oldObj()
 		newObj := old.DeepCopy()
-		newObj.Spec.Image.Tag = "2026.1"
+		newObj.Spec.Image.Tag = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.2 option catalog"))
 	})
 
 	t.Run("plugin-list edit is re-validated and rejected", func(t *testing.T) {
@@ -3698,7 +3698,7 @@ func TestValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 	})
 }
 

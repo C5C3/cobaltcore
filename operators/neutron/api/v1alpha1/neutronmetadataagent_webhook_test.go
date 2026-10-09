@@ -25,10 +25,10 @@ func validNeutronMetadataAgent() *NeutronMetadataAgent {
 	return &NeutronMetadataAgent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "openstack"},
 		Spec: NeutronMetadataAgentSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/neutron",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			ChassisRef: OVNChassisRef{Name: "chassis"},
 		},
@@ -368,7 +368,7 @@ func TestNeutronMetadataAgentValidateCreate_RejectionTable(t *testing.T) {
 					"ovs": {"not_an_option": "x"},
 				}
 			},
-			wantSub: "no such option in the neutron 2025.2 option catalog",
+			wantSub: "no such option in the neutron 2026.1 option catalog",
 		},
 		{
 			name: "extraConfig value with a newline rejected",
@@ -550,5 +550,5 @@ func TestNeutronMetadataAgentValidateUpdate_ExtraConfigCatalogGate(t *testing.T)
 	}
 	_, err = w.ValidateUpdate(context.Background(), stale, edited)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2026.1 option catalog"))
 }

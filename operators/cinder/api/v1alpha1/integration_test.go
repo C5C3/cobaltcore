@@ -485,10 +485,10 @@ func TestIntegration_WebhookDefaultsAbsentDeploymentBlocks(t *testing.T) {
 			"namespace": ns,
 		},
 		"spec": map[string]any{
-			"openStackRelease": "2025.2",
+			"openStackRelease": "2026.1",
 			"image": map[string]any{
 				"repository": "ghcr.io/c5c3/cinder",
-				"tag":        "2025.2",
+				"tag":        "2026.1",
 			},
 			"database": map[string]any{
 				"clusterRef": map[string]any{"name": "mariadb"},
@@ -567,7 +567,7 @@ func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
 	cinder.Spec.ExtraConfig = map[string]map[string]string{
 		"DEFAULT": {"glance_api_server": "http://glance.openstack.svc:9292"},
 	}
-	expectRejected(t, c.Create(ctx, cinder), "no such option in the cinder 2025.2 option catalog")
+	expectRejected(t, c.Create(ctx, cinder), "no such option in the cinder 2026.1 option catalog")
 }
 
 // TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of

@@ -363,7 +363,7 @@ func TestIntegration_CRLifecycleRoundTrip(t *testing.T) {
 
 	created := &Placement{}
 	g.Expect(c.Get(ctx, key, created)).To(Succeed(), "read the created Placement back")
-	g.Expect(created.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(created.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(created.Spec.Deployment.Replicas).To(Equal(int32(3)))
 	// Captured before the Update, which writes the server's response back into
 	// created and would otherwise carry the bumped generation.

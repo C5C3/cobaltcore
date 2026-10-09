@@ -663,7 +663,7 @@ func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
 		},
 		Spec: KeystoneSpec{
 			Deployment: DeploymentSpec{Replicas: 0}, // webhook defaults to 3
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -716,7 +716,7 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 		},
 		Spec: KeystoneSpec{
 			Deployment: DeploymentSpec{Replicas: 5},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -1223,7 +1223,7 @@ func TestIntegration_AcceptsValidNonDefaultMarkers(t *testing.T) {
 
 	k := validIntegrationKeystone("valid-markers", ns.Name)
 	// Non-default image (different repository + tag with separators).
-	k.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-operator", Tag: "2025.2-upgraded"}
+	k.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-operator", Tag: "2026.1-upgraded"}
 	// Brownfield DB with an explicit non-default port and an underscore name.
 	k.Spec.Database.Host = "db.internal.svc.cluster.local"
 	k.Spec.Database.Port = 13306
@@ -1279,7 +1279,7 @@ func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
 	g.Expect(err).To(HaveOccurred(), "unknown extraConfig option should be rejected by the webhook")
 	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
-	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 }
 
 // --- KeystoneIdentityBackend CRD schema (CEL + defaults) ---

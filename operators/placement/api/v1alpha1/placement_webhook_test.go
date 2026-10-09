@@ -31,11 +31,11 @@ func validPlacement() *Placement {
 	return &Placement{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-placement", Namespace: "openstack"},
 		Spec: PlacementSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Deployment:       DeploymentSpec{Replicas: 3},
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/placement",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
@@ -630,7 +630,7 @@ func TestPlacementValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the placement 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the placement 2026.1 option catalog"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("api"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("auth_strategy_typo"))
 }
@@ -648,7 +648,7 @@ func TestPlacementValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the placement 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the placement 2026.1 option catalog"))
 	g.Expect(err.Error()).To(gomega.ContainSubstring("placement_databas"))
 }
 
@@ -667,7 +667,7 @@ func TestPlacementValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
 	warnings, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(warnings).To(gomega.ContainElement(gomega.ContainSubstring(
-		"deprecated option in placement 2025.2, replaced by [DEFAULT] log_file",
+		"deprecated option in placement 2026.1, replaced by [DEFAULT] log_file",
 	)))
 }
 
@@ -815,17 +815,17 @@ func TestPlacementValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 		}
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
-		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the placement 2025.2 option catalog")))
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the placement 2026.1 option catalog")))
 	})
 
 	t.Run("openStackRelease edit is re-validated and rejected", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		old := oldObj()
 		newObj := old.DeepCopy()
-		newObj.Spec.OpenStackRelease = "2026.1"
+		newObj.Spec.OpenStackRelease = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
-		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the placement 2026.1 option catalog")))
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the placement 2026.2 option catalog")))
 	})
 }
 

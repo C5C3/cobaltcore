@@ -429,7 +429,7 @@ func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
 	g.Expect(err).To(HaveOccurred(), "unknown extraConfig option should be rejected by the webhook")
 	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
-	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2026.1 option catalog"))
 }
 
 // TestIntegration_CRD_CELOnly_VerticalAutoscaling pins the CEL rules of

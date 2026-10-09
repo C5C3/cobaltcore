@@ -31,11 +31,11 @@ func validNeutron() *Neutron {
 	return &Neutron{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-neutron", Namespace: "openstack"},
 		Spec: NeutronSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Deployment:       DeploymentSpec{Replicas: 3},
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/neutron",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
@@ -942,7 +942,7 @@ func TestNeutronValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 	}
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2026.1 option catalog"))
 }
 
 func TestNeutronValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
@@ -955,7 +955,7 @@ func TestNeutronValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
 	}
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the neutron 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the neutron 2026.1 option catalog"))
 }
 
 // The catalog is the flat union of the three generator files, so an option of the
@@ -1038,7 +1038,7 @@ func TestNeutronValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 	}
 	_, err = w.ValidateUpdate(context.Background(), stale, edited)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the neutron 2026.1 option catalog"))
 }
 
 // TestNeutronValidateUpdate_CarriedRejectedKeyStaysUpdatable covers a Rejected

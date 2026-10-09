@@ -35,11 +35,11 @@ func validGlance() *Glance {
 	return &Glance{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-glance", Namespace: "openstack"},
 		Spec: GlanceSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Deployment:       DeploymentSpec{Replicas: 3},
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/glance",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
@@ -1736,8 +1736,8 @@ func TestGlanceDefault_EmptyImportFilteringListSurvivesAdmission(t *testing.T) {
 		"kind": "Glance",
 		"metadata": {"name": "test-glance", "namespace": "openstack"},
 		"spec": {
-			"openStackRelease": "2025.2",
-			"image": {"repository": "ghcr.io/c5c3/glance", "tag": "2025.2"},
+			"openStackRelease": "2026.1",
+			"image": {"repository": "ghcr.io/c5c3/glance", "tag": "2026.1"},
 			"keystoneEndpoint": "http://keystone.openstack.svc.cluster.local:5000/v3",
 			"importFiltering": {"allowedSchemes": [], "disallowedSchemes": ["http"]}
 		}
@@ -2022,7 +2022,7 @@ func TestGlanceValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.1 option catalog"))
 }
 
 // TestGlanceValidate_ExtraConfigUnknownSectionRejected pins that an option under
@@ -2038,7 +2038,7 @@ func TestGlanceValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2026.1 option catalog"))
 }
 
 // TestGlanceValidate_ExtraConfigReservedStoreSectionsExempt pins that the
@@ -2062,7 +2062,7 @@ func TestGlanceValidate_ExtraConfigReservedStoreSectionsExempt(t *testing.T) {
 // TestGlanceValidate_ExtraConfigOwnershipRegistryKeyExempt pins that an
 // operator-owned (section, key) pair is exempt even when the catalog section
 // exists but does not list that key. [keystone_authtoken] username is a
-// non-Rejected registry entry whose key the 2025.2 catalog does not carry, so
+// non-Rejected registry entry whose key the 2026.1 catalog does not carry, so
 // without the registry exemption it would be flagged as an unknown option.
 func TestGlanceValidate_ExtraConfigOwnershipRegistryKeyExempt(t *testing.T) {
 	g := gomega.NewWithT(t)
@@ -2169,7 +2169,7 @@ func TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected(t *testing.
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2026.1 option catalog"))
 }
 
 // TestGlanceValidate_ExtraConfigImportPluginsOwnedKeyRejected pins that none of
@@ -2243,7 +2243,7 @@ func TestGlanceValidate_ExtraConfigImportPluginsOwnedKeyRejected(t *testing.T) {
 
 		_, err := w.ValidateCreate(context.Background(), obj)
 		g.Expect(err).To(gomega.HaveOccurred())
-		g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2026.1 option catalog"))
 	})
 }
 
@@ -2321,7 +2321,7 @@ func TestGlanceValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
 	warnings, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(warnings).To(gomega.ContainElement(gomega.ContainSubstring(
-		"deprecated option in glance 2025.2, replaced by [DEFAULT] log_file",
+		"deprecated option in glance 2026.1, replaced by [DEFAULT] log_file",
 	)))
 }
 
@@ -2359,18 +2359,18 @@ func TestGlanceValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(gomega.HaveOccurred())
-		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.1 option catalog"))
 	})
 
 	t.Run("openStackRelease edit is re-validated and rejected", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		old := oldObj()
 		newObj := old.DeepCopy()
-		newObj.Spec.OpenStackRelease = "2026.1"
+		newObj.Spec.OpenStackRelease = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(gomega.HaveOccurred())
-		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.1 option catalog"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.2 option catalog"))
 	})
 
 	t.Run("plugin-list edit is re-validated and rejected", func(t *testing.T) {
@@ -2383,7 +2383,7 @@ func TestGlanceValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 
 		_, err := w.ValidateUpdate(context.Background(), old, newObj)
 		g.Expect(err).To(gomega.HaveOccurred())
-		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.1 option catalog"))
 	})
 }
 

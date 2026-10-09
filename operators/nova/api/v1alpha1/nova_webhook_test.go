@@ -34,10 +34,10 @@ func validNova() *Nova {
 	return &Nova{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-nova", Namespace: "openstack"},
 		Spec: NovaSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/nova",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			APIDatabase: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
@@ -721,7 +721,7 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 				o.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"not_an_option": "x"}}
 			},
 			wantPath: "spec.extraConfig[DEFAULT][not_an_option]",
-			wantSub:  "no such option in the nova 2025.2 option catalog",
+			wantSub:  "no such option in the nova 2026.1 option catalog",
 		},
 		{
 			name: "rejected owned key in extraConfig refused",
@@ -739,7 +739,7 @@ func TestNovaValidateCreate_RejectionTable(t *testing.T) {
 				o.Spec.ExtraConfig = map[string]map[string]string{"no_such_section": {"x": "y"}}
 			},
 			wantPath: "spec.extraConfig[no_such_section][x]",
-			wantSub:  "no such section in the nova 2025.2 option catalog",
+			wantSub:  "no such section in the nova 2026.1 option catalog",
 		},
 		{
 			name: "empty extraConfig section rejected",
@@ -1261,7 +1261,7 @@ func TestNovaValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 	}
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the nova 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the nova 2026.1 option catalog"))
 }
 
 // A release the build ships no catalog for must not block admission: the check
@@ -1351,12 +1351,12 @@ func TestNovaValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 	}
 	_, err = w.ValidateUpdate(context.Background(), stale, edited)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the nova 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the nova 2026.1 option catalog"))
 }
 
 // An OpenStack upgrade is an edit to spec.openStackRelease alone, and it is the
-// edit that can invalidate an unchanged extraConfig: [DEFAULT] watch_log_file is
-// in the 2025.2 catalog and gone from 2026.1. The release is one of the two
+// edit that can invalidate an unchanged extraConfig: [cache] enforce_fips_mode
+// is in the 2026.1 catalog and gone from 2026.2. The release is one of the two
 // inputs the update gate compares, so the bump is measured against the new
 // catalog instead of carrying an option nova no longer registers into the
 // upgrade.
@@ -1366,16 +1366,16 @@ func TestNovaValidateUpdate_ReleaseChangeRevalidatesExtraConfig(t *testing.T) {
 
 	running := validNova()
 	running.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"watch_log_file": "true"},
+		"cache": {"enforce_fips_mode": "true"},
 	}
 	_, err := w.ValidateCreate(context.Background(), running)
-	g.Expect(err).NotTo(gomega.HaveOccurred(), "the option is in the 2025.2 catalog")
+	g.Expect(err).NotTo(gomega.HaveOccurred(), "the option is in the 2026.1 catalog")
 
 	upgraded := running.DeepCopy()
-	upgraded.Spec.OpenStackRelease = "2026.1"
+	upgraded.Spec.OpenStackRelease = "2026.2"
 	_, err = w.ValidateUpdate(context.Background(), running, upgraded)
-	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.extraConfig[DEFAULT][watch_log_file]")))
-	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the nova 2026.1 option catalog")))
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("spec.extraConfig[cache][enforce_fips_mode]")))
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("no such option in the nova 2026.2 option catalog")))
 }
 
 // A deprecated option still takes effect, so it is admitted. The warning is the
@@ -1392,7 +1392,7 @@ func TestNovaValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
 	warnings, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(warnings).To(gomega.ConsistOf(gomega.ContainSubstring(
-		"spec.extraConfig [DEFAULT] logfile: deprecated option in nova 2025.2, replaced by [DEFAULT] log_file")))
+		"spec.extraConfig [DEFAULT] logfile: deprecated option in nova 2026.1, replaced by [DEFAULT] log_file")))
 }
 
 // A CR admitted clean can gain the newline in a later edit, so the shape rule
