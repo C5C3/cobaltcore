@@ -24,6 +24,13 @@
 #   7. Bootstrap OpenBao (init, unseal, configure)
 #   8. Wait for ExternalSecrets to sync
 #
+# Under EXTERNAL_CLUSTER=true, WITH_CEPH=true adds the lab Ceph: Step 3 applies
+# the Rook operator overlay ceph/ of the overlay root, Phase 3 waits for its
+# HelmRelease rook-ceph, Step 5 applies ceph/cluster/ once the Rook CRDs are
+# registered, and after Step 8 the run waits for the CephCluster to report
+# HEALTH_OK (wait_for_ceph_cluster) and for its two client keys to reach
+# openstack through OpenBao (sync_ceph_client_keys).
+#
 # Fresh-cluster bootstrap installs flux-operator and
 #   applies FluxInstance/flux without requiring the Flux CLI.
 # wait_for_fluxinstance gates Step 3 on Ready=True.
@@ -48,8 +55,10 @@
 #   (cluster create, nofile cap, Gateway API CRDs, OpenBao init/bootstrap) or
 #   apply their changes convergently (kubectl apply / upserts).
 #   Re-running with ADDITIONAL opt-in flags (e.g. WITH_METRICS_SERVER=true,
-#   WITH_PROMETHEUS=true) installs only the newly enabled components and leaves
-#   the already-deployed ones untouched. Two flags are NOT additive:
+#   WITH_PROMETHEUS=true, WITH_CEPH=true) installs only the newly enabled
+#   components and leaves the already-deployed ones untouched. A second run
+#   with WITH_CEPH=true re-applies both Ceph kustomizations, finds the Ceph
+#   healthy at once and forces the key sync again. Two flags are NOT additive:
 #   WITH_REGISTRY_CACHE only takes effect on a cluster CREATED with it (the
 #   mirror files stay inert otherwise — wire_node_registry_mirror warns), and
 #   WITH_CONTROLPLANE on a provisioned standalone stack is a mode change (the
@@ -71,6 +80,9 @@ HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 WEBHOOK_TIMEOUT="${WEBHOOK_TIMEOUT:-120}"
+# Bounds wait_for_ceph_cluster under WITH_CEPH=true. The OSD preparation on
+# NVMe/TCP block volumes takes minutes, so POD_TIMEOUT is too short.
+CEPH_TIMEOUT="${CEPH_TIMEOUT:-900}"
 
 # Host port that kind binds to forward into the Envoy data-plane NodePort
 # (containerPort 31443). Defaults to 443 so the documented Quick Start URL
@@ -181,6 +193,15 @@ WITH_DIZZY="${WITH_DIZZY:-false}"
 # WITH_NFS=true to install it. The server runs privileged, so the stack stays
 # opt-in.
 WITH_NFS="${WITH_NFS:-false}"
+
+# Gates the opt-in lab Ceph, external cluster only: the Rook operator overlay,
+# the ceph/ of OVERLAY_ROOT, in Step 3, the Ceph cluster overlay, its
+# ceph/cluster/, in Step 5, and after Step 8 the health wait and the hand-off
+# of the two client keys through OpenBao into openstack. There is no kind
+# overlay: preflight_checks refuses WITH_CEPH=true in kind mode (Ceph on kind
+# and in CI is #1339). Defaults to false; the OSD pods run privileged, so the
+# stack stays opt-in.
+WITH_CEPH="${WITH_CEPH:-false}"
 
 # Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
 # small RabbitmqCluster named `shared-rabbitmq` in `openstack`. The standalone
@@ -347,8 +368,10 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # are refused in preflight_checks, WITH_NFS=true is accepted only for an overlay
 # with an nfs/ kustomization, WITH_CHAOS_MESH=true only for one with a
 # chaos-mesh/ kustomization, WITH_DIZZY=true only for one with a dizzy/
-# kustomization and WITH_PROMETHEUS=true only for one with a prometheus/
-# kustomization; the cluster is checked for a default
+# kustomization, WITH_PROMETHEUS=true only for one with a prometheus/
+# kustomization and WITH_CEPH=true, which the kind mode refuses, only for one
+# with a ceph/ and a ceph/cluster/ kustomization; the cluster is checked for a
+# default
 # StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
 # foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
 # the Cinder backends of the overlay's ControlPlane mount, before anything is
@@ -388,7 +411,17 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # to render the HelmRelease kube-prometheus-stack in monitoring, the name this
 # script waits for and make teardown-infra deletes, and it takes the Keystone
 # dashboard from deploy/kind/prometheus/keystone-operator.json, which Step 3
-# stages. Read only under EXTERNAL_CLUSTER=true.
+# stages. An overlay may carry a ceph/ and a ceph/cluster/ kustomization too,
+# which Steps 3 and 5 apply under WITH_CEPH=true; neither has a kind
+# counterpart. ceph/ has to render the HelmRelease rook-ceph in rook-ceph, the
+# name Phase 3 waits for, and the ceph.rook.io CRDs through its chart.
+# ceph/cluster/ has to render the CephCluster rook-ceph in rook-ceph with its
+# device set first under spec.storage.storageClassDeviceSets, the SecretStore
+# openbao-ceph-store in rook-ceph and in openstack, the PushSecrets
+# ceph-client-cinder and ceph-client-cinder-backup in rook-ceph and the
+# ExternalSecrets of the same names in openstack, the objects
+# wait_for_ceph_cluster and sync_ceph_client_keys read. Read only under
+# EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
 # Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
@@ -940,6 +973,126 @@ wait_for_rabbitmqcluster() {
 }
 
 # ---------------------------------------------------------------------------
+# wait_for_ceph_cluster — Wait for the lab Ceph of WITH_CEPH=true to be healthy
+#
+# Polls the CephCluster rook-ceph in rook-ceph every 10 seconds, bounded by
+# CEPH_TIMEOUT, until its .status.phase is Ready, its .status.ceph.health is
+# HEALTH_OK, and at least as many Deployments labelled app=rook-ceph-osd report
+# one ready replica as the CR's first device set counts. The count is read from
+# the live CR (.spec.storage.storageClassDeviceSets[0].count), so a shoot of
+# another size changes the manifest and not this function. Rook removes no OSD
+# when the count goes down, so more ready OSDs than counted pass. A read that
+# fails, or a status without these fields, counts as not ready. On success it
+# logs .status.ceph.fsid, the default rbd_secret_uuid of #1341.
+#
+# On timeout it prints .status.ceph.details and .status.conditions, the pods
+# of rook-ceph, the last 50 lines of every rook-ceph-osd-prepare-* pod and of
+# the operator, then exits 1. A device class that serves no volumeMode: Block
+# claim shows here as OSD claims that stay Pending.
+#
+# It runs after Step 8, so the OSD preparation overlaps the OpenBao bootstrap
+# of Steps 6 to 8.
+# ---------------------------------------------------------------------------
+wait_for_ceph_cluster() {
+  local deadline=$(( $(date +%s) + CEPH_TIMEOUT ))
+  local cluster osds phase health fsid count ready
+
+  log "Waiting up to ${CEPH_TIMEOUT}s for CephCluster rook-ceph/rook-ceph to report HEALTH_OK with every OSD ready..."
+
+  while true; do
+    cluster="$(kubectl -n rook-ceph get cephcluster rook-ceph -o json 2>/dev/null)" || cluster=""
+    osds="$(kubectl -n rook-ceph get deployment -l app=rook-ceph-osd -o json 2>/dev/null)" || osds=""
+    phase="$(jq -r '.status.phase // empty' <<<"${cluster}" 2>/dev/null)" || phase=""
+    health="$(jq -r '.status.ceph.health // empty' <<<"${cluster}" 2>/dev/null)" || health=""
+    fsid="$(jq -r '.status.ceph.fsid // empty' <<<"${cluster}" 2>/dev/null)" || fsid=""
+    count="$(jq -r '.spec.storage.storageClassDeviceSets[0].count // empty' <<<"${cluster}" 2>/dev/null)" || count=""
+    ready="$(jq '[.items[]? | select(.status.readyReplicas == 1)] | length' <<<"${osds}" 2>/dev/null)" || ready=""
+    phase="${phase:-unknown}"
+    health="${health:-unknown}"
+    ready="${ready:-0}"
+
+    if [[ "${phase}" == "Ready" && "${health}" == "HEALTH_OK" && -n "${count}" ]] && (( ready >= count )); then
+      log "Ceph: phase Ready, HEALTH_OK, ${ready} of ${count} OSDs ready, fsid ${fsid:-unknown}"
+      return 0
+    fi
+    log "  Ceph: phase '${phase}', health '${health}', ${ready} of ${count:-unknown} OSDs ready."
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Ceph did not reach HEALTH_OK with ${count:-unknown} OSDs within ${CEPH_TIMEOUT}s (phase '${phase}', health '${health}', ${ready} OSDs ready)."
+      log "CephCluster health details and conditions:"
+      jq '{details: .status.ceph.details, conditions: .status.conditions}' <<<"${cluster}" 2>/dev/null || true
+      kubectl -n rook-ceph get pods -o wide 2>/dev/null || true
+      local pod
+      while IFS= read -r pod; do
+        [[ "${pod}" == pod/rook-ceph-osd-prepare-* ]] || continue
+        log "Last 50 log lines of ${pod}:"
+        kubectl -n rook-ceph logs "${pod}" --all-containers --tail=50 2>/dev/null || true
+      done < <(kubectl -n rook-ceph get pods -o name 2>/dev/null || true)
+      log "Last 50 log lines of deploy/rook-ceph-operator:"
+      kubectl -n rook-ceph logs deploy/rook-ceph-operator --tail=50 2>/dev/null || true
+      exit 1
+    fi
+
+    sleep 10
+  done
+}
+
+# ---------------------------------------------------------------------------
+# sync_ceph_client_keys — Hand the lab Ceph's two client keys to openstack
+#
+# Step 5 applies the SecretStores openbao-ceph-store in rook-ceph and in
+# openstack before OpenBao is initialised (Step 7) and before setup-auth.sh has
+# written the roles push-ceph-keys and read-ceph-keys, so ESO's first
+# validation of both stores failed and backed off, as it does for the cluster
+# store after Step 7. The PushSecrets ceph-client-cinder and
+# ceph-client-cinder-backup had no source Secret until the CephClients
+# reconciled. Called after wait_for_ceph_cluster, this forces both stores to
+# re-validate and waits for them (POD_TIMEOUT), forces both PushSecrets to
+# push and waits for them (EXTERNALSECRET_TIMEOUT), then forces the two
+# ExternalSecrets in openstack and waits for them to sync. A store or a
+# PushSecret that stays unready exits 1 with what to read.
+# ---------------------------------------------------------------------------
+sync_ceph_client_keys() {
+  local now ns name message
+  local keys=(ceph-client-cinder ceph-client-cinder-backup)
+  now="$(date +%s)"
+
+  log "Forcing the Ceph key SecretStores to re-validate..."
+  for ns in rook-ceph openstack; do
+    kubectl annotate secretstore/openbao-ceph-store -n "${ns}" \
+      "deploy.c5c3.io/reconcile-trigger=${now}" --overwrite || true
+  done
+  for ns in rook-ceph openstack; do
+    if ! kubectl wait secretstore/openbao-ceph-store -n "${ns}" \
+      --for=condition=Ready --timeout="${POD_TIMEOUT}s"; then
+      log "ERROR: SecretStore ${ns}/openbao-ceph-store is not Ready; read 'kubectl -n ${ns} describe secretstore openbao-ceph-store' (a 403 means setup-auth.sh did not write the push-ceph-keys or read-ceph-keys role)."
+      exit 1
+    fi
+  done
+
+  log "Forcing the Ceph key PushSecrets to push..."
+  for name in "${keys[@]}"; do
+    kubectl annotate "pushsecret/${name}" -n rook-ceph "force-sync=${now}" --overwrite || true
+  done
+  for name in "${keys[@]}"; do
+    if ! kubectl wait --for=condition=Ready "pushsecret/${name}" -n rook-ceph \
+      --timeout="${EXTERNALSECRET_TIMEOUT}s"; then
+      message="$(kubectl get "pushsecret/${name}" -n rook-ceph \
+        -o "jsonpath={.status.conditions[?(@.type=='Ready')].message}" 2>/dev/null)" || message=""
+      log "ERROR: PushSecret rook-ceph/${name} is not Ready: ${message:-<no Ready condition>}"
+      exit 1
+    fi
+  done
+
+  log "Forcing the Ceph key ExternalSecrets to sync..."
+  for name in "${keys[@]}"; do
+    kubectl annotate "externalsecret/${name}" -n openstack "force-sync=${now}" --overwrite || true
+  done
+  wait_for_externalsecrets openstack "${EXTERNALSECRET_TIMEOUT}" "${keys[@]}"
+  log "Ceph client keys ${keys[*]} synced into openstack."
+}
+
+# ---------------------------------------------------------------------------
 # wait_for_pods — Wait for pods matching a label selector to be Ready.
 #
 # Arguments:
@@ -1452,6 +1605,12 @@ preflight_checks() {
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
     preflight_external_cluster
   else
+    # The lab Ceph needs raw block volumes and a node per OSD; neither kind nor
+    # CI runs it yet.
+    if [[ "${WITH_CEPH}" == "true" ]]; then
+      log "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/lab/metal-stack, and Ceph on kind and in CI is tracked by #1339."
+      exit 1
+    fi
     # Check that Docker is running.
     if ! docker info &>/dev/null; then
       log "ERROR: Docker is not running. Please start Docker and try again."
@@ -1472,7 +1631,9 @@ preflight_checks() {
 # applies in place of deploy/kind/chaos-mesh, then WITH_DIZZY=true for one
 # without the dizzy/ kustomization Step 3 applies in place of deploy/kind/dizzy,
 # then WITH_PROMETHEUS=true for one without the prometheus/ kustomization Step 3
-# applies in place of deploy/kind/prometheus, then an overlay whose by-hand
+# applies in place of deploy/kind/prometheus, then WITH_CEPH=true for one
+# without the ceph/ and ceph/cluster/ kustomizations Steps 3 and 5 apply, then
+# an overlay whose by-hand
 # controlplane/ does not render exactly one ControlPlane,
 # openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
 # backend on the in-cluster NFS server, then a kubeconfig context whose API
@@ -1483,8 +1644,8 @@ preflight_checks() {
 # rather than as literal `"${WITH_X}" == "true"` tests, because each
 # tests/unit/hack/deploy_infra_<flag>_flag_test.sh counts those literals and a
 # second gate here would change the count. The overlay checks of WITH_NFS,
-# WITH_CHAOS_MESH, WITH_DIZZY and WITH_PROMETHEUS below are literal gates, and
-# those four tests count them.
+# WITH_CHAOS_MESH, WITH_DIZZY, WITH_PROMETHEUS and WITH_CEPH below are literal
+# gates, and those five tests count them.
 #
 # Logs the context and the API server URL, so the transcript records which
 # cluster the run went to.
@@ -1515,6 +1676,14 @@ preflight_external_cluster() {
   # well.
   if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
     log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
+    exit 1
+  fi
+
+  # The lab Ceph is two kustomizations: the operator in Step 3 and, once its
+  # CRDs are registered, the cluster in Step 5. Both files are tested.
+  if [[ "${WITH_CEPH}" == "true" && ( ! -f "${OVERLAY_ROOT}/ceph/kustomization.yaml" ||
+    ! -f "${OVERLAY_ROOT}/ceph/cluster/kustomization.yaml" ) ]]; then
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_CEPH=true needs ${OVERLAY_ROOT}/ceph/kustomization.yaml and ${OVERLAY_ROOT}/ceph/cluster/kustomization.yaml, which do not both exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}')."
     exit 1
   fi
 
@@ -2966,6 +3135,7 @@ main() {
   log "VPA recommender    : ${WITH_VPA} (set WITH_VPA=true to install the recommender and metrics-server)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
+  log "Ceph storage stack  : ${WITH_CEPH} (set WITH_CEPH=true for the Rook operator and a Ceph on raw block volumes; external cluster only)"
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
@@ -3366,6 +3536,18 @@ main() {
     fi
   fi
 
+  # Opt-in lab Ceph, first half: the Rook operator overlay, the ceph/ of the
+  # overlay root, external cluster only (preflight_checks refuses WITH_CEPH=true
+  # in kind mode). Its chart installs the ceph.rook.io CRDs the second half,
+  # ceph/cluster/, needs, so that one waits for Step 5. Every resource of the
+  # overlay is local, so kubectl's embedded kustomize renders it under the
+  # default LoadRestrictionsRootOnly security check, the same contract as the
+  # overlays above (no `--load-restrictor` flag, kubernetes/kubectl#948).
+  if [[ "${WITH_CEPH}" == "true" ]]; then
+    kubectl apply -k "${OVERLAY_ROOT}/ceph"
+    log "Ceph operator overlay ${OVERLAY_ROOT}/ceph applied (WITH_CEPH=true)."
+  fi
+
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
   # GitRepository/Kustomization) is published and valid, so it would reconcile —
   # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
@@ -3558,6 +3740,11 @@ main() {
   if [[ "${WITH_NFS}" == "true" ]]; then
     helm_releases+=(csi-driver-nfs)
   fi
+  # rook-ceph is appended last for the same reason. Its chart installs the
+  # Rook CRDs, so a Ready release here precedes the CRD wait of Step 5.
+  if [[ "${WITH_CEPH}" == "true" ]]; then
+    helm_releases+=(rook-ceph)
+  fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
   # Phase 3b: the RabbitMQ Cluster Operator arrives through a Flux Kustomization
@@ -3704,6 +3891,17 @@ main() {
   else
     kubectl apply -k "${OVERLAY_ROOT}/infrastructure"
     log "Infrastructure kustomize overlay applied."
+  fi
+
+  # Opt-in lab Ceph, second half: the CephCluster, its pools and clients, the
+  # toolbox and both halves of the key hand-off, the ceph/cluster/ of the
+  # overlay root. Their kinds come from the chart Phase 3 waited for. The
+  # SecretStores reach an OpenBao that Step 7 has yet to initialise; ESO
+  # retries them, and sync_ceph_client_keys forces them after Step 8.
+  if [[ "${WITH_CEPH}" == "true" ]]; then
+    wait_for_crds "${POD_TIMEOUT}" cephclusters.ceph.rook.io cephblockpools.ceph.rook.io cephclients.ceph.rook.io
+    kubectl apply -k "${OVERLAY_ROOT}/ceph/cluster"
+    log "Ceph cluster overlay ${OVERLAY_ROOT}/ceph/cluster applied (WITH_CEPH=true)."
   fi
 
   # The message-bus overlay lands after Step 5, where both of its prerequisites
@@ -3938,6 +4136,14 @@ main() {
     --for=condition=Available --timeout="${POD_TIMEOUT}s"
   log "OpenBaoCluster CR is Available."
 
+  # The lab Ceph: its OSDs prepared while Steps 6 to 8 ran. The key sync needs
+  # the roles Step 7 wrote and the client Secrets Rook writes once the Ceph is
+  # up, so it runs after the health wait.
+  if [[ "${WITH_CEPH}" == "true" ]]; then
+    wait_for_ceph_cluster
+    sync_ceph_client_keys
+  fi
+
   if [[ "${WITH_CONTROLPLANE}" != "true" ]]; then
     # Trigger MariaDB operator re-reconciliation.
     # The MariaDB CR was applied in Step 5 before the root password Secret
@@ -4166,6 +4372,9 @@ main() {
     if [[ "${WITH_DIZZY}" == "true" ]]; then
       log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
       log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"
+    fi
+    if [[ "${WITH_CEPH}" == "true" ]]; then
+      log "Ceph:   kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status"
     fi
     log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"
   else
