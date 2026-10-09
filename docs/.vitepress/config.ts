@@ -286,6 +286,10 @@ export default defineConfig({
               { text: 'KeystoneService Reconciler', link: '/reference/c5c3/keystoneservice-reconciler' },
               { text: 'KeystoneUser CRD', link: '/reference/c5c3/keystoneuser-crd' },
               { text: 'KeystoneUser Reconciler', link: '/reference/c5c3/keystoneuser-reconciler' },
+              { text: 'KeystoneProject CRD', link: '/reference/c5c3/keystoneproject-crd' },
+              { text: 'KeystoneRoleAssignment CRD', link: '/reference/c5c3/keystoneroleassignment-crd' },
+              { text: 'KeystoneCatalogEntry CRD', link: '/reference/c5c3/keystonecatalogentry-crd' },
+              { text: 'Keystone Orders Reconciler', link: '/reference/c5c3/keystone-orders-reconciler' },
             ],
           },
           {
