@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base for the immutability wave. It is applied FIRST and must
+# SUCCEED. The 07-10 variants reuse this metadata.name, so Chainsaw applies
+# each of them to the live object as an UPDATE, which is what makes the CEL
+# transition rules evaluate at all. userName is declared explicitly and
+# passwordGeneration starts at 2, so a lowered value is reachable.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: ku-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userName: svc-user
+  passwordGeneration: 2

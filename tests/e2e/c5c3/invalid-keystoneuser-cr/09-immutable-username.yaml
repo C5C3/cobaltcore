@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# userName is immutable (root CEL transition rule over the effective name):
+# the name identifies a live Keystone user. The error carries 'userName is
+# immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: ku-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userName: svc-user-renamed
+  passwordGeneration: 2
