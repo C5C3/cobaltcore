@@ -49,6 +49,9 @@ using that password."
   mints it from a password-based bootstrap `clouds.yaml`
   (`{cp}-admin-password-cloud`) and re-mints it on rotation. This sketch
   repeats that shape per service account.
+- A [`KeystoneUser`](../reference/c5c3/keystoneuser-crd.md) order delivers a
+  password `clouds.yaml` without a project into an assigned namespace, and the
+  application-credential order of #1330 builds on that user.
 
 ## The upstream constraint
 

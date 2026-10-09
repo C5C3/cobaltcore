@@ -1433,15 +1433,22 @@ one invocation over both directories would let either abort the other; the secon
 step writes its JUnit XML under a distinct report name so each survives in the
 uploaded artifact.
 
-A third chainsaw step runs `tests/e2e/c5c3/keystone-service/`, the own-namespace
+A third chainsaw step runs `tests/e2e/c5c3/keystone-user/`, the `KeystoneUser`
+order suite: against a Keystone-only ControlPlane of its own that assigns one
+namespace, it proves the Secret delivered beside the order, its repair, a
+rotation through `spec.passwordGeneration`, the refusal of an unassigned
+namespace, the freeze when the assignment is withdrawn, and the teardown down to
+the OpenBao path. It writes its JUnit XML as `chainsaw-report-keystone-user`.
+
+A fourth chainsaw step runs `tests/e2e/c5c3/keystone-service/`, the own-namespace
 `KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own and
 seeds that plane's OpenBao paths itself, then proves the round-trip through the
 materialised `clouds.yaml`, the rotation driven by a `CredentialRotation`, a
 collision held at `ServiceCollision` / `ServiceAccountCollision` until
-`catalog.adopt` takes the row over, and residue-free deletion. It is a separate
-step for the same `failFast` reason and writes its JUnit XML as
+`catalog.adopt` takes the row over, and residue-free deletion. Both are separate
+steps for the same `failFast` reason, and this one writes its JUnit XML as
 `chainsaw-report-keystone-service-own-namespace`, so the uploaded artifact
-carries three report files.
+carries four report files.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
@@ -1474,22 +1481,23 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 240-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 270-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
-OpenBao + ESO + K-ORC on one node is resource-heavy, and its three chainsaw
+OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
-and the `cleanup` budget runs after all three. Each of the three suites
+and the `cleanup` budget runs after all three. Each of the four suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 85, 80 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 85, 80, 80 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 240 minutes are the sum of roughly 40 minutes of bring-up, the
-85-minute ceiling of the full-chain suite, roughly 25 minutes for the
-foreign-namespace pass, and the 90-minute ceiling of the last suite; the
-bring-up and foreign-namespace terms are estimates, so confirm them against the
-first green run of the leg and re-derive the wall if either overruns.
+no JUnit XML. The 270 minutes cover roughly 40 minutes of bring-up, the
+85-minute ceiling of the full-chain suite, roughly 25 minutes each for the
+foreign-namespace and keystone-user passes, and the 90-minute ceiling of the
+last suite, 265 minutes in all; the bring-up and the two pass terms are
+estimates, so confirm them against the first green run of the leg and re-derive
+the wall if one overruns.
 
 Under `ci:measure-sizing` the job runs the
 [sizing measurement](#sizing-measurement): the watch starts after

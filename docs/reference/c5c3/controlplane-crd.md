@@ -24,7 +24,11 @@ what the c5c3-operator creates from it.
 The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
-this level; the reconciler is deferred). All four are documented here.
+this level; the reconciler is deferred). All four are documented here. The
+registration kind `KeystoneService` and the first order kind `KeystoneUser`,
+which orders a Keystone user from an [assigned namespace](#namespaceassignmentspec),
+have pages of their own: [KeystoneService CRD](./keystoneservice-crd.md) and
+[KeystoneUser CRD](./keystoneuser-crd.md).
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -2336,6 +2340,11 @@ the consent the order kinds check before they act on an order from that
 namespace, and it lists the Keystone roles such an order may request. The
 c5c3-operator reports every entry in `status.namespaceAssignments` (see
 [NamespaceAssignmentStatus](#namespaceassignmentstatus)).
+
+The first order kind is [`KeystoneUser`](./keystoneuser-crd.md), which orders an
+unscoped Keystone user and delivers its credentials as a Secret beside the
+order. It requests no role, so `allowedRoles` does not limit it. The
+[Order a Service User](../../guides/order-a-service-user.md) guide walks it.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
