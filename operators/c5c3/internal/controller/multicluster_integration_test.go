@@ -150,11 +150,15 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	// workload, never the service CRs. The K-ORC kinds ARE served here, because
 	// they ship in those same shared dirs, and that is what makes the "the K-ORC
 	// ensemble is not on B" assertions below a real absence rather than a kind the
-	// cluster could never have answered for. The KeystoneUser order is the one
-	// c5c3 CRD a target serves: an order for a namespace assigned there lives
-	// there, as the target-cluster-access chart installs it.
+	// cluster could never have answered for. The order kinds are the c5c3 CRDs a
+	// target serves: an order for a namespace assigned there lives there, as the
+	// target-cluster-access chart installs it.
+	orderCRDs := filepath.Join(testutil.C5c3WebhookDir(), "..", "crd", "bases")
 	targetClient, targetCfg := commonenvtest.StartEnvTestWithConfig(t, mcScheme, append(commonenvtest.CommonFakeCRDDirs(),
-		filepath.Join(testutil.C5c3WebhookDir(), "..", "crd", "bases", "c5c3.io_keystoneusers.yaml")))
+		filepath.Join(orderCRDs, "c5c3.io_keystoneusers.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_keystoneprojects.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_keystoneroleassignments.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_keystonecatalogentries.yaml")))
 
 	// --- Environment A: the management cluster, hosting the manager.
 	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
@@ -235,10 +239,31 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			if err := r.setupWithOptions(mcMgr, opts); err != nil {
 				return err
 			}
-			// The KeystoneUser reconciler resolves an order's cluster through the
-			// same multicluster manager, so an order on the target is reconciled
-			// from here.
-			return (&KeystoneUserReconciler{
+			// The order reconcilers resolve an order's cluster through the same
+			// multicluster manager, so an order on the target is reconciled from
+			// here.
+			if err := (&KeystoneUserReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			if err := (&KeystoneProjectReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			if err := (&KeystoneRoleAssignmentReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			return (&KeystoneCatalogEntryReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Resolver: mcMgr,
@@ -1147,8 +1172,10 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcEnsureNamespace(t, ctx, mgmtClient, mcOrderNamespace)
 		mcEnsureNamespace(t, ctx, targetClient, mcAssignedNamespace)
 		orderCP := integrationManagedControlPlane(mcOrderControlPlane, mcOrderNamespace)
+		// The roles are the next subtest's: the pieces order a role beside a user
+		// on this same plane.
 		orderCP.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
-			{Namespace: mcAssignedNamespace, TargetClusterRef: target},
+			{Namespace: mcAssignedNamespace, TargetClusterRef: target, AllowedRoles: []string{"member"}},
 		}
 		g.Expect(mgmtClient.Create(ctx, orderCP)).To(Succeed(), "create the ControlPlane the order names")
 		driveControlPlaneToAdminCredentialReady(t, ctx, mgmtClient, orderCP)
@@ -1289,6 +1316,230 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, secretKey, &corev1.Secret{}))).To(BeTrue())
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 			"deleting the order removes the User, the PushSecret and the Secret")
+	})
+
+	t.Run("the Keystone pieces are ordered beside a user on the target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		orderCPKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: mcOrderControlPlane}
+		cpRef := c5c3v1alpha1.ControlPlaneRefSpec{Name: mcOrderControlPlane, Namespace: mcOrderNamespace}
+		objMeta := func(name string) metav1.ObjectMeta {
+			return metav1.ObjectMeta{Name: name, Namespace: mcAssignedNamespace}
+		}
+		user := &c5c3v1alpha1.KeystoneUser{ObjectMeta: objMeta("pieces"), Spec: c5c3v1alpha1.KeystoneUserSpec{ControlPlaneRef: cpRef}}
+		project := &c5c3v1alpha1.KeystoneProject{
+			ObjectMeta: objMeta("pieces-project"), Spec: c5c3v1alpha1.KeystoneProjectSpec{ControlPlaneRef: cpRef},
+		}
+		assignment := &c5c3v1alpha1.KeystoneRoleAssignment{
+			ObjectMeta: objMeta("pieces-member"),
+			Spec: c5c3v1alpha1.KeystoneRoleAssignmentSpec{
+				ControlPlaneRef: cpRef,
+				UserRef:         c5c3v1alpha1.KeystoneOrderRef{Name: user.Name},
+				ProjectRef:      c5c3v1alpha1.KeystoneOrderRef{Name: project.Name},
+				Role:            "member",
+			},
+		}
+		entry := &c5c3v1alpha1.KeystoneCatalogEntry{
+			ObjectMeta: objMeta("pieces-dns"),
+			Spec: c5c3v1alpha1.KeystoneCatalogEntrySpec{
+				ControlPlaneRef: cpRef,
+				ServiceType:     "dns",
+				Endpoints: []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+					{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://dns.example.test/v2"},
+				},
+			},
+		}
+		for _, obj := range []client.Object{user, project, assignment, entry} {
+			g.Expect(targetClient.Create(ctx, obj)).To(Succeed(), "create %T %s on the target cluster", obj, obj.GetName())
+		}
+
+		userPrefix := keystoneUserChildPrefix(user, mcTargetCluster)
+		projectRef := keystoneProjectRef(project, mcTargetCluster)
+		assignmentRef := keystoneRoleAssignmentRef(assignment, mcTargetCluster)
+		entryRef := keystoneCatalogEntryRef(entry, mcTargetCluster)
+		childKey := func(name string) client.ObjectKey { return client.ObjectKey{Namespace: mcOrderNamespace, Name: name} }
+
+		// envtest runs no K-ORC: a probe is answered absent, a child is reported
+		// Available for its live generation, by hand.
+		markStatus := func(obj client.Object, name string, set func()) {
+			t.Helper()
+			g.Eventually(func() error {
+				if err := mgmtClient.Get(ctx, childKey(name), obj); err != nil {
+					return err
+				}
+				set()
+				return mgmtClient.Status().Update(ctx, obj)
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "report %s converged", name)
+		}
+		available := func(obj client.Object) []metav1.Condition {
+			conds := availableImportConditions()
+			conds[0].ObservedGeneration = obj.GetGeneration()
+			return conds
+		}
+		expectClaimed := func(obj client.Object, name string, ref orderRef) {
+			t.Helper()
+			mcEventuallyExists(t, ctx, mgmtClient, childKey(name), obj, name)
+			g.Expect(obj.GetLabels()).To(Equal(ref.childLabels()), name)
+			g.Expect(obj.GetOwnerReferences()).To(BeEmpty(), "%s carries labels only", name)
+		}
+		expectCondition := func(obj client.Object, key client.ObjectKey, conds func() []metav1.Condition,
+			condType string, status metav1.ConditionStatus, reason, what string,
+		) {
+			t.Helper()
+			g.Eventually(func(ig Gomega) {
+				ig.Expect(targetClient.Get(ctx, key, obj)).To(Succeed())
+				cond := meta.FindStatusCondition(conds(), condType)
+				ig.Expect(cond).NotTo(BeNil())
+				ig.Expect(cond.Status).To(Equal(status))
+				ig.Expect(cond.Reason).To(Equal(reason))
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), what)
+		}
+
+		// The user and the project converge first; the assignment waits on them.
+		userProbe := &orcv1alpha1.User{}
+		markStatus(userProbe, userPrefix+"user-probe", func() { userProbe.Status.Conditions = pendingImportConditions(0) })
+		managedUser := &orcv1alpha1.User{}
+		markStatus(managedUser, userPrefix+"user", func() {
+			managedUser.Status.ID = ptr.To("pieces-user-id")
+			managedUser.Status.Conditions = available(managedUser)
+			managedUser.Status.Resource = &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: userPrefix + "password-v1"}
+		})
+		projectProbe := &orcv1alpha1.Project{}
+		markStatus(projectProbe, projectRef.childPrefix()+"project-probe", func() {
+			projectProbe.Status.Conditions = pendingImportConditions(0)
+		})
+		managedProject := &orcv1alpha1.Project{}
+		expectClaimed(managedProject, projectRef.childPrefix()+"project", projectRef)
+		markStatus(managedProject, projectRef.childPrefix()+"project", func() {
+			managedProject.Status.ID = ptr.To("pieces-project-id")
+			managedProject.Status.Conditions = available(managedProject)
+		})
+		liveProject := &c5c3v1alpha1.KeystoneProject{}
+		expectCondition(liveProject, client.ObjectKeyFromObject(project), func() []metav1.Condition { return liveProject.Status.Conditions },
+			conditionTypeKeystoneProjectProjectReady, metav1.ConditionTrue, reasonKeystoneProjectProvisioned,
+			"the project is provisioned")
+		g.Expect(liveProject.Status.ProjectID).To(Equal("pieces-project-id"))
+
+		role := &orcv1alpha1.Role{}
+		expectClaimed(role, assignmentRef.childPrefix()+"role", assignmentRef)
+		roleAssignment := &orcv1alpha1.RoleAssignment{}
+		expectClaimed(roleAssignment, assignmentRef.childPrefix()+"assignment", assignmentRef)
+		g.Expect(string(*roleAssignment.Spec.Resource.UserRef)).To(Equal(userPrefix + "user"))
+		g.Expect(string(*roleAssignment.Spec.Resource.ProjectRef)).To(Equal(projectRef.childPrefix() + "project"))
+		markStatus(role, assignmentRef.childPrefix()+"role", func() {
+			role.Status.ID = ptr.To("member-role-id")
+			role.Status.Conditions = available(role)
+		})
+		markStatus(roleAssignment, assignmentRef.childPrefix()+"assignment", func() {
+			roleAssignment.Status.Conditions = available(roleAssignment)
+			roleAssignment.Status.Resource = &orcv1alpha1.RoleAssignmentResourceStatus{
+				RoleID: "member-role-id", UserID: "pieces-user-id", ProjectID: "pieces-project-id",
+			}
+		})
+		liveAssignment := &c5c3v1alpha1.KeystoneRoleAssignment{}
+		expectCondition(liveAssignment, client.ObjectKeyFromObject(assignment),
+			func() []metav1.Condition { return liveAssignment.Status.Conditions },
+			conditionTypeKeystoneRoleAssignmentAssignmentReady, metav1.ConditionTrue, reasonKeystoneRoleAssignmentAssigned,
+			"the role is assigned")
+		g.Expect(liveAssignment.Status.RoleID).To(Equal("member-role-id"))
+		g.Expect(liveAssignment.Status.UserID).To(Equal("pieces-user-id"))
+		g.Expect(liveAssignment.Status.ProjectID).To(Equal("pieces-project-id"))
+
+		// The entry has no catalog consent yet, and projects nothing.
+		liveEntry := &c5c3v1alpha1.KeystoneCatalogEntry{}
+		entryKey := client.ObjectKeyFromObject(entry)
+		expectCondition(liveEntry, entryKey, func() []metav1.Condition { return liveEntry.Status.Conditions },
+			conditionTypeKeystoneCatalogEntryCatalogReady, metav1.ConditionFalse, reasonKeystoneCatalogEntryNotAllowed,
+			"the entry is refused without allowCatalogEntries")
+		mcExpectAbsent(t, ctx, mgmtClient, childKey(entryRef.childPrefix()+"service-probe"), &orcv1alpha1.Service{},
+			"catalog probe")
+
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, orderCPKey, live); err != nil {
+				return err
+			}
+			live.Spec.NamespaceAssignments[0].AllowCatalogEntries = true
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "admit catalog entries")
+		// No ControlPlane watch reaches an order on a target cluster; an
+		// annotation edit wakes it the way the refresh would.
+		g.Eventually(func() error {
+			if err := targetClient.Get(ctx, entryKey, liveEntry); err != nil {
+				return err
+			}
+			liveEntry.Annotations = map[string]string{"test.c5c3.io/nudge": "admitted"}
+			return targetClient.Update(ctx, liveEntry)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "nudge the entry")
+
+		serviceProbe := &orcv1alpha1.Service{}
+		markStatus(serviceProbe, entryRef.childPrefix()+"service-probe", func() {
+			serviceProbe.Status.Conditions = pendingImportConditions(0)
+		})
+		service := &orcv1alpha1.Service{}
+		expectClaimed(service, entryRef.childPrefix()+"service", entryRef)
+		region := &orcv1alpha1.Region{}
+		expectClaimed(region, entryRef.childPrefix()+"region", entryRef)
+		endpoint := &orcv1alpha1.Endpoint{}
+		expectClaimed(endpoint, entryRef.childPrefix()+"endpoint-public", entryRef)
+		markStatus(service, entryRef.childPrefix()+"service", func() {
+			service.Status.ID = ptr.To("dns-service-id")
+			service.Status.Conditions = available(service)
+		})
+		markStatus(region, entryRef.childPrefix()+"region", func() { region.Status.Conditions = available(region) })
+		markStatus(endpoint, entryRef.childPrefix()+"endpoint-public", func() {
+			endpoint.Status.ID = ptr.To("dns-public-id")
+			endpoint.Status.Conditions = available(endpoint)
+		})
+		expectCondition(liveEntry, entryKey, func() []metav1.Condition { return liveEntry.Status.Conditions },
+			conditionTypeKeystoneCatalogEntryCatalogReady, metav1.ConditionTrue, reasonKeystoneServiceCatalogRegistered,
+			"the entry is registered")
+		g.Expect(liveEntry.Status.ServiceID).To(Equal("dns-service-id"))
+
+		// A referenced user holds its deletion until the assignment is gone.
+		g.Expect(targetClient.Delete(ctx, user)).To(Succeed())
+		liveUser := &c5c3v1alpha1.KeystoneUser{}
+		expectCondition(liveUser, client.ObjectKeyFromObject(user), func() []metav1.Condition { return liveUser.Status.Conditions },
+			conditionTypeKeystoneUserUserReady, metav1.ConditionFalse, reasonOrderReferencedByRoleAssignments,
+			"a referenced user holds")
+		g.Expect(meta.FindStatusCondition(liveUser.Status.Conditions, conditionTypeKeystoneUserUserReady).Message).
+			To(ContainSubstring(`["pieces-member"]`))
+		g.Expect(mgmtClient.Get(ctx, childKey(userPrefix+"user"), &orcv1alpha1.User{})).To(Succeed(),
+			"the held user's K-ORC User stays")
+
+		g.Expect(targetClient.Delete(ctx, assignment)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, client.ObjectKeyFromObject(assignment),
+				&c5c3v1alpha1.KeystoneRoleAssignment{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(assignmentRef.childPrefix()+"assignment"),
+				&orcv1alpha1.RoleAssignment{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(assignmentRef.childPrefix()+"role"),
+				&orcv1alpha1.Role{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "deleting the assignment removes its children")
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, client.ObjectKeyFromObject(user),
+				&c5c3v1alpha1.KeystoneUser{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(userPrefix+"user"), &orcv1alpha1.User{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the released user is torn down")
+
+		g.Expect(targetClient.Delete(ctx, project)).To(Succeed())
+		g.Expect(targetClient.Delete(ctx, entry)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, client.ObjectKeyFromObject(project),
+				&c5c3v1alpha1.KeystoneProject{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, entryKey, &c5c3v1alpha1.KeystoneCatalogEntry{}))).To(BeTrue())
+			for _, child := range []struct {
+				name string
+				obj  client.Object
+			}{
+				{projectRef.childPrefix() + "project", &orcv1alpha1.Project{}},
+				{entryRef.childPrefix() + "service", &orcv1alpha1.Service{}},
+				{entryRef.childPrefix() + "region", &orcv1alpha1.Region{}},
+				{entryRef.childPrefix() + "endpoint-public", &orcv1alpha1.Endpoint{}},
+			} {
+				ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(child.name), child.obj))).To(BeTrue(), child.name)
+			}
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "deleting the project and the entry removes their children")
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {

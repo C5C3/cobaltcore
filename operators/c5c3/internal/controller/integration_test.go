@@ -5465,6 +5465,283 @@ func TestIntegration_KeystoneUser_SchemaValidation(t *testing.T) {
 	})
 }
 
+// orderSchemaCase is one admission case of an order kind's schema test: a
+// create from spec, or an update of the stored base object through mutate.
+type orderSchemaCase struct {
+	name       string
+	objName    string
+	spec       map[string]any
+	mutate     func(spec map[string]any)
+	wantErrSub string
+}
+
+// runOrderSchemaCases creates each create case as an unstructured object of
+// kind and expects it rejected with wantErrSub, admits minimal under a 63-byte
+// name, then creates base once per update case, applies mutate to its spec and
+// expects the update rejected the same way, or admitted when wantErrSub is
+// empty. The order kinds have no webhook, so these schema rules are all there
+// is.
+func runOrderSchemaCases(
+	t *testing.T, c client.Client, ctx context.Context, kind string,
+	createCases []orderSchemaCase, minimal, base map[string]any, updateCases []orderSchemaCase,
+) {
+	t.Helper()
+	newNamespace := func(g *WithT) string {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-order-cel-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		return ns.Name
+	}
+	object := func(name, namespace string, spec map[string]any) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+		u.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind(kind))
+		u.SetName(name)
+		u.SetNamespace(namespace)
+		return u
+	}
+	for i, tc := range createCases {
+		t.Run("create rejects "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			err := c.Create(ctx, object(cmp.Or(tc.objName, fmt.Sprintf("order-%d", i)), newNamespace(g), tc.spec))
+			g.Expect(err).To(HaveOccurred(), "admission must reject %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+		})
+	}
+	t.Run("a minimal order with a 63-byte name is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(c.Create(ctx, object(strings.Repeat("a", 63), newNamespace(g), minimal))).To(Succeed())
+	})
+	for i, tc := range updateCases {
+		verb := "update rejects "
+		if tc.wantErrSub == "" {
+			verb = "update admits "
+		}
+		t.Run(verb+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			stored := object(fmt.Sprintf("base-%d", i), newNamespace(g), runtime.DeepCopyJSON(base))
+			g.Expect(c.Create(ctx, stored)).To(Succeed())
+
+			tc.mutate(stored.Object["spec"].(map[string]any))
+			err := c.Update(ctx, stored)
+			if tc.wantErrSub == "" {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must admit %s", tc.name)
+				return
+			}
+			g.Expect(err).To(HaveOccurred(), "admission must reject %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+		})
+	}
+}
+
+// orderControlPlaneRefCases are the create rejections and update rejections of
+// the controlPlaneRef every order kind carries, with its messages naming kind.
+func orderControlPlaneRefCases(kind string, base map[string]any) (create, update []orderSchemaCase) {
+	with := func(ref map[string]any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec["controlPlaneRef"] = ref
+		return spec
+	}
+	create = []orderSchemaCase{
+		{
+			name: "a 64-byte metadata.name", objName: strings.Repeat("a", 64), spec: runtime.DeepCopyJSON(base),
+			wantErrSub: "metadata.name must be at most 63 bytes",
+		},
+		{name: "a controlPlaneRef without a name", spec: with(map[string]any{}), wantErrSub: "Required value"},
+		{
+			name:       "a controlPlaneRef namespace outside the label shape",
+			spec:       with(map[string]any{"name": "cp", "namespace": "Bad_NS"}),
+			wantErrSub: "should match",
+		},
+	}
+	update = []orderSchemaCase{
+		{
+			name: "a changed controlPlaneRef.name",
+			mutate: func(spec map[string]any) {
+				spec["controlPlaneRef"].(map[string]any)["name"] = "other"
+			},
+			wantErrSub: "controlPlaneRef.name is immutable; delete and re-create the " + kind +
+				" to move it to another ControlPlane",
+		},
+		{
+			name: "a changed controlPlaneRef.namespace",
+			mutate: func(spec map[string]any) {
+				spec["controlPlaneRef"].(map[string]any)["namespace"] = "other"
+			},
+			wantErrSub: "controlPlaneRef.namespace is immutable; delete and re-create the " + kind +
+				" to move it to another ControlPlane",
+		},
+	}
+	return create, update
+}
+
+// TestIntegration_KeystoneProject_SchemaValidation pins every admission rule of
+// the KeystoneProject CRD against the real envtest API server; the substrings
+// are the ones the invalid-keystoneproject-cr chainsaw corpus asserts on.
+func TestIntegration_KeystoneProject_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "KeystoneProject"
+	ref := map[string]any{"name": "cp", "namespace": "cp-ns"}
+	base := map[string]any{"controlPlaneRef": ref, "projectName": "svc-project"}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a comma in projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": "a,b"}, wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": ""}, wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "a 256-byte projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": strings.Repeat("a", 256)},
+			wantErrSub: "Too long",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed explicit projectName",
+			mutate:     func(spec map[string]any) { spec["projectName"] = "other-project" },
+			wantErrSub: "projectName is immutable; delete and re-create the KeystoneProject to rename its project",
+		},
+	)
+	runOrderSchemaCases(t, c, ctx, kind, create, map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}},
+		base, update)
+}
+
+// TestIntegration_KeystoneRoleAssignment_SchemaValidation pins every admission
+// rule of the KeystoneRoleAssignment CRD; the substrings are the ones the
+// invalid-keystoneroleassignment-cr chainsaw corpus asserts on.
+func TestIntegration_KeystoneRoleAssignment_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "KeystoneRoleAssignment"
+	base := map[string]any{
+		"controlPlaneRef": map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"userRef":         map[string]any{"name": "workflow"},
+		"projectRef":      map[string]any{"name": "workflow-project"},
+		"role":            "member",
+	}
+	without := func(field string) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		delete(spec, field)
+		return spec
+	}
+	with := func(field string, value any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec[field] = value
+		return spec
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing role", spec: without("role"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing userRef", spec: without("userRef"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing projectRef", spec: without("projectRef"), wantErrSub: "Required value"},
+		orderSchemaCase{
+			name: "an empty userRef.name", spec: with("userRef", map[string]any{"name": ""}),
+			wantErrSub: "should be at least 1 chars",
+		},
+		orderSchemaCase{name: "a comma in role", spec: with("role", "a,b"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty role", spec: with("role", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{name: "a 256-byte role", spec: with("role", strings.Repeat("r", 256)), wantErrSub: "Too long"},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed userRef",
+			mutate:     func(spec map[string]any) { spec["userRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "userRef is immutable; delete and re-create the KeystoneRoleAssignment to bind another user",
+		},
+		orderSchemaCase{
+			name:       "a changed projectRef",
+			mutate:     func(spec map[string]any) { spec["projectRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "projectRef is immutable; delete and re-create the KeystoneRoleAssignment to bind another project",
+		},
+		orderSchemaCase{
+			name:       "a changed role",
+			mutate:     func(spec map[string]any) { spec["role"] = "reader" },
+			wantErrSub: "role is immutable; delete and re-create the KeystoneRoleAssignment to assign another role",
+		},
+	)
+	minimal := with("controlPlaneRef", map[string]any{"name": "cp"})
+	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
+}
+
+// TestIntegration_KeystoneCatalogEntry_SchemaValidation pins every admission
+// rule of the KeystoneCatalogEntry CRD; the substrings are the ones the
+// invalid-keystonecatalogentry-cr chainsaw corpus asserts on.
+func TestIntegration_KeystoneCatalogEntry_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "KeystoneCatalogEntry"
+	public := map[string]any{"interface": "public", "url": "https://dns.example.test/v2"}
+	base := map[string]any{
+		"controlPlaneRef": map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"serviceType":     "dns",
+		"serviceName":     "svc-dns",
+		"endpoints":       []any{public},
+	}
+	without := func(field string) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		delete(spec, field)
+		return spec
+	}
+	with := func(field string, value any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec[field] = value
+		return spec
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing serviceType", spec: without("serviceType"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "serviceType identity", spec: with("serviceType", "identity"), wantErrSub: "ControlPlane-owned"},
+		orderSchemaCase{name: "an uppercase serviceType", spec: with("serviceType", "DNS"), wantErrSub: "should match"},
+		orderSchemaCase{name: "a comma in serviceName", spec: with("serviceName", "a,b"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty serviceName", spec: with("serviceName", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "an ftp endpoint URL", spec: with("endpoints", []any{map[string]any{"interface": "public", "url": "ftp://x"}}),
+			wantErrSub: "should match",
+		},
+		orderSchemaCase{
+			name: "an unknown interface", spec: with("endpoints", []any{map[string]any{"interface": "private", "url": "https://x"}}),
+			wantErrSub: "Unsupported value",
+		},
+		orderSchemaCase{
+			name: "two public endpoints", spec: with("endpoints", []any{public, public}), wantErrSub: "Duplicate value",
+		},
+		orderSchemaCase{
+			name: "a 1025-byte endpoint URL",
+			spec: with("endpoints", []any{map[string]any{
+				"interface": "public", "url": "https://" + strings.Repeat("a", 1025-len("https://")),
+			}}),
+			wantErrSub: "Too long",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed serviceType",
+			mutate:     func(spec map[string]any) { spec["serviceType"] = "image" },
+			wantErrSub: "serviceType is immutable; delete and re-create the KeystoneCatalogEntry to register a different service type",
+		},
+		orderSchemaCase{
+			name:       "a changed explicit serviceName",
+			mutate:     func(spec map[string]any) { spec["serviceName"] = "other-dns" },
+			wantErrSub: "serviceName is immutable; delete and re-create the KeystoneCatalogEntry to rename its catalog entry",
+		},
+		orderSchemaCase{
+			name: "a changed endpoints list",
+			mutate: func(spec map[string]any) {
+				spec["endpoints"] = []any{
+					map[string]any{"interface": "public", "url": "https://dns.example.test/v3"},
+					map[string]any{"interface": "internal", "url": "http://designate-api.tenant.svc:9001/v2"},
+				}
+			},
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}, "serviceType": "dns"}
+	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on
