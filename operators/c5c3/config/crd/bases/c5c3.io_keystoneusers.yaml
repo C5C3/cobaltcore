@@ -1,0 +1,267 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: keystoneusers.c5c3.io
+spec:
+  group: c5c3.io
+  names:
+    kind: KeystoneUser
+    listKind: KeystoneUserList
+    plural: keystoneusers
+    singular: keystoneuser
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.controlPlaneRef.name
+      name: ControlPlane
+      type: string
+    - jsonPath: .status.passwordGeneration
+      name: Generation
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KeystoneUser orders one Keystone user from a namespace the referenced
+          ControlPlane assigns to a service owner. The operator creates the user in the
+          ControlPlane's admin domain, keeps its password in OpenBao, and writes the
+          credentials into the Secret <metadata.name>-credentials beside the order, with
+          the keys clouds.yaml and password.
+
+          The order lives in the assigned namespace, on the cluster that namespace is
+          assigned on: the management cluster or a registered target cluster. Status,
+          the finalizer and the delivered Secret are written on the order's own
+          cluster. The K-ORC User, its password Secrets and the PushSecret backing the
+          password up to OpenBao live in the ControlPlane's namespace on the management
+          cluster and carry ownership labels.
+
+          The spec.namespaceAssignments entry for the order's namespace and cluster is
+          the only consent. spec.korc.serviceRegistrations.allowedNamespaces and the
+          ControlPlane's own namespaces admit nothing. Without an entry the order
+          reports NamespaceNotAssigned and is frozen: nothing is provisioned,
+          delivered, repaired or swept, and what it created stays. Deleting the order
+          still tears everything down.
+
+          The user is unscoped: it has no project and no role, so its clouds.yaml
+          carries no project keys and yields an unscoped token. A Keystone user of the
+          same name that the order did not create is refused with
+          ServiceAccountCollision and never taken over.
+
+          Raising spec.passwordGeneration rotates the password. The delivered Secret
+          is rewritten with the new one, and status.passwordGeneration reports the
+          generation Keystone holds.
+
+          The kind has no webhook, because a target cluster runs none: every
+          admission rule is a schema rule. An empty spec.userName means metadata.name,
+          and an empty spec.controlPlaneRef.namespace means the order's own namespace;
+          the reconciler resolves both defaults.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: KeystoneUserSpec defines the desired state of a KeystoneUser.
+            properties:
+              controlPlaneRef:
+                description: |-
+                  ControlPlaneRef names the ControlPlane whose identity plane the user is
+                  created in. An order on a target cluster sets the namespace: the
+                  ControlPlane lives on the management cluster, in a namespace the order's
+                  own namespace does not name.
+
+                  Both halves are frozen after creation. Re-pointing a live order would
+                  strand the Keystone user it created on the old plane. Delete and re-create
+                  the order to move it. The namespace rule spells the field __namespace__,
+                  the escape Kubernetes CEL requires for a property named after a CEL
+                  reserved word.
+                properties:
+                  name:
+                    description: Name is the referenced ControlPlane CR's name.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the referenced ControlPlane CR's namespace. Empty (the
+                      default) means the KeystoneService's own namespace. The referenced
+                      ControlPlane does not have to exist at admission time (GitOps ordering:
+                      the registration may be applied before the ControlPlane); a dangling
+                      reference surfaces as a status condition, not an admission error.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: controlPlaneRef.name is immutable; delete and re-create
+                    the KeystoneUser to move it to another ControlPlane
+                  rule: self.name == oldSelf.name
+                - message: controlPlaneRef.namespace is immutable; delete and re-create
+                    the KeystoneUser to move it to another ControlPlane
+                  rule: '(has(self.__namespace__) ? self.__namespace__ : '''') ==
+                    (has(oldSelf.__namespace__) ? oldSelf.__namespace__ : '''')'
+              passwordGeneration:
+                default: 1
+                description: |-
+                  PasswordGeneration is the generation of the user's password. Raising it
+                  rotates the password: the operator generates a new one, Keystone applies
+                  it, and the delivered Secret is rewritten. It may only increase.
+                format: int64
+                minimum: 1
+                type: integer
+                x-kubernetes-validations:
+                - message: passwordGeneration may only increase
+                  rule: self >= oldSelf
+              userName:
+                description: |-
+                  UserName is the Keystone user name. Empty (the default) means the order's
+                  metadata.name. The pattern and caps mirror K-ORC's OpenStackName.
+
+                  The effective name is frozen after creation by a rule on the whole object,
+                  so setting userName to a value other than metadata.name later is rejected
+                  as well. The name identifies a live Keystone user, and an edit would create
+                  a second one.
+                maxLength: 255
+                minLength: 1
+                pattern: ^[^,]+$
+                type: string
+            required:
+            - controlPlaneRef
+            type: object
+          status:
+            description: KeystoneUserStatus defines the observed state of a KeystoneUser.
+            properties:
+              conditions:
+                description: Conditions are UserReady, DeliveryReady and the aggregate
+                  Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastPasswordRotation:
+                description: LastPasswordRotation is when the password was last rotated.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the .metadata.generation the controller last
+                  reconciled.
+                format: int64
+                type: integer
+              passwordGeneration:
+                description: PasswordGeneration is the password generation Keystone
+                  holds.
+                format: int64
+                type: integer
+              secretKeys:
+                description: |-
+                  SecretKeys lists the keys of the delivered Secret once it carries the
+                  current password: clouds.yaml and password.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+              secretName:
+                description: |-
+                  SecretName is the name of the delivered Secret in the order's namespace,
+                  <metadata.name>-credentials.
+                type: string
+              userID:
+                description: UserID is the Keystone user id. Empty until the user
+                  is provisioned.
+                maxLength: 1024
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be at most 63 bytes; it is carried as a label
+            value on the order's children
+          rule: size(self.metadata.name) <= 63
+        - message: userName is immutable; delete and re-create the KeystoneUser to
+            rename its user
+          rule: '(has(self.spec.userName) ? self.spec.userName : self.metadata.name)
+            == (has(oldSelf.spec.userName) ? oldSelf.spec.userName : oldSelf.metadata.name)'
+    served: true
+    storage: true
+    subresources:
+      status: {}

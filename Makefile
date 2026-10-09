@@ -263,7 +263,9 @@ manifests:
 
 .PHONY: sync-crds
 # sync-crds copies generated CRD manifests from config/crd/bases/ to the Helm
-# chart crds/ directory, prepending a cross-reference comment header.
+# chart crds/ directory, prepending a cross-reference comment header. The
+# KeystoneUser CRD gets a third copy in the target-cluster-access chart: an
+# order on a target cluster lives there, so that cluster has to serve the kind.
 sync-crds: manifests
 	@for op in $(OPERATORS); do \
 		if [ -d "operators/$$op/helm/$$op-operator/crds" ]; then \
@@ -280,10 +282,14 @@ sync-crds: manifests
 			done; \
 		fi; \
 	done
+	@echo "Syncing the KeystoneUser CRD into the target-cluster-access chart..."
+	@cp operators/c5c3/helm/c5c3-operator/crds/c5c3.io_keystoneusers.yaml deploy/target-cluster/target-cluster-access/crds/
 
 .PHONY: verify-crd-sync
 # verify-crd-sync checks that CRD files in helm chart crds/ directories match
-# the source files in config/crd/bases/ (ignoring the cross-reference header).
+# the source files in config/crd/bases/ (ignoring the cross-reference header);
+# the KeystoneUser copy in the target-cluster-access chart must equal the
+# c5c3-operator chart copy byte for byte.
 verify-crd-sync:
 	@fail=0; \
 	tmp=$$(mktemp); \
@@ -307,6 +313,11 @@ verify-crd-sync:
 			done; \
 		fi; \
 	done; \
+	if ! cmp -s operators/c5c3/helm/c5c3-operator/crds/c5c3.io_keystoneusers.yaml deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml; then \
+		echo "FAIL: deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml differs from operators/c5c3/helm/c5c3-operator/crds/c5c3.io_keystoneusers.yaml"; \
+		diff -u operators/c5c3/helm/c5c3-operator/crds/c5c3.io_keystoneusers.yaml deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml || true; \
+		fail=1; \
+	fi; \
 	if [ "$$fail" -eq 1 ]; then \
 		echo "CRD sync check failed. Run 'make sync-crds' to update."; \
 		exit 1; \
