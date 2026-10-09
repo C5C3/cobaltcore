@@ -807,7 +807,7 @@ func TestKeystoneUser_RefusalComesBackOnTheRefresh(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kuCondition(got, conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserDeliveryRefused))
-	g.Expect(result.RequeueAfter).To(Equal(keystoneUserRefreshAfter))
+	g.Expect(result.RequeueAfter).To(Equal(orderRefreshAfter))
 }
 
 // --- teardown ---

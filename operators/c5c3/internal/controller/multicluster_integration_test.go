@@ -1223,7 +1223,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			return mgmtClient.Update(ctx, live)
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "publish the Keystone endpoint")
 		// No ControlPlane watch reaches an order on a target cluster; it comes back
-		// on keystoneUserRefreshAfter, which a test cannot wait for. An annotation
+		// on orderRefreshAfter, which a test cannot wait for. An annotation
 		// edit wakes it the same way.
 		g.Eventually(func() error {
 			live := &c5c3v1alpha1.KeystoneUser{}

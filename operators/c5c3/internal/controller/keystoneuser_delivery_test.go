@@ -175,7 +175,7 @@ func TestKeystoneUserDelivery_UnpublishedKeystone(t *testing.T) {
 	result, err := h.reconcile(context.Background())
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(keystoneUserRefreshAfter))
+	g.Expect(result.RequeueAfter).To(Equal(orderRefreshAfter))
 	got := h.get(t)
 	delivery := kuCondition(got, conditionTypeKeystoneUserDeliveryReady)
 	g.Expect(delivery.Reason).To(Equal(reasonKeystoneUserKeystoneNotPublished))
@@ -240,7 +240,7 @@ func TestKeystoneUserDelivery_AuthURLPerCluster(t *testing.T) {
 			secret, found := deliveredSecret(t, h.order)
 			g.Expect(found).To(BeTrue())
 			g.Expect(deliveredAuth(t, secret).Auth.AuthURL).To(Equal(tc.want))
-			g.Expect(result.RequeueAfter).To(Equal(keystoneUserRefreshAfter),
+			g.Expect(result.RequeueAfter).To(Equal(orderRefreshAfter),
 				"a converged order on a target cluster comes back on the refresh")
 			_, onManagement := deliveredSecret(t, h.mgmt)
 			g.Expect(onManagement).To(BeFalse(), "the Secret is written beside the order only")

@@ -176,7 +176,7 @@ func (r *KeystoneRoleAssignmentReconciler) reconcileNormal(
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	refused := ctrl.Result{RequeueAfter: keystoneUserRefreshAfter}
+	refused := ctrl.Result{RequeueAfter: orderRefreshAfter}
 	if roles := entry.RolesOutside([]string{order.Spec.Role}); len(roles) > 0 {
 		fail(reasonKeystoneServiceRoleNotAllowed, namespaceAssignmentRoleMessage(cp, entry, roles))
 		return refused, nil
