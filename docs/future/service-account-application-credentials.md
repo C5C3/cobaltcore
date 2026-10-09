@@ -51,7 +51,11 @@ using that password."
   repeats that shape per service account.
 - A [`KeystoneUser`](../reference/c5c3/keystoneuser-crd.md) order delivers a
   password `clouds.yaml` without a project into an assigned namespace, and the
-  application-credential order of #1330 builds on that user.
+  application-credential order of #1330 builds on that user. The project and
+  the role such a credential scopes to come from a
+  [`KeystoneProject`](../reference/c5c3/keystoneproject-crd.md) and a
+  [`KeystoneRoleAssignment`](../reference/c5c3/keystoneroleassignment-crd.md)
+  ordered from the same namespace.
 
 ## The upstream constraint
 

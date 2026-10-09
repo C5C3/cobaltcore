@@ -92,7 +92,11 @@ delegate the areas to parallel sub-agents for a large corpus.
   `keystoneuser-reconciler.md` pair `## User provisioning` with
   `keystoneuser_provision.go`, `## Credential delivery` with
   `keystoneuser_delivery.go`, and `## Deletion and Teardown` with
-  `keystoneuser_controller.go`; in
+  `keystoneuser_controller.go`; in `keystone-orders-reconciler.md` pair
+  `## The shared scaffold` with `keystoneorder.go`, `## Project provisioning`
+  with `keystoneproject_controller.go`, `## Role assignment` with
+  `keystoneroleassignment_controller.go`, and `## Catalog registration` with
+  `keystonecatalogentry_controller.go`; in
   `controlplane-reconciler.md` pair `### Built-in service
   registrations` with `builtin_registrations.go`.
 - **CRD reference** — for each Spec field listed in

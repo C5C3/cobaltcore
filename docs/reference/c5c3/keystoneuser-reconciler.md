@@ -48,6 +48,12 @@ empty name is the management cluster. `SetupWithManager` delegates to
 `setupWithOptions`, so the integration suites register the same watches with
 `SkipNameValidation`.
 
+The cluster-agnostic machinery (child naming and ownership, the admission
+gates, the pass result, the teardown and the label mapping) lives in
+`keystoneorder.go`, which the reconcilers of the further order kinds share.
+`keystoneuser_controller.go` keeps its `keystoneUser*` names as delegates. See
+[The shared scaffold](./keystone-orders-reconciler.md#the-shared-scaffold).
+
 Before the watches it registers one field indexer, on the local manager's
 indexer only: with a provider configured the multicluster indexer would
 register against every target cluster too, and one without the kind would fail
@@ -63,8 +69,9 @@ its engagement.
 | --- | --- | --- | --- |
 | `KeystoneUser` | `For()` | management, and every engaged target cluster that serves the kind | Filtered by `watch.CRUpdatePredicate()`. The request carries the event's cluster |
 | `Secret` | `Owns()` | the same | The delivered Secret beside the order. An edit or a deletion brings the order back with the event's cluster |
-| K-ORC `User`, `Secret`, `PushSecret` | `Watches()` | management | Mapped back to the order by the three ownership labels (`keystoneUserChildToRequests`). The cluster label becomes the request's cluster |
-| `ControlPlane` | `Watches()` | management | Index-backed fan-out (`controlPlaneToKeystoneUsersMapper`) to the orders on the management cluster that reference it. Filtered by `keystoneUserControlPlanePredicate()`: an update passes on a spec change, a deletion, or a flip of `AdminCredentialReady`, the one status condition the gates read |
+| K-ORC `User`, `Secret`, `PushSecret` | `Watches()` | management | Mapped back to the order by the three ownership labels (`orderChildRequests`). The cluster label becomes the request's cluster |
+| `KeystoneRoleAssignment` | `Watches()` | management, and every engaged target cluster that serves the kind | The user an assignment names as `userRef`, on the assignment's cluster (`keystoneUserReferenceRequests`), so an assignment leaving wakes a held teardown. Filtered by `watch.CRUpdatePredicate()` |
+| `ControlPlane` | `Watches()` | management | Index-backed fan-out (`controlPlaneToKeystoneUsersMapper`) to the orders on the management cluster that reference it. Filtered by `orderControlPlanePredicate()`: an update passes on a spec change, a deletion, or a flip of `AdminCredentialReady`, the one status condition the gates read |
 
 The order watch on a target cluster carries the `ClusterServesKind` filter. A
 cluster that does not serve the kind is engaged for every other watch and
@@ -72,7 +79,7 @@ skipped for this one; a CRD installed later is watched once the cluster is
 engaged again, which a change of its registration Secret triggers.
 
 No ControlPlane watch reaches an order on a target cluster. Such an order is
-reconciled again every 10 minutes (`keystoneUserRefreshAfter`), which is how a
+reconciled again every 10 minutes (`orderRefreshAfter`), which is how a
 publication or an admin-domain edit reaches it.
 
 ### RBAC
@@ -83,9 +90,10 @@ On the management cluster the ClusterRole gains the order verbs:
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
 ```
 
-It never creates or deletes an order. The kinds it writes in the ControlPlane's
+The last marker is for the teardown hold. It never creates or deletes an order. The kinds it writes in the ControlPlane's
 namespace (K-ORC Users, Secrets, PushSecrets) and the ControlPlane reads are
 granted by the ControlPlane's marker block.
 
@@ -101,10 +109,11 @@ Reconcile
   ├─ resolve the order's cluster ──→ unresolvable: log, no requeue
   ├─ deleting? ───────────────────→ reconcileDelete  (see Deletion and Teardown)
   └─ reconcileNormal
-       ├─ cluster name ≤ 63        → ClusterNameTooLong, no requeue
-       ├─ resolveControlPlane      → ControlPlaneNotFound (10s); on a target
-       │                             cluster NamespaceNotAssigned (1m)
-       ├─ namespace assignment     → NamespaceNotAssigned (1m), frozen
+       ├─ orderAdmission
+       │    ├─ cluster name ≤ 63   → ClusterNameTooLong, no requeue
+       │    ├─ ControlPlane read   → ControlPlaneNotFound (10s); on a target
+       │    │                        cluster NamespaceNotAssigned (1m)
+       │    └─ namespace assignment → NamespaceNotAssigned (1m), frozen
        ├─ EnsureFinalizer          c5c3.io/keystoneuser-teardown
        ├─ AdminCredentialReady     → WaitingForAdminCredential (10s)
        ├─ provisionUser   (instrumented: KeystoneUserProvision)
@@ -220,9 +229,17 @@ child's name that is not the order's child.
 
 ## Deletion and Teardown
 
-`reconcileDelete` runs the `c5c3.io/keystoneuser-teardown` finalizer without
-consulting the assignment, so a frozen order tears down too. It issues the
-deletes in this order, in the resolved `controlPlaneRef` namespace:
+`reconcileDelete` first lists the KeystoneRoleAssignments in the order's
+namespace through the order's cluster client (`referencingRoleAssignments`).
+While one names the order as its `userRef`, `UserReady` reads
+`ReferencedByRoleAssignments` naming them, nothing is deleted, and the pass
+requeues after a minute. K-ORC guards a User with a finalizer while a
+RoleAssignment references it, so the sweep would wedge.
+
+Past the hold, `orderTeardown` runs the `c5c3.io/keystoneuser-teardown`
+finalizer without consulting the assignment, so a frozen order tears down too.
+It issues the deletes in this order, in the resolved `controlPlaneRef`
+namespace:
 
 1. the PushSecret, whose `deletionPolicy` has ESO remove the OpenBao path,
 2. the managed User, whose K-ORC finalizer deletes the Keystone user,
@@ -265,7 +282,8 @@ back to `condition_type=UNKNOWN`.
 
 | Layer | Location |
 | --- | --- |
-| Gates, freeze, mappers, teardown | `operators/c5c3/internal/controller/keystoneuser_controller_test.go` |
+| Gates, freeze, mappers, teardown, the hold | `operators/c5c3/internal/controller/keystoneuser_controller_test.go` |
+| The shared scaffold | `operators/c5c3/internal/controller/keystoneorder_test.go` |
 | User provisioning | `operators/c5c3/internal/controller/keystoneuser_provision_test.go` |
 | Credential delivery | `operators/c5c3/internal/controller/keystoneuser_delivery_test.go` |
 | The unscoped `clouds.yaml` | `operators/c5c3/internal/controller/korc_cloudsyaml_test.go` |

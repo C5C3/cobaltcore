@@ -140,6 +140,11 @@ Withdrawing an entry is therefore not a revocation; deleting the order is. A
 frozen order re-reads the ControlPlane every minute, so restoring the entry
 brings it back without an edit to the order.
 
+A [KeystoneRoleAssignment](./keystoneroleassignment-crd.md) in the order's
+namespace may name the order as its `userRef`. While one does, deleting the
+order holds on `ReferencedByRoleAssignments`; see
+[Deletion Semantics](#deletion-semantics).
+
 ### Orders on a target cluster
 
 An order for a namespace assigned on a target cluster is created on that
@@ -230,6 +235,7 @@ namespace, so its protection at rest is the cluster's encryption configuration.
 | `UserReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the User. A latched transport error is cleared first, so K-ORC retries. |
 | `UserReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the User failed. |
 | `UserReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting the user. |
+| `UserReady` | False | `ReferencedByRoleAssignments` | The order is being deleted while KeystoneRoleAssignments in its namespace still name it as `userRef`. The message lists them. |
 | `DeliveryReady` | True | `Delivered` | The Secret beside the order carries the current password. |
 | `DeliveryReady` | False | `WaitingForServiceAccounts` | The user is not provisioned yet, the password of the current generation is not available, or the delivered Secret does not carry it yet. |
 | `DeliveryReady` | False | `KeystoneNotPublished` | The order lives on a cluster that cannot reach the in-cluster Keystone Service and the ControlPlane publishes no public endpoint. |
@@ -321,6 +327,13 @@ that carries it runs the teardown:
 | OpenBao backup path | **Deleted** with the PushSecret (`deletionPolicy: Delete`) |
 | Source Secret | **Deleted** |
 | Delivered Secret | **Deleted**; the garbage collector would reap it too |
+
+The teardown first lists the KeystoneRoleAssignments in the order's namespace.
+While one names the order as its `userRef`, the order reads
+`UserReady=False/ReferencedByRoleAssignments`, deletes nothing, and checks again
+every minute and whenever an assignment changes: K-ORC guards a User with a
+finalizer while a RoleAssignment references it, and deleting the user would
+take the assignment with it. Delete the assignments first.
 
 The assignment is not consulted, so a frozen order tears down the same way.
 While the ControlPlane exists the teardown is patient: the finalizer is held
