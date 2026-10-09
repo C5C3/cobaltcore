@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An entry without a serviceType is rejected by the CRD required list. The
+# error carries 'Required value'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-invalid-servicetype-missing
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent

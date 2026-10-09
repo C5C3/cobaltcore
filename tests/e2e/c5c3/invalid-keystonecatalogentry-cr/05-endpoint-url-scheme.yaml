@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An endpoint URL with the ftp scheme violates the http(s) pattern of the
+# endpoint type KeystoneService shares. The error carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-invalid-endpoint-url-scheme
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  serviceType: dns
+  endpoints:
+  - interface: public
+    url: ftp://x

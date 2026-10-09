@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# serviceName carrying a comma is rejected by the CRD pattern that mirrors
+# K-ORC's OpenStackName. The error carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-invalid-servicename-comma
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  serviceType: dns
+  serviceName: a,b

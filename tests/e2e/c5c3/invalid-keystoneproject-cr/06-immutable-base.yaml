@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base for the immutability wave. It is applied FIRST and must
+# SUCCEED. The 07-09 variants reuse this metadata.name, so Chainsaw applies
+# each of them to the live object as an UPDATE, which is what makes the CEL
+# transition rules evaluate at all. projectName is declared explicitly.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: kp-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  projectName: svc-project

@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# projectName is immutable (root CEL transition rule over the effective
+# name): the name identifies a live Keystone project. The error carries
+# 'projectName is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: kp-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  projectName: svc-project-renamed
