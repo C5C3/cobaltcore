@@ -5255,6 +5255,12 @@ func TestIntegration_ControlPlane_NamespaceAssignmentsSchemaValidation(t *testin
 				{Namespace: "tenant-a", TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "no-such-cluster"}},
 			},
 		},
+		{
+			name: "an entry that admits catalog entries is accepted",
+			assignments: []c5c3v1alpha1.NamespaceAssignmentSpec{
+				{Namespace: "tenant-a", AllowCatalogEntries: true},
+			},
+		},
 	}
 
 	for i, tc := range cases {
@@ -5280,6 +5286,35 @@ func TestIntegration_ControlPlane_NamespaceAssignmentsSchemaValidation(t *testin
 			}
 		})
 	}
+}
+
+// TestIntegration_ControlPlane_NamespaceAssignmentStatusWithoutCatalogConsent
+// writes a status.namespaceAssignments item without allowCatalogEntries, the
+// shape an operator built before the field writes, and expects the API server
+// to accept it: the CRD stays installed when the operator is rolled back, and
+// that operator must still be able to write the ControlPlane status.
+func TestIntegration_ControlPlane_NamespaceAssignmentStatusWithoutCatalogConsent(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-assignment-status-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	cp := integrationMinimalControlPlane("cp-assignment-status", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed())
+
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind("ControlPlane"))
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), live)).To(Succeed())
+	g.Expect(unstructured.SetNestedSlice(live.Object, []any{map[string]any{
+		"namespace":        "tenant-a",
+		"clusterReachable": true,
+		"namespaceExists":  true,
+		"reason":           string(c5c3v1alpha1.NamespaceAssignmentAssigned),
+	}}, "status", "namespaceAssignments")).To(Succeed())
+	g.Expect(c.Status().Update(ctx, live)).To(Succeed(),
+		"a namespaceAssignments status item without allowCatalogEntries must be accepted")
 }
 
 // keystoneUserObject returns a KeystoneUser as an unstructured object, so a

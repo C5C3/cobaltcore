@@ -121,9 +121,10 @@ func (r *ControlPlaneReconciler) observeNamespaceAssignment(
 ) c5c3v1alpha1.NamespaceAssignmentStatus {
 	logger := log.FromContext(ctx).WithValues("assignedNamespace", a.Namespace, "location", a.Location())
 	status := c5c3v1alpha1.NamespaceAssignmentStatus{
-		Namespace:        a.Namespace,
-		TargetClusterRef: a.TargetClusterRef.DeepCopy(),
-		AllowedRoles:     slices.Clone(a.AllowedRoles),
+		Namespace:           a.Namespace,
+		TargetClusterRef:    a.TargetClusterRef.DeepCopy(),
+		AllowedRoles:        slices.Clone(a.AllowedRoles),
+		AllowCatalogEntries: a.AllowCatalogEntries,
 	}
 
 	c, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, a.TargetClusterRef)

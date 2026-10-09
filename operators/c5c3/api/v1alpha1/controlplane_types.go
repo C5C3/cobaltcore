@@ -2515,6 +2515,11 @@ type ServiceRegistrationsSpec struct {
 // both. An empty allowedRoles is legal and allows no role, while the namespace
 // may still order a database or a message-bus vhost.
 //
+// A KeystoneCatalogEntry order needs allowCatalogEntries as well: a catalog row
+// is visible to every cloud user, so the assignment alone does not admit one.
+// The flag binds orders only. The catalog block of a KeystoneService stays
+// admitted by spec.korc.serviceRegistrations.allowedNamespaces.
+//
 // An entry for a management-cluster namespace that
 // spec.korc.serviceRegistrations.allowedNamespaces admits also binds the
 // KeystoneService CRs there: an account role outside allowedRoles reports
@@ -2564,6 +2569,13 @@ type NamespaceAssignmentSpec struct {
 	// +kubebuilder:validation:items:MaxLength=255
 	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
 	AllowedRoles []string `json:"allowedRoles,omitempty"`
+
+	// AllowCatalogEntries admits KeystoneCatalogEntry orders from this namespace.
+	// Without it such an order reports CatalogNotAllowed and is frozen the way a
+	// withdrawn entry freezes it. It binds orders only: the catalog block of a
+	// KeystoneService is admitted by allowedNamespaces, not by this flag.
+	// +optional
+	AllowCatalogEntries bool `json:"allowCatalogEntries,omitempty"`
 }
 
 // ServiceAccountProjectSpec declares the OpenStack project a service account is
@@ -2898,6 +2910,11 @@ type NamespaceAssignmentStatus struct {
 	// AllowedRoles echoes the spec entry's role allowlist.
 	// +optional
 	AllowedRoles []string `json:"allowedRoles,omitempty"`
+
+	// AllowCatalogEntries echoes the spec entry's catalog consent. Absent means
+	// false.
+	// +optional
+	AllowCatalogEntries bool `json:"allowCatalogEntries,omitempty"`
 
 	// ClusterReachable reports whether the cluster resolved and answered the
 	// namespace read.

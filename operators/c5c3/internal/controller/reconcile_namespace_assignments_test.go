@@ -118,6 +118,24 @@ func TestReconcileNamespaceAssignments_ExistingNamespace(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("all 1 namespace assignment(s) resolve to a reachable cluster"))
 }
 
+// TestReconcileNamespaceAssignments_EchoesCatalogConsent echoes each entry's
+// allowCatalogEntries, false for an entry that does not set it.
+func TestReconcileNamespaceAssignments_EchoesCatalogConsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := assignedControlPlane(
+		c5c3v1alpha1.NamespaceAssignmentSpec{Namespace: "tenant-a", AllowCatalogEntries: true},
+		c5c3v1alpha1.NamespaceAssignmentSpec{Namespace: "tenant-b"},
+	)
+	r, _ := assignmentsReconciler(t, existingNamespace("tenant-a", nil), existingNamespace("tenant-b", nil))
+
+	_, err := r.reconcileNamespaceAssignments(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cp.Status.NamespaceAssignments).To(HaveLen(2))
+	g.Expect(cp.Status.NamespaceAssignments[0].AllowCatalogEntries).To(BeTrue())
+	g.Expect(cp.Status.NamespaceAssignments[1].AllowCatalogEntries).To(BeFalse())
+}
+
 // TestReconcileNamespaceAssignments_MissingNamespace keeps the condition True
 // for a namespace that does not exist yet, because an assignment may precede
 // it, and requeues so the namespace shows up once it is created. The step

@@ -749,6 +749,11 @@ spec:
                     both. An empty allowedRoles is legal and allows no role, while the namespace
                     may still order a database or a message-bus vhost.
 
+                    A KeystoneCatalogEntry order needs allowCatalogEntries as well: a catalog row
+                    is visible to every cloud user, so the assignment alone does not admit one.
+                    The flag binds orders only. The catalog block of a KeystoneService stays
+                    admitted by spec.korc.serviceRegistrations.allowedNamespaces.
+
                     An entry for a management-cluster namespace that
                     spec.korc.serviceRegistrations.allowedNamespaces admits also binds the
                     KeystoneService CRs there: an account role outside allowedRoles reports
@@ -773,6 +778,13 @@ spec:
                     control plane's Ready False, and so does an outage of a cluster that only
                     tenants use.
                   properties:
+                    allowCatalogEntries:
+                      description: |-
+                        AllowCatalogEntries admits KeystoneCatalogEntry orders from this namespace.
+                        Without it such an order reports CatalogNotAllowed and is frozen the way a
+                        withdrawn entry freezes it. It binds orders only: the catalog block of a
+                        KeystoneService is admitted by allowedNamespaces, not by this flag.
+                      type: boolean
                     allowedRoles:
                       description: |-
                         AllowedRoles lists the Keystone role names an order from this namespace may
@@ -12473,6 +12485,11 @@ spec:
                     NamespaceAssignmentStatus reports the observed state of one
                     spec.namespaceAssignments entry.
                   properties:
+                    allowCatalogEntries:
+                      description: |-
+                        AllowCatalogEntries echoes the spec entry's catalog consent. Absent means
+                        false.
+                      type: boolean
                     allowedRoles:
                       description: AllowedRoles echoes the spec entry's role allowlist.
                       items:
