@@ -87,6 +87,7 @@ rules:
   resources:
   - controlplanes/finalizers
   - keystoneservices/finalizers
+  - keystoneusers/finalizers
   verbs:
   - update
 - apiGroups:
@@ -95,10 +96,21 @@ rules:
   - controlplanes/status
   - credentialrotations/status
   - keystoneservices/status
+  - keystoneusers/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - c5c3.io
+  resources:
+  - keystoneusers
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - c5c3.io
   resources:

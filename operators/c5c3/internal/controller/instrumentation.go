@@ -15,8 +15,9 @@ import (
 // condition_type it drives. The instrumenter consults this map to attribute
 // errors to the correct Ready sub-condition.
 //
-// Every value MUST be a member of subConditionTypes or of the KeystoneService
-// CR's keystoneServiceSubConditionTypes; the drift-guard test
+// Every value MUST be a member of subConditionTypes, of the KeystoneService
+// CR's keystoneServiceSubConditionTypes or of the KeystoneUser CR's
+// keystoneUserSubConditionTypes; the drift-guard test
 // TestSubReconcilerConditionTypesCoversAllNames asserts this invariant. If a
 // sub_reconciler name reaches the instrumenter without a key here, the helper
 // falls back to instrumentation.ConditionTypeUnknown ("UNKNOWN") rather than
@@ -57,6 +58,10 @@ var subReconcilerConditionTypes = map[string]string{
 	// aggregation), and the two must stay distinguishable per metric series.
 	"KeystoneServiceCatalog": conditionTypeKeystoneServiceCatalogReady,
 	"KeystoneServiceAccount": conditionTypeKeystoneServiceAccountReady,
+	// The KeystoneUser controller's two legs, prefixed with the kind for the same
+	// reason.
+	"KeystoneUserProvision": conditionTypeKeystoneUserUserReady,
+	"KeystoneUserDelivery":  conditionTypeKeystoneUserDeliveryReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
