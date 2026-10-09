@@ -65,7 +65,7 @@ func dbTLSBaseKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 1},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Database:  "keystone",
 				SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},

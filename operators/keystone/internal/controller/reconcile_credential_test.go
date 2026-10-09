@@ -61,7 +61,7 @@ func credentialTestKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -687,13 +687,13 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(podSpec.InitContainers).To(HaveLen(1))
 	initContainer := podSpec.InitContainers[0]
 	g.Expect(initContainer.Name).To(Equal("copy-keys"))
-	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
+	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
 	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
 
 	// Verify main container uses script from versioned ConfigMap.
 	container := podSpec.Containers[0]
 	g.Expect(container.Name).To(Equal("credential-rotate"))
-	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
 	g.Expect(container.Command).To(Equal([]string{"/scripts/credential_rotate.sh"}))
 
 	// Verify env vars for Secret update via K8s API and oslo.config overrides

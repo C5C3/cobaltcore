@@ -75,7 +75,7 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -228,7 +228,7 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -379,7 +379,7 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -558,7 +558,7 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -635,7 +635,7 @@ spec:
         - -DFOREGROUND
         - -f
         - /etc/keystone-federation-proxy/httpd-base.conf
-        image: ghcr.io/c5c3/keystone-federation-proxy:2025.2
+        image: ghcr.io/c5c3/keystone-federation-proxy:2026.1
         imagePullPolicy: Always
         livenessProbe:
           initialDelaySeconds: 15
@@ -799,7 +799,7 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
-        image: ghcr.io/c5c3/keystone:2025.2
+        image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
           preStop:
@@ -954,7 +954,7 @@ func pinFederationProjection() *federationProjection {
 		},
 		SAMLProtocolID:        "mapped",
 		SAMLRemoteIDAttribute: "MELLON_IDP",
-		ProxyImage:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "2025.2"},
+		ProxyImage:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "2026.1"},
 	}
 }
 

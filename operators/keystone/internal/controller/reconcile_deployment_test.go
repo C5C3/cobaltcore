@@ -61,7 +61,7 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 			Deployment: keystonev1alpha1.DeploymentSpec{
 				Replicas: 3,
 			},
-			Image: commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image: commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -232,7 +232,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Name).To(Equal("keystone"))
-	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
 
 	// Verify port.
 	g.Expect(container.Ports).To(HaveLen(1))
@@ -1528,8 +1528,8 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
 
 	deploy := readyDeployment(ks, "keystone-config-abc123")
@@ -1563,8 +1563,8 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
 
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
@@ -1598,8 +1598,8 @@ func TestReconcileDeployment_RollingUpdate_SurgeReady_HoldsContract(t *testing.T
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
 
 	// Surge-ready but not converged: Available=True and ReadyReplicas at the
@@ -1677,8 +1677,8 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseExpanding
 
 	deploy := readyDeployment(ks, "keystone-config-abc123")

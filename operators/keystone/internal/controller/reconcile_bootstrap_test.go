@@ -48,7 +48,7 @@ func bootstrapKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -1166,14 +1166,14 @@ func TestReconcileBootstrap_ImageChangeRetainsJob(t *testing.T) {
 	s := bootstrapTestScheme()
 	ks := bootstrapKeystone()
 
-	// A completed bootstrap Job from the pre-upgrade release (image 2025.2),
+	// A completed bootstrap Job from the pre-upgrade release (image 2026.1),
 	// stamped with the current admin-password digest. Pin a UID so a
 	// delete/recreate would surface as a changed UID.
 	completed := completedBootstrapJob(ks)
 	completed.UID = "bootstrap-job-uid"
 
 	// Reconcile after a release upgrade to a NEW image — same admin password.
-	ks.Spec.Image.Tag = "2026.1"
+	ks.Spec.Image.Tag = "2026.2"
 	r := newBootstrapTestReconciler(s, ks, bootstrapAdminSecret(ks), completed)
 
 	result, err := r.reconcileBootstrap(context.Background(), r.Client, ks, "keystone-config-abc123", "")

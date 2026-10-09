@@ -188,7 +188,7 @@ func integrationBrownfieldKeystone(name, namespace string) *keystonev1alpha1.Key
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -222,7 +222,7 @@ func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keysto
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
 				Port:       3306,
@@ -1587,7 +1587,7 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create brownfield Keystone CR with tag "2025.2".
+	// Create brownfield Keystone CR with tag "2026.1".
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
@@ -1601,7 +1601,7 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
 	// Verify status.installedRelease is set to spec.image.tag.
-	g.Expect(updated.Status.InstalledRelease).To(Equal("2025.2"),
+	g.Expect(updated.Status.InstalledRelease).To(Equal("2026.1"),
 		"installedRelease should equal spec.image.tag after fresh deployment")
 
 	// Verify no upgrade was triggered.
@@ -1651,9 +1651,9 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create brownfield Keystone with initial release "2025.1".
+	// Create brownfield Keystone with initial release "2026.1".
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
-	ks.Spec.Image.Tag = "2025.1"
+	ks.Spec.Image.Tag = "2026.1"
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
@@ -1664,17 +1664,17 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	// Verify initial installedRelease.
 	initial := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, initial)).To(Succeed())
-	g.Expect(initial.Status.InstalledRelease).To(Equal("2025.1"),
-		"installedRelease should be 2025.1 after initial deployment")
+	g.Expect(initial.Status.InstalledRelease).To(Equal("2026.1"),
+		"installedRelease should be 2026.1 after initial deployment")
 
-	expectedNewImage := fmt.Sprintf("%s:2025.2", ks.Spec.Image.Repository)
+	expectedNewImage := fmt.Sprintf("%s:2026.2", ks.Spec.Image.Repository)
 
 	// Capture the completed bootstrap Job from the initial release. A pure image
 	// change must NOT re-run the bootstrap Job identity bootstrap is
 	// one-time and gated on the admin-password digest, so it stays put across a
 	// release upgrade while the migration Jobs (db-sync / schema-check /
 	// expand / migrate / contract) re-run with the new image.
-	oldImage := fmt.Sprintf("%s:2025.1", ks.Spec.Image.Repository)
+	oldImage := fmt.Sprintf("%s:2026.1", ks.Spec.Image.Repository)
 	bootstrapKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-bootstrap", ks.Name)}
 	preUpgradeBootstrap := &batchv1.Job{}
 	g.Expect(c.Get(ctx, bootstrapKey, preUpgradeBootstrap)).To(Succeed())
@@ -1682,10 +1682,10 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"pre-upgrade bootstrap Job should carry the initial image")
 	preUpgradeBootstrapUID := preUpgradeBootstrap.UID
 
-	// --- Trigger upgrade: update image tag to 2025.2 ---
+	// --- Trigger upgrade: update image tag to 2026.2 ---
 	current := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, current)).To(Succeed())
-	current.Spec.Image.Tag = "2025.2"
+	current.Spec.Image.Tag = "2026.2"
 	g.Expect(c.Update(ctx, current)).To(Succeed())
 
 	// Phase 1: Expanding — expand Job with NEW image.
@@ -1701,7 +1701,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	// Verify targetRelease is set.
 	ksState := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
-	g.Expect(ksState.Status.TargetRelease).To(Equal("2025.2"))
+	g.Expect(ksState.Status.TargetRelease).To(Equal("2026.2"))
 
 	expandKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-expand"}
 	g.Eventually(func() error {
@@ -1805,8 +1805,8 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 			return ""
 		}
 		return ks.Status.InstalledRelease
-	}, eventuallyTimeout, pollInterval).Should(Equal("2025.2"),
-		"installedRelease should be updated to 2025.2 after upgrade")
+	}, eventuallyTimeout, pollInterval).Should(Equal("2026.2"),
+		"installedRelease should be updated to 2026.2 after upgrade")
 
 	postUpgrade := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, postUpgrade)).To(Succeed())
@@ -1866,7 +1866,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	final := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, final)).To(Succeed())
-	g.Expect(final.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(final.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(final.Status.Endpoint).To(Equal(
 		fmt.Sprintf("http://test-keystone.%s.svc.cluster.local:5000/v3", ns.Name),
 	),
