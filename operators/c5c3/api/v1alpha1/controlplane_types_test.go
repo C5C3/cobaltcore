@@ -99,7 +99,7 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 // round-trips through DeepCopy with independent pointer storage (plan decision #2).
 func TestServiceKeystoneSpecDeepCopy(t *testing.T) {
 	spec := ServiceKeystoneSpec{
-		Image:            &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+		Image:            &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 		RotationInterval: &metav1.Duration{Duration: time.Hour},
 	}
 

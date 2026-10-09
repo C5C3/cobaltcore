@@ -35,7 +35,7 @@ import (
 func validControlPlane() *ControlPlane {
 	return &ControlPlane{
 		Spec: ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -262,7 +262,7 @@ func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 	// clusterRef present but Name empty, with host/servers unset => managed mode.
 	cp := &ControlPlane{
 		Spec: ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{ClusterRef: &corev1.LocalObjectReference{}},
 				Cache:    commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{}},
@@ -297,7 +297,7 @@ func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 func externalControlPlane() *ControlPlane {
 	return &ControlPlane{
 		Spec: ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Services: ServicesSpec{
 				Keystone: &ServiceKeystoneSpec{
@@ -506,7 +506,7 @@ func TestValidateCreate_RejectsKeystoneImageTagAndDigestBothSet(t *testing.T) {
 	// Override the Keystone image with BOTH a tag and a digest — XOR violation.
 	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
 		Repository: "ghcr.io/c5c3/keystone",
-		Tag:        "2025.2",
+		Tag:        "2026.1",
 		Digest:     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	}
 
@@ -844,7 +844,7 @@ func TestValidateUpdate_AcceptsValidChange(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 	oldCP := validControlPlane()
 	newCP := validControlPlane()
-	newCP.Spec.OpenStackRelease = "2026.1"
+	newCP.Spec.OpenStackRelease = "2026.2"
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -957,7 +957,7 @@ func TestValidateUpdate_AllowsMutableFieldChanges(t *testing.T) {
 	oldCP := managedControlPlane()
 
 	newCP := managedControlPlane()
-	newCP.Spec.OpenStackRelease = "2026.1"
+	newCP.Spec.OpenStackRelease = "2026.2"
 	newCP.Spec.Sizing = &ControlPlaneSizingSpec{SizingSpec: keystoneAPI(apiReplicas(3))}
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
@@ -1114,18 +1114,20 @@ func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 
-	// Year downgrade: 2025.2 -> 2024.1.
+	// Year downgrade: 2026.1 -> 2025.1.
 	oldCP := managedControlPlane()
 	yearDown := managedControlPlane()
-	yearDown.Spec.OpenStackRelease = "2024.1"
+	yearDown.Spec.OpenStackRelease = "2025.1"
 	_, err := w.ValidateUpdate(context.Background(), oldCP, yearDown)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
 
-	// Same-year minor downgrade: 2025.2 -> 2025.1.
+	// Same-year minor downgrade: 2026.2 -> 2026.1.
+	minorOld := managedControlPlane()
+	minorOld.Spec.OpenStackRelease = "2026.2"
 	minorDown := managedControlPlane()
-	minorDown.Spec.OpenStackRelease = "2025.1"
-	_, err = w.ValidateUpdate(context.Background(), oldCP, minorDown)
+	minorDown.Spec.OpenStackRelease = "2026.1"
+	_, err = w.ValidateUpdate(context.Background(), minorOld, minorDown)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
 }
@@ -1133,7 +1135,7 @@ func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
 // TestValidateUpdate_RejectsNonCadenceReleaseMinor guards the regression where a
 // regex-valid but non-cadence minor was silently admitted on UPDATE. OpenStack
 // ships only YYYY.1 and YYYY.2; before the release pattern was tightened to
-// ^\d{4}\.[12]$, patching a live 2025.2 to 2025.9 passed validate() (whose regex
+// ^\d{4}\.[12]$, patching a live 2026.1 to 2026.9 passed validate() (whose regex
 // accepted any single-digit minor) while validateReleaseNotDowngraded returned
 // nil (release.ParseRelease rejects minor 9), admitting an edit that had been
 // rejected before validateReleaseNotDowngraded delegated to ParseRelease.
@@ -1142,7 +1144,7 @@ func TestValidateUpdate_RejectsNonCadenceReleaseMinor(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 	oldCP := managedControlPlane()
 	nonCadence := managedControlPlane()
-	nonCadence.Spec.OpenStackRelease = "2025.9"
+	nonCadence.Spec.OpenStackRelease = "2026.9"
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, nonCadence)
 	g.Expect(err).To(HaveOccurred(),
@@ -1157,7 +1159,7 @@ func TestValidateUpdate_AcceptsOpenStackReleaseUpgrade(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 	oldCP := managedControlPlane()
 	newCP := managedControlPlane()
-	newCP.Spec.OpenStackRelease = "2026.1"
+	newCP.Spec.OpenStackRelease = "2026.2"
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1234,7 +1236,7 @@ func TestValidateCreate_AllowsFirstControlPlane_AndUpdate(t *testing.T) {
 	cWith := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(first).Build()
 	wWith := &ControlPlaneWebhook{Client: cWith}
 	updated := first.DeepCopy()
-	updated.Spec.OpenStackRelease = "2026.1"
+	updated.Spec.OpenStackRelease = "2026.2"
 	_, err = wWith.ValidateUpdate(context.Background(), first, updated)
 	g.Expect(err).NotTo(HaveOccurred())
 }
@@ -1279,7 +1281,7 @@ func TestValidateCreate_RejectsHorizonImageTagAndDigestBothSet(t *testing.T) {
 	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
 		Image: &commonv1.ImageSpec{
 			Repository: "ghcr.io/c5c3/horizon",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
 	}
@@ -3146,7 +3148,7 @@ func TestValidateUpdate_RejectsServiceNamespaceChanges(t *testing.T) {
 		w := &ControlPlaneWebhook{}
 		oldCP := namespacedControlPlane()
 		newCP := oldCP.DeepCopy()
-		newCP.Spec.OpenStackRelease = "2026.1"
+		newCP.Spec.OpenStackRelease = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -4397,7 +4399,7 @@ func TestValidateCreate_RejectsPlacementImageTagDigestXOR(t *testing.T) {
 		"neither tag nor digest": {Repository: "ghcr.io/c5c3/placement"},
 		"both tag and digest": {
 			Repository: "ghcr.io/c5c3/placement",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:" + strings.Repeat("a", 64),
 		},
 	} {
@@ -4993,7 +4995,7 @@ func TestValidateCreate_RejectsUnknownGlobalExtraConfigOption(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
-	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 }
 
 // TestValidateCreate_RejectsGlobalKeystoneOptionUnknownToGlance pins the
@@ -5009,7 +5011,7 @@ func TestValidateCreate_RejectsGlobalKeystoneOptionUnknownToGlance(t *testing.T)
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][expiration]"))
-	g.Expect(err.Error()).To(ContainSubstring("no such section in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such section in the glance 2026.1 option catalog"))
 }
 
 // TestValidateCreate_RejectsUnknownGlanceExtraConfigOption pins a per-service
@@ -5023,7 +5025,7 @@ func TestValidateCreate_RejectsUnknownGlanceExtraConfigOption(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[DEFAULT][workerz]"))
-	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2026.1 option catalog"))
 }
 
 // TestValidateCreate_RejectsUnknownPlacementExtraConfigOption pins the placement
@@ -5046,7 +5048,7 @@ func TestValidateCreate_RejectsUnknownPlacementExtraConfigOption(t *testing.T) {
 		g.Expect(err.Error()).To(ContainSubstring(
 			"spec.services.placement.extraConfig[placement][randomize_allocation_candidatez]",
 		))
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the placement 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the placement 2026.1 option catalog"))
 	})
 
 	t.Run("in globalExtraConfig", func(t *testing.T) {
@@ -5057,7 +5059,7 @@ func TestValidateCreate_RejectsUnknownPlacementExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][expiration]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2026.1 option catalog"))
 	})
 }
 
@@ -5075,7 +5077,7 @@ func TestValidateCreate_RejectsUnknownOptionInBothBlocks(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.extraConfig[token][providr]"))
-	g.Expect(strings.Count(err.Error(), "no such option in the keystone 2025.2 option catalog")).
+	g.Expect(strings.Count(err.Error(), "no such option in the keystone 2026.1 option catalog")).
 		To(Equal(2), "one error per contributing block")
 }
 
@@ -5577,29 +5579,29 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 	})
 
 	t.Run("changing openStackRelease re-validates and rejects", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
-		newCP.Spec.OpenStackRelease = "2026.1"
+		newCP.Spec.OpenStackRelease = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.2 option catalog"))
 	})
 
 	t.Run("changing keystone image re-validates and rejects", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
-		newCP.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"}
+		newCP.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"}
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
 	})
 
 	t.Run("newly declaring glance re-validates and rejects", func(t *testing.T) {
@@ -5622,7 +5624,7 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
-		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2025.2 option catalog"))
+		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2026.1 option catalog"))
 	})
 }
 
@@ -5947,7 +5949,7 @@ func TestValidateCreate_RejectsBarbicanImageTagDigestXOR(t *testing.T) {
 		"neither tag nor digest": {Repository: "ghcr.io/c5c3/barbican"},
 		"both tag and digest": {
 			Repository: "ghcr.io/c5c3/barbican",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:" + strings.Repeat("a", 64),
 		},
 	} {
@@ -7137,7 +7139,7 @@ func TestValidateUpdate_FreezesServiceTargetClusterRefs(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := placed()
 		newCP := oldCP.DeepCopy()
-		newCP.Spec.OpenStackRelease = "2026.1"
+		newCP.Spec.OpenStackRelease = "2026.2"
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -8035,7 +8037,7 @@ func TestValidateCreate_RejectsNeutronImageTagDigestXOR(t *testing.T) {
 		"neither tag nor digest": {Repository: "ghcr.io/c5c3/neutron"},
 		"both tag and digest": {
 			Repository: "ghcr.io/c5c3/neutron",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:" + strings.Repeat("a", 64),
 		},
 	} {
@@ -8806,7 +8808,7 @@ func TestValidateCreate_RejectsCinderImageTagDigestXOR(t *testing.T) {
 		"neither tag nor digest": {Repository: "ghcr.io/c5c3/cinder"},
 		"both tag and digest": {
 			Repository: "ghcr.io/c5c3/cinder",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:" + strings.Repeat("a", 64),
 		},
 	} {
@@ -10273,7 +10275,7 @@ func TestValidateCreate_RejectsNovaImageTagDigestXOR(t *testing.T) {
 		"neither tag nor digest": {Repository: "ghcr.io/c5c3/nova"},
 		"both tag and digest": {
 			Repository: "ghcr.io/c5c3/nova",
-			Tag:        "2025.2",
+			Tag:        "2026.1",
 			Digest:     "sha256:" + strings.Repeat("a", 64),
 		},
 	} {
