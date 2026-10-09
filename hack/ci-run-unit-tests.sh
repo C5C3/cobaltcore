@@ -111,27 +111,14 @@ print(name or os.environ["SERVICE_NAME"])
 PYEOF
 )"
     printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$PKG_NAME" "$SERVICE_VERSION" > PKG-INFO
-    # Old sdist-only pins (e.g. the 2025.2 XStatic set) have legacy setup.py
-    # scripts importing pkg_resources, which setuptools 81 removed from uv
-    # isolated build envs; pin the build backend to the last bundling release.
-    printf "setuptools<81\n" > /tmp/build-constraints.txt
-    export UV_BUILD_CONSTRAINT=/tmp/build-constraints.txt
     TEST_REQ_ARG=""
     if [ -f test-requirements.txt ]; then
       TEST_REQ_ARG="-r test-requirements.txt"
     fi
     if [ -f .stestr.conf ]; then
-      # The runtime venv needs pkg_resources too, not only the build envs
-      # above: cinder 27.0.0 imports os_win at module level (in
-      # cinder/volume/drivers/windows/smbfs.py) and os-win 5.9.0 imports
-      # pkg_resources (in os_win/_utils.py), which setuptools 81 removed.
-      # stestr imports every test module during discovery, before it
-      # applies --exclude-list, so no exclude pattern can help. cinder
-      # 28.0.0 dropped the Windows drivers; the pin is harmless for the
-      # other services.
       uv pip install --prefix /var/lib/openstack \
         --constraint /workspace/upper-constraints.txt \
-        $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools "setuptools<81"
+        $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
       stestr init
       set +e
       stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
