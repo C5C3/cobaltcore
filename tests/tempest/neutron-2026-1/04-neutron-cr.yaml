@@ -21,7 +21,7 @@ spec:
   openStackRelease: "2026.1"
   deployment:
     replicas: 2
-    # Mirror tests/tempest/glance-2025-2/02-glance-cr.yaml: the operator sets no
+    # Mirror tests/tempest/glance-2026-1/02-glance-cr.yaml: the operator sets no
     # CPU limit, so this block exists for its memory. The four uWSGI workers
     # below share one memory cgroup, and the port-forward pins every stestr
     # worker to a single pod, so that pod's budget has to cover the whole suite

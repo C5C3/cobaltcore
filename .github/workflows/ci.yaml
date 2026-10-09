@@ -4357,7 +4357,7 @@ jobs:
       # The host differs by leg. The cinder leg's compute registers as fake-1,
       # the nova leg's under the node's name, because the OVN chassis registers
       # under that name and neutron binds a port only to a host with a live
-      # chassis (tests/tempest/nova-2025-2/11-fake-compute.yaml).
+      # chassis (tests/tempest/nova-2026-1/11-fake-compute.yaml).
       - name: Deploy the fake compute
         if: matrix.service == 'nova' || matrix.service == 'cinder'
         run: |

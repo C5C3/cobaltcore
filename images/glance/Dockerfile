@@ -23,14 +23,15 @@ ARG PIP_PACKAGES=""
 #
 # Both launch modes ship in this one image by construction: uv's --prefix
 # install generates the glance-api and glance-manage console scripts from
-# setup.cfg (it only skips PBR wsgi_scripts). 2025.2 starts the eventlet
-# glance-api console script; 2026.1+ runs uWSGI with the hand-shipped
-# glance-wsgi-api script (keystone's technique, see images/keystone/
-# Dockerfile). The stock module path glance.wsgi.api:application is unusable
-# under the operator's layout: wsgi_app.init_app() ignores sys.argv (and so
-# uWSGI's --pyargv) and reads only $OS_GLANCE_CONFIG_DIR/glance-api.conf,
-# never the two --config-dir mounts — see glance-wsgi-api. uwsgi itself comes
-# from the venv-builder base requirements.
+# setup.cfg (it only skips PBR wsgi_scripts). Every wired release (2026.1
+# and later) runs uWSGI with the hand-shipped glance-wsgi-api script
+# (keystone's technique, see images/keystone/Dockerfile), and none starts the
+# eventlet glance-api console script. The stock module path
+# glance.wsgi.api:application is unusable under the operator's layout:
+# wsgi_app.init_app() ignores sys.argv (and so uWSGI's --pyargv) and reads only
+# $OS_GLANCE_CONFIG_DIR/glance-api.conf, never the two --config-dir mounts —
+# see glance-wsgi-api. uwsgi itself comes from the venv-builder base
+# requirements.
 #
 # 'set -f' disables pathname expansion for the install step: PIP_PACKAGES stays
 # unquoted so multiple space-separated packages word-split, but its

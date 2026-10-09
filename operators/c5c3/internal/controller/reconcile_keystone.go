@@ -36,7 +36,7 @@ const keystoneNameSuffix = "-keystone"
 // DECISION the default Keystone image repository is
 // "ghcr.io/c5c3/keystone" — the canonical repo the keystone operator's own
 // fixtures, tempest CRs, and e2e manifests all use (e.g.
-// tests/tempest/keystone-2025-2/00-keystone-cr.yaml). The tag is derived from
+// tests/tempest/keystone-2026-1/00-keystone-cr.yaml). The tag is derived from
 // spec.openStackRelease unless spec.services.keystone.image overrides the whole
 // image reference.
 const defaultKeystoneRepository = "ghcr.io/c5c3/keystone"

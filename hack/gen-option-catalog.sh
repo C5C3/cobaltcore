@@ -37,7 +37,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
   service       keystone, glance, placement, barbican, neutron, cinder, or nova.
-  release       release directory name (e.g. 2025.2).
+  release       release directory name (e.g. 2026.1).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
 EOF
@@ -79,7 +79,7 @@ fi
 #    to drop from the generator config. That floor catches a truncated generator
 #    run, and it is per service because a full run yields very different counts:
 #    keystone registers 44 sections, glance 30 and barbican 22, so 10 is a loose
-#    guard for all three, while placement registers 8 (2025.2) and 9 (2026.1).
+#    guard for all three, while placement registers 9 on 2026.1 and 2026.2.
 #    Every service but neutron maps to a single path; neutron unions three
 #    per-process generator files, see its case below.
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ inputs:
   images:
     description: >
       Multiline list of canonical local image refs to materialise
-      locally (one per line, e.g. "ghcr.io/c5c3/keystone:2025.2").
+      locally (one per line, e.g. "ghcr.io/c5c3/keystone:2026.1").
       For each line the action pulls
       <repo>:e2e-<run-id>-<tag> from GHCR and re-tags it to the
       provided ref. Blank lines and lines starting with `#` are

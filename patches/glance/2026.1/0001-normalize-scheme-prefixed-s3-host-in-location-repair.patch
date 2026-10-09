@@ -34,10 +34,10 @@ once the access key rotates.
 No 2026.2 twin: glance 33.0.0 removed _construct_s3_url and the
 comparison it fed.
 
-Applies to glance 31.1.0 (2025.2) and 32.0.0 (2026.1); the function is
-identical in both. store_utils.py is not (32.0.0 rewrote
-_update_s3_url), so the hunk, cut from 31.1.0, applies to 32.0.0 at an
-offset of 42 lines.
+Applies to glance 32.0.0 (2026.1). The hunk was cut from 31.1.0, where
+the function is identical; store_utils.py is not (32.0.0 rewrote
+_update_s3_url), so the hunk applies to 32.0.0 at an offset of 42
+lines.
 
 Upstream status: not yet proposed.
 

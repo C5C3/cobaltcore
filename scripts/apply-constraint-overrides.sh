@@ -8,7 +8,7 @@
 # package removal (-package). Idempotent: exits 0 when no override file exists.
 #
 # Usage: apply-constraint-overrides.sh <release>
-# Example: apply-constraint-overrides.sh 2025.2
+# Example: apply-constraint-overrides.sh 2026.1
 
 set -euo pipefail
 
