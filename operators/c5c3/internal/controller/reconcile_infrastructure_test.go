@@ -64,7 +64,7 @@ func managedInfraControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -458,7 +458,7 @@ func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Generation: 1},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					Host:      "db.example.com",
@@ -503,7 +503,7 @@ func externalInfraControlPlane() *c5c3v1alpha1.ControlPlane {
 	return &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Generation: 1},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Mode:     c5c3v1alpha1.KeystoneModeExternal,

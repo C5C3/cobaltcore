@@ -62,7 +62,7 @@ func namespacedControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{

@@ -83,7 +83,7 @@ func neutronControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -1015,9 +1015,9 @@ func TestReconcileNeutron_ProjectedChildFields(t *testing.T) {
 
 	nn := getProjectedNeutron(t, r.Client, cp)
 	g.Expect(nn.Name).To(Equal("cp-neutron"))
-	g.Expect(nn.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(nn.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(nn.Spec.Image.Repository).To(Equal("ghcr.io/c5c3/neutron"))
-	g.Expect(nn.Spec.Image.Tag).To(Equal("2025.2"), "the tag defaults to spec.openStackRelease")
+	g.Expect(nn.Spec.Image.Tag).To(Equal("2026.1"), "the tag defaults to spec.openStackRelease")
 
 	// Database: the shared cluster, the fixed neutron schema, the operator-owned
 	// credential Secret, and the managed-shared Dynamic default.

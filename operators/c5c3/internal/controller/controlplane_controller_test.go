@@ -101,7 +101,7 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services:         c5c3v1alpha1.ServicesSpec{Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{}},
 		},
 	}
@@ -113,7 +113,7 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	g.Expect(svc).NotTo(BeNil(), "status.services must report the projected keystone service")
 	g.Expect(svc.Name).To(Equal("keystone"))
 	g.Expect(svc.Ready).To(BeFalse(), "keystone service must be not Ready while KeystoneReady is absent")
-	g.Expect(svc.Release).To(Equal("2025.2"))
+	g.Expect(svc.Release).To(Equal("2026.1"))
 
 	// KeystoneReady True => service reported Ready.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeKeystoneReady))
@@ -132,7 +132,7 @@ func TestSetServicesStatus_GlanceEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:  &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -147,7 +147,7 @@ func TestSetServicesStatus_GlanceEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
 	g.Expect(cp.Status.Services[2].Ready).To(BeFalse(),
 		"glance is not Ready while GlanceReady is absent")
-	g.Expect(cp.Status.Services[2].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[2].Release).To(Equal("2026.1"))
 
 	// GlanceReady True flips only the glance entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeGlanceReady))
@@ -171,7 +171,7 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -187,7 +187,7 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[3].Name).To(Equal("placement"))
 	g.Expect(cp.Status.Services[3].Ready).To(BeFalse(),
 		"placement is not Ready while PlacementReady is absent")
-	g.Expect(cp.Status.Services[3].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[3].Release).To(Equal("2026.1"))
 
 	// PlacementReady True flips only the placement entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypePlacementReady))
@@ -216,7 +216,7 @@ func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -233,7 +233,7 @@ func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[4].Name).To(Equal("barbican"))
 	g.Expect(cp.Status.Services[4].Ready).To(BeFalse(),
 		"barbican is not Ready while BarbicanReady is absent")
-	g.Expect(cp.Status.Services[4].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[4].Release).To(Equal("2026.1"))
 
 	// BarbicanReady True flips only the barbican entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeBarbicanReady))
@@ -264,7 +264,7 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -286,7 +286,7 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[5].Name).To(Equal("neutron"))
 	g.Expect(cp.Status.Services[5].Ready).To(BeFalse(),
 		"neutron is not Ready while NeutronReady is absent")
-	g.Expect(cp.Status.Services[5].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[5].Release).To(Equal("2026.1"))
 
 	// A False NeutronReady keeps the entry not-ready; only True flips it, and only
 	// the neutron entry.
@@ -325,7 +325,7 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -357,7 +357,7 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[6].Name).To(Equal("cinder"))
 	g.Expect(cp.Status.Services[6].Ready).To(BeFalse(),
 		"cinder is not Ready while CinderReady is absent")
-	g.Expect(cp.Status.Services[6].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[6].Release).To(Equal("2026.1"))
 
 	// A False CinderReady keeps the entry not-ready; only True flips it, and only
 	// the cinder entry.
@@ -396,7 +396,7 @@ func TestSetServicesStatus_NovaEntry(t *testing.T) {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
 				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
@@ -430,7 +430,7 @@ func TestSetServicesStatus_NovaEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[7].Name).To(Equal("nova"))
 	g.Expect(cp.Status.Services[7].Ready).To(BeFalse(),
 		"nova is not Ready while NovaReady is absent")
-	g.Expect(cp.Status.Services[7].Release).To(Equal("2025.2"))
+	g.Expect(cp.Status.Services[7].Release).To(Equal("2026.1"))
 
 	// A False NovaReady keeps the entry not-ready; only True flips it, and only
 	// the nova entry.

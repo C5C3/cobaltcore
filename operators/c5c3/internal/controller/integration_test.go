@@ -233,7 +233,7 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 			Namespace: namespace,
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
@@ -289,7 +289,7 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 			Namespace: namespace,
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
 			},
@@ -1797,7 +1797,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	// Image: the canonical repository with the release-derived tag.
 	g.Expect(projectedGlance.Spec.Image.Repository).To(Equal(defaultGlanceRepository))
-	g.Expect(projectedGlance.Spec.Image.Tag).To(Equal("2025.2"), "Glance image tag must derive from openStackRelease")
+	g.Expect(projectedGlance.Spec.Image.Tag).To(Equal("2026.1"), "Glance image tag must derive from openStackRelease")
 
 	// Database: the shared managed cluster, the fixed "glance" logical schema, and
 	// the operator-owned engine-issued DB credential (Dynamic is the default on the
@@ -1907,9 +1907,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"Placement child should be projected once KeystoneReady and the Placement registration are ready")
 
 	// Release and image: the canonical repository with the release-derived tag.
-	g.Expect(projectedPlacement.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedPlacement.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(projectedPlacement.Spec.Image.Repository).To(Equal(defaultPlacementRepository))
-	g.Expect(projectedPlacement.Spec.Image.Tag).To(Equal("2025.2"), "Placement image tag must derive from openStackRelease")
+	g.Expect(projectedPlacement.Spec.Image.Tag).To(Equal("2026.1"), "Placement image tag must derive from openStackRelease")
 
 	// extraConfig: globalExtraConfig unioned with the per-service block.
 	g.Expect(projectedPlacement.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
@@ -2278,9 +2278,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"the Barbican child must be projected once its secret store is attached")
 
 	// Release and image: the canonical repository with the release-derived tag.
-	g.Expect(projectedBarbican.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedBarbican.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(projectedBarbican.Spec.Image.Repository).To(Equal(defaultBarbicanRepository))
-	g.Expect(projectedBarbican.Spec.Image.Tag).To(Equal("2025.2"), "Barbican image tag must derive from openStackRelease")
+	g.Expect(projectedBarbican.Spec.Image.Tag).To(Equal("2026.1"), "Barbican image tag must derive from openStackRelease")
 
 	// Database: the shared managed cluster, the fixed "barbican" logical schema, and
 	// the operator-owned engine-issued DB credential (Dynamic is the default on the
@@ -2431,9 +2431,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"Neutron child should be projected once KeystoneReady, OVNReady and the Neutron registration are ready")
 
 	// Release and image: the canonical repository with the release-derived tag.
-	g.Expect(projectedNeutron.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedNeutron.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(projectedNeutron.Spec.Image.Repository).To(Equal(defaultNeutronRepository))
-	g.Expect(projectedNeutron.Spec.Image.Tag).To(Equal("2025.2"), "Neutron image tag must derive from openStackRelease")
+	g.Expect(projectedNeutron.Spec.Image.Tag).To(Equal("2026.1"), "Neutron image tag must derive from openStackRelease")
 
 	// extraConfig: this fixture declares no services.neutron.extraConfig, so the
 	// merge is the global section alone.
@@ -2558,9 +2558,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"Cinder child should be projected once KeystoneReady and the Cinder registration are ready")
 
 	// Release and image: the canonical repository with the release-derived tag.
-	g.Expect(projectedCinder.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedCinder.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(projectedCinder.Spec.Image.Repository).To(Equal(defaultCinderRepository))
-	g.Expect(projectedCinder.Spec.Image.Tag).To(Equal("2025.2"), "Cinder image tag must derive from openStackRelease")
+	g.Expect(projectedCinder.Spec.Image.Tag).To(Equal("2026.1"), "Cinder image tag must derive from openStackRelease")
 
 	// extraConfig: this fixture declares no services.cinder.extraConfig, so the
 	// merge is the global section alone.
@@ -2879,9 +2879,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"Nova child should be projected once PlacementReady, its registration and both DB credentials are ready")
 
 	// Release and image: the canonical repository with the release-derived tag.
-	g.Expect(projectedNova.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedNova.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(projectedNova.Spec.Image.Repository).To(Equal(defaultNovaRepository))
-	g.Expect(projectedNova.Spec.Image.Tag).To(Equal("2025.2"), "Nova image tag must derive from openStackRelease")
+	g.Expect(projectedNova.Spec.Image.Tag).To(Equal("2026.1"), "Nova image tag must derive from openStackRelease")
 
 	// extraConfig: this fixture declares no services.nova.extraConfig, so the merge
 	// is the global section alone.
@@ -3079,19 +3079,19 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.Services[2].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[3].Name).To(Equal("placement"))
 	g.Expect(final.Status.Services[3].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[3].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[3].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[4].Name).To(Equal("barbican"))
 	g.Expect(final.Status.Services[4].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[4].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[4].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[5].Name).To(Equal("neutron"))
 	g.Expect(final.Status.Services[5].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[5].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[5].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[6].Name).To(Equal("cinder"))
 	g.Expect(final.Status.Services[6].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[6].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[6].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[7].Name).To(Equal("nova"))
 	g.Expect(final.Status.Services[7].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[7].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[7].Release).To(Equal("2026.1"))
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -3118,7 +3118,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: keystoneName(final), Namespace: ns.Name}, ks)).
 		To(Succeed(), "get projected Keystone CR")
 	g.Expect(ks.Spec.Image.Repository).To(Equal(defaultKeystoneRepository))
-	g.Expect(ks.Spec.Image.Tag).To(Equal("2025.2"), "Keystone image tag must derive from openStackRelease")
+	g.Expect(ks.Spec.Image.Tag).To(Equal("2026.1"), "Keystone image tag must derive from openStackRelease")
 	g.Expect(ks.Spec.Database.ClusterRef).NotTo(BeNil(), "Keystone database clusterRef must be wired")
 	g.Expect(ks.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
 	g.Expect(ks.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(final)),
@@ -5621,7 +5621,7 @@ func integrationExternalControlPlane(name, namespace string) *c5c3v1alpha1.Contr
 	return &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Mode: c5c3v1alpha1.KeystoneModeExternal,
