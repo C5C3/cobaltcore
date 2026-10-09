@@ -142,7 +142,7 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 	// The Secret is the order's through its controller reference, not its labels.
 	// It carries the name and namespace labels so its owner can select it, and no
 	// cluster label: that label is what makes an object a labelled child
-	// (isKeystoneUserChild, the teardown's selector), and this Secret is never one.
+	// (isOrderChild, the teardown's selector), and this Secret is never one.
 	labels := keystoneUserChildLabels(order, cluster)
 	delete(labels, keystoneUserClusterLabel)
 	secret := &corev1.Secret{

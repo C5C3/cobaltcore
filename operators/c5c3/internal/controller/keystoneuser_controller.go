@@ -7,8 +7,6 @@ package controller
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -16,28 +14,20 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -77,24 +67,24 @@ const (
 	keystoneUserClusterLabel   = "c5c3.io/keystoneuser-cluster"
 )
 
+// keystoneUserLabelKeys are the three ownership label keys as the shared order
+// scaffold takes them.
+var keystoneUserLabelKeys = orderLabelKeys{
+	Name: keystoneUserNameLabel, Namespace: keystoneUserNamespaceLabel, Cluster: keystoneUserClusterLabel,
+}
+
 // keystoneUserGVK is the kind the order watch filters target clusters on: a
 // cluster that does not serve it is not engaged for the leg.
 var keystoneUserGVK = c5c3v1alpha1.GroupVersion.WithKind("KeystoneUser")
 
-// Condition reasons this controller introduces. The gates it shares with the
+// Condition reasons this controller introduces. The admission gates write the
+// scaffold's reasons (keystoneorder.go), and the gates it shares with the
 // KeystoneService controller reuse that vocabulary instead
 // (reasonKeystoneServiceControlPlaneNotFound, reasonWaitingForServiceAccountAdmin,
 // reasonServiceAccountStoreNotReady, reasonProbingForCollision,
 // reasonServiceAccountCollision, reasonWaitingForServiceAccounts,
 // reasonServiceAccountsFailed, reasonServiceAccountError).
 const (
-	// reasonKeystoneUserNamespaceNotAssigned reports that the ControlPlane has no
-	// spec.namespaceAssignments entry for the order's namespace and cluster. The
-	// order is frozen while it holds.
-	reasonKeystoneUserNamespaceNotAssigned = "NamespaceNotAssigned"
-	// reasonKeystoneUserClusterNameTooLong reports an order on a target cluster
-	// whose name is too long to be carried as a label value on the children.
-	reasonKeystoneUserClusterNameTooLong = "ClusterNameTooLong"
 	// reasonKeystoneUserProvisioned is UserReady's True reason.
 	reasonKeystoneUserProvisioned = "UserProvisioned"
 	// reasonKeystoneUserDelivered is DeliveryReady's True reason.
@@ -149,7 +139,7 @@ type KeystoneUserReconciler struct {
 // provision and delivery, and the teardown.
 func (r *KeystoneUserReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cluster := string(req.ClusterName)
-	oc, err := r.orderClient(ctx, cluster)
+	oc, err := orderClient(ctx, r.Resolver, r.Client, cluster)
 	if err != nil {
 		// The cluster was deregistered between the event and this pass. Nothing
 		// can be read or written there, and a requeue would only repeat this.
@@ -176,33 +166,24 @@ func (r *KeystoneUserReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	return r.updateStatus(ctx, oc, &order, statusBefore, result, err)
 }
 
-// orderClient returns the client of the cluster an order lives on: the
-// management client for c5c3v1alpha1.ManagementCluster, and the resolved target
-// cluster's client otherwise.
-func (r *KeystoneUserReconciler) orderClient(ctx context.Context, cluster string) (client.Client, error) {
-	return commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, keystoneUserClusterRef(cluster))
-}
-
 // keystoneUserClusterRef returns the target-cluster ref of cluster, or nil for
 // the management cluster.
 func keystoneUserClusterRef(cluster string) *commonv1.TargetClusterRefSpec {
-	if cluster == c5c3v1alpha1.ManagementCluster {
-		return nil
-	}
-	return &commonv1.TargetClusterRefSpec{Name: cluster}
+	return orderRef{Cluster: cluster}.clusterRef()
 }
 
 // keystoneUserLocation names the cluster an order lives on in the phrase the
 // namespace-assignment messages share.
 func keystoneUserLocation(cluster string) string {
-	return (&c5c3v1alpha1.NamespaceAssignmentSpec{TargetClusterRef: keystoneUserClusterRef(cluster)}).Location()
+	return orderRef{Cluster: cluster}.location()
 }
 
 // reconcileNormal runs the gates, then the provision and the delivery.
 //
-// The freeze of #1327 D2 is the assignment gate: without an entry the pass writes
-// NamespaceNotAssigned and returns before anything is read or written in the
-// ControlPlane's namespace, so nothing is projected, delivered, repaired or swept.
+// The freeze of #1327 D2 is the assignment gate of orderAdmission: without an
+// entry the pass writes NamespaceNotAssigned and returns before anything is read
+// or written in the ControlPlane's namespace, so nothing is projected,
+// delivered, repaired or swept.
 //
 // The finalizer is installed only past that gate. An order the operator does not
 // serve has nothing to tear down, and in a namespace that is not assigned to it
@@ -210,27 +191,11 @@ func keystoneUserLocation(cluster string) string {
 func (r *KeystoneUserReconciler) reconcileNormal(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster string,
 ) (ctrl.Result, error) {
-	// The cluster name is a label value on every child, which Kubernetes caps at
-	// 63 characters, while a registration Secret's name may run to 253. Refusing
-	// here keeps every child write from failing in the API server. The name is the
-	// cluster's identity, so no edit of the order lifts the refusal.
-	if len(cluster) > validation.LabelValueMaxLength {
-		keystoneUserFailBoth(order, reasonKeystoneUserClusterNameTooLong, fmt.Sprintf(
-			"the order lives on %s, whose name exceeds %d characters and cannot be carried as a label value; "+
-				"nothing is provisioned for an order on that cluster", keystoneUserLocation(cluster),
-			validation.LabelValueMaxLength))
-		return ctrl.Result{}, nil
-	}
-
-	cp, result, err := r.resolveControlPlane(ctx, order, cluster)
+	failBoth := func(reason, message string) { keystoneUserFailBoth(order, reason, message) }
+	cp, _, result, err := orderAdmission(ctx, r.Client, keystoneUserRef(order, cluster),
+		order.Spec.ControlPlaneRef, failBoth)
 	if err != nil || cp == nil {
 		return result, err
-	}
-
-	if cp.NamespaceAssignmentFor(order.Namespace, cluster) == nil {
-		keystoneUserFailBoth(order, reasonKeystoneUserNamespaceNotAssigned,
-			keystoneUserNotAssignedMessage(client.ObjectKeyFromObject(cp), order.Namespace, cluster))
-		return ctrl.Result{RequeueAfter: namespaceAssignmentRequeueAfter}, nil
 	}
 
 	if added, err := commonreconcile.EnsureFinalizer(ctx, oc, order, keystoneUserFinalizerName); err != nil {
@@ -239,11 +204,7 @@ func (r *KeystoneUserReconciler) reconcileNormal(
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
-	// K-ORC cannot talk to Keystone before the admin credential exists.
-	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady) {
-		keystoneUserFailBoth(order, reasonWaitingForServiceAccountAdmin, fmt.Sprintf(
-			"ControlPlane %s/%s reports AdminCredentialReady is not True; the order is deferred",
-			cp.Namespace, cp.Name))
+	if !orderAdminCredentialGate(cp, failBoth) {
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -272,69 +233,19 @@ func (r *KeystoneUserReconciler) reconcileNormal(
 }
 
 // keystoneUserPassResult decides when the next pass runs once both legs had
-// their say. A requeue a leg asked for stands. A delivered order on the
-// management cluster waits for an event: the ControlPlane watch reaches it. Every
-// other order comes back on keystoneUserRefreshAfter, because no watch reaches it:
-// a converged order on a target cluster, and a refusal that only an edit outside
-// the order's own watches lifts (an unpublished Keystone, a Secret somebody else
-// owns, the admin identity).
+// their say, with DeliveryReady as the converged condition (orderPassResult). A
+// refusal only an edit outside the order's own watches lifts (an unpublished
+// Keystone, a Secret somebody else owns, the admin identity) comes back on the
+// refresh.
 func keystoneUserPassResult(order *c5c3v1alpha1.KeystoneUser, cluster string, result ctrl.Result) ctrl.Result {
-	if !result.IsZero() {
-		return result
-	}
-	if cluster == c5c3v1alpha1.ManagementCluster &&
-		conditions.AllTrue(order.Status.Conditions, conditionTypeKeystoneUserDeliveryReady) {
-		return ctrl.Result{}
-	}
-	return ctrl.Result{RequeueAfter: keystoneUserRefreshAfter}
-}
-
-// resolveControlPlane fetches the referenced ControlPlane on the management
-// cluster. A dangling reference writes a failure on both conditions and returns
-// a nil ControlPlane with a nil error; any other read failure is returned
-// wrapped, so the workqueue backs off.
-//
-// For an order on the management cluster the failure is ControlPlaneNotFound.
-// For an order on a target cluster it is the NamespaceNotAssigned a plane
-// without the assignment writes, with the same message: the owner there cannot
-// read the management cluster, and the reason must not tell them which
-// ControlPlanes exist on it.
-func (r *KeystoneUserReconciler) resolveControlPlane(
-	ctx context.Context, order *c5c3v1alpha1.KeystoneUser, cluster string,
-) (*c5c3v1alpha1.ControlPlane, ctrl.Result, error) {
-	key := keystoneUserControlPlaneKey(order)
-	var cp c5c3v1alpha1.ControlPlane
-	if err := r.Get(ctx, key, &cp); err != nil {
-		if apierrors.IsNotFound(err) && cluster != c5c3v1alpha1.ManagementCluster {
-			keystoneUserFailBoth(order, reasonKeystoneUserNamespaceNotAssigned,
-				keystoneUserNotAssignedMessage(key, order.Namespace, cluster))
-			return nil, ctrl.Result{RequeueAfter: namespaceAssignmentRequeueAfter}, nil
-		}
-		if apierrors.IsNotFound(err) {
-			keystoneUserFailBoth(order, reasonKeystoneServiceControlPlaneNotFound, fmt.Sprintf(
-				"ControlPlane %s not found; the order is deferred until it exists", key))
-			return nil, ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-		return nil, ctrl.Result{}, fmt.Errorf("fetching ControlPlane %s/%s: %w", key.Namespace, key.Name, err)
-	}
-	return &cp, ctrl.Result{}, nil
+	return orderPassResult(cluster,
+		conditions.AllTrue(order.Status.Conditions, conditionTypeKeystoneUserDeliveryReady), result)
 }
 
 // keystoneUserControlPlaneKey resolves the order's controlPlaneRef, the
 // namespace defaulting to the order's own.
 func keystoneUserControlPlaneKey(order *c5c3v1alpha1.KeystoneUser) client.ObjectKey {
-	return client.ObjectKey{
-		Namespace: cmp.Or(order.Spec.ControlPlaneRef.Namespace, order.Namespace),
-		Name:      order.Spec.ControlPlaneRef.Name,
-	}
-}
-
-// keystoneUserNotAssignedMessage is the NamespaceNotAssigned message for the
-// ControlPlane cpKey names.
-func keystoneUserNotAssignedMessage(cpKey client.ObjectKey, namespace, cluster string) string {
-	return fmt.Sprintf("ControlPlane %s assigns no namespace %q on %s (spec.namespaceAssignments); "+
-		"the order is frozen: nothing is provisioned, delivered or repaired, and what was created stays",
-		cpKey, namespace, keystoneUserLocation(cluster))
+	return orderControlPlaneKey(order.Spec.ControlPlaneRef, order.Namespace)
 }
 
 // keystoneUserFail returns a closure bound to order and condType that writes a
@@ -374,14 +285,19 @@ func (r *KeystoneUserReconciler) updateStatus(
 
 // --- naming ---
 
+// keystoneUserRef identifies the order to the shared scaffold: its children
+// carry the "user" segment and the keystoneuser labels.
+func keystoneUserRef(order *c5c3v1alpha1.KeystoneUser, cluster string) orderRef {
+	return orderRef{
+		Name: order.Name, Namespace: order.Namespace, Cluster: cluster,
+		Segment: "user", Keys: keystoneUserLabelKeys,
+	}
+}
+
 // keystoneUserChildPrefix scopes every child an order creates in the
-// ControlPlane's namespace, and every sweep that removes one. The hash covers the
-// cluster, the namespace and the name, because the same namespace and name on two
-// clusters are two orders whose children share that one namespace. The readable
-// base stays in front so `kubectl get users` reads as the order it belongs to.
+// ControlPlane's namespace, and every sweep that removes one (orderRef.childPrefix).
 func keystoneUserChildPrefix(order *c5c3v1alpha1.KeystoneUser, cluster string) string {
-	sum := sha256.Sum256([]byte(cluster + "/" + order.Namespace + "/" + order.Name))
-	return order.Name + "-" + hex.EncodeToString(sum[:])[:8] + "-user-"
+	return keystoneUserRef(order, cluster).childPrefix()
 }
 
 func keystoneUserUserRef(order *c5c3v1alpha1.KeystoneUser, cluster string) string {
@@ -450,79 +366,32 @@ func keystoneUserPasswordGeneration(order *c5c3v1alpha1.KeystoneUser) int64 {
 // keystoneUserChildLabels returns the three ownership labels of the order's
 // children in the ControlPlane's namespace.
 func keystoneUserChildLabels(order *c5c3v1alpha1.KeystoneUser, cluster string) map[string]string {
-	return map[string]string{
-		keystoneUserNameLabel:      order.Name,
-		keystoneUserNamespaceLabel: order.Namespace,
-		keystoneUserClusterLabel:   cluster,
-	}
-}
-
-// isKeystoneUserChild reports whether order owns obj: obj carries all three of
-// the order's labels (the cluster label present, also when it is empty), or
-// order is obj's controller owner reference (the delivered Secret).
-func isKeystoneUserChild(obj client.Object, order *c5c3v1alpha1.KeystoneUser, cluster string) bool {
-	if metav1.IsControlledBy(obj, order) {
-		return true
-	}
-	labels := obj.GetLabels()
-	objCluster, ok := labels[keystoneUserClusterLabel]
-	return ok && objCluster == cluster &&
-		labels[keystoneUserNameLabel] == order.Name &&
-		labels[keystoneUserNamespaceLabel] == order.Namespace
+	return keystoneUserRef(order, cluster).childLabels()
 }
 
 // ownsKeystoneUserChild reports whether obj is a child the order created in the
-// ControlPlane's namespace. The ownership test and the prefix test must both
-// pass, so an object of the plane, of a KeystoneService or of another order that
-// shares the namespace is never reshaped or swept.
+// ControlPlane's namespace (ownsOrderChild).
 func ownsKeystoneUserChild(obj client.Object, order *c5c3v1alpha1.KeystoneUser, cluster string) bool {
-	return isKeystoneUserChild(obj, order, cluster) &&
-		strings.HasPrefix(obj.GetName(), keystoneUserChildPrefix(order, cluster))
+	return ownsOrderChild(obj, order, keystoneUserRef(order, cluster))
 }
 
-// claimKeystoneUserChild sets the order's labels on obj, keeping any label
-// already there. It never sets an owner reference: every labelled child lives in
-// another namespace or on another cluster than the order.
+// claimKeystoneUserChild sets the order's labels on obj (claimOrderChild).
 func claimKeystoneUserChild(obj client.Object, order *c5c3v1alpha1.KeystoneUser, cluster string) {
-	labels := obj.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	for k, v := range keystoneUserChildLabels(order, cluster) {
-		labels[k] = v
-	}
-	obj.SetLabels(labels)
+	claimOrderChild(obj, keystoneUserRef(order, cluster))
 }
 
-// ensureKeystoneUserChild applies a child in the ControlPlane's namespace with
-// Server-Side Apply. A live object of that name the order did not create is
-// refused: the apply would overwrite its spec and the teardown would delete it.
+// ensureKeystoneUserChild applies a child in the ControlPlane's namespace,
+// refusing one the order did not create (ensureOrderChild).
 func (r *KeystoneUserReconciler) ensureKeystoneUserChild(
 	ctx context.Context, order *c5c3v1alpha1.KeystoneUser, cluster string, obj client.Object,
 ) error {
-	live := obj.DeepCopyObject().(client.Object)
-	switch err := r.Get(ctx, client.ObjectKeyFromObject(obj), live); {
-	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
-	case err != nil:
-		return fmt.Errorf("checking for a pre-existing %T %s before adopting it: %w",
-			obj, client.ObjectKeyFromObject(obj), err)
-	default:
-		if !isKeystoneUserChild(live, order, cluster) {
-			return fmt.Errorf("refusing to adopt pre-existing %T %s: it was not created by this order",
-				obj, client.ObjectKeyFromObject(obj))
-		}
-	}
-	claimKeystoneUserChild(obj, order, cluster)
-	return apply.EnsureUnownedObject(ctx, r.Client, r.Scheme, obj, apply.FieldManager)
+	return ensureOrderChild(ctx, r.Client, r.Scheme, order, keystoneUserRef(order, cluster), obj)
 }
 
 // keystoneUserEnsure returns the ensure seam the shared projection helpers take,
-// bound to the order: every child they build is written through
-// ensureKeystoneUserChild.
+// bound to the order (orderEnsure).
 func (r *KeystoneUserReconciler) keystoneUserEnsure(order *c5c3v1alpha1.KeystoneUser, cluster string) registrationEnsure {
-	return func(ctx context.Context, obj client.Object) error {
-		return r.ensureKeystoneUserChild(ctx, order, cluster, obj)
-	}
+	return orderEnsure(r.Client, r.Scheme, order, keystoneUserRef(order, cluster))
 }
 
 // ensureKeystoneUserSecret create-or-updates a labelled Secret in the
@@ -549,58 +418,19 @@ func (r *KeystoneUserReconciler) ensureKeystoneUserSecret(
 // --- teardown ---
 
 // reconcileDelete removes everything the order created and releases the
-// finalizer. The assignment is not consulted: a withdrawn assignment freezes an
-// order, and deleting a frozen order still tears it down.
-//
-// With the ControlPlane present the teardown is patient: K-ORC's finalizer takes
-// the user out of Keystone and ESO's takes the password out of OpenBao, so the
-// finalizer is held until none of the children is listed any more. With the
-// ControlPlane gone it fails open: K-ORC has no credential left to reach Keystone
-// with, so the children are deleted and the finalizer is released whatever
-// their outcome.
+// finalizer through orderTeardown: K-ORC's finalizer takes the user out of
+// Keystone and ESO's takes the password out of OpenBao.
 func (r *KeystoneUserReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster string,
 ) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(order, keystoneUserFinalizerName) {
-		return ctrl.Result{}, nil
-	}
-	logger := log.FromContext(ctx)
-
-	key := keystoneUserControlPlaneKey(order)
-	controlPlaneGone := false
-	if err := r.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("fetching ControlPlane %s during teardown: %w", key, err)
-		}
-		controlPlaneGone = true
-	}
-
-	// key.Namespace is where the children are, whether or not the plane is still
-	// there to be read.
-	remaining, err := r.sweepKeystoneUserChildren(ctx, oc, order, cluster, key.Namespace)
-	if err != nil {
-		if !controlPlaneGone {
-			return ctrl.Result{}, err
-		}
-		logger.Error(err, "best-effort teardown of KeystoneUser children failed; releasing the finalizer anyway",
-			"controlPlane", key)
-		return r.removeFinalizer(ctx, oc, order)
-	}
-	if !controlPlaneGone && remaining > 0 {
-		logger.V(1).Info("waiting for KeystoneUser children to be removed before releasing the finalizer",
-			"remaining", remaining)
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-	}
-	if controlPlaneGone {
-		logger.Info("referenced ControlPlane is gone; releasing the KeystoneUser finalizer", "controlPlane", key)
-	}
-	return r.removeFinalizer(ctx, oc, order)
+	return orderTeardown(ctx, r.Client, oc, order, keystoneUserFinalizerName, keystoneUserControlPlaneKey(order),
+		func(ctx context.Context, childNS string) (int, error) {
+			return r.sweepKeystoneUserChildren(ctx, oc, order, cluster, childNS)
+		})
 }
 
 // sweepKeystoneUserChildren issues the deletes of every child the order owns and
-// reports how many are still listed. A child is counted on the pass that issued
-// its delete: K-ORC and ESO hold their objects behind finalizers while they clear
-// Keystone and OpenBao, and the teardown waits for that.
+// reports how many are still listed.
 //
 // The deletes run in this order: the PushSecret (its deletionPolicy removes the
 // OpenBao path), the managed User (K-ORC deletes the Keystone user), the probe,
@@ -611,62 +441,27 @@ func (r *KeystoneUserReconciler) reconcileDelete(
 func (r *KeystoneUserReconciler) sweepKeystoneUserChildren(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster, childNS string,
 ) (int, error) {
-	logger := log.FromContext(ctx)
-	selector := client.MatchingLabels(keystoneUserChildLabels(order, cluster))
+	ref := keystoneUserRef(order, cluster)
+	userRef := keystoneUserUserRef(order, cluster)
+	passwordPrefix := keystoneUserPasswordSecretPrefix(order, cluster)
 	remaining := 0
-
-	sweep := func(obj client.Object) error {
-		if !ownsKeystoneUserChild(obj, order, cluster) {
-			return nil
-		}
-		logger.Info("removing a KeystoneUser child", "name", obj.GetName(), "namespace", obj.GetNamespace())
-		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
-			return fmt.Errorf("deleting KeystoneUser child %q: %w", obj.GetName(), err)
-		}
-		remaining++
-		return nil
-	}
-
-	var pushSecrets esov1alpha1.PushSecretList
-	if err := r.List(ctx, &pushSecrets, client.InNamespace(childNS), selector); err != nil {
-		return 0, fmt.Errorf("listing order PushSecrets: %w", err)
-	}
-	for i := range pushSecrets.Items {
-		if err := sweep(&pushSecrets.Items[i]); err != nil {
+	for _, leg := range []struct {
+		list  client.ObjectList
+		first func(client.Object) bool
+	}{
+		{list: &esov1alpha1.PushSecretList{}},
+		// The managed User first, then the probe, both of the one kind.
+		{list: &orcv1alpha1.UserList{}, first: func(obj client.Object) bool { return obj.GetName() == userRef }},
+		// The password Secrets, then the source Secret.
+		{list: &corev1.SecretList{}, first: func(obj client.Object) bool {
+			return strings.HasPrefix(obj.GetName(), passwordPrefix)
+		}},
+	} {
+		n, err := sweepOrderList(ctx, r.Client, order, ref, childNS, leg.list, leg.first)
+		if err != nil {
 			return 0, err
 		}
-	}
-	// The managed User first, then the probe, both of the one kind.
-	var users orcv1alpha1.UserList
-	if err := r.List(ctx, &users, client.InNamespace(childNS), selector); err != nil {
-		return 0, fmt.Errorf("listing order Users: %w", err)
-	}
-	userRef := keystoneUserUserRef(order, cluster)
-	for _, managedFirst := range []bool{true, false} {
-		for i := range users.Items {
-			if (users.Items[i].Name == userRef) != managedFirst {
-				continue
-			}
-			if err := sweep(&users.Items[i]); err != nil {
-				return 0, err
-			}
-		}
-	}
-	// The password Secrets, then the source Secret.
-	var kubeSecrets corev1.SecretList
-	if err := r.List(ctx, &kubeSecrets, client.InNamespace(childNS), selector); err != nil {
-		return 0, fmt.Errorf("listing order Secrets: %w", err)
-	}
-	passwordPrefix := keystoneUserPasswordSecretPrefix(order, cluster)
-	for _, passwordsFirst := range []bool{true, false} {
-		for i := range kubeSecrets.Items {
-			if strings.HasPrefix(kubeSecrets.Items[i].Name, passwordPrefix) != passwordsFirst {
-				continue
-			}
-			if err := sweep(&kubeSecrets.Items[i]); err != nil {
-				return 0, err
-			}
-		}
+		remaining += n
 	}
 
 	delivered := &corev1.Secret{}
@@ -676,25 +471,13 @@ func (r *KeystoneUserReconciler) sweepKeystoneUserChildren(
 	case err != nil:
 		return 0, fmt.Errorf("reading delivered Secret %s: %w", deliveredKey, err)
 	case metav1.IsControlledBy(delivered, order):
-		logger.Info("removing the delivered KeystoneUser Secret", "secret", deliveredKey)
+		log.FromContext(ctx).Info("removing the delivered KeystoneUser Secret", "secret", deliveredKey)
 		if err := client.IgnoreNotFound(oc.Delete(ctx, delivered)); err != nil {
 			return 0, fmt.Errorf("deleting delivered Secret %s: %w", deliveredKey, err)
 		}
 		remaining++
 	}
 	return remaining, nil
-}
-
-// removeFinalizer releases the teardown finalizer through the order's cluster
-// client.
-func (r *KeystoneUserReconciler) removeFinalizer(
-	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser,
-) (ctrl.Result, error) {
-	controllerutil.RemoveFinalizer(order, keystoneUserFinalizerName)
-	if err := oc.Update(ctx, order); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing KeystoneUser finalizer: %w", err)
-	}
-	return ctrl.Result{}, nil
 }
 
 // --- manager setup ---
@@ -744,51 +527,6 @@ func controlPlaneToKeystoneUsersMapper(c client.Reader) handler.MapFunc {
 	}
 }
 
-// keystoneUserControlPlanePredicate passes the ControlPlane updates an order
-// reads: a spec change, which moves the generation, a deletion, and a flip of
-// AdminCredentialReady, the one status condition the gates consult. The plane's
-// other status writes, of which a rollout makes many, would wake every order on
-// the management cluster for nothing.
-func keystoneUserControlPlanePredicate() predicate.Funcs {
-	adminCredentialReady := func(obj client.Object) bool {
-		cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
-		return ok && conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady)
-	}
-	return predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
-				!e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp()) ||
-				adminCredentialReady(e.ObjectOld) != adminCredentialReady(e.ObjectNew)
-		},
-	}
-}
-
-// keystoneUserChildToRequests maps a child in the ControlPlane's namespace back
-// to its order by the three labels. The cluster label becomes the request's
-// cluster, so the event reaches the order on the cluster it lives on. An object
-// without the name and namespace labels belongs to something else and maps to
-// nothing.
-func keystoneUserChildToRequests(_ context.Context, obj client.Object) []mcreconcile.Request {
-	labels := obj.GetLabels()
-	name, namespace := labels[keystoneUserNameLabel], labels[keystoneUserNamespaceLabel]
-	if name == "" || namespace == "" {
-		return nil
-	}
-	return []mcreconcile.Request{{
-		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}},
-		ClusterName: mcruntime.ClusterName(labels[keystoneUserClusterLabel]),
-	}}
-}
-
-// keystoneUserChildRequests is the event-handler factory of the child legs. It
-// keeps the cluster keystoneUserChildToRequests chose, where LocalRequests would
-// pin every request to the management cluster.
-func keystoneUserChildRequests() mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
-	return func(_ mcruntime.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-		return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(keystoneUserChildToRequests)
-	}
-}
-
 // SetupWithManager registers the KeystoneUserReconciler with the multicluster
 // manager.
 func (r *KeystoneUserReconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -809,7 +547,7 @@ func (r *KeystoneUserReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 //   - The User, Secret and PushSecret children in the ControlPlane's namespace,
 //     mapped back by their labels.
 //   - ControlPlane: the orders on the management cluster that reference it,
-//     on the updates keystoneUserControlPlanePredicate passes.
+//     on the updates orderControlPlanePredicate passes.
 //
 // The index goes on the local field indexer: with a provider configured, the
 // multicluster manager's indexer would register against every target cluster as
@@ -823,6 +561,7 @@ func (r *KeystoneUserReconciler) setupWithOptions(mgr mcmanager.Manager, opts cr
 	engageNoProviders := commonmulticluster.EngageNoProviderClusters
 	engageProviders := mcbuilder.WithEngageWithProviderClusters(true)
 	servesKind := mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneUserGVK))
+	children := orderChildRequests(keystoneUserLabelKeys)
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		WithOptions(opts).
@@ -831,12 +570,12 @@ func (r *KeystoneUserReconciler) setupWithOptions(mgr mcmanager.Manager, opts cr
 		For(&c5c3v1alpha1.KeystoneUser{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()),
 			engageLocal, engageProviders, servesKind).
 		Owns(&corev1.Secret{}, engageLocal, engageProviders, servesKind).
-		Watches(&orcv1alpha1.User{}, keystoneUserChildRequests(), engageLocal, engageNoProviders).
-		Watches(&corev1.Secret{}, keystoneUserChildRequests(), engageLocal, engageNoProviders).
-		Watches(&esov1alpha1.PushSecret{}, keystoneUserChildRequests(), engageLocal, engageNoProviders).
+		Watches(&orcv1alpha1.User{}, children, engageLocal, engageNoProviders).
+		Watches(&corev1.Secret{}, children, engageLocal, engageNoProviders).
+		Watches(&esov1alpha1.PushSecret{}, children, engageLocal, engageNoProviders).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneUsersMapper(local.GetClient())),
-			mcbuilder.WithPredicates(keystoneUserControlPlanePredicate()), engageLocal, engageNoProviders).
+			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).
 		// Reconcile answers an unresolvable cluster itself, so the wrapper that
 		// would turn a cluster-not-found error into a success stays off.
 		WithClusterNotFoundWrapper(false).
