@@ -96,10 +96,10 @@ ARG PIP_PACKAGES=""
 # unquoted so multiple space-separated packages word-split, but a PEP 508
 # extras suffix (e.g. some_lib[s3]) is also a glob bracket expression that the
 # shell would rewrite if a matching file existed in the build CWD.
-# Nova has no os-win and imports no pkg_resources, so no setuptools<81
-# constraint is needed. The 32.0.0 image resolves setuptools 84 and its
-# oslo-config-generator run over etc/nova/nova-config-generator.conf exits 0,
-# so no derived catalog image is needed either.
+# Nova imports no pkg_resources, so the install needs no setuptools
+# constraint, and its oslo-config-generator run over
+# etc/nova/nova-config-generator.conf exits 0 on the service image, so no
+# derived catalog image is needed either.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=nova,target=/tmp/nova,readwrite \
     PKG="/tmp/nova" && \

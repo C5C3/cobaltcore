@@ -21,16 +21,10 @@ ARG PIP_PACKAGES=""
 # beforehand by scripts/apply-constraint-overrides.sh reading
 # overrides/<release>/constraints.txt (-horizon), otherwise pip refuses to
 # install the source tree against its own pin.
-# UV_BUILD_CONSTRAINT: several XStatic pins in the 2025.2 upper-constraints
-# ship only sdists whose legacy setup.py imports pkg_resources; setuptools 81
-# removed it from uv's isolated build env, so sdist builds need the last
-# release that still bundles it. Runtime resolution is unaffected.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=horizon,target=/tmp/horizon,readwrite \
     PKG="/tmp/horizon" && \
     if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
-    printf 'setuptools<81\n' > /tmp/build-constraints.txt && \
-    UV_BUILD_CONSTRAINT=/tmp/build-constraints.txt \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
         "$PKG" $PIP_PACKAGES
