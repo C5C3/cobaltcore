@@ -5,12 +5,12 @@
 
 # Verify glance container image meets requirements
 # Usage: bash tests/container-images/verify_glance.sh [image_name]
-# Default image: c5c3/glance:31.1.0
+# Default image: c5c3/glance:32.0.0
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/glance:31.1.0}"
+IMAGE="${1:-c5c3/glance:32.0.0}"
 
 PASS=0
 FAIL=0

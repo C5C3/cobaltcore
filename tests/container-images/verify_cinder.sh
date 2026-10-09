@@ -5,12 +5,12 @@
 
 # Verify cinder container image meets requirements
 # Usage: bash tests/container-images/verify_cinder.sh [image_name]
-# Default image: c5c3/cinder:27.0.0
+# Default image: c5c3/cinder:28.0.0
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/cinder:27.0.0}"
+IMAGE="${1:-c5c3/cinder:28.0.0}"
 
 PASS=0
 FAIL=0

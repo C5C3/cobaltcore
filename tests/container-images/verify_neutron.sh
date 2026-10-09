@@ -5,12 +5,12 @@
 
 # Verify neutron container image meets requirements
 # Usage: bash tests/container-images/verify_neutron.sh [image_name]
-# Default image: c5c3/neutron:27.0.3
+# Default image: c5c3/neutron:28.0.1
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/neutron:27.0.3}"
+IMAGE="${1:-c5c3/neutron:28.0.1}"
 
 PASS=0
 FAIL=0
