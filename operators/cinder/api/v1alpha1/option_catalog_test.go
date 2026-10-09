@@ -18,8 +18,7 @@ import (
 func TestCinderOptionCatalogs_EmbeddedReleasesParse(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(optionCatalogs).To(gomega.HaveLen(3))
-	g.Expect(optionCatalogs).To(gomega.HaveKey("2025.2"))
+	g.Expect(optionCatalogs).To(gomega.HaveLen(2))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.1"))
 	g.Expect(optionCatalogs).To(gomega.HaveKey("2026.2"))
 
@@ -99,15 +98,15 @@ func TestCinderOptionCatalogs_CoverTheRenderedSections(t *testing.T) {
 func TestCinderOptionCatalogForRelease(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	cat2025, ok := OptionCatalogForRelease("2025.2")
+	base, ok := OptionCatalogForRelease("2026.1")
 	g.Expect(ok).To(gomega.BeTrue())
-	g.Expect(cat2025).NotTo(gomega.BeNil())
-	g.Expect(cat2025.Release).To(gomega.Equal("2025.2"))
+	g.Expect(base).NotTo(gomega.BeNil())
+	g.Expect(base.Release).To(gomega.Equal("2026.1"))
 
 	// A patch suffix strips to the same base-release catalog (same pointer).
-	catPatch, ok := OptionCatalogForRelease("2025.2-p1")
+	catPatch, ok := OptionCatalogForRelease("2026.1-p1")
 	g.Expect(ok).To(gomega.BeTrue())
-	g.Expect(catPatch).To(gomega.BeIdenticalTo(cat2025))
+	g.Expect(catPatch).To(gomega.BeIdenticalTo(base))
 
 	// Values that do not resolve to an embedded catalog. "2024.2" parses as a
 	// release but no catalog is embedded for it.

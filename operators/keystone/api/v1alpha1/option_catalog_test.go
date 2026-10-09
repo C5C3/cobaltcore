@@ -18,8 +18,7 @@ import (
 func TestOptionCatalogs_EmbeddedReleasesParse(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	g.Expect(optionCatalogs).To(HaveLen(3))
-	g.Expect(optionCatalogs).To(HaveKey("2025.2"))
+	g.Expect(optionCatalogs).To(HaveLen(2))
 	g.Expect(optionCatalogs).To(HaveKey("2026.1"))
 	g.Expect(optionCatalogs).To(HaveKey("2026.2"))
 
@@ -62,15 +61,15 @@ func TestOptionCatalogs_UseUnderscoreSpelling(t *testing.T) {
 func TestOptionCatalogForRelease(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	cat2025, ok := OptionCatalogForRelease("2025.2")
+	base, ok := OptionCatalogForRelease("2026.1")
 	g.Expect(ok).To(BeTrue())
-	g.Expect(cat2025).NotTo(BeNil())
-	g.Expect(cat2025.Release).To(Equal("2025.2"))
+	g.Expect(base).NotTo(BeNil())
+	g.Expect(base.Release).To(Equal("2026.1"))
 
 	// A patch suffix strips to the same base-release catalog (same pointer).
-	catPatch, ok := OptionCatalogForRelease("2025.2-p1")
+	catPatch, ok := OptionCatalogForRelease("2026.1-p1")
 	g.Expect(ok).To(BeTrue())
-	g.Expect(catPatch).To(BeIdenticalTo(cat2025))
+	g.Expect(catPatch).To(BeIdenticalTo(base))
 
 	// Tags that do not resolve to an embedded catalog. "2024.2" parses as a
 	// release but no catalog is embedded for it.
@@ -81,12 +80,12 @@ func TestOptionCatalogForRelease(t *testing.T) {
 	}
 }
 
-// TestOptionCatalog2025_DeprecatesLogfile pins one representative deprecation the
+// TestOptionCatalog_DeprecatesLogfile pins one representative deprecation the
 // webhook's deprecated-option warning depends on.
-func TestOptionCatalog2025_DeprecatesLogfile(t *testing.T) {
+func TestOptionCatalog_DeprecatesLogfile(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	catalog, ok := OptionCatalogForRelease("2025.2")
+	catalog, ok := OptionCatalogForRelease("2026.1")
 	g.Expect(ok).To(BeTrue())
 	g.Expect(catalog.Sections["DEFAULT"].Deprecated).To(HaveKeyWithValue("logfile", "[DEFAULT] log_file"))
 }
