@@ -5,7 +5,7 @@
 # Read-only node probe for metal-stack clusters, the survey of #1138 (work
 # package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
 # lab: run it against a metal-stack cluster before anything of the lab is
-# deployed. It prints the node facts the lab depends on under twelve fixed
+# deployed. It prints the node facts the lab depends on under thirteen fixed
 # headers and exits 0 whatever it finds, so a node that lacks something
 # prints `absent`, `none` or `NOT FOUND` and the Job still completes.
 #
@@ -161,6 +161,15 @@
 #   lo: mtu=65536 operstate=unknown
 #   ovs-system: mtu=1500 operstate=down
 #
+# The `== rook` header came after that run. On a node that never ran the lab
+# Ceph it prints one line:
+#   == rook
+#   /var/lib/rook: absent
+# On a node that runs it, or that a Ceph left without its cleanup, it prints
+# `/var/lib/rook: present`, the entries of the directory one per line (the
+# directory of the CephCluster's namespace, rook-ceph, among them) and the
+# `df -h` lines of the filesystem that holds it, the /var/lib volume above.
+#
 # Reading it: `/dev/kvm` present, VT-x and a `kvm-intel` module file mean
 # `virtType: kvm`; an `openvswitch`, `geneve` and `vhost_net` module file mean
 # the OVN chassis and the libvirt DaemonSet can load what they need; the lab's
@@ -196,6 +205,15 @@
 # 2026-09-29 run, before any lab run and before the probe looked for the Chaos
 # Mesh modules, listed only tun, nvme_tcp, kvm_intel and kvm as loaded. The
 # `/dev/kvm` date and the `Used` column change from run to run.
+#
+# `/var/lib/rook: present` on a bare cluster is the leftover of a Ceph that
+# was not torn down with its cleanup policy (hack/teardown-infra.sh confirms
+# the policy and waits for the cleanup Jobs), and a new monitor refuses to
+# start over another cluster's data there. The probe cannot see a
+# StorageClass, since it mounts no ServiceAccount token, so whether the
+# default class serves `volumeMode: Block` claims is answered by the deploy:
+# Step 1 logs the default class, and the Ceph wait of WITH_CEPH=true fails
+# when the OSD claims stay Pending.
 ---
 apiVersion: batch/v1
 kind: Job
@@ -273,6 +291,14 @@ spec:
                 [ -e "$n" ] || { echo absent; break; }
                 echo "$(basename "$n"): mtu=$(cat "${n}mtu" 2>/dev/null) operstate=$(cat "${n}operstate" 2>/dev/null)"
               done
+              echo "== rook"
+              if [ -d /host/var/lib/rook ]; then
+                echo "/var/lib/rook: present"
+                ls -A /host/var/lib/rook 2>/dev/null
+                df -h /host/var/lib/rook 2>/dev/null
+              else
+                echo "/var/lib/rook: absent"
+              fi
               exit 0
           securityContext:
             # Only a privileged container sees the host's device nodes; an
