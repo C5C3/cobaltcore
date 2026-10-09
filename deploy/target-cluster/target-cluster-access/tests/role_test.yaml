@@ -56,10 +56,10 @@ tests:
           count: 23
         documentIndex: 1
 
-  # The KeystoneUser order watch spans every namespace of the registration, so a
-  # placed namespace grants reading the kind and nothing more: no order is
+  # The order watches span every namespace of the registration, so a placed
+  # namespace grants reading the order kinds and nothing more: no order is
   # served here.
-  - it: should grant read-only access on keystoneusers
+  - it: should grant read-only access on the order kinds
     set:
       namespaces:
         - openstack
@@ -70,11 +70,53 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystonecatalogentries
+              - keystoneprojects
+              - keystoneroleassignments
               - keystoneusers
             verbs:
               - get
               - list
               - watch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystonecatalogentries
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneprojects
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneroleassignments
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
       - notContains:
           path: rules
           content:

@@ -68,6 +68,9 @@ tests:
             - apiGroups:
                 - c5c3.io
               resources:
+                - keystonecatalogentries
+                - keystoneprojects
+                - keystoneroleassignments
                 - keystoneusers
               verbs:
                 - get
@@ -78,6 +81,9 @@ tests:
             - apiGroups:
                 - c5c3.io
               resources:
+                - keystonecatalogentries/status
+                - keystoneprojects/status
+                - keystoneroleassignments/status
                 - keystoneusers/status
               verbs:
                 - get
@@ -86,6 +92,9 @@ tests:
             - apiGroups:
                 - c5c3.io
               resources:
+                - keystonecatalogentries/finalizers
+                - keystoneprojects/finalizers
+                - keystoneroleassignments/finalizers
                 - keystoneusers/finalizers
               verbs:
                 - update
