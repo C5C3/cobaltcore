@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two RBD pools of the lab: volumes for Cinder's volume backend and
+# backups for its backup backend (#1346 attaches both). The overlay creates
+# them and CobaltCore never does (rule 1 of #1338).
+#
+# Two replicas on two different hosts (D2 of #1338): with three OSDs on three
+# workers a host can fail without data loss. requireSafeReplicaSize keeps a
+# later edit from dropping a pool to a single replica.
+---
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: volumes
+  namespace: rook-ceph
+spec:
+  failureDomain: host
+  replicated:
+    size: 2
+    requireSafeReplicaSize: true
+---
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: backups
+  namespace: rook-ceph
+spec:
+  failureDomain: host
+  replicated:
+    size: 2
+    requireSafeReplicaSize: true

@@ -531,6 +531,7 @@ directory. The table lists every directory under `deploy/` that holds a
 | `deploy/lab/metal-stack/nfs` | `deploy/kind/nfs` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_NFS=true` |
 | `deploy/lab/metal-stack/prometheus` | `deploy/kind/prometheus` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_PROMETHEUS=true` |
 | `deploy/lab/metal-stack/ceph` | none | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` ([Lab Ceph](infrastructure-manifests.md#lab-ceph)) |
+| `deploy/lab/metal-stack/ceph/cluster` | none | Step 5 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` |
 | `deploy/lab/metal-stack/controlplane` | none | a person ([Quick Start (metal-stack)](../../quick-start-metal-stack.md)) |
 | `deploy/lab/metal-stack/hypervisor-fixtures` | `deploy/kind/hypervisor-operator-fixtures` | a person, after the ControlPlane |
 | `deploy/lab/metal-stack/hypervisor` | `deploy/lab/metal-stack/migration-ports` | a person, after the ControlPlane |

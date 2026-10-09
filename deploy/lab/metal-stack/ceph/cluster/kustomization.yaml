@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: the Ceph of #1344, the second of
+# the two kustomizations of the lab Ceph. hack/deploy-infra.sh applies it in
+# Step 5 under EXTERNAL_CLUSTER=true WITH_CEPH=true, once it has waited for
+# the CRDs cephclusters, cephblockpools and cephclients that the chart of
+# ../release.yaml installs:
+#
+#   EXTERNAL_CLUSTER=true WITH_CEPH=true make deploy-infra
+#
+# It renders:
+#   - cluster.yaml: the CephCluster rook-ceph, one mon, one mgr and three OSDs
+#     on raw block volumes of the default class;
+#   - pools.yaml: the CephBlockPools volumes and backups, two replicas each;
+#   - clients.yaml: the CephClients cinder and cinder-backup with aes keys;
+#   - toolbox.yaml: the Deployment rook-ceph-tools, Rook's toolbox;
+#   - keys-push.yaml: in rook-ceph, the PushSecrets that write the two client
+#     keys to OpenBao, with their SecretStore, Certificate and ServiceAccount;
+#   - keys-pull.yaml: in openstack, the ExternalSecrets that read them back
+#     into the Secrets ceph-client-cinder and ceph-client-cinder-backup, with
+#     their own SecretStore, Certificate and ServiceAccount.
+#
+# The OSD preparation takes minutes, so the deploy waits for the Ceph at the
+# end of the run, after the OpenBao bootstrap of Steps 6 to 8:
+# wait_for_ceph_cluster waits up to CEPH_TIMEOUT for the phase Ready, the
+# health HEALTH_OK and one ready OSD per entry of the device set, and
+# sync_ceph_client_keys then forces both SecretStores, both PushSecrets and
+# both ExternalSecrets and waits for them. ../kustomization.yaml describes the
+# posture and the teardown.
+#
+# Every resource is local to the directory, so `kubectl apply -k` renders it
+# under kustomize's default LoadRestrictionsRootOnly check.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - cluster.yaml
+  - pools.yaml
+  - clients.yaml
+  - toolbox.yaml
+  - keys-push.yaml
+  - keys-pull.yaml

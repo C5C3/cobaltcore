@@ -1,0 +1,253 @@
+# SPDX-FileCopyrightText: Copyright The Rook Authors
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Ceph toolbox: a pod with the ceph and rbd CLIs, configured as
+# client.admin of the lab Ceph. The quick start and the reference use it for
+# `ceph status`, `rbd create` and `ceph auth get-key`:
+#
+#   kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status
+#
+# Copied from deploy/examples/toolbox.yaml of https://github.com/rook/rook at
+# tag v1.21.0 (commit f190ca3b45f131da03641741e9e03b2584cd7d5e), the release
+# the HelmRelease of ../release.yaml pins; the file is the same on the branch
+# release-1.21. Four edits:
+#   - the image is the CephCluster's of cluster.yaml, quay.io/ceph/ceph:v20.2.4
+#     by tag and digest, in place of the floating quay.io/ceph/ceph:v20, so the
+#     CLIs match the daemons and Renovate moves both together;
+#   - the container carries resources, 10m CPU and 64Mi memory requested and
+#     a 256Mi memory limit; upstream sets none;
+#   - the pod holds the admin keyring in a namespace that enforces the
+#     privileged PodSecurity level, so the container also forbids privilege
+#     escalation and runs the RuntimeDefault seccomp profile, and the pod
+#     mounts no ServiceAccount token: the script never calls the API;
+#   - the script's first comment names upstream's generator in place of
+#     upstream's "do not edit" marker, which points to a make target of
+#     rook/rook that this repository does not have.
+# Everything else is upstream's: one replica, the ServiceAccount
+# rook-ceph-default of the chart, UID 2016 with every capability dropped, and
+# a script that writes /etc/ceph/ceph.conf and the admin keyring from the
+# Secret rook-ceph-mon and the ConfigMap rook-ceph-mon-endpoints into an
+# emptyDir and checks them every 10 seconds. The pod starts once the CephCluster
+# has created both. A refresh copies the file again and repeats the four edits.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-tools
+  namespace: rook-ceph # namespace:cluster
+  labels:
+    app: rook-ceph-tools
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rook-ceph-tools
+  template:
+    metadata:
+      labels:
+        app: rook-ceph-tools
+    spec:
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: rook-ceph-default
+      automountServiceAccountToken: false
+      containers:
+        - name: rook-ceph-tools
+          image: quay.io/ceph/ceph:v20.2.4@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # The script is inlined because the ceph image does not ship toolbox.sh.
+              # Upstream generates this script from images/ceph/toolbox.sh of rook/rook
+              # (make gen-toolbox there); refresh it by copying the file the header names.
+              # inputs
+              ENDPOINT_MOUNT="/etc/rook/mon-endpoints"
+              KEYRING_MOUNT="/var/lib/rook-ceph-mon/secret.keyring"
+              CONFIG_OVERRIDE_MOUNT="/etc/rook-config-override/config"
+
+              # outputs
+              CEPH_CONFIG="/etc/ceph/ceph.conf"
+              KEYRING_FILE="/etc/ceph/keyring"
+
+              config_override_exists() {
+                [ -f "${CONFIG_OVERRIDE_MOUNT}" ] && [ -s "${CONFIG_OVERRIDE_MOUNT}" ]
+              }
+
+              # create/update the ceph keyring file
+              write_keyring() {
+                DATE=$(date)
+
+                # read the secret from an env var (for backward compatibility), or from the secret file
+                ceph_secret=${ROOK_CEPH_SECRET}
+                if [[ "$ceph_secret" == "" ]]; then
+                  ceph_secret=$(cat ${KEYRING_MOUNT})
+                fi
+
+                echo "$DATE writing keyring to ${KEYRING_FILE}"
+                cat <<EOF > ${KEYRING_FILE}
+              [${ROOK_CEPH_USERNAME}]
+              key = ${ceph_secret}
+              EOF
+
+              } # write_keyring()
+
+              # create/update the ceph config file in its default location so ceph/rados tools can be used
+              # without specifying any arguments
+              write_conf() {
+                DATE=$(date)
+
+                # filter out the mon names
+                # external cluster can have numbers or hyphens in mon names, handling them in regex
+                # shellcheck disable=SC2001
+                mon_endpoints=$(cat ${ENDPOINT_MOUNT}| sed 's/[a-z0-9_-]\+=//g')
+
+                config_override=""
+                if config_override_exists; then
+                  echo "$DATE merging config override from ${CONFIG_OVERRIDE_MOUNT}"
+                  config_override=$(cat "${CONFIG_OVERRIDE_MOUNT}")
+                fi
+
+                echo "$DATE writing mon endpoints to ${CEPH_CONFIG}: ${mon_endpoints}"
+                cat << EOF > ${CEPH_CONFIG}
+              [global]
+              mon_host = ${mon_endpoints}
+
+              [client.admin]
+              keyring = ${KEYRING_FILE}
+
+              ${config_override}
+              EOF
+
+              } # write_conf()
+
+              # watch the ceph config directory and update if the mon endpoints or keyring change
+              watch_etc_ceph() {
+                # get the timestamp for the targets of the soft links
+                keyring_mount_path=$(realpath "${KEYRING_MOUNT}")
+                keyring_init_time=$(stat -c %Z "${keyring_mount_path}")
+
+                endpoint_mount_path=$(realpath "${ENDPOINT_MOUNT}")
+                endpoint_init_time=$(stat -c %Z "${endpoint_mount_path}")
+
+                override_mount_path=""
+                override_init_time=""
+                if config_override_exists; then
+                  override_mount_path=$(realpath "${CONFIG_OVERRIDE_MOUNT}")
+                  override_init_time=$(stat -c %Z "${override_mount_path}")
+                fi
+
+                while true; do
+                  sleep 10
+                  DATE=$(date)
+
+                  # keyring file
+                  keyring_mount_path=$(realpath "${KEYRING_MOUNT}")
+                  keyring_latest_time="$(stat -c %Z "${keyring_mount_path}")"
+
+                  if [ "${keyring_latest_time}" != "${keyring_init_time}" ]; then
+                    echo "$DATE keyring changed"
+                    write_keyring
+                    keyring_init_time="${keyring_latest_time}"
+                  fi
+
+                  # ceph.conf file / config override
+                  endpoint_mount_path=$(realpath "${ENDPOINT_MOUNT}")
+                  endpoint_latest_time=$(stat -c %Z "${endpoint_mount_path}")
+
+                  override_mount_path=""
+                  override_latest_time=""
+                  if config_override_exists; then
+                    override_mount_path=$(realpath "${CONFIG_OVERRIDE_MOUNT}")
+                    override_latest_time=$(stat -c %Z "${override_mount_path}")
+                  fi
+
+                  need_conf_update=false
+
+                  if [ "${endpoint_latest_time}" != "${endpoint_init_time}" ]; then
+                    echo "$DATE mon endpoints changed"
+                    need_conf_update=true
+                  fi
+
+                  if [ "${override_latest_time}" != "${override_init_time}" ]; then
+                    echo "$DATE config override changed"
+                    need_conf_update=true
+                  fi
+
+                  if $need_conf_update; then
+                    write_conf
+                    endpoint_init_time="${endpoint_latest_time}"
+                    override_init_time="${override_latest_time}"
+                  fi
+                done
+              }
+
+              # write the initial config files
+              write_keyring
+              write_conf
+
+              # continuously update the config files for mon failover and/or cephx key rotation
+              if [ "$1" != "--skip-watch" ]; then
+                watch_etc_ceph
+              fi
+              # END AUTOGENERATED
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          tty: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 2016
+            runAsGroup: 2016
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: ROOK_CEPH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: ceph-username
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: ceph-config
+            - name: mon-endpoint-volume
+              mountPath: /etc/rook
+            - name: ceph-admin-secret
+              mountPath: /var/lib/rook-ceph-mon
+              readOnly: true
+            - name: rook-config-override
+              mountPath: /etc/rook-config-override
+              readOnly: true
+      volumes:
+        - name: ceph-admin-secret
+          secret:
+            secretName: rook-ceph-mon
+            optional: false
+            items:
+              - key: ceph-secret
+                path: secret.keyring
+        - name: mon-endpoint-volume
+          configMap:
+            name: rook-ceph-mon-endpoints
+            items:
+              - key: data
+                path: mon-endpoints
+        - name: rook-config-override
+          configMap:
+            name: rook-config-override
+            optional: true
+        - name: ceph-config
+          emptyDir: {}
+      tolerations:
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 5

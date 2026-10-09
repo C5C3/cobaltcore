@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The control-plane half of the Ceph key hand-off (D4 of #1338): two
+# ExternalSecrets read the client keys keys-push.yaml wrote to OpenBao and
+# create the Secrets openstack/ceph-client-cinder and
+# openstack/ceph-client-cinder-backup, each with the raw key under userKey
+# and nothing else. These are the names #1346 puts on the lab's ControlPlane
+# fragment and #1345 reads for the libvirt secret.
+#
+# The SecretStore authenticates on kubernetes/management as the role
+# read-ceph-keys, which setup-auth.sh binds to the ServiceAccount
+# openstack/ceph-keys-read and the policy read-ceph-keys (read on
+# kv-v2/data/ceph/*). The role binds openstack alone, so no other namespace
+# reads a Ceph key. A refreshInterval of one minute carries a rotation Rook
+# drives to openstack within a few minutes; creationPolicy Owner deletes the
+# Secrets with the ExternalSecrets.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-keys-read
+  namespace: openstack
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ceph-keys-read-client-tls
+  namespace: openstack
+spec:
+  secretName: ceph-keys-read-client-tls
+  duration: 8760h
+  renewBefore: 720h
+  commonName: ceph-keys-read-client-tls.openstack.svc
+  usages:
+    - client auth
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: openbao-ceph-store
+  namespace: openstack
+spec:
+  provider:
+    vault:
+      server: https://openbao.shared-services.svc:8200
+      path: kv-v2
+      version: v2
+      tls:
+        certSecretRef:
+          name: ceph-keys-read-client-tls
+        keySecretRef:
+          name: ceph-keys-read-client-tls
+      auth:
+        kubernetes:
+          mountPath: kubernetes/management
+          role: read-ceph-keys
+          serviceAccountRef:
+            name: ceph-keys-read
+      caProvider:
+        type: Secret
+        name: ceph-keys-read-client-tls
+        key: ca.crt
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ceph-client-cinder
+  namespace: openstack
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: openbao-ceph-store
+    kind: SecretStore
+  target:
+    name: ceph-client-cinder
+    creationPolicy: Owner
+  data:
+    - secretKey: userKey
+      remoteRef:
+        key: ceph/client-cinder
+        property: userKey
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ceph-client-cinder-backup
+  namespace: openstack
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: openbao-ceph-store
+    kind: SecretStore
+  target:
+    name: ceph-client-cinder-backup
+    creationPolicy: Owner
+  data:
+    - secretKey: userKey
+      remoteRef:
+        key: ceph/client-cinder-backup
+        property: userKey
