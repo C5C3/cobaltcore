@@ -85,7 +85,7 @@ func cinderControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -1030,9 +1030,9 @@ func TestReconcileCinder_ProjectedChildFields(t *testing.T) {
 
 	cn := getProjectedCinder(t, r.Client, cp)
 	g.Expect(cn.Name).To(Equal("cp-cinder"))
-	g.Expect(cn.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(cn.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(cn.Spec.Image.Repository).To(Equal("ghcr.io/c5c3/cinder"))
-	g.Expect(cn.Spec.Image.Tag).To(Equal("2025.2"), "the tag defaults to spec.openStackRelease")
+	g.Expect(cn.Spec.Image.Tag).To(Equal("2026.1"), "the tag defaults to spec.openStackRelease")
 
 	// Database: the shared cluster, the fixed cinder schema, the operator-owned
 	// credential Secret, and the managed-shared Dynamic default.

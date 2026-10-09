@@ -95,7 +95,7 @@ func novaControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -1358,9 +1358,9 @@ func TestReconcileNova_ProjectedChildFields(t *testing.T) {
 
 	nv := getProjectedNova(t, r.Client, cp)
 	g.Expect(nv.Name).To(Equal("cp-nova"))
-	g.Expect(nv.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(nv.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(nv.Spec.Image.Repository).To(Equal("ghcr.io/c5c3/nova"))
-	g.Expect(nv.Spec.Image.Tag).To(Equal("2025.2"), "the tag defaults to spec.openStackRelease")
+	g.Expect(nv.Spec.Image.Tag).To(Equal("2026.1"), "the tag defaults to spec.openStackRelease")
 
 	// Two schemas on one instance, each with its own operator-owned credential and
 	// the managed-shared Dynamic default both blocks have to agree on.

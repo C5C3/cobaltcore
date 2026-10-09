@@ -77,7 +77,7 @@ func glanceControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -994,8 +994,8 @@ func TestReconcileGlance_ImageTagFromRelease(t *testing.T) {
 		release string
 		wantTag string
 	}{
-		{release: "2025.2", wantTag: "2025.2"},
 		{release: "2026.1", wantTag: "2026.1"},
+		{release: "2026.2", wantTag: "2026.2"},
 	} {
 		t.Run(tt.release, func(t *testing.T) {
 			g := NewGomegaWithT(t)

@@ -64,7 +64,7 @@ func ovnControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Services: c5c3v1alpha1.ServicesSpec{
 				Neutron: &c5c3v1alpha1.ServiceNeutronSpec{

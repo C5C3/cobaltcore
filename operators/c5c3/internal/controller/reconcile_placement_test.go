@@ -70,7 +70,7 @@ func placementControlPlane() *c5c3v1alpha1.ControlPlane {
 			UID:        types.UID("cp-uid"),
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Region:           "RegionOne",
 			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
@@ -804,9 +804,9 @@ func TestReconcilePlacement_ProjectedChildFields(t *testing.T) {
 
 	pl := getProjectedPlacement(t, r.Client, cp)
 	g.Expect(pl.Name).To(Equal("cp-placement"))
-	g.Expect(pl.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(pl.Spec.OpenStackRelease).To(Equal("2026.1"))
 	g.Expect(pl.Spec.Image.Repository).To(Equal("ghcr.io/c5c3/placement"))
-	g.Expect(pl.Spec.Image.Tag).To(Equal("2025.2"), "the tag defaults to spec.openStackRelease")
+	g.Expect(pl.Spec.Image.Tag).To(Equal("2026.1"), "the tag defaults to spec.openStackRelease")
 
 	// Database: the shared cluster, the fixed placement schema, the operator-owned
 	// credential Secret, and the managed-shared Dynamic default.
