@@ -31,7 +31,7 @@ func validHorizon() *Horizon {
 			Deployment: DeploymentSpec{Replicas: 3},
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/horizon",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			Cache: commonv1.CacheSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},

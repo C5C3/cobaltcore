@@ -96,10 +96,10 @@ func minimalNovaManifest(name, namespace string) *unstructured.Unstructured {
 			"namespace": namespace,
 		},
 		"spec": map[string]any{
-			"openStackRelease": "2025.2",
+			"openStackRelease": "2026.1",
 			"image": map[string]any{
 				"repository": "ghcr.io/c5c3/nova",
-				"tag":        "2025.2",
+				"tag":        "2026.1",
 			},
 			"apiDatabase": map[string]any{
 				"clusterRef": map[string]any{"name": "mariadb"},
@@ -639,7 +639,7 @@ func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
 	nova.Spec.ExtraConfig = map[string]map[string]string{
 		"DEFAULT": {"cpu_allocation_ration": "16.0"},
 	}
-	expectRejected(t, c.Create(ctx, nova), "no such option in the nova 2025.2 option catalog")
+	expectRejected(t, c.Create(ctx, nova), "no such option in the nova 2026.1 option catalog")
 }
 
 // TestIntegration_WebhookRejectsOverlongName pins the metadata.name bound
@@ -886,7 +886,7 @@ func TestIntegration_NovaCompute_WebhookCatalogCheck(t *testing.T) {
 
 		nc := integrationNovaCompute("pool", ns)
 		nc.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"cpu_allocation_ration": "16.0"}}
-		expectRejected(t, c.Create(ctx, nc), "no such option in the nova 2025.2 option catalog")
+		expectRejected(t, c.Create(ctx, nc), "no such option in the nova 2026.1 option catalog")
 	})
 }
 

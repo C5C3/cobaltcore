@@ -32,10 +32,10 @@ func validCinder() *Cinder {
 	return &Cinder{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cinder", Namespace: "openstack"},
 		Spec: CinderSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Image: commonv1.ImageSpec{
 				Repository: "ghcr.io/c5c3/cinder",
-				Tag:        "2025.2",
+				Tag:        "2026.1",
 			},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
@@ -713,7 +713,7 @@ func TestCinderValidate_ExtraConfigBackendSectionRejected(t *testing.T) {
 	}
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the cinder 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the cinder 2026.1 option catalog"))
 }
 
 func TestCinderValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
@@ -726,7 +726,7 @@ func TestCinderValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 	}
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the cinder 2026.1 option catalog"))
 }
 
 // A deprecated-but-accepted option is admitted and reported: the catalog knows
@@ -744,7 +744,7 @@ func TestCinderValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
 	warnings, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(warnings).To(gomega.ConsistOf(gomega.ContainSubstring(
-		"deprecated option in cinder 2025.2, replaced by [DEFAULT] log_file")))
+		"deprecated option in cinder 2026.1, replaced by [DEFAULT] log_file")))
 }
 
 // A release the build ships no catalog for must not block admission: the check
@@ -834,7 +834,7 @@ func TestCinderValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 	}
 	_, err = w.ValidateUpdate(context.Background(), stale, edited)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the cinder 2025.2 option catalog"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the cinder 2026.1 option catalog"))
 }
 
 // --- Warnings ---

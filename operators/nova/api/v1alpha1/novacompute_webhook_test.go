@@ -244,7 +244,7 @@ func TestNovaComputeWebhook_ValidateCreate_RejectsEachRule(t *testing.T) {
 			edit: func(nc *NovaCompute) {
 				nc.Spec.Image = &commonv1.ImageSpec{
 					Repository: "ghcr.io/c5c3/nova-compute",
-					Tag:        "2025.2",
+					Tag:        "2026.1",
 					Digest:     "sha256:" + strings.Repeat("a", 64),
 				}
 			},
@@ -358,7 +358,7 @@ func TestNovaComputeWebhook_CatalogCheck(t *testing.T) {
 		nc := validNovaCompute()
 		nc.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"cpu_allocation_ration": "16.0"}}
 		_, err := w.ValidateCreate(context.Background(), nc)
-		expectInvalid(t, err, "no such option in the nova 2025.2 option catalog")
+		expectInvalid(t, err, "no such option in the nova 2026.1 option catalog")
 	})
 
 	t.Run("a known option is admitted without a warning", func(t *testing.T) {
@@ -491,7 +491,7 @@ func TestNovaComputeWebhook_ValidateUpdate(t *testing.T) {
 		newObj := oldObj.DeepCopy()
 		newObj.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"cpu_allocation_ration": "16.0"}}
 		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
-		expectInvalid(t, err, "no such option in the nova 2025.2 option catalog")
+		expectInvalid(t, err, "no such option in the nova 2026.1 option catalog")
 	})
 
 	t.Run("adding a live-migration key is rejected", func(t *testing.T) {
