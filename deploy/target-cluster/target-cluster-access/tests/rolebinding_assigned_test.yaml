@@ -1,0 +1,63 @@
+# Per-assigned-namespace RoleBinding unit tests.
+suite: RoleBindingAssigned
+templates:
+  - templates/rolebinding-assigned.yaml
+tests:
+  - it: should render no RoleBinding without assigned namespaces
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render one RoleBinding per assigned namespace
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+        - tenant-b
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: metadata.namespace
+          value: tenant-a
+        documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: tenant-b
+        documentIndex: 1
+
+  - it: should bind that namespace's assigned Role
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+    asserts:
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: RELEASE-NAME-target-cluster-access-assigned
+
+  - it: should bind the service account in the release namespace
+    release:
+      namespace: cluster-access
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+      serviceAccount:
+        name: custom-sa
+    asserts:
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: custom-sa
+              namespace: cluster-access

@@ -1,0 +1,103 @@
+# Per-assigned-namespace Role unit tests.
+suite: RoleAssigned
+templates:
+  - templates/role-assigned.yaml
+tests:
+  - it: should render no Role without assigned namespaces
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces: []
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render one Role per assigned namespace
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+        - tenant-b
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-target-cluster-access-assigned
+      - equal:
+          path: metadata.namespace
+          value: tenant-a
+        documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: tenant-b
+        documentIndex: 1
+
+  # The whole rule set is pinned: an assigned namespace belongs to a service
+  # owner, so a workload kind (deployments, jobs, mariadbs) appearing here
+  # would let the registration kubeconfig run code in it.
+  - it: should grant the four order rules and nothing else
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+        - tenant-b
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 4
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              verbs:
+                - get
+                - list
+                - watch
+                - create
+                - update
+                - patch
+                - delete
+            - apiGroups:
+                - c5c3.io
+              resources:
+                - keystoneusers
+              verbs:
+                - get
+                - list
+                - watch
+                - update
+                - patch
+            - apiGroups:
+                - c5c3.io
+              resources:
+                - keystoneusers/status
+              verbs:
+                - get
+                - update
+                - patch
+            - apiGroups:
+                - c5c3.io
+              resources:
+                - keystoneusers/finalizers
+              verbs:
+                - update
+        documentIndex: 1
+
+  - it: should carry the chart labels
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: target-cluster-access

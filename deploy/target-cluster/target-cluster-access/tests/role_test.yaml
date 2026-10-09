@@ -49,12 +49,45 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 22
+          count: 23
         documentIndex: 0
       - lengthEqual:
           path: rules
-          count: 22
+          count: 23
         documentIndex: 1
+
+  # The KeystoneUser order watch spans every namespace of the registration, so a
+  # placed namespace grants reading the kind and nothing more: no order is
+  # served here.
+  - it: should grant read-only access on keystoneusers
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneusers
+            verbs:
+              - get
+              - list
+              - watch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneusers
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
 
   # The opt-in VerticalPodAutoscalers of the placed workloads.
   - it: should grant full CRUD on verticalpodautoscalers
@@ -268,7 +301,7 @@ tests:
         documentIndex: 1
       - lengthEqual:
           path: rules
-          count: 22
+          count: 23
         documentIndex: 1
 
   # A namespace that hosts no node-level workload carries no DaemonSet write.

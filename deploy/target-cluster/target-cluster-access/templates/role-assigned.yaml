@@ -1,0 +1,67 @@
+{{/*
+One Role per assigned namespace, holding what the c5c3-operator needs to serve
+a KeystoneUser order there and nothing else: it reads the order, writes its
+status and finalizer, and writes the Secret it delivers beside it. No workload
+kind is granted, so whoever holds the registration kubeconfig cannot run
+anything in a namespace that belongs to a service owner.
+
+The finalizers subresource is what lets the delivered Secret carry an owner
+reference with blockOwnerDeletion, which the OwnerReferencesPermissionEnforcement
+admission plugin checks against update on the owner's finalizers.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+{{- include "target-cluster-access.requireAssignedNamespaces" . }}
+{{- range $namespace := .Values.assignedNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "target-cluster-access.fullname" $ }}-assigned
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "target-cluster-access.labels" $ | nindent 4 }}
+rules:
+  # core - secrets
+  # The Secret <order>-credentials the operator delivers, repairs and deletes.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # c5c3.io - keystoneusers
+  # The orders themselves: read, and updated to install and release the
+  # teardown finalizer. The operator never creates or deletes one.
+  - apiGroups:
+      - c5c3.io
+    resources:
+      - keystoneusers
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
+  # c5c3.io - keystoneusers/status
+  - apiGroups:
+      - c5c3.io
+    resources:
+      - keystoneusers/status
+    verbs:
+      - get
+      - update
+      - patch
+  # c5c3.io - keystoneusers/finalizers
+  - apiGroups:
+      - c5c3.io
+    resources:
+      - keystoneusers/finalizers
+    verbs:
+      - update
+{{- end }}
