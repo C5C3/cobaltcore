@@ -64,14 +64,15 @@
 <polygon points="430,839 422.8,824 437.2,824" fill="#3A4452"/>
 <text x="446" y="798.2" font-size="20" font-weight="400" fill="#2B3440">FluxInstance flux Ready</text>
 <text x="446" y="824.2" font-size="20" font-weight="400" fill="#55606E">HELMRELEASE_TIMEOUT</text>
-<rect x="908" y="839" width="860" height="226" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="908" y="839" width="860" height="252" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="927" y="878.36" font-size="26" font-weight="700" fill="#2B3440">Opt-in overlays</text>
 <text x="927" y="912.2" font-size="20" font-weight="400" fill="#55606E">WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS:</text>
 <text x="927" y="938.2" font-size="20" font-weight="400" fill="#55606E">the directory of that name under deploy/kind or EXTERNAL_OVERLAY</text>
-<text x="927" y="964.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA: deploy/kind/metrics-server, deploy/kind/vpa</text>
-<text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: resumes the service-operator releases</text>
-<text x="927" y="1016.2" font-size="20" font-weight="400" fill="#55606E">without it: suspends c5c3-operator and k-orc</text>
-<text x="927" y="1042.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore operator release</text>
+<text x="927" y="964.2" font-size="20" font-weight="400" fill="#55606E">WITH_CEPH: ceph/ of EXTERNAL_OVERLAY, external cluster only</text>
+<text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA: deploy/kind/metrics-server, deploy/kind/vpa</text>
+<text x="927" y="1016.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: resumes the service-operator releases</text>
+<text x="927" y="1042.2" font-size="20" font-weight="400" fill="#55606E">without it: suspends c5c3-operator and k-orc</text>
+<text x="927" y="1068.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore operator release</text>
 <polyline points="908,952 830.5,952" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
 <polygon points="820,952 835,944.8 835,959.2" fill="#3A4452"/>
 <rect x="40" y="1101" width="780" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
@@ -101,11 +102,12 @@
 <polygon points="430,1341 422.8,1326 437.2,1326" fill="#3A4452"/>
 <text x="446" y="1300.2" font-size="20" font-weight="400" fill="#2B3440">operator CRDs registered</text>
 <text x="446" y="1326.2" font-size="20" font-weight="400" fill="#55606E">POD_TIMEOUT</text>
-<rect x="908" y="1341" width="860" height="148" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="908" y="1341" width="860" height="174" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="927" y="1380.36" font-size="26" font-weight="700" fill="#2B3440">A different apply</text>
 <text x="927" y="1414.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: without MariaDB, Memcached and the</text>
 <text x="927" y="1440.2" font-size="20" font-weight="400" fill="#55606E">three ExternalSecrets of Step 8</text>
 <text x="927" y="1466.2" font-size="20" font-weight="400" fill="#55606E">WITH_MESSAGING: then deploy/kind/messaging, until its broker is ready</text>
+<text x="927" y="1492.2" font-size="20" font-weight="400" fill="#55606E">WITH_CEPH: then ceph/cluster, and the Ceph wait after Step 8</text>
 <polyline points="908,1415 830.5,1415" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
 <polygon points="820,1415 835,1407.8 835,1422.2" fill="#3A4452"/>
 <rect x="40" y="1555" width="780" height="96" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
