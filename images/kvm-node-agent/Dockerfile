@@ -26,7 +26,7 @@
 ARG KNA_COMMIT=1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700
 
 # ---------- Stage 1: build ----------
-FROM golang:1.27@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS build
+FROM golang:1.27@sha256:e432b43af23a9328d56a7c499be0476810aa344acbcf65fc7c455d4ff5a40602 AS build
 
 # An ARG declared before the first FROM is global; each stage re-declares it
 # bare to read its value.
