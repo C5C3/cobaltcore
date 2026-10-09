@@ -19,8 +19,8 @@
 #      the guide scaffold prints that command as the bring-up, refuses a
 #      second `--opt-in WITH_NFS=true` and a kind-only `--opt-in
 #      WITH_REGISTRY_CACHE=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`,
-#      `--opt-in WITH_DIZZY=true` and `--opt-in WITH_PROMETHEUS=true`, which
-#      the lab overlay carries; of the
+#      `--opt-in WITH_DIZZY=true`, `--opt-in WITH_PROMETHEUS=true` and
+#      `--opt-in WITH_CEPH=true`, which the lab overlay carries; of the
 #      WITH_* flags hack/deploy-infra.sh declares, it refuses exactly those
 #      its preflight_external_cluster refuses
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
@@ -356,6 +356,12 @@ test_devstack() {
   assert_eq "the guide scaffold accepts WITH_PROMETHEUS=true, which the lab overlay carries" "0" "$rc"
   assert_not_empty "and adds it to the bring-up" \
     "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra' <<<"$out" || true)"
+  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_CEPH=true 2>&1)"
+  rc=$?
+  assert_eq "the guide scaffold accepts WITH_CEPH=true, which the lab overlay carries" "0" "$rc"
+  assert_eq "and adds it to the metal-stack bring-up" \
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra' \
+    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra' <<<"$out" || true)"
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_REGISTRY_CACHE=true 2>&1)"
   rc=$?
   assert_eq "the guide scaffold still refuses the kind-only WITH_REGISTRY_CACHE=true" "2" "$rc"

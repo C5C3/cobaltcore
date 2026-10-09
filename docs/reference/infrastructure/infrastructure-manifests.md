@@ -1577,7 +1577,7 @@ describes each numbered step, and
 [Steps and phases](e2e-deployment.md#steps-and-phases) maps the step and phase
 numbers of the two pages.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
 ### Step 1: Apply base resources
 
@@ -2662,7 +2662,8 @@ metal-stack cluster, planned in
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
 well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
-`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
+`ceph/` and `ceph/cluster/` when `WITH_CEPH=true` is set (see
+[Lab Ceph](#lab-ceph)), its `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
 [Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
 is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 `WITH_PROMETHEUS=true` is set (see
@@ -2692,7 +2693,7 @@ The node probe is the prerequisite check of the lab. The
 reader run it first, against any metal-stack cluster, before anything else is
 deployed. It
 is one Job, `node-probe`, that prints the node facts the lab depends on under
-twelve fixed headers. It exits 0 whatever it finds: a node that lacks something
+thirteen fixed headers. It exits 0 whatever it finds: a node that lacks something
 prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
 `kubectl wait --for=condition=complete` returns.
 
@@ -2747,6 +2748,7 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 | `== host os / binaries` | The host OS, and that no `libvirtd`, `qemu-system-x86_64`, `ovs-vswitchd` or `rpc.nfsd` is installed on the host |
 | `== containerd socket` | Where the containerd socket the Chaos Mesh daemon mounts lives. Two lines test containerd's default path, `run/containerd/containerd.sock`, and the k3s one, `run/k3s/containerd/containerd.sock`, under the host's `/run`; each prints `socket`, `present, not a socket` or `absent`. The third line prints the `address` of the `[grpc]` table in the host's `/etc/containerd/config.toml`, quotes included and a trailing comment dropped. `not set` means the probe read no `address` in a `[grpc]` table: the file is missing, is an absolute symlink, which resolves inside the pod, or sets no such key. An `imports` file or containerd's `--address` flag can still move the socket, so the two socket lines are the evidence |
 | `== nics` | Every host interface with its MTU and state: the uplinks, and the host end of each pod's veth (`cali*`), which carries the pod network's MTU. Neutron's `global_physnet_mtu` must not exceed the MTU of the network the Geneve tunnels run on (see [Lab ControlPlane](#lab-controlplane)) |
+| `== rook` | Whether `/var/lib/rook` exists on the node, where the [Lab Ceph](#lab-ceph) keeps its state: `/var/lib/rook: absent`, or `present` followed by the directory's entries and the `df -h` lines of its filesystem. `present` on a bare cluster is the leftover of a Ceph that was not torn down with its cleanup policy, and a new monitor refuses to start over another cluster's data there. The probe mounts no ServiceAccount token and cannot see a StorageClass, so whether the default class serves `volumeMode: Block` claims shows in the deploy: Step 1 logs the default class, and the Ceph wait fails when the OSD claims stay `Pending` |
 
 The values a lab-ready node shows come from the 2026-09-29 survey in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138). The header comment of
@@ -2892,14 +2894,16 @@ The deploy runs against the current kubeconfig context and never switches it.
 It refuses four opt-ins that are bound to kind, `WITH_VPA`,
 `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`
 (`WITH_MESSAGING`, which applies `deploy/kind/messaging` unchanged, and
-`WITH_NFS`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply `nfs/`,
-`chaos-mesh/` and `dizzy/`),
+`WITH_NFS`, `WITH_CEPH`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply
+`nfs/`, `ceph/` with `ceph/cluster/`, `chaos-mesh/` and `dizzy/`),
 checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
 node, and prints the port-forward command when it
 completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
 `deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
+`WITH_CEPH=true` has no kind overlay: the kind mode refuses it, and this mode
+accepts it only for an overlay with both `ceph/` and `ceph/cluster/`.
 The teardown removes the stack in finalizer order and leaves the
 platform's namespaces and CRDs alone. Both are described in
 [E2E Deployment](e2e-deployment.md#make-teardown-infra), with every variable.
@@ -3073,6 +3077,180 @@ peaked at 545 MiB, and 1.25 times that is 681 MiB. The lab's volume was fast
 enough for each guest to write its first 1 GiB in about 5 seconds, so the
 300-second row is the one the request rests on. The files of the session are
 in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issuecomment-6001688841).
+
+### Lab Ceph
+
+**Files:** `deploy/lab/metal-stack/ceph/kustomization.yaml`,
+`deploy/lab/metal-stack/ceph/namespace.yaml`,
+`deploy/lab/metal-stack/ceph/source.yaml`,
+`deploy/lab/metal-stack/ceph/release.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/kustomization.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/cluster.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/pools.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/clients.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/toolbox.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/keys-push.yaml`,
+`deploy/lab/metal-stack/ceph/cluster/keys-pull.yaml`
+
+A Ceph deployed by Rook for the metal-stack lab
+([#1344](https://github.com/c5c3/cobaltcore/issues/1344), a package of
+[#1338](https://github.com/c5c3/cobaltcore/issues/1338)): one monitor, one
+manager and three OSDs on raw block volumes, the RBD pools `volumes` and
+`backups`, and the Ceph users `cinder` and `cinder-backup`. The RBD backends of
+[#1341](https://github.com/c5c3/cobaltcore/issues/1341) and
+[#1346](https://github.com/c5c3/cobaltcore/issues/1346) and the libvirt secret
+of [#1345](https://github.com/c5c3/cobaltcore/issues/1345) attach to it. Until
+then the lab's Cinder stays on the [Lab NFS stack](#lab-nfs-stack), and nothing
+of the ControlPlane changes. `hack/deploy-infra.sh` applies both
+kustomizations when `WITH_CEPH=true` is set beside `EXTERNAL_CLUSTER=true`.
+The flag has no kind overlay, and the kind mode refuses it; Ceph on kind and
+in CI is [#1339](https://github.com/c5c3/cobaltcore/issues/1339).
+
+```bash
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra
+```
+
+The Rook chart installs the `ceph.rook.io` CRDs, so the Ceph comes in two
+kustomizations. Step 3 applies `ceph/`: the Namespace `rook-ceph`, the
+HelmRepository `rook-release` and the HelmRelease `rook-ceph`. Phase 3 waits
+for that release. Step 5 waits for the CRDs `cephclusters`, `cephblockpools`
+and `cephclients` (`POD_TIMEOUT`) and applies `ceph/cluster/`. After Step 8
+`wait_for_ceph_cluster` polls the CephCluster every 10 seconds, bounded by
+`CEPH_TIMEOUT` (900), until its phase is `Ready`, its health `HEALTH_OK` and
+at least as many OSD Deployments report a ready replica as the device set
+counts (Rook removes no OSD when the count goes down), so the OSD preparation
+overlaps the OpenBao bootstrap. Then
+`sync_ceph_client_keys` makes ESO validate both SecretStores again and waits
+for them (`POD_TIMEOUT`), forces both PushSecrets and waits for them, then
+forces both ExternalSecrets and waits until they sync
+(`EXTERNALSECRET_TIMEOUT`). Step 5 applied the stores before Step 7 had
+initialised OpenBao and written their roles. Every resource of either
+kustomization is local, so `kubectl apply -k` needs no `--load-restrictor`.
+
+| Property | Value |
+| --- | --- |
+| Operator chart | `rook-ceph` `v1.21.0` from `https://charts.rook.io/release`, pinned to one version: the chart installs a privileged operator and the `ceph.rook.io` CRDs. `csi.installCsiOperator: false` and `csi.createCsiOperatorResources: false`, because nothing in the lab mounts Ceph through CSI: Cinder's RBD backend talks librados, and the hypervisors attach through QEMU. The discovery daemon and the operator's monitoring are off. The operator keeps the chart's resources, 200m CPU and 128Mi requested, 512Mi limit |
+| Ceph image | `quay.io/ceph/ceph:v20.2.4` (Tentacle) by tag and digest, for the CephCluster and the toolbox. Renovate moves both lines in one PR (`ceph image`), majors disabled, nothing automerged |
+| Cluster | the CephCluster `rook-ceph`: one mon on a 10Gi claim, one mgr without modules, no dashboard, crash collector, log collector or metrics, msgr2 required, the daemons' state under `/var/lib/rook`. `cephConfig.global.osd_pool_default_size: "2"` gives the `.mgr` pool two replicas, so it fits two hosts. One mon is a single point of failure the lab accepts (D2 of #1338) |
+| OSDs | one device set `lightbits` with `count: 3`, one OSD per worker of `newforge`, each on a 100Gi `volumeMode: Block` claim of the default class (D1). `portable: true`, so a volume follows its OSD to another node; a topology spread on the hostname puts one OSD on each node. 500m CPU and 2Gi requested, 2Gi limit; with the limit equal to the request Rook derives `osd_memory_target` from it. A shoot of another size changes `count` |
+| Pools | the CephBlockPools `volumes` and `backups`, each with two replicas on two hosts and `requireSafeReplicaSize: true`. Three OSDs of 100Gi give about 150 GiB, the bound the NFS export claim puts on the lab's volumes and backups |
+| Clients | the CephClients `cinder` (`mon: profile rbd`, `osd: profile rbd pool=volumes`, `mgr: profile rbd pool=volumes`) and `cinder-backup` (the same on `backups`), each with `keyType: aes`, `keyRotationPolicy: KeyGeneration` and `keyGeneration: 1` (D5, D7). Rook writes the Secrets `rook-ceph-client-cinder` and `rook-ceph-client-cinder-backup`, with the raw key under `userKey` |
+| Key hand-off | in `rook-ceph`, the PushSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` write `userKey` to the OpenBao paths `ceph/client-cinder` and `ceph/client-cinder-backup` (`kv-v2/data/ceph/client-*`) as the role `push-ceph-keys`; in `openstack`, the ExternalSecrets of the same names read them as the role `read-ceph-keys` into the Secrets `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup`, with the one key `userKey` (D4). Each side has its own SecretStore `openbao-ceph-store`, client Certificate of `openbao-ca-issuer` and ServiceAccount, and both refresh every minute. [OpenBao Bootstrap](openbao-bootstrap.md) lists the two roles and policies |
+| Toolbox | the Deployment `rook-ceph-tools`, Rook's `deploy/examples/toolbox.yaml` of `v1.21.0` with the cluster's image and 10m CPU and 64Mi requested, 256Mi limit. It runs as UID 2016 with every capability dropped, no privilege escalation and the `RuntimeDefault` seccomp profile, and mounts no ServiceAccount token |
+| Namespace | `rook-ceph`, with `pod-security.kubernetes.io/enforce: privileged` and `apiserver-proxy.networking.gardener.cloud/inject: disable`, and no `chaos-mesh.org/inject` annotation: Ceph faults are not a lab scope |
+| The deploy waits for | the HelmRelease `rook-ceph` (Phase 3), the three CRDs (Step 5), the CephCluster `Ready` with `HEALTH_OK` and at least one ready OSD per device, then the stores, the PushSecrets and the ExternalSecrets of the hand-off (after Step 8) |
+| Pinned by | `tests/unit/deploy/metal_stack_ceph_test.sh`, `tests/unit/hack/deploy_infra_ceph_flag_test.sh` |
+
+The health wait logs `Ceph: phase Ready, HEALTH_OK, 3 of 3 OSDs ready, fsid <fsid>`;
+the fsid is the default `rbd_secret_uuid` of #1341. On a timeout it exits 1
+with `ERROR: Ceph did not reach HEALTH_OK with <count> OSDs within <n>s (phase '<phase>', health '<health>', <ready> OSDs ready).`
+and prints the CephCluster's health details and conditions, the pods of
+`rook-ceph` and the last 50 log lines of every OSD prepare pod and of the
+operator. A default class that serves no `volumeMode: Block` claim leaves the
+OSD claims `Pending` and ends here. A store that stays unready names the
+`kubectl describe` to read; a 403 there means `setup-auth.sh` has not written
+the role. The key sync logs
+`Ceph client keys ceph-client-cinder ceph-client-cinder-backup synced into openstack.`
+
+The cluster, a block image and a key compared through the toolbox:
+
+```bash
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd pool ls
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd create volumes/lab-probe --size 1G
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd info volumes/lab-probe
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd rm volumes/lab-probe
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get client.cinder | grep caps
+kubectl -n openstack get secret ceph-client-cinder -o jsonpath='{.data.userKey}' | base64 -d | sha256sum
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder | sha256sum
+```
+
+`ceph status` shows `HEALTH_OK`, one mon and three OSDs up, and the pool list
+names `volumes`, `backups` and `.mgr`. The last two commands print the same
+digest. They hash the key rather than print it, so a transcript of the run
+can be pasted into an issue without publishing a live Ceph credential. A raised `keyGeneration` on a client has Rook rotate its key; the
+PushSecret and the ExternalSecret carry the new key to `openstack` within
+their refresh intervals:
+
+```bash
+kubectl -n rook-ceph patch cephclient cinder-backup --type merge \
+  -p '{"spec":{"security":{"cephx":{"keyGeneration":2}}}}'
+```
+
+**Posture.** The namespace enforces the privileged PodSecurity level. The
+operator runs with the chart's ClusterRoles, the mon and OSD pods mount
+`/var/lib/rook` from the host, and the OSD pods run privileged to open their
+raw block devices. The client keys leave `rook-ceph` only through OpenBao:
+the push role writes `ceph/*` from `rook-ceph`, and the one read role is bound
+to `openstack`, because the Ceph paths are not namespace-templated. The two
+clients' `aes` keys raise the Ceph warning `AUTH_INSECURE_CLIENT_KEY_TYPE`;
+the CephCluster mutes it (`healthCheck.muteHealthWarning`), so the deploy can
+wait for `HEALTH_OK`. D7 of #1338 keeps `aes` until every client's `librbd`
+reads `aes256k`. When it is revisited, the mute is lifted by setting
+`policy: unmute`: an entry that is deleted sends Ceph no unmute, and the
+warning stays muted. Rook gives its own daemons `aes256k` keys.
+
+**Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the Ceph at
+the end of its step 2, after the [Lab NFS stack](#lab-nfs-stack) and while
+the operator, ESO, cert-manager and the helm-controller still run (see
+[E2E Deployment](e2e-deployment.md#make-teardown-infra)), in six sub-steps:
+
+1. It renders `ceph/cluster/`; a render that fails exits 1 before any delete.
+2. While the CRD `cephclusters.ceph.rook.io` exists and the CephCluster
+   answers, it reads the nodes the Ceph daemons run on, saves their number on
+   the namespace `rook-ceph` as the annotation `teardown.c5c3.io/ceph-nodes`,
+   sets `spec.cleanupPolicy.confirmation` to `yes-really-destroy-data` and
+   marks the CephCluster for deletion without waiting. The manifest never
+   carries the confirmation, because Rook refuses spec changes once it is
+   set. Rook's pool and client controllers count a CephCluster marked for
+   deletion under that policy as gone and release their CRs without a Ceph
+   command, so neither a Ceph without mon quorum nor a pool that still holds
+   RBD images blocks the next sub-step.
+3. It deletes that render without its CephCluster: the clients, the pools,
+   the toolbox and both halves of the hand-off. The ExternalSecrets take the
+   two Secrets in `openstack` with them; the PushSecrets leave the values in
+   OpenBao (`deletionPolicy: None`), which go with OpenBao's volumes in step
+   4. Then it waits for the CephCluster, which Rook deletes once no other
+   Rook CR references it. A delete that runs out exits 1 with the hint that
+   the operator has to clear the finalizer.
+4. Rook then starts one Job `cluster-cleanup-job-<node>` per node, labelled
+   `rook-ceph-cleanup=true`, which empties `/var/lib/rook`. The teardown
+   waits until there is one finished Job for each node read in sub-step 2,
+   logs each with its `succeeded` count, and exits 1 after `TEARDOWN_TIMEOUT`
+   with the Jobs that are not done. A Job that failed is logged as a warning.
+   A rerun after that exit finds the CRD without the CephCluster and waits
+   for one Job per node of the annotation. Only the operator process that
+   removed the CephCluster creates the Jobs. When fewer exist, the exit says
+   how to go on once that process is gone: empty `/var/lib/rook` by hand on
+   each node without a Job, then remove the annotation. Without the
+   annotation, a rerun waits for the cleanup Jobs that exist. A wait that
+   passes removes the annotation, and a rerun that reads a value other than
+   a decimal count exits 1 before the wait.
+5. It deletes the claims in `rook-ceph`, the mon's and the OSDs'. Where the
+   default class reclaims with `Delete`, as `premium` does, the volumes go
+   too.
+6. It deletes the render of `ceph/` without its Namespace, so the
+   helm-controller uninstalls the chart. The chart keeps its CRDs
+   (`helm.sh/resource-policy: keep`); step 8 deletes them with the
+   `ceph.rook.io`, `objectbucket.io` and `csi.ceph.io` groups, and step 7
+   deletes the Namespace `rook-ceph`.
+
+The operator also clears the finalizers of the Secret `rook-ceph-mon` and the
+ConfigMap `rook-ceph-mon-endpoints` when it deletes the CephCluster. An
+operator that is gone first leaves both, and they hold the namespace in
+`Terminating` until their finalizers are removed by hand.
+
+**What the pods change on a node.**
+
+- Every node that ran a mon, a mgr, an OSD or an OSD prepare Job keeps the
+  cluster's configuration, logs and crash data under `/var/lib/rook`, until
+  the cleanup Job of the teardown empties it. The node probe reports the
+  directory under `== rook`.
+- The OSDs hold their data on the Lightbits volumes, which the CSI driver of
+  the platform attaches to the node as NVMe/TCP devices; no OSD uses a disk
+  of the node itself.
+- No pod loads a kernel module, and the deploy script writes no file on a
+  node.
 
 ### Lab Chaos Mesh
 

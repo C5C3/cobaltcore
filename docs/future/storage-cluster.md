@@ -8,9 +8,12 @@ quadrant: infrastructure
 > **Status: sketch — not implemented.** Carried over in raw form from the
 > original
 > [C5C3 architecture document](https://c5c3.github.io/C5C3/03-components/04-storage).
-> Nothing on this page exists in this repository yet; the implemented storage
-> surface is the [Garage S3 object store](../reference/infrastructure/infrastructure-manifests.md#garage-object-store)
-> backing Glance multi-store.
+> The dedicated storage cluster does not exist in this repository. The
+> implemented storage surface is the [Garage S3 object store](../reference/infrastructure/infrastructure-manifests.md#garage-object-store)
+> backing Glance multi-store, and the metal-stack lab runs a Rook Ceph in its
+> own cluster behind `WITH_CEPH=true`, whose client keys reach the control
+> plane through OpenBao and ESO; see
+> [Lab Ceph](../reference/infrastructure/infrastructure-manifests.md#lab-ceph).
 
 The original document plans a dedicated bare-metal Kubernetes cluster for
 persistent storage, provisioned like the hypervisor cluster via IronCore and

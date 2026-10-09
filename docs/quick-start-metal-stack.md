@@ -44,12 +44,14 @@ The lab assumes a cluster of this shape:
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
 | For the NFS stack that holds Cinder's volumes and backups: the module files `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
+| Only with the optional `WITH_CEPH=true`: no `/var/lib/rook` on any node | probe, `== rook` |
 | cgroup v2 | probe, `== cgroup` |
 | `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
 | No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
 | Room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy in Step 3, which exits 1 otherwise |
+| Only with the optional `WITH_CEPH=true`: room in that class for three 100Gi raw block volumes and one 10Gi volume, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
@@ -86,7 +88,7 @@ directory with `KUBECONFIG` set this way.
 
 The [node probe](./reference/infrastructure/infrastructure-manifests.md#node-probe)
 is a read-only Job that prints the node facts the lab depends on under
-twelve fixed headers. The loop pins it to each node in turn, under a `=== <node>`
+thirteen fixed headers. The loop pins it to each node in turn, under a `=== <node>`
 line, and deletes it before and after every run: a Job's pod template is
 immutable, so a Job left over from an interrupted run would make the apply
 fail and print another node's facts:
@@ -156,6 +158,17 @@ and Grafana with
 `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`,
 where it signs in `admin` with the password `prom-operator`; see
 [Lab Prometheus stack](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-stack).
+
+`WITH_CEPH=true` is optional, and this page does not use the Ceph it deploys:
+Cinder stays on the NFS shares. Added to the deploy command, it deploys the
+Rook operator and a Ceph with one OSD per worker on raw block volumes of the
+default class, the RBD pools `volumes` and `backups`, and the users `cinder`
+and `cinder-backup`, whose keys reach the Secrets `ceph-client-cinder` and
+`ceph-client-cinder-backup` in `openstack` through OpenBao. The deploy waits
+until the Ceph reports `HEALTH_OK`, which can take several minutes, and its
+completion block names the status command,
+`kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status`; see
+[Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph).
 
 The shoot brings a VerticalPodAutoscaler and a metrics-server of its own, so
 the script refuses `WITH_VPA=true` and `WITH_METRICS_SERVER=true` and installs
@@ -676,7 +689,11 @@ and the claim `nfs-server-exports` with it. Where the default class has the
 reclaim policy `Delete`, the claim's volume goes too, with every volume file
 and backup on it. The node state under `/var/lib/nova`, `/var/lib/libvirt` and
 `/etc/pki` stays on the nodes, and the NFS kernel modules stay loaded until a
-node reboots. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
+node reboots. A Ceph deployed with `WITH_CEPH=true` goes at the end of the
+same step, after the NFS stack: its CephCluster with its claims, whose volumes
+go too where the class reclaims with `Delete`, and its state under
+`/var/lib/rook` on every node, which Rook's cleanup Jobs empty before the
+teardown goes on. A Chaos Mesh deployed with `WITH_CHAOS_MESH=true` goes before
 the hypervisors: its experiments are released while its controller still runs,
 and its kernel modules stay loaded until a node reboots as well. A dizzy soak
 started with `make dizzy-soak-start` ends before the hypervisors go, and its

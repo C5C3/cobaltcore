@@ -204,6 +204,41 @@ before its delete. Then:
    is never named; once the uninstall has finished, the delete finds nothing.
    The kernel modules the stack's pods loaded stay on the nodes until they
    reboot.
+
+   When the overlay has a `ceph/cluster/` kustomization (see
+   [Lab Ceph](infrastructure-manifests.md#lab-ceph)), step 2 then removes the
+   lab Ceph with `teardown_ceph`, while the Rook operator and the
+   helm-controller still run. It renders `ceph/cluster/`. While the CRD
+   `cephclusters.ceph.rook.io` exists and the CephCluster `rook-ceph`
+   answers, it reads the nodes the Ceph daemons run on, sets
+   `spec.cleanupPolicy.confirmation` to `yes-really-destroy-data` and marks
+   the CephCluster for deletion without waiting. Rook's pool and client
+   controllers count a CephCluster marked for deletion under that policy as
+   gone and release their CRs without a Ceph command. Then it deletes the
+   render without its CephCluster: the CephClients, the CephBlockPools, the
+   toolbox, the PushSecrets and the ExternalSecrets with their SecretStores,
+   Certificates and ServiceAccounts, and waits for the CephCluster, which
+   Rook deletes once no other Rook CR references it. A delete that runs out
+   exits 1 with
+   `The rook-ceph-operator has to clear the CephCluster's finalizer; ...`.
+   Rook starts the cleanup Jobs `cluster-cleanup-job-<node>`, labelled
+   `rook-ceph-cleanup=true`, only after the CephCluster is gone, so the
+   teardown waits, bounded by `TEARDOWN_TIMEOUT`, until one Job per node of
+   that read has finished, and logs each as `<name>: succeeded: <n>`. A wait
+   that runs out exits 1 with
+   `ERROR: the Rook cleanup Jobs in rook-ceph are not done after <n>s:` and
+   the Jobs still running, or the number created. The number of nodes is
+   saved on the namespace `rook-ceph` as the annotation
+   `teardown.c5c3.io/ceph-nodes` before the CephCluster is marked, so a rerun
+   that finds the CRD without the CephCluster waits for as many Jobs; without
+   the annotation it waits for the cleanup Jobs that exist. A wait that
+   passes removes the annotation, and a rerun that reads a value other than
+   a decimal count exits 1 before the wait. Then it
+   deletes the PVCs in `rook-ceph` and the render of `ceph/` without its
+   Namespace, whose HelmRelease finalizer has the helm-controller uninstall
+   the chart. A render that fails exits 1 before the deletes it feeds. The
+   PushSecrets leave the keys in OpenBao, which go with OpenBao's volumes in
+   step 4.
 3. The base overlay without its Namespaces and FluxInstance. Every suspended
    HelmRelease with a release history and every suspended Flux Kustomization
    with an inventory is resumed first, because Flux neither uninstalls a
@@ -235,7 +270,7 @@ before its delete. Then:
 6. The `flux-system` namespace and the flux-operator's ClusterRoles and
    ClusterRoleBinding.
 7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`,
-   `headlamp-system`, `chaos-mesh` and `dizzy`. Then every ClusterRole, ClusterRoleBinding,
+   `headlamp-system`, `chaos-mesh`, `dizzy` and `rook-ceph`. Then every ClusterRole, ClusterRoleBinding,
    MutatingWebhookConfiguration and ValidatingWebhookConfiguration whose label
    `helm.toolkit.fluxcd.io/namespace` names one of these namespaces or
    `flux-system`. The helm-controller sets that label, the namespace of the
@@ -259,8 +294,11 @@ before its delete. Then:
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
    Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups,
    `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and Helm
-   leaves behind, and `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
-   installs from its `crds/` and Helm never deletes).
+   leaves behind, `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
+   installs from its `crds/` and Helm never deletes, and `ceph.rook.io`,
+   `objectbucket.io` and `csi.ceph.io`: the `rook-ceph` chart marks its CRDs
+   `helm.sh/resource-policy: keep`, and `csi.ceph.io` exists only on a
+   cluster deployed with the CSI operator on).
 
 In `kube-system` it deletes only the `maint-<node>` objects of step 0, the
 `csi-driver-nfs` HelmRelease of step 2 with its chart, the Service and the
@@ -310,7 +348,7 @@ Produces JUnit XML reports in `_output/reports/`.
 the two cluster modes and the step each opt-in changes. The list under the
 figure describes every step under its number.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
 
 Before Step 1 the script runs its preflight checks: the tools on the `PATH`
 (`docker`, `kind`, `kubectl` and `jq`, under `EXTERNAL_CLUSTER=true` only
@@ -363,6 +401,9 @@ and `WITH_NFS`.
      `EXTERNAL_CLUSTER=true` the script waits for the rollout of the
      DaemonSets `chaos-mesh-modules` and `nfs-client-modules`, and under
      `WITH_NFS=true` in both modes for the rollout of `nfs-server`.
+   - `WITH_CEPH=true`, under `EXTERNAL_CLUSTER=true` alone, applies `ceph/` of
+     `EXTERNAL_OVERLAY`: the Namespace `rook-ceph` and the Rook operator's
+     HelmRepository and HelmRelease.
    - `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=flux` resumes the
      nine service-operator HelmReleases. Every other run suspends the
      `c5c3-operator` HelmRelease and the `k-orc` Kustomization with their
@@ -383,8 +424,9 @@ and `WITH_NFS`.
      `mariadb-operator`, `external-secrets`, `memcached-operator`,
      `envoy-gateway`, `garage-operator` and `openbao-operator` are Ready
      (`HELMRELEASE_TIMEOUT`), and with them the release of every opt-in
-     overlay of Step 3. `WITH_PROMETHEUS=true` raises the wait to at least
-     1200 seconds.
+     overlay of Step 3, `rook-ceph` under `WITH_CEPH=true`, whose chart
+     registers the Rook CRDs. `WITH_PROMETHEUS=true` raises the wait to at
+     least 1200 seconds.
    - Phase 3b: `kustomization/rabbitmq-cluster-operator` is Ready. The
      RabbitMQ Cluster Operator arrives as a Flux Kustomization, which the
      HelmRelease wait cannot see. This wait fails the run on every cluster,
@@ -403,7 +445,10 @@ and `WITH_NFS`.
    31443, the MariaDB, Memcached and Garage CRs, the proving `OpenBaoCluster`
    and the ESO resources. Under `WITH_CONTROLPLANE=true` the script applies
    the render without `MariaDB`, `Memcached` and the three ExternalSecrets of
-   Step 8. Under `WITH_MESSAGING=true` it then applies `deploy/kind/messaging`
+   Step 8. Under `WITH_CEPH=true` it then waits for the CRDs
+   `cephclusters`, `cephblockpools` and `cephclients` of `ceph.rook.io`
+   (`POD_TIMEOUT`) and applies `ceph/cluster/` of `EXTERNAL_OVERLAY`. Under
+   `WITH_MESSAGING=true` it then applies `deploy/kind/messaging`
    and waits for `rabbitmqcluster/shared-rabbitmq`. The step ends with
    `wait_for_gateway_programmed`, which polls `Programmed=True` on
    `Gateway/openstack-gw` (`HELMRELEASE_TIMEOUT`): the Gateway is programmed
@@ -426,8 +471,12 @@ and `WITH_NFS`.
 
 After Step 8 the script un-pauses the proving `OpenBaoCluster` and waits for
 it to be `Available`, and it waits for the Garage ExternalSecrets and for
-`garagecluster/garage` to reach the phase `Running`. A standalone run ends
-when `mariadb/openstack-db` is Ready.
+`garagecluster/garage` to reach the phase `Running`. Under `WITH_CEPH=true`
+it then waits up to `CEPH_TIMEOUT` seconds for the CephCluster `rook-ceph` to
+be `Ready` with `HEALTH_OK` and one ready OSD per device, and hands the two
+client keys to `openstack` through OpenBao: it forces the two SecretStores,
+the two PushSecrets and the two ExternalSecrets of `ceph/cluster/` and waits
+for each. A standalone run ends when `mariadb/openstack-db` is Ready.
 
 A run under `WITH_CONTROLPLANE=true` ends with the ControlPlane admission
 instead. On the `flux` path, unless `INFRA_ONLY=true`, it waits for
@@ -605,6 +654,19 @@ deploy/lab/metal-stack/
 │                                    Patches OpenBao HelmRelease → removes the storage class,
 │                                    every Namespace → Gardener apiserver-proxy opt-out label
 │                                    and chaos-mesh.org/inject annotation
+├── ceph/                           The Rook operator (#1344), applied in Step 3 under WITH_CEPH=true
+│   ├── kustomization.yaml          Lists the three manifests below; no kind base
+│   ├── namespace.yaml              Namespace rook-ceph, privileged, Gardener opt-out label
+│   ├── source.yaml                 HelmRepository rook-release in flux-system
+│   ├── release.yaml                HelmRelease rook-ceph, chart pinned, CSI off
+│   └── cluster/                    The Ceph, applied in Step 5 under WITH_CEPH=true
+│       ├── kustomization.yaml      Lists the six manifests below
+│       ├── cluster.yaml            CephCluster rook-ceph: one mon, one mgr, three OSDs on Block claims
+│       ├── pools.yaml              CephBlockPools volumes and backups, two replicas
+│       ├── clients.yaml            CephClients cinder and cinder-backup, aes keys
+│       ├── toolbox.yaml            Deployment rook-ceph-tools, Rook's toolbox
+│       ├── keys-push.yaml          PushSecrets of the client keys to OpenBao, in rook-ceph
+│       └── keys-pull.yaml          ExternalSecrets of the client keys, in openstack
 ├── chaos-mesh/                     Chaos Mesh (#1221), applied under WITH_CHAOS_MESH=true
 │   ├── kustomization.yaml          References ../../../kind/chaos-mesh/
 │   │                                Patches the Namespace → Gardener opt-out label,
@@ -668,7 +730,8 @@ Step 5 in place of the kind overlays, under `WITH_NFS=true` it applies
 under `WITH_DIZZY=true` `dizzy/` in place of `deploy/kind/dizzy`, and under
 `WITH_PROMETHEUS=true` `prometheus/` in place of `deploy/kind/prometheus`.
 Each takes its kind overlay as its base, so the lab inherits every patch
-above. It removes the storage class, labels the Namespaces with Gardener's
+above. Under `WITH_CEPH=true` it applies `ceph/` in Step 3 and `ceph/cluster/`
+in Step 5; neither has a kind overlay, and the kind mode refuses the flag. It removes the storage class, labels the Namespaces with Gardener's
 apiserver-proxy opt-out and annotates them for Chaos Mesh, turns on Chaos
 Mesh's namespace filter, loads the NFS and NetworkChaos kernel modules in
 pods, keeps the dizzy metrics on a volume behind a ClusterIP Service, leaves
@@ -680,8 +743,9 @@ nothing else. The script never applies
 `hypervisor-fixtures/`, which follow the ControlPlane by hand, or
 `dizzy-soak/`, which `make dizzy-soak-start` applies. Every volume of
 the lab, the proving `OpenBaoCluster`'s, the NFS export claim, the dizzy
-VictoriaMetrics claim, the soak's report claim and the Prometheus claim
-included, binds to the cluster's default class, which Step 1 checks exists.
+VictoriaMetrics claim, the soak's report claim, the Prometheus claim and the
+Ceph's mon and OSD claims included, binds to the cluster's default class,
+which Step 1 checks exists.
 
 | Setting | Kind | Lab |
 | --- | --- | --- |
@@ -705,6 +769,11 @@ included, binds to the cluster's default class, which Step 1 checks exists.
 | Prometheus rule selector | `release: kube-prometheus-stack` | every PrometheusRule (`ruleSelectorNilUsesHelmValues: false`) |
 | Prometheus memory request and limit | `256Mi`, `512Mi` | `1Gi`, `2Gi` |
 | Grafana dashboards | Keystone Operator | Keystone Operator and Hypervisor Operator |
+| Rook operator (`rook-ceph` chart) | none | `v1.21.0`, pinned, CSI operator off, in the privileged Namespace `rook-ceph` |
+| Ceph image and cluster shape | none | `quay.io/ceph/ceph:v20.2.4` by digest; one mon on 10Gi, one mgr, three OSDs on 100Gi `volumeMode: Block` claims of the default class |
+| Ceph pools and clients | none | `volumes` and `backups` at two replicas; `client.cinder` and `client.cinder-backup` with rbd caps on their pool and `aes` keys |
+| Ceph key hand-off | none | PushSecrets in `rook-ceph` to `ceph/client-cinder` and `ceph/client-cinder-backup` in OpenBao, ExternalSecrets into `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup` |
+| Ceph toolbox | none | the Deployment `rook-ceph-tools` on the cluster's image |
 | Everything else | as above | inherited from the kind overlay |
 
 The overlay is described in
@@ -721,6 +790,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
+| `CEPH_TIMEOUT` | `900` | Seconds `wait_for_ceph_cluster` waits under `WITH_CEPH=true` for the CephCluster `rook-ceph` to be `Ready` with `HEALTH_OK` and at least one ready OSD per device. The OSD preparation on block volumes takes minutes, so `POD_TIMEOUT` is too short. A timeout stops the run with the health details, the conditions and the logs of the OSD prepare pods and the operator |
 | `WEBHOOK_TIMEOUT` | `120` | Seconds to wait, after cert-manager is Ready, for its webhook to admit a server-side dry-run of the ClusterIssuer before the Phase-2 TLS prerequisites are applied. Also bounds the second probe, under `WITH_CONTROLPLANE=true`: the wait for the API server to admit or deny a server-side dry-run of the ControlPlane manifests. Under `WITH_CONTROLPLANE_CR=true` it probes the bundled CR before its apply; otherwise, on the `flux` path, it probes the render of the overlay's `controlplane/` directory, or the kind `controlplane/controlplane.yaml` together with the lab's OVNCentral, before the by-hand hint. A timeout stops the run and prints the `c5c3-operator` and `ovn-operator` HelmReleases, pods and pod logs |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |
 | `KIND_CONFIG` | `hack/kind-config.yaml` | The kind config `render_kind_config` starts from. Set it to `hack/kind-config-multinode.yaml` (1 control-plane node + 2 workers) for suites that need more than one schedulable node. Both configs bind the same host ports, so two clusters created from them cannot coexist on one host. A custom config must keep its control-plane node at `nodes[0]`, which is the only node the `KIND_HOST_PORT` override rewrites. Read only on the run that creates the cluster: with `SKIP_KIND_CREATE=true` or an existing cluster of that name the value is ignored and the script warns |
@@ -732,13 +802,14 @@ The deployment script supports configurable timeouts via environment variables:
 | `WITH_OVN_KERNEL_MODULES` | `false` | When `true`, `modprobe` `openvswitch` and `geneve` on the host before the cluster is created, so the OVN chassis suites find the datapath and tunnel modules in the kernel the kind nodes share. Linux only, and it needs root or passwordless sudo: without either the script logs a warning and continues |
 | `WITH_CHAOS_MESH` | `false` | When `true`, deploy Chaos Mesh in Step 3 and append `chaos-mesh` to the Phase 3 HelmRelease wait. In kind mode it first runs `modprobe` for `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` on the host before the cluster is created and applies `deploy/kind/chaos-mesh`. The module load is Linux only and needs root or passwordless sudo: without either the script logs a warning and continues. Under `EXTERNAL_CLUSTER=true` it loads nothing on the host and applies `<overlay>/chaos-mesh` instead, whose DaemonSet `chaos-mesh-modules` loads the modules on the nodes, and waits up to `POD_TIMEOUT` seconds for that DaemonSet's rollout; a failed wait stops the run with `ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, ...` and the command that reads the loader's log. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#chaos-mesh-kind-only-opt-in) and [Lab Chaos Mesh](infrastructure-manifests.md#lab-chaos-mesh) |
 | `WITH_NFS` | `false` | When `true`, deploy the NFS server in `openstack` and the `csi-driver-nfs` mounter in `kube-system` in Step 3, wait for the `nfs-server` rollout, and append `csi-driver-nfs` to the Phase 3 HelmRelease wait. In kind mode it first runs `modprobe` for `nfs` and `nfsv4`, the modules the `csi-driver-nfs` node plugin mounts with, on the host before the cluster is created and applies the `deploy/kind/nfs` overlay; the server, NFS-Ganesha, needs no module. The module load is Linux only and needs root or passwordless sudo: without either the script logs a warning and continues. A rollout failure of the server stops the run with `ERROR: the NFS server did not roll out.` and the commands that read the logs of `prepare-exports` and `nfs-server`. Under `EXTERNAL_CLUSTER=true` it loads nothing on the host and applies `<overlay>/nfs` instead, whose DaemonSet `nfs-client-modules` loads the modules on the nodes; it also waits for that DaemonSet's rollout, and a failed wait stops the run with an error naming the log to read. When the overlay ships `nfs/client-policy.yaml`, it applies that NetworkPolicy before `<overlay>/nfs`, with the node network of Step 1 in place of the placeholder `NODE_NETWORK`. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#nfs-storage-stack-opt-in) and [Lab NFS stack](infrastructure-manifests.md#lab-nfs-stack) |
+| `WITH_CEPH` | `false` | Under `EXTERNAL_CLUSTER=true` only: deploy the lab Ceph. Step 3 applies `<overlay>/ceph` (the Rook operator), Phase 3 waits for the HelmRelease `rook-ceph`, Step 5 waits for the Rook CRDs and applies `<overlay>/ceph/cluster` (the CephCluster, its pools and clients, the toolbox and the key hand-off), and after Step 8 the script waits for the Ceph (`CEPH_TIMEOUT`) and syncs the two client keys into `openstack` through OpenBao. Preflight refuses the flag in kind mode, and under `EXTERNAL_CLUSTER=true` for an overlay without both kustomizations. `make teardown-infra` removes the Ceph at the end of its step 2. The overlays are described in [Lab Ceph](infrastructure-manifests.md#lab-ceph) |
 | `WITH_DIZZY` | `false` | When `true`, stage dizzy's three Grafana dashboards into `deploy/kind/dizzy/dashboards/` with `hack/dizzy.sh stage-dashboards`, deploy the dizzy metrics stack (VictoriaMetrics and Grafana) in Step 3, append `dizzy-victoria-metrics` and `dizzy-grafana` to the Phase 3 HelmRelease wait, and log the Grafana URL `https://dizzy.127-0-0-1.nip.io` on the public port. A dashboard download that fails stops the run before the stack is applied. In kind mode it applies `deploy/kind/dizzy`, whose VictoriaMetrics keeps its metrics in an emptyDir and takes dizzy's OTLP export on NodePort 30428, which `hack/kind-config.yaml` maps to host port 8428; the script warns when the cluster predates that mapping. Under `EXTERNAL_CLUSTER=true` it applies `<overlay>/dizzy` instead, whose VictoriaMetrics keeps its metrics on a 10Gi claim on the cluster's default class behind a ClusterIP Service, calls no `docker port`, and the completion banner names the `kubectl port-forward` to VictoriaMetrics on local port 8428 through which `EXTERNAL_CLUSTER=true make dizzy-keystone` exports, beside Grafana on the Gateway port-forward. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#dizzy-load-chaos-stack-kind-only-opt-in) and [Lab dizzy stack](infrastructure-manifests.md#lab-dizzy-stack) |
 | `WITH_PROMETHEUS` | `false` | When `true`, stage the Keystone Operator dashboard into `deploy/kind/prometheus/keystone-operator.json`, deploy kube-prometheus-stack (the Prometheus Operator, Prometheus and Grafana) in `monitoring` in Step 3, append `kube-prometheus-stack` to the Phase 3 HelmRelease wait and raise that wait to at least 1200 seconds, and then set `monitoring.serviceMonitor.enabled=true` on the nine service-operator HelmReleases, waiting for each one that is not suspended. In kind mode it applies `deploy/kind/prometheus`, whose Prometheus keeps 6 hours of metrics in an emptyDir. Under `EXTERNAL_CLUSTER=true` it applies `<overlay>/prometheus` instead, and preflight refuses the flag for an overlay without `prometheus/kustomization.yaml`. The lab's overlay leaves the Namespace `monitoring` to the base, turns off the scrape jobs of etcd, the scheduler, the controller manager and kube-proxy, keeps 7 days on a 10Gi claim on the cluster's default class, loads every PrometheusRule, and adds the dashboard of openstack-hypervisor-operator. `make teardown-infra` deletes the release, the PVCs in `monitoring` and the Service and Endpoints `kube-system/kube-prometheus-stack-kubelet` in its step 3. The overlays are described in [Infrastructure Manifests](infrastructure-manifests.md#kube-prometheus-stack-kind-only-opt-in) and [Lab Prometheus stack](infrastructure-manifests.md#lab-prometheus-stack) |
 | `WITH_MESSAGING` | `false` | When `true`, apply the `deploy/kind/messaging` overlay after Step 5 and wait for `rabbitmqcluster/shared-rabbitmq` in `openstack` to report `AllReplicasReady`. A timeout stops the run and prints the `kubectl describe` output for the broker plus the events of its server pod. The overlay is described in [Infrastructure Manifests](infrastructure-manifests.md#message-bus-kind-only-opt-in). The `e2e-controlplane` job is the broker's second consumer after the cinder `e2e-operator` leg: the full-ControlPlane suite takes a vhost of its own through `tests/e2e/cinder/broker-vhost.sh` and hands the ControlPlane the transport URL of that vhost brownfield |
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
-| `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses the four kind-bound opt-ins `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`; the messages for `WITH_VPA` and `WITH_METRICS_SERVER` name the opt-in fields under `spec.sizing` of the ControlPlane, since the platform already runs a VPA and serves the metrics API. Preflight accepts `WITH_NFS=true` only when `<overlay>/nfs/kustomization.yaml` exists, `WITH_CHAOS_MESH=true` only when `<overlay>/chaos-mesh/kustomization.yaml` exists, `WITH_DIZZY=true` only when `<overlay>/dizzy/kustomization.yaml` exists and `WITH_PROMETHEUS=true` only when `<overlay>/prometheus/kustomization.yaml` exists, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. Under `WITH_NFS=true` it also refuses a `CSIDriver/nfs.csi.k8s.io` whose `helm.toolkit.fluxcd.io` labels do not name the HelmRelease `kube-system/csi-driver-nfs`: the cluster then runs its own NFS CSI driver, which Step 3 would replace and the HelmRelease would adopt. For an overlay with `nfs/client-policy.yaml` it then reads the node network from `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, logs it, and refuses a cluster where that value is missing or no IPv4 CIDR, or where a node has no IPv4 `InternalIP` inside it. Without `WITH_NFS=true`, when the ControlPlane of the overlay's `controlplane/` (see `EXTERNAL_OVERLAY`) has a Cinder backend on NFS, it refuses a cluster whose `CSIDriver/nfs.csi.k8s.io` is missing or does not list the `Ephemeral` lifecycle mode, and logs the driver's modes: the Cinder pods mount every export as an inline volume of that driver, and only `WITH_NFS=true` installs it. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
-| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds, and, unless `WITH_NFS=true`, a ControlPlane with a Cinder backend on the in-cluster NFS server `nfs-server.openstack`, which only `WITH_NFS=true` deploys. The server counts under `nfs-server.openstack`, `nfs-server.openstack.svc` and `nfs-server.openstack.svc.cluster.local`, in any case and the last with a trailing dot too. A backend on any other NFS server passes preflight, and Step 1 checks the cluster for the CSI driver it mounts through (see `EXTERNAL_CLUSTER`). A `hypervisor/` kustomization, with `hypervisor-fixtures/` beside it, is applied by hand as well; `make teardown-infra` removes both in its step 0. An optional `nfs/` kustomization is what Step 3 applies under `WITH_NFS=true` in place of `deploy/kind/nfs`; it has to render the Deployment `nfs-server` and the DaemonSet `nfs-client-modules` in `openstack` and the HelmRelease `csi-driver-nfs` in `kube-system`, the three objects the script waits for, and `make teardown-infra` removes it at the end of its step 2. `nfs/` may also ship `client-policy.yaml`, a NetworkPolicy template outside the kustomization whose placeholder `NODE_NETWORK` the script replaces with the node network of a Gardener shoot; an overlay for a cluster without the ConfigMap `kube-system/shoot-info` ships none. An optional `chaos-mesh/` kustomization is what Step 3 applies under `WITH_CHAOS_MESH=true` in place of `deploy/kind/chaos-mesh`; it has to render the DaemonSet `chaos-mesh-modules` and the HelmRelease `chaos-mesh` in `chaos-mesh`, the two objects the script waits for, and `make teardown-infra` removes it before its step 0. An optional `dizzy/` kustomization is what Step 3 applies under `WITH_DIZZY=true` in place of `deploy/kind/dizzy`; it has to render the HelmReleases `dizzy-victoria-metrics` and `dizzy-grafana` in `dizzy`, the two objects the script waits for and `make teardown-infra` deletes in its step 3, and it takes its dashboards from `deploy/kind/dizzy/dashboards/`, which Step 3 stages. An optional `prometheus/` kustomization is what Step 3 applies under `WITH_PROMETHEUS=true` in place of `deploy/kind/prometheus`; it has to render the HelmRelease `kube-prometheus-stack` in `monitoring`, the object the script waits for and `make teardown-infra` deletes in its step 3, and it takes the Keystone dashboard from `deploy/kind/prometheus/keystone-operator.json`, which Step 3 stages. Read by `make deploy-infra` and `make teardown-infra` |
+| `EXTERNAL_CLUSTER` | `false` | When `true`, deploy onto the cluster the current kubeconfig context points at (the script never switches contexts) with the `EXTERNAL_OVERLAY` overlays in Steps 3 and 5. Docker and kind are not required. Preflight refuses the four kind-bound opt-ins `WITH_VPA`, `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`; the messages for `WITH_VPA` and `WITH_METRICS_SERVER` name the opt-in fields under `spec.sizing` of the ControlPlane, since the platform already runs a VPA and serves the metrics API. Preflight accepts `WITH_NFS=true` only when `<overlay>/nfs/kustomization.yaml` exists, `WITH_CHAOS_MESH=true` only when `<overlay>/chaos-mesh/kustomization.yaml` exists, `WITH_DIZZY=true` only when `<overlay>/dizzy/kustomization.yaml` exists, `WITH_PROMETHEUS=true` only when `<overlay>/prometheus/kustomization.yaml` exists and `WITH_CEPH=true`, which the kind mode refuses, only when both `<overlay>/ceph/kustomization.yaml` and `<overlay>/ceph/cluster/kustomization.yaml` exist, requires the context's API server to answer, and logs the context and the server URL. Step 1 creates no cluster; it checks for a default StorageClass, for the absence of a `node-local-dns` DaemonSet in `kube-system` and for a Ready node, and logs the class and the node names. Under `WITH_NFS=true` it also refuses a `CSIDriver/nfs.csi.k8s.io` whose `helm.toolkit.fluxcd.io` labels do not name the HelmRelease `kube-system/csi-driver-nfs`: the cluster then runs its own NFS CSI driver, which Step 3 would replace and the HelmRelease would adopt. For an overlay with `nfs/client-policy.yaml` it then reads the node network from `data.nodeNetwork` of the ConfigMap `kube-system/shoot-info`, logs it, and refuses a cluster where that value is missing or no IPv4 CIDR, or where a node has no IPv4 `InternalIP` inside it. Without `WITH_NFS=true`, when the ControlPlane of the overlay's `controlplane/` (see `EXTERNAL_OVERLAY`) has a Cinder backend on NFS, it refuses a cluster whose `CSIDriver/nfs.csi.k8s.io` is missing or does not list the `Ephemeral` lifecycle mode, and logs the driver's modes: the Cinder pods mount every export as an inline volume of that driver, and only `WITH_NFS=true` installs it. The nofile cap and the Keystone image preload are skipped. The Gateway is reached through `kubectl port-forward` on local port 8443, which the completion banner prints, and the bundled ControlPlane CR's `publicEndpoint` gets `:8443`. Also consumed by `make teardown-infra`. Any other value keeps the kind mode |
+| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | Overlay root of `EXTERNAL_CLUSTER=true`: its `base/` and `infrastructure/` replace `deploy/kind/base` and `deploy/kind/infrastructure`. Relative to the repository root unless absolute. Preflight fails when either kustomization is missing. An overlay may also carry a `controlplane/` kustomization, which `make deploy-infra` names in its `WITH_CONTROLPLANE=true` completion hint and never applies; while it exists and `WITH_CONTROLPLANE_CR` is not `true`, preflight renders it and refuses a failing render, a render with no ControlPlane or more than one, a ControlPlane other than `openstack/<CONTROLPLANE_NAME>`, the only one Step 7 seeds, and, unless `WITH_NFS=true`, a ControlPlane with a Cinder backend on the in-cluster NFS server `nfs-server.openstack`, which only `WITH_NFS=true` deploys. The server counts under `nfs-server.openstack`, `nfs-server.openstack.svc` and `nfs-server.openstack.svc.cluster.local`, in any case and the last with a trailing dot too. A backend on any other NFS server passes preflight, and Step 1 checks the cluster for the CSI driver it mounts through (see `EXTERNAL_CLUSTER`). A `hypervisor/` kustomization, with `hypervisor-fixtures/` beside it, is applied by hand as well; `make teardown-infra` removes both in its step 0. An optional `nfs/` kustomization is what Step 3 applies under `WITH_NFS=true` in place of `deploy/kind/nfs`; it has to render the Deployment `nfs-server` and the DaemonSet `nfs-client-modules` in `openstack` and the HelmRelease `csi-driver-nfs` in `kube-system`, the three objects the script waits for, and `make teardown-infra` removes it at the end of its step 2. `nfs/` may also ship `client-policy.yaml`, a NetworkPolicy template outside the kustomization whose placeholder `NODE_NETWORK` the script replaces with the node network of a Gardener shoot; an overlay for a cluster without the ConfigMap `kube-system/shoot-info` ships none. An optional `chaos-mesh/` kustomization is what Step 3 applies under `WITH_CHAOS_MESH=true` in place of `deploy/kind/chaos-mesh`; it has to render the DaemonSet `chaos-mesh-modules` and the HelmRelease `chaos-mesh` in `chaos-mesh`, the two objects the script waits for, and `make teardown-infra` removes it before its step 0. An optional `dizzy/` kustomization is what Step 3 applies under `WITH_DIZZY=true` in place of `deploy/kind/dizzy`; it has to render the HelmReleases `dizzy-victoria-metrics` and `dizzy-grafana` in `dizzy`, the two objects the script waits for and `make teardown-infra` deletes in its step 3, and it takes its dashboards from `deploy/kind/dizzy/dashboards/`, which Step 3 stages. An optional `prometheus/` kustomization is what Step 3 applies under `WITH_PROMETHEUS=true` in place of `deploy/kind/prometheus`; it has to render the HelmRelease `kube-prometheus-stack` in `monitoring`, the object the script waits for and `make teardown-infra` deletes in its step 3, and it takes the Keystone dashboard from `deploy/kind/prometheus/keystone-operator.json`, which Step 3 stages. Optional `ceph/` and `ceph/cluster/` kustomizations are what Steps 3 and 5 apply under `WITH_CEPH=true`, with no kind counterpart; `ceph/` has to render the HelmRelease `rook-ceph` in `rook-ceph`, the object Phase 3 waits for, and `ceph/cluster/` the CephCluster `rook-ceph` with its device set first, the SecretStore `openbao-ceph-store` in `rook-ceph` and in `openstack`, the PushSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `rook-ceph` and the ExternalSecrets of the same names in `openstack`, the objects the script waits for. `make teardown-infra` removes both at the end of its step 2. Read by `make deploy-infra` and `make teardown-infra` |
 | `TEARDOWN_TIMEOUT` | `600` | Consumed by `make teardown-infra` under `EXTERNAL_CLUSTER=true`: seconds each delete waits for its objects to be gone before the teardown exits 1 |
 
 **Example: override HelmRelease timeout:**
