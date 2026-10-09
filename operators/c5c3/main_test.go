@@ -34,6 +34,8 @@ func TestSchemeRegistersAllExpectedGVKs(t *testing.T) {
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneServiceList"},
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneUser"},
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneUserList"},
+		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneProject"},
+		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneProjectList"},
 		// Keystone child CR.
 		{Group: "keystone.openstack.c5c3.io", Version: "v1alpha1", Kind: "Keystone"},
 		// MariaDB child CR.
