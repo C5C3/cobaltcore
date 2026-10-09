@@ -305,7 +305,7 @@ func TestKeystoneUser_NoFinalizerOnAnOrderThatIsNotServed(t *testing.T) {
 		{
 			name:   "the namespace is not assigned",
 			objs:   func() []client.Object { return []client.Object{keystoneUserControlPlane()} },
-			reason: reasonKeystoneUserNamespaceNotAssigned,
+			reason: reasonOrderNamespaceNotAssigned,
 		},
 		{
 			name:   "the ControlPlane does not exist",
@@ -344,7 +344,7 @@ func TestKeystoneUser_OverlongClusterNameIsRefused(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.IsZero()).To(BeTrue())
-	expectBothConditions(t, got, reasonKeystoneUserClusterNameTooLong)
+	expectBothConditions(t, got, reasonOrderClusterNameTooLong)
 	g.Expect(kuCondition(got, conditionTypeKeystoneUserUserReady).Message).To(ContainSubstring("63 characters"))
 	g.Expect(got.Finalizers).To(BeEmpty())
 	g.Expect(kuLabelled(t, h.mgmt)).To(BeZero())
@@ -403,7 +403,7 @@ func TestKeystoneUser_NamespaceNotAssigned(t *testing.T) {
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result.RequeueAfter).To(Equal(namespaceAssignmentRequeueAfter))
-			expectBothConditions(t, got, reasonKeystoneUserNamespaceNotAssigned)
+			expectBothConditions(t, got, reasonOrderNamespaceNotAssigned)
 			message := kuCondition(got, conditionTypeKeystoneUserUserReady).Message
 			g.Expect(message).To(ContainSubstring("spec.namespaceAssignments"))
 			g.Expect(message).To(ContainSubstring(tc.location))
@@ -460,7 +460,7 @@ func TestKeystoneUser_WithdrawnAssignmentFreezes(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(namespaceAssignmentRequeueAfter))
 	got := h.get(t)
-	expectBothConditions(t, got, reasonKeystoneUserNamespaceNotAssigned)
+	expectBothConditions(t, got, reasonOrderNamespaceNotAssigned)
 	g.Expect(got.Status.SecretName).To(Equal("workflow-credentials"), "the frozen order keeps its status")
 
 	for _, obj := range []client.Object{
@@ -501,7 +501,7 @@ func TestKeystoneUser_MissingControlPlaneOnATargetReadsAsNotAssigned(t *testing.
 	unassigned, _, unassignedResult, err := reconcileKeystoneUser(t, kuTestCluster, keystoneUserCR(kuTestNamespace), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	expectBothConditions(t, missing, reasonKeystoneUserNamespaceNotAssigned)
+	expectBothConditions(t, missing, reasonOrderNamespaceNotAssigned)
 	for _, condType := range keystoneUserSubConditionTypes {
 		g.Expect(kuCondition(missing, condType).Message).To(Equal(kuCondition(unassigned, condType).Message), condType)
 	}
@@ -686,7 +686,7 @@ func TestKeystoneUserChildToRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "u", Namespace: "default", Labels: tc.labels}}
-			g.Expect(keystoneUserChildToRequests(context.Background(), user)).To(Equal(tc.want))
+			g.Expect(orderChildToRequests(keystoneUserLabelKeys)(context.Background(), user)).To(Equal(tc.want))
 		})
 	}
 }
@@ -738,9 +738,9 @@ func TestControlPlaneToKeystoneUsersMapper_ReturnsNilOnListError(t *testing.T) {
 	g.Expect(controlPlaneToKeystoneUsersMapper(c)(context.Background(), ksControlPlane())).To(BeNil())
 }
 
-// TestKeystoneUserControlPlanePredicate pins which ControlPlane updates reach
-// the orders: what they read, and none of the plane's other status writes.
-func TestKeystoneUserControlPlanePredicate(t *testing.T) {
+// TestOrderControlPlanePredicate pins which ControlPlane updates reach the
+// orders: what they read, and none of the plane's other status writes.
+func TestOrderControlPlanePredicate(t *testing.T) {
 	base := ksControlPlane()
 	base.Generation = 3
 	cases := []struct {
@@ -770,7 +770,7 @@ func TestKeystoneUserControlPlanePredicate(t *testing.T) {
 			updated := base.DeepCopy()
 			tc.mutate(updated)
 
-			g.Expect(keystoneUserControlPlanePredicate().Update(event.UpdateEvent{
+			g.Expect(orderControlPlanePredicate().Update(event.UpdateEvent{
 				ObjectOld: base, ObjectNew: updated,
 			})).To(Equal(tc.want))
 		})
