@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two Ceph users of the lab's Cinder: client.cinder on the pool volumes and
+# client.cinder-backup on the pool backups. The overlay creates them and
+# CobaltCore never does (rule 1 of #1338).
+#
+# For each client Rook writes the Secret rook-ceph-client-<name> in rook-ceph
+# with the data keys <name>, userID and userKey, and rewrites it in place when
+# it rotates the key. The raw key under userKey is the contract #1341
+# consumes; keys-push.yaml hands it to OpenBao and keys-pull.yaml into
+# openstack.
+#
+# Rotation is driven by keyGeneration (D5 of #1338): raising it makes Rook
+# create a new key, and the hand-off carries it to openstack within a few
+# minutes. The keys stay aes (D7 of #1338) until every client librbd reads
+# aes256k; cluster.yaml mutes the warning that raises.
+---
+apiVersion: ceph.rook.io/v1
+kind: CephClient
+metadata:
+  name: cinder
+  namespace: rook-ceph
+spec:
+  caps:
+    mon: profile rbd
+    osd: profile rbd pool=volumes
+    mgr: profile rbd pool=volumes
+  security:
+    cephx:
+      keyRotationPolicy: KeyGeneration
+      keyGeneration: 1
+      keyType: aes
+---
+apiVersion: ceph.rook.io/v1
+kind: CephClient
+metadata:
+  name: cinder-backup
+  namespace: rook-ceph
+spec:
+  caps:
+    mon: profile rbd
+    osd: profile rbd pool=backups
+    mgr: profile rbd pool=backups
+  security:
+    cephx:
+      keyRotationPolicy: KeyGeneration
+      keyGeneration: 1
+      keyType: aes

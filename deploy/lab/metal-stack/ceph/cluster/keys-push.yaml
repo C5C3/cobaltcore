@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The storage half of the Ceph key hand-off (D4 of #1338): two PushSecrets
+# write the raw client keys Rook generates into OpenBao, at
+# kv-v2/data/ceph/client-cinder and kv-v2/data/ceph/client-cinder-backup.
+# keys-pull.yaml reads them back into openstack.
+#
+# The SecretStore is the shape of deploy/openbao/bootstrap/setup-eso-tenant.sh:
+# an mTLS client Certificate from the ClusterIssuer openbao-ca-issuer, whose
+# Secret also carries the CA, and Kubernetes auth on kubernetes/management as
+# the role push-ceph-keys, which setup-auth.sh binds to the ServiceAccount
+# rook-ceph/ceph-keys-push and the policy push-ceph-keys (create, update and
+# read on kv-v2/data/ceph/* and kv-v2/metadata/ceph/*).
+#
+# Step 5 of hack/deploy-infra.sh applies the store before OpenBao is
+# initialised in Step 7 and before setup-auth.sh has written the role, so
+# ESO's first validation fails and backs off; the PushSecrets have no source
+# Secret until the CephClients of clients.yaml reconcile. sync_ceph_client_keys
+# forces both once the Ceph is healthy.
+#
+# deletionPolicy None leaves the values in OpenBao when a PushSecret is
+# deleted; they go with OpenBao's volumes in the teardown. updatePolicy Replace
+# writes the key again whenever Rook rotates it.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-keys-push
+  namespace: rook-ceph
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ceph-keys-push-client-tls
+  namespace: rook-ceph
+spec:
+  secretName: ceph-keys-push-client-tls
+  duration: 8760h
+  renewBefore: 720h
+  commonName: ceph-keys-push-client-tls.rook-ceph.svc
+  usages:
+    - client auth
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: openbao-ceph-store
+  namespace: rook-ceph
+spec:
+  provider:
+    vault:
+      server: https://openbao.shared-services.svc:8200
+      path: kv-v2
+      version: v2
+      tls:
+        certSecretRef:
+          name: ceph-keys-push-client-tls
+        keySecretRef:
+          name: ceph-keys-push-client-tls
+      auth:
+        kubernetes:
+          mountPath: kubernetes/management
+          role: push-ceph-keys
+          serviceAccountRef:
+            name: ceph-keys-push
+      caProvider:
+        type: Secret
+        name: ceph-keys-push-client-tls
+        key: ca.crt
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: ceph-client-cinder
+  namespace: rook-ceph
+spec:
+  refreshInterval: 1m
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: openbao-ceph-store
+      kind: SecretStore
+  selector:
+    secret:
+      name: rook-ceph-client-cinder
+  data:
+    - match:
+        secretKey: userKey
+        remoteRef:
+          remoteKey: ceph/client-cinder
+          property: userKey
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: ceph-client-cinder-backup
+  namespace: rook-ceph
+spec:
+  refreshInterval: 1m
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: openbao-ceph-store
+      kind: SecretStore
+  selector:
+    secret:
+      name: rook-ceph-client-cinder-backup
+  data:
+    - match:
+        secretKey: userKey
+        remoteRef:
+          remoteKey: ceph/client-cinder-backup
+          property: userKey

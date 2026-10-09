@@ -1,0 +1,141 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The lab Ceph: one monitor, one manager and one OSD per worker, each OSD on a
+# raw block volume of the cluster's default class (D1 and D2 of #1338). On
+# newforge that class is `premium`, whose Lightbits volumes reach the workers
+# as NVMe/TCP devices.
+#
+# The image is Tentacle, the Ceph release the Rook 1.21 CephCluster docs name,
+# pinned by tag and digest. The toolbox of toolbox.yaml runs the same string,
+# and Renovate's customManager for quay.io/ceph/ceph moves both together
+# (packageRules "ceph image", no automerge: a Ceph minor is a question of the
+# versions the pinned Rook supports).
+#
+# The device set's `count` is the number of OSDs, one per worker of newforge's
+# three. It is the one field a shoot of another size changes; the topology
+# spread puts one OSD on each host while there are enough, and the deploy's
+# health wait reads it from the live CR. Three OSDs of 100Gi at two replicas
+# give about 150 GiB of pool capacity, the bound the 100Gi NFS claim of ../../nfs
+# puts on the lab's volumes and backups.
+#
+# One monitor is a single point of failure the lab accepts, as it accepts the
+# single NFS server (D2). The claims name no storage class, so they bind to the
+# cluster's default class like every other volume of the lab;
+# hack/deploy-infra.sh refuses a cluster without one.
+#
+# The memory values are Rook's documented minimums. With the limits equal to
+# the requests Rook derives osd_memory_target from them. Per worker that is
+# 2 GiB for its OSD, plus 1.5 GiB on the worker that runs the mon and the mgr.
+#
+# The daemons keep Rook's cephx defaults, which give them aes256k keys on
+# 20.2.4. The two clients of clients.yaml carry `keyType: aes` (D7 of #1338),
+# which raises AUTH_INSECURE_CLIENT_KEY_TYPE; healthCheck mutes it so the
+# deploy can wait for HEALTH_OK. When D7 is revisited the mute is lifted with
+# `policy: unmute`, not by deleting the entry, so Rook sends the unmute to Ceph.
+# No allowedCiphers: an empty list is Ceph's default, aes and aes256k.
+#
+# cleanupPolicy.confirmation stays empty here. hack/teardown-infra.sh sets it
+# right before it deletes the cluster; Rook refuses spec changes once it is
+# set, so the manifest never carries it.
+---
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  cephVersion:
+    image: quay.io/ceph/ceph:v20.2.4@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9
+    allowUnsupported: false
+  dataDirHostPath: /var/lib/rook
+  mon:
+    count: 1
+    volumeClaimTemplate:
+      spec:
+        resources:
+          requests:
+            storage: 10Gi
+  mgr:
+    count: 1
+  dashboard:
+    enabled: false
+  crashCollector:
+    disable: true
+  logCollector:
+    enabled: false
+  # No exporter and no Prometheus module; a Ceph scrape target is a follow-up
+  # of #1338.
+  monitoring:
+    metricsDisabled: true
+  network:
+    connections:
+      # The Rook 1.21 default, written out. msgr2 needs a 5.11 kernel; the
+      # lab's workers run 6.1.
+      requireMsgr2: true
+  cephConfig:
+    global:
+      # The manager creates the .mgr pool at the default size. Without this it
+      # is created at size 3, and the cluster never reaches HEALTH_OK on a
+      # shoot with two workers; the lab's own pools set size 2 themselves.
+      osd_pool_default_size: "2"
+  healthCheck:
+    muteHealthWarning:
+      # D7 of #1338: the clients' keys stay aes. See the header.
+      AUTH_INSECURE_CLIENT_KEY_TYPE:
+        policy: mute
+  resources:
+    mon:
+      requests:
+        cpu: 100m
+        memory: 1Gi
+      limits:
+        memory: 1Gi
+    mgr:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+  storage:
+    useAllNodes: false
+    useAllDevices: false
+    storageClassDeviceSets:
+      - name: lightbits
+        # One OSD per worker of newforge; see the header.
+        count: 3
+        # The volume follows its OSD to another node.
+        portable: true
+        placement:
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app: rook-ceph-osd
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            memory: 2Gi
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes:
+                - ReadWriteOnce
+              volumeMode: Block
+              resources:
+                requests:
+                  storage: 100Gi
+  cleanupPolicy:
+    confirmation: ""
+    sanitizeDisks:
+      method: quick
+      dataSource: zero
+      iteration: 1
+    allowUninstallWithVolumes: false
+    wipeDevicesFromOtherClusters: false
