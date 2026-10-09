@@ -365,14 +365,17 @@ rules:
     verbs:
       - get
       - list
-  # c5c3.io - keystoneusers (read-only)
-  # The c5c3-operator watches KeystoneUser orders in every namespace of the
+  # c5c3.io - the order kinds (read-only)
+  # The c5c3-operator watches the order kinds in every namespace of the
   # registration Secret's namespaces key, these ones included, and a watch that
   # cannot list one of them never syncs. No order is served here: an order lives
   # in an assigned namespace, which has a Role of its own (role-assigned.yaml).
   - apiGroups:
       - c5c3.io
     resources:
+      - keystonecatalogentries
+      - keystoneprojects
+      - keystoneroleassignments
       - keystoneusers
     verbs:
       - get

@@ -1,9 +1,10 @@
 {{/*
 One Role per assigned namespace, holding what the c5c3-operator needs to serve
-a KeystoneUser order there and nothing else: it reads the order, writes its
-status and finalizer, and writes the Secret it delivers beside it. No workload
-kind is granted, so whoever holds the registration kubeconfig cannot run
-anything in a namespace that belongs to a service owner.
+the order kinds there (KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
+KeystoneCatalogEntry) and nothing else: it reads the orders, writes their
+status and finalizers, and writes the Secret a KeystoneUser delivers beside it.
+No workload kind is granted, so whoever holds the registration kubeconfig
+cannot run anything in a namespace that belongs to a service owner.
 
 The finalizers subresource is what lets the delivered Secret carry an owner
 reference with blockOwnerDeletion, which the OwnerReferencesPermissionEnforcement
@@ -35,12 +36,15 @@ rules:
       - update
       - patch
       - delete
-  # c5c3.io - keystoneusers
+  # c5c3.io - the order kinds
   # The orders themselves: read, and updated to install and release the
   # teardown finalizer. The operator never creates or deletes one.
   - apiGroups:
       - c5c3.io
     resources:
+      - keystonecatalogentries
+      - keystoneprojects
+      - keystoneroleassignments
       - keystoneusers
     verbs:
       - get
@@ -48,19 +52,25 @@ rules:
       - watch
       - update
       - patch
-  # c5c3.io - keystoneusers/status
+  # c5c3.io - the order kinds' status
   - apiGroups:
       - c5c3.io
     resources:
+      - keystonecatalogentries/status
+      - keystoneprojects/status
+      - keystoneroleassignments/status
       - keystoneusers/status
     verbs:
       - get
       - update
       - patch
-  # c5c3.io - keystoneusers/finalizers
+  # c5c3.io - the order kinds' finalizers
   - apiGroups:
       - c5c3.io
     resources:
+      - keystonecatalogentries/finalizers
+      - keystoneprojects/finalizers
+      - keystoneroleassignments/finalizers
       - keystoneusers/finalizers
     verbs:
       - update

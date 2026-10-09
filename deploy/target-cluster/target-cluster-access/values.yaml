@@ -23,12 +23,14 @@ namespaces: []
 # an entry also in namespaces (a namespace is either placed into or assigned),
 # fail the render.
 #
-# The KeystoneUser CRD ships in this chart's crds/ directory. Helm installs it
-# with the first install and never upgrades it, so apply
-# crds/c5c3.io_keystoneusers.yaml with kubectl on an upgrade that changes it.
-# Install the chart before the cluster is registered: the operator watches the
-# kind only on a cluster that served it when it was engaged, and a later CRD is
-# watched once the registration Secret changes.
+# The CRDs of the order kinds ship in this chart's crds/ directory:
+# c5c3.io_keystoneusers.yaml, c5c3.io_keystoneprojects.yaml,
+# c5c3.io_keystoneroleassignments.yaml and c5c3.io_keystonecatalogentries.yaml.
+# Helm installs them with the first install and never upgrades them, so apply
+# the crds/ files with kubectl on an upgrade that changes one. Install the chart
+# before the cluster is registered: the operator watches a kind only on a
+# cluster that served it when it was engaged, and a later CRD is watched once
+# the registration Secret changes.
 assignedNamespaces: []
 
 # Whether to create the namespaces above. Set to false when they already exist
