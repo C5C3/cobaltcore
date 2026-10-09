@@ -46,9 +46,10 @@ deploys keystone-operator, c5c3-operator, and K-ORC as local dev images
 the build instead of skipping. A second step on the same job runs
 `keystone-service-foreign-namespace`, which brings up a Keystone-only
 ControlPlane of its own and seeds that plane's OpenBao paths itself. A third
-runs `keystone-user`, the KeystoneUser order suite: delivery of the Secret
-beside the order, its repair, a rotation, a refused and a frozen order, and the
-teardown down to the OpenBao path. A fourth runs `keystone-service`, the
+runs `keystone-user`, the Keystone order suite: delivery of the Secret beside
+the user order, its repair, a rotation, a project, a role assignment and a
+catalog entry ordered beside it, a refused and a frozen order, and the teardown
+down to the OpenBao path. A fourth runs `keystone-service`, the
 own-namespace registration suite: the round-trip, an injected K-ORC latch that
 holds for a misconfiguration and is cleared for a transport failure, a rotation
 through a `CredentialRotation`, a collision held until `adopt`, and deletion.
@@ -84,7 +85,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
-| [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` | KeystoneUser orders: an order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates, an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes the order, and deletion removes the user, the Secret and the OpenBao path |
+| [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` | Keystone orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion holds the user on the assignment and removes everything down to the OpenBao path |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [e2e-autoscaling](#e2e-autoscaling) | `cp-autoscaling` | The API autoscaler with metrics-server and the VPA: token load scales Keystone from one pod to its HPA maximum and back within 240 s, the budget admits an eviction at the minimum, every database-backed API fits its SQL connection cap at its maximum, and the opted-in workloads get their VerticalPodAutoscalers |
@@ -99,6 +100,9 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 | invalid-keystoneservice-cr | multiple (rejected) | Every `KeystoneService` CEL `XValidation` and webhook rejection path pinned to a deterministic admission failure. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 | invalid-keystoneuser-cr | multiple (rejected) | Every `KeystoneUser` CRD rule pinned to a deterministic admission failure (fixtures `00` to `11`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
+| invalid-keystoneproject-cr | multiple (rejected) | Every `KeystoneProject` CRD rule pinned to a deterministic admission failure (fixtures `00` to `09`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
+| invalid-keystoneroleassignment-cr | multiple (rejected) | Every `KeystoneRoleAssignment` CRD rule pinned to a deterministic admission failure (fixtures `00` to `15`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
+| invalid-keystonecatalogentry-cr | multiple (rejected) | Every `KeystoneCatalogEntry` CRD rule pinned to a deterministic admission failure (fixtures `00` to `16`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 | invalid-sizingprofile-cr | multiple (rejected, cluster-scoped) | Every `SizingProfile` marker and webhook rejection path pinned to a deterministic admission failure (fixtures `00` to `12`). Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 
 ## Test Suite Details
@@ -968,17 +972,19 @@ the fourth chainsaw step of the `e2e-controlplane` CI job.
 
 ### keystone-user
 
-Covers the first order kind: a `KeystoneUser` from a namespace the ControlPlane
-assigns through `spec.namespaceAssignments`. The order is the only kind whose
-credentials arrive without a tenant store: the operator writes the Secret beside
-the order itself and backs the password up through the ControlPlane namespace's
-own store. Unit tests and envtest see neither Keystone nor OpenBao nor ESO, so
-this suite is where the three meet.
+Covers the order kinds: a `KeystoneUser` from a namespace the ControlPlane
+assigns through `spec.namespaceAssignments`, and the `KeystoneProject`,
+`KeystoneRoleAssignment` and `KeystoneCatalogEntry` ordered beside it. The user
+order is the only kind whose credentials arrive without a tenant store: the
+operator writes the Secret beside the order itself and backs the password up
+through the ControlPlane namespace's own store. Unit tests and envtest see
+neither Keystone nor OpenBao nor ESO, so this suite is where the three meet.
 
 The plane is a Keystone-only `cp` in the ephemeral namespace that assigns one
 namespace, `<namespace>-tenant`, and nothing else; it carries no
-`allowedNamespaces`. The suite seeds the plane's two OpenBao prerequisites
-itself, as the foreign-namespace suite does, and runs six legs:
+`allowedNamespaces`, and its entry starts without roles and without
+`allowCatalogEntries`. The suite seeds the plane's two OpenBao prerequisites
+itself, as the foreign-namespace suite does, and runs nine steps:
 
 1. **Delivery**: the order `workflow` reaches `Ready=True` with
    `UserReady=True/UserProvisioned` and `DeliveryReady=True/Delivered`,
@@ -997,18 +1003,43 @@ itself, as the foreign-namespace suite does, and runs six legs:
    OpenBao path read off the PushSecret holds it too, the generation-1 password
    Secret is gone from the plane's namespace, and the Job authenticates with the
    new password.
-4. **Refusal**: an order `outsider` in `<namespace>-outsider`, which no entry
+4. **Pieces refused**: `workflow-project`, `workflow-member` and `workflow-dns`
+   are applied. Within 5 min the project reads `Ready=True` with a
+   `status.projectID`, the assignment reads `RoleNotAllowed` with a message
+   naming `["member"]` and `admits roles []`, the catalog entry reads
+   `CatalogNotAllowed` naming `allowCatalogEntries`, and no RoleAssignment,
+   Service or Endpoint carries their labels.
+5. **Pieces**: a JSON patch sets entry 0 to
+   `{namespace, allowedRoles: [member], allowCatalogEntries: true}`. Within
+   10 min both orders read `Ready=True`, the assignment carries its three ids
+   and the entry its service id and two endpoint ids, one RoleAssignment, one
+   Service and two Endpoints carry the labels, and a Job scoped through
+   `OS_PROJECT_NAME` and `OS_PROJECT_DOMAIN_NAME` issues a token and prints the
+   entry's public URL. `workflow-member-dup` reads `DuplicateRoleAssignment`
+   naming `workflow-member` and projects nothing, `workflow-dns-dup` reads
+   `ServiceCollision` and registers no Service, and both are deleted.
+6. **Pieces freeze**: `allowedRoles: []` flips the assignment to
+   `RoleNotAllowed` while its RoleAssignment stays and the scoped Job still
+   authenticates; `allowCatalogEntries: false` flips the entry to
+   `CatalogNotAllowed` while its Service stays. Restoring the entry returns both
+   to `Ready=True`.
+7. **Refusal**: an order `outsider` in `<namespace>-outsider`, which no entry
    assigns, holds at `NamespaceNotAssigned` on both conditions with a message
    naming `spec.namespaceAssignments`, and nothing carrying its labels appears,
    re-checked after a settle.
-5. **Freeze**: removing `namespaceAssignments` flips `workflow` to
-   `NamespaceNotAssigned` on both conditions while its Secret and K-ORC User
-   stay, and a password patched to `Zm9v` still reads `Zm9v` 90 s later.
-   Restoring the entry returns it to `Ready=True` with the real password.
-6. **Teardown**: deleting `workflow` returns, the Secret is gone, nothing
-   carrying the order's labels is left in the plane's namespace, and its OpenBao
-   path holds no live value. The plane is then deleted in the order the
-   foreign-namespace suite checks.
+8. **Freeze**: removing `namespaceAssignments` flips `workflow` to
+   `NamespaceNotAssigned` on both conditions, and the three pieces to it too,
+   while the Secret, the K-ORC User and the pieces' K-ORC children stay, and a
+   password patched to `Zm9v` still reads `Zm9v` 90 s later. Restoring the full
+   entry, roles and flag included, returns all four orders to `Ready=True`.
+9. **Teardown**: deleting `workflow` first holds it at
+   `ReferencedByRoleAssignments` naming `workflow-member`, with its K-ORC User
+   in place. Deleting `workflow-member` removes its RoleAssignment and Role
+   import, and `workflow` then goes: the Secret is gone, nothing carrying the
+   user's labels is left in the plane's namespace, and its OpenBao path holds no
+   live value. Deleting `workflow-dns` and `workflow-project` removes their
+   Services, Endpoints, Region import and Project. The plane is then deleted in
+   the order the foreign-namespace suite checks.
 
 The target-cluster path is not driven here: no e2e job registers a second
 cluster with the c5c3-operator, so the two-API-server envtest
@@ -1071,6 +1102,21 @@ tests/e2e/c5c3/
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
 │   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
 │   └── NN-*.yaml                       One rejected KeystoneService CR per rule
+├── invalid-keystonecatalogentry-cr/
+│   ├── chainsaw-test.yaml              KeystoneCatalogEntry admission rejections (no webhook)
+│   ├── _generate.py                    Canonical scaffold + generator for the fixtures
+│   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
+│   └── NN-*.yaml                       One rejected KeystoneCatalogEntry per rule
+├── invalid-keystoneproject-cr/
+│   ├── chainsaw-test.yaml              KeystoneProject admission rejections (no webhook)
+│   ├── _generate.py                    Canonical scaffold + generator for the fixtures
+│   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
+│   └── NN-*.yaml                       One rejected KeystoneProject per rule
+├── invalid-keystoneroleassignment-cr/
+│   ├── chainsaw-test.yaml              KeystoneRoleAssignment admission rejections (no webhook)
+│   ├── _generate.py                    Canonical scaffold + generator for the fixtures
+│   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
+│   └── NN-*.yaml                       One rejected KeystoneRoleAssignment per rule
 ├── invalid-keystoneuser-cr/
 │   ├── chainsaw-test.yaml              KeystoneUser admission rejections (no webhook)
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
@@ -1096,11 +1142,17 @@ tests/e2e/c5c3/
 │   ├── 02-keystoneservice-outsider.yaml  The refused registration (outsider)
 │   └── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
 ├── keystone-user/
-│   ├── chainsaw-test.yaml              KeystoneUser orders, six legs
+│   ├── chainsaw-test.yaml              Keystone orders, nine steps
 │   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; @TENANT_NS@ assigned)
 │   ├── 01-keystoneuser-tenant.yaml     The assigned order (workflow)
 │   ├── 02-keystoneuser-outsider.yaml   The refused order (outsider)
-│   └── 03-openstack-verify-job.yaml    openstack CLI token issue on the delivered Secret
+│   ├── 03-openstack-verify-job.yaml    openstack CLI token issue on the delivered Secret
+│   ├── 04-keystoneproject-tenant.yaml  The project order (workflow-project)
+│   ├── 05-keystoneroleassignment-tenant.yaml  The role order (workflow-member)
+│   ├── 06-keystonecatalogentry-tenant.yaml  The catalog order (workflow-dns)
+│   ├── 07-openstack-scoped-verify-job.yaml  Project-scoped token issue and catalog show
+│   ├── 08-keystoneroleassignment-duplicate.yaml  The duplicate order (workflow-member-dup)
+│   └── 09-keystonecatalogentry-collision.yaml  The colliding order (workflow-dns-dup)
 ├── messaging/
 │   ├── chainsaw-test.yaml              Shared RabbitMQ bus: provisioned, owned, sized, ready, torn down
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)

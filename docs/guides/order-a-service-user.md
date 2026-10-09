@@ -16,6 +16,10 @@ password up to OpenBao, and writes the credentials into a Secret beside the
 order. Nothing in the owner's namespace can reach OpenBao: the owner receives a
 Secret and nothing else.
 
+Beside the user the owner can order a project, a role for the user on it, and a
+catalog entry, each as a CR of its own. None of them delivers a Secret: the
+user's Secret scopes a token to the project once the role is assigned.
+
 The example orders a user for a fictional `workflow` service from a namespace
 of the same name.
 
@@ -43,6 +47,8 @@ examples below is one that devstack produces.
 | The namespace assignment | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
 | The K-ORC User, its password Secrets, the source Secret and the PushSecret | `openstack` | K-ORC reads the admin credential there, and the PushSecret pushes the password to OpenBao through that namespace's own secret store |
 | The order and the delivered Secret `workflow-credentials` | `workflow` | The credentials are delivered where the service that reads them runs |
+| The K-ORC Project, Role import, RoleAssignment, Service, Region import and Endpoints of the further orders | `openstack` | K-ORC reads the admin credential there |
+| The `KeystoneProject`, `KeystoneRoleAssignment` and `KeystoneCatalogEntry` orders | `workflow` | They live beside the user they belong to |
 
 The objects in `openstack` cannot carry an owner reference to an order in
 another namespace, so they carry the labels `c5c3.io/keystoneuser-name`,
@@ -219,6 +225,146 @@ from `openstack`. The new password goes to OpenBao first; once ESO has pushed
 it, the Secret carries it and the order is `Ready` again. A service reads the
 Secret again to pick the new password up.
 
+## Order a project
+
+The user has no project yet. Order one from the same namespace:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: workflow-project
+  namespace: workflow
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+EOF
+kubectl wait --for=condition=Ready keystoneproject/workflow-project -n workflow --timeout=10m
+kubectl get keystoneproject workflow-project -n workflow \
+  -o jsonpath='{.status.projectName}{" "}{.status.domainName}{" "}{.status.projectID}{"\n"}'
+```
+
+The project name defaults to `metadata.name`, and the project lives in the
+ControlPlane's admin domain, `Default` on the devstack. A project of that name
+the order did not create, the admin project, or a built-in service project such
+as `service-glance` is refused with `ProjectCollision`.
+
+## Assign a role
+
+A role assignment names the user and the project by their order names, and one
+role:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: workflow-member
+  namespace: workflow
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  role: member
+EOF
+kubectl get keystoneroleassignment workflow-member -n workflow \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
+```
+
+The entry of Step 2 lists no roles, so the order is refused, and the message
+names the list and the role:
+
+```
+AssignmentReady=False (RoleNotAllowed)
+Ready=False (NotAllReady)
+```
+
+Allow the role on the `workflow` entry. The `test` operation guards the index
+as in [Withdrawing the assignment](#withdrawing-the-assignment-freezes-the-order):
+
+```bash
+i=$(kubectl get controlplane controlplane -n openstack -o json \
+  | jq '[.spec.namespaceAssignments[] | .namespace == "workflow" and .targetClusterRef == null] | index(true)')
+kubectl patch controlplane controlplane -n openstack --type json -p "[
+  {\"op\":\"test\",\"path\":\"/spec/namespaceAssignments/${i}/namespace\",\"value\":\"workflow\"},
+  {\"op\":\"add\",\"path\":\"/spec/namespaceAssignments/${i}/allowedRoles\",\"value\":[\"member\"]}]"
+kubectl wait --for=condition=Ready keystoneroleassignment/workflow-member -n workflow --timeout=10m
+kubectl get keystoneroleassignment workflow-member -n workflow \
+  -o jsonpath='{.status.roleID}{" "}{.status.userID}{" "}{.status.projectID}{"\n"}'
+```
+
+The delivered `clouds.yaml` stays unscoped. A service scopes its token to the
+project with two environment variables beside it. Rerun the Verification Job
+with them:
+
+```yaml
+          env:
+            - name: OS_CLIENT_CONFIG_FILE
+              value: /etc/openstack/clouds.yaml
+            - name: OS_PROJECT_NAME
+              value: workflow-project
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+```
+
+The token table now names the project. Taking the role off the list later
+freezes the order and revokes nothing: the assignment stays in Keystone until
+the order is deleted.
+
+## Register a catalog entry
+
+A catalog row is visible to every cloud user, so the entry has to admit catalog
+entries on top of the assignment. Order the entry first:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: workflow-dns
+  namespace: workflow
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  serviceType: dns
+  serviceName: designate
+  endpoints:
+    - interface: public
+      url: https://dns.example.test/v2
+EOF
+kubectl get keystonecatalogentry workflow-dns -n workflow \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
+```
+
+```
+CatalogReady=False (CatalogNotAllowed)
+Ready=False (NotAllReady)
+```
+
+Set `allowCatalogEntries` on the `workflow` entry, with the index `i` from the
+role step:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type json -p "[
+  {\"op\":\"test\",\"path\":\"/spec/namespaceAssignments/${i}/namespace\",\"value\":\"workflow\"},
+  {\"op\":\"add\",\"path\":\"/spec/namespaceAssignments/${i}/allowCatalogEntries\",\"value\":true}]"
+kubectl wait --for=condition=Ready keystonecatalogentry/workflow-dns -n workflow --timeout=10m
+openstack --insecure catalog show dns
+```
+
+The catalog lists the public URL in `RegionOne`. Every service type but
+`identity` may be registered; a row of the same type and name that the order
+did not create is refused with `ServiceCollision`. The endpoints may change
+later, and an interface the spec no longer declares is removed. The type and
+the name are frozen.
+
 ## Edit or delete the Secret
 
 The operator owns the two keys it writes. Overwrite the password, then delete
@@ -282,14 +428,22 @@ kubectl wait --for=condition=Ready keystoneuser/workflow -n workflow --timeout=1
 
 ## Revoking the user
 
-Deleting the order is what revokes:
+Deleting the order is what revokes. Delete the role assignment first: a user or
+a project that an assignment names holds its deletion and reports
+`ReferencedByRoleAssignments` until the assignment is gone.
 
 ```bash
+kubectl delete keystoneroleassignment workflow-member -n workflow
+kubectl delete keystonecatalogentry workflow-dns -n workflow
+kubectl delete keystoneproject workflow-project -n workflow
 kubectl delete keystoneuser workflow -n workflow
 ```
 
-The command blocks while K-ORC deletes the user from Keystone and ESO removes
-the password from OpenBao. Afterwards the Secret is gone from `workflow` and
+K-ORC unassigns the role, removes the catalog rows and deletes the project
+before each order goes.
+
+The last command blocks while K-ORC deletes the user from Keystone and ESO
+removes the password from OpenBao. Afterwards the Secret is gone from `workflow` and
 nothing labelled for the order is left in `openstack`:
 
 ```bash
@@ -334,6 +488,8 @@ through the identity API directly.
 - [KeystoneUser CRD: Delivered Secret contract](../reference/c5c3/keystoneuser-crd.md#delivered-secret-contract): the Secret's keys, the auth URL per cluster, and the repair.
 - [KeystoneUser CRD: Conditions](../reference/c5c3/keystoneuser-crd.md#conditions): every reason the two conditions report.
 - [KeystoneUser Reconciler Architecture](../reference/c5c3/keystoneuser-reconciler.md): the gates, the steps and the teardown order.
+- [KeystoneProject CRD](../reference/c5c3/keystoneproject-crd.md), [KeystoneRoleAssignment CRD](../reference/c5c3/keystoneroleassignment-crd.md) and [KeystoneCatalogEntry CRD](../reference/c5c3/keystonecatalogentry-crd.md): the further orders, their consent and their conditions.
+- [Keystone Orders Reconciler Architecture](../reference/c5c3/keystone-orders-reconciler.md): the scaffold the four order kinds share, and the holds.
 - [ControlPlane CRD: NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec): the assignment field and its validation.
 - [Register a Service the ControlPlane Does Not Manage](./register-a-foreign-service.md): a KeystoneService with a catalog entry and roles.
 - [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suite behind this guide.
@@ -348,9 +504,12 @@ chainsaw test --test-dir tests/e2e/c5c3/keystone-user
 ```
 
 It orders a user from an assigned namespace and authenticates with the Secret
-from a Job there, repairs an edited and a deleted Secret, rotates the password,
-refuses an order from an unassigned namespace, freezes the order by withdrawing
-the assignment, restores it, and deletes it down to the OpenBao path. Against a
+from a Job there, repairs an edited and a deleted Secret, and rotates the
+password. It then orders a project, a role assignment and a catalog entry, sees
+the role and the entry refused, admits both, scopes a token to the project and
+reads the entry out of the catalog. It refuses an order from an unassigned
+namespace, freezes every order by withdrawing the assignment, restores it, and
+deletes the orders, the user first to see it hold on the assignment. Against a
 full ControlPlane stack, run the suite with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`.
 
@@ -366,4 +525,16 @@ suites never collide.
 
 ::: details The order the suite applies from the assigned namespace
 <<< @/../tests/e2e/c5c3/keystone-user/01-keystoneuser-tenant.yaml#keystoneuser-workflow
+:::
+
+::: details The project the suite orders
+<<< @/../tests/e2e/c5c3/keystone-user/04-keystoneproject-tenant.yaml#keystoneproject-workflow-project
+:::
+
+::: details The role assignment the suite orders
+<<< @/../tests/e2e/c5c3/keystone-user/05-keystoneroleassignment-tenant.yaml#keystoneroleassignment-workflow-member
+:::
+
+::: details The catalog entry the suite orders
+<<< @/../tests/e2e/c5c3/keystone-user/06-keystonecatalogentry-tenant.yaml#keystonecatalogentry-workflow-dns
 :::

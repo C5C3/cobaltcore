@@ -25,10 +25,13 @@ The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
 this level; the reconciler is deferred). All four are documented here. The
-registration kind `KeystoneService` and the first order kind `KeystoneUser`,
-which orders a Keystone user from an [assigned namespace](#namespaceassignmentspec),
-have pages of their own: [KeystoneService CRD](./keystoneservice-crd.md) and
-[KeystoneUser CRD](./keystoneuser-crd.md).
+registration kind `KeystoneService` and the four order kinds, which order
+Keystone pieces from an [assigned namespace](#namespaceassignmentspec), have
+pages of their own: [KeystoneService CRD](./keystoneservice-crd.md),
+[KeystoneUser CRD](./keystoneuser-crd.md),
+[KeystoneProject CRD](./keystoneproject-crd.md),
+[KeystoneRoleAssignment CRD](./keystoneroleassignment-crd.md) and
+[KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md).
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -224,7 +227,7 @@ status:
 | `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, Placement, and Barbican today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (the operator-provisioned `SecretStore` `openbao-tenant-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, Neutron, Cinder, Nova and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, the c5c3-operator provisions the namespaced `SecretStore` `openbao-tenant-store` in the ControlPlane namespace and routes the control plane through it. Set the field only to use a store you manage yourself: `{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own namespace; the shared `openbao-cluster-store` lacks the per-ControlPlane grants and is not an option. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
-| `namespaceAssignments` | [`[]NamespaceAssignmentSpec`](#namespaceassignmentspec) | No | `nil` | Namespaces on the management cluster or on a registered target cluster assigned to the owners of services the control plane does not manage, each with the Keystone roles an order from it may request. `listType=atomic`, at most 32 entries, each (`namespace`, `targetClusterRef.name`) pair unique. It sits beside `korc` because the consent also covers database and message-bus orders. Reported in `status.namespaceAssignments` and by [`NamespaceAssignmentsReady`](#namespaceassignmentsready). Legal in both keystone modes. See [NamespaceAssignmentSpec](#namespaceassignmentspec). |
+| `namespaceAssignments` | [`[]NamespaceAssignmentSpec`](#namespaceassignmentspec) | No | `nil` | Namespaces on the management cluster or on a registered target cluster assigned to the owners of services the control plane does not manage, each with the Keystone roles an order from it may request and whether it may order catalog entries. `listType=atomic`, at most 32 entries, each (`namespace`, `targetClusterRef.name`) pair unique. It sits beside `korc` because the consent also covers database and message-bus orders. Reported in `status.namespaceAssignments` and by [`NamespaceAssignmentsReady`](#namespaceassignmentsready). Legal in both keystone modes. See [NamespaceAssignmentSpec](#namespaceassignmentspec). |
 
 ### SecretStoreRefSpec
 
@@ -2341,16 +2344,22 @@ namespace, and it lists the Keystone roles such an order may request. The
 c5c3-operator reports every entry in `status.namespaceAssignments` (see
 [NamespaceAssignmentStatus](#namespaceassignmentstatus)).
 
-The first order kind is [`KeystoneUser`](./keystoneuser-crd.md), which orders an
-unscoped Keystone user and delivers its credentials as a Secret beside the
-order. It requests no role, so `allowedRoles` does not limit it. The
-[Order a Service User](../../guides/order-a-service-user.md) guide walks it.
+Four order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
+an unscoped Keystone user and delivers its credentials as a Secret beside the
+order. [`KeystoneProject`](./keystoneproject-crd.md) orders a project in the
+admin domain. [`KeystoneRoleAssignment`](./keystoneroleassignment-crd.md)
+orders a role for an ordered user on an ordered project, and is the one kind
+`allowedRoles` limits. [`KeystoneCatalogEntry`](./keystonecatalogentry-crd.md)
+orders a catalog entry, and needs `allowCatalogEntries` as well. The
+[Order a Service User](../../guides/order-a-service-user.md) guide walks all
+four.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `namespace` | `string` | Yes | — | The assigned namespace, 1 to 63 characters matching `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. The operator only reads it: it never creates, labels or deletes the namespace, and the entry may precede the namespace. |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the management cluster) | The registered target cluster the namespace lives on. Admission does not check that the cluster is registered. The ref may be edited: a changed ref is one entry removed and another added. |
 | `allowedRoles` | `[]string` | No | `[]` | The Keystone role names an order from this namespace may request. `listType=set`, at most 16 entries, each 1 to 255 bytes without a comma, the bounds of a `KeystoneService` account role. An empty list allows no role, while the namespace may still order a database or a message-bus vhost. |
+| `allowCatalogEntries` | `bool` | No | `false` | Admits `KeystoneCatalogEntry` orders from this namespace. Without it such an order reports `CatalogNotAllowed` and is frozen the way a withdrawn entry freezes it. It binds orders only. |
 
 The pair (`namespace`, `targetClusterRef.name`) is unique, so the same
 namespace name on two clusters is two entries. Only the validating webhook
@@ -2382,6 +2391,12 @@ reported twice in status, and the consent lookup uses the first entry.
 > lapse at their TTL. A `KeystoneService` refused for a role freezes the same
 > way: a role assignment that already exists in Keystone stays until the owner
 > drops the role from `spec.account.roles` or deletes the CR.
+
+> **Catalog entries need their own consent.** A catalog row is visible to every
+> cloud user, so the assignment alone does not admit a `KeystoneCatalogEntry`:
+> the entry must set `allowCatalogEntries`. Clearing the flag later freezes the
+> orders without removing their rows. The flag binds orders only; the catalog
+> block of a `KeystoneService` stays admitted by `allowedNamespaces`.
 
 > **An unknown cluster is refused in status.** Admission never checks
 > registration. An entry whose cluster does not resolve sets
@@ -2632,6 +2647,7 @@ Reports the observed state of one `spec.namespaceAssignments` entry.
 | `namespace` | `string` | Yes | The assigned namespace, copied from the spec entry. |
 | `targetClusterRef` | `*commonv1.TargetClusterRefSpec` | No | The spec entry's cluster reference. Absent means the management cluster. |
 | `allowedRoles` | `[]string` | No | The spec entry's role allowlist, echoed. |
+| `allowCatalogEntries` | `bool` | No | The spec entry's catalog consent, echoed. Absent means `false`. |
 | `clusterReachable` | `bool` | Yes | Whether the cluster resolved and answered the namespace GET. |
 | `namespaceExists` | `bool` | Yes | Whether the namespace exists on that cluster. |
 | `reason` | `string` (`Assigned` \| `NamespaceNotFound` \| `NamespaceTerminating` \| `TargetClusterUnavailable` \| `ClusterUnreachable`) | Yes | The entry's outcome. `NamespaceNotFound` and `NamespaceTerminating` keep [`NamespaceAssignmentsReady`](#namespaceassignmentsready) `True`. The last two fail it. |
@@ -2865,6 +2881,7 @@ Keystone discipline:
 | `spec.namespaceAssignments[].namespace` | Required; MinLength 1; MaxLength 63; Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
 | `spec.namespaceAssignments[].targetClusterRef.name` | Required; MinLength 1; Pattern (DNS-1123 subdomain), the shared `TargetClusterRefSpec` markers |
 | `spec.namespaceAssignments[].allowedRoles` | `listType=set` (the API server rejects duplicate entries); MaxItems 16; item MinLength 1; item MaxLength 255; item Pattern `^[^,]+$` |
+| `spec.namespaceAssignments[].allowCatalogEntries` | Boolean, default `false`; no further rule |
 
 ### Validating-webhook rules
 
