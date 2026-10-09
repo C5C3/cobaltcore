@@ -49,11 +49,16 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 # kvm.cloud.sap CRDs the charts of the lab hypervisors install
 # (deploy/lab/metal-stack/hypervisor; Helm leaves them behind), and the
 # chaos-mesh.org CRDs the opt-in Chaos Mesh release installs from its chart's
-# crds/, which Helm never deletes either. The groups
+# crds/, which Helm never deletes either. The rook-ceph chart of the lab Ceph
+# (deploy/lab/metal-stack/ceph) installs the ceph.rook.io and objectbucket.io
+# CRDs as templates marked helm.sh/resource-policy: keep, so its uninstall
+# leaves them too; csi.ceph.io is the group of the ceph-csi-operator, which a
+# cluster deployed before csi.installCsiOperator was turned off carries, and
+# finds nothing otherwise. The groups
 # of the platform (autoscaling.k8s.io, cert.gardener.cloud, dns.gardener.cloud,
 # crd.projectcalico.org, metallb.io, snapshot.storage.k8s.io) are absent on
 # purpose and must stay absent.
-STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap|chaos-mesh\.org'
+STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap|chaos-mesh\.org|ceph\.rook\.io|objectbucket\.io|csi\.ceph\.io'
 
 # The kinds of the cluster-scoped objects the stack's charts leave behind. Helm
 # does not track a hook object as part of its release, so no uninstall removes
@@ -195,13 +200,14 @@ resume_installed_flux_objects() {
 # stack_namespaces — The namespaces the stack creates, one per line: every
 # Namespace of deploy/flux-system/namespaces.yaml, the two the kind base files
 # declare (envoy-gateway-system, headlamp-system), chaos-mesh and dizzy, which
-# the opt-in Chaos Mesh and dizzy overlays declare, and flux-system. No other
-# namespace is ever deleted. Fails when yq cannot read the file.
+# the opt-in Chaos Mesh and dizzy overlays declare, rook-ceph, which the lab's
+# Ceph overlay declares, and flux-system. No other namespace is ever deleted.
+# Fails when yq cannot read the file.
 # ---------------------------------------------------------------------------
 stack_namespaces() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "${REPO_ROOT}/deploy/flux-system/namespaces.yaml" || return 1
-  printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh dizzy flux-system
+  printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh dizzy rook-ceph flux-system
 }
 
 # ---------------------------------------------------------------------------
@@ -374,6 +380,81 @@ wait_for_nfs_pods_gone() {
         [[ -n "${line}" ]] && log "         ${line}"
       done <<<"${left}"
       log "       The csi-driver-nfs node plugin has to unmount them before it is removed; delete what owns these pods and claims and rerun."
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_ceph_cleanup_jobs_done [NODES] — Wait until the Rook operator has
+# run its cleanup Job on each of the NODES nodes that ran a Ceph daemon, bounded
+# by TEARDOWN_TIMEOUT. Without NODES, wait for the cleanup Jobs that exist.
+#
+# Rook starts the cleanup in the background once it removes the CephCluster's
+# finalizer: it waits for the daemon pods to be gone, then creates one Job
+# cluster-cleanup-job-<node> per node, labelled rook-ceph-cleanup=true, which
+# empties /var/lib/rook there and runs the cleanup policy's disk sanitizing.
+# The CephCluster delete therefore returns before any Job exists, so the wait
+# counts the Jobs against NODES, read before the delete, and passes only when
+# that many exist and each carries a Complete or Failed condition. Only the
+# operator process that removed the CephCluster creates the Jobs; a restarted
+# operator never does. teardown_ceph saves NODES on the namespace rook-ceph
+# until a wait for them passes, so a rerun counts against the same number.
+# Without NODES the wait passes once every Job that exists has one of the two
+# conditions. A Job that failed is named as a warning: /var/lib/rook may remain
+# on its node, where the node probe shows it under `== rook`.
+#
+# The loop is the one of wait_for_nfs_pods_gone: a read that fails counts as
+# Jobs left, and so does a yq that cannot read the answer. Exits 1 when the
+# wait runs out, naming each unfinished Job, or the number of Jobs created with
+# the way on when the operator will not create the others.
+# ---------------------------------------------------------------------------
+wait_for_ceph_cleanup_jobs_done() {
+  local nodes="${1:-0}" json created left errfile
+  if [[ $# -gt 0 ]]; then
+    log "Waiting for the Rook cleanup Jobs in rook-ceph, one for each of the ${nodes} nodes that ran a Ceph daemon..."
+  else
+    log "Waiting for the Rook cleanup Jobs a previous run left in rook-ceph..."
+  fi
+  local unfinished='.items[] | select((.status.conditions // []) | any_c((.type == "Complete" or .type == "Failed") and .status == "True") | not) | .metadata.name'
+
+  errfile="$(mktemp)"
+  local deadline=$((SECONDS + TEARDOWN_TIMEOUT))
+  while :; do
+    if json="$(kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json 2>"${errfile}")"; then
+      if left="$(yq -r "${unfinished}" <<<"${json}")" && created="$(yq -r '.items | length' <<<"${json}")"; then
+        if [[ -z "${left}" && "${created}" -lt "${nodes}" ]]; then
+          left="${created} of ${nodes} cleanup Jobs created"
+        fi
+      else
+        left="yq cannot read them (its error is above)"
+      fi
+    else
+      left="cannot read them: $(head -n 1 "${errfile}")"
+    fi
+    if [[ -z "${left}" ]]; then
+      rm -f "${errfile}"
+      local line
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && log "${line}"
+      done < <(yq -r '.items[] | "  " + .metadata.name + ": succeeded: " + ((.status.succeeded // 0) | tostring)' <<<"${json}")
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && log "WARNING: the Rook cleanup Job ${line} failed; /var/lib/rook may remain on its node. Read 'kubectl -n rook-ceph logs job/${line}' and run the node probe there."
+      done < <(yq -r '.items[] | select((.status.conditions // []) | any_c(.type == "Failed" and .status == "True")) | .metadata.name' <<<"${json}")
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      rm -f "${errfile}"
+      log "ERROR: the Rook cleanup Jobs in rook-ceph are not done after ${TEARDOWN_TIMEOUT}s:"
+      local line
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && log "         ${line}"
+      done <<<"${left}"
+      log "       They empty /var/lib/rook on every node that ran a Ceph daemon; read 'kubectl -n rook-ceph logs job/<name>' and 'kubectl -n rook-ceph logs deploy/rook-ceph-operator' before rerunning."
+      if [[ "${left}" == *" cleanup Jobs created" ]]; then
+        log "       A rerun waits for the same ${nodes} Jobs. If the operator restarted since it removed the CephCluster, or its log shows the cleanup ended without them, none will come: empty /var/lib/rook by hand on each node without a Job (the node probe shows it under '== rook'), then run 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' before rerunning."
+      fi
       exit 1
     fi
     sleep 5
@@ -657,6 +738,143 @@ teardown_nfs() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_ceph — The end of step 2 of teardown_external_cluster, after
+# teardown_nfs: remove the lab Ceph of the overlay's ceph/ and ceph/cluster/,
+# which hack/deploy-infra.sh applies under WITH_CEPH=true. It runs while the
+# rook-ceph-operator, ESO, cert-manager and the helm-controller still run (step
+# 3 removes the first three, step 5 the last). A no-op unless
+# ${OVERLAY_ROOT}/ceph/cluster/kustomization.yaml exists.
+#   1. render ceph/cluster/; a render that fails exits 1 before any delete;
+#   2. while the CRD cephclusters.ceph.rook.io exists and the CephCluster
+#      rook-ceph answers: read the nodes its daemons run on, save their
+#      number on the namespace rook-ceph as the annotation
+#      teardown.c5c3.io/ceph-nodes, set
+#      spec.cleanupPolicy.confirmation, which the manifest never carries
+#      because Rook refuses spec changes once it is set, and mark the
+#      CephCluster for deletion without waiting. Rook's pool and client
+#      controllers count a CephCluster marked for deletion under that policy
+#      as gone and release their CRs without a Ceph command, so neither a
+#      Ceph without mon quorum nor a pool that holds RBD images blocks them.
+#      A read that fails exits 1 before the patch;
+#   3. that render without its CephCluster: the clients, the pools, the
+#      toolbox and both halves of the key hand-off. The ExternalSecrets take
+#      the Secrets ceph-client-cinder and ceph-client-cinder-backup in
+#      openstack with them (creationPolicy Owner); the PushSecrets leave the
+#      values in OpenBao (deletionPolicy None), which go with OpenBao's
+#      volumes in step 4. Then, in the branch of 2, the wait for the
+#      CephCluster, which Rook deletes once no other Rook CR in its namespace
+#      references it. The operator clears its finalizer, and those of the
+#      Secret rook-ceph-mon and the ConfigMap rook-ceph-mon-endpoints; without
+#      the operator all three would hold the namespace. A delete that runs out
+#      exits 1 with the hint;
+#   4. in the branch of 2, wait_for_ceph_cleanup_jobs_done: one cleanup Job
+#      per node read in sub-step 2, which empties /var/lib/rook there. While
+#      the CRD exists and the CephCluster is gone, as on the rerun after that
+#      wait ran out, it waits for one Job per node of the annotation, or for
+#      the cleanup Jobs that exist without it. A wait that passes removes the
+#      annotation. A read of the annotation that fails, or an annotation that
+#      is not a decimal count, exits 1;
+#   5. the claims in rook-ceph, the mon's and the OSDs'. Garbage collection
+#      reaps them with the CephCluster; the delete makes the wait explicit.
+#      Where the default class reclaims with Delete, the volumes go too;
+#   6. the render of ceph/ without its Namespace: the HelmRelease rook-ceph,
+#      whose finalizer has the helm-controller uninstall the chart, and the
+#      HelmRepository rook-release. The chart's CRDs stay (resource-policy
+#      keep) for step 8, and step 7 deletes the Namespace with the chart's
+#      cluster-scoped leftovers. A render that fails exits 1 before the delete.
+# ---------------------------------------------------------------------------
+teardown_ceph() {
+  if [[ ! -f "${OVERLAY_ROOT}/ceph/cluster/kustomization.yaml" ]]; then
+    return 0
+  fi
+
+  # 1. The render of the CephCluster and its dependents.
+  local render
+  if ! render="$(kubectl kustomize "${OVERLAY_ROOT}/ceph/cluster")"; then
+    log "ERROR: cannot render ${OVERLAY_ROOT}/ceph/cluster (kustomize's error is above)."
+    exit 1
+  fi
+
+  # 2. The CephCluster, marked for deletion under its confirmed cleanup policy.
+  # A missing kind means there is no CephCluster.
+  local has_crd=false has_cluster=false nodes=""
+  if kubectl get crd cephclusters.ceph.rook.io >/dev/null 2>&1; then
+    has_crd=true
+    local cluster
+    if ! cluster="$(kubectl get cephcluster rook-ceph -n rook-ceph --ignore-not-found -o name 2>&1)"; then
+      if [[ "${cluster}" != *"doesn't have a resource type"* ]]; then
+        log "ERROR: cannot read the CephCluster rook-ceph/rook-ceph:"
+        log "         ${cluster}"
+        exit 1
+      fi
+      cluster=""
+    fi
+    # kubectl may write warnings beside an empty answer; only the name counts.
+    if grep -qxF 'cephcluster.ceph.rook.io/rook-ceph' <<<"${cluster}"; then
+      has_cluster=true
+      local pods
+      if ! pods="$(kubectl get pods -n rook-ceph \
+        -l 'app in (rook-ceph-mon,rook-ceph-mgr,rook-ceph-osd,rook-ceph-rgw,rook-ceph-mds,rook-ceph-rbd-mirror,rook-ceph-filesystem-mirror)' \
+        -o json)" || ! nodes="$(yq -r '[.items[].spec.nodeName | select(. != null and . != "")] | unique | length' <<<"${pods}")"; then
+        log "ERROR: cannot read the nodes the Ceph daemons run on (the error is above)."
+        exit 1
+      fi
+      kubectl annotate namespace rook-ceph "teardown.c5c3.io/ceph-nodes=${nodes}" --overwrite >/dev/null
+      log "Confirming the cleanup policy of the CephCluster rook-ceph..."
+      kubectl patch cephcluster rook-ceph -n rook-ceph --type merge \
+        -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}' >/dev/null
+      log "Marking the CephCluster rook-ceph for deletion..."
+      kubectl delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait=false >/dev/null
+    fi
+  fi
+
+  # 3. The dependents of the CephCluster, then the CephCluster.
+  printf '%s\n' "${render}" |
+    yq 'select(.kind != "CephCluster")' |
+    delete_and_wait "the Ceph clients, pools, keys and toolbox" -f -
+  if [[ "${has_cluster}" == "true" ]]; then
+    if ! (delete_and_wait "the CephCluster" cephcluster rook-ceph -n rook-ceph); then
+      log "The rook-ceph-operator has to clear the CephCluster's finalizer; read 'kubectl -n rook-ceph logs deploy/rook-ceph-operator' and 'kubectl -n rook-ceph get cephcluster rook-ceph -o jsonpath={.status.conditions}'."
+      exit 1
+    fi
+    # 4. The cleanup Jobs, one per node. Once they are done the count is
+    # spent: a rerun waits for the Jobs that exist, not for this many.
+    wait_for_ceph_cleanup_jobs_done "${nodes}"
+    kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes- >/dev/null
+  elif [[ "${has_crd}" == "true" ]]; then
+    # 4. On a rerun, the cleanup Jobs counted against the nodes the previous
+    # run read. The wait compares the count arithmetically, and bash evaluates
+    # an arithmetic operand as an expression, so only a decimal count passes.
+    local saved
+    if ! saved="$(kubectl get namespace rook-ceph --ignore-not-found \
+      -o jsonpath='{.metadata.annotations.teardown\.c5c3\.io/ceph-nodes}')"; then
+      log "ERROR: cannot read the node count a previous run saved on the namespace rook-ceph (kubectl's error is above)."
+      exit 1
+    fi
+    if [[ -n "${saved}" && ! "${saved}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      log "ERROR: the annotation teardown.c5c3.io/ceph-nodes on the namespace rook-ceph is not a node count; remove it with 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' and rerun."
+      exit 1
+    fi
+    wait_for_ceph_cleanup_jobs_done ${saved:+"${saved}"}
+    if [[ -n "${saved}" ]]; then
+      kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes- >/dev/null
+    fi
+  fi
+
+  # 5. The claims of the mon and the OSDs.
+  delete_and_wait "the PVCs in rook-ceph" pvc --all -n rook-ceph
+
+  # 6. The operator overlay, its Namespace aside.
+  if ! render="$(kubectl kustomize "${OVERLAY_ROOT}/ceph")"; then
+    log "ERROR: cannot render ${OVERLAY_ROOT}/ceph (kustomize's error is above)."
+    exit 1
+  fi
+  printf '%s\n' "${render}" |
+    yq 'select(.kind != "Namespace")' |
+    delete_and_wait "the Ceph operator overlay (HelmRelease and HelmRepository)" -f -
+}
+
+# ---------------------------------------------------------------------------
 # teardown_prometheus — Step 3 of teardown_external_cluster, after the base
 # overlay: remove kube-prometheus-stack, which hack/deploy-infra.sh applies
 # under WITH_PROMETHEUS=true, while the helm-controller still runs (step 5
@@ -749,7 +967,14 @@ teardown_dizzy() {
 #      Bound, then the overlay with that HelmRelease, while the
 #      helm-controller can still uninstall its chart, the NetworkPolicy of
 #      nfs/client-policy.yaml and the CSIDriver that release created. The
-#      modules its pods loaded stay on the nodes until they reboot;
+#      modules its pods loaded stay on the nodes until they reboot. Then, when
+#      the overlay has ceph/cluster/, the lab Ceph (teardown_ceph): the
+#      CephCluster with its cleanup policy confirmed, marked for deletion,
+#      the render of ceph/cluster/ without it (the clients, pools, keys and
+#      toolbox), the wait for the CephCluster and for the cleanup Jobs that
+#      empty /var/lib/rook on every node that ran a Ceph daemon, the claims
+#      in rook-ceph, and the render of ceph/ without its Namespace, while the
+#      helm-controller can still uninstall the chart;
 #   3. the base overlay without its Namespaces and FluxInstance, after resuming
 #      what was suspended, so the helm-controller uninstalls every chart and the
 #      Flux Kustomizations prune K-ORC and the RabbitMQ operator; the Gateway and
@@ -767,13 +992,14 @@ teardown_dizzy() {
 #      chart is uninstalled;
 #   5. the FluxInstance, so the flux-operator uninstalls the toolkit;
 #   6. the flux-system namespace and the flux-operator's cluster-scoped RBAC;
-#   7. the stack namespaces (stack_namespaces), by name, chaos-mesh and dizzy
-#      among them, then the objects of STACK_CHART_OBJECT_KINDS whose
+#   7. the stack namespaces (stack_namespaces), by name, chaos-mesh, dizzy and
+#      rook-ceph among them, then the objects of STACK_CHART_OBJECT_KINDS whose
 #      helm.toolkit.fluxcd.io/namespace label names one of them: Helm hook
 #      objects, which no uninstall removes, then the two Leases
 #      cert-manager's leader election leaves in kube-system, once no
 #      cert-manager pod is left to renew them;
-#   8. the CRDs of STACK_CRD_GROUPS, chaos-mesh.org among them.
+#   8. the CRDs of STACK_CRD_GROUPS, chaos-mesh.org and the groups of the
+#      rook-ceph chart among them.
 # It ends with the count of stack CRDs, stack namespaces and cluster-scoped
 # chart objects still present, which must all be zero. Every delete ignores
 # absence, so a second run finds nothing and exits 0; a wait that runs out
@@ -865,6 +1091,8 @@ teardown_external_cluster() {
   # The NFS stack, once Cinder no longer mounts its shares and while the
   # helm-controller still runs.
   teardown_nfs
+  # The lab Ceph, while its operator and the helm-controller still run.
+  teardown_ceph
 
   # 3. The Flux objects of the base overlay.
   resume_installed_flux_objects

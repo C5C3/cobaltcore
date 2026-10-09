@@ -105,6 +105,34 @@
 #      delete nor the render. A Job delete that runs out exits 1 with
 #      kubectl's line before any NovaCompute delete, a render that fails
 #      exits 1 before the objects' delete, and a second run exits 0.
+#   9. The lab Ceph goes at the end of step 2, after the NFS stack and before
+#      the first operator is resumed: the render of ceph/cluster/, then,
+#      while the CRD cephclusters.ceph.rook.io exists, a read of the
+#      CephCluster and of the nodes its daemons run on, their number saved on
+#      the namespace rook-ceph, the cleanup confirmation and a CephCluster
+#      delete that does not wait, then the render without its CephCluster,
+#      the wait for the CephCluster and for one finished cleanup Job per node
+#      (logged with its succeeded count), the removal of the saved number,
+#      then the claims in rook-ceph and the render of ceph/ without its
+#      Namespace. Without the CRD no CephCluster is read, patched or deleted
+#      and the two render deletes still run. With the CRD and no CephCluster,
+#      as on the rerun after a cleanup wait ran out, nothing is patched or
+#      deleted and no number is saved; the Jobs are counted against the saved
+#      number, which is removed once they are done, or without one the Jobs
+#      that exist are waited for, before the claims. Fewer Jobs than the saved
+#      number exit 1 with the way on and keep the number, a saved number that
+#      is not a decimal count exits 1 before the Jobs are read without running
+#      what it carries, and a read of that number that fails exits 1. A
+#      cleanup Job that stays active, Jobs that are never created, or a Job
+#      read that fails exit 1 after TEARDOWN_TIMEOUT before the claims; a Job
+#      created late is waited for; a failed Job is a warning. A CephCluster
+#      delete that runs out exits 1 with the finalizer hint before the
+#      claims, a CephCluster read or a read of its daemons' nodes that fails
+#      exits 1 before the patch, a ceph/cluster/ that does not render exits 1
+#      before any delete of the step, a ceph/ that does not render exits 1
+#      after the claims and before the operator's delete, an overlay without
+#      ceph/cluster/ gets no Ceph call, and step 7 and step 8 name rook-ceph
+#      and the Rook CRD groups.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -144,7 +172,13 @@ remoteclusters.chaos-mesh.org
 schedules.chaos-mesh.org
 statuschecks.chaos-mesh.org
 workflownodes.chaos-mesh.org
-workflows.chaos-mesh.org"
+workflows.chaos-mesh.org
+cephclusters.ceph.rook.io
+cephblockpools.ceph.rook.io
+cephclients.ceph.rook.io
+objectbucketclaims.objectbucket.io
+objectbuckets.objectbucket.io
+cephconnections.csi.ceph.io"
 # The arguments of step 0's label removal.
 HYPERVISOR_LABELS_REMOVED="openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
 nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle-"
@@ -261,6 +295,40 @@ ippools.crd.projectcalico.org"
 #                          (default 0)
 #   KUBECTL_SOAK_RENDER_RC non-empty: `kustomize` of dizzy-soak/ fails; it
 #                          answers soak-render.yaml otherwise
+#   KUBECTL_CEPH_CLUSTER_RENDER_RC
+#                          non-empty: `kustomize` of ceph/cluster/ fails; it
+#                          answers ceph-cluster-render.yaml otherwise
+#   KUBECTL_CEPH_RENDER_RC non-empty: `kustomize` of ceph/ fails; it answers
+#                          ceph-render.yaml otherwise
+#   KUBECTL_CEPH_CRD_ABSENT non-empty: the CRD cephclusters.ceph.rook.io does
+#                          not exist, as on a second run
+#   KUBECTL_CEPH_CLUSTER_READ_RC
+#                          non-empty: the read of the CephCluster rook-ceph
+#                          fails with Forbidden
+#   KUBECTL_CEPH_CLUSTER_GONE
+#                          non-empty: the read of the CephCluster rook-ceph
+#                          answers nothing, as on a rerun after it went
+#   KUBECTL_CEPH_PODS_RC   non-empty: the read of the Ceph daemon pods fails
+#                          with Forbidden
+#   KUBECTL_CEPH_NODES_SAVED
+#                          the node count the read of the namespace
+#                          rook-ceph's annotation teardown.c5c3.io/ceph-nodes
+#                          answers (default: none)
+#   KUBECTL_CEPH_NODES_READ_RC
+#                          non-empty: that read fails
+#   KUBECTL_CEPH_DELETE_RC exit code of the CephCluster delete that waits,
+#                          which then times out on it (default 0)
+#   KUBECTL_CEPH_JOBS_RC   non-empty: the cleanup Job read fails with
+#                          Forbidden
+#   KUBECTL_CEPH_CLEANUP_ACTIVE
+#                          non-empty: the cleanup Job read also answers the
+#                          active Job cluster-cleanup-job-node-a
+#   KUBECTL_CEPH_CLEANUP_FAILED
+#                          non-empty: the Job of lab-b failed
+#   KUBECTL_CEPH_CLEANUP_READS
+#                          a number n: the first n cleanup Job reads answer no
+#                          Job, the later ones both (the reads are counted in
+#                          job-reads beside the stub)
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
 # hvo-cc3test that a second run no longer finds. On a second run the named
 # deletes of HelmReleases and HelmRepositories fail on the missing kind. The
@@ -273,6 +341,8 @@ ippools.crd.projectcalico.org"
 # chart objects answers the three of chart-objects.txt until they are deleted;
 # afterwards, and on a second run, it answers nothing and, without
 # --ignore-not-found, writes kubectl's "No resources found" to stderr.
+# The Ceph daemon pods run on lab-a and lab-b, and the cleanup Job read
+# answers one finished Job for each.
 # A `delete -f -` records the kinds it received on stdin, and fails the way
 # kubectl does when stdin holds no object.
 make_stubs() {
@@ -307,6 +377,12 @@ schedules.chaos-mesh.org                     Namespaced   Schedule
 statuschecks.chaos-mesh.org                  Namespaced   StatusCheck
 workflownodes.chaos-mesh.org                 Namespaced   WorkflowNode
 workflows.chaos-mesh.org                     Namespaced   Workflow
+cephclusters.ceph.rook.io                    Namespaced   CephCluster
+cephblockpools.ceph.rook.io                  Namespaced   CephBlockPool
+cephclients.ceph.rook.io                     Namespaced   CephClient
+objectbucketclaims.objectbucket.io           Namespaced   ObjectBucketClaim
+objectbuckets.objectbucket.io                Cluster      ObjectBucket
+cephconnections.csi.ceph.io                  Namespaced   CephConnection
 verticalpodautoscalers.autoscaling.k8s.io    Namespaced   VerticalPodAutoscaler
 certificates.cert.gardener.cloud             Namespaced   Certificate
 ippools.crd.projectcalico.org                Cluster      IPPool
@@ -441,6 +517,81 @@ kind: User
 metadata:
   name: dizzy-soak
   namespace: openstack
+YAML
+  # What `kubectl kustomize` renders for the overlay's ceph/cluster/, one
+  # object of each kind, and for its ceph/.
+  cat >"$dir/ceph-cluster-render.yaml" <<'YAML'
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+---
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: volumes
+  namespace: rook-ceph
+---
+apiVersion: ceph.rook.io/v1
+kind: CephClient
+metadata:
+  name: cinder
+  namespace: rook-ceph
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-tools
+  namespace: rook-ceph
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-keys-push
+  namespace: rook-ceph
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ceph-keys-push-client-tls
+  namespace: rook-ceph
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: openbao-ceph-store
+  namespace: rook-ceph
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: ceph-client-cinder
+  namespace: rook-ceph
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ceph-client-cinder
+  namespace: openstack
+YAML
+  cat >"$dir/ceph-render.yaml" <<'YAML'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rook-ceph
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: rook-release
+  namespace: flux-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
 YAML
   cat >"$dir/base-render.yaml" <<'YAML'
 apiVersion: v1
@@ -720,6 +871,13 @@ case "$args" in
     fi
     cat "$dir/kustomizations.json"
     ;;
+  "get namespace rook-ceph --ignore-not-found -o jsonpath="*)
+    if [ -n "${KUBECTL_CEPH_NODES_READ_RC:-}" ]; then
+      echo 'Unable to connect to the server: dial tcp 10.128.0.1:443: i/o timeout' >&2
+      exit 1
+    fi
+    printf '%s' "${KUBECTL_CEPH_NODES_SAVED:-}"
+    ;;
   "get namespace "*)
     if [ -n "${KUBECTL_NS_RC:-}" ]; then
       echo 'Unable to connect to the server: dial tcp 10.128.0.1:443: i/o timeout' >&2
@@ -755,6 +913,63 @@ case "$args" in
       exit 1
     fi
     cat "$dir/soak-render.yaml"
+    ;;
+  "kustomize "*"/ceph/cluster")
+    if [ -n "${KUBECTL_CEPH_CLUSTER_RENDER_RC:-}" ]; then
+      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'cluster.yaml'"'"': open cluster.yaml: no such file or directory' >&2
+      exit 1
+    fi
+    cat "$dir/ceph-cluster-render.yaml"
+    ;;
+  "kustomize "*"/ceph")
+    if [ -n "${KUBECTL_CEPH_RENDER_RC:-}" ]; then
+      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'release.yaml'"'"': open release.yaml: no such file or directory' >&2
+      exit 1
+    fi
+    cat "$dir/ceph-render.yaml"
+    ;;
+  "get crd cephclusters.ceph.rook.io"*)
+    if [ -n "${KUBECTL_SECOND_RUN:-}" ] || [ -n "${KUBECTL_CEPH_CRD_ABSENT:-}" ]; then
+      echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "cephclusters.ceph.rook.io" not found' >&2
+      exit 1
+    fi
+    ;;
+  "get cephcluster rook-ceph -n rook-ceph"*)
+    if [ -n "${KUBECTL_CEPH_CLUSTER_READ_RC:-}" ]; then
+      echo 'Error from server (Forbidden): cephclusters.ceph.rook.io "rook-ceph" is forbidden: User "lab" cannot get resource "cephclusters" in API group "ceph.rook.io" in the namespace "rook-ceph"' >&2
+      exit 1
+    fi
+    if [ -z "${KUBECTL_CEPH_CLUSTER_GONE:-}" ]; then
+      echo 'cephcluster.ceph.rook.io/rook-ceph'
+    fi
+    ;;
+  "get pods -n rook-ceph -l "*)
+    if [ -n "${KUBECTL_CEPH_PODS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): pods is forbidden: User "lab" cannot list resource "pods" in API group "" in the namespace "rook-ceph"' >&2
+      exit 1
+    fi
+    echo '{"items":[{"spec":{"nodeName":"lab-a"}},{"spec":{"nodeName":"lab-a"}},{"spec":{"nodeName":"lab-b"}},{"spec":{}}]}'
+    ;;
+  "get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json")
+    if [ -n "${KUBECTL_CEPH_JOBS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): jobs.batch is forbidden: User "lab" cannot list resource "jobs" in API group "batch" in the namespace "rook-ceph"' >&2
+      exit 1
+    fi
+    reads=$(( $(cat "$dir/job-reads" 2>/dev/null || echo 0) + 1 ))
+    echo "$reads" >"$dir/job-reads"
+    if [ -n "${KUBECTL_CEPH_CLEANUP_READS:-}" ] && [ "$reads" -le "$KUBECTL_CEPH_CLEANUP_READS" ]; then
+      echo '{"items":[]}'
+      exit 0
+    fi
+    last='{"type":"Complete","status":"True"}'
+    succeeded=1
+    if [ -n "${KUBECTL_CEPH_CLEANUP_FAILED:-}" ]; then last='{"type":"Failed","status":"True"}'; succeeded=0; fi
+    items="{\"metadata\":{\"name\":\"cluster-cleanup-job-lab-a\"},\"status\":{\"succeeded\":1,\"conditions\":[{\"type\":\"Complete\",\"status\":\"True\"}]}},"
+    items="${items}{\"metadata\":{\"name\":\"cluster-cleanup-job-lab-b\"},\"status\":{\"succeeded\":${succeeded},\"conditions\":[${last}]}}"
+    if [ -n "${KUBECTL_CEPH_CLEANUP_ACTIVE:-}" ]; then
+      items="${items},{\"metadata\":{\"name\":\"cluster-cleanup-job-node-a\"},\"status\":{\"active\":1}}"
+    fi
+    printf '{"items":[%s]}\n' "$items"
     ;;
   "kustomize "*)
     if [ -n "${KUBECTL_RENDER_RC:-}" ]; then
@@ -805,6 +1020,12 @@ case "$args" in
         if [ "${KUBECTL_KUBELET_SERVICE_DELETE_RC:-0}" != "0" ]; then
           echo 'Error from server (Forbidden): services "kube-prometheus-stack-kubelet" is forbidden: User "lab" cannot delete resource "services" in API group "" in the namespace "kube-system"' >&2
           exit "${KUBECTL_KUBELET_SERVICE_DELETE_RC}"
+        fi
+        ;;
+      "delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait --timeout="*)
+        if [ "${KUBECTL_CEPH_DELETE_RC:-0}" != "0" ]; then
+          echo "error: timed out waiting for the condition on cephclusters/rook-ceph" >&2
+          exit "${KUBECTL_CEPH_DELETE_RC}"
         fi
         ;;
       "delete jobs.batch/dizzy-soak "*)
@@ -902,6 +1123,7 @@ mutations() {
       -e "s# --type merge -p {\"spec\":{\"suspend\":false}}##" \
       -e "s# --type merge -p {\"spec\":{\"deletionPolicy\":\"DeletePVCs\"}}##" \
       -e "s# --type merge -p {\"spec\":{\"resource\":{\"enabled\":false}}}##" \
+      -e "s# --type merge -p {\"spec\":{\"cleanupPolicy\":{\"confirmation\":\"yes-really-destroy-data\"}}}##" \
       -e "s#${PROJECT_ROOT}/##g"
 }
 
@@ -911,11 +1133,11 @@ have_yq() {
 
 # stack_namespace_names — the Namespaces of deploy/flux-system/namespaces.yaml,
 # space-separated, then the two the kind base declares and the ones of the
-# Chaos Mesh and dizzy overlays.
+# Chaos Mesh, dizzy and Ceph overlays.
 stack_namespace_names() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
     "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" | tr '\n' ' '
-  printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh dizzy'
+  printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh dizzy rook-ceph'
 }
 
 # ---------------------------------------------------------------------------
@@ -1016,6 +1238,16 @@ test_external_teardown_order() {
     'kubectl delete -k deploy/lab/metal-stack/nfs' \
     'kubectl delete -f deploy/lab/metal-stack/nfs/client-policy.yaml' \
     'kubectl delete csidriver -l helm.toolkit.fluxcd.io/name=csi-driver-nfs,helm.toolkit.fluxcd.io/namespace=kube-system' \
+    'kubectl kustomize deploy/lab/metal-stack/ceph/cluster' \
+    'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes=2 --overwrite' \
+    'kubectl patch cephcluster rook-ceph -n rook-ceph' \
+    'kubectl delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait=false' \
+    'kubectl delete -f - [kinds: CephBlockPool CephClient Certificate Deployment ExternalSecret PushSecret SecretStore ServiceAccount]' \
+    'kubectl delete cephcluster rook-ceph -n rook-ceph' \
+    'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' \
+    'kubectl delete pvc --all -n rook-ceph' \
+    'kubectl kustomize deploy/lab/metal-stack/ceph' \
+    'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl patch helmrelease c5c3-operator -n c5c3-system' \
     'kubectl patch kustomization k-orc -n flux-system' \
     'kubectl kustomize deploy/lab/metal-stack/base' \
@@ -1087,7 +1319,8 @@ test_external_teardown_order() {
     cut -d' ' -f3 | tr ',' '\n' | sort)"
   assert_eq "the one read names every namespaced stack kind and nothing else" \
     "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
-      -e 'evictions.kvm.cloud.sap' -e 'remoteclusters.chaos-mesh.org' <<<"$STACK_CRDS" | sort)" "$read_kinds"
+      -e 'evictions.kvm.cloud.sap' -e 'remoteclusters.chaos-mesh.org' -e 'objectbuckets.objectbucket.io' \
+      <<<"$STACK_CRDS" | sort)" "$read_kinds"
 
   # The NFS stack goes after that wait, once no pod mounts a share through its
   # node plugin, which the HelmRelease csi-driver-nfs installed. Neither pod of
@@ -1131,8 +1364,11 @@ test_external_teardown_order() {
   deletes="$(grep -E '^kubectl delete ' "$CALL_LOG")"
   without_flag="$(grep -v -e '--ignore-not-found' <<<"$deletes" || true)"
   assert_eq "every delete carries --ignore-not-found" "" "$without_flag"
-  assert_eq "every delete waits, bounded by TEARDOWN_TIMEOUT" "" \
-    "$(grep -v -e '--wait --timeout=600s' <<<"$deletes" || true)"
+  # The one delete that does not wait marks the CephCluster for deletion
+  # before its dependents go; a delete that waits for it follows them.
+  assert_eq "every delete but the CephCluster's mark waits, bounded by TEARDOWN_TIMEOUT" "" \
+    "$(grep -v -e '--wait --timeout=600s' \
+      -e '^kubectl delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait=false$' <<<"$deletes" || true)"
 
   local crd_line crd_args
   crd_line="$(grep -E '^kubectl delete customresourcedefinition' "$CALL_LOG")"
@@ -2008,6 +2244,346 @@ test_dizzy_soak_step() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7b2: the lab Ceph, at the end of step 2
+# ---------------------------------------------------------------------------
+test_ceph_step() {
+  echo "Test: the Ceph step marks the CephCluster for deletion under its cleanup policy, deletes its dependents, waits for it and its cleanup, then deletes the claims and the operator"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (114 checks skipped)"
+    SKIP=$((SKIP + 114))
+    return
+  fi
+
+  local tmp output rc calls flags deps operator
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  flags='--ignore-not-found --wait --timeout=600s'
+  deps="kubectl delete -f - $flags [kinds: CephBlockPool CephClient Certificate Deployment ExternalSecret PushSecret SecretStore ServiceAccount]"
+  operator="kubectl delete -f - $flags [kinds: HelmRelease HelmRepository]"
+
+  # line <pattern> — the first line of the call log matching the fixed string.
+  line() {
+    grep -nF -- "$1" "$CALL_LOG" | cut -d: -f1 | head -n1
+  }
+  # in_order <line>... — true when every line is set and each is above the next.
+  in_order() {
+    local prev="" l
+    for l in "$@"; do
+      [[ -n "$l" ]] || { echo false; return; }
+      if [[ -n "$prev" && "$prev" -ge "$l" ]]; then echo false; return; fi
+      prev="$l"
+    done
+    echo true
+  }
+
+  # The default overlay carries ceph/ and ceph/cluster/.
+  : >"$CALL_LOG"
+  rm -f "$tmp/bin/job-reads"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "the teardown exits 0" "0" "$rc"
+  local csidriver render deps_line crd_read cluster_read pods_read annotate patch mark delete jobs unannotate pvc render_op op_line resume
+  csidriver="$(line 'kubectl delete csidriver -l helm.toolkit.fluxcd.io/name=csi-driver-nfs')"
+  render="$(line "kubectl kustomize $PROJECT_ROOT/deploy/lab/metal-stack/ceph/cluster")"
+  deps_line="$(grep -nxF "$deps" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  crd_read="$(line 'kubectl get crd cephclusters.ceph.rook.io')"
+  cluster_read="$(line 'kubectl get cephcluster rook-ceph -n rook-ceph --ignore-not-found -o name')"
+  pods_read="$(line 'kubectl get pods -n rook-ceph -l app in (rook-ceph-mon,rook-ceph-mgr,rook-ceph-osd,')"
+  annotate="$(line 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes=2 --overwrite')"
+  patch="$(line 'kubectl patch cephcluster rook-ceph -n rook-ceph --type merge -p {"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}')"
+  mark="$(line 'kubectl delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait=false')"
+  delete="$(line "kubectl delete cephcluster rook-ceph -n rook-ceph $flags")"
+  jobs="$(line 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json')"
+  unannotate="$(line 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-')"
+  pvc="$(line "kubectl delete pvc --all -n rook-ceph $flags")"
+  render_op="$(grep -nx "kubectl kustomize .*/deploy/lab/metal-stack/ceph" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  # The first of two: the base overlay's HelmReleases follow in step 3.
+  op_line="$(grep -nxF "$operator" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  resume="$(line 'kubectl patch helmrelease c5c3-operator')"
+  assert_eq "ceph/cluster/ is rendered after the NFS stack" "$(in_order "$csidriver" "$render")" "true"
+  assert_eq "its render without the CephCluster is deleted once, ignoring absence and waiting" "1" \
+    "$(grep -cxF "$deps" "$CALL_LOG")"
+  assert_eq "then the CRD and the CephCluster are read" "true" "$(in_order "$render" "$crd_read" "$cluster_read")"
+  assert_eq "then the nodes of its daemons, before the confirmation" "true" "$(in_order "$cluster_read" "$pods_read" "$patch")"
+  # A rerun that finds the CephCluster gone counts the cleanup Jobs against it.
+  assert_eq "their number is saved on the namespace in between" "true" "$(in_order "$pods_read" "$annotate" "$patch")"
+  assert_eq "the cleanup policy is confirmed before the CephCluster is marked for deletion" "true" "$(in_order "$patch" "$mark")"
+  # Rook releases a pool or a client without a Ceph command only while its
+  # CephCluster is marked for deletion under a destructive cleanup policy.
+  assert_eq "which comes before its dependents are deleted" "true" "$(in_order "$mark" "$deps_line")"
+  assert_eq "the CephCluster delete is waited for once they are gone" "true" "$(in_order "$deps_line" "$delete")"
+  assert_eq "the cleanup Jobs are read after the delete" "true" "$(in_order "$delete" "$jobs")"
+  assert_eq "and the finished Jobs end the wait on the first read" "1" \
+    "$(grep -cxF 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json' "$CALL_LOG")"
+  # A rerun must not wait for Jobs this run saw done.
+  assert_eq "the saved count is removed once they are done, before the claims" "true" \
+    "$(in_order "$jobs" "$unannotate" "$pvc")"
+  assert_eq "the claims go after the Jobs, then ceph/ is rendered and deleted without its Namespace" "true" \
+    "$(in_order "$jobs" "$pvc" "$render_op" "$op_line")"
+  assert_eq "all before the first operator is resumed" "true" "$(in_order "$op_line" "$resume")"
+  assert_contains "each cleanup Job is logged with its succeeded count" "$output" "  cluster-cleanup-job-lab-a: succeeded: 1"
+  assert_contains "the other one too" "$output" "  cluster-cleanup-job-lab-b: succeeded: 1"
+  assert_contains "the wait names the two nodes the daemons ran on" "$output" \
+    "Waiting for the Rook cleanup Jobs in rook-ceph, one for each of the 2 nodes that ran a Ceph daemon..."
+  assert_contains "step 7 deletes rook-ceph" "$calls" "kubectl delete namespace $(stack_namespace_names) "
+  assert_contains "step 8 deletes the Rook CRDs" "$(grep '^kubectl delete customresourcedefinition' "$CALL_LOG")" \
+    "customresourcedefinition.apiextensions.k8s.io/cephclusters.ceph.rook.io"
+  assert_contains "the objectbucket.io CRDs the chart keeps" "$(grep '^kubectl delete customresourcedefinition' "$CALL_LOG")" \
+    "customresourcedefinition.apiextensions.k8s.io/objectbuckets.objectbucket.io"
+  assert_contains "and those of the CSI operator" "$(grep '^kubectl delete customresourcedefinition' "$CALL_LOG")" \
+    "customresourcedefinition.apiextensions.k8s.io/cephconnections.csi.ceph.io"
+
+  # Without the CephCluster CRD: no CephCluster call, both render deletes.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CRD_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cluster without the CephCluster CRD tears down" "0" "$rc"
+  assert_not_contains "without reading the CephCluster" "$calls" "get cephcluster"
+  assert_not_contains "patching it" "$calls" "patch cephcluster"
+  assert_not_contains "deleting it" "$calls" "delete cephcluster"
+  assert_not_contains "or waiting for cleanup Jobs" "$calls" "rook-ceph-cleanup"
+  assert_contains "the dependents' render delete still runs" "$calls" "$deps"
+  assert_contains "and the operator's" "$calls" "$operator"
+
+  # A cleanup Job that stays active: exit 1 naming it, before the claims.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CEPH_CLEANUP_ACTIVE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cleanup Job that stays active exits 1" "1" "$rc"
+  assert_contains "the error says the Jobs are not done" "$output" \
+    "ERROR: the Rook cleanup Jobs in rook-ceph are not done after 1s:"
+  assert_contains "and names the active Job" "$output" "         cluster-cleanup-job-node-a"
+  assert_not_contains "not the finished ones" "$output" "         cluster-cleanup-job-lab-a"
+  assert_contains "and says what the Jobs do" "$output" "They empty /var/lib/rook on every node that ran a Ceph daemon"
+  assert_not_contains "every Job is created, so no hint for missing ones" "$output" "teardown.c5c3.io/ceph-nodes-"
+  assert_not_contains "the claims in rook-ceph are not deleted" "$calls" "delete pvc --all -n rook-ceph"
+  assert_not_contains "nor the operator" "$calls" "[kinds: HelmRelease HelmRepository]"
+
+  # Jobs that are never created: the CephCluster delete returns before Rook
+  # starts them, so an empty answer is not done.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CEPH_CLEANUP_READS=1000)"
+  rc=$?
+  assert_eq "cleanup Jobs that are never created exit 1" "1" "$rc"
+  assert_contains "naming how many exist" "$output" "         0 of 2 cleanup Jobs created"
+  assert_not_contains "before the claims" "$(cat "$CALL_LOG")" "delete pvc --all -n rook-ceph"
+  assert_not_contains "the saved count stays for the rerun" "$(cat "$CALL_LOG")" \
+    "kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-"
+
+  # Jobs created after the first read are waited for.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=30 KUBECTL_CEPH_CLEANUP_READS=1)"
+  rc=$?
+  assert_eq "cleanup Jobs created during the wait let the teardown go on" "0" "$rc"
+  assert_eq "after a second Job read" "2" \
+    "$(grep -cxF 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json' "$CALL_LOG")"
+
+  # A failed cleanup Job is a warning, not an abort.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLEANUP_FAILED=1)"
+  rc=$?
+  assert_eq "a failed cleanup Job does not stop the teardown" "0" "$rc"
+  assert_contains "it is logged with no success" "$output" "  cluster-cleanup-job-lab-b: succeeded: 0"
+  assert_contains "and named in a warning" "$output" \
+    "WARNING: the Rook cleanup Job cluster-cleanup-job-lab-b failed; /var/lib/rook may remain on its node."
+
+  # A CephCluster delete that runs out: exit 1 with the finalizer hint.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a CephCluster delete that runs out exits 1" "1" "$rc"
+  assert_contains "with kubectl's line" "$output" "error: timed out waiting for the condition on cephclusters/rook-ceph"
+  assert_contains "and the finalizer hint" "$output" \
+    "The rook-ceph-operator has to clear the CephCluster's finalizer; read 'kubectl -n rook-ceph logs deploy/rook-ceph-operator' and 'kubectl -n rook-ceph get cephcluster rook-ceph -o jsonpath={.status.conditions}'."
+  assert_not_contains "no cleanup Job is waited for" "$calls" "rook-ceph-cleanup"
+  assert_not_contains "and the claims are not deleted" "$calls" "delete pvc --all -n rook-ceph"
+
+  # A CephCluster read that fails: exit 1 before the confirmation.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_READ_RC=1)"
+  rc=$?
+  assert_eq "a CephCluster read that fails exits 1" "1" "$rc"
+  assert_contains "naming kubectl's error" "$output" \
+    "ERROR: cannot read the CephCluster rook-ceph/rook-ceph:"
+  assert_not_contains "before the confirmation" "$(cat "$CALL_LOG")" "patch cephcluster"
+  assert_not_contains "and before any dependent is deleted" "$(cat "$CALL_LOG")" "[kinds: CephBlockPool"
+
+  # A read of the daemons' nodes that fails: exit 1 before the confirmation.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_PODS_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a read of the Ceph daemon pods that fails exits 1" "1" "$rc"
+  assert_contains "says what it could not read" "$output" \
+    "ERROR: cannot read the nodes the Ceph daemons run on (the error is above)."
+  assert_contains "after kubectl's error" "$output" 'pods is forbidden: User "lab" cannot list resource "pods"'
+  assert_not_contains "before the confirmation" "$calls" "patch cephcluster"
+  assert_not_contains "and before the CephCluster delete" "$calls" "delete cephcluster"
+
+  # The rerun after a cleanup wait ran out: the CRD is left, the CephCluster
+  # is gone, and the Jobs it left are waited for before the claims.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_GONE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a rerun without the CephCluster tears down" "0" "$rc"
+  assert_not_contains "without reading its daemons' nodes" "$calls" "get pods -n rook-ceph"
+  assert_not_contains "patching it" "$calls" "patch cephcluster"
+  assert_not_contains "or deleting it" "$calls" "delete cephcluster"
+  assert_eq "the cleanup Jobs that exist are read before the claims are deleted" "true" \
+    "$(in_order "$(line 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json')" "$(line "kubectl delete pvc --all -n rook-ceph $flags")")"
+  assert_contains "the wait says it waits for the Jobs a previous run left" "$output" \
+    "Waiting for the Rook cleanup Jobs a previous run left in rook-ceph..."
+  assert_contains "and logs each one" "$output" "  cluster-cleanup-job-lab-b: succeeded: 1"
+  assert_not_contains "it saves no node count" "$calls" "kubectl annotate namespace"
+
+  # The rerun after a run that saved its node count and Rook created no
+  # cleanup Job: an empty answer is not done, and the error names the way on.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CEPH_CLUSTER_GONE=1 \
+    KUBECTL_CEPH_NODES_SAVED=2 KUBECTL_CEPH_CLEANUP_READS=1000)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a rerun that finds fewer cleanup Jobs than the saved count exits 1" "1" "$rc"
+  assert_contains "it waits for one Job per node the first run read" "$output" \
+    "Waiting for the Rook cleanup Jobs in rook-ceph, one for each of the 2 nodes that ran a Ceph daemon..."
+  assert_contains "naming how many exist" "$output" "         0 of 2 cleanup Jobs created"
+  assert_contains "and how to go on once the operator will not create them" "$output" \
+    "then run 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' before rerunning."
+  assert_not_contains "before the claims" "$calls" "delete pvc --all -n rook-ceph"
+  assert_not_contains "and before the operator" "$calls" "[kinds: HelmRelease HelmRepository]"
+  assert_not_contains "the saved count stays for the next rerun" "$calls" \
+    "kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-"
+
+  # The rerun once Rook has created a cleanup Job per saved node: the count is
+  # spent and removed before the claims.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_GONE=1 KUBECTL_CEPH_NODES_SAVED=2)"
+  rc=$?
+  assert_eq "a rerun that finds a finished Job per saved node tears down" "0" "$rc"
+  assert_eq "and removes the saved count between the Job read and the claims" "true" \
+    "$(in_order "$(line 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json')" \
+      "$(line 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-')" \
+      "$(line "kubectl delete pvc --all -n rook-ceph $flags")")"
+
+  # A saved count that is not a decimal count: exit 1 before the wait, which
+  # compares it arithmetically, where bash runs the command substitution in
+  # the subscript of a set variable and reads an unknown word as an unset one.
+  local saved
+  # shellcheck disable=SC2016 # the command substitution is the annotation's value, unexpanded
+  for saved in 'PATH[$(touch '"$tmp"'/ran)]' two 08; do
+    rm -f "$tmp/bin/job-reads"
+    : >"$CALL_LOG"
+    output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_GONE=1 "KUBECTL_CEPH_NODES_SAVED=$saved")"
+    rc=$?
+    assert_eq "a saved count of '$saved' exits 1" "1" "$rc"
+    assert_contains "naming the annotation and how to remove it" "$output" \
+      "ERROR: the annotation teardown.c5c3.io/ceph-nodes on the namespace rook-ceph is not a node count; remove it with 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' and rerun."
+    assert_not_contains "before the cleanup Jobs are read" "$(cat "$CALL_LOG")" "rook-ceph-cleanup"
+  done
+  assert_eq "the command in the annotation never runs" "false" "$([[ -e "$tmp/ran" ]] && echo true || echo false)"
+
+  # A rerun whose read of the saved node count fails: exit 1 before the wait.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_GONE=1 KUBECTL_CEPH_NODES_READ_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a read of the saved node count that fails exits 1" "1" "$rc"
+  assert_contains "says what it could not read" "$output" \
+    "ERROR: cannot read the node count a previous run saved on the namespace rook-ceph (kubectl's error is above)."
+  assert_not_contains "before the cleanup Jobs are read" "$calls" "rook-ceph-cleanup"
+  assert_not_contains "and before the claims" "$calls" "delete pvc --all -n rook-ceph"
+
+  # The same rerun with a cleanup Job that stays active: exit 1 before the
+  # claims.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CEPH_CLUSTER_GONE=1 \
+    KUBECTL_CEPH_CLEANUP_ACTIVE=1)"
+  rc=$?
+  assert_eq "a rerun with a cleanup Job that stays active exits 1" "1" "$rc"
+  assert_contains "naming the active Job" "$output" "         cluster-cleanup-job-node-a"
+  assert_not_contains "before the claims" "$(cat "$CALL_LOG")" "delete pvc --all -n rook-ceph"
+
+  # A cleanup Job read that fails until the wait runs out: exit 1 with
+  # kubectl's line, before the claims.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=1 KUBECTL_CEPH_JOBS_RC=1)"
+  rc=$?
+  assert_eq "a cleanup Job read that keeps failing exits 1" "1" "$rc"
+  assert_contains "naming kubectl's error" "$output" \
+    '         cannot read them: Error from server (Forbidden): jobs.batch is forbidden: User "lab" cannot list resource "jobs" in API group "batch" in the namespace "rook-ceph"'
+  assert_not_contains "before the claims" "$(cat "$CALL_LOG")" "delete pvc --all -n rook-ceph"
+
+  # ceph/cluster/ does not render: exit 1 before any delete of the step.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_CLUSTER_RENDER_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a ceph/cluster/ that does not render exits 1" "1" "$rc"
+  assert_contains "says which overlay cannot be rendered" "$output" \
+    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/ceph/cluster (kustomize's error is above)."
+  assert_not_contains "no dependent is deleted" "$calls" "[kinds: CephBlockPool"
+  assert_not_contains "nor the CephCluster" "$calls" "delete cephcluster"
+  assert_not_contains "nor a claim in rook-ceph" "$calls" "-n rook-ceph"
+
+  # ceph/ does not render: exit 1 after the claims, before the operator's
+  # delete.
+  rm -f "$tmp/bin/job-reads"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CEPH_RENDER_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a ceph/ that does not render exits 1" "1" "$rc"
+  assert_contains "says which overlay cannot be rendered" "$output" \
+    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/ceph (kustomize's error is above)."
+  assert_contains "after the claims in rook-ceph" "$calls" "kubectl delete pvc --all -n rook-ceph"
+  assert_not_contains "and before the operator's HelmRelease is deleted" "$calls" "[kinds: HelmRelease HelmRepository]"
+
+  # An overlay without ceph/cluster/: no Ceph call at all.
+  mkdir -p "$tmp/no-ceph/base" "$tmp/no-ceph/infrastructure"
+  : >"$tmp/no-ceph/base/kustomization.yaml"
+  : >"$tmp/no-ceph/infrastructure/kustomization.yaml"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-ceph")"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an overlay without ceph/cluster/ tears down" "0" "$rc"
+  assert_not_contains "without a Ceph render" "$calls" "kustomize $tmp/no-ceph/ceph"
+  assert_not_contains "without a CRD read of the step" "$calls" "get crd cephclusters.ceph.rook.io"
+  assert_not_contains "without a CephCluster read" "$calls" "get cephcluster rook-ceph"
+  assert_not_contains "and without a delete in rook-ceph" "$calls" "-n rook-ceph"
+
+  # A second run: the Ceph CRDs are gone.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_not_contains "without a CephCluster read" "$calls" "get cephcluster"
+  assert_contains "its claim delete passes" "$calls" "kubectl delete pvc --all -n rook-ceph"
+  assert_not_contains "and it prints no 'No resources found'" "$output" "No resources found"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Test 7c: kube-prometheus-stack and what its uninstall leaves, in step 3
 # ---------------------------------------------------------------------------
 test_prometheus_step() {
@@ -2183,6 +2759,7 @@ test_hypervisor_step_zero
 test_chaos_mesh_step
 test_dizzy_step
 test_dizzy_soak_step
+test_ceph_step
 test_prometheus_step
 test_requires_yq
 test_requires_mikefarah_yq
