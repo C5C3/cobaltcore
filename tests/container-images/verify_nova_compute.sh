@@ -5,14 +5,14 @@
 
 # Verify nova-compute container image meets requirements
 # Usage: bash tests/container-images/verify_nova_compute.sh [image_name]
-# Default image: c5c3/nova-compute:32.0.0
+# Default image: c5c3/nova-compute:33.0.0
 # Optional env: NOVA_COMPUTE_RELEASE, the image's release (CI sets it from
 #   matrix.release); unset, test 2 finds the release from nova's version
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/nova-compute:32.0.0}"
+IMAGE="${1:-c5c3/nova-compute:33.0.0}"
 
 PASS=0
 FAIL=0

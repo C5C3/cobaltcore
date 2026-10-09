@@ -5,12 +5,12 @@
 
 # Verify nova container image meets requirements
 # Usage: bash tests/container-images/verify_nova.sh [image_name]
-# Default image: c5c3/nova:32.0.0
+# Default image: c5c3/nova:33.0.0
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/nova:32.0.0}"
+IMAGE="${1:-c5c3/nova:33.0.0}"
 
 PASS=0
 FAIL=0
