@@ -343,6 +343,106 @@ func TestKORCAuthURL_PlacedKeystoneIsReachedPublicly(t *testing.T) {
 	})
 }
 
+// --- the KeystoneUser document ---
+
+// TestBuildUserCloudsYAML pins the document a KeystoneUser order delivers: the
+// service-account document without the two project keys, so the ordered user
+// authenticates unscoped, under the same quoted cloud key and with the auth_url
+// of the cluster the order lives on.
+func TestBuildUserCloudsYAML(t *testing.T) {
+	t.Run("managed golden carries no project keys", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := korcControlPlane()
+
+		rendered := buildUserCloudsYAML(cp, "workflow", "Default", "pw", nil)
+
+		g.Expect(rendered).To(Equal(`clouds:
+  "admin":
+    auth:
+      auth_url: "http://cp-keystone.default.svc:5000/v3"
+      username: "workflow"
+      password: "pw"
+      user_domain_name: "Default"
+    region_name: "RegionOne"
+    endpoint_type: internal
+    identity_api_version: 3
+`))
+		g.Expect(rendered).NotTo(ContainSubstring("project_name"))
+		g.Expect(rendered).NotTo(ContainSubstring("project_domain_name"))
+	})
+
+	t.Run("the cloud key cannot escape its mapping key", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := korcExternalControlPlane()
+		cloudName := "admin\"\n  evil:\n    auth:\n      auth_url: \"http://attacker.example.com"
+		cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName = cloudName
+
+		clouds := parseCloudsYAML(g, buildUserCloudsYAML(cp, "workflow", "Default", "pw", nil))
+
+		g.Expect(clouds).To(HaveLen(1), "cloudName must not inject a second cloud entry")
+		g.Expect(clouds).To(HaveKey(cloudName))
+		g.Expect(clouds[cloudName].Auth.AuthURL).To(Equal("https://keystone.example.com/v3"))
+	})
+
+	edge1 := &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	cases := []struct {
+		name string
+		cp   func() *c5c3v1alpha1.ControlPlane
+		ref  *commonv1.TargetClusterRefSpec
+		want string
+	}{
+		{
+			name: "management cluster beside an unplaced keystone",
+			cp:   korcControlPlane,
+			want: "http://cp-keystone.default.svc:5000/v3",
+		},
+		{
+			name: "another cluster gets the public endpoint",
+			cp: func() *c5c3v1alpha1.ControlPlane {
+				cp := korcControlPlane()
+				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.test/v3"
+				return cp
+			},
+			ref:  edge1,
+			want: "https://keystone.example.test/v3",
+		},
+		{
+			name: "another cluster without a publication gets no URL",
+			cp:   korcControlPlane,
+			ref:  edge1,
+			want: "",
+		},
+		{
+			name: "the cluster keystone is placed on keeps the in-cluster URL",
+			cp: func() *c5c3v1alpha1.ControlPlane {
+				cp := korcControlPlane()
+				cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.test/v3"
+				return cp
+			},
+			ref:  edge1,
+			want: "http://cp-keystone.default.svc:5000/v3",
+		},
+		{
+			name: "external mode carries the external authURL",
+			cp:   korcExternalControlPlane,
+			ref:  edge1,
+			want: "https://keystone.example.com/v3",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cp := tc.cp()
+
+			clouds := parseCloudsYAML(g, buildUserCloudsYAML(cp, "workflow", "Default", "pw", tc.ref))
+
+			g.Expect(clouds).To(HaveKey(korcCloudName(cp)))
+			g.Expect(clouds[korcCloudName(cp)].Auth.AuthURL).To(Equal(tc.want))
+		})
+	}
+}
+
 // --- webhook-bypass fallbacks ---
 //
 // The defaulting webhook normally materializes endpointType, cloudName and the

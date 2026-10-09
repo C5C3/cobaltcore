@@ -10,6 +10,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -617,6 +619,113 @@ func TestKSAccount_UnobservedRotationNudgeSurvivesForTheNextPass(t *testing.T) {
 		"an unobserved nudge must be left in place so the next pass rotates")
 	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)),
 		"and this pass must not rotate on a request it did not see")
+}
+
+// TestEnsureManagedAccountUser_DesiredGeneration pins the branch an owner that
+// declares its password generation takes: a fresh User starts at the declared
+// generation, an existing one moves up to it and records the rotation, a lower
+// declaration never rolls the password back, and an empty projectRef leaves the
+// User without a default project. The nudge annotation plays no part.
+func TestEnsureManagedAccountUser_DesiredGeneration(t *testing.T) {
+	const ns = "default"
+	pwName := func(gen int64) string { return fmt.Sprintf("acct-password-v%d", gen) }
+	liveUser := func(gen int64, applied string) *orcv1alpha1.User {
+		return &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "acct-user", Namespace: ns, CreationTimestamp: metav1.Now(),
+				Annotations: map[string]string{serviceAccountPasswordGenerationAnnotation: strconv.FormatInt(gen, 10)},
+			},
+			Spec: orcv1alpha1.UserSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+				Resource: &orcv1alpha1.UserResourceSpec{
+					PasswordRef: ptr.To(orcv1alpha1.KubernetesNameRef(pwName(gen))),
+				},
+			},
+			Status: orcv1alpha1.UserStatus{
+				Resource: &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: applied},
+			},
+		}
+	}
+	pwSecret := func(gen int64) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: pwName(gen), Namespace: ns},
+			Data:       map[string][]byte{serviceAccountPasswordKey: []byte("pw")},
+		}
+	}
+
+	cases := []struct {
+		name       string
+		desired    int64
+		projectRef string
+		seed       []client.Object
+		wantGen    int64
+		wantRotate bool
+		wantKeptV1 bool
+	}{
+		{name: "fresh user starts at generation 1", desired: 1, wantGen: 1, wantKeptV1: true},
+		{name: "fresh user starts at a declared generation 2 without a rotation", desired: 2, wantGen: 2},
+		{
+			name: "raising the generation rotates and keeps v1 until v2 is applied", desired: 2,
+			seed:    []client.Object{liveUser(1, pwName(1)), pwSecret(1)},
+			wantGen: 2, wantRotate: true, wantKeptV1: true,
+		},
+		{
+			name: "a lower declaration never rolls the password back", desired: 1,
+			seed:    []client.Object{liveUser(2, pwName(2)), pwSecret(1), pwSecret(2)},
+			wantGen: 2,
+		},
+		{
+			name: "an empty nudge annotation is ignored", desired: 1,
+			seed: func() []client.Object {
+				u := liveUser(1, pwName(1))
+				u.Annotations[serviceAccountPasswordGenerationAnnotation] = ""
+				return []client.Object{u, pwSecret(1)}
+			}(),
+			wantGen: 1, wantKeptV1: true,
+		},
+		{
+			name: "a project ref is kept when the owner names one", desired: 1, projectRef: "acct-project",
+			wantGen: 1, wantKeptV1: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := korcTestScheme(t)
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(tc.seed...).
+				WithStatusSubresource(&orcv1alpha1.User{}).Build()
+
+			user, gen, _, rotatedAt, err := ensureManagedAccountUser(context.Background(), c, managedAccountUserInput{
+				name: "acct-user", namespace: ns, userName: "acct",
+				domainRef: "cp-domain-default", projectRef: tc.projectRef,
+				passwordSecretNameFor: pwName,
+				ensurePasswordSecret: func(ctx context.Context, gen int64) error {
+					secret := pwSecret(gen)
+					return client.IgnoreAlreadyExists(c.Create(ctx, secret))
+				},
+				passwordSecretPrefix: "acct-password-v",
+				ownsChild:            func(client.Object) bool { return true },
+				claim:                func(client.Object) error { return nil },
+				desiredGeneration:    tc.desired,
+			})
+			g.Expect(err).NotTo(HaveOccurred())
+
+			g.Expect(gen).To(Equal(tc.wantGen))
+			g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(pwName(tc.wantGen)))
+			g.Expect(rotatedAt != nil).To(Equal(tc.wantRotate))
+			if tc.projectRef == "" {
+				g.Expect(user.Spec.Resource.DefaultProjectRef).To(BeNil())
+			} else {
+				g.Expect(string(*user.Spec.Resource.DefaultProjectRef)).To(Equal(tc.projectRef))
+			}
+			err = c.Get(context.Background(), types.NamespacedName{Name: pwName(1), Namespace: ns}, &corev1.Secret{})
+			if tc.wantKeptV1 {
+				g.Expect(err).NotTo(HaveOccurred(), "v1 stays until a later generation is applied")
+			} else if tc.wantGen > 1 && len(tc.seed) > 0 {
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a superseded v1 is pruned once v2 is applied")
+			}
+		})
+	}
 }
 
 func TestKSAccount_SupersededPasswordSecretsArePrunedOnlyOnceApplied(t *testing.T) {
