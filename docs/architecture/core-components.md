@@ -26,6 +26,9 @@ resources, and aggregates their readiness.
 | `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret |
 | `KeystoneService` | `c5c3.io/v1alpha1` | Registers one service against a ControlPlane's identity plane: catalog entry and service account, from the service's own namespace ([CRD reference](../reference/c5c3/keystoneservice-crd.md)) |
 | `KeystoneUser` | `c5c3.io/v1alpha1` | Orders one Keystone user from a namespace a ControlPlane assigns, on the management cluster or a target cluster, and delivers its credentials as a Secret beside the order ([CRD reference](../reference/c5c3/keystoneuser-crd.md)) |
+| `KeystoneProject` | `c5c3.io/v1alpha1` | Orders one Keystone project in the ControlPlane's admin domain from an assigned namespace ([CRD reference](../reference/c5c3/keystoneproject-crd.md)) |
+| `KeystoneRoleAssignment` | `c5c3.io/v1alpha1` | Orders one role, on the namespace's role allowlist, for an ordered user on an ordered project ([CRD reference](../reference/c5c3/keystoneroleassignment-crd.md)) |
+| `KeystoneCatalogEntry` | `c5c3.io/v1alpha1` | Orders one catalog entry, a service row and its endpoints, from an assigned namespace that admits catalog entries ([CRD reference](../reference/c5c3/keystonecatalogentry-crd.md)) |
 
 ## Service operators
 
