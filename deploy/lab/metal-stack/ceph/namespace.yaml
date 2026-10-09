@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Namespace of the Rook operator and of the Ceph it deploys. The lab Ceph
+# has no kind sibling, so the Namespace is declared here and nowhere else.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rook-ceph
+  labels:
+    # The mon and OSD pods mount /var/lib/rook from the host, and the OSD pods
+    # run privileged to open their raw block devices. Without this label the
+    # Pod Security admission controller of a namespace with a stricter level
+    # would refuse them.
+    pod-security.kubernetes.io/enforce: privileged
+    # The lab's rule for every namespace it declares: Gardener's
+    # kubernetes-service-host webhook leaves the pods' KUBERNETES_SERVICE_HOST
+    # alone. ../base/kustomization.yaml gives the reasons.
+    apiserver-proxy.networking.gardener.cloud/inject: disable
+  # No chaos-mesh.org/inject annotation: Ceph faults are not a lab scope, so
+  # Chaos Mesh never selects a pod here.
