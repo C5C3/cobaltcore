@@ -49,7 +49,7 @@ func trustFlushTestKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -247,7 +247,7 @@ func defaultPodTemplate() corev1.PodTemplateSpec {
 			RestartPolicy: corev1.RestartPolicyOnFailure,
 			Containers: []corev1.Container{{
 				Name:    "trust-flush",
-				Image:   "ghcr.io/c5c3/keystone:2025.2",
+				Image:   "ghcr.io/c5c3/keystone:2026.1",
 				Command: []string{"keystone-manage", "trust_flush"},
 			}},
 		},
@@ -434,7 +434,7 @@ func TestTrustFlushCronJob_Labels(t *testing.T) {
 func TestTrustFlushCronJob_Image(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
-	ks.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"}
+	ks.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"}
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
@@ -442,7 +442,7 @@ func TestTrustFlushCronJob_Image(t *testing.T) {
 	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
+	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
 }
 
 func TestTrustFlushCronJob_Volumes(t *testing.T) {

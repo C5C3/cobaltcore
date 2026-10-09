@@ -55,7 +55,7 @@ func managedKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
 				Database:   "keystone",
@@ -81,7 +81,7 @@ func brownfieldKeystone() *keystonev1alpha1.Keystone {
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
 			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -866,42 +866,42 @@ func TestIsUpgrade(t *testing.T) {
 		{
 			name:             "FreshDeployment_EmptyInstalledRelease",
 			installedRelease: "",
-			tag:              "2025.2",
+			tag:              "2026.1",
 			want:             false,
 		},
 		{
 			name:             "SameVersion",
-			installedRelease: "2025.2",
-			tag:              "2025.2",
+			installedRelease: "2026.1",
+			tag:              "2026.1",
 			want:             false,
 		},
 		{
 			name:             "PatchOnlyChange",
-			installedRelease: "2025.2",
-			tag:              "2025.2-p1",
+			installedRelease: "2026.1",
+			tag:              "2026.1-p1",
 			want:             false,
 		},
 		{
 			name:             "SequentialUpgrade",
-			installedRelease: "2025.2",
-			tag:              "2026.1",
+			installedRelease: "2026.1",
+			tag:              "2026.2",
 			want:             true,
 		},
 		{
 			name:             "SkipLevelUpgrade",
 			installedRelease: "2024.2",
-			tag:              "2026.1",
+			tag:              "2026.2",
 			want:             true,
 		},
 		{
 			name:             "UnparseableInstalledRelease",
 			installedRelease: "latest",
-			tag:              "2025.2",
+			tag:              "2026.1",
 			want:             true,
 		},
 		{
 			name:             "UnparseableTargetTag",
-			installedRelease: "2025.2",
+			installedRelease: "2026.1",
 			tag:              "latest",
 			want:             true,
 		},
@@ -922,8 +922,8 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2026.1"
-	ks.Status.InstalledRelease = "2025.2"
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Status.InstalledRelease = "2026.1"
 
 	r := newDBTestReconciler(s, ks)
 
@@ -932,7 +932,7 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Verify status fields.
-	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
 
 	// Verify condition.
@@ -940,8 +940,8 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectEvent(g, r, "Normal UpgradeInitiated")
 }
@@ -950,7 +950,7 @@ func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2026.1"
+	ks.Spec.Image.Tag = "2026.2"
 	ks.Status.InstalledRelease = "2024.2"
 
 	r := newDBTestReconciler(s, ks)
@@ -971,8 +971,8 @@ func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2025.2"
-	ks.Status.InstalledRelease = "2026.1"
+	ks.Spec.Image.Tag = "2026.1"
+	ks.Status.InstalledRelease = "2026.2"
 
 	r := newDBTestReconciler(s, ks)
 
@@ -993,7 +993,7 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
 	ks.Spec.Image.Tag = "latest"
-	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.InstalledRelease = "2026.1"
 
 	r := newDBTestReconciler(s, ks)
 
@@ -1024,7 +1024,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	g.Expect(result.RequeueAfter).To(BeZero())
 
 	// After successful db_sync, installedRelease should be set.
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -1038,8 +1038,8 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2025.2-p1"
-	ks.Status.InstalledRelease = "2025.2"
+	ks.Spec.Image.Tag = "2026.1-p1"
+	ks.Status.InstalledRelease = "2026.1"
 
 	// Build a completed db_sync job matching the patched image tag.
 	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
@@ -1061,7 +1061,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 	g.Expect(result.RequeueAfter).To(BeZero())
 
 	// Verify it used the simple db_sync path and updated installedRelease.
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2-p1"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1-p1"))
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 
 	expectEvent(g, r, "Normal DatabaseSynced")
@@ -1071,9 +1071,9 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2026.1"
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseExpanding
 
 	r := newDBTestReconciler(s, ks)
@@ -1086,8 +1086,8 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectNoEvent(g, r)
 }
@@ -1096,7 +1096,7 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := brownfieldKeystone()
-	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.InstalledRelease = "2026.1"
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
@@ -1105,7 +1105,7 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 	g.Expect(result.RequeueAfter).To(BeZero())
 
 	// Still on the simple db_sync path.
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1198,9 +1198,9 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 
 func upgradingKeystone(phase keystonev1alpha1.UpgradePhase) *keystonev1alpha1.Keystone {
 	ks := brownfieldKeystone()
-	ks.Spec.Image.Tag = "2026.1"
-	ks.Status.InstalledRelease = "2025.2"
-	ks.Status.TargetRelease = "2026.1"
+	ks.Spec.Image.Tag = "2026.2"
+	ks.Status.InstalledRelease = "2026.1"
+	ks.Status.TargetRelease = "2026.2"
 	ks.Status.UpgradePhase = phase
 	return ks
 }
@@ -1286,8 +1286,8 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonExpandInProgress))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectNoEvent(g, r)
 }
@@ -1359,8 +1359,8 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonMigrateInProgress))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectNoEvent(g, r)
 }
@@ -1386,8 +1386,8 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeRollingUpdate))
 	g.Expect(cond.Message).To(ContainSubstring("Migrate complete"))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectEvent(g, r, "Normal MigrateComplete")
 }
@@ -1431,8 +1431,8 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeRollingUpdate))
 	g.Expect(cond.Message).To(ContainSubstring("Waiting for Deployment rollout"))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectNoEvent(g, r)
 }
@@ -1458,8 +1458,8 @@ func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
 	}, &createdJob)).To(Succeed())
 	g.Expect(createdJob.Annotations).To(HaveKey(job.PodSpecHashAnnotation))
 
-	// Verify the Job uses the NEW image tag ("2026.1"), not the old one ("2025.2").
-	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.1"))
+	// Verify the Job uses the NEW image tag ("2026.2"), not the old one ("2026.1").
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.2"))
 
 	// Verify condition.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1491,8 +1491,8 @@ func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("ContractInProgress"))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectNoEvent(g, r)
 }
@@ -1513,7 +1513,7 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
 	// Verify status fields updated for upgrade completion.
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 
@@ -1523,8 +1523,8 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("upgraded"))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	expectEvent(g, r, "Normal UpgradeComplete")
 }
@@ -1569,9 +1569,9 @@ func TestReconcileContract_UsesNewImage(t *testing.T) {
 		Namespace: "default",
 	}, &createdJob)).To(Succeed())
 
-	// Contract uses the NEW image (spec.image.tag = "2026.1"), NOT the old one (installedRelease = "2025.2").
-	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.1"))
-	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).NotTo(ContainSubstring("2025.2"))
+	// Contract uses the NEW image (spec.image.tag = "2026.2"), NOT the old one (installedRelease = "2026.1").
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("2026.2"))
+	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).NotTo(ContainSubstring("2026.1"))
 }
 
 // --- Upgrade edge case tests ---
@@ -1625,31 +1625,31 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	s := dbTestScheme()
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
 
-	// Simulate: operator is upgrading 2025.2 → 2026.1, but someone changes the
-	// tag to 2026.2 mid-upgrade.
-	ks.Spec.Image.Tag = "2026.2"
+	// Simulate: operator is upgrading 2026.1 → 2026.2, but someone changes the
+	// tag to 2027.1 mid-upgrade.
+	ks.Spec.Image.Tag = "2027.1"
 
 	r := newDBTestReconciler(s, ks)
 
 	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
-	g.Expect(err.Error()).To(ContainSubstring("2026.1"))
 	g.Expect(err.Error()).To(ContainSubstring("2026.2"))
+	g.Expect(err.Error()).To(ContainSubstring("2027.1"))
 
 	// Verify condition.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonUpgradeTargetChanged))
-	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
-	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
+	g.Expect(cond.Message).To(ContainSubstring("2027.1"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
+	g.Expect(cond.Message).To(ContainSubstring("2026.2"))
 
 	// Verify upgrade state was NOT modified.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
-	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
 
 	expectEvent(g, r, "Warning UpgradeTargetChanged")
 }
@@ -1666,14 +1666,14 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
-	// Operator reverts the tag from the in-flight target (2026.1) back to the
-	// installed release (2025.2) to abort.
-	ks.Spec.Image.Tag = "2025.2"
+	// Operator reverts the tag from the in-flight target (2026.2) back to the
+	// installed release (2026.1) to abort.
+	ks.Spec.Image.Tag = "2026.1"
 
 	// Pre-create the expand and migrate phase Jobs so the abort has something to
 	// clean up (the contract Job is never created during Expanding).
-	expandJob := buildExpandJob(ks, "keystone-config-abc123", "", "2026.1")
-	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "", "2026.1")
+	expandJob := buildExpandJob(ks, "keystone-config-abc123", "", "2026.2")
+	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "", "2026.2")
 
 	r := newDBTestReconciler(s, ks, expandJob, migrateJob)
 
@@ -1684,7 +1684,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 	// Upgrade state cleared; installed release untouched.
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
-	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
 
 	// Assert absence of old state: every upgrade phase Job is gone.
 	for _, suffix := range []string{"db-expand", "db-migrate", "db-contract"} {
@@ -1728,7 +1728,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase(t *testin
 
 			g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 			g.Expect(ks.Status.TargetRelease).To(BeEmpty())
-			g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+			g.Expect(ks.Status.InstalledRelease).To(Equal("2026.1"))
 
 			expectEvent(g, r, "Normal UpgradeAborted")
 		})
@@ -1744,7 +1744,7 @@ func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
-	ks.Spec.Image.Tag = "2025.2"
+	ks.Spec.Image.Tag = "2026.1"
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -1770,7 +1770,7 @@ func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
 
 	// Upgrade state must survive a failed abort so the retry can complete it.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
-	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.2"))
 
 	expectNoEvent(g, r)
 }

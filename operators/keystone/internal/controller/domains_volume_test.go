@@ -91,21 +91,21 @@ func TestDomainsVolumeThreading(t *testing.T) {
 			name:          "ExpandJob",
 			containerName: "db-expand",
 			podSpec: func(n string) corev1.PodSpec {
-				return buildExpandJob(deployTestKeystone(), "keystone-config-abc123", n, "2025.2").Spec.Template.Spec
+				return buildExpandJob(deployTestKeystone(), "keystone-config-abc123", n, "2026.1").Spec.Template.Spec
 			},
 		},
 		{
 			name:          "MigrateJob",
 			containerName: "db-migrate",
 			podSpec: func(n string) corev1.PodSpec {
-				return buildMigrateJob(deployTestKeystone(), "keystone-config-abc123", n, "2025.2").Spec.Template.Spec
+				return buildMigrateJob(deployTestKeystone(), "keystone-config-abc123", n, "2026.1").Spec.Template.Spec
 			},
 		},
 		{
 			name:          "ContractJob",
 			containerName: "db-contract",
 			podSpec: func(n string) corev1.PodSpec {
-				return buildContractJob(deployTestKeystone(), "keystone-config-abc123", n, "2025.2").Spec.Template.Spec
+				return buildContractJob(deployTestKeystone(), "keystone-config-abc123", n, "2026.1").Spec.Template.Spec
 			},
 		},
 		{
