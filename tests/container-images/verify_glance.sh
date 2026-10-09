@@ -33,9 +33,10 @@ test_glance_manage_version() {
 test_glance_api_present() {
   echo "Test: glance-api console script is present"
   # The issue asks only that glance-api is present, not that it runs: the
-  # eventlet launcher (2025.2's mode) needs operator-mounted runtime config to
-  # start. Its mere presence proves uv's --prefix install generated the
-  # setup.cfg console_scripts entry despite skipping PBR wsgi_scripts.
+  # eventlet launcher, which no wired release starts, needs operator-mounted
+  # runtime config to start. Its mere presence proves uv's --prefix install
+  # generated the setup.cfg console_scripts entry despite skipping PBR
+  # wsgi_scripts.
   local path exit_code=0
   path=$(docker run --rm "$IMAGE" sh -c 'command -v glance-api' 2>&1) || exit_code=$?
 
@@ -220,10 +221,10 @@ test_s3_location_repair_converges() {
   # request touches an image's locations. The check drives the repair the
   # image carries rather than grepping the source text, and branches on it.
   #
-  # Glance 31.1.0 and 32.0.0 (2025.2, 2026.1) carry
+  # Glance 32.0.0 (2026.1) carries
   # _update_s3_location_and_store_id, which compares each location against
   # the URL _construct_s3_url builds from the store configuration. This branch
-  # proves both build paths applied
+  # proves the 2026.1 build applied
   # patches/glance/<release>/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch,
   # which strips the http:// or https:// prefix of s3_store_host in
   # _construct_s3_url. The glance-operator always renders the prefix (the

@@ -34,11 +34,11 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
         "$PKG" $PIP_PACKAGES
 
 # Generate the WSGI entry-point script that uWSGI loads at runtime.
-# 2025.2 declares placement-api as a PBR wsgi_scripts entry in setup.cfg, which
-# uv's --prefix install mode does not generate; 2026.1 moved packaging to
-# pyproject.toml and declares no WSGI script at all. The entry therefore ships
-# by hand for both releases under the upstream name, with no release
-# conditional. The placement-operator, once it lands, must launch uWSGI with
+# Neither wired release declares a placement-api WSGI script that uv's
+# --prefix install would generate: 2026.1 moved packaging to pyproject.toml
+# with no wsgi_scripts entry, and 2026.2 keeps it that way. The entry therefore
+# ships by hand under the upstream name, with no release conditional. The
+# placement-operator, once it lands, must launch uWSGI with
 # `--wsgi-file /var/lib/openstack/bin/placement-api`; the two paths have to
 # stay in lockstep from that point on.
 # The image itself stays config-free: placement locates its configuration via

@@ -13,7 +13,7 @@
 #   SERVICE_VERSION    — Version string for PBR PKG-INFO
 #   INSTALL_SPEC       — pip install spec (e.g. .[ldap] or .)
 #   VENV_BUILDER_IMAGE — Docker image to run tests in
-#   RELEASE            — Release directory name (e.g. 2025.2)
+#   RELEASE            — Release directory name (e.g. 2026.1)
 #
 # Optional env vars:
 #   WORKSPACE_DIR                  — Root workspace directory (default: $GITHUB_WORKSPACE or pwd)
@@ -31,7 +31,7 @@ SERVICE_VERSION="${SERVICE_VERSION:?SERVICE_VERSION is required}"
 # a valid pip install spec.
 INSTALL_SPEC="${INSTALL_SPEC:?INSTALL_SPEC is required (e.g. . or .[ldap])}"
 VENV_BUILDER_IMAGE="${VENV_BUILDER_IMAGE:?VENV_BUILDER_IMAGE is required}"
-RELEASE="${RELEASE:?RELEASE is required (e.g. 2025.2)}"
+RELEASE="${RELEASE:?RELEASE is required (e.g. 2026.1)}"
 
 # ---------------------------------------------------------------------------
 # Resolve workspace directory

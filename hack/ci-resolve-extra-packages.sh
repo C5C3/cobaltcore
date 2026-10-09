@@ -9,7 +9,7 @@
 #
 # Required env vars:
 #   MATRIX_SERVICE — OpenStack service name (e.g. keystone)
-#   MATRIX_RELEASE — Release directory name (e.g. 2025.2)
+#   MATRIX_RELEASE — Release directory name (e.g. 2026.1)
 #
 # Outputs written to GITHUB_OUTPUT:
 #   pip-extras    — Comma-separated pip extras (e.g. "ldap,memcache")
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 MATRIX_SERVICE="${MATRIX_SERVICE:?MATRIX_SERVICE is required (e.g. keystone)}"
-MATRIX_RELEASE="${MATRIX_RELEASE:?MATRIX_RELEASE is required (e.g. 2025.2)}"
+MATRIX_RELEASE="${MATRIX_RELEASE:?MATRIX_RELEASE is required (e.g. 2026.1)}"
 
 EXTRAS_FILE="releases/${MATRIX_RELEASE}/extra-packages.yaml"
 if [ ! -f "$EXTRAS_FILE" ]; then

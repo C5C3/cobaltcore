@@ -8,14 +8,14 @@
 # Scans releases/*/ directories and, for each release, emits one matrix entry
 # per Tempest-covered service (keystone, glance, barbican, neutron, cinder,
 # nova). Each service requires a matching Tempest config directory at
-# tests/tempest/<service>-<slug>/ (e.g. keystone-2025-2, glance-2025-2,
-# barbican-2025-2, neutron-2025-2, cinder-2025-2 and nova-2025-2 for release
-# 2025.2); a missing directory for any service is a hard failure.
+# tests/tempest/<service>-<slug>/ (e.g. keystone-2026-1, glance-2026-1,
+# barbican-2026-1, neutron-2026-1, cinder-2026-1 and nova-2026-1 for release
+# 2026.1); a missing directory for any service is a hard failure.
 #
 # Each emitted entry carries:
 #   service          — service under test
 #                      (keystone|glance|barbican|neutron|cinder|nova)
-#   release          — OpenStack release (e.g. 2025.2)
+#   release          — OpenStack release (e.g. 2026.1)
 #   config-dir       — tests/tempest/<service>-<slug>
 #   cr-name          — Keystone CR the CI job waits on and port-forwards
 #   service-k8s-name — K8s Service name for the keystone port-forward (== cr-name)

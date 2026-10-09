@@ -89,7 +89,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/*; \
     fi
 
-# DNS resolution: the virtualenv holds ovs 3.5.1 (2025.2) and 3.7.0 (2026.1),
+# DNS resolution: the virtualenv holds ovs 3.7.0 (2026.1) and 3.7.1 (2026.2),
 # whose ovs/dns_resolve.py resolves no hostname without the unbound Python
 # module (importing it raises "ModuleNotFoundError: No module named
 # 'unbound'"). This image deliberately ships no python3-unbound: the system

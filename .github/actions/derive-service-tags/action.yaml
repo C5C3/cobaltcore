@@ -15,7 +15,7 @@ inputs:
     description: OpenStack service name (e.g. keystone)
     required: true
   release:
-    description: Release directory name (e.g. 2025.2)
+    description: Release directory name (e.g. 2026.1)
     required: true
   repository-owner:
     description: GitHub repository owner (github.repository_owner)
@@ -43,7 +43,7 @@ outputs:
     description: Short-SHA tag reference (e.g. ghcr.io/owner/keystone:abc1234)
     value: ${{ steps.run.outputs.sha }}
   release:
-    description: Release tag reference (e.g. ghcr.io/owner/keystone:2025.2)
+    description: Release tag reference (e.g. ghcr.io/owner/keystone:2026.1)
     value: ${{ steps.run.outputs.release }}
   version-ref:
     description: Raw upstream version string (e.g. 28.0.0)

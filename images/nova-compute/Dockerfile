@@ -29,8 +29,8 @@ ARG PIP_PACKAGES=""
 
 # libvirt-python publishes no wheels, so the install below builds it from its
 # sdist against the libvirt API description and the pkg-config file that
-# libvirt-dev ships. noble's libvirt 10.0.0 builds both pins (11.6.0 at
-# 2025.2, 12.0.0 at 2026.1). Build-only: the runtime stage installs libvirt0,
+# libvirt-dev ships. noble's libvirt 10.0.0 builds both pins (12.0.0 at
+# 2026.1, 12.6.0 at 2026.2). Build-only: the runtime stage installs libvirt0,
 # the shared libraries the binding's extension modules link.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

@@ -26,7 +26,7 @@ tests, the test fails with
 "Second list contains 20 additional elements." It needs the Ceph tests
 earlier on the same stestr worker and a collection at that exact point,
 and stestr spreads tests over workers in per-process hash order, so it
-is rare: `test-service-images (cinder, 2025.2)` hit it once, in run
+is rare: a cinder `test-service-images` leg hit it once, in run
 36865504387 on 2026-10-01. The volume manager twins of the two tests are
 skipped upstream for the same class of failure (`self.skipTest("Bug
 1811663")` in cinder/tests/unit/volume/test_volume.py).
@@ -48,10 +48,6 @@ wrapper and both tests pass.
 
 The patch changes test code only, so it changes nothing at runtime and
 tests/container-images/verify_cinder.sh needs no assertion.
-The 2025.2 twin is
-patches/cinder/2025.2/0004-tests-collect-garbage-before-the-backup-tpool-size-tests.patch;
-it differs in the index line and the hunk offsets. The numbers differ
-because 2025.2 carries the NetApp fakes backport as 0003.
 No 2026.2 twin: 29.0.0 carries upstream commit c07c49c586, which
 replaced both tests.
 
