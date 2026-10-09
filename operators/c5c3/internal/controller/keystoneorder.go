@@ -271,7 +271,7 @@ func orderAdminCredentialGate(cp *c5c3v1alpha1.ControlPlane, fail func(reason, m
 // orderPassResult decides when the next pass runs once the kind's legs had
 // their say. A requeue a leg asked for stands. A converged order on the
 // management cluster waits for an event: the ControlPlane watch reaches it.
-// Every other order comes back on keystoneUserRefreshAfter, because no watch
+// Every other order comes back on orderRefreshAfter, because no watch
 // reaches it: a converged order on a target cluster, and a refusal that only an
 // edit outside the order's own watches lifts.
 func orderPassResult(cluster string, converged bool, result ctrl.Result) ctrl.Result {
@@ -281,7 +281,7 @@ func orderPassResult(cluster string, converged bool, result ctrl.Result) ctrl.Re
 	if cluster == c5c3v1alpha1.ManagementCluster && converged {
 		return ctrl.Result{}
 	}
-	return ctrl.Result{RequeueAfter: keystoneUserRefreshAfter}
+	return ctrl.Result{RequeueAfter: orderRefreshAfter}
 }
 
 // --- teardown ---

@@ -393,7 +393,7 @@ func keystoneProjectControlPlaneRefExtractor(obj client.Object) []string {
 
 // controlPlaneToKeystoneProjectsMapper maps a ControlPlane event to the orders
 // on the management cluster that reference it. Orders on target clusters come
-// back on keystoneUserRefreshAfter. A List failure is logged and maps to
+// back on orderRefreshAfter. A List failure is logged and maps to
 // nothing.
 func controlPlaneToKeystoneProjectsMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {

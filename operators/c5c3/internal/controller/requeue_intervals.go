@@ -27,13 +27,14 @@ const (
 	// shows up in status.
 	namespaceAssignmentRequeueAfter = time.Minute
 
-	// keystoneUserRefreshAfter is the cadence a KeystoneUser no watch reaches is
-	// reconciled at. An order on a target cluster has no ControlPlane watch, so a
-	// publication or admin-domain edit reaches it on this interval. A refusal that
-	// only an edit outside the order's own watches lifts (an unpublished Keystone,
-	// a Secret somebody else owns, the admin identity) is re-read on it on either
-	// cluster.
-	keystoneUserRefreshAfter = 10 * time.Minute
+	// orderRefreshAfter is the cadence an order no watch reaches is
+	// reconciled at; every order kind refreshes on it. An order on a target
+	// cluster has no ControlPlane watch, so a publication, admin-domain or
+	// allowlist edit reaches it on this interval. A refusal that only an edit
+	// outside the order's own watches lifts (an unpublished Keystone, a Secret
+	// somebody else owns, the admin identity, an older duplicate) is re-read on
+	// it on either cluster.
+	orderRefreshAfter = 10 * time.Minute
 
 	// orderReferenceHoldRequeueAfter is the fallback cadence a KeystoneUser or
 	// KeystoneProject teardown re-checks the KeystoneRoleAssignments that hold it

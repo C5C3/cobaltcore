@@ -524,7 +524,7 @@ func registerKeystoneUserControlPlaneRefIndex(ctx context.Context, indexer clien
 
 // controlPlaneToKeystoneUsersMapper maps a ControlPlane event to the orders on
 // the management cluster that reference it. Orders on target clusters are not in
-// the local cache it lists; they come back on keystoneUserRefreshAfter. A List
+// the local cache it lists; they come back on orderRefreshAfter. A List
 // failure is logged and maps to nothing.
 func controlPlaneToKeystoneUsersMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
