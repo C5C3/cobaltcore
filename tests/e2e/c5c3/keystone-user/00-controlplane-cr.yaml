@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the KeystoneUser order E2E test.
+#
+# The keystone-service-foreign-namespace plane with one change: instead of an
+# allowlist entry for KeystoneService registrations it carries a namespace
+# assignment, which is the only consent a KeystoneUser order reads. A
+# Keystone-only managed plane, sized Minimal, so it schedules on one node beside
+# the other suites' stacks.
+#
+# The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
+# ephemeral namespace and the test applies this CR into it: the webhook admits
+# one ControlPlane per namespace.
+#
+# @TENANT_NS@ is substituted by the test with a namespace derived from the
+# ephemeral one. The outsider namespace is deliberately not assigned.
+#
+# Two things this fixture does NOT set, for the reasons the foreign-namespace
+# fixture gives:
+#   - spec.services.keystone.gateway: the openstack-gw Gateway allows routes
+#     from its own namespace only.
+#   - spec.secretStoreRef: the order's password is backed up through the
+#     operator-provisioned per-tenant store in this namespace.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region controlplane
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone: {}
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
+  namespaceAssignments:
+  - namespace: "@TENANT_NS@"
+# endregion controlplane

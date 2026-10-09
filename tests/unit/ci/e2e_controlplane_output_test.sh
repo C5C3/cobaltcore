@@ -201,6 +201,8 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "tests/e2e/c5c3/keystone-service/**"
   assert_contains "the filter lists the foreign-namespace registration suite" \
     "$block" "tests/e2e/c5c3/keystone-service-foreign-namespace/**"
+  assert_contains "the filter lists the KeystoneUser order suite" \
+    "$block" "tests/e2e/c5c3/keystone-user/**"
   # The full-chain suite applies the fixtures of this overlay, so an edit to it
   # has to schedule that suite and not only the canary.
   assert_contains "the filter lists the hypervisor-operator fixture overlay" \
@@ -244,8 +246,8 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "images/keystone-federation-proxy/**"
 }
 
-test_job_runs_all_three_suites() {
-  echo "Test: the job schedules all three chainsaw suites"
+test_job_runs_all_four_suites() {
+  echo "Test: the job schedules all four chainsaw suites"
 
   local block
   block=$(job_block e2e-controlplane)
@@ -262,14 +264,18 @@ test_job_runs_all_three_suites() {
     "$block" "tests/e2e/c5c3/keystone-service/"
   assert_contains "the own-namespace suite reports under its own name" \
     "$block" "chainsaw-report-keystone-service-own-namespace"
+  assert_contains "the job runs the KeystoneUser order suite" \
+    "$block" "tests/e2e/c5c3/keystone-user/"
+  assert_contains "the KeystoneUser order suite reports under its own name" \
+    "$block" "chainsaw-report-keystone-user"
 
   # The `--` keeps grep from reading the pattern as flags. Matching the quoted
   # env form keeps the job's own prose comment about the unquoted
   # E2E_REQUIRE_CONTROLPLANE_STACK=true out of the count.
-  assert_eq "the job runs exactly two named reports" \
-    "2" "$(grep -c -- '--report-name' <<<"$block")"
-  assert_eq "all three suites harden the presence guard" \
-    "3" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
+  assert_eq "the job runs exactly three named reports" \
+    "3" "$(grep -c -- '--report-name' <<<"$block")"
+  assert_eq "all four suites harden the presence guard" \
+    "4" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
 }
 
 test_autoscaling_job_runs_its_suite() {
@@ -298,7 +304,7 @@ test_tag_push_forces_the_job
 test_resolve_script_errors_without_operators
 test_ci_yaml_wires_all_four_sides
 test_filter_covers_the_machinery_and_the_suites
-test_job_runs_all_three_suites
+test_job_runs_all_four_suites
 test_autoscaling_job_runs_its_suite
 
 echo ""
