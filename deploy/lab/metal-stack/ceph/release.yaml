@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# rook-ceph HelmRelease: the Rook operator, which deploys and runs the lab Ceph
+# of cluster/ (#1344). The chart also installs the ceph.rook.io CRDs, and the
+# two objectbucket.io CRDs, as chart templates (`crds.enabled`, default true),
+# which is why the CephCluster, the pools and the clients of cluster/ are a
+# second kustomization: hack/deploy-infra.sh applies this one in Step 3, waits
+# for the release in Phase 3, and applies cluster/ in Step 5 once the CRDs are
+# registered. The templates carry `helm.sh/resource-policy: keep`, so an
+# uninstall leaves the CRDs, and hack/teardown-infra.sh deletes them with the
+# other stack CRDs.
+#
+# The chart version is PINNED, for the reason deploy/kind/nfs/release.yaml
+# gives for csi-driver-nfs: a range would let Flux adopt a new chart on its
+# next reconcile with no repo diff, and what this chart installs is a
+# privileged operator and the CRDs every Ceph object of the lab is stored
+# under. Renovate's flux manager tracks the pin (packageRules "rook-ceph
+# chart", major disabled, no automerge), so an upgrade is a reviewed diff, and
+# a Rook minor is a question of the Ceph versions it supports. The pin controls
+# which version Flux installs, not which bytes: nothing here records a checksum
+# or a signature of the tarball. The chart index lists the release as v1.21.0
+# and as 1.21.0; both name the same chart.
+#
+# No CSI driver. The 1.21 chart installs the ceph-csi-operator subchart unless
+# `csi.installCsiOperator` is false, and the operator writes the CephConnection
+# and ClientProfile CRs that operator consumes unless
+# `csi.createCsiOperatorResources` is false (ROOK_CREATE_CSI_OPERATOR_RESOURCES
+# in the ConfigMap rook-ceph-operator-config, whose comment names clusters that
+# use no CSI driver). Nothing in the lab mounts Ceph through CSI: Cinder's RBD
+# backend of #1341 talks librados, and the hypervisors of #1345 attach through
+# QEMU. Without the subchart the CRDs of those two kinds do not exist, so both
+# values go together.
+#
+# What stays at chart default, and is relied on:
+#   - the operator image docker.io/rook/ceph at the chart's appVersion;
+#   - the operator's resources, 200m CPU and 128Mi memory requested, 512Mi
+#     memory limit;
+#   - `crds.enabled: true`, the CRDs as chart templates (above);
+#   - the ServiceAccounts and RBAC of a CephCluster in the operator's own
+#     namespace, rook-ceph-default among them, which the toolbox of cluster/
+#     runs as.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: rook-ceph
+      # Pinned, not a range. Renovate's flux manager bumps it; see the header.
+      version: "v1.21.0"
+      sourceRef:
+        kind: HelmRepository
+        name: rook-release
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    csi:
+      # See the header: no CSI driver, and no CSI objects for one.
+      installCsiOperator: false
+      createCsiOperatorResources: false
+    # The OSDs run on the claims of cluster/'s device set, not on devices the
+    # operator discovers on the nodes. Already the chart default.
+    enableDiscoveryDaemon: false
+    # No ServiceMonitor for the operator; a Ceph scrape target is a follow-up
+    # of #1338. Already the chart default.
+    monitoring:
+      enabled: false
+    # The lab's nodes run Debian 12 without SELinux, so the Ceph pods need no
+    # privilege to write their hostPath. Already the chart default.
+    hostpathRequiresPrivileged: false

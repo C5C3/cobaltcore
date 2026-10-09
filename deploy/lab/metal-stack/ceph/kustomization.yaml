@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kustomize overlay for the metal-stack lab: the Rook operator, the first of
+# the two kustomizations of the lab Ceph (#1344). hack/deploy-infra.sh applies
+# it in Step 3 under EXTERNAL_CLUSTER=true WITH_CEPH=true:
+#
+#   EXTERNAL_CLUSTER=true WITH_CEPH=true make deploy-infra
+#
+# It renders three objects: the Namespace rook-ceph, the HelmRepository
+# rook-release in flux-system and the HelmRelease rook-ceph in rook-ceph,
+# which Phase 3 waits for. The chart installs the ceph.rook.io CRDs, so the
+# Ceph itself is the second kustomization, cluster/, which Step 5 applies once
+# the deploy has waited for the CRDs cephclusters, cephblockpools and
+# cephclients. After Step 8 the deploy waits for the CephCluster rook-ceph to
+# report HEALTH_OK with one ready OSD per entry of its device set and for the
+# two client keys to reach openstack (wait_for_ceph_cluster and
+# sync_ceph_client_keys). There is no kind sibling: Ceph on kind and in CI is
+# #1339, and the deploy refuses WITH_CEPH=true in kind mode.
+#
+# POSTURE: the namespace enforces the privileged PodSecurity level. The
+# operator runs with the chart's RBAC, the mon and OSD pods mount
+# /var/lib/rook from the host, and the OSD pods run privileged to open their
+# raw block devices. The client keys leave the namespace only through
+# OpenBao: the push role writes them from rook-ceph, and the one read role is
+# bound to openstack alone (deploy/openbao/bootstrap/setup-auth.sh).
+#
+# What the pods leave on a node: every node that ran a mon, an OSD or an OSD
+# prepare job keeps the cluster's state under /var/lib/rook. The node probe
+# reports it under `== rook`. A new monitor refuses to start over another
+# cluster's data there, so the directory has to go with the cluster.
+#
+# The teardown (teardown_ceph in hack/teardown-infra.sh, at the end of its
+# step 2) removes the Ceph in six sub-steps: it renders cluster/, confirms
+# the cleanup policy on the CephCluster and marks it for deletion, deletes the
+# render without its CephCluster (clients, pools, keys and toolbox) and waits
+# for the CephCluster, waits for the Jobs labelled rook-ceph-cleanup=true that
+# empty /var/lib/rook on every node, deletes the claims in rook-ceph, then
+# deletes this render without its Namespace, so the helm-controller
+# uninstalls the chart. Step 7 deletes the Namespace with the other stack
+# namespaces.
+#
+# Every resource is local to the directory, so `kubectl apply -k` renders it
+# under kustomize's default LoadRestrictionsRootOnly check.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - source.yaml
+  - release.yaml
