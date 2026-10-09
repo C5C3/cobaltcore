@@ -239,7 +239,7 @@ func TestPinNovaConf_ReleasesRenderIdentically(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			rendered := map[string]string{}
-			for _, openStackRelease := range []string{"2025.2", "2026.1", "2026.2"} {
+			for _, openStackRelease := range []string{"2026.1", "2026.2"} {
 				t.Run(openStackRelease, func(t *testing.T) {
 					nova := tc.fixture()
 					nova.Spec.OpenStackRelease = openStackRelease
@@ -250,7 +250,7 @@ func TestPinNovaConf_ReleasesRenderIdentically(t *testing.T) {
 				})
 			}
 			for _, conf := range rendered {
-				expectGolden(t, conf, rendered["2025.2"])
+				expectGolden(t, conf, rendered["2026.1"])
 			}
 		})
 	}

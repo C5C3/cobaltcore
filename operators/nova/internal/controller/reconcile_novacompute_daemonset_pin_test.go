@@ -33,7 +33,7 @@ const (
 )
 
 func pinNovaComputeImage() commonv1.ImageSpec {
-	return commonv1.ImageSpec{Repository: novaComputeDefaultRepository, Tag: "2025.2"}
+	return commonv1.ImageSpec{Repository: novaComputeDefaultRepository, Tag: "2026.1"}
 }
 
 // pinOnDeleteNovaCompute names its own resources, a toleration, and the
@@ -173,7 +173,7 @@ spec:
             secretKeyRef:
               key: password
               name: nova-compute-config
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: nova-compute
         resources:
@@ -229,7 +229,7 @@ spec:
         - -m
         - "0755"
         - /var/lib/nova/instances
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: create-instances-dir
         resources:
@@ -298,7 +298,7 @@ spec:
         env:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: wait-for-chassis
         resources:
@@ -471,7 +471,7 @@ spec:
             secretKeyRef:
               key: password
               name: nova-compute-config
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: nova-compute
         resources:
@@ -527,7 +527,7 @@ spec:
         - -m
         - "0755"
         - /var/lib/nova/instances
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: create-instances-dir
         resources:
@@ -596,7 +596,7 @@ spec:
         env:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: wait-for-chassis
         resources:
@@ -782,7 +782,7 @@ spec:
             secretKeyRef:
               key: password
               name: nova-compute-config
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: nova-compute
         resources:
@@ -838,7 +838,7 @@ spec:
         - -m
         - "0755"
         - /var/lib/nova/instances
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: create-instances-dir
         resources:
@@ -907,7 +907,7 @@ spec:
         env:
         - name: OVSDB_SOCKET
           value: /run/openvswitch/db.sock
-        image: ghcr.io/c5c3/nova-compute:2025.2
+        image: ghcr.io/c5c3/nova-compute:2026.1
         imagePullPolicy: Always
         name: wait-for-chassis
         resources:

@@ -289,7 +289,7 @@ func publishedComputeConfig(t *testing.T, c client.Client, nova *novav1alpha1.No
 }
 
 // TestPinComputeConfigFragment pins the fragment byte for byte for both
-// fixtures. The document names no release, so the 2026.1 render has to be the
+// fixtures. The document names no release, so the 2026.2 render has to be the
 // same bytes: a compute is configured from what the CR says about the services
 // it calls, not from the version the control plane runs.
 func TestPinComputeConfigFragment(t *testing.T) {
@@ -299,7 +299,7 @@ func TestPinComputeConfigFragment(t *testing.T) {
 	expectGolden(t, config.RenderINI(computeConfigDefaults(novaMinimal())), pinComputeConfigMinimalGolden)
 
 	next := validNova()
-	next.Spec.OpenStackRelease = "2026.1"
+	next.Spec.OpenStackRelease = "2026.2"
 	g.Expect(config.RenderINI(computeConfigDefaults(next))).To(Equal(pinComputeConfigGolden),
 		"the fragment carries no release, so an upgrade must not rewrite the compute contract")
 }

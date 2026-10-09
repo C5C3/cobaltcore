@@ -131,15 +131,15 @@ func settleDatabase(t *testing.T, r *NovaReconciler, nova *novav1alpha1.Nova,
 	return ctrl.Result{}, nil
 }
 
-// upgradingNova returns a Nova mid-upgrade: the installed release is 2025.2, the
-// spec requests 2026.1 (both the OpenStack release and the image tag, per the
+// upgradingNova returns a Nova mid-upgrade: the installed release is 2026.1, the
+// spec requests 2026.2 (both the OpenStack release and the image tag, per the
 // operator's bump-in-lockstep contract), and the given phase is active.
 func upgradingNova(phase commonv1.UpgradePhase) *novav1alpha1.Nova {
 	nova := validNova()
-	nova.Spec.OpenStackRelease = "2026.1"
-	nova.Spec.Image.Tag = "2026.1"
-	nova.Status.InstalledRelease = "2025.2"
-	nova.Status.TargetRelease = "2026.1"
+	nova.Spec.OpenStackRelease = "2026.2"
+	nova.Spec.Image.Tag = "2026.2"
+	nova.Status.InstalledRelease = "2026.1"
+	nova.Status.TargetRelease = "2026.2"
 	nova.Status.UpgradePhase = phase
 	return nova
 }
@@ -392,7 +392,7 @@ func TestCheckImageReleaseMismatch(t *testing.T) {
 			because: "nothing comparable, so release tracking is left to spec.openStackRelease",
 		},
 		{
-			name: "a lagging image", tag: "2025.2", release: "2026.1", blocked: true,
+			name: "a lagging image", tag: "2026.1", release: "2026.2", blocked: true,
 			because: "the migration Jobs would run the old nova-manage against the new schema",
 		},
 		{
@@ -439,7 +439,7 @@ func TestCheckImageReleaseMismatch(t *testing.T) {
 // which is where the next upgrade would start from.
 func TestReconcileDatabase_ImageReleaseMismatchBlocksTheSync(t *testing.T) {
 	g := NewGomegaWithT(t)
-	nova := validNova() // spec.openStackRelease 2025.2, nothing installed yet
+	nova := validNova() // spec.openStackRelease 2026.1, nothing installed yet
 	nova.Spec.Image.Tag = "2025.1"
 	r := newNovaTestReconciler(nova, readyMariaDBCluster())
 
@@ -464,13 +464,13 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocksTheSync(t *testing.T) {
 // the migrations in reverse.
 func TestReconcileDatabase_DowngradeReportsDowngradeNotSupported(t *testing.T) {
 	g := NewGomegaWithT(t)
-	nova := validNova() // spec.openStackRelease 2025.2
-	nova.Status.InstalledRelease = "2026.1"
+	nova := validNova() // spec.openStackRelease 2026.1
+	nova.Status.InstalledRelease = "2026.2"
 	r := newNovaTestReconciler(nova, readyMariaDBCluster())
 
 	_, err := settleDatabase(t, r, nova, testConfigMapName)
 
-	g.Expect(err).To(MatchError(ContainSubstring("downgrade from 2026.1 to 2025.2 is not supported")))
+	g.Expect(err).To(MatchError(ContainSubstring("downgrade from 2026.2 to 2026.1 is not supported")))
 	cond := novaCondition(nova, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(database.ReasonDowngradeNotSupported))
@@ -798,7 +798,7 @@ func TestBuildPhaseJob(t *testing.T) {
 // terminal metric stamps its per-phase dedupe annotation.
 func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	g := NewGomegaWithT(t)
-	nova := validNova() // InstalledRelease empty (fresh), OpenStackRelease 2025.2
+	nova := validNova() // InstalledRelease empty (fresh), OpenStackRelease 2026.1
 	completed := completedJob(database.SyncJob(novaJobSetParams(nova, testConfigMapName)), "sync-job-uid")
 	r := newNovaTestReconciler(nova, readyMariaDBCluster(), completed)
 
@@ -806,7 +806,7 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
-	g.Expect(nova.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(nova.Status.InstalledRelease).To(Equal("2026.1"))
 	cond := novaCondition(nova, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
@@ -854,15 +854,17 @@ func TestReconcileDatabase_FailedSyncReportsNoCells(t *testing.T) {
 func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	t.Run("a release bump initiates the upgrade", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		nova := validNova() // spec.openStackRelease 2025.2
-		nova.Status.InstalledRelease = "2025.1"
+		nova := validNova()
+		nova.Spec.OpenStackRelease = "2026.2"
+		nova.Spec.Image.Tag = "2026.2"
+		nova.Status.InstalledRelease = "2026.1"
 		r := newNovaTestReconciler(nova, readyMariaDBCluster())
 
 		_, err := settleDatabase(t, r, nova, testConfigMapName)
 
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(nova.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-		g.Expect(nova.Status.TargetRelease).To(Equal("2025.2"))
+		g.Expect(nova.Status.TargetRelease).To(Equal("2026.2"))
 	})
 
 	t.Run("the expand phase completes into the migrate phase", func(t *testing.T) {
@@ -888,7 +890,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 	t.Run("a mid-upgrade image drift blocks", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		nova := upgradingNova(commonv1.UpgradePhaseExpanding)
-		nova.Spec.Image.Tag = "2025.2"
+		nova.Spec.Image.Tag = "2026.1"
 		r := newNovaTestReconciler(nova, readyMariaDBCluster())
 
 		res, err := settleDatabase(t, r, nova, testConfigMapName)
@@ -909,7 +911,7 @@ func TestReconcileDatabase_UpgradeWalk(t *testing.T) {
 func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := upgradingNova(commonv1.UpgradePhaseExpanding)
-	nova.Spec.OpenStackRelease = nova.Status.InstalledRelease // spec.image.tag stays on 2026.1
+	nova.Spec.OpenStackRelease = nova.Status.InstalledRelease // spec.image.tag stays on 2026.2
 	r := newNovaTestReconciler(nova, readyMariaDBCluster())
 
 	// The abort writes no condition of its own, so settling against the real
@@ -924,7 +926,7 @@ func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(nova.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(nova.Status.TargetRelease).To(BeEmpty())
-	g.Expect(nova.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(nova.Status.InstalledRelease).To(Equal("2026.1"))
 	g.Expect(novaCondition(nova, "DatabaseReady").Reason).NotTo(Equal(conditionReasonImageReleaseMismatch),
 		"a revert to the installed release must not be blocked by the image mismatch check")
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(

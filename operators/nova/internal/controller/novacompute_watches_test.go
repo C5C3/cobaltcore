@@ -106,7 +106,7 @@ func TestNovaChangePredicate(t *testing.T) {
 			n.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}
 		}, want: false},
 		{name: "a spec change", mutate: func(n *novav1alpha1.Nova) { n.Generation++ }, want: true},
-		{name: "the installed release", mutate: func(n *novav1alpha1.Nova) { n.Status.InstalledRelease = "2026.1" }, want: true},
+		{name: "the installed release", mutate: func(n *novav1alpha1.Nova) { n.Status.InstalledRelease = "2026.2" }, want: true},
 		{name: "the published contract", mutate: func(n *novav1alpha1.Nova) { n.Status.ComputeConfigSecretRef = nil }, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
