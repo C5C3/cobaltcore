@@ -25,6 +25,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -113,6 +115,14 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcAssignedNamespace        = "mc-tenant"
 		mcMissingAssignedNamespace = "mc-tenant-missing"
 
+		// The ControlPlane a KeystoneUser on the target cluster orders from. It
+		// is a second, unplaced plane: the first one places Keystone on the
+		// target and publishes it from the start, so an order there would never
+		// meet KeystoneNotPublished.
+		mcOrderNamespace    = "mc-order"
+		mcOrderControlPlane = "order-cp"
+		mcOrderPublicURL    = "https://keystone.example.test/v3"
+
 		// The cleartext admin password reconcileKORC reads across the cluster
 		// boundary, and the decoy of the same shape planted on the management
 		// cluster to prove it is not the one being read.
@@ -136,12 +146,15 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	//
 	// It carries the shared fake CRDs of the external operators whose objects the
 	// ControlPlane places (MariaDB, Memcached, ESO, cert-manager, openbao) and
-	// deliberately NEITHER the c5c3 CRDs NOR the sibling service-operator ones: a
-	// target cluster holds the workload, never the CRs. The K-ORC kinds ARE
-	// served here, because they ship in those same shared dirs, and that is what
-	// makes the "the K-ORC ensemble is not on B" assertions below a real absence
-	// rather than a kind the cluster could never have answered for.
-	targetClient, targetCfg := commonenvtest.StartEnvTestWithConfig(t, mcScheme, commonenvtest.CommonFakeCRDDirs())
+	// none of the sibling service-operator ones: a target cluster holds the
+	// workload, never the service CRs. The K-ORC kinds ARE served here, because
+	// they ship in those same shared dirs, and that is what makes the "the K-ORC
+	// ensemble is not on B" assertions below a real absence rather than a kind the
+	// cluster could never have answered for. The KeystoneUser order is the one
+	// c5c3 CRD a target serves: an order for a namespace assigned there lives
+	// there, as the target-cluster-access chart installs it.
+	targetClient, targetCfg := commonenvtest.StartEnvTestWithConfig(t, mcScheme, append(commonenvtest.CommonFakeCRDDirs(),
+		filepath.Join(testutil.C5c3WebhookDir(), "..", "crd", "bases", "c5c3.io_keystoneusers.yaml")))
 
 	// --- Environment A: the management cluster, hosting the manager.
 	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
@@ -219,7 +232,17 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			// constraint at the top of this file intact.
 			opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
 			opts.SkipNameValidation = ptr.To(true)
-			return r.setupWithOptions(mcMgr, opts)
+			if err := r.setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			// The KeystoneUser reconciler resolves an order's cluster through the
+			// same multicluster manager, so an order on the target is reconciled
+			// from here.
+			return (&KeystoneUserReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts)
 		},
 	})
 
@@ -1115,6 +1138,157 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			ig.Expect(cond.Reason).To(Equal("NoNamespaceAssignments"))
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 			"removing every entry clears the status")
+	})
+
+	t.Run("a KeystoneUser on the target cluster is delivered beside it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		target := &commonv1.TargetClusterRefSpec{Name: mcTargetCluster}
+		mcEnsureNamespace(t, ctx, mgmtClient, mcOrderNamespace)
+		mcEnsureNamespace(t, ctx, targetClient, mcAssignedNamespace)
+		orderCP := integrationManagedControlPlane(mcOrderControlPlane, mcOrderNamespace)
+		orderCP.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+			{Namespace: mcAssignedNamespace, TargetClusterRef: target},
+		}
+		g.Expect(mgmtClient.Create(ctx, orderCP)).To(Succeed(), "create the ControlPlane the order names")
+		driveControlPlaneToAdminCredentialReady(t, ctx, mgmtClient, orderCP)
+		orderCPKey := client.ObjectKeyFromObject(orderCP)
+
+		order := &c5c3v1alpha1.KeystoneUser{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow", Namespace: mcAssignedNamespace},
+			Spec: c5c3v1alpha1.KeystoneUserSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: mcOrderControlPlane, Namespace: mcOrderNamespace},
+			},
+		}
+		g.Expect(targetClient.Create(ctx, order)).To(Succeed(), "create the order on the target cluster")
+		orderKey := client.ObjectKeyFromObject(order)
+		prefix := keystoneUserChildPrefix(order, mcTargetCluster)
+		wantLabels := map[string]string{
+			keystoneUserNameLabel:      order.Name,
+			keystoneUserNamespaceLabel: mcAssignedNamespace,
+			keystoneUserClusterLabel:   mcTargetCluster,
+		}
+
+		// envtest runs no K-ORC, so the probe is answered by hand: no such user.
+		g.Eventually(func() error {
+			probe := &orcv1alpha1.User{}
+			if err := mgmtClient.Get(ctx, client.ObjectKey{Namespace: mcOrderNamespace, Name: prefix + "user-probe"}, probe); err != nil {
+				return err
+			}
+			probe.Status.Conditions = pendingImportConditions(0)
+			return mgmtClient.Status().Update(ctx, probe)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the order probes for its user on the management cluster")
+
+		user := &orcv1alpha1.User{}
+		userKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: prefix + "user"}
+		mcEventuallyExists(t, ctx, mgmtClient, userKey, user, "managed User")
+		g.Expect(user.Labels).To(Equal(wantLabels))
+		g.Expect(user.OwnerReferences).To(BeEmpty(), "a child on another cluster than its order carries labels only")
+		targetUsers := &orcv1alpha1.UserList{}
+		g.Expect(targetClient.List(ctx, targetUsers)).To(Succeed())
+		g.Expect(targetUsers.Items).To(BeEmpty(), "nothing K-ORC reads is written on the target")
+
+		g.Eventually(func() error {
+			live := &orcv1alpha1.User{}
+			if err := mgmtClient.Get(ctx, userKey, live); err != nil {
+				return err
+			}
+			live.Status.ID = ptr.To("workflow-user-id")
+			live.Status.Conditions = availableImportConditions()
+			live.Status.Conditions[0].ObservedGeneration = live.Generation
+			live.Status.Resource = &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: prefix + "password-v1"}
+			return mgmtClient.Status().Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "report the user Available with v1 applied")
+
+		// The plane publishes no endpoint yet, and the order is on another
+		// cluster than Keystone. The delivery stops before it writes anything.
+		pushKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: prefix + "backup"}
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.KeystoneUser{}
+			ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeKeystoneUserDeliveryReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Reason).To(Equal(reasonKeystoneUserKeystoneNotPublished))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "an unpublished Keystone refuses the delivery")
+		mcExpectAbsent(t, ctx, targetClient, client.ObjectKey{Namespace: mcAssignedNamespace, Name: "workflow-credentials"},
+			&corev1.Secret{}, "delivered Secret")
+		mcExpectAbsent(t, ctx, mgmtClient, pushKey, &esov1alpha1.PushSecret{}, "order PushSecret")
+
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, orderCPKey, live); err != nil {
+				return err
+			}
+			live.Spec.Services.Keystone.PublicEndpoint = mcOrderPublicURL
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "publish the Keystone endpoint")
+		// No ControlPlane watch reaches an order on a target cluster; it comes back
+		// on keystoneUserRefreshAfter, which a test cannot wait for. An annotation
+		// edit wakes it the same way.
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.KeystoneUser{}
+			if err := targetClient.Get(ctx, orderKey, live); err != nil {
+				return err
+			}
+			live.Annotations = map[string]string{"test.c5c3.io/nudge": "published"}
+			return targetClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "nudge the order")
+
+		// envtest runs no ESO either: the backup is reported pushed by hand, once
+		// the operator has stamped the document's hash on it, by moving
+		// syncedResourceVersion the way a completed push does.
+		g.Eventually(func() error {
+			live := &esov1alpha1.PushSecret{}
+			if err := mgmtClient.Get(ctx, pushKey, live); err != nil {
+				return err
+			}
+			hash := live.Annotations[keystoneUserPushContentHashAnnotation]
+			if hash == "" {
+				return errors.New("the PushSecret carries no content hash yet")
+			}
+			live.Status.SyncedResourceVersion = "pushed-" + hash
+			live.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{{
+				Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue, Reason: "PushSecretSynced",
+				LastTransitionTime: metav1.Now(),
+			}}
+			return mgmtClient.Status().Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "report the stamped document pushed")
+		push := &esov1alpha1.PushSecret{}
+		g.Expect(mgmtClient.Get(ctx, pushKey, push)).To(Succeed())
+		g.Expect(push.Labels).To(Equal(wantLabels))
+		g.Expect(push.OwnerReferences).To(BeEmpty())
+
+		secretKey := client.ObjectKey{Namespace: mcAssignedNamespace, Name: "workflow-credentials"}
+		expectDelivered := func(what string) {
+			t.Helper()
+			g.Eventually(func(ig Gomega) {
+				live := &c5c3v1alpha1.KeystoneUser{}
+				ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+				ig.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, conditionTypeReady)).To(BeTrue())
+				secret := &corev1.Secret{}
+				ig.Expect(targetClient.Get(ctx, secretKey, secret)).To(Succeed())
+				ig.Expect(metav1.IsControlledBy(secret, live)).To(BeTrue(), "the order owns its Secret on the target")
+				ig.Expect(string(secret.Data["clouds.yaml"])).To(ContainSubstring(mcOrderPublicURL))
+				ig.Expect(string(secret.Data["clouds.yaml"])).NotTo(ContainSubstring("project_name"))
+				ig.Expect(secret.Data["password"]).NotTo(BeEmpty())
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), what)
+		}
+		expectDelivered("the credentials are delivered beside the order")
+		mcExpectAbsent(t, ctx, mgmtClient, secretKey, &corev1.Secret{}, "delivered Secret on the management cluster")
+
+		g.Expect(targetClient.Delete(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretKey.Name, Namespace: secretKey.Namespace},
+		})).To(Succeed())
+		expectDelivered("a deleted Secret is delivered again")
+
+		g.Expect(targetClient.Delete(ctx, order)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, orderKey, &c5c3v1alpha1.KeystoneUser{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, userKey, &orcv1alpha1.User{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, pushKey, &esov1alpha1.PushSecret{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, secretKey, &corev1.Secret{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"deleting the order removes the User, the PushSecret and the Secret")
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {
