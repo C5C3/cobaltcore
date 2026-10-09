@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A Keystone project ordered from the assigned namespace, beside the user.
+#
+# projectName is left to default to metadata.name ("workflow-project"). The
+# project is created in the plane's admin domain, where the ordered user lives
+# as well.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region keystoneproject-workflow-project
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: workflow-project
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion keystoneproject-workflow-project

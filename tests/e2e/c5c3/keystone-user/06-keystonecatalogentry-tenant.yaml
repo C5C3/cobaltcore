@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A catalog entry of type dns named designate, with a public and an internal
+# endpoint. Nothing serves the URLs; the suite reads them back out of the
+# catalog. The entry is admitted only once the namespace's assignment entry
+# sets allowCatalogEntries, which the plane's fixture leaves unset at first.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region keystonecatalogentry-workflow-dns
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: workflow-dns
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  serviceType: dns
+  serviceName: designate
+  endpoints:
+  - interface: public
+    url: https://dns.example.test/v2
+  - interface: internal
+    url: http://designate-api.@TENANT_NS@.svc:9001/v2
+# endregion keystonecatalogentry-workflow-dns

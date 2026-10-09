@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A second catalog entry of type dns named designate. workflow-dns created that
+# row, so the collision probe finds it and this order reports ServiceCollision:
+# it never takes over a row it did not create.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: workflow-dns-dup
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  serviceType: dns
+  serviceName: designate

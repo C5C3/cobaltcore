@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The role member for the ordered user "workflow" on the ordered project
+# "workflow-project". Both references name orders in the same namespace. The
+# role must be on the allowedRoles of the namespace's assignment entry, which
+# the plane's fixture leaves empty at first, so the suite sees the refusal
+# before it admits the role.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region keystoneroleassignment-workflow-member
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: workflow-member
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  role: member
+# endregion keystoneroleassignment-workflow-member

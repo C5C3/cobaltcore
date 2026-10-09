@@ -2,15 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for KeystoneUser orders: a service owner orders a Keystone
+# Chainsaw E2E test for the Keystone orders: a service owner orders a Keystone
 # user from a namespace the ControlPlane assigns to them, and the credentials
-# arrive as a Secret beside the order.
+# arrive as a Secret beside the order. Beside the user the owner orders a
+# project, a role on it, and a catalog entry.
 #
 # Unit tests drive a fake client and envtest carries K-ORC as schema without a
 # controller; neither sees Keystone, OpenBao or ESO. This suite is where the
-# order meets all three: K-ORC creates the user in a live Keystone, ESO pushes
-# the password to OpenBao through the plane namespace's own store, and a Job in
-# the owner's namespace authenticates with the delivered Secret.
+# orders meet all three: K-ORC creates the user, the project, the role
+# assignment and the catalog rows in a live Keystone, ESO pushes the password to
+# OpenBao through the plane namespace's own store, and a Job in the owner's
+# namespace authenticates with the delivered Secret and scopes to the project.
 #
 # ── Legs ─────────────────────────────────────────────────────────────────────
 #   DELIVERY  the order in the assigned namespace reaches Ready, its Secret
@@ -20,13 +22,24 @@
 #   REPAIR    an overwritten password and a deleted Secret come back.
 #   ROTATION  raising spec.passwordGeneration delivers a new password, backs
 #             it up to OpenBao, and drops the old generation's Secret.
+#   PIECES-REFUSED  a project, a role assignment and a catalog entry are
+#             ordered; the project is provisioned, the role is off the empty
+#             allowedRoles and the entry has no allowCatalogEntries, so neither
+#             projects anything.
+#   PIECES    admitting the role and catalog entries assigns the role and
+#             registers the entry; a Job scoped to the project issues a token
+#             and reads the entry out of the catalog. A duplicate assignment
+#             and a colliding catalog entry are refused.
+#   PIECES-FREEZE  taking the role off the list and clearing the catalog flag
+#             freeze the two orders without revoking anything.
 #   REFUSAL   an order from a namespace no entry assigns reads
 #             NamespaceNotAssigned and creates nothing.
-#   FREEZE    withdrawing the assignment freezes the order: its Secret and
-#             Keystone user stay, and an edited Secret is not repaired.
-#             Restoring the entry recovers it.
-#   TEARDOWN  deleting the order removes the user, the Secret, every child in
-#             the plane's namespace and the OpenBao path.
+#   FREEZE    withdrawing the assignment freezes every order: the Secret, the
+#             Keystone user and the pieces' K-ORC children stay, and an edited
+#             Secret is not repaired. Restoring the entry recovers them.
+#   TEARDOWN  deleting the user holds while the assignment references it;
+#             deleting the assignment releases it, and every order's deletion
+#             removes what it created, the OpenBao path included.
 #
 # ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
 # As the keystone-service-foreign-namespace suite: a Keystone-only plane in
@@ -44,17 +57,18 @@ kind: Test
 metadata:
   name: keystone-user
 spec:
-  # The bring-up of an identity plane plus six legs and a bounded teardown runs
-  # well past the suite defaults; the budgets match the foreign-namespace
-  # suite's, and cleanup is generous for the same reason it is there.
+  # The bring-up of an identity plane plus nine legs and a bounded teardown runs
+  # well past the suite defaults. The three legs of the pieces add three K-ORC
+  # convergences to the foreign-namespace suite's budget, and cleanup is
+  # generous for the same reason it is there.
   timeouts:
     assert: 5m
-    exec: 40m
+    exec: 50m
     cleanup: 15m
   steps:
   - try:
     - script:
-        timeout: 40m
+        timeout: 50m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
         shell: bash
         content: |
@@ -66,10 +80,17 @@ spec:
           OUTSIDER_NS="${NAMESPACE}-outsider"
           ORDER=workflow
           OUTSIDER=outsider
+          PROJECT=workflow-project
+          MEMBER=workflow-member
+          DNS=workflow-dns
           CREDS_SECRET=workflow-credentials
           ORDER_SELECTOR="c5c3.io/keystoneuser-name=${ORDER},c5c3.io/keystoneuser-namespace=${TENANT_NS}"
           OUTSIDER_SELECTOR="c5c3.io/keystoneuser-name=${OUTSIDER},c5c3.io/keystoneuser-namespace=${OUTSIDER_NS}"
+          PROJECT_SELECTOR="c5c3.io/keystoneproject-name=${PROJECT},c5c3.io/keystoneproject-namespace=${TENANT_NS}"
+          MEMBER_SELECTOR="c5c3.io/keystoneroleassignment-name=${MEMBER},c5c3.io/keystoneroleassignment-namespace=${TENANT_NS}"
+          DNS_SELECTOR="c5c3.io/keystonecatalogentry-name=${DNS},c5c3.io/keystonecatalogentry-namespace=${TENANT_NS}"
           CHILD_KINDS=users.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io
+          PIECE_KINDS=roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
           skip_or_fail() { # <reason...>
@@ -88,12 +109,21 @@ spec:
           for crd in \
             controlplanes.c5c3.io \
             keystoneusers.c5c3.io \
+            keystoneprojects.c5c3.io \
+            keystoneroleassignments.c5c3.io \
+            keystonecatalogentries.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             mariadbs.k8s.mariadb.com \
             memcacheds.memcached.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             users.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -159,7 +189,7 @@ spec:
           if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
             skip_or_fail "the eso-tenant OpenBao auth role is not configured."
           fi
-          echo "OK: prerequisites present — running the KeystoneUser order chain."
+          echo "OK: prerequisites present — running the Keystone order chain."
 
           # ── Helpers ───────────────────────────────────────────────────────
           # Explicit polls rather than `kubectl wait`, so a condition that is
@@ -392,6 +422,37 @@ spec:
             fi
             echo "OK: a Job in the owner's namespace issued a token ($1)."
           }
+          # Runs the project-scoped verify Job from scratch and fails unless a
+          # token was issued and the catalog lists the entry's public URL.
+          run_scoped_verify_job() { # <when>
+            local domain logs
+            domain="$(kubectl get keystoneproject "${PROJECT}" -n "${TENANT_NS}" -o jsonpath='{.status.domainName}')"
+            kubectl delete job workflow-scoped-verify -n "${TENANT_NS}" --ignore-not-found --wait=true
+            sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@DOMAIN@|${domain}|g" 07-openstack-scoped-verify-job.yaml \
+              | kubectl apply -f -
+            if ! kubectl wait --for=condition=complete "job/workflow-scoped-verify" -n "${TENANT_NS}" --timeout=5m; then
+              echo "ERROR: the scoped verify Job did not complete ($1)"
+              kubectl logs -n "${TENANT_NS}" job/workflow-scoped-verify 2>&1 || true
+              exit 1
+            fi
+            # One capture, then here-strings, for the EPIPE reason run_verify_job
+            # gives.
+            logs="$(kubectl logs -n "${TENANT_NS}" job/workflow-scoped-verify)"
+            if ! grep -q "expires" <<<"${logs}" || ! grep -q "https://dns.example.test/v2" <<<"${logs}"; then
+              echo "ERROR: the scoped verify Job printed no token table or no catalog URL ($1)"
+              echo "${logs}"
+              exit 1
+            fi
+            echo "OK: a Job in the owner's namespace scoped a token to the project and read the catalog ($1)."
+          }
+          # The managed catalog Services carrying a selector: the collision
+          # probe is an unmanaged import of the row it found, so it does not
+          # count as a registered row.
+          managed_services() { # <selector>
+            kubectl get services.openstack.k-orc.cloud -n "${CP_NS}" -l "$1" \
+              -o jsonpath='{range .items[?(@.spec.managementPolicy=="managed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+              | grep -c . || true
+          }
 
           # ── The two namespaces the plane does not own ─────────────────────
           kubectl create namespace "${TENANT_NS}"
@@ -516,7 +577,90 @@ spec:
           wait_gone secret "${PREFIX}password-v1" "${CP_NS}" 300
           run_verify_job "after the rotation"
 
-          # ══ LEG 4 — an unassigned namespace is refused ════════════════════
+          # ══ LEG 4 — the pieces are refused without roles or consent ═══════
+          for fixture in 04-keystoneproject-tenant.yaml 05-keystoneroleassignment-tenant.yaml \
+            06-keystonecatalogentry-tenant.yaml; do
+            sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" "${fixture}" | kubectl apply -f -
+          done
+          wait_condition keystoneproject "${PROJECT}" "${TENANT_NS}" Ready True 300
+          assert_nonempty "Keystone resolved the project id" \
+            "$(kubectl get keystoneproject "${PROJECT}" -n "${TENANT_NS}" -o jsonpath='{.status.projectID}')"
+          wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady RoleNotAllowed 300
+          MEMBER_MESSAGE="$(condition_message keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady)"
+          if ! grep -qF '["member"]' <<<"${MEMBER_MESSAGE}" || ! grep -qF 'admits roles []' <<<"${MEMBER_MESSAGE}"; then
+            echo "ERROR: the role refusal does not name the role and the empty allowlist: ${MEMBER_MESSAGE}"; exit 1
+          fi
+          wait_reason keystonecatalogentry "${DNS}" "${TENANT_NS}" CatalogReady CatalogNotAllowed 300
+          if ! grep -q allowCatalogEntries <<<"$(condition_message keystonecatalogentry "${DNS}" "${TENANT_NS}" CatalogReady)"; then
+            echo "ERROR: the catalog refusal does not name allowCatalogEntries"; exit 1
+          fi
+          assert_eq "the refused assignment projects nothing" "0" \
+            "$(count_of "${PIECE_KINDS}" "${CP_NS}" "${MEMBER_SELECTOR}")"
+          assert_eq "the refused catalog entry projects nothing" "0" \
+            "$(count_of "${PIECE_KINDS}" "${CP_NS}" "${DNS_SELECTOR}")"
+
+          # ══ LEG 5 — admitting the role and the catalog entry ══════════════
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
+            -p "[{\"op\":\"replace\",\"path\":\"/spec/namespaceAssignments/0\",\"value\":{\"namespace\":\"${TENANT_NS}\",\"allowedRoles\":[\"member\"],\"allowCatalogEntries\":true}}]"
+          wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 600
+          wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 600
+          for field in roleID userID projectID; do
+            assert_nonempty "the assignment reports its ${field}" \
+              "$(kubectl get keystoneroleassignment "${MEMBER}" -n "${TENANT_NS}" -o "jsonpath={.status.${field}}")"
+          done
+          assert_nonempty "the catalog entry reports its service id" \
+            "$(kubectl get keystonecatalogentry "${DNS}" -n "${TENANT_NS}" -o jsonpath='{.status.serviceID}')"
+          assert_eq "the catalog entry reports two endpoint ids" "2" \
+            "$(kubectl get keystonecatalogentry "${DNS}" -n "${TENANT_NS}" -o jsonpath='{.status.endpoints[*].id}' | wc -w | tr -d ' ')"
+          assert_eq "one RoleAssignment carries the assignment's labels" "1" \
+            "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
+          assert_eq "one Service carries the entry's labels" "1" \
+            "$(count_of services.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
+          assert_eq "two Endpoints carry the entry's labels" "2" \
+            "$(count_of endpoints.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
+          run_scoped_verify_job "after the role is assigned"
+
+          # A second order of the same tuple, and a second entry of the same row.
+          DUP_SELECTOR="c5c3.io/keystoneroleassignment-name=workflow-member-dup,c5c3.io/keystoneroleassignment-namespace=${TENANT_NS}"
+          COLLISION_SELECTOR="c5c3.io/keystonecatalogentry-name=workflow-dns-dup,c5c3.io/keystonecatalogentry-namespace=${TENANT_NS}"
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            08-keystoneroleassignment-duplicate.yaml | kubectl apply -f -
+          wait_reason keystoneroleassignment workflow-member-dup "${TENANT_NS}" AssignmentReady DuplicateRoleAssignment 120
+          if ! grep -q "\"${MEMBER}\"" <<<"$(condition_message keystoneroleassignment workflow-member-dup "${TENANT_NS}" AssignmentReady)"; then
+            echo "ERROR: the duplicate refusal does not name ${MEMBER}"; exit 1
+          fi
+          assert_eq "the duplicate projects no Role or RoleAssignment" "0" \
+            "$(count_of roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud "${CP_NS}" "${DUP_SELECTOR}")"
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            09-keystonecatalogentry-collision.yaml | kubectl apply -f -
+          wait_reason keystonecatalogentry workflow-dns-dup "${TENANT_NS}" CatalogReady ServiceCollision 300
+          assert_eq "the colliding entry registers no Service" "0" "$(managed_services "${COLLISION_SELECTOR}")"
+          kubectl delete keystoneroleassignment workflow-member-dup -n "${TENANT_NS}" --wait=false
+          kubectl delete keystonecatalogentry workflow-dns-dup -n "${TENANT_NS}" --wait=false
+          wait_gone keystoneroleassignment workflow-member-dup "${TENANT_NS}" 120
+          wait_gone keystonecatalogentry workflow-dns-dup "${TENANT_NS}" 120
+          echo "OK: a duplicate assignment and a colliding catalog entry are refused and leave nothing behind."
+
+          # ══ LEG 6 — taking the role or the catalog consent away freezes ═══
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
+            -p '[{"op":"replace","path":"/spec/namespaceAssignments/0/allowedRoles","value":[]}]'
+          wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady RoleNotAllowed 300
+          assert_eq "the RoleAssignment stays while the role is off the list" "1" \
+            "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
+          run_scoped_verify_job "with the role frozen"
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
+            -p '[{"op":"replace","path":"/spec/namespaceAssignments/0/allowCatalogEntries","value":false}]'
+          wait_reason keystonecatalogentry "${DNS}" "${TENANT_NS}" CatalogReady CatalogNotAllowed 300
+          assert_eq "the Service stays while the catalog consent is cleared" "1" \
+            "$(count_of services.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
+          FULL_ENTRY="{\"namespace\":\"${TENANT_NS}\",\"allowedRoles\":[\"member\"],\"allowCatalogEntries\":true}"
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
+            -p "[{\"op\":\"replace\",\"path\":\"/spec/namespaceAssignments/0\",\"value\":${FULL_ENTRY}}]"
+          wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 300
+          wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
+          echo "OK: the frozen pieces revoked nothing and recovered."
+
+          # ══ LEG 7 — an unassigned namespace is refused ════════════════════
           sed -e "s|@OUTSIDER_NS@|${OUTSIDER_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
             02-keystoneuser-outsider.yaml | kubectl apply -f -
           wait_condition keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" Ready False 300
@@ -540,15 +684,24 @@ spec:
           sleep 30
           assert_nothing_created "after a settle"
 
-          # ══ LEG 5 — withdrawing the assignment freezes the order ══════════
+          # ══ LEG 8 — withdrawing the assignment freezes the orders ═════════
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
             -p '{"spec":{"namespaceAssignments":null}}'
           for ctype in UserReady DeliveryReady; do
             wait_reason keystoneuser "${ORDER}" "${TENANT_NS}" "${ctype}" NamespaceNotAssigned 300
           done
+          wait_reason keystoneproject "${PROJECT}" "${TENANT_NS}" ProjectReady NamespaceNotAssigned 300
+          wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady NamespaceNotAssigned 300
+          wait_reason keystonecatalogentry "${DNS}" "${TENANT_NS}" CatalogReady NamespaceNotAssigned 300
           kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null
           assert_eq "the Keystone user stays while the order is frozen" "1" \
             "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
+          assert_eq "the project stays while the order is frozen" "1" \
+            "$(count_of projects.openstack.k-orc.cloud "${CP_NS}" "${PROJECT_SELECTOR}")"
+          assert_eq "the RoleAssignment stays while the order is frozen" "1" \
+            "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
+          assert_eq "the catalog rows stay while the order is frozen" "3" \
+            "$(count_of services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
           kubectl patch secret "${CREDS_SECRET}" -n "${TENANT_NS}" --type merge -p '{"data":{"password":"Zm9v"}}'
           sleep 90
           assert_eq "a frozen order does not repair its Secret" "Zm9v" \
@@ -556,25 +709,53 @@ spec:
           echo "OK: withdrawing the assignment froze the order and revoked nothing."
 
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
-            -p "{\"spec\":{\"namespaceAssignments\":[{\"namespace\":\"${TENANT_NS}\"}]}}"
+            -p "{\"spec\":{\"namespaceAssignments\":[${FULL_ENTRY}]}}"
           wait_condition keystoneuser "${ORDER}" "${TENANT_NS}" Ready True 300
           wait_delivered_password 2 120
-          echo "OK: restoring the assignment recovered the order."
+          wait_condition keystoneproject "${PROJECT}" "${TENANT_NS}" Ready True 300
+          wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 300
+          wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
+          echo "OK: restoring the assignment recovered the orders."
 
-          # ══ LEG 6 — deleting the order tears it down ══════════════════════
-          kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found
+          # ══ LEG 9 — deleting the orders tears them down ═══════════════════
+          kubectl delete job workflow-verify workflow-scoped-verify -n "${TENANT_NS}" --ignore-not-found
           kubectl delete keystoneuser "${OUTSIDER}" -n "${OUTSIDER_NS}"
           wait_gone keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" 300
 
+          # The user goes first and holds: the assignment still references it.
+          kubectl delete keystoneuser "${ORDER}" -n "${TENANT_NS}" --wait=false
+          wait_reason keystoneuser "${ORDER}" "${TENANT_NS}" UserReady ReferencedByRoleAssignments 120
+          if ! grep -q "\"${MEMBER}\"" <<<"$(condition_message keystoneuser "${ORDER}" "${TENANT_NS}" UserReady)"; then
+            echo "ERROR: the hold does not name ${MEMBER}"; exit 1
+          fi
+          kubectl get keystoneuser "${ORDER}" -n "${TENANT_NS}" >/dev/null
+          assert_eq "the held user's Keystone user stays" "1" \
+            "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
+
+          # K-ORC unassigns the role before the assignment's finalizer goes.
+          kubectl delete keystoneroleassignment "${MEMBER}" -n "${TENANT_NS}" --wait=false
+          wait_gone keystoneroleassignment "${MEMBER}" "${TENANT_NS}" 300
+          assert_eq "no Role or RoleAssignment carries the assignment's labels" "0" \
+            "$(count_of roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
+
           # K-ORC deletes the Keystone user and ESO the OpenBao path before the
           # finalizer is released, so this is the slow delete.
-          kubectl delete keystoneuser "${ORDER}" -n "${TENANT_NS}" --wait=false
           wait_gone keystoneuser "${ORDER}" "${TENANT_NS}" 600
           assert_absent secret "${CREDS_SECRET}" "${TENANT_NS}"
           assert_eq "every child in the plane's namespace went with the order" "0" \
             "$(count_of "${CHILD_KINDS}" "${CP_NS}" "${ORDER_SELECTOR}")"
           wait_kv_purged "${KV_PATH}" 120 "the order left"
           echo "OK: the order's teardown reached Keystone, the Secret and OpenBao."
+
+          kubectl delete keystonecatalogentry "${DNS}" -n "${TENANT_NS}" --wait=false
+          kubectl delete keystoneproject "${PROJECT}" -n "${TENANT_NS}" --wait=false
+          wait_gone keystonecatalogentry "${DNS}" "${TENANT_NS}" 300
+          wait_gone keystoneproject "${PROJECT}" "${TENANT_NS}" 300
+          assert_eq "no catalog row or Region import carries the entry's labels" "0" \
+            "$(count_of services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
+          assert_eq "no Project carries the project's labels" "0" \
+            "$(count_of projects.openstack.k-orc.cloud "${CP_NS}" "${PROJECT_SELECTOR}")"
+          echo "OK: the project and the catalog entry went with their orders."
 
           # The plane goes down through its own finalizer, in the order the
           # foreign-namespace suite documents and checks.
@@ -595,12 +776,12 @@ spec:
           assert_no_event OpenBaoCleanupStalled "${CP_NS}"
           assert_no_event KeystoneTeardownStalled "${CP_NS}"
           kubectl delete namespace "${TENANT_NS}" "${OUTSIDER_NS}" --wait=false || true
-          echo "OK: KeystoneUser orders proven end to end."
+          echo "OK: the Keystone orders proven end to end."
     catch:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to every
         # script operation; a dump against a wedged apiserver must not inherit
-        # 40m.
+        # 50m.
         timeout: 5m
         shell: bash
         content: |
@@ -610,11 +791,16 @@ spec:
           echo "=== ControlPlane conditions ==="
           kubectl get controlplane cp -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
-          echo "=== KeystoneUsers ==="
-          kubectl get keystoneuser -A -o yaml 2>&1 || true
+          echo "=== Orders ==="
+          kubectl get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry -A -o yaml 2>&1 || true
           echo "=== Order children in the plane's namespace ==="
           kubectl get users.openstack.k-orc.cloud,pushsecrets.external-secrets.io,secrets \
             -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name -o wide 2>&1 || true
+          for label in c5c3.io/keystoneproject-name c5c3.io/keystoneroleassignment-name c5c3.io/keystonecatalogentry-name; do
+            kubectl get projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud \
+              -n "${NAMESPACE}" -l "${label}" \
+              -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
+          done
           kubectl get pushsecrets.external-secrets.io -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name \
             -o jsonpath='{range .items[*]}{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           echo "=== The order namespaces ==="
@@ -622,8 +808,9 @@ spec:
             echo "--- ${ns} ---"
             kubectl get secretstore,serviceaccount,certificate,externalsecret,pushsecret,secret,job -n "${ns}" 2>&1 || true
           done
-          echo "=== Verify Job ==="
+          echo "=== Verify Jobs ==="
           kubectl logs -n "${TENANT_NS}" job/workflow-verify --tail=100 2>&1 || true
+          kubectl logs -n "${TENANT_NS}" job/workflow-scoped-verify --tail=100 2>&1 || true
           echo "=== c5c3-operator ==="
           OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
             -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
@@ -640,9 +827,9 @@ spec:
     finally:
     - script:
         # Pinned for the same reason as catch above. The waits below are bounded
-        # and add up to 780s; 20m covers them plus the deletes that drive them,
+        # and add up to 1110s; 20m covers them plus the deletes that drive them,
         # and keeps the suite's ceiling at exec + catch + finally + cleanup =
-        # 80m, which is the number .github/workflows/ci.yaml budgets against.
+        # 90m, which is the number .github/workflows/ci.yaml budgets against.
         timeout: 20m
         shell: bash
         content: |
@@ -651,7 +838,9 @@ spec:
           # order matters for the reason the foreign-namespace suite gives: the
           # orders first, while Keystone and the plane's store still serve the
           # calls their finalizers make, then the plane, then the two namespaces
-          # this suite created itself. Every wait is bounded and best-effort.
+          # this suite created itself. The pieces go before the user, the
+          # assignment first, because a user or project an assignment references
+          # holds its deletion. Every wait is bounded and best-effort.
           TENANT_NS="${NAMESPACE}-tenant"
           OUTSIDER_NS="${NAMESPACE}-outsider"
           gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
@@ -670,7 +859,20 @@ spec:
           # suite; the pod is shared with the other suites on this job.
           kubectl exec -n shared-services openbao-0 -- \
             rm -f /tmp/.bao-token 2>&1 || true
-          kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete job workflow-verify workflow-scoped-verify -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+
+          for ra in workflow-member workflow-member-dup; do
+            kubectl delete keystoneroleassignment "${ra}" -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          done
+          gone_within keystoneroleassignment workflow-member "${TENANT_NS}" 90 || true
+          gone_within keystoneroleassignment workflow-member-dup "${TENANT_NS}" 30 || true
+          for entry in workflow-dns workflow-dns-dup; do
+            kubectl delete keystonecatalogentry "${entry}" -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          done
+          gone_within keystonecatalogentry workflow-dns "${TENANT_NS}" 90 || true
+          gone_within keystonecatalogentry workflow-dns-dup "${TENANT_NS}" 30 || true
+          kubectl delete keystoneproject workflow-project -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystoneproject workflow-project "${TENANT_NS}" 90 || true
 
           kubectl delete keystoneuser workflow -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
           kubectl delete keystoneuser outsider -n "${OUTSIDER_NS}" --ignore-not-found --wait=false 2>&1 || true
