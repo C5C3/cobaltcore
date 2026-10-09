@@ -92,3 +92,21 @@ only that nothing is being asked for, not that PodSecurity is enforcing. See
 {{- fail "values.privilegedNamespaces requires createNamespaces: true (the chart cannot label a namespace it does not create)" }}
 {{- end }}
 {{- end }}
+
+{{/*
+Refuse a values.assignedNamespaces the chart cannot honour: an empty entry, and
+an entry that is also in values.namespaces. A namespace is either placed into,
+with the workload grants of role.yaml, or assigned to a service owner, with the
+narrow grants of role-assigned.yaml; one namespace with both Roles would hand
+an owner's orders the placed workload grants.
+*/}}
+{{- define "target-cluster-access.requireAssignedNamespaces" -}}
+{{- range $entry := .Values.assignedNamespaces }}
+{{- if not $entry }}
+{{- fail "values.assignedNamespaces must not contain an empty entry" }}
+{{- end }}
+{{- if has $entry $.Values.namespaces }}
+{{- fail (printf "values.assignedNamespaces entry %q is also in values.namespaces; a namespace is either placed into or assigned" $entry) }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -54,3 +54,35 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "values.privilegedNamespaces requires createNamespaces: true (the chart cannot label a namespace it does not create)"
+
+  # An assigned namespace carries the narrow order grants, a placed one the
+  # workload grants; one namespace with both would hand the owner's orders the
+  # workload grants.
+  - it: should fail on an assigned namespace that is also placed into
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - openstack
+    asserts:
+      - failedTemplate:
+          errorMessage: 'values.assignedNamespaces entry "openstack" is also in values.namespaces; a namespace is either placed into or assigned'
+
+  - it: should fail on an empty assigned namespace
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "values.assignedNamespaces must not contain an empty entry"
+
+  - it: should render with assigned namespaces beside placed ones
+    set:
+      namespaces:
+        - openstack
+      assignedNamespaces:
+        - tenant-a
+    asserts:
+      - notFailedTemplate: {}
