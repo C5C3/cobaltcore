@@ -387,6 +387,40 @@ main() {
     token_max_ttl=72h
   log "nova-cell-db role written."
 
+  # push-ceph-keys and read-ceph-keys roles on the management cluster's
+  # Kubernetes auth mount, the two halves of the Ceph key hand-off of the
+  # metal-stack lab (deploy/lab/metal-stack/ceph/cluster). The PushSecrets in
+  # rook-ceph authenticate as ceph-keys-push and write the client keys Rook
+  # generates to kv-v2/data/ceph/client-<user>; the ExternalSecrets in openstack
+  # authenticate as ceph-keys-read and read them back. Each role binds one
+  # ServiceAccount in one namespace. The read role binds openstack and not "*"
+  # because the Ceph paths are not namespace-templated (eso-hypervisor expects
+  # the flat ceph/client-nova), so a wildcard would hand every tenant namespace
+  # every Ceph key. The push side authenticates on kubernetes/management because
+  # the lab's Ceph runs in the same cluster; the kubernetes/storage mount stays
+  # for a separate storage cluster.
+  #
+  # Both roles are written unconditionally, like the Nova roles above, and stay
+  # dormant on a cluster without the Ceph overlay: no ceph-keys-push or
+  # ceph-keys-read ServiceAccount exists there to authenticate.
+  log "Writing push-ceph-keys role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/push-ceph-keys" \
+    bound_service_account_names=ceph-keys-push \
+    bound_service_account_namespaces=rook-ceph \
+    token_policies=push-ceph-keys \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "push-ceph-keys role written."
+
+  log "Writing read-ceph-keys role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/read-ceph-keys" \
+    bound_service_account_names=ceph-keys-read \
+    bound_service_account_namespaces=openstack \
+    token_policies=read-ceph-keys \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "read-ceph-keys role written."
+
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
   # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
