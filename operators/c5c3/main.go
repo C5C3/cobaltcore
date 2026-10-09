@@ -161,10 +161,18 @@ func main() {
 				}).SetupWithManager(mgr); err != nil {
 					return err
 				}
-				// The KeystoneUser reconciler takes mcMgr: it is the one tenant kind
-				// reconciled across clusters, because an order for a namespace
-				// assigned on a target cluster lives on that cluster.
+				// The order reconcilers take mcMgr: the order kinds are the tenant
+				// kinds reconciled across clusters, because an order for a
+				// namespace assigned on a target cluster lives on that cluster.
 				if err := (&controller.KeystoneUserReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Resolver:                mcMgr,
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
+				if err := (&controller.KeystoneProjectReconciler{
 					Client:                  mgr.GetClient(),
 					Scheme:                  mgr.GetScheme(),
 					Resolver:                mcMgr,

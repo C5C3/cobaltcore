@@ -128,32 +128,30 @@ func TestInstrumenterInstrument_RecordsMetrics(t *testing.T) {
 // TestSubReconcilerConditionTypesCoversAllNames is a drift guard: every
 // condition_type value in subReconcilerConditionTypes must be a member of
 // subConditionTypes, of the KeystoneService CR's
-// keystoneServiceSubConditionTypes or of the KeystoneUser CR's
-// keystoneUserSubConditionTypes, otherwise an addition to one list without
-// the other will silently produce metrics with a stale condition_type label.
+// keystoneServiceSubConditionTypes or of an order kind's sub-condition list,
+// otherwise an addition to one list without the other will silently produce
+// metrics with a stale condition_type label.
 // The reverse direction is NOT asserted because subConditionTypes may
 // legitimately contain entries (e.g. aggregated conditions) that have no
 // dedicated sub-reconciler.
 func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	known := make(map[string]struct{},
-		len(subConditionTypes)+len(keystoneServiceSubConditionTypes)+len(keystoneUserSubConditionTypes))
-	for _, ct := range subConditionTypes {
-		known[ct] = struct{}{}
-	}
-	for _, ct := range keystoneServiceSubConditionTypes {
-		known[ct] = struct{}{}
-	}
-	for _, ct := range keystoneUserSubConditionTypes {
-		known[ct] = struct{}{}
+	known := map[string]struct{}{}
+	for _, list := range [][]string{
+		subConditionTypes, keystoneServiceSubConditionTypes, keystoneUserSubConditionTypes,
+		keystoneProjectSubConditionTypes,
+	} {
+		for _, ct := range list {
+			known[ct] = struct{}{}
+		}
 	}
 
 	for name, condType := range subReconcilerConditionTypes {
 		_, ok := known[condType]
 		g.Expect(ok).To(BeTrue(),
 			"sub_reconciler %q maps to condition_type %q which is in none of subConditionTypes, "+
-				"keystoneServiceSubConditionTypes and keystoneUserSubConditionTypes — update the lists or "+
+				"keystoneServiceSubConditionTypes and the order kinds' lists — update the lists or "+
 				"fix the mapping", name, condType)
 	}
 }

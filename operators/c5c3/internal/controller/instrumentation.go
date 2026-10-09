@@ -62,6 +62,8 @@ var subReconcilerConditionTypes = map[string]string{
 	// reason.
 	"KeystoneUserProvision": conditionTypeKeystoneUserUserReady,
 	"KeystoneUserDelivery":  conditionTypeKeystoneUserDeliveryReady,
+	// The one leg of each further order kind, prefixed the same way.
+	"KeystoneProjectProvision": conditionTypeKeystoneProjectProjectReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

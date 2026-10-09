@@ -17,17 +17,120 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
+
+// orderFakeClient builds a fake client with the status subresources of the
+// order kinds, which the reconcilers write through Status().Update. The K-ORC
+// kinds carry no status subresource, so a test seeds and edits their status in
+// place.
+func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Object) client.Client {
+	t.Helper()
+	b := fake.NewClientBuilder().WithScheme(korcTestScheme(t)).WithObjects(objs...).
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneUser{}, &c5c3v1alpha1.KeystoneProject{},
+			&c5c3v1alpha1.KeystoneRoleAssignment{}, &c5c3v1alpha1.KeystoneCatalogEntry{})
+	if funcs != nil {
+		b = b.WithInterceptorFuncs(*funcs)
+	}
+	return b.Build()
+}
+
+// orderReconciler is what the harness drives: any order kind's reconciler.
+type orderReconciler interface {
+	Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error)
+}
+
+// orderHarness is one order reconciler with the clients of the two clusters an
+// order's objects are spread over. order is the management client for an order
+// on the management cluster.
+type orderHarness struct {
+	r           orderReconciler
+	mgmt, order client.Client
+	cluster     string
+	key         types.NamespacedName
+}
+
+// newOrderHarness seeds the clients and builds the reconciler. For an order on a
+// target cluster every object in kuTestNamespace goes to that cluster's client
+// and everything else to the management client; for the management cluster
+// both are one client.
+func newOrderHarness(
+	t *testing.T, cluster string, key types.NamespacedName, mgmtFuncs, orderFuncs *interceptor.Funcs,
+	objs []client.Object, build func(mgmt client.Client, resolver commonmulticluster.ClusterResolver) orderReconciler,
+) *orderHarness {
+	t.Helper()
+	h := &orderHarness{cluster: cluster, key: key}
+	var mgmtObjs, orderObjs []client.Object
+	for _, obj := range objs {
+		if cluster != c5c3v1alpha1.ManagementCluster && obj.GetNamespace() == kuTestNamespace {
+			orderObjs = append(orderObjs, obj)
+			continue
+		}
+		mgmtObjs = append(mgmtObjs, obj)
+	}
+	h.mgmt = orderFakeClient(t, mgmtFuncs, mgmtObjs...)
+	h.order = h.mgmt
+	var resolver commonmulticluster.ClusterResolver
+	if cluster != c5c3v1alpha1.ManagementCluster {
+		h.order = orderFakeClient(t, orderFuncs, orderObjs...)
+		resolver = &childrenResolver{children: h.order}
+	}
+	h.r = build(h.mgmt, resolver)
+	return h
+}
+
+func (h *orderHarness) reconcile(ctx context.Context) (ctrl.Result, error) {
+	return h.r.Reconcile(ctx, mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: h.key},
+		ClusterName: mcruntime.ClusterName(h.cluster),
+	})
+}
+
+// reloadOrder reloads the harness's order from its cluster, or returns nil once
+// it is gone.
+func reloadOrder[T any, PT interface {
+	*T
+	client.Object
+}](t *testing.T, h *orderHarness,
+) PT {
+	t.Helper()
+	got := PT(new(T))
+	if err := h.order.Get(context.Background(), h.key, got); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		t.Fatalf("reloading the order: %v", err)
+	}
+	return got
+}
+
+// labelledIn counts the objects of list's kind in the ControlPlane's namespace
+// "default" that carry the order name label key names.
+func labelledIn(t *testing.T, c client.Client, list client.ObjectList, key, name string) int {
+	t.Helper()
+	if err := c.List(context.Background(), list, client.InNamespace("default"), client.MatchingLabels{key: name}); err != nil {
+		t.Fatalf("listing %T: %v", list, err)
+	}
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		t.Fatalf("reading %T: %v", list, err)
+	}
+	return len(items)
+}
 
 // testOrderRef is the KeystoneUser fixture order as the scaffold sees it.
 func testOrderRef(cluster string) orderRef {
