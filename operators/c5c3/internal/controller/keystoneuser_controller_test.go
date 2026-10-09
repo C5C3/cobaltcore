@@ -881,6 +881,59 @@ func TestKeystoneUser_DeleteRemovesChildrenThenReleasesTheFinalizer(t *testing.T
 	g.Expect(kuLabelled(t, h.mgmt)).To(BeZero())
 }
 
+// TestKeystoneUser_DeleteHoldsWhileRoleAssignmentsReferenceIt pins the hold: a
+// deleting user that an assignment in its namespace names keeps every child and
+// says which assignments it waits for, and tears down once they are gone.
+func TestKeystoneUser_DeleteHoldsWhileRoleAssignmentsReferenceIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := keystoneUserControlPlane(assignOn(kuTestNamespace, ""))
+	order, seeded := kuDeletingOrder(cp)
+	assignment := &c5c3v1alpha1.KeystoneRoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: "workflow-member", Namespace: kuTestNamespace},
+		Spec: c5c3v1alpha1.KeystoneRoleAssignmentSpec{
+			ControlPlaneRef: order.Spec.ControlPlaneRef,
+			UserRef:         c5c3v1alpha1.KeystoneOrderRef{Name: kuTestName},
+			ProjectRef:      c5c3v1alpha1.KeystoneOrderRef{Name: "workflow-project"},
+			Role:            "member",
+		},
+	}
+	var deleted []string
+	h := newKUHarness(t, c5c3v1alpha1.ManagementCluster, &interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleted = append(deleted, obj.GetName())
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, nil, append([]client.Object{order, cp, assignment}, seeded...)...)
+	before := kuLabelled(t, h.mgmt)
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+	g.Expect(deleted).To(BeEmpty(), "a held teardown deletes nothing")
+	got := h.get(t)
+	g.Expect(got.Finalizers).To(ContainElement(keystoneUserFinalizerName))
+	cond := kuCondition(got, conditionTypeKeystoneUserUserReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonOrderReferencedByRoleAssignments))
+	g.Expect(cond.Message).To(ContainSubstring(`["workflow-member"]`))
+	g.Expect(kuLabelled(t, h.mgmt)).To(Equal(before), "the User, the PushSecret and the Secrets stay")
+	g.Expect(h.mgmt.Get(ctx, types.NamespacedName{Namespace: kuTestNamespace, Name: "workflow-credentials"},
+		&corev1.Secret{})).To(Succeed(), "the delivered Secret stays")
+
+	g.Expect(h.mgmt.Delete(ctx, assignment)).To(Succeed())
+	deleted = nil
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	prefix := keystoneUserChildPrefix(order, "")
+	g.Expect(deleted).To(Equal([]string{
+		prefix + "backup", prefix + "user", prefix + "user-probe",
+		prefix + "password-v1", prefix + "password-v2", prefix + "source", "workflow-credentials",
+	}), "with the assignment gone the teardown runs")
+}
+
 func TestKeystoneUser_DeleteFailsOpenWithoutTheControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
 

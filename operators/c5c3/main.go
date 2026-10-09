@@ -180,6 +180,14 @@ func main() {
 				}).SetupWithManager(mcMgr); err != nil {
 					return err
 				}
+				if err := (&controller.KeystoneRoleAssignmentReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Resolver:                mcMgr,
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
 			}
 			if opts.Webhooks {
 				// DECISION Client must be non-nil for the

@@ -17,10 +17,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -98,10 +100,11 @@ type KeystoneProjectReconciler struct {
 // deletes one. The K-ORC Projects it writes and the ControlPlane reads are
 // granted by the ControlPlane's marker block. On a target cluster the
 // target-cluster-access chart's Role for an assigned namespace grants the same
-// verbs.
+// verbs. The teardown hold reads the KeystoneRoleAssignments beside the order.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
 
 // Reconcile drives one KeystoneProject: the gates, finalizer installation, the
 // provision and the teardown.
@@ -336,9 +339,28 @@ func keystoneProjectName(order *c5c3v1alpha1.KeystoneProject) string {
 // reconcileDelete removes the project the order created and releases the
 // finalizer: K-ORC's finalizer takes the project out of Keystone, and
 // orderTeardown waits for it while the ControlPlane exists.
+//
+// The teardown holds while a KeystoneRoleAssignment in the order's namespace
+// names it as projectRef, for the reason the KeystoneUser teardown gives.
 func (r *KeystoneProjectReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneProject, cluster string,
 ) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(order, keystoneProjectFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+	referencing, err := referencingRoleAssignments(ctx, oc, order.Namespace,
+		func(ra *c5c3v1alpha1.KeystoneRoleAssignment) bool { return ra.Spec.ProjectRef.Name == order.Name })
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(referencing) > 0 {
+		statusBefore := order.Status.DeepCopy()
+		keystoneProjectFail(order)(reasonOrderReferencedByRoleAssignments,
+			orderReferencedMessage(referencing, order.Namespace, "project"))
+		return r.updateStatus(ctx, oc, order, statusBefore,
+			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
+	}
+
 	ref := keystoneProjectRef(order, cluster)
 	managed := keystoneProjectProjectRef(order, cluster)
 	return orderTeardown(ctx, r.Client, oc, order, keystoneProjectFinalizerName,
@@ -390,6 +412,12 @@ func controlPlaneToKeystoneProjectsMapper(c client.Reader) handler.MapFunc {
 	}
 }
 
+// keystoneProjectReferenceRequests maps a KeystoneRoleAssignment to the project
+// it names as projectRef.
+func keystoneProjectReferenceRequests() mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return roleAssignmentToReferencedOrderRequests(roleAssignmentProjectName)
+}
+
 // SetupWithManager registers the KeystoneProjectReconciler with the
 // multicluster manager.
 func (r *KeystoneProjectReconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -405,6 +433,8 @@ func (r *KeystoneProjectReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 //     cluster that serves the kind.
 //   - The Project children in the ControlPlane's namespace, mapped back by their
 //     labels.
+//   - KeystoneRoleAssignment: the project an assignment names, on the
+//     assignment's cluster, so an assignment leaving wakes a held teardown.
 //   - ControlPlane: the orders on the management cluster that reference it, on
 //     the updates orderControlPlanePredicate passes.
 //
@@ -426,6 +456,9 @@ func (r *KeystoneProjectReconciler) setupWithOptions(mgr mcmanager.Manager, opts
 			engageLocal, engageProviders,
 			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneProjectGVK))).
 		Watches(&orcv1alpha1.Project{}, orderChildRequests(keystoneProjectLabelKeys), engageLocal, engageNoProviders).
+		Watches(&c5c3v1alpha1.KeystoneRoleAssignment{}, keystoneProjectReferenceRequests(),
+			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
+			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneRoleAssignmentGVK))).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneProjectsMapper(local.GetClient())),
 			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).

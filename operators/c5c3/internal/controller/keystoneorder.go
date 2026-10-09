@@ -46,6 +46,11 @@ import (
 // and ownership of the children, the consent gates, the pass result, the
 // teardown and the watch mapping.
 
+// reasonOrderReferencedByRoleAssignments reports a KeystoneUser or
+// KeystoneProject whose deletion holds while a KeystoneRoleAssignment from the
+// same namespace still references it.
+const reasonOrderReferencedByRoleAssignments = "ReferencedByRoleAssignments"
+
 // orderLabelKeys are the three ownership label keys of one order kind.
 type orderLabelKeys struct{ Name, Namespace, Cluster string }
 
@@ -376,6 +381,37 @@ func sweepOrderList(
 		}
 	}
 	return deleted, nil
+}
+
+// orderSweep is one list sweepOrderLists sweeps, with the selector of the items
+// deleted first.
+type orderSweep struct {
+	list  client.ObjectList
+	first func(client.Object) bool
+}
+
+// sweepOrderLists runs sweepOrderList over each list in turn and returns the
+// deletes issued across all of them. The first error stops the sweep.
+func sweepOrderLists(
+	ctx context.Context, mgmt client.Client, owner client.Object, o orderRef, childNS string, sweeps ...orderSweep,
+) (int, error) {
+	deleted := 0
+	for _, sw := range sweeps {
+		n, err := sweepOrderList(ctx, mgmt, owner, o, childNS, sw.list, sw.first)
+		if err != nil {
+			return 0, err
+		}
+		deleted += n
+	}
+	return deleted, nil
+}
+
+// orderReferencedMessage is the ReferencedByRoleAssignments message of an order
+// whose deletion holds while the KeystoneRoleAssignments names lists still
+// reference it. noun is "user" or "project".
+func orderReferencedMessage(names []string, namespace, noun string) string {
+	return fmt.Sprintf("KeystoneRoleAssignment(s) %q in namespace %q still reference this %s; delete them first, "+
+		"because deleting the %s would take their assignments with it", names, namespace, noun, noun)
 }
 
 // --- watches ---

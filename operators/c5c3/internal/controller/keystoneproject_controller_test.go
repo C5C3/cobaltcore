@@ -433,14 +433,14 @@ func TestKeystoneProject_ConsentAndFreeze(t *testing.T) {
 
 // kpDeletingOrder returns a converged order marked for deletion with its managed
 // Project, held by K-ORC's finalizer, and a leftover probe.
-func kpDeletingOrder() (*c5c3v1alpha1.KeystoneProject, []client.Object) {
+func kpDeletingOrder(cluster string) (*c5c3v1alpha1.KeystoneProject, []client.Object) {
 	order := keystoneProjectCR()
 	order.DeletionTimestamp = ptr.To(metav1.Now())
-	project := kpManagedProject(order, "", availableImportConditions())
+	project := kpManagedProject(order, cluster, availableImportConditions())
 	project.Finalizers = []string{"openstack.k-orc.cloud/project"}
-	probe := unmanagedProjectImport(keystoneProjectProjectProbeRef(order, ""), "default", kpTestName,
+	probe := unmanagedProjectImport(keystoneProjectProjectProbeRef(order, cluster), "default", kpTestName,
 		"cp-domain-default", orcv1alpha1.CloudCredentialsReference{})
-	probe.Labels = keystoneProjectRef(order, "").childLabels()
+	probe.Labels = keystoneProjectRef(order, cluster).childLabels()
 	return order, []client.Object{project, probe}
 }
 
@@ -448,7 +448,7 @@ func TestKeystoneProject_DeleteRemovesTheProjectThenReleasesTheFinalizer(t *test
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	order, seeded := kpDeletingOrder()
+	order, seeded := kpDeletingOrder("")
 	var deleted []string
 	h := newKPHarness(t, c5c3v1alpha1.ManagementCluster, &interceptor.Funcs{
 		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
@@ -479,7 +479,7 @@ func TestKeystoneProject_DeleteRemovesTheProjectThenReleasesTheFinalizer(t *test
 func TestKeystoneProject_DeleteFailsOpenWithoutTheControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	order, seeded := kpDeletingOrder()
+	order, seeded := kpDeletingOrder("")
 	h := newKPHarness(t, c5c3v1alpha1.ManagementCluster, nil, append([]client.Object{order}, seeded...)...)
 
 	_, err := h.reconcile(context.Background())
@@ -487,4 +487,41 @@ func TestKeystoneProject_DeleteFailsOpenWithoutTheControlPlane(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kpGet(t, h)).To(BeNil(), "without a plane the finalizer is released at once")
 	g.Expect(kpLabelled(t, h.mgmt)).To(Equal(1), "only the Project K-ORC still holds is left")
+}
+
+func TestKeystoneProject_DeleteHoldsWhileRoleAssignmentsReferenceIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	order, seeded := kpDeletingOrder(kuTestCluster)
+	assignment := keystoneRoleAssignmentCR()
+	assignment.Finalizers = nil
+	other := keystoneRoleAssignmentCR()
+	other.Name = "another-project"
+	other.Spec.ProjectRef.Name = "another"
+	var deleted []string
+	h := newKPHarness(t, kuTestCluster, &interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleted = append(deleted, obj.GetName())
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, append([]client.Object{order, assignment, other, keystoneUserControlPlane(assignOn(kuTestNamespace, kuTestCluster))},
+		seeded...)...)
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(time.Minute))
+	g.Expect(deleted).To(BeEmpty(), "a held teardown deletes nothing")
+	cond := kpCondition(kpGet(t, h))
+	g.Expect(cond.Reason).To(Equal(reasonOrderReferencedByRoleAssignments))
+	g.Expect(cond.Message).To(ContainSubstring(`KeystoneRoleAssignment(s) ["workflow-member"] in namespace "tenant-a"`))
+	g.Expect(cond.Message).To(ContainSubstring("still reference this project"))
+
+	g.Expect(h.order.Delete(ctx, assignment)).To(Succeed())
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	prefix := keystoneProjectRef(order, kuTestCluster).childPrefix()
+	g.Expect(deleted).To(Equal([]string{prefix + "project", prefix + "project-probe"}),
+		"with the assignment gone the teardown proceeds")
 }
