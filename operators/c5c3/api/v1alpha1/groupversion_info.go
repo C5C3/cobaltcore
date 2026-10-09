@@ -6,7 +6,8 @@
 // It defines the ControlPlane aggregate CRD that projects an
 // OpenStack control plane (Keystone today; more services later) plus the
 // CredentialRotation and SecretAggregate helper CRDs, the KeystoneService
-// registration CRD, and the KeystoneUser order CRD.
+// registration CRD, and the order CRDs KeystoneUser, KeystoneProject,
+// KeystoneRoleAssignment and KeystoneCatalogEntry.
 //
 // DECISION (plan decision #1): the API group is "c5c3.io" (NOT
 // keystone.openstack.c5c3.io). The ControlPlane is a cross-service aggregate,
