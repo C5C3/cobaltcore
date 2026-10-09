@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# controlPlaneRef.name is immutable (CEL transition rule): the edit would
+# strand the catalog rows the order created on the old plane. The error
+# carries 'controlPlaneRef.name is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-immutable
+spec:
+  controlPlaneRef:
+    name: cp-other
+  serviceType: dns
+  serviceName: svc-dns
+  endpoints:
+  - interface: public
+    url: https://dns.example.test/v2

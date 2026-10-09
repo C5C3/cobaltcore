@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# serviceType identity is rejected by a CEL rule: the identity catalog entry
+# is ControlPlane-owned. Every other type is admitted, the built-in ones
+# included. The error carries 'ControlPlane-owned'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-invalid-servicetype-identity
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  serviceType: identity

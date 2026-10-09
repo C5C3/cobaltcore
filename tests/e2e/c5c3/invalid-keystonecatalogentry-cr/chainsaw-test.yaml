@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the KeystoneCatalogEntry admission surface. Pins the
+# CRD patterns, minimums, required fields, list keys and CEL rules in
+# operators/c5c3/api/v1alpha1/keystonecatalogentry_types.go to deterministic
+# admission failures against a real API server.
+#
+# The kind has no webhook, defaulting or validating: an order may live on a
+# target cluster, and no c5c3 webhook runs there. Every rejection below is the
+# schema's own, so no step needs an arm ruling a webhook denial out.
+#
+# Fixtures carry NO metadata.namespace: Chainsaw runs the Test in its own
+# ephemeral namespace and injects it.
+#
+# The referenced ControlPlane `cp-invalid-cr-absent` never exists, by design.
+# Admission tolerates the dangling reference, and the reconciler parks the one
+# admitted order on ControlPlaneNotFound, projects nothing and installs no
+# `c5c3.io/keystonecatalogentry-teardown` finalizer
+# (operators/c5c3/internal/controller/keystonecatalogentry_controller.go), so
+# Chainsaw's namespace cleanup cannot wedge.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-keystonecatalogentry-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` and `test_generate.py`, so a hand-edit to a generated fixture fails
+# the build before the cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-keystonecatalogentry-cr
+spec:
+  steps:
+  # An entry without a serviceType (CRD required list).
+  - try:
+    - apply:
+        file: 00-servicetype-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceType')): true
+            (contains($error, 'Required value')): true
+  # serviceType identity (CEL rule): the identity entry is ControlPlane-owned.
+  - try:
+    - apply:
+        file: 01-servicetype-identity.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ControlPlane-owned')): true
+  # serviceType outside the DNS-1123 label shape (CRD pattern).
+  - try:
+    - apply:
+        file: 02-servicetype-uppercase.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceType')): true
+            (contains($error, 'should match')): true
+  # serviceName carrying a comma (CRD pattern mirroring K-ORC's OpenStackName).
+  - try:
+    - apply:
+        file: 03-servicename-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName')): true
+            (contains($error, 'should match')): true
+  # An empty serviceName (CRD minimum); the default is the absent field.
+  - try:
+    - apply:
+        file: 04-servicename-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName')): true
+            (contains($error, 'should be at least 1 chars')): true
+  # An endpoint URL outside the http(s) scheme (CRD pattern).
+  - try:
+    - apply:
+        file: 05-endpoint-url-scheme.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints[0].url')): true
+            (contains($error, 'should match')): true
+  # An endpoint interface outside public, internal and admin (CRD enum).
+  - try:
+    - apply:
+        file: 06-endpoint-interface-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints[0].interface')): true
+            (contains($error, 'Unsupported value')): true
+  # Two endpoint rows sharing one interface collide on the listType=map key,
+  # which the apiserver answers before any rule of ours runs.
+  - try:
+    - apply:
+        file: 07-endpoint-duplicate-interface.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints')): true
+            (contains($error, 'Duplicate value')): true
+  # A 1025-byte endpoint URL (CRD maximum mirroring K-ORC's cap).
+  - try:
+    - apply:
+        file: 08-endpoint-url-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints[0].url')): true
+            (contains($error, 'Too long')): true
+  # A 64-byte metadata.name (root CEL rule): the name is a label value on the
+  # order's children.
+  - try:
+    - apply:
+        file: 09-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name must be at most 63 bytes')): true
+  # A controlPlaneRef without a name (CRD required list). No defaulting webhook
+  # fills it in first.
+  - try:
+    - apply:
+        file: 10-controlplaneref-name-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name')): true
+            (contains($error, 'Required value')): true
+  # controlPlaneRef.namespace outside the RFC-1123 label shape (CRD pattern).
+  - try:
+    - apply:
+        file: 11-controlplaneref-namespace-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'namespace')): true
+            (contains($error, 'should match')): true
+  # The immutability wave: the base is admitted, and every later fixture
+  # changes one field of it, so Chainsaw applies it as an UPDATE and the CEL
+  # transition rules evaluate.
+  - try:
+    - apply:
+        file: 12-immutable-base.yaml
+  - try:
+    - apply:
+        file: 13-immutable-controlplaneref-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name is immutable')): true
+  - try:
+    - apply:
+        file: 14-immutable-controlplaneref-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.namespace is immutable')): true
+  - try:
+    - apply:
+        file: 15-immutable-servicetype.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceType is immutable')): true
+  - try:
+    - apply:
+        file: 16-immutable-servicename.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName is immutable')): true

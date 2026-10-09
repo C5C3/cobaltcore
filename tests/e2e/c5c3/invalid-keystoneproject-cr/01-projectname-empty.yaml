@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An empty projectName is rejected by the CRD minimum: the default is
+# spelled by leaving the field out, which means metadata.name. The error
+# carries 'should be at least 1 chars'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: kp-invalid-projectname-empty
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  projectName: ""

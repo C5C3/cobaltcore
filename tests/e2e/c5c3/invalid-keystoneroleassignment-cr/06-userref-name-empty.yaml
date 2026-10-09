@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An empty userRef.name is rejected by the CRD minimum: a reference names an
+# order. The error carries 'should be at least 1 chars'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: kra-invalid-userref-name-empty
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userRef:
+    name: ""
+  projectRef:
+    name: workflow-project
+  role: member

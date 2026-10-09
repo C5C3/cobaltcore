@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An order without a role is rejected by the CRD required list. The error
+# carries 'Required value'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: kra-invalid-role-missing
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project

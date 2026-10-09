@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two endpoint rows sharing the interface 'public' collide on the listMapKey:
+# the list is a listType=map keyed by interface, so the apiserver rejects the
+# duplicate before any rule of ours runs. The error carries 'Duplicate value'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: kce-invalid-endpoint-duplicate
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  serviceType: dns
+  endpoints:
+  - interface: public
+    url: https://dns.example.test/v2
+  - interface: public
+    url: https://dns.example.test/v2

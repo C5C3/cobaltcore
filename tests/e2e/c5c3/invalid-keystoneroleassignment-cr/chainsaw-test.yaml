@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the KeystoneRoleAssignment admission surface. Pins the
+# CRD patterns, minimums, required fields and CEL rules in
+# operators/c5c3/api/v1alpha1/keystoneroleassignment_types.go to deterministic
+# admission failures against a real API server.
+#
+# The kind has no webhook, defaulting or validating: an order may live on a
+# target cluster, and no c5c3 webhook runs there. Every rejection below is the
+# schema's own, so no step needs an arm ruling a webhook denial out.
+#
+# Fixtures carry NO metadata.namespace: Chainsaw runs the Test in its own
+# ephemeral namespace and injects it.
+#
+# The referenced ControlPlane `cp-invalid-cr-absent` never exists, by design,
+# and neither do the referenced orders. Admission tolerates the dangling
+# references, and the reconciler parks the one admitted order on
+# ControlPlaneNotFound, projects nothing and installs no
+# `c5c3.io/keystoneroleassignment-teardown` finalizer
+# (operators/c5c3/internal/controller/keystoneroleassignment_controller.go), so
+# Chainsaw's namespace cleanup cannot wedge.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-keystoneroleassignment-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` and `test_generate.py`, so a hand-edit to a generated fixture fails
+# the build before the cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-keystoneroleassignment-cr
+spec:
+  steps:
+  # role carrying a comma (CRD pattern mirroring K-ORC's KeystoneName).
+  - try:
+    - apply:
+        file: 00-role-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'role')): true
+            (contains($error, 'should match')): true
+  # An empty role (CRD minimum).
+  - try:
+    - apply:
+        file: 01-role-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'role')): true
+            (contains($error, 'should be at least 1 chars')): true
+  # A 256-byte role (CRD maximum mirroring K-ORC's KeystoneName cap).
+  - try:
+    - apply:
+        file: 02-role-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'role')): true
+            (contains($error, 'Too long')): true
+  # An order without a role (CRD required list).
+  - try:
+    - apply:
+        file: 03-role-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'role')): true
+            (contains($error, 'Required value')): true
+  # An order without a userRef (CRD required list).
+  - try:
+    - apply:
+        file: 04-userref-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef')): true
+            (contains($error, 'Required value')): true
+  # An order without a projectRef (CRD required list).
+  - try:
+    - apply:
+        file: 05-projectref-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'projectRef')): true
+            (contains($error, 'Required value')): true
+  # An empty userRef.name (CRD minimum).
+  - try:
+    - apply:
+        file: 06-userref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef.name')): true
+            (contains($error, 'should be at least 1 chars')): true
+  # A 64-byte metadata.name (root CEL rule): the name is a label value on the
+  # order's children.
+  - try:
+    - apply:
+        file: 07-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name must be at most 63 bytes')): true
+  # A controlPlaneRef without a name (CRD required list). No defaulting webhook
+  # fills it in first.
+  - try:
+    - apply:
+        file: 08-controlplaneref-name-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name')): true
+            (contains($error, 'Required value')): true
+  # controlPlaneRef.namespace outside the RFC-1123 label shape (CRD pattern).
+  - try:
+    - apply:
+        file: 09-controlplaneref-namespace-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'namespace')): true
+            (contains($error, 'should match')): true
+  # The immutability wave: the base is admitted, and every later fixture
+  # changes one field of it, so Chainsaw applies it as an UPDATE and the CEL
+  # transition rules evaluate.
+  - try:
+    - apply:
+        file: 10-immutable-base.yaml
+  - try:
+    - apply:
+        file: 11-immutable-controlplaneref-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name is immutable')): true
+  - try:
+    - apply:
+        file: 12-immutable-controlplaneref-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.namespace is immutable')): true
+  - try:
+    - apply:
+        file: 13-immutable-userref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef is immutable')): true
+  - try:
+    - apply:
+        file: 14-immutable-projectref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'projectRef is immutable')): true
+  - try:
+    - apply:
+        file: 15-immutable-role.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'role is immutable')): true
