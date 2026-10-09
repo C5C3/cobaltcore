@@ -23,12 +23,14 @@
 #      sysctl, apt-get, apt, tee, dd, mknod and rm, redirects nothing but
 #      stderr to /dev/null, and never names /host/var/run.
 #   5. Run against an empty stand-in for the host root, the script exits 0 and
-#      prints the twelve headers in order with its absent and NOT FOUND
+#      prints the thirteen headers in order with its absent and NOT FOUND
 #      fallbacks, NOT FOUND for each of the five NFS module files and the six
-#      Chaos Mesh module files, nfs4 and nfsd as not registered, and both
-#      containerd socket paths as absent with no [grpc] address set; against
-#      a populated one it reports a module file, a module built into the
-#      kernel, the NFS server binary and a NIC, nfs stays NOT FOUND beside an
+#      Chaos Mesh module files, nfs4 and nfsd as not registered, both
+#      containerd socket paths as absent with no [grpc] address set, and
+#      /var/lib/rook as absent; against a populated one it reports a module
+#      file, a module built into the kernel, the NFS server binary, a NIC and
+#      a /var/lib/rook that is present with its entry mon-a, nfs stays NOT
+#      FOUND beside an
 #      nfsd.ko and ip_set_hash_ip beside an ip_set_hash_ipport.ko, the loaded
 #      modules are the NFS ones, sunrpc and the four Chaos Mesh ones alone,
 #      nfs4 is registered, a regular file at containerd's socket path prints
@@ -112,7 +114,8 @@ EXPECTED_HEADERS="$(printf '%s\n' \
   '== cgroup' \
   '== host os / binaries' \
   '== containerd socket' \
-  '== nics')"
+  '== nics' \
+  '== rook')"
 
 EXPECTED_LOAD_HEADERS="$(printf '%s\n' \
   '== load' \
@@ -356,7 +359,7 @@ run_probe_on() {
 test_script_reports_the_host_root_and_completes() {
   echo "Test: the probe script exits 0 on an empty host root and reports a populated one"
 
-  local checks=34
+  local checks=37
   render_probe "$checks" || return
 
   local script
@@ -374,7 +377,8 @@ test_script_reports_the_host_root_and_completes() {
   # Two stand-ins for the host root the pod mounts at /host: an empty one, and
   # one with four module files, three built-in modules, the NFS server binary,
   # a NIC, a regular file at containerd's socket path, a bound socket at
-  # k3s's and a containerd config.toml. Each comes with a /proc/modules and a
+  # k3s's, a containerd config.toml and a /var/lib/rook with the entry mon-a,
+  # the leftover of a Ceph torn down without its cleanup. Each comes with a /proc/modules and a
   # /proc/filesystems: empty ones, and ones with the NFS server, its helpers,
   # four Chaos Mesh modules and two other modules loaded and nfs4 registered.
   local tmp kver
@@ -385,7 +389,7 @@ test_script_reports_the_host_root_and_completes() {
     "$tmp/node/lib/modules/$kver/kernel/net/netfilter/ipset" \
     "$tmp/node/usr/sbin" "$tmp/node/sys/class/net/lan0" \
     "$tmp/node/run/containerd" "$tmp/node/run/k3s/containerd" \
-    "$tmp/node/etc/containerd" \
+    "$tmp/node/etc/containerd" "$tmp/node/var/lib/rook/mon-a" \
     "$tmp/empty-proc" "$tmp/node-proc"
   : >"$tmp/node/lib/modules/$kver/kernel/arch/x86/kvm/kvm.ko"
   : >"$tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
@@ -421,7 +425,7 @@ test_script_reports_the_host_root_and_completes() {
 
   assert_eq "the script exits 0 on a host root that lacks everything" "0" "$rc"
   # The kernel version after `== module files for` is not part of the header.
-  assert_eq "the script prints the twelve headers in order" "$EXPECTED_HEADERS" \
+  assert_eq "the script prints the thirteen headers in order" "$EXPECTED_HEADERS" \
     "$(printf '%s\n' "$empty" | grep -E '^== ' | sed -E 's/^(== module files for) .*/\1/')"
   assert_contains "a missing module file prints NOT FOUND" "$empty" "kvm: NOT FOUND"
   assert_contains "a missing binary prints absent" "$empty" "usr/sbin/libvirtd: absent"
@@ -436,6 +440,8 @@ test_script_reports_the_host_root_and_completes() {
   for m in ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf; do
     assert_contains "a missing $m module file prints NOT FOUND" "$empty" "$m: NOT FOUND"
   done
+  assert_eq "a host root without /var/lib/rook prints it absent" "/var/lib/rook: absent" \
+    "$(section "$empty" '== rook')"
   assert_eq "a host root without run/ and config.toml prints both sockets absent and no address" \
     "$(printf '%s\n' 'run/containerd/containerd.sock: absent' \
       'run/k3s/containerd/containerd.sock: absent' 'config.toml [grpc] address: not set')" \
@@ -446,6 +452,10 @@ test_script_reports_the_host_root_and_completes() {
   assert_contains "a module built into the kernel prints builtin" "$node" "tun: builtin"
   assert_contains "an installed NFS server prints present" "$node" "usr/sbin/rpc.nfsd: present"
   assert_contains "a NIC prints its MTU and state" "$node" "lan0: mtu=9000 operstate=up"
+  assert_eq "a /var/lib/rook prints present first" "/var/lib/rook: present" \
+    "$(section "$node" '== rook' | head -n 1)"
+  assert_eq "and then its entries, one per line" "mon-a" \
+    "$(section "$node" '== rook' | grep -x 'mon-a')"
   assert_contains "the nfsd module file prints its path" \
     "$node" "nfsd: $tmp/node/lib/modules/$kver/kernel/fs/nfsd/nfsd.ko"
   assert_contains "a built-in sunrpc prints builtin" "$node" "sunrpc: builtin"
