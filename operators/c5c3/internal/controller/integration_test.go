@@ -14,6 +14,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -5279,6 +5280,154 @@ func TestIntegration_ControlPlane_NamespaceAssignmentsSchemaValidation(t *testin
 			}
 		})
 	}
+}
+
+// keystoneUserObject returns a KeystoneUser as an unstructured object, so a
+// case can send the shapes a typed client never would: an empty userName, a
+// zero passwordGeneration, a controlPlaneRef without a name.
+func keystoneUserObject(name, namespace string, spec map[string]any) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+	u.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind("KeystoneUser"))
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	return u
+}
+
+// TestIntegration_KeystoneUser_SchemaValidation pins every admission rule of the
+// KeystoneUser CRD against the real envtest API server. The kind has no webhook,
+// because a target cluster runs none, so these rules are all there is; the
+// substrings are the ones the invalid-keystoneuser-cr chainsaw corpus asserts on.
+func TestIntegration_KeystoneUser_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ref := map[string]any{"name": "cp"}
+	createCases := []struct {
+		name       string
+		objName    string
+		spec       map[string]any
+		wantErrSub string
+	}{
+		{name: "a comma in userName", spec: map[string]any{"controlPlaneRef": ref, "userName": "a,b"}, wantErrSub: "should match"},
+		{name: "an empty userName", spec: map[string]any{"controlPlaneRef": ref, "userName": ""}, wantErrSub: "should be at least 1 chars"},
+		{name: "a 256-byte userName", spec: map[string]any{"controlPlaneRef": ref, "userName": strings.Repeat("a", 256)}, wantErrSub: "Too long"},
+		{
+			name: "a zero passwordGeneration", spec: map[string]any{"controlPlaneRef": ref, "passwordGeneration": int64(0)},
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		{
+			name: "a 64-byte metadata.name", objName: strings.Repeat("a", 64), spec: map[string]any{"controlPlaneRef": ref},
+			wantErrSub: "metadata.name must be at most 63 bytes",
+		},
+		{name: "a controlPlaneRef without a name", spec: map[string]any{"controlPlaneRef": map[string]any{}}, wantErrSub: "Required value"},
+		{
+			name: "a controlPlaneRef namespace outside the label shape",
+			spec: map[string]any{"controlPlaneRef": map[string]any{"name": "cp", "namespace": "Bad_NS"}}, wantErrSub: "should match",
+		},
+	}
+	for i, tc := range createCases {
+		t.Run("create rejects "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			err := c.Create(ctx, keystoneUserObject(cmp.Or(tc.objName, fmt.Sprintf("ku-%d", i)), ns.Name, tc.spec))
+			g.Expect(err).To(HaveOccurred(), "admission must reject %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+		})
+	}
+
+	t.Run("a minimal order is admitted with passwordGeneration 1", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		g.Expect(c.Create(ctx, keystoneUserObject(strings.Repeat("a", 63), ns.Name,
+			map[string]any{"controlPlaneRef": ref}))).To(Succeed(), "a 63-byte name is admitted")
+		stored := &c5c3v1alpha1.KeystoneUser{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: strings.Repeat("a", 63)}, stored)).To(Succeed())
+		g.Expect(stored.Spec.PasswordGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.UserName).To(BeEmpty(), "the userName default is the reconciler's, not the schema's")
+	})
+
+	updateCases := []struct {
+		name       string
+		mutate     func(*c5c3v1alpha1.KeystoneUser)
+		wantErrSub string
+	}{
+		{
+			name:       "a changed controlPlaneRef.name",
+			mutate:     func(o *c5c3v1alpha1.KeystoneUser) { o.Spec.ControlPlaneRef.Name = "other" },
+			wantErrSub: "controlPlaneRef.name is immutable; delete and re-create the KeystoneUser to move it to another ControlPlane",
+		},
+		{
+			name:       "a changed controlPlaneRef.namespace",
+			mutate:     func(o *c5c3v1alpha1.KeystoneUser) { o.Spec.ControlPlaneRef.Namespace = "other" },
+			wantErrSub: "controlPlaneRef.namespace is immutable; delete and re-create the KeystoneUser to move it to another ControlPlane",
+		},
+		{
+			name:       "a removed controlPlaneRef.namespace",
+			mutate:     func(o *c5c3v1alpha1.KeystoneUser) { o.Spec.ControlPlaneRef.Namespace = "" },
+			wantErrSub: "controlPlaneRef.namespace is immutable",
+		},
+		{
+			name:       "a changed explicit userName",
+			mutate:     func(o *c5c3v1alpha1.KeystoneUser) { o.Spec.UserName = "other-user" },
+			wantErrSub: "userName is immutable; delete and re-create the KeystoneUser to rename its user",
+		},
+		{
+			name:       "a lowered passwordGeneration",
+			mutate:     func(o *c5c3v1alpha1.KeystoneUser) { o.Spec.PasswordGeneration = 1 },
+			wantErrSub: "passwordGeneration may only increase",
+		},
+	}
+	for i, tc := range updateCases {
+		t.Run("update rejects "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+			order := &c5c3v1alpha1.KeystoneUser{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("base-%d", i), Namespace: ns.Name},
+				Spec: c5c3v1alpha1.KeystoneUserSpec{
+					ControlPlaneRef:    c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp", Namespace: "cp-ns"},
+					UserName:           "svc-user",
+					PasswordGeneration: 2,
+				},
+			}
+			g.Expect(c.Create(ctx, order)).To(Succeed())
+
+			tc.mutate(order)
+			err := c.Update(ctx, order)
+			g.Expect(err).To(HaveOccurred(), "admission must reject %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+		})
+	}
+
+	// The userName rule compares the EFFECTIVE name, so spelling out the
+	// metadata.name default is not a rename, and naming anything else is.
+	t.Run("update compares the effective userName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		order := &c5c3v1alpha1.KeystoneUser{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow", Namespace: ns.Name},
+			Spec:       c5c3v1alpha1.KeystoneUserSpec{ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		order.Spec.UserName = "other-user"
+		err := c.Update(ctx, order)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("userName is immutable"))
+
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), order)).To(Succeed())
+		order.Spec.UserName = "workflow"
+		order.Spec.PasswordGeneration = 3
+		g.Expect(c.Update(ctx, order)).To(Succeed(), "the default spelled out and a raised generation are admitted")
+	})
 }
 
 // integrationKeystoneService returns a valid two-block KeystoneService for the

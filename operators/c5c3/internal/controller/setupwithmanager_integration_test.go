@@ -12,7 +12,8 @@
 // Watches, the CredentialRotation builder, and the KeystoneService chain (ten
 // Owns plus the ControlPlane and consumer-Secret Watches) are never executed
 // by any test. This test wires the production SetupWithManager methods of all
-// three controllers onto an envtest-backed manager and starts it, mirroring
+// four controllers (the KeystoneUser one too) onto an envtest-backed manager
+// and starts it, mirroring
 // the main.go wiring, so a regression that drops a watch or crashes the
 // manager on a missing kind fails here instead of only in a live cluster.
 //
@@ -91,9 +92,9 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
-			// Mirror operators/c5c3/main.go: all three controllers are registered
-			// on the same manager, the ControlPlane one through the multicluster
-			// wrapper. A nil provider engages no target cluster, so the remote
+			// Mirror operators/c5c3/main.go: all four controllers are registered
+			// on the same manager, the ControlPlane and KeystoneUser ones through
+			// the multicluster wrapper. A nil provider engages no target cluster, so the remote
 			// legs add nothing and every local informer must still sync. That is
 			// the single-cluster default path: an operator started with an empty
 			// --clusters-namespace clears the provider the same way.
@@ -123,13 +124,23 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
+			// The KeystoneUser reconciler takes mcMgr, as in main.go. Its order
+			// leg engages the management cluster here, so the keystoneusers
+			// informer has to sync like every other one.
+			if err := (&KeystoneUserReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
+				return err
+			}
 			registered = true
 			return nil
 		},
 	)
 
 	g.Expect(registered).To(BeTrue(),
-		"all three SetupWithManager calls must have completed without error")
+		"all four SetupWithManager calls must have completed without error")
 }
 
 // TestBuildControlPlaneController_StartsWithoutServiceCRDs is the exact scenario
