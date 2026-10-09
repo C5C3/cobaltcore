@@ -127,8 +127,9 @@ func TestInstrumenterInstrument_RecordsMetrics(t *testing.T) {
 
 // TestSubReconcilerConditionTypesCoversAllNames is a drift guard: every
 // condition_type value in subReconcilerConditionTypes must be a member of
-// subConditionTypes or of the KeystoneService CR's
-// keystoneServiceSubConditionTypes, otherwise an addition to one list without
+// subConditionTypes, of the KeystoneService CR's
+// keystoneServiceSubConditionTypes or of the KeystoneUser CR's
+// keystoneUserSubConditionTypes, otherwise an addition to one list without
 // the other will silently produce metrics with a stale condition_type label.
 // The reverse direction is NOT asserted because subConditionTypes may
 // legitimately contain entries (e.g. aggregated conditions) that have no
@@ -136,19 +137,24 @@ func TestInstrumenterInstrument_RecordsMetrics(t *testing.T) {
 func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	known := make(map[string]struct{}, len(subConditionTypes)+len(keystoneServiceSubConditionTypes))
+	known := make(map[string]struct{},
+		len(subConditionTypes)+len(keystoneServiceSubConditionTypes)+len(keystoneUserSubConditionTypes))
 	for _, ct := range subConditionTypes {
 		known[ct] = struct{}{}
 	}
 	for _, ct := range keystoneServiceSubConditionTypes {
 		known[ct] = struct{}{}
 	}
+	for _, ct := range keystoneUserSubConditionTypes {
+		known[ct] = struct{}{}
+	}
 
 	for name, condType := range subReconcilerConditionTypes {
 		_, ok := known[condType]
 		g.Expect(ok).To(BeTrue(),
-			"sub_reconciler %q maps to condition_type %q which is in neither subConditionTypes "+
-				"nor keystoneServiceSubConditionTypes — update the lists or fix the mapping", name, condType)
+			"sub_reconciler %q maps to condition_type %q which is in none of subConditionTypes, "+
+				"keystoneServiceSubConditionTypes and keystoneUserSubConditionTypes — update the lists or "+
+				"fix the mapping", name, condType)
 	}
 }
 
@@ -180,6 +186,42 @@ func TestInstrumenterInstrument_KeystoneServiceLabelPairs(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
 			To(Equal(1.0), "error path must attribute %s to condition_type %s", name, condType)
+	}
+}
+
+// TestInstrumenterInstrument_KeystoneUserLabelPairs is the same guard for the
+// KeystoneUser controller's two legs: an unmapped name would label their error
+// series UNKNOWN.
+func TestInstrumenterInstrument_KeystoneUserLabelPairs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := withTestInstrumenter(t)
+
+	for name, condType := range map[string]string{
+		"KeystoneUserProvision": conditionTypeKeystoneUserUserReady,
+		"KeystoneUserDelivery":  conditionTypeKeystoneUserDeliveryReady,
+	} {
+		durLabels := map[string]string{"sub_reconciler": name}
+		errLabels := map[string]string{"sub_reconciler": name, "condition_type": condType}
+		unknownLabels := map[string]string{
+			"sub_reconciler": name,
+			"condition_type": instrumentation.ConditionTypeUnknown,
+		}
+
+		_, err := instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, nil
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(histogramSampleCountOn(t, reg, reconcileDurationMetric, durLabels)).
+			To(Equal(uint64(1)), "success path must observe exactly one duration sample for %s", name)
+
+		_, err = instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, errors.New("boom")
+		})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
+			To(Equal(1.0), "error path must attribute %s to condition_type %s", name, condType)
+		g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, unknownLabels)).
+			To(Equal(0.0), "%s must never fall back to the UNKNOWN condition_type", name)
 	}
 }
 

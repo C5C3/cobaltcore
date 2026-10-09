@@ -27,6 +27,14 @@ const (
 	// shows up in status.
 	namespaceAssignmentRequeueAfter = time.Minute
 
+	// keystoneUserRefreshAfter is the cadence a KeystoneUser no watch reaches is
+	// reconciled at. An order on a target cluster has no ControlPlane watch, so a
+	// publication or admin-domain edit reaches it on this interval. A refusal that
+	// only an edit outside the order's own watches lifts (an unpublished Keystone,
+	// a Secret somebody else owns, the admin identity) is re-read on it on either
+	// cluster.
+	keystoneUserRefreshAfter = 10 * time.Minute
+
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second

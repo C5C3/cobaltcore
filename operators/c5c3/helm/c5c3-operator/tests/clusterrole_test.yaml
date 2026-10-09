@@ -30,6 +30,64 @@ tests:
               - update
               - watch
 
+  # The KeystoneUser reconciler reads the orders and updates them to install
+  # and release its finalizer; it never creates or deletes one.
+  - it: should grant get/list/watch/update/patch on keystoneusers and nothing more
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneusers
+            verbs:
+              - get
+              - list
+              - patch
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - controlplanes/status
+              - credentialrotations/status
+              - keystoneservices/status
+              - keystoneusers/status
+            verbs:
+              - get
+              - patch
+              - update
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - controlplanes/finalizers
+              - keystoneservices/finalizers
+              - keystoneusers/finalizers
+            verbs:
+              - update
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneusers
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
   # The ControlPlane reads the SizingProfile it references and watches the
   # kind; it never writes one.
   - it: should grant read-only on secretaggregates and sizingprofiles
