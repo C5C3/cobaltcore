@@ -48,10 +48,10 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache"`))
 	g.Expect(rendered).To(ContainSubstring(`"LOCATION": ["memcached:11211"]`))
 	// The image-scoped KEY_PREFIX sorts between BACKEND and LOCATION. The
-	// literal is sha256("ghcr.io/c5c3/horizon:2025.2")[:12], pinned rather
+	// literal is sha256("ghcr.io/c5c3/horizon:2026.1")[:12], pinned rather
 	// than computed so a change of the hash input or length fails here.
-	g.Expect(rendered).To(ContainSubstring(`"KEY_PREFIX": "horizon-cb859537a8dc"`))
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-cb859537a8dc", "LOCATION": ["memcached:11211"]}}`))
+	g.Expect(rendered).To(ContainSubstring(`"KEY_PREFIX": "horizon-e3b48cc65c6f"`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}}`))
 
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"`))
 	// The server-side clients must use the internal catalog interface — the
@@ -553,7 +553,7 @@ func TestDefaultSettings_RegistryDriftGuard(t *testing.T) {
 
 // --- image-scoped cache KEY_PREFIX ---
 
-// TestCacheKeyPrefix_DerivesFromImageReference pins the prefix of the three
+// TestCacheKeyPrefix_DerivesFromImageReference pins the prefix of the two
 // releases under releases/ and of the edge inputs. Expected values are
 // literals, never a call to cacheKeyPrefix, so a change of the hash input or
 // length fails the test.
@@ -564,7 +564,6 @@ func TestCacheKeyPrefix_DerivesFromImageReference(t *testing.T) {
 		image commonv1.ImageSpec
 		want  string
 	}{
-		{name: "2025.2 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2025.2"}, want: "horizon-cb859537a8dc"},
 		{name: "2026.1 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2026.1"}, want: "horizon-e3b48cc65c6f"},
 		{name: "2026.2 tag", image: commonv1.ImageSpec{Repository: repository, Tag: "2026.2"}, want: "horizon-bf42999233c3"},
 		// 64 hex characters, the digest shape the CRD pattern accepts. The
@@ -593,7 +592,7 @@ func TestCacheKeyPrefix_DerivesFromImageReference(t *testing.T) {
 		})
 	}
 
-	// Pairwise distinct: every row, the three releases, the digest pin and
+	// Pairwise distinct: every row, the two releases, the digest pin and
 	// the zero ImageSpec, gets its own prefix, so no two of them share cache
 	// entries on one Memcached. A new row must hash to a new prefix too.
 	if len(seen) != len(tests) {
@@ -618,14 +617,14 @@ func TestReconcileConfig_SameImageRendersSameConfigMapName(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(second).To(Equal(first))
 
-	h.Spec.Image.Tag = "2026.1"
+	h.Spec.Image.Tag = "2026.2"
 	third, err := r.reconcileConfig(ctx, r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(third).NotTo(Equal(first), "an image change must move the ConfigMap name")
 
 	var cm corev1.ConfigMap
 	g.Expect(r.Get(ctx, types.NamespacedName{Namespace: "default", Name: third}, &cm)).To(Succeed())
-	g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(`"KEY_PREFIX": "horizon-e3b48cc65c6f"`))
+	g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(`"KEY_PREFIX": "horizon-bf42999233c3"`))
 }
 
 // TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported covers the
@@ -671,5 +670,5 @@ func TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix(t *t
 
 	rendered, err := renderLocalSettings(h)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-cb859537a8dc", "LOCATION": None}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None}}`))
 }

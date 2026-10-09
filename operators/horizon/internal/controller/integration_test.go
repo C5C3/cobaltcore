@@ -121,7 +121,7 @@ func integrationHorizon(name, namespace string) *horizonv1alpha1.Horizon {
 		},
 		Spec: horizonv1alpha1.HorizonSpec{
 			Deployment: horizonv1alpha1.DeploymentSpec{Replicas: 3},
-			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2025.2"},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
 			Cache: commonv1.CacheSpec{
 				Servers: []string{"memcached-0.memcached:11211"},
 				Backend: horizonv1alpha1.DefaultCacheBackend,
