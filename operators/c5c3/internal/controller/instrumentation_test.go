@@ -140,7 +140,7 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	known := map[string]struct{}{}
 	for _, list := range [][]string{
 		subConditionTypes, keystoneServiceSubConditionTypes, keystoneUserSubConditionTypes,
-		keystoneProjectSubConditionTypes,
+		keystoneProjectSubConditionTypes, keystoneRoleAssignmentSubConditionTypes,
 	} {
 		for _, ct := range list {
 			known[ct] = struct{}{}

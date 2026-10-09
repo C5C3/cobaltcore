@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -130,10 +131,12 @@ type KeystoneUserReconciler struct {
 // The kinds it writes in the ControlPlane's namespace (K-ORC users, Secrets,
 // PushSecrets) and the ControlPlane reads are granted by the ControlPlane's
 // marker block. On a target cluster the target-cluster-access chart's Role for
-// an assigned namespace grants the same verbs.
+// an assigned namespace grants the same verbs. The teardown hold reads the
+// KeystoneRoleAssignments beside the order.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
 
 // Reconcile drives one KeystoneUser: the gates, finalizer installation, the
 // provision and delivery, and the teardown.
@@ -420,9 +423,30 @@ func (r *KeystoneUserReconciler) ensureKeystoneUserSecret(
 // reconcileDelete removes everything the order created and releases the
 // finalizer through orderTeardown: K-ORC's finalizer takes the user out of
 // Keystone and ESO's takes the password out of OpenBao.
+//
+// The teardown holds while a KeystoneRoleAssignment in the order's namespace
+// names it as userRef. K-ORC guards a User with a finalizer while a
+// RoleAssignment references it, so a sweep would wedge, and the user's removal
+// would take the assignment with it; the order says why it waits instead.
 func (r *KeystoneUserReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster string,
 ) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(order, keystoneUserFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+	referencing, err := referencingRoleAssignments(ctx, oc, order.Namespace,
+		func(ra *c5c3v1alpha1.KeystoneRoleAssignment) bool { return ra.Spec.UserRef.Name == order.Name })
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(referencing) > 0 {
+		statusBefore := order.Status.DeepCopy()
+		keystoneUserFail(order, conditionTypeKeystoneUserUserReady)(reasonOrderReferencedByRoleAssignments,
+			orderReferencedMessage(referencing, order.Namespace, "user"))
+		return r.updateStatus(ctx, oc, order, statusBefore,
+			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
+	}
+
 	return orderTeardown(ctx, r.Client, oc, order, keystoneUserFinalizerName, keystoneUserControlPlaneKey(order),
 		func(ctx context.Context, childNS string) (int, error) {
 			return r.sweepKeystoneUserChildren(ctx, oc, order, cluster, childNS)
@@ -441,27 +465,19 @@ func (r *KeystoneUserReconciler) reconcileDelete(
 func (r *KeystoneUserReconciler) sweepKeystoneUserChildren(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster, childNS string,
 ) (int, error) {
-	ref := keystoneUserRef(order, cluster)
 	userRef := keystoneUserUserRef(order, cluster)
 	passwordPrefix := keystoneUserPasswordSecretPrefix(order, cluster)
-	remaining := 0
-	for _, leg := range []struct {
-		list  client.ObjectList
-		first func(client.Object) bool
-	}{
-		{list: &esov1alpha1.PushSecretList{}},
+	remaining, err := sweepOrderLists(ctx, r.Client, order, keystoneUserRef(order, cluster), childNS,
+		orderSweep{list: &esov1alpha1.PushSecretList{}},
 		// The managed User first, then the probe, both of the one kind.
-		{list: &orcv1alpha1.UserList{}, first: func(obj client.Object) bool { return obj.GetName() == userRef }},
+		orderSweep{list: &orcv1alpha1.UserList{}, first: func(obj client.Object) bool { return obj.GetName() == userRef }},
 		// The password Secrets, then the source Secret.
-		{list: &corev1.SecretList{}, first: func(obj client.Object) bool {
+		orderSweep{list: &corev1.SecretList{}, first: func(obj client.Object) bool {
 			return strings.HasPrefix(obj.GetName(), passwordPrefix)
 		}},
-	} {
-		n, err := sweepOrderList(ctx, r.Client, order, ref, childNS, leg.list, leg.first)
-		if err != nil {
-			return 0, err
-		}
-		remaining += n
+	)
+	if err != nil {
+		return 0, err
 	}
 
 	delivered := &corev1.Secret{}
@@ -527,6 +543,12 @@ func controlPlaneToKeystoneUsersMapper(c client.Reader) handler.MapFunc {
 	}
 }
 
+// keystoneUserReferenceRequests maps a KeystoneRoleAssignment to the user it
+// names as userRef.
+func keystoneUserReferenceRequests() mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return roleAssignmentToReferencedOrderRequests(roleAssignmentUserName)
+}
+
 // SetupWithManager registers the KeystoneUserReconciler with the multicluster
 // manager.
 func (r *KeystoneUserReconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -546,6 +568,8 @@ func (r *KeystoneUserReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 //     or a deletion brings the order back with the event's cluster.
 //   - The User, Secret and PushSecret children in the ControlPlane's namespace,
 //     mapped back by their labels.
+//   - KeystoneRoleAssignment: the user an assignment names, on the assignment's
+//     cluster, so an assignment leaving wakes a held teardown.
 //   - ControlPlane: the orders on the management cluster that reference it,
 //     on the updates orderControlPlanePredicate passes.
 //
@@ -573,6 +597,9 @@ func (r *KeystoneUserReconciler) setupWithOptions(mgr mcmanager.Manager, opts cr
 		Watches(&orcv1alpha1.User{}, children, engageLocal, engageNoProviders).
 		Watches(&corev1.Secret{}, children, engageLocal, engageNoProviders).
 		Watches(&esov1alpha1.PushSecret{}, children, engageLocal, engageNoProviders).
+		Watches(&c5c3v1alpha1.KeystoneRoleAssignment{}, keystoneUserReferenceRequests(),
+			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
+			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneRoleAssignmentGVK))).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneUsersMapper(local.GetClient())),
 			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).

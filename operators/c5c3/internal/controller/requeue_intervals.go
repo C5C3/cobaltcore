@@ -35,6 +35,11 @@ const (
 	// cluster.
 	keystoneUserRefreshAfter = 10 * time.Minute
 
+	// orderReferenceHoldRequeueAfter is the fallback cadence a KeystoneUser or
+	// KeystoneProject teardown re-checks the KeystoneRoleAssignments that hold it
+	// at. The assignment watch normally wakes it first.
+	orderReferenceHoldRequeueAfter = time.Minute
+
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second

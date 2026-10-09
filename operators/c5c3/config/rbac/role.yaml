@@ -87,6 +87,7 @@ rules:
   resources:
   - controlplanes/finalizers
   - keystoneprojects/finalizers
+  - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
   verbs:
@@ -97,6 +98,7 @@ rules:
   - controlplanes/status
   - credentialrotations/status
   - keystoneprojects/status
+  - keystoneroleassignments/status
   - keystoneservices/status
   - keystoneusers/status
   verbs:
@@ -107,6 +109,7 @@ rules:
   - c5c3.io
   resources:
   - keystoneprojects
+  - keystoneroleassignments
   - keystoneusers
   verbs:
   - get
