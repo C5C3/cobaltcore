@@ -334,10 +334,10 @@ plaintext HTTP on port 80 — the only place CI imports over a widened filter.
 
 ::: details The widened filter the Tempest leg applies
 The leg isolates its Glance from the parallel suite pool, so the CR name
-(`glance-tempest-2025-2`) and its database and Keystone endpoint are the leg's
+(`glance-tempest-2026-1`) and its database and Keystone endpoint are the leg's
 own rather than the `controlplane-glance` devstack names used above. Its
 `disallowedHosts` stays unset, so the operator's host denylist keeps applying
 behind the widened scheme and port:
 
-<<< @/../tests/tempest/glance-2025-2/02-glance-cr.yaml#glance-cr
+<<< @/../tests/tempest/glance-2026-1/02-glance-cr.yaml#glance-cr
 :::
