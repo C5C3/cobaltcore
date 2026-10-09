@@ -16,7 +16,8 @@
   "flux": {
     "managerFilePatterns": [
       "/^deploy/flux-system/(releases|sources)/.+\\.yaml$/",
-      "/^deploy/kind/.+\\.yaml$/"
+      "/^deploy/kind/.+\\.yaml$/",
+      "/^deploy/lab/metal-stack/ceph/(release|source)\\.yaml$/"
     ]
   },
   "customManagers": [
@@ -525,6 +526,19 @@
       "datasourceTemplate": "github-tags",
       "packageNameTemplate": "novnc/noVNC",
       "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Ceph image of the lab Ceph: the CephCluster and the toolbox run the same tag and digest",
+      "managerFilePatterns": [
+        "/deploy/lab/metal-stack/ceph/cluster/cluster\\.yaml$/",
+        "/deploy/lab/metal-stack/ceph/cluster/toolbox\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>quay\\.io/ceph/ceph):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -908,6 +922,29 @@
     },
     {
       "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/ceph/cluster/cluster.yaml",
+        "deploy/lab/metal-stack/ceph/cluster/toolbox.yaml"
+      ],
+      "matchPackageNames": ["quay.io/ceph/ceph"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "A Ceph minor is a question of the versions the pinned Rook supports, so nothing automerges; one group moves the CephCluster and the toolbox together",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/lab/metal-stack/ceph/cluster/cluster.yaml",
+        "deploy/lab/metal-stack/ceph/cluster/toolbox.yaml"
+      ],
+      "matchPackageNames": ["quay.io/ceph/ceph"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "ceph image"
+    },
+    {
+      "matchManagers": ["custom.regex"],
       "matchFileNames": ["deploy/lab/metal-stack/dizzy-soak/job.yaml"],
       "matchPackageNames": ["docker.io/alpine/k8s"],
       "matchUpdateTypes": ["major", "minor"],
@@ -1138,6 +1175,23 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "csi-driver-nfs chart"
+    },
+    {
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/lab/metal-stack/ceph/release.yaml"],
+      "matchPackageNames": ["rook-ceph"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "The Rook operator of the lab Ceph: a privileged operator with the ceph.rook.io CRDs, pinned to one version; a minor changes the Ceph versions it supports, so nothing automerges",
+      "matchManagers": ["flux"],
+      "matchFileNames": ["deploy/lab/metal-stack/ceph/release.yaml"],
+      "matchPackageNames": ["rook-ceph"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "rook-ceph chart"
     }
   ]
 }

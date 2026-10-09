@@ -6,9 +6,11 @@
 # Verify renovate.json points Renovate's native flux manager at the Flux
 # HelmReleases, so a chart release past the ceiling of a range opens a reviewed
 # PR that raises the ceiling and keeps the floor. The test pins:
-#   - the two flux.managerFilePatterns, replayed with Perl against every
+#   - the three flux.managerFilePatterns, replayed with Perl against every
 #     HelmRelease and HelmRepository file under deploy/flux-system/ and
-#     deploy/kind/, and against deploy/lab/ and deploy/examples/, which stay out
+#     deploy/kind/, and against deploy/lab/ and deploy/examples/, of which only
+#     the release.yaml and source.yaml of deploy/lab/metal-stack/ceph match:
+#     the lab Ceph has no kind sibling
 #   - the order of the flux packageRules: the base rule (widen, no automerge,
 #     3-day cooldown, timestamp-optional) is the first flux rule, so every later
 #     one overrides it
@@ -18,7 +20,8 @@
 #     exactly the files a customManager also reads (one owner per pin, never
 #     none)
 #   - the per-chart policies: bump plus automerged minor/patch for gateway-helm
-#     and headlamp, an exact csi-driver-nfs pin with majors disabled, one group
+#     and headlamp, exact csi-driver-nfs and rook-ceph pins with majors
+#     disabled and minor/patch unmerged, one group
 #     each for the two mariadb-operator charts and for kube-prometheus-stack
 #     with prometheus-operator-crds
 #
@@ -123,11 +126,11 @@ package_of() {
 }
 
 test_flux_file_patterns() {
-  echo "Test: the flux manager reads deploy/flux-system/ and deploy/kind/, not deploy/lab/ or deploy/examples/"
+  echo "Test: the flux manager reads deploy/flux-system/, deploy/kind/ and the lab Ceph's chart, nothing else under deploy/lab/ or deploy/examples/"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: jq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
     return
   fi
 
@@ -138,13 +141,13 @@ test_flux_file_patterns() {
     FAIL=$((FAIL + 1))
     return
   fi
-  assert_eq "flux.managerFilePatterns names the two Flux trees" \
-    '["/^deploy/flux-system/(releases|sources)/.+\\.yaml$/","/^deploy/kind/.+\\.yaml$/"]' \
+  assert_eq "flux.managerFilePatterns names the two Flux trees and the two Flux files of the lab Ceph" \
+    '["/^deploy/flux-system/(releases|sources)/.+\\.yaml$/","/^deploy/kind/.+\\.yaml$/","/^deploy/lab/metal-stack/ceph/(release|source)\\.yaml$/"]' \
     "$patterns"
 
   if ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: perl not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
+    echo "  SKIP: perl not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
 
@@ -171,11 +174,14 @@ test_flux_file_patterns() {
     fi
   fi
 
-  local outside strays
+  # The lab Ceph has no kind overlay to inherit, so its HelmRelease and
+  # HelmRepository are the two files under deploy/lab/ the flux manager reads.
+  local outside strays ceph
+  ceph="$(printf '%s\n' deploy/lab/metal-stack/ceph/release.yaml deploy/lab/metal-stack/ceph/source.yaml)"
   outside="$(cd "$PROJECT_ROOT" && find deploy/lab deploy/examples -type f 2>/dev/null | sort)"
-  strays="$(paths_matching "$pattern_lines" "$outside")"
+  strays="$(paths_matching "$pattern_lines" "$outside" | grep -vxF -- "$ceph" || true)"
   if [ -z "$strays" ]; then
-    echo "  PASS: no file under deploy/lab/ or deploy/examples/ matches a flux pattern"
+    echo "  PASS: no other file under deploy/lab/ or deploy/examples/ matches a flux pattern"
     PASS=$((PASS + 1))
   else
     while IFS= read -r f; do
@@ -183,6 +189,8 @@ test_flux_file_patterns() {
       FAIL=$((FAIL + 1))
     done <<<"$strays"
   fi
+  assert_eq "the release.yaml and source.yaml of deploy/lab/metal-stack/ceph match a flux pattern" \
+    "$ceph" "$(paths_matching "$pattern_lines" "$ceph")"
 }
 
 test_base_rule_is_first() {
@@ -483,6 +491,59 @@ test_csi_driver_nfs_rules() {
     "3 days" "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
 }
 
+test_rook_ceph_rules() {
+  echo "Test: the rook-ceph pin of the lab Ceph keeps majors disabled and minor/patch unmerged"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
+    return
+  fi
+
+  local path="deploy/lab/metal-stack/ceph/release.yaml" pkg version
+  pkg="$(chart_of "$path")"
+  version="$(chart_versions "$path")"
+  assert_eq "$path carries the chart rook-ceph" "rook-ceph" "$pkg"
+  assert_eq "its version is one exact version, not a range" "true" \
+    "$([[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo true || echo false)"
+
+  local major_rule minor_rule
+  major_rule="$(jq -c --arg path "$path" --arg pkg "$pkg" '.packageRules[]
+    | select(
+        .matchManagers == ["flux"]
+        and ((.matchFileNames // []) | index($path)) != null
+        and (((.matchPackageNames // []) | index($pkg)) != null)
+        and (((.matchUpdateTypes // []) | index("major")) != null)
+      )' "$RENOVATE_FILE" | head -1)"
+  minor_rule="$(jq -c --arg path "$path" --arg pkg "$pkg" '.packageRules[]
+    | select(
+        .matchManagers == ["flux"]
+        and ((.matchFileNames // []) | index($path)) != null
+        and (((.matchPackageNames // []) | index($pkg)) != null)
+        and (((.matchUpdateTypes // []) | index("minor")) != null)
+      )' "$RENOVATE_FILE" | head -1)"
+
+  if [ -z "$major_rule" ]; then
+    echo "  FAIL: no flux packageRule disabling majors for $path"
+    FAIL=$((FAIL + 1))
+  else
+    assert_eq "major rook-ceph chart updates are disabled" \
+      "false" "$(jq -r '.enabled' <<<"$major_rule")"
+  fi
+
+  if [ -z "$minor_rule" ]; then
+    echo "  FAIL: no flux packageRule for minor/patch rook-ceph chart updates"
+    FAIL=$((FAIL + 3))
+    return
+  fi
+  assert_eq "minor/patch chart updates are not automerged (a Rook minor moves the supported Ceph versions)" \
+    "false" "$(jq -r '.automerge' <<<"$minor_rule")"
+  assert_eq "minor/patch chart rule waits minimumReleaseAge=3 days" \
+    "3 days" "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
+  assert_eq "minor/patch chart rule groupName is rook-ceph chart" \
+    "rook-ceph chart" "$(jq -r '.groupName' <<<"$minor_rule")"
+}
+
 test_crd_coupled_charts_grouped() {
   echo "Test: a chart and the CRD chart it runs against move in one PR"
 
@@ -520,6 +581,7 @@ test_c5c3_charts_are_excluded
 test_one_owner_per_file
 test_floor_tracked_charts
 test_csi_driver_nfs_rules
+test_rook_ceph_rules
 test_crd_coupled_charts_grouped
 
 echo ""

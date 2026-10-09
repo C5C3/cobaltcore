@@ -62,6 +62,7 @@ The custom managers cover:
 - **kvm-node-agent image pin** — the `ARG KNA_COMMIT` line in `images/kvm-node-agent/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed `git apply` step in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets** — the `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT` lines in `images/nova/Dockerfile` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent lines, so the tag and the commit it names move in a single PR. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 - **Lab libvirt image** — the seven `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is the keeper tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, that `hack/ci-tag-libvirt-keeper.sh` mints once on `main`. `deb` compares the Ubuntu revision and the `-r<N>` suffix numerically; `docker` versioning would read `-2ubuntu8.19-r1` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `10.x`, so `allowedVersions` admits the keeper shape alone. Majors are disabled, because `tests/container-images/verify_libvirt.sh` pins libvirt 10, the `libvirt0` that `images/nova-compute/Dockerfile` links. Minor, patch and digest updates move all seven lines in one PR (`metal-stack lab libvirt image`) without a cooldown, since this repository's own `main` builds the image from a reviewed commit. They are **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump is what the pin is for.
+- **Lab Ceph image** — the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
 - **Lab soak runner image** — the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/lab/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
@@ -101,20 +102,22 @@ bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-env
 
 ### Flux HelmRelease chart versions
 
-Renovate's native `flux` manager reads the Flux manifests through the two
+Renovate's native `flux` manager reads the Flux manifests through the three
 `flux.managerFilePatterns` entries in `renovate.json`:
 
 - `/^deploy/flux-system/(releases|sources)/.+\.yaml$/`
 - `/^deploy/kind/.+\.yaml$/`
+- `/^deploy/lab/metal-stack/ceph/(release|source)\.yaml$/`
 
 The manager resolves the `sourceRef` of a HelmRelease against the HelmRepository
 manifests it has parsed, so the sources directory has to match as well:
 `deploy/kind/prometheus/release.yaml` references the `prometheus-community`
-HelmRepository in `deploy/flux-system/sources/`. Nothing under `deploy/lab/` or
-`deploy/examples/` matches. The patterns use no regex lookahead, because the hosted bot
+HelmRepository in `deploy/flux-system/sources/`. Under `deploy/lab/` only the
+HelmRelease and the HelmRepository of the lab Ceph match, because that overlay has no
+kind sibling to inherit; nothing else under `deploy/lab/` or `deploy/examples/` does. The patterns use no regex lookahead, because the hosted bot
 compiles them with RE2, which has none.
 
-It tracks sixteen third-party charts and one image:
+It tracks seventeen third-party charts and one image:
 
 | Chart | File | Strategy | Automerge |
 | --- | --- | --- | --- |
@@ -134,6 +137,7 @@ It tracks sixteen third-party charts and one image:
 | `gateway-helm` | `deploy/kind/base/envoy-gateway.yaml` | `bump`, group `envoy-gateway` | minor/patch after 3 days |
 | `headlamp` | `deploy/kind/base/headlamp.yaml` | `bump`, group `headlamp` | minor/patch after 3 days |
 | `csi-driver-nfs` | `deploy/kind/nfs/release.yaml` | exact pin, majors disabled, group `csi-driver-nfs chart` | no |
+| `rook-ceph` | `deploy/lab/metal-stack/ceph/release.yaml` | exact pin, majors disabled, group `rook-ceph chart` | no |
 | image `ghcr.io/headlamp-k8s/headlamp-plugin-flux` | `deploy/kind/base/headlamp.yaml` (HelmRelease values) | tag | no |
 
 `widen` is the `rangeStrategy` of the base rule. A release inside the range changes
