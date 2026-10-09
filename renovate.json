@@ -571,13 +571,6 @@
       "groupName": "OpenStack test tooling (PyPI)"
     },
     {
-      "description": "neutron-tempest-plugin 3.1.0 and later require testtools>=2.8.4, and the 2025.2 upper-constraints.txt pins testtools===2.7.2, so the 2025.2 tempest image cannot resolve them",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["releases/2025.2/test-refs.yaml"],
-      "matchPackageNames": ["neutron-tempest-plugin"],
-      "allowedVersions": "<3.1.0"
-    },
-    {
       "description": "neutron-tempest-plugin 3.3.0 imports neutron_lib.services.pvlan, and the 2026.1 upper-constraints.txt pins neutron-lib===3.24.0, which does not ship it, so stestr fails test discovery on every 2026.1 tempest leg",
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["releases/2026.1/test-refs.yaml"],
