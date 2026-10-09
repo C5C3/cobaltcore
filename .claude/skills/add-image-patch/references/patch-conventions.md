@@ -58,8 +58,9 @@ Conventions the existing patches follow:
   cc981d81b6 (master, 2025-09-17, Change-Id I50c4…). Cinder 28.0.0
   contains it, 27.0.0 does not, and no 27.0.x tag exists that could be
   pinned instead."
-- A release without a twin says why, in the patch that exists: "No 2026.1
-  twin: 28.0.0 already carries the commit."
+- A release without a twin says why, in the patch that exists: "No 2026.2
+  twin: 29.0.0 carries upstream commit c07c49c586, which replaced both
+  tests."
 - No diffstat and no `-- ` signature trailer: the `--no-signature` flag of
   `git format-patch` drops the trailer, the diffstat is deleted by hand.
 
@@ -75,9 +76,9 @@ Upstream-status lines.
 both tags (from the repository root):
 
 ```bash
-git -C /tmp/cinder-27.0.0 apply --check "$PWD"/patches/cinder/2025.2/0001-*.patch
-git -C /tmp/cinder-27.0.0 apply "$PWD"/patches/cinder/2025.2/0001-*.patch
-git -C /tmp/cinder-27.0.0 apply "$PWD"/patches/cinder/2025.2/0001-*.patch   # must fail: "patch does not apply"
+git -C /tmp/cinder-28.0.0 apply --check "$PWD"/patches/cinder/2026.1/0001-*.patch
+git -C /tmp/cinder-28.0.0 apply "$PWD"/patches/cinder/2026.1/0001-*.patch
+git -C /tmp/cinder-28.0.0 apply "$PWD"/patches/cinder/2026.1/0001-*.patch   # must fail: "patch does not apply"
 ```
 
 `check-image-patches.sh --apply` automates the first two for every patch in
@@ -91,10 +92,10 @@ package with its `tests/` tree and `pip`; only test-only dependencies are
 missing. Mount the patched package over the installed one:
 
 ```bash
-img=ghcr.io/c5c3/cinder:2025.2
+img=ghcr.io/c5c3/cinder:2026.1
 pkg=$(docker run --rm --entrypoint /var/lib/openstack/bin/python "$img" \
   -c 'import cinder, os; print(os.path.dirname(cinder.__file__))')
-docker run --rm --user 0 -v /tmp/cinder-27.0.0/cinder:"$pkg" --entrypoint /bin/sh "$img" -c \
+docker run --rm --user 0 -v /tmp/cinder-28.0.0/cinder:"$pkg" --entrypoint /bin/sh "$img" -c \
   '/var/lib/openstack/bin/python -m pip install --quiet ddt oslotest &&
    /var/lib/openstack/bin/python -m unittest cinder.tests.unit.test_image_utils'
 ```
@@ -106,7 +107,7 @@ once (`docker build -t python-base images/python-base/`, then
 `WORKSPACE_DIR`:
 
 ```bash
-ws=$(mktemp -d); rel=2025.2; svc=cinder
+ws=$(mktemp -d); rel=2026.1; svc=cinder
 tag=$(yq ".${svc}" releases/$rel/source-refs.yaml)
 git clone --depth 1 --branch "$tag" https://github.com/openstack/$svc.git "$ws/src/$svc"
 git -C "$ws/src/$svc" apply "$PWD"/patches/$svc/$rel/*.patch
@@ -117,9 +118,9 @@ WORKSPACE_DIR="$ws" SERVICE_NAME=$svc SERVICE_VERSION="$tag" RELEASE=$rel \
   bash hack/ci-run-unit-tests.sh
 ```
 
-The cinder 2025.2 suite runs about 17,900 tests in roughly six minutes on
+The cinder 2025.2 suite ran about 17,900 tests in roughly six minutes on
 four workers. Order-dependent failures need a single worker: the NetApp
-flake behind cinder 0003 failed every time under
+flake behind 64754d84 failed every time under
 `stestr run --concurrency 1 <module>` and only about one run in four in CI,
 because stestr spreads tests over workers in hash order.
 
@@ -128,8 +129,8 @@ because stestr spreads tests over workers in hash order.
 `hack/ci-build-service-image.sh` applies the patches exactly as CI does:
 
 ```bash
-OPERATOR=cinder IMAGE_PREFIX=c5c3 RELEASE=2025.2 bash hack/ci-build-service-image.sh
-bash tests/container-images/verify_cinder.sh c5c3/cinder:2025.2
+OPERATOR=cinder IMAGE_PREFIX=c5c3 RELEASE=2026.1 bash hack/ci-build-service-image.sh
+bash tests/container-images/verify_cinder.sh c5c3/cinder:2026.1
 ```
 
 Two host caveats, both from `scripts/apply-constraint-overrides.sh`, which
@@ -143,7 +144,7 @@ the build script calls after the patches:
   used with stdin") and the build stops after the clone. Build by hand:
 
 ```bash
-rel=2025.2; svc=cinder; tag=$(yq ".${svc}" releases/$rel/source-refs.yaml)
+rel=2026.1; svc=cinder; tag=$(yq ".${svc}" releases/$rel/source-refs.yaml)
 ovr=$(mktemp -d); mkdir -p "$ovr/scripts" "$ovr/releases/$rel" "$ovr/overrides/$rel"
 cp scripts/apply-constraint-overrides.sh "$ovr/scripts/"
 cp releases/$rel/upper-constraints.txt "$ovr/releases/$rel/"
