@@ -148,7 +148,7 @@ test_union_of_three_generator_files() {
   make_neutron_source "$src_dir"
 
   PATH="$stub_dir:$PATH" GEN_CONF_LOG="$gen_conf" SOURCE_DIR="$src_dir" \
-    bash "$GEN_CATALOG_SH" neutron 2025.2 ghcr.io/c5c3/neutron:test >/dev/null 2>&1
+    bash "$GEN_CATALOG_SH" neutron 2026.1 ghcr.io/c5c3/neutron:test >/dev/null 2>&1
 
   require_gen_conf "$gen_conf" "$stub_dir" "$src_dir" "$log_dir" || return 1
   assert_eq "the generator config opens with the [DEFAULT] header" \
@@ -177,7 +177,7 @@ test_missing_generator_file_fails_before_docker() {
   rm "$src_dir/etc/oslo-config-generator/ml2_conf.ini"
 
   PATH="$stub_dir:$PATH" GEN_CONF_LOG="$gen_conf" SOURCE_DIR="$src_dir" \
-    bash "$GEN_CATALOG_SH" neutron 2025.2 ghcr.io/c5c3/neutron:test \
+    bash "$GEN_CATALOG_SH" neutron 2026.1 ghcr.io/c5c3/neutron:test \
     >/dev/null 2>"$stderr_file"
   exit_code=$?
   stderr="$(cat "$stderr_file")"
@@ -210,7 +210,7 @@ namespace = keystone
 EOF
 
   PATH="$stub_dir:$PATH" GEN_CONF_LOG="$gen_conf" SOURCE_DIR="$src_dir" \
-    bash "$GEN_CATALOG_SH" keystone 2025.2 ghcr.io/c5c3/keystone:test >/dev/null 2>&1
+    bash "$GEN_CATALOG_SH" keystone 2026.1 ghcr.io/c5c3/keystone:test >/dev/null 2>&1
 
   require_gen_conf "$gen_conf" "$stub_dir" "$src_dir" "$log_dir" || return 1
   expected="$(printf '[DEFAULT]\nnamespace = keystone\n')"
@@ -242,7 +242,7 @@ namespace = oslo.log
 EOF
 
   PATH="$stub_dir:$PATH" GEN_CONF_LOG="$gen_conf" SOURCE_DIR="$src_dir" \
-    bash "$GEN_CATALOG_SH" barbican 2025.2 ghcr.io/c5c3/barbican:test >/dev/null 2>&1
+    bash "$GEN_CATALOG_SH" barbican 2026.1 ghcr.io/c5c3/barbican:test >/dev/null 2>&1
 
   require_gen_conf "$gen_conf" "$stub_dir" "$src_dir" "$log_dir" || return 1
   assert_file_not_contains "the kmip namespace is dropped" "$gen_conf" "kmip"
