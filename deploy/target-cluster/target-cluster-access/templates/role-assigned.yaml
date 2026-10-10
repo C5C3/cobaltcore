@@ -1,9 +1,13 @@
 {{/*
 One Role per assigned namespace, holding what the c5c3-operator needs to serve
 the order kinds there (KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
-KeystoneCatalogEntry, KeystoneApplicationCredential) and nothing else: it reads
-the orders, writes their status and finalizers, and writes the Secret a
-KeystoneUser or KeystoneApplicationCredential delivers beside it.
+KeystoneCatalogEntry, KeystoneApplicationCredential, MariaDBDatabase) and
+nothing else: it reads the orders, writes their status and finalizers, and
+writes the Secret a KeystoneUser, KeystoneApplicationCredential or
+MariaDBDatabase delivers beside it. It also reads the mariadb-operator's
+Database CRs, which the operator watches in every namespace of the
+registration. A MariaDBDatabase's Database CR lives beside the MariaDB, in a
+placed namespace, whose Role grants the writes.
 No workload kind is granted, so whoever holds the registration kubeconfig
 cannot run anything in a namespace that belongs to a service owner.
 
@@ -48,6 +52,7 @@ rules:
       - keystoneprojects
       - keystoneroleassignments
       - keystoneusers
+      - mariadbdatabases
     verbs:
       - get
       - list
@@ -63,6 +68,7 @@ rules:
       - keystoneprojects/status
       - keystoneroleassignments/status
       - keystoneusers/status
+      - mariadbdatabases/status
     verbs:
       - get
       - update
@@ -76,6 +82,21 @@ rules:
       - keystoneprojects/finalizers
       - keystoneroleassignments/finalizers
       - keystoneusers/finalizers
+      - mariadbdatabases/finalizers
     verbs:
       - update
+  # k8s.mariadb.com - databases (read-only)
+  # The c5c3-operator watches the Database CRs of its MariaDBDatabase orders in
+  # every namespace of the registration Secret's namespaces key, these ones
+  # included, and a watch that cannot list one of them never syncs. No Database
+  # CR is written here, and one an owner writes here wakes no order: the
+  # operator maps a Database CR back only from Keystone's namespace.
+  - apiGroups:
+      - k8s.mariadb.com
+    resources:
+      - databases
+    verbs:
+      - get
+      - list
+      - watch
 {{- end }}
