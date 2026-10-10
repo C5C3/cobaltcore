@@ -1,0 +1,461 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the operator mechanics of an RBD backup target (2026.1),
+# on a kind cluster that runs no Ceph:
+#   - the credentials gate waits on a missing key Secret, then on an empty key,
+#     and admits a Secret carrying a cephx key under userKey; until then the
+#     Cinder renders no backup service
+#   - the target's projection Secret carries the Ceph backup driver's
+#     [DEFAULT] section, the ceph.conf and the keyring, and nothing of the
+#     chunked NFS driver
+#   - the backup Deployment mounts no target export, keeps mounting the NFS
+#     volume backend's export, and carries one projected volume at /etc/ceph:
+#     the target's two files and the RBD volume backend's keyring, which a
+#     backup of an RBD volume reads the volume with
+#   - the NetworkPolicy's Ceph rule opens the union of the networks the volume
+#     backend and the backup target name
+#   - the driver reaches librados with the projected configuration: the
+#     monitor does not resolve, so the one setup attempt fails on it alone
+#   - a replaced backup key and a replaced volume key each roll the backup
+#     service onto the new keyring
+#
+# cinder-backup runs its driver setup once at start, in a looping call that
+# ends on the first failure, logs the failure and starts its RPC server anyway,
+# so the pod passes the AMQP readiness probe without a Ceph. That is what lets
+# the suite assert a Ready target and an available Deployment while the driver
+# itself never connects.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-backup-rbd
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration and the API cold start precede the first assertion
+    # on the Cinder, which does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test. The backup key Secret does not exist yet.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-bkrbd cinder-bkrbd-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-key-secret-volume.yaml
+    - apply:
+        file: 02-cinderbackend-rbd-cr.yaml
+    - apply:
+        file: 03-cinderbackend-nfs-cr.yaml
+    - apply:
+        file: 04-cinderbackupbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-bkrbd || true
+  # ── Step 2: Walk the credentials gate of the backup target ─────────────
+  # The backup backend controller polls an unready gate every 15 seconds,
+  # which is how it notices a Secret that appears or changes after a False
+  # gate.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: bkrbd-rbdbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForCredentials
+              (contains(message, 'not found yet')): true
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-bkrbd
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: bkrbd-nfs1
+              host: cinder-bkrbd@bkrbd-nfs1
+            - backend: bkrbd-rbd1
+              host: cinder-bkrbd@bkrbd-rbd1
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "False"
+              reason: WaitingForBackupBackend
+              message: 'Waiting for backup backends: bkrbd-rbdbk'
+            # Backups are opt-in: without a projected target the backup
+            # service is not rendered, which is not a fault.
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupNotConfigured
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          OUT="$(kubectl get deploy cinder-bkrbd-backup -n "$NAMESPACE" 2>&1)" && {
+            echo "FAIL: a backup target without credentials has a backup Deployment"
+            exit 1
+          }
+          printf '%s\n' "$OUT" | grep -q NotFound
+          echo "OK: no backup Deployment for bkrbd-rbdbk"
+    - apply:
+        file: 05-key-secret-backup-empty.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: bkrbd-rbdbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForCredentials
+              (contains(message, 'carries an empty userKey')): true
+    - script:
+        shell: bash
+        content: |
+          kubectl patch secret bkrbd-rbdbk-key -n "$NAMESPACE" \
+            -p '{"stringData":{"userKey":"AQBzm0VoQ2x9JBAAeT1n6hV4cRk8yL2oWq5dXg=="}}'
+    catch: &bkrbd-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-bkrbd
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackupBackend
+        name: bkrbd-rbdbk
+        namespace: openstack
+    - script:
+        content: |
+          for b in bkrbd-rbd1 bkrbd-nfs1; do
+            kubectl get cinderbackend "$b" -n $NAMESPACE -o yaml 2>&1 || true
+          done
+          for d in cinder-bkrbd cinder-bkrbd-scheduler cinder-bkrbd-volume-bkrbd-rbd1 cinder-bkrbd-volume-bkrbd-nfs1 cinder-bkrbd-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-bkrbd -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Projection Secrets ==="
+          kubectl get secret -l cobaltcore.c5c3.io/config-base -n $NAMESPACE 2>&1 || true
+          echo "=== Current backup.conf of bkrbd-rbdbk ==="
+          SECRET="$(kubectl get deploy cinder-bkrbd-backup -n $NAMESPACE \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}' 2>/dev/null || true)"
+          if [ -n "$SECRET" ]; then
+            kubectl get secret "$SECRET" -n $NAMESPACE -o 'jsonpath={.data.backup\.conf}' 2>/dev/null | base64 -d 2>&1 || true
+            echo "=== Current ceph.conf of bkrbd-rbdbk ==="
+            kubectl get secret "$SECRET" -n $NAMESPACE -o 'jsonpath={.data.ceph\.conf}' 2>/dev/null | base64 -d 2>&1 || true
+          fi
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy cinder-bkrbd -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Assert the projection, the backup pod's mounts and the policy
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: bkrbd-rbdbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-bkrbd
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "True"
+              reason: BackupBackendProjected
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupServiceReady
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-bkrbd-backup
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # An RBD target has no export to mount, and the Ceph files come
+                # from two Secrets, the target's and the RBD volume backend's,
+                # read-only. The NFS volume backend's export stays mounted,
+                # because a backup reads its source volume itself.
+                (length(volumes[?name == 'backup-share']) == `0`): true
+                (length(volumes[?name == 'ceph'] | [0].projected.sources) == `2`): true
+                (containers[0].volumeMounts[?mountPath == '/etc/ceph'] | [0].readOnly): true
+                (volumes[?name == 'share-bkrbd-nfs1'].csi.volumeAttributes.share | [0]): /volumes
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: cinder-bkrbd
+            namespace: openstack
+          spec:
+            # DNS, database, cache, messaging, the export rule of the NFS
+            # volume backend, then the Ceph rule. An RBD target adds no export,
+            # and its networks join the volume backend's in the one Ceph rule,
+            # sorted and once each.
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 5672
+            - ports:
+              - protocol: TCP
+                port: 2049
+            - to:
+              - ipBlock:
+                  cidr: 10.244.0.0/16
+              - ipBlock:
+                  cidr: 10.96.0.0/12
+              ports:
+              - protocol: TCP
+                port: 3300
+              - protocol: TCP
+                port: 6789
+              - protocol: TCP
+                port: 6800
+                endPort: 7300
+    catch: *bkrbd-dump
+  # ── Step 4: Read the projected files and the driver's attempt ──────────
+  # The Secret the backup volume names is the one the pod runs on, so the files
+  # are read from it rather than from the newest Secret of the base name.
+  - try:
+    - script:
+        timeout: 5m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          DEPLOY=cinder-bkrbd-backup
+
+          SECRET="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}')"
+          test -n "$SECRET"
+          echo "projection Secret: $SECRET"
+          data() {
+            kubectl get secret "$SECRET" -n "$NAMESPACE" -o "jsonpath={.data.$1}" | base64 -d
+          }
+          expect_line() {
+            if ! printf '%s\n' "$2" | grep -qxF -- "$3"; then
+              echo "FAIL: $1 lacks the line: $3"
+              printf '%s\n' "$2"
+              exit 1
+            fi
+          }
+
+          # Exactly the three data keys of an RBD target.
+          KEYS="$(kubectl get secret "$SECRET" -n "$NAMESPACE" \
+            -o 'go-template={{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' | sort | paste -sd ' ' -)"
+          echo "data keys: $KEYS"
+          [ "$KEYS" = "backup.conf ceph.conf keyring" ]
+
+          SECTION="$(data 'backup\.conf')"
+          for line in \
+            '[DEFAULT]' \
+            'backup_ceph_conf = /etc/ceph/ceph.conf' \
+            'backup_ceph_pool = backups' \
+            'backup_ceph_user = cinder-backup' \
+            'backup_driver = cinder.backup.drivers.ceph.CephBackupDriver' \
+            'backup_use_same_host = false' \
+            'host = cinder-bkrbd-backup'; do
+            expect_line backup.conf "$SECTION" "$line"
+          done
+          # The chunked NFS driver's options are not rendered for the Ceph one.
+          for option in backup_file_size backup_compression_algorithm backup_share; do
+            if printf '%s\n' "$SECTION" | grep -q "^$option"; then
+              echo "FAIL: backup.conf renders $option for an RBD target"
+              exit 1
+            fi
+          done
+
+          CONF="$(data 'ceph\.conf')"
+          for line in \
+            '[global]' \
+            'mon_host = ceph-mon.openstack.svc.cluster.local' \
+            'keyring = /etc/ceph/ceph.client.cinder-backup.keyring' \
+            'log_file = /dev/null' \
+            'admin_socket = /tmp/$cluster-$name.$pid.$cctid.asok'; do
+            expect_line ceph.conf "$CONF" "$line"
+          done
+
+          KEYRING="$(data keyring)"
+          expect_line keyring "$KEYRING" '[client.cinder-backup]'
+          expect_line keyring "$KEYRING" "$(printf '\tkey = AQBzm0VoQ2x9JBAAeT1n6hV4cRk8yL2oWq5dXg==')"
+
+          # The target's files and the volume backend's keyring sit where the
+          # Ceph driver and os-brick look for them, and the projected volume
+          # masks the rbdmap file ceph-common ships.
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test -f /etc/ceph/ceph.conf
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test -f /etc/ceph/ceph.client.cinder-backup.keyring
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test -f /etc/ceph/ceph.client.cinder.keyring
+          VOLUME_KEYRING="$(kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- cat /etc/ceph/ceph.client.cinder.keyring)"
+          expect_line ceph.client.cinder.keyring "$VOLUME_KEYRING" \
+            "$(printf '\tkey = AQDHlkVoYx3QKRAAk9m6j4QzG8w2yK0hfr9c6g==')"
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test ! -e /etc/ceph/rbdmap
+
+          # The driver reaches librados with the projected configuration and
+          # fails on the monitor that does not resolve. 36 x 5s = 3m.
+          LOG=""
+          for _ in $(seq 1 36); do
+            LOG="$(kubectl logs -n "$NAMESPACE" "deploy/$DEPLOY" 2>&1 || true)"
+            if printf '%s\n' "$LOG" | grep -q '_setup_backup_driver'; then
+              break
+            fi
+            sleep 5
+          done
+          printf '%s\n' "$LOG" | grep -q '_setup_backup_driver' || {
+            echo "FAIL: the backup service never logged the driver's setup failure"
+            printf '%s\n' "$LOG" | tail -60
+            exit 1
+          }
+          printf '%s\n' "$LOG" | grep -q 'error connecting to the cluster' || {
+            echo "FAIL: the driver failed before it tried to connect to the cluster"
+            printf '%s\n' "$LOG" | tail -60
+            exit 1
+          }
+          # ceph.conf was read: librados names the file it could not read.
+          if printf '%s\n' "$LOG" | grep -qF conf_read_file; then
+            echo "FAIL: the backup service log carries conf_read_file"
+            printf '%s\n' "$LOG" | grep -F conf_read_file | head -5
+            exit 1
+          fi
+          echo "OK: the driver read the projected configuration and failed on the unresolvable monitor alone"
+    catch: *bkrbd-dump
+  # ── Step 5: Replace the backup key, then the volume key ────────────────
+  # Each rotation reaches the Cinder through its Secret watch, renders a Secret
+  # of a new name and rolls the backup service with the Recreate strategy.
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          DEPLOY=cinder-bkrbd-backup
+          SELECTOR=app.kubernetes.io/instance=cinder-bkrbd,app.kubernetes.io/component=backup
+          NEW_BACKUP_KEY=AQC1nEVoRk7pLhAAb8Qw3vY2sN9tJf4mZx6cHA==
+          NEW_VOLUME_KEY=AQDgmkVoAYKpDxAAoN4Pf8u2v3Yq1Ms7rZ9k2w==
+
+          backup_secret() {
+            kubectl get deploy "$DEPLOY" -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}'
+          }
+          volume_keyring_secret() {
+            kubectl get deploy "$DEPLOY" -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="ceph")].projected.sources[1].secret.name}'
+          }
+          pod_created() {
+            kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o 'jsonpath={.items[0].metadata.creationTimestamp}'
+          }
+          # wait_for_roll polls until $1 prints something other than $2 and the
+          # Deployment runs one available, updated pod. 54 x 5s = 4.5m in all.
+          wait_for_roll() {
+            local now=""
+            for _ in $(seq 1 27); do
+              now="$($1 || true)"
+              AVAILABLE="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o 'jsonpath={.status.availableReplicas}' || true)"
+              UPDATED="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o 'jsonpath={.status.updatedReplicas}' || true)"
+              PODS="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o name 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "$now" != "$2" ] && [ "$AVAILABLE" = "1" ] && [ "$UPDATED" = "1" ] && [ "$PODS" = "1" ]; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "FAIL: the backup service did not roll away from $2 (now: $now)"
+            return 1
+          }
+
+          # The backup key: a new projection Secret, the old one retained.
+          OLD="$(backup_secret)"
+          OLD_POD_TS="$(pod_created)"
+          test -n "$OLD"
+          test -n "$OLD_POD_TS"
+          echo "before: Secret $OLD, pod created $OLD_POD_TS"
+          kubectl patch secret bkrbd-rbdbk-key -n "$NAMESPACE" \
+            -p "{\"stringData\":{\"userKey\":\"$NEW_BACKUP_KEY\"}}"
+          wait_for_roll backup_secret "$OLD"
+          NEW="$(backup_secret)"
+          echo "after: Secret $NEW"
+          KEYRING="$(kubectl get secret "$NEW" -n "$NAMESPACE" -o 'jsonpath={.data.keyring}' | base64 -d)"
+          printf '%s\n' "$KEYRING" | grep -qxF "$(printf '\tkey = %s' "$NEW_BACKUP_KEY")"
+          kubectl get secret "$OLD" -n "$NAMESPACE" >/dev/null
+          MID_POD_TS="$(pod_created)"
+          echo "pod created $MID_POD_TS"
+          [[ "$MID_POD_TS" > "$OLD_POD_TS" ]]
+          echo "OK: the replaced backup key rolled the backup service onto $NEW and kept $OLD"
+
+          # The volume key: its keyring is projected into the backup pod too.
+          OLD_VOLUME="$(volume_keyring_secret)"
+          test -n "$OLD_VOLUME"
+          echo "before: volume keyring from $OLD_VOLUME"
+          kubectl patch secret bkrbd-rbd1-key -n "$NAMESPACE" \
+            -p "{\"stringData\":{\"userKey\":\"$NEW_VOLUME_KEY\"}}"
+          wait_for_roll volume_keyring_secret "$OLD_VOLUME"
+          echo "after: volume keyring from $(volume_keyring_secret)"
+          NEW_POD_TS="$(pod_created)"
+          echo "pod created $NEW_POD_TS"
+          [[ "$NEW_POD_TS" > "$MID_POD_TS" ]]
+          VOLUME_KEYRING="$(kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- cat /etc/ceph/ceph.client.cinder.keyring)"
+          printf '%s\n' "$VOLUME_KEYRING" | grep -qxF "$(printf '\tkey = %s' "$NEW_VOLUME_KEY")"
+          echo "OK: the replaced volume key rolled the backup service onto the new keyring"
+    catch: *bkrbd-dump

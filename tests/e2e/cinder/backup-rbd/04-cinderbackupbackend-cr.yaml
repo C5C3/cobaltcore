@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RBD backup target of the cinder-bkrbd CR, applied before its key Secret
+# exists: step 2 walks the credentials gate from a missing Secret through an
+# empty key to a usable one.
+#
+# The name carries the suite's own prefix because the namespace is shared and
+# spec.cinderRef is immutable.
+#
+# The monitor does not resolve, so the Ceph backup driver fails its one setup
+# attempt on DNS. The networks name the pod network the volume backend names as
+# well and the service network, so the Ceph egress rule carries both, each once.
+#
+# spec.rbd.clusterName is left out, so the schema default ceph applies;
+# fileSize and compression get their schema defaults too and are not rendered.
+# region backup-backend
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: bkrbd-rbdbk
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-bkrbd
+  type: RBD
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    - 10.96.0.0/12
+    keySecretRef:
+      name: bkrbd-rbdbk-key
+# endregion backup-backend
