@@ -57,16 +57,16 @@ cluster. `hack/ci-deploy-operator.sh` installs the pulled chart via its optional
 
 | # | Action | Details |
 | --- | --- | --- |
-| 1 | Deploy CR on released operator | Applies the CR and asserts `Ready=True` (AllReady) and `status.installedRelease == "2025.2"` under the released operator |
+| 1 | Deploy CR on released operator | Applies the CR and asserts `Ready=True` (AllReady) and `status.installedRelease == "2026.1"` under the released operator |
 | 2 | Capture baseline | Reads the `keystone-op-upgrade-bootstrap` Job UID and the API Service backend count and stashes both in a ConfigMap (the bootstrap Job persists — `TTLSecondsAfterFinished` is unset — so its UID is a stable "no re-bootstrap" anchor) |
 | 3 | helm upgrade | Applies the locally built CRDs, `helm dependency build`s the in-repo chart, `helm upgrade`s the release to the `:dev` image, and waits for the rollout |
 | 4 | Assert operator rolled | Verifies the `manager` container runs the `:dev` image and `updatedReplicas == replicas` — proving the rollout actually happened, not just that the spec was patched |
 | 5 | Assert endpoints survive upgrade | Samples the API Service EndpointSlices until the new operator has narrowed the Service selector to `app.kubernetes.io/component=api`, failing if the non-terminating backend count ever drops below the step-2 baseline, or if the narrowing never lands |
 | 6 | Poke reconcile | Annotates the CR to force one full reconcile by the new operator (`AnnotationChangedPredicate` admits it; generation is unchanged) |
-| 7 | Assert after upgrade | Asserts `Ready=True` (AllReady), `status.observedGeneration == metadata.generation`, `status.installedRelease` still `2025.2`, the bootstrap Job UID is unchanged, and exactly one bootstrap Job exists |
+| 7 | Assert after upgrade | Asserts `Ready=True` (AllReady), `status.observedGeneration == metadata.generation`, `status.installedRelease` still `2026.1`, the bootstrap Job UID is unchanged, and exactly one bootstrap Job exists |
 
-`status.installedRelease` tracks the Keystone service image tag (`2025.2`), not
-the operator version, so "unchanged" means it stays `2025.2` across the operator
+`status.installedRelease` tracks the Keystone service image tag (`2026.1`), not
+the operator version, so "unchanged" means it stays `2026.1` across the operator
 upgrade. Bootstrap is gated on the admin-password digest (not the image), so the
 operator upgrade must not re-run it — asserted via the unchanged bootstrap Job
 UID and the exactly-one-bootstrap-Job count.
@@ -97,7 +97,7 @@ and running the suite.
 The `e2e-operator-upgrade` job runs on `pull_request` when
 `has-e2e-operators == 'true'` and `build-e2e-images` succeeded, in its own job
 (not the `e2e-operator` matrix). It loads the run-scoped `:dev` operator and
-`2025.2` service images, `helm registry login`s GHCR, fetches the released
+`2026.1` service images, `helm registry login`s GHCR, fetches the released
 baseline, deploys it, and runs the suite. See
 [CI Workflow — e2e-operator-upgrade](../ci-cd/ci-workflow.md#e2e-operator-upgrade)
 for the full job documentation.

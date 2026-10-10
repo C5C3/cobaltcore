@@ -94,7 +94,7 @@ Six labels add jobs. None of them ever removes one.
 | `ci:chaos` | all four `e2e-chaos` legs. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling` |
 | `ci:multicluster` | `e2e-multicluster` |
-| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all eighteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -865,7 +865,7 @@ guard.
 | 5 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true |
 | 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
-| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each `<service> <release>` line in `BUILD_SERVICE_IMAGES`, and `<IMAGE_PREFIX>/<image>:<release>` from the service's source for a line carrying a third field (`nova 2025.2 nova-compute`); passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
+| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each `<service> <release>` line in `BUILD_SERVICE_IMAGES`, and `<IMAGE_PREFIX>/<image>:<release>` from the service's source for a line carrying a third field (`nova 2026.1 nova-compute`); passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
 | 9 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh`; passes `GITHUB_TOKEN` as the `github_token` BuildKit secret for the fetches inside the build |
 | 10 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
 | 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
@@ -934,7 +934,7 @@ Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2025.2, 2026.1 and 2026.2 today) and the 2025.2-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2025.2, 2026.1 and 2026.2) and `ovn:<pin>` |
+| 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>` |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
@@ -1011,12 +1011,12 @@ their broker connection. It passes `WITH_OVN_KERNEL_MODULES: true` for that
 chassis. `WITH_NFS` stays off, since `spec.endpoints.cinder` is opt-in on the
 Nova CRD.
 
-On top of `nova-operator:dev`, `nova:2025.2`, `nova:2026.1` and `nova:2026.2`,
+On top of `nova-operator:dev`, `nova:2026.1` and `nova:2026.2`,
 the leg also resolves the five sibling operator images; `keystone`,
-`placement`, `glance` and `neutron` at every release each one ships (2025.2,
-2026.1 and 2026.2 today, per `hack/ci-service-image-releases.sh`);
+`placement`, `glance` and `neutron` at every release each one ships (2026.1
+and 2026.2 today, per `hack/ci-service-image-releases.sh`);
 `nova-compute` at every nova release, which the NovaCompute pool runs;
-`ovn:<pin>`; and `tempest:2025.2`, whose `openstack` client is what the
+`ovn:<pin>`; and `tempest:2026.1`, whose `openstack` client is what the
 catalog, seed and verify Jobs of the functional suites run, on every
 per-release suite, so it is loaded once. It loads the whole list in one
 `kind load docker-image` call, so the base layers the service images share go
@@ -1087,7 +1087,7 @@ resolver sets that flag from the suite's own tree or a keystone code change.
 
 Unlike the per-CR `e2e-operator` matrix, this suite manages the operator Helm
 release itself, so it runs in its own single job. The job pulls the run-scoped
-`:dev` operator and `2025.2` service images, `helm registry login`s GHCR,
+`:dev` operator and `2026.1` service images, `helm registry login`s GHCR,
 fetches the released baseline via `hack/ci-fetch-released-operator.sh`, deploys the
 infra stack, installs the baseline via `hack/ci-deploy-operator.sh` (with `CHART_DIR`
 pointing at the pulled chart and `IMAGE_TAG=latest`), and runs the suite from
@@ -1149,10 +1149,10 @@ A `Resolve OVN version` step reads the pin from `images/ovn/Dockerfile` through
 `hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
 the tag itself never appears in the workflow. The `network`, `ovn` and `nova`
 legs load `ovn-operator:dev` and `ovn:$OVN_VERSION` into kind, the `network` leg
-adds `neutron-operator:dev` and `neutron:2025.2`, and the `ovn` leg loads none of
+adds `neutron-operator:dev` and `neutron:2026.1`, and the `ovn` leg loads none of
 the keystone stack. The `nova` leg names seven images of its own:
-`placement-operator:dev`, `placement:2025.2`, `neutron-operator:dev`,
-`neutron:2025.2`, `nova-operator:dev`, `nova:2025.2` and `tempest:2025.2`, the
+`placement-operator:dev`, `placement:2026.1`, `neutron-operator:dev`,
+`neutron:2026.1`, `nova-operator:dev`, `nova:2026.1` and `tempest:2026.1`, the
 last of which carries the `openstack` client its catalog, seed and verify Jobs
 run. `WITH_MESSAGING` is set on the `network` and `nova` legs, the first for the
 vhosts two Cinder suites take, the second because every Nova process dials the
@@ -1198,7 +1198,7 @@ estimate — confirm it against the first green run of the leg.
 | Timeout | 68 minutes, 150 for the `nova` leg | 90 minutes, 150 for the `nova` leg |
 | Blocking | Yes | `pod` leg blocking; `network`, `ovn` and `nova` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
-| Service images | 2025.2 + 2025.2-upgraded + 2026.1 + 2026.2 | 2025.2 only, plus the pinned OVN daemon image |
+| Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1 only, plus the pinned OVN daemon image |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
 mutate shared infrastructure pod availability. The assert timeout is 300s (vs 120s for
@@ -1290,7 +1290,7 @@ finishes.
 
 Runs the `tests/e2e-nova-libvirt/server-boot/` Chainsaw suite, which boots a
 server through Nova's libvirt driver on the one node of a
-`hack/kind-config.yaml` cluster. The suite brings up the 2025.2 stack of
+`hack/kind-config.yaml` cluster. The suite brings up the 2026.1 stack of
 `tests/e2e/nova/compute-node-pool/` from that suite's own fixtures, starts
 libvirtd in the DaemonSet `libvirt-e2e` and applies a `NovaCompute` pool with
 `virtType: qemu`. The server boots from the stack's 1 MiB zero image under
@@ -1320,8 +1320,8 @@ each into `<op>-system`, and the suite runs through `make e2e-nova-libvirt`,
 the target a developer calls locally.
 
 The job loads 14 images: the six operators at `:dev`, `keystone`, `placement`,
-`glance`, `neutron`, `nova` and `nova-compute` at `2025.2`, the OVN daemon image
-at the tag `hack/ci-resolve-ovn-version.sh` reads, and `tempest:2025.2`, whose
+`glance`, `neutron`, `nova` and `nova-compute` at `2026.1`, the OVN daemon image
+at the tag `hack/ci-resolve-ovn-version.sh` reads, and `tempest:2026.1`, whose
 `openstack` client the suite's Jobs run. It loads no libvirt image: the image
 is not in the E2E image map, and the kind node pulls the public
 `ghcr.io/c5c3/libvirt:latest` that `main` published. Diagnostics run with
@@ -1371,7 +1371,7 @@ genuine regression of the kind-only Quick Start observability story.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev` and `keystone:2025.2` from GHCR and re-tags them to their canonical local references |
+| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev` and `keystone:2026.1` from GHCR and re-tags them to their canonical local references |
 | 4 | `kind load docker-image` | Loads operator and service images into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
 | 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm with `WITH_PROMETHEUS: "true"` (gates `--set monitoring.serviceMonitor.enabled=true`) |
@@ -1401,7 +1401,7 @@ suite applies a standalone `OVNCentral` of its own beside the ControlPlane, sinc
 the plane only references a central and never projects one, and asserts the
 network service on top: `OVNReady` mirroring that central and `NeutronReady` over
 the projected `Neutron` child. The block-storage service closes the chain:
-`cinder-operator:dev` and `cinder:2025.2` join the images loaded into kind, and
+`cinder-operator:dev` and `cinder:2026.1` join the images loaded into kind, and
 the `Deploy cinder-operator` step runs between `Deploy neutron-operator` and
 `Deploy c5c3-operator` so the three Cinder CRDs exist before c5c3-operator
 projects the child and its satellites, and something drives that child to Ready
@@ -1409,7 +1409,7 @@ once it lands. A second `hack/ci-dump-diagnostics.sh` invocation runs with
 `OPERATOR: cinder`, which points the operator half of the dump at
 `cinder-system` while the workload half stays on `openstack`.
 
-The compute service closes it in turn: `nova-operator:dev` and `nova:2025.2`
+The compute service closes it in turn: `nova-operator:dev` and `nova:2026.1`
 join both image lists, and the `Deploy nova-operator` step runs between
 `Deploy cinder-operator` and `Deploy c5c3-operator`, so the Nova CRD exists
 before c5c3-operator projects the child and something drives that child to Ready
@@ -1543,7 +1543,7 @@ behind `ghcr.io/c5c3/keystone-federation-proxy:latest`.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `horizon-operator:dev`, `keystone-federation-proxy:dev`, `keystone:2025.2`, `horizon:2025.2` from GHCR |
+| 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `horizon-operator:dev`, `keystone-federation-proxy:dev`, `keystone:2026.1`, `horizon:2026.1` from GHCR |
 | 4 | `kind load docker-image` | Loads the six images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-sso WITH_CONTROLPLANE_CR=false` |
 | 5a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 5 then also carries `WITH_VPA` |
@@ -1609,7 +1609,7 @@ are estimates to confirm against the first green run.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/Dockerfile` |
-| 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2025.2`, `ovn:${OVN_VERSION}` and `tempest:2025.2` |
+| 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2026.1`, `ovn:${OVN_VERSION}` and `tempest:2026.1` |
 | 5 | `kind load docker-image` | Loads the nineteen images into kind |
 | 6 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_CONTROLPLANE_CR=false WITH_NFS=true WITH_MESSAGING=true WITH_METRICS_SERVER=true WITH_VPA=true` |
 | 7 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit, with `GITHUB_TOKEN` |
@@ -1657,7 +1657,7 @@ leaves `CONTROLPLANE_NAME` at its default: the OpenBao bootstrap only seeds the
 managed-mode admin-password path, which the External ControlPlanes — in their own
 namespaces, authenticating from user-supplied Secrets — never read, and the suite
 asserts their own per-CR OpenBao paths are never-seeded. It loads the
-`keystone:2025.2` and `tempest:2025.2` service images (but **not** `horizon:2025.2`
+`keystone:2026.1` and `tempest:2026.1` service images (but **not** `horizon:2026.1`
 — External mode never runs a Horizon workload; the horizon-operator is deployed
 only for its CRD) and runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"` so a
 broken deployment fails the build instead of the suite skipping.
@@ -1704,11 +1704,11 @@ its `needs`.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}`, `config: hack/kind-config.yaml` and `cluster-name: ${{ env.TARGET_CLUSTER }}`. Only the target takes the kind config with its host ports |
 | 3 | `Resolve OVN version` | Writes `OVN_VERSION` to `$GITHUB_ENV` from `hack/ci-resolve-ovn-version.sh`, which reads the pin in `images/ovn/Dockerfile` |
-| 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls eight images: `keystone-operator`, `barbican-operator`, `ovn-operator` and `neutron-operator` at `:dev`, `keystone`, `barbican` and `neutron` at `2025.2`, and `ovn:${{ env.OVN_VERSION }}` |
-| 5 | `Load service images into the target cluster` | `kind load docker-image` for `keystone:2025.2`, `barbican:2025.2`, `neutron:2025.2` and the OVN image into `cobaltcore-target`. The OVN image is a service image here: the databases and northd of the placed `OVNCentral` run on the target |
+| 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls eight images: `keystone-operator`, `barbican-operator`, `ovn-operator` and `neutron-operator` at `:dev`, `keystone`, `barbican` and `neutron` at `2026.1`, and `ovn:${{ env.OVN_VERSION }}` |
+| 5 | `Load service images into the target cluster` | `kind load docker-image` for `keystone:2026.1`, `barbican:2026.1`, `neutron:2026.1` and the OVN image into `cobaltcore-target`. The OVN image is a service image here: the databases and northd of the placed `OVNCentral` run on the target |
 | 6 | `Setup target-cluster infrastructure` | `setup-e2e-infra` composite action with `INFRA_ONLY: "true"`, `CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}` and `WITH_OVN_KERNEL_MODULES: "true"`. With `INFRA_ONLY=true`, `hack/deploy-infra.sh` suspends every CobaltCore operator HelmRelease and scales its Deployment to zero. The chassis runs on the management cluster, but the `openvswitch` and `geneve` modules load into the host kernel that both kind clusters share |
 | 7 | `Create the management cluster` | `hack/deploy-mgmt-cluster.sh` with `CLUSTER_NAME: ${{ env.MGMT_CLUSTER }}`. The script creates a kind cluster without a config file, so the two clusters never contend for a host port. It installs flux-operator and cert-manager, applies the Flux releases whose CRDs the operators' watches need, and installs the rabbitmq-cluster-operator. It installs no CobaltCore operator and leaves the `kubectl` context on the new cluster |
-| 8 | `Load operator and datapath images into the management cluster` | `kind load docker-image` for the four operator images at `:dev`, the OVN image and `neutron:2025.2` into `cobaltcore-mgmt`. The DaemonSets of the suite's `OVNChassis` and `NeutronMetadataAgent` run on this cluster |
+| 8 | `Load operator and datapath images into the management cluster` | `kind load docker-image` for the four operator images at `:dev`, the OVN image and `neutron:2026.1` into `cobaltcore-mgmt`. The DaemonSets of the suite's `OVNChassis` and `NeutronMetadataAgent` run on this cluster |
 | 9 | `Deploy keystone-operator` | `hack/ci-deploy-operator.sh` with `OPERATOR: keystone`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator` and `NAMESPACE: keystone-system` |
 | 10 | `Deploy barbican-operator` | The same script with `OPERATOR: barbican`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator` and `NAMESPACE: barbican-system` |
 | 11 | `Deploy ovn-operator` | The same script with `OPERATOR: ovn`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator` and `NAMESPACE: ovn-system`. No other operator in the job writes a StatefulSet or a PersistentVolumeClaim to the target, so this one exercises those two grants of the chart |
@@ -1755,7 +1755,7 @@ lists the commands of a job in order.
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
 output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
-Three releases and six services make eighteen legs. A service without a
+Two releases and six services make twelve legs. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
 `TEMPEST_SERVICES`, set from the change resolver, narrows the emitted entries to
 the services a pull request touches; the directory check still covers all six.
@@ -2081,7 +2081,7 @@ full image chain (`python-base` -> `venv-builder` -> service image).
 | `OPERATOR` | Yes | - | OpenStack service name (e.g. `keystone`) |
 | `IMAGE_PREFIX` | Yes | - | Container image prefix (e.g. `ghcr.io/c5c3`) |
 | `IMAGE` | No | `$OPERATOR` | Image to build. A derived image (e.g. `nova-compute`) is built from `OPERATOR`'s source, patches and constraints; `IMAGE` selects the `extra-packages.yaml` key, `images/<IMAGE>/` and the tag. Lowercase alphanumeric with hyphens, like `OPERATOR`. An `IMAGE` your shell exports for another purpose is read too, so unset it for a plain service build |
-| `RELEASE` | No | `2025.2` | Release directory name under `releases/` |
+| `RELEASE` | No | `2026.1` | Release directory name under `releases/` |
 | `GITHUB_TOKEN` | No | (unset) | Authenticates the clone from `github.com`; the `Build service images` step passes the workflow token, a run without one clones anonymously |
 
 The script reads `releases/<RELEASE>/source-refs.yaml` for the upstream Git ref of
@@ -2145,7 +2145,7 @@ the release config, then running `docker build` with the pinned versions.
 
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `RELEASE` | No | `2025.2` | Release directory name under `releases/` |
+| `RELEASE` | No | `2026.1` | Release directory name under `releases/` |
 | `TEMPEST_IMAGE` | No | `c5c3/tempest:local` | Target image name:tag |
 
 The script reads `releases/<RELEASE>/test-refs.yaml` to resolve `tempest` and
@@ -2156,7 +2156,7 @@ Usage:
 
 ```bash
 hack/ci-build-tempest-image.sh
-RELEASE=2025.2 TEMPEST_IMAGE=c5c3/tempest:local hack/ci-build-tempest-image.sh
+RELEASE=2026.1 TEMPEST_IMAGE=c5c3/tempest:local hack/ci-build-tempest-image.sh
 ```
 
 ### hack/ci-resolve-ovn-version.sh
@@ -2222,12 +2222,12 @@ handles local execution including image building).
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `SERVICE` | No | `keystone` | Service under test |
-| `CONFIG_DIR` | No | `tests/tempest/<SERVICE>-2025-2` | Directory containing `tempest.conf` template and include/exclude lists |
+| `CONFIG_DIR` | No | `tests/tempest/<SERVICE>-2026-1` | Directory containing `tempest.conf` template and include/exclude lists |
 | `NAMESPACE` | No | `openstack` | Kubernetes namespace |
 | `ADMIN_SECRET` | No | `keystone-admin` | Secret name holding admin password |
 | `OUTPUT_DIR` | No | `_output/tempest` | Test output directory |
 | `TEMPEST_IMAGE` | No | `c5c3/tempest:local` | Tempest container image |
-| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-2025-2` | K8s Service name for port-forwarding; the CI matrix passes its `service-k8s-name` entry for release-specific CR names (e.g. `keystone-tempest-2026-1`) |
+| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-2026-1` | K8s Service name for port-forwarding; the CI matrix passes its `service-k8s-name` entry for release-specific CR names (e.g. `keystone-tempest-2026-2`) |
 
 The script:
 1. Extracts the admin password from the Kubernetes secret
@@ -2425,7 +2425,7 @@ left empty. A malformed map fails the step before the first pull.
 | Input | Default | Description |
 | --- | --- | --- |
 | `run-id` | `${{ github.run_id }}` | Run ID used as the tag prefix (`e2e-<run-id>-`) |
-| `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2025.2`); blank/comment lines are ignored |
+| `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2026.1`); blank/comment lines are ignored |
 | `image-map` | `''` | The `image-map` output of `build-e2e-images`; empty means pull every ref by run-scoped tag |
 | `registry` | `ghcr.io` | Registry to authenticate against |
 | `username` | `${{ github.actor }}` | Login user |
@@ -2440,7 +2440,7 @@ Usage in a workflow job:
     image-map: ${{ needs.build-e2e-images.outputs.image-map }}
     images: |
       ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-      ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+      ${{ env.IMAGE_PREFIX }}/keystone:2026.1
 ```
 
 GH-310 replaced the previous `actions/download-artifact` + `zstd | docker load`

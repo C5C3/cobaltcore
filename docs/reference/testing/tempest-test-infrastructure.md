@@ -90,9 +90,9 @@ keystone-tempest-plugin: "0.22.0"
 The tempest pin may run ahead of the release line a directory represents:
 tempest is branchless (released tags never receive fixes) and upstream
 validates current plus recent stable releases with the latest tag. The
-2025.2 and 2026.1 directories pin tempest `46.3.0` and the 2026.2 directory
-`47.0.0`; `renovate.json` disables major updates under
-`releases/**/test-refs.yaml`, so the older two stay on 46.x. The glance legs
+2026.1 directory pins tempest `46.3.0` and the 2026.2 directory `47.0.0`;
+`renovate.json` disables major updates under `releases/**/test-refs.yaml`, so
+2026.1 stays on 46.x. The glance legs
 need `>= 46.2.0`, where the web-download bad-URL negative test accepts the
 synchronous 400 that glance's DNS-based URI filtering returns.
 
@@ -134,7 +134,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | `tempest` | OpenStack Tempest testing framework |
 | `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release in `test-refs.yaml` (every release pins `4.6.0`) |
 | `keystone-tempest-plugin` | Keystone-specific Tempest test plugins |
-| `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.0.0` for 2025.2, `3.2.0` for 2026.1, `3.3.0` for 2026.2). Version 3.1.0 and later need `testtools>=2.8.4`, and 2025.2's `upper-constraints.txt` pins `testtools===2.7.2`, so `3.0.0` is the newest version that resolves there. Version 3.3.0 imports `neutron_lib.services.pvlan`, which the neutron-lib 2026.2 constrains (`5.0.1`) ships and the one 2026.1 constrains (`3.24.0`) does not |
+| `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.2.0` for 2026.1, `3.3.0` for 2026.2). Version 3.3.0 imports `neutron_lib.services.pvlan`, which the neutron-lib 2026.2 constrains (`5.0.1`) ships and the one 2026.1 constrains (`3.24.0`) does not |
 | `cinder-tempest-plugin` | Cinder-specific Tempest test plugins; every release pins `1.23.0`, since the plugin needs only `pbr`, `oslo.config`, `oslo.serialization` and `tempest>=40.0.0` and no release's `upper-constraints.txt` narrows those |
 | `python-openstackclient` | `openstack` CLI, used by the full-chain ControlPlane E2E verify Job (`token issue` / `catalog list`); version pinned by `upper-constraints.txt` |
 | `osc-placement` | `openstack` CLI placement plugin, used by the full-chain ControlPlane E2E placement round-trip (`resource class list`); version pinned by `upper-constraints.txt` |
@@ -187,9 +187,9 @@ Build the Tempest image locally (requires `python-base` and `venv-builder` image
 docker build images/python-base -t python-base
 docker build images/venv-builder -t venv-builder
 
-# Build Tempest image for a specific release (e.g., 2025.2, 2026.1 or 2026.2).
+# Build Tempest image for a specific release (e.g., 2026.1 or 2026.2).
 # Resolve versions from the release's test-refs.yaml:
-RELEASE=2025.2   # or 2026.1, 2026.2
+RELEASE=2026.1   # or 2026.2
 TEMPEST_VERSION=$(yq -r '.tempest' releases/${RELEASE}/test-refs.yaml)
 BTP_VERSION=$(yq -r '.["barbican-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
 KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
@@ -390,9 +390,10 @@ carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
 
 On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
 the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on` version is
-per group and per release: two groups carry `> 0.19.0` for 2025.2 and `> 0.20.0` for
-2026.1, and the third carries `> 0.22.0` for both older releases. All three
-`test-refs.yaml` pin `0.22.0`; the 2026.2 list carries no RBAC group (below).
+per group and per release: two groups carry `> 0.20.0` and the third `> 0.22.0`
+in the 2026.1 list (`tests/tempest/keystone-2026-1/exclude-tests.txt:27,31,37`).
+Both `test-refs.yaml` pin `0.22.0`; the 2026.2 list carries no RBAC group
+(below).
 
 The RBAC suite runs only when the plugin sees scope enforcement. From 0.22.0 on
 it reads `[identity-feature-enabled] enforce_scope`, which every keystone
@@ -400,26 +401,24 @@ it reads `[identity-feature-enabled] enforce_scope`, which every keystone
 `[enforce_scope] keystone`, which they leave unset, and skipped all 325 RBAC
 classes. The first 0.22.0 run failed three tests the release's default policy
 answers differently from the plugin, and a group tracked by
-[#1127](https://github.com/C5C3/cobaltcore/issues/1127) excludes them:
-`test_ec2_credential` on 2025.2 and 2026.1, where a reader persona gets `201`
-creating its own EC2 credential and the plugin expects `403`, and on 2025.2
-`test_limit.DomainAdminTests.test_identity_list_limits`, where a domain admin
-listing limits sees one of the two limits the test created. The group carries
-`re-evaluate-on: keystone-tempest-plugin > 0.22.0` in those two release lists. The barbican legs follow
-the same convention for their one exclude,
+[#1127](https://github.com/C5C3/cobaltcore/issues/1127) excludes them. On
+2026.1 that is `test_ec2_credential`, where a reader persona gets `201` creating
+its own EC2 credential and the plugin expects `403`. The group carries
+`re-evaluate-on: keystone-tempest-plugin > 0.22.0` in that release list. The
+barbican legs follow the same convention for their one exclude,
 `barbican_tempest_plugin\.tests\.api\.test_quotas\.ProjectQuotasTest\.test_manage_project_quotas`.
 The plugin runs that test with a credential that holds only
 `key-manager:service-admin`, which Barbican's
 [new policy defaults](../barbican/index.md#design-decisions) refuse for project
 quotas. The exclude is tracked by
 [#991](https://github.com/C5C3/cobaltcore/issues/991) and carries
-`re-evaluate-on: barbican-tempest-plugin > 4.5.0` on 2025.2 and 2026.1 and
+`re-evaluate-on: barbican-tempest-plugin > 4.5.0` on 2026.1 and
 `re-evaluate-on: barbican-tempest-plugin > 4.6.0` on 2026.2. The excluded
 test was the leg's only runtime sign of that policy posture, so the leg's
 `04-policy-check-job.yaml` Job asserts the posture before Tempest runs. The
 2026.2 keystone list carries neither the #1127 group nor the
-[#480](https://github.com/C5C3/cobaltcore/issues/480) RBAC groups of the older
-releases, so the 2026.2 keystone leg runs those tests until a 2026.2 run shows
+[#480](https://github.com/C5C3/cobaltcore/issues/480) RBAC groups of the 2026.1
+list, so the 2026.2 keystone leg runs those tests until a 2026.2 run shows
 their outcome.
 
 ### Compute configuration of the nova legs
@@ -488,7 +487,7 @@ new service needs one config directory per release, not a single directory. To
 add another service:
 
 1. Create a `tests/tempest/<service>-<slug>/` directory for each release (e.g.
-   `<service>-2025-2` and `<service>-2026-1`), each with `tempest.conf`,
+   `<service>-2026-1` and `<service>-2026-2`), each with `tempest.conf`,
    `include-tests.txt`, `exclude-tests.txt`, and the `00-keystone-cr.yaml`
    identity CR the job waits on. The matrix generator fails the `changes` job if a
    release is missing the directory, so no `tempest` leg starts. A service with its own
@@ -586,7 +585,7 @@ SERVICE=keystone hack/run-tempest.sh
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SERVICE` | *(required)* | OpenStack service to test (e.g., `keystone`) |
-| `RELEASE` | `2025.2` | Release version (selects `test-refs.yaml` and `upper-constraints.txt`) |
+| `RELEASE` | `2026.1` | Release version (selects `test-refs.yaml` and `upper-constraints.txt`) |
 | `TEMPEST_IMAGE` | `c5c3/tempest:local` | Docker image name for the Tempest container |
 | `OUTPUT_DIR` | `_output/tempest` | Directory for test results (JUnit XML, subunit stream) |
 | `TEMPEST_TIMEOUT` | `1800` | Timeout for Tempest execution in seconds |
@@ -656,8 +655,8 @@ port. "Compute stack" names those two legs everywhere below.
 **Release matrix:**
 
 The generator scans `releases/*/` and emits one `keystone`, one `glance`, one
-`barbican`, one `neutron`, one `cinder` and one `nova` leg per release, eighteen
-entries across the three releases in the tree; each service requires a matching
+`barbican`, one `neutron`, one `cinder` and one `nova` leg per release, twelve
+entries across the two releases in the tree; each service requires a matching
 `tests/tempest/<service>-<slug>` directory or the generator fails the `changes` job.
 `service-k8s-name` always equals `cr-name` (the Keystone identity CR the job waits on
 and port-forwards on 5000). The glance legs additionally carry `glance-cr-name` (the
@@ -774,7 +773,7 @@ re-derive each from the first green run of its leg.
 | Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built by the `Build base images` step of the `build-e2e-images` job (no `--build-context` for bases) |
 | Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |
 
-**Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2025.2-results`, `tempest-glance-2026.1-results`)
+**Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2026.1-results`, `tempest-glance-2026.2-results`)
 **Retention:** 14 days
 
 ### build-images.yaml — build-tempest Job
@@ -838,9 +837,9 @@ security. The job is parameterized by release via the `generate-matrix` job.
 
 | Tag | Example | Description |
 | --- | --- | --- |
-| `<release>` | `ghcr.io/<owner>/tempest:2025.2` | Release series tag |
+| `<release>` | `ghcr.io/<owner>/tempest:2026.1` | Release series tag |
 | `<tempest-version>` | `ghcr.io/<owner>/tempest:46.3.0` | Tempest PyPI version (main branch only) |
-| `<release>-<commit-sha>` | `ghcr.io/<owner>/tempest:2025.2-<sha>` | Release + git commit for traceability |
+| `<release>-<commit-sha>` | `ghcr.io/<owner>/tempest:2026.1-<sha>` | Release + git commit for traceability |
 
 **Supply chain security steps:**
 
