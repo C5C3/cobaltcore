@@ -24,6 +24,9 @@ var (
 	PermissionGVK = schema.GroupVersionKind{Group: "rabbitmq.com", Version: "v1beta1", Kind: "Permission"}
 )
 
+// TopologyGVKs are the three topology kinds, in the order a vhost is built up.
+var TopologyGVKs = []schema.GroupVersionKind{VhostGVK, UserGVK, PermissionGVK}
+
 // TopologyOperatorLabel is the label every Secret the topology operator reads
 // must carry, with the value "true": its Secret informer caches only labelled
 // Secrets, and its admission webhook refuses a User whose

@@ -108,11 +108,25 @@ type serverResourcesLister interface {
 // *unstructured.Unstructured, because this repository takes no dependency on the
 // RabbitMQ Cluster Operator's Go module; apiutil.GVKForObject reads an
 // unstructured object's GVK off the object itself, so it needs no scheme entry.
+//
+// The Vhost, User and Permission kinds of the RabbitMQ Messaging Topology
+// Operator are listed for the same reason: the topology operator is optional
+// infrastructure a Keystone-only install never carries, and the RabbitMQVhost
+// controller registers its child watches only when the probe serves them. They
+// are carried unstructured as well (messaging.VhostGVK, UserGVK,
+// PermissionGVK). An order on a cluster without them reports
+// TopologyOperatorNotInstalled.
 func optionalWatchObjects() []client.Object {
 	rabbitmq := &unstructured.Unstructured{}
 	rabbitmq.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+	topology := make([]client.Object, 0, len(messaging.TopologyGVKs))
+	for _, gvk := range messaging.TopologyGVKs {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		topology = append(topology, obj)
+	}
 
-	return []client.Object{
+	return append([]client.Object{
 		&keystonev1alpha1.Keystone{},
 		&horizonv1alpha1.Horizon{},
 		&glancev1alpha1.Glance{},
@@ -132,7 +146,7 @@ func optionalWatchObjects() []client.Object {
 		&novav1alpha1.Nova{},
 		&novav1alpha1.NovaCompute{},
 		&ovnv1alpha1.OVNCentral{},
-	}
+	}, topology...)
 }
 
 // servedKindsForGroupVersion asks discovery which Kinds the API server serves under a

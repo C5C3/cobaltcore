@@ -40,6 +40,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,7 +51,10 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
 )
@@ -156,6 +160,13 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 				return err
 			}
 			if err := (&KeystoneApplicationCredentialReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
+				return err
+			}
+			if err := (&RabbitMQVhostReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Resolver: mcMgr,
@@ -340,6 +351,143 @@ func TestBuildControlPlaneController_StartsWithoutRabbitmqClusterCRD(t *testing.
 		return got.Finalizers, nil
 	}, itEventuallyTimeout, itPollInterval).Should(ContainElement(controlPlaneORCFinalizer),
 		"Reconcile must install the ORC-teardown finalizer with the RabbitmqCluster CRD unserved")
+}
+
+// TestRabbitMQVhostSetup_StartsWithoutTopologyCRDs covers the install the
+// RabbitMQ Messaging Topology Operator is optional for: a management cluster
+// that serves the RabbitmqCluster kind but none of the topology kinds. The
+// RabbitMQVhost controller must skip its Vhost, User and Permission watches
+// there; registering them anyway would leave their informers unsynced, fail
+// mgr.Start on the CacheSyncTimeout, and crash-loop the c5c3 operator, the
+// failure #648 fixed for the ControlPlane controller. The controller is
+// registered through setupWithOptions with SkipNameValidation, so it does not
+// contend with TestSetupWithManager_AllControllersStart for the controller
+// name.
+//
+// An order on that cluster still reconciles: it gets its finalizer, and once
+// the bus and the store are up it reports TopologyOperatorNotInstalled, which
+// is what the real API server answers the Vhost apply with.
+func TestRabbitMQVhostSetup_StartsWithoutTopologyCRDs(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	// The baseline's rabbitmq-operator directory holds the RabbitmqCluster CRD
+	// beside the three topology CRDs; that one file stands in for it.
+	var crdPaths []string
+	busOnly := ""
+	for _, path := range testutil.BaselineCRDDirectoryPaths() {
+		if filepath.Base(path) == "rabbitmq-operator" {
+			busOnly = filepath.Join(path, "rabbitmqcluster.yaml")
+			path = busOnly
+		}
+		crdPaths = append(crdPaths, path)
+	}
+	g.Expect(busOnly).NotTo(BeEmpty(),
+		"the rabbitmq-operator fake CRD directory must be part of the baseline for this test to mean anything")
+
+	// The setup helper only returns once mgr.Start succeeded and every registered
+	// informer synced, so a watch on an unserved topology kind fails here.
+	c, ctx, _ := testutil.SetupC5c3EnvTestWithControllerAndCRDs(
+		t,
+		crdPaths,
+		c5c3v1alpha1.AddToScheme,
+		func(mgr ctrl.Manager) error {
+			// mgr.GetAPIReader() mirrors main.go: admission lookups read the API
+			// server directly, never a stale cache.
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// and SizingProfile entries (failurePolicy=Fail), so their handlers must
+			// be served here too.
+			if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			return (&c5c3v1alpha1.SizingProfileWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+		},
+		func(mgr ctrl.Manager) error {
+			// A nil provider engages no target cluster, so only the local legs
+			// have to sync.
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
+				return err
+			}
+			return (&RabbitMQVhostReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, controller.TypedOptions[mcreconcile.Request]{SkipNameValidation: ptr.To(true)})
+		},
+	)
+
+	tenant := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-rmv-setup-"}}
+	g.Expect(c.Create(ctx, tenant)).To(Succeed())
+	cp := integrationMinimalControlPlane("rmv-setup-cp", "default")
+	cp.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{{Namespace: tenant.Name}}
+	g.Expect(c.Create(ctx, cp)).To(Succeed())
+
+	order := &c5c3v1alpha1.RabbitMQVhost{
+		ObjectMeta: metav1.ObjectMeta{Name: "workflow", Namespace: tenant.Name},
+		Spec: c5c3v1alpha1.RabbitMQVhostSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: cp.Name, Namespace: cp.Namespace},
+		},
+	}
+	g.Expect(c.Create(ctx, order)).To(Succeed())
+	g.Eventually(func() ([]string, error) {
+		var got c5c3v1alpha1.RabbitMQVhost
+		if err := c.Get(ctx, client.ObjectKeyFromObject(order), &got); err != nil {
+			return nil, err
+		}
+		return got.Finalizers, nil
+	}, itEventuallyTimeout, itPollInterval).Should(ContainElement(rabbitMQVhostFinalizerName),
+		"Reconcile must install the teardown finalizer with the topology CRDs unserved")
+
+	// envtest runs neither the RabbitMQ Cluster Operator nor ESO: the bus and
+	// the tenant store are reported up by hand before the plane declares the
+	// bus, whose ControlPlane event wakes the order.
+	const busName = "rmv-setup-bus"
+	bus := &unstructured.Unstructured{}
+	bus.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
+	bus.SetName(busName)
+	bus.SetNamespace(cp.Namespace)
+	g.Expect(c.Create(ctx, bus)).To(Succeed())
+	g.Expect(simulators.SimulateRabbitmqClusterReady(ctx, c, client.ObjectKeyFromObject(bus), busName+"-default-user")).
+		To(Succeed())
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: busName + "-default-user", Namespace: cp.Namespace},
+		Data: map[string][]byte{
+			"username": []byte("default_user"), "password": []byte("admin-password"),
+			"host": []byte(busName + ".default.svc"), "port": []byte("5672"),
+		},
+	})).To(Succeed())
+	store := readyTenantStoreFor(cp)
+	storeStatus := store.Status
+	g.Expect(c.Create(ctx, store)).To(Succeed())
+	store.Status = storeStatus
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed())
+	g.Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), live); err != nil {
+			return err
+		}
+		live.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: busName},
+		}
+		return c.Update(ctx, live)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "declare the managed bus")
+
+	g.Eventually(func() (string, error) {
+		var got c5c3v1alpha1.RabbitMQVhost
+		if err := c.Get(ctx, client.ObjectKeyFromObject(order), &got); err != nil {
+			return "", err
+		}
+		cond := conditions.GetCondition(got.Status.Conditions, conditionTypeRabbitMQVhostVhostReady)
+		if cond == nil || cond.Status != metav1.ConditionFalse {
+			return "", nil
+		}
+		return cond.Reason, nil
+	}, itEventuallyTimeout, itPollInterval).Should(Equal(reasonRabbitMQVhostTopologyOperatorNotInstalled),
+		"the API server answers the Vhost apply with NoKindMatch, which the order reports")
 }
 
 // TestKeystoneServiceSetup_WatchesConverge drives the KeystoneService wiring end

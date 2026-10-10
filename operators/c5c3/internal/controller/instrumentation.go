@@ -70,6 +70,9 @@ var subReconcilerConditionTypes = map[string]string{
 	// way.
 	"KeystoneApplicationCredentialProvision": conditionTypeKeystoneApplicationCredentialCredentialReady,
 	"KeystoneApplicationCredentialDelivery":  conditionTypeKeystoneApplicationCredentialDeliveryReady,
+	// The RabbitMQVhost controller's two legs, prefixed the same way.
+	"RabbitMQVhostProvision": conditionTypeRabbitMQVhostVhostReady,
+	"RabbitMQVhostDelivery":  conditionTypeRabbitMQVhostDeliveryReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
