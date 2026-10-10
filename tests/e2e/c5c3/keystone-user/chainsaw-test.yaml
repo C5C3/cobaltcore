@@ -5,14 +5,17 @@
 # Chainsaw E2E test for the Keystone orders: a service owner orders a Keystone
 # user from a namespace the ControlPlane assigns to them, and the credentials
 # arrive as a Secret beside the order. Beside the user the owner orders a
-# project, a role on it, and a catalog entry.
+# project, a role on it, a catalog entry, and an application credential the
+# operator mints as the user and rotates on a schedule.
 #
 # Unit tests drive a fake client and envtest carries K-ORC as schema without a
 # controller; neither sees Keystone, OpenBao or ESO. This suite is where the
 # orders meet all three: K-ORC creates the user, the project, the role
-# assignment and the catalog rows in a live Keystone, ESO pushes the password to
-# OpenBao through the plane namespace's own store, and a Job in the owner's
-# namespace authenticates with the delivered Secret and scopes to the project.
+# assignment and the catalog rows in a live Keystone and mints the application
+# credential authenticated as the ordered user, ESO pushes the password and the
+# credential to OpenBao through the plane namespace's own store, and a Job in
+# the owner's namespace authenticates with the delivered Secrets and scopes to
+# the project.
 #
 # ── Legs ─────────────────────────────────────────────────────────────────────
 #   DELIVERY  the order in the assigned namespace reaches Ready, its Secret
@@ -22,24 +25,33 @@
 #   REPAIR    an overwritten password and a deleted Secret come back.
 #   ROTATION  raising spec.passwordGeneration delivers a new password, backs
 #             it up to OpenBao, and drops the old generation's Secret.
-#   PIECES-REFUSED  a project, a role assignment and a catalog entry are
-#             ordered; the project is provisioned, the role is off the empty
-#             allowedRoles and the entry has no allowCatalogEntries, so neither
-#             projects anything.
+#   PIECES-REFUSED  a project, a role assignment, a catalog entry and an
+#             application credential are ordered; the project is provisioned,
+#             the role is off the empty allowedRoles and the entry has no
+#             allowCatalogEntries, so neither projects anything, and the
+#             credential without a role on the project mints nothing.
 #   PIECES    admitting the role and catalog entries assigns the role and
 #             registers the entry; a Job scoped to the project issues a token
 #             and reads the entry out of the catalog. A duplicate assignment
 #             and a colliding catalog entry are refused.
+#   APPCRED   the application credential is minted as the user and delivered
+#             with clouds.yaml, application_credential_id and
+#             application_credential_secret; a Job authenticates with it. The
+#             schedule rotates it to generation 2, the superseded credential
+#             stops working after the grace period, the schedule is turned off,
+#             and raising credentialGeneration rotates it once more.
 #   PIECES-FREEZE  taking the role off the list and clearing the catalog flag
 #             freeze the two orders without revoking anything.
 #   REFUSAL   an order from a namespace no entry assigns reads
 #             NamespaceNotAssigned and creates nothing.
 #   FREEZE    withdrawing the assignment freezes every order: the Secret, the
-#             Keystone user and the pieces' K-ORC children stay, and an edited
-#             Secret is not repaired. Restoring the entry recovers them.
-#   TEARDOWN  deleting the user holds while the assignment references it;
-#             deleting the assignment releases it, and every order's deletion
-#             removes what it created, the OpenBao path included.
+#             Keystone user, the pieces' K-ORC children and the credential stay,
+#             and an edited Secret is not repaired. Restoring the entry recovers
+#             them.
+#   TEARDOWN  deleting the assignment holds while the credential order uses
+#             it, and deleting the user holds while the assignment references
+#             it; deleting the credential order releases both, and every order's
+#             deletion removes what it created, the OpenBao paths included.
 #
 # ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
 # As the keystone-service-foreign-namespace suite: a Keystone-only plane in
@@ -57,18 +69,19 @@ kind: Test
 metadata:
   name: keystone-user
 spec:
-  # The bring-up of an identity plane plus nine legs and a bounded teardown runs
+  # The bring-up of an identity plane plus ten legs and a bounded teardown runs
   # well past the suite defaults. The three legs of the pieces add three K-ORC
-  # convergences to the foreign-namespace suite's budget, and cleanup is
-  # generous for the same reason it is there.
+  # convergences to the foreign-namespace suite's budget, the application
+  # credential's leg waits out a scheduled rotation and its grace period, and
+  # cleanup is generous for the same reason it is there.
   timeouts:
     assert: 5m
-    exec: 50m
+    exec: 60m
     cleanup: 15m
   steps:
   - try:
     - script:
-        timeout: 50m
+        timeout: 60m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
         shell: bash
         content: |
@@ -83,13 +96,17 @@ spec:
           PROJECT=workflow-project
           MEMBER=workflow-member
           DNS=workflow-dns
+          APPCRED=workflow-appcred
           CREDS_SECRET=workflow-credentials
+          APPCRED_SECRET=workflow-appcred-credentials
           ORDER_SELECTOR="c5c3.io/keystoneuser-name=${ORDER},c5c3.io/keystoneuser-namespace=${TENANT_NS}"
           OUTSIDER_SELECTOR="c5c3.io/keystoneuser-name=${OUTSIDER},c5c3.io/keystoneuser-namespace=${OUTSIDER_NS}"
           PROJECT_SELECTOR="c5c3.io/keystoneproject-name=${PROJECT},c5c3.io/keystoneproject-namespace=${TENANT_NS}"
           MEMBER_SELECTOR="c5c3.io/keystoneroleassignment-name=${MEMBER},c5c3.io/keystoneroleassignment-namespace=${TENANT_NS}"
           DNS_SELECTOR="c5c3.io/keystonecatalogentry-name=${DNS},c5c3.io/keystonecatalogentry-namespace=${TENANT_NS}"
+          APPCRED_SELECTOR="c5c3.io/keystoneapplicationcredential-name=${APPCRED},c5c3.io/keystoneapplicationcredential-namespace=${TENANT_NS}"
           CHILD_KINDS=users.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io
+          APPCRED_KINDS=applicationcredentials.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io
           PIECE_KINDS=roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
@@ -112,6 +129,7 @@ spec:
             keystoneprojects.c5c3.io \
             keystoneroleassignments.c5c3.io \
             keystonecatalogentries.c5c3.io \
+            keystoneapplicationcredentials.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             mariadbs.k8s.mariadb.com \
             memcacheds.memcached.c5c3.io \
@@ -445,6 +463,85 @@ spec:
             fi
             echo "OK: a Job in the owner's namespace scoped a token to the project and read the catalog ($1)."
           }
+          # One jsonpath read of an object; an absent field or object reads empty.
+          jsonpath_of() { # <resource> <name> <namespace> <jsonpath>
+            kubectl get "$1" "$2" -n "$3" -o "jsonpath=$4" 2>/dev/null || true
+          }
+          appcred_status() { # <status field>
+            jsonpath_of keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" "{.status.$1}"
+          }
+          # Waits until a jsonpath of an object reads the expected value, the
+          # empty string included.
+          wait_field() { # <resource> <name> <namespace> <jsonpath> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" path="$4" want="$5" timeout="$6" deadline got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(jsonpath_of "${res}" "${name}" "${ns}" "${path}")"
+              if [ "${got}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${path} reads '${want}'"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${path} did not read '${want}' within ${timeout}s (last: '${got}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          # Waits until the delivered application-credential Secret names the
+          # given credential id. The id is not a secret; the secret beside it is
+          # never read here.
+          wait_delivered_appcred() { # <credential id> <timeoutSeconds>
+            local want="$1" timeout="$2" deadline got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(base64 -d <<<"$(secret_key "${APPCRED_SECRET}" "${TENANT_NS}" application_credential_id)" 2>/dev/null || true)"
+              if [ "${got}" = "${want}" ]; then
+                echo "OK: ${APPCRED_SECRET} carries credential ${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${APPCRED_SECRET} does not carry credential ${want} within ${timeout}s (last: '${got}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          # Runs the application-credential verify Job from scratch against the
+          # Secret secretName names, and fails unless it ends as expected:
+          # complete (a token was issued) or failed (Keystone refused it).
+          run_appcred_verify_job() { # <when> [secretName] [complete|failed]
+            local when="$1" secret="${2:-${APPCRED_SECRET}}" expect="${3:-complete}" logs
+            kubectl delete job workflow-appcred-verify -n "${TENANT_NS}" --ignore-not-found --wait=true
+            sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|secretName: ${APPCRED_SECRET}|secretName: ${secret}|" \
+              11-openstack-appcred-verify-job.yaml | kubectl apply -f -
+            if [ "${expect}" = "failed" ]; then
+              if ! kubectl wait --for=condition=Failed job/workflow-appcred-verify -n "${TENANT_NS}" --timeout=3m; then
+                echo "ERROR: the verify Job with ${secret} did not fail (${when})"
+                kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify 2>&1 || true
+                exit 1
+              fi
+              echo "OK: Keystone refused the credential in ${secret} (${when})."
+              return 0
+            fi
+            if ! kubectl wait --for=condition=complete job/workflow-appcred-verify -n "${TENANT_NS}" --timeout=5m; then
+              echo "ERROR: the application-credential verify Job did not complete (${when})"
+              kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify 2>&1 || true
+              exit 1
+            fi
+            # One capture, then here-strings, for the EPIPE reason run_verify_job
+            # gives.
+            logs="$(kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify)"
+            if ! grep -q "expires" <<<"${logs}" ||
+              ! grep -q "the delivered application credential authenticates" <<<"${logs}"; then
+              echo "ERROR: the application-credential verify Job printed no token table (${when})"
+              echo "${logs}"
+              exit 1
+            fi
+            echo "OK: a Job in the owner's namespace authenticated with the application credential (${when})."
+          }
           # The managed catalog Services carrying a selector: the collision
           # probe is an unmanaged import of the row it found, so it does not
           # count as a registered row.
@@ -598,6 +695,17 @@ spec:
             "$(count_of "${PIECE_KINDS}" "${CP_NS}" "${MEMBER_SELECTOR}")"
           assert_eq "the refused catalog entry projects nothing" "0" \
             "$(count_of "${PIECE_KINDS}" "${CP_NS}" "${DNS_SELECTOR}")"
+          # The credential is minted with a token scoped to the project, which
+          # needs a role there, so the order is refused until the role is
+          # assigned. It goes again here: the duplicate assignment of LEG 5 would
+          # hold on it, and LEG 6 times the schedule from a mint of its own.
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            10-keystoneapplicationcredential-tenant.yaml | kubectl apply -f -
+          wait_reason keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" CredentialReady NoRoleOnProject 300
+          assert_eq "the refused credential order mints nothing" "0" \
+            "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
+          kubectl delete keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --wait=false
+          wait_gone keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" 120
 
           # ══ LEG 5 — admitting the role and the catalog entry ══════════════
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
@@ -641,7 +749,102 @@ spec:
           wait_gone keystonecatalogentry workflow-dns-dup "${TENANT_NS}" 120
           echo "OK: a duplicate assignment and a colliding catalog entry are refused and leave nothing behind."
 
-          # ══ LEG 6 — taking the role or the catalog consent away freezes ═══
+          # ══ LEG 6 — an application credential is minted and rotated ═══════
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            10-keystoneapplicationcredential-tenant.yaml | kubectl apply -f -
+          # K-ORC mints the credential authenticated as the user, and ESO pushes
+          # it to OpenBao before anything is delivered.
+          wait_condition keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" Ready True 900
+          assert_eq "the credential is minted" "CredentialMinted" \
+            "$(condition_reason keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" CredentialReady)"
+          assert_eq "the order holds credential generation 1" "1" "$(appcred_status credentialGeneration)"
+          for field in credentialID nextRotation credentialExpiresAt; do
+            assert_nonempty "status reports ${field}" "$(appcred_status "${field}")"
+          done
+          assert_eq "status names the delivered Secret" "${APPCRED_SECRET}" "$(appcred_status secretName)"
+          assert_eq "status names the three keys" "clouds.yaml application_credential_id application_credential_secret" \
+            "$(appcred_status 'secretKeys[*]')"
+          assert_eq "one K-ORC ApplicationCredential sits in the plane's namespace" "1" \
+            "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
+          # The children's common prefix, read off the PushSecret (<prefix>backup),
+          # and the OpenBao path it pushes to.
+          APPCRED_BACKUP="$(kubectl get pushsecrets.external-secrets.io -n "${CP_NS}" -l "${APPCRED_SELECTOR}" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          APPCRED_PREFIX="${APPCRED_BACKUP%backup}"
+          assert_eq "one mint document sits in the plane's namespace" "${APPCRED_PREFIX}mint-cloud" \
+            "$(kubectl get secrets -n "${CP_NS}" -l "${APPCRED_SELECTOR}" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep 'mint-cloud$' || true)"
+          APPCRED_KV_PATH="$(kubectl get pushsecret "${APPCRED_BACKUP}" -n "${CP_NS}" \
+            -o jsonpath='{.spec.data[0].match.remoteRef.remoteKey}')"
+          if ! grep -qE "^openstack/keystone/${CP_NS}/${APPCRED}-[0-9a-f]{8}-applicationcredential/service-accounts/application-credential\$" <<<"${APPCRED_KV_PATH}"; then
+            echo "ERROR: the backup path '${APPCRED_KV_PATH}' does not have the documented shape"; exit 1
+          fi
+          # Tested, never printed: the secret and the document are credentials.
+          for k in 'clouds\.yaml' application_credential_id application_credential_secret; do
+            if [ -z "$(secret_key "${APPCRED_SECRET}" "${TENANT_NS}" "${k}")" ]; then
+              echo "ERROR: the delivered Secret is missing key ${k}"; exit 1
+            fi
+          done
+          if ! grep -q "auth_type: v3applicationcredential" \
+               <<<"$(base64 -d <<<"$(secret_key "${APPCRED_SECRET}" "${TENANT_NS}" 'clouds\.yaml')")"; then
+            echo "ERROR: the delivered clouds.yaml is not an application-credential document"; exit 1
+          fi
+          assert_eq "the order owns its Secret" "KeystoneApplicationCredential/${APPCRED}" \
+            "$(kubectl get secret "${APPCRED_SECRET}" -n "${TENANT_NS}" \
+              -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
+          run_appcred_verify_job "after the mint"
+          assert_kv_live "${APPCRED_KV_PATH}" 120
+
+          # The generation-1 document is kept, to prove the superseded
+          # credential stops working once its grace period ends. Never printed.
+          kubectl get secret "${APPCRED_SECRET}" -n "${TENANT_NS}" -o json \
+            | jq '{apiVersion: "v1", kind: "Secret", type: "Opaque",
+                   metadata: {name: "workflow-appcred-old", namespace: .metadata.namespace},
+                   data: {"clouds.yaml": .data["clouds.yaml"]}}' \
+            | kubectl apply -f -
+          OLD_ID="$(appcred_status credentialID)"
+
+          # The schedule mints generation 2 three minutes after generation 1 and
+          # switches the Secret once Keystone holds it; generation 1 stays for the
+          # one-minute grace period.
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.credentialGeneration}' 2 300
+          NEW_ID="$(appcred_status credentialID)"
+          if [ -z "${NEW_ID}" ] || [ "${NEW_ID}" = "${OLD_ID}" ]; then
+            echo "ERROR: the rotation did not change the credential id"; exit 1
+          fi
+          assert_eq "status keeps the superseded credential during its grace period" "${OLD_ID}" \
+            "$(appcred_status previousCredentialID)"
+          assert_eq "both credentials sit in the plane's namespace during the grace period" "2" \
+            "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
+          wait_delivered_appcred "${NEW_ID}" 120
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.previousCredentialID}' "" 180
+          assert_eq "one credential is left once the grace period ends" "1" \
+            "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
+          # The schedule goes off before a third scheduled rotation could race
+          # the manual one below.
+          kubectl patch keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"rotation":{"interval":"0s"}}}'
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.nextRotation}' "" 120
+          run_appcred_verify_job "after the scheduled rotation"
+          run_appcred_verify_job "with the superseded credential" workflow-appcred-old failed
+          kubectl delete secret workflow-appcred-old -n "${TENANT_NS}"
+
+          # Raising credentialGeneration rotates at once. Generation 2 still
+          # carries its expiry, which rotates it as well once it has passed; both
+          # paths end at generation 3, minted without an expiry.
+          kubectl patch keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"credentialGeneration":3}}'
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.credentialGeneration}' 3 300
+          THIRD_ID="$(appcred_status credentialID)"
+          if [ -z "${THIRD_ID}" ] || [ "${THIRD_ID}" = "${NEW_ID}" ]; then
+            echo "ERROR: the manual rotation did not change the credential id"; exit 1
+          fi
+          assert_eq "a credential minted with the schedule off carries no expiry" "" \
+            "$(appcred_status credentialExpiresAt)"
+          wait_delivered_appcred "${THIRD_ID}" 120
+          run_appcred_verify_job "after the manual rotation"
+
+          # ══ LEG 7 — taking the role or the catalog consent away freezes ═══
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
             -p '[{"op":"replace","path":"/spec/namespaceAssignments/0/allowedRoles","value":[]}]'
           wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady RoleNotAllowed 300
@@ -660,7 +863,7 @@ spec:
           wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
           echo "OK: the frozen pieces revoked nothing and recovered."
 
-          # ══ LEG 7 — an unassigned namespace is refused ════════════════════
+          # ══ LEG 8 — an unassigned namespace is refused ════════════════════
           sed -e "s|@OUTSIDER_NS@|${OUTSIDER_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
             02-keystoneuser-outsider.yaml | kubectl apply -f -
           wait_condition keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" Ready False 300
@@ -684,7 +887,9 @@ spec:
           sleep 30
           assert_nothing_created "after a settle"
 
-          # ══ LEG 8 — withdrawing the assignment freezes the orders ═════════
+          # ══ LEG 9 — withdrawing the assignment freezes the orders ═════════
+          APPCRED_GEN="$(appcred_status credentialGeneration)"
+          APPCRED_ID="$(appcred_status credentialID)"
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
             -p '{"spec":{"namespaceAssignments":null}}'
           for ctype in UserReady DeliveryReady; do
@@ -693,7 +898,11 @@ spec:
           wait_reason keystoneproject "${PROJECT}" "${TENANT_NS}" ProjectReady NamespaceNotAssigned 300
           wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady NamespaceNotAssigned 300
           wait_reason keystonecatalogentry "${DNS}" "${TENANT_NS}" CatalogReady NamespaceNotAssigned 300
+          for ctype in CredentialReady DeliveryReady; do
+            wait_reason keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" "${ctype}" NamespaceNotAssigned 300
+          done
           kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null
+          kubectl get secret "${APPCRED_SECRET}" -n "${TENANT_NS}" >/dev/null
           assert_eq "the Keystone user stays while the order is frozen" "1" \
             "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
           assert_eq "the project stays while the order is frozen" "1" \
@@ -715,14 +924,29 @@ spec:
           wait_condition keystoneproject "${PROJECT}" "${TENANT_NS}" Ready True 300
           wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 300
           wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
+          wait_condition keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" Ready True 300
+          assert_eq "the frozen credential order kept its generation" "${APPCRED_GEN}" \
+            "$(appcred_status credentialGeneration)"
+          assert_eq "the frozen credential order kept its credential" "${APPCRED_ID}" "$(appcred_status credentialID)"
           echo "OK: restoring the assignment recovered the orders."
 
-          # ══ LEG 9 — deleting the orders tears them down ═══════════════════
-          kubectl delete job workflow-verify workflow-scoped-verify -n "${TENANT_NS}" --ignore-not-found
+          # ══ LEG 10 — deleting the orders tears them down ══════════════════
+          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify -n "${TENANT_NS}" \
+            --ignore-not-found
           kubectl delete keystoneuser "${OUTSIDER}" -n "${OUTSIDER_NS}"
           wait_gone keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" 300
 
-          # The user goes first and holds: the assignment still references it.
+          # The assignment goes first and holds: the credential order is minted
+          # and deleted with the role it grants.
+          kubectl delete keystoneroleassignment "${MEMBER}" -n "${TENANT_NS}" --wait=false
+          wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady ReferencedByApplicationCredentials 120
+          if ! grep -q "\"${APPCRED}\"" <<<"$(condition_message keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady)"; then
+            echo "ERROR: the assignment's hold does not name ${APPCRED}"; exit 1
+          fi
+          assert_eq "the held assignment's RoleAssignment stays" "1" \
+            "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
+
+          # The user holds as well: the assignment still references it.
           kubectl delete keystoneuser "${ORDER}" -n "${TENANT_NS}" --wait=false
           wait_reason keystoneuser "${ORDER}" "${TENANT_NS}" UserReady ReferencedByRoleAssignments 120
           if ! grep -q "\"${MEMBER}\"" <<<"$(condition_message keystoneuser "${ORDER}" "${TENANT_NS}" UserReady)"; then
@@ -732,8 +956,19 @@ spec:
           assert_eq "the held user's Keystone user stays" "1" \
             "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
 
-          # K-ORC unassigns the role before the assignment's finalizer goes.
-          kubectl delete keystoneroleassignment "${MEMBER}" -n "${TENANT_NS}" --wait=false
+          # The credential order goes: K-ORC deletes the credentials in Keystone
+          # through the mint document, then the mint document and the delivered
+          # Secret go, and ESO takes the backup out of OpenBao.
+          kubectl delete keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --wait=false
+          wait_gone keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" 600
+          assert_eq "every child of the credential order went with it" "0" \
+            "$(count_of "${APPCRED_KINDS}" "${CP_NS}" "${APPCRED_SELECTOR}")"
+          assert_absent secret "${APPCRED_SECRET}" "${TENANT_NS}"
+          wait_kv_purged "${APPCRED_KV_PATH}" 120 "the credential order left"
+          echo "OK: the credential order's teardown reached Keystone, the Secret and OpenBao."
+
+          # The released assignment goes: K-ORC unassigns the role before its
+          # finalizer goes.
           wait_gone keystoneroleassignment "${MEMBER}" "${TENANT_NS}" 300
           assert_eq "no Role or RoleAssignment carries the assignment's labels" "0" \
             "$(count_of roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud "${CP_NS}" "${MEMBER_SELECTOR}")"
@@ -781,7 +1016,7 @@ spec:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to every
         # script operation; a dump against a wedged apiserver must not inherit
-        # 50m.
+        # 60m.
         timeout: 5m
         shell: bash
         content: |
@@ -792,7 +1027,8 @@ spec:
           kubectl get controlplane cp -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== Orders ==="
-          kubectl get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry -A -o yaml 2>&1 || true
+          kubectl get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry,keystoneapplicationcredential \
+            -A -o yaml 2>&1 || true
           echo "=== Order children in the plane's namespace ==="
           kubectl get users.openstack.k-orc.cloud,pushsecrets.external-secrets.io,secrets \
             -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name -o wide 2>&1 || true
@@ -801,6 +1037,9 @@ spec:
               -n "${NAMESPACE}" -l "${label}" \
               -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           done
+          kubectl get applicationcredentials.openstack.k-orc.cloud,pushsecrets.external-secrets.io \
+            -n "${NAMESPACE}" -l c5c3.io/keystoneapplicationcredential-name \
+            -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           kubectl get pushsecrets.external-secrets.io -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name \
             -o jsonpath='{range .items[*]}{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           echo "=== The order namespaces ==="
@@ -811,6 +1050,7 @@ spec:
           echo "=== Verify Jobs ==="
           kubectl logs -n "${TENANT_NS}" job/workflow-verify --tail=100 2>&1 || true
           kubectl logs -n "${TENANT_NS}" job/workflow-scoped-verify --tail=100 2>&1 || true
+          kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify --tail=100 2>&1 || true
           echo "=== c5c3-operator ==="
           OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
             -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
@@ -827,9 +1067,9 @@ spec:
     finally:
     - script:
         # Pinned for the same reason as catch above. The waits below are bounded
-        # and add up to 1110s; 20m covers them plus the deletes that drive them,
+        # and add up to 1170s; 20m covers them plus the deletes that drive them,
         # and keeps the suite's ceiling at exec + catch + finally + cleanup =
-        # 90m, which is the number .github/workflows/ci.yaml budgets against.
+        # 100m, which is the number .github/workflows/ci.yaml budgets against.
         timeout: 20m
         shell: bash
         content: |
@@ -839,8 +1079,10 @@ spec:
           # orders first, while Keystone and the plane's store still serve the
           # calls their finalizers make, then the plane, then the two namespaces
           # this suite created itself. The pieces go before the user, the
-          # assignment first, because a user or project an assignment references
-          # holds its deletion. Every wait is bounded and best-effort.
+          # credential order first and the assignment next, because an assignment
+          # a credential order uses, and a user or project an assignment or a
+          # credential order references, hold their deletion. Every wait is
+          # bounded and best-effort.
           TENANT_NS="${NAMESPACE}-tenant"
           OUTSIDER_NS="${NAMESPACE}-outsider"
           gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
@@ -859,7 +1101,12 @@ spec:
           # suite; the pod is shared with the other suites on this job.
           kubectl exec -n shared-services openbao-0 -- \
             rm -f /tmp/.bao-token 2>&1 || true
-          kubectl delete job workflow-verify workflow-scoped-verify -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify -n "${TENANT_NS}" \
+            --ignore-not-found --wait=false 2>&1 || true
+
+          kubectl delete keystoneapplicationcredential workflow-appcred -n "${TENANT_NS}" \
+            --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystoneapplicationcredential workflow-appcred "${TENANT_NS}" 60 || true
 
           for ra in workflow-member workflow-member-dup; do
             kubectl delete keystoneroleassignment "${ra}" -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true

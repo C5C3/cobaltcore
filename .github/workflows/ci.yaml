@@ -2437,7 +2437,8 @@ jobs:
   #
   # A third step runs the keystone-user suite, the Keystone orders from an
   # assigned namespace (the user's delivery, repair and rotation, the project,
-  # role assignment and catalog entry beside it, refusal, freeze, teardown),
+  # role assignment and catalog entry beside it, the application credential and
+  # its scheduled rotation, refusal, freeze, teardown),
   # and a fourth the keystone-service suite, the own-namespace registration
   # (round-trip, rotation, collision/adopt, deletion). Each brings up a
   # Keystone-only plane of its own and stays separate for the same failFast
@@ -2453,10 +2454,10 @@ jobs:
   # get one, and the cleanup runs after all three. Each of the four therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
   # 65+5+5+5+2+3 = 85m (full-chain, where the compute leg added a third finally
-  # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace)
-  # and 50+5+20+15 = 90m (keystone-user and own-namespace each). Unpinned, catch
-  # and finally would inherit the exec budget and the own-namespace ceiling alone
-  # would be 165m.
+  # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace),
+  # 60+5+20+15 = 100m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
+  # Unpinned, catch and finally would inherit the exec budget and the
+  # own-namespace ceiling alone would be 165m.
   #
   # timeout-minutes has to outlast the bring-up (kind create, twenty kind
   # loads, setup-e2e-infra, K-ORC and ten operator deploys) plus the suites
@@ -2475,10 +2476,15 @@ jobs:
   # keystone-user suite added a fourth step, so the wall moved to 270m. Its
   # project, role assignment and catalog entry legs then raised its exec budget
   # 40m -> 50m and its pass estimate from ~25m to ~35m, so the wall moved to
-  # 280m: 40+85+25+35+90 = 275m. The bring-up and the two pass terms are the
+  # 280m: 40+85+25+35+90 = 275m. Its application-credential leg waits out a
+  # scheduled rotation and a grace period, which raised its exec budget 50m ->
+  # 60m, its ceiling to 100m and its pass estimate to ~45m. The last suite is
+  # now the own-namespace one at 90m, but the stall the wall has to absorb is
+  # the largest ceiling of any suite, so the wall moved to 300m:
+  # 40+85+25+45+100 = 295m. The bring-up and the two pass terms are the
   # estimates in that sum —
   # confirm them against the first green run of this leg and re-derive if one
-  # overruns. The worst case holds the runner for four and a half hours, which
+  # overruns. The worst case holds the runner for five hours, which
   # is the price of a stalled suite reporting as a failure rather than a
   # cancellation.
   e2e-controlplane:
@@ -2495,7 +2501,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 280
+    timeout-minutes: 300
     continue-on-error: false
     permissions:
       contents: read
