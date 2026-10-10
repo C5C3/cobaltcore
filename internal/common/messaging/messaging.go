@@ -99,11 +99,19 @@ func TransportURLEnvVar(instanceName string) corev1.EnvVar {
 // trip. The path is the root vhost "/", the vhost the RabbitMQ Cluster Operator
 // grants its default user.
 func BuildTransportURL(username, password, host string, port int32) (transportURL, digest string) {
+	return BuildTransportURLForVhost(username, password, host, port, "")
+}
+
+// BuildTransportURLForVhost is BuildTransportURL for the named vhost: the path
+// is "/" followed by vhost, and an empty vhost is the root vhost "/". The
+// vhost is not escaped, so it must be a name of the characters
+// [A-Za-z0-9._-], which every vhost a RabbitMQVhost order derives is.
+func BuildTransportURLForVhost(username, password, host string, port int32, vhost string) (transportURL, digest string) {
 	busURL := &url.URL{
 		Scheme: "rabbit",
 		User:   url.UserPassword(username, password),
 		Host:   net.JoinHostPort(host, strconv.Itoa(int(port))),
-		Path:   "/",
+		Path:   "/" + vhost,
 	}
 	transportURL = busURL.String()
 	return transportURL, digestOf(transportURL)
