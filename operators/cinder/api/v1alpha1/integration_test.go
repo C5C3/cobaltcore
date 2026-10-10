@@ -91,6 +91,16 @@ func integrationBackend(name, namespace, cinderRef string) *CinderBackend {
 	return b
 }
 
+// integrationRBDBackend returns validRBDCinderBackend() stamped with
+// name/namespace and pointed at cinderRef, for API server submission.
+func integrationRBDBackend(name, namespace, cinderRef string) *CinderBackend {
+	b := validRBDCinderBackend()
+	b.Name = name
+	b.Namespace = namespace
+	b.Spec.CinderRef = CinderRefSpec{Name: cinderRef}
+	return b
+}
+
 // integrationBackupBackend returns validCinderBackupBackend() stamped with
 // name/namespace and pointed at cinderRef, for API server submission.
 func integrationBackupBackend(name, namespace, cinderRef string) *CinderBackupBackend {
@@ -151,9 +161,11 @@ func TestIntegration_CRD_CELOnly_RejectsCinderRefChange(t *testing.T) {
 }
 
 // TestIntegration_CRD_CELOnly_RejectsTypeChange pins the type immutability
-// transition rule on both satellites. type is a single-value enum (NFS), so no
-// valid transition exists; changing it to any other value is rejected at the CRD
-// layer — by the immutability rule, the enum constraint, or both.
+// transition rule on both satellites. A CinderBackend can name two types, so its
+// update moves an NFS backend to a well-formed RBD one and only the transition
+// rule is left to answer. The backup type is a single-value enum (NFS), so any
+// change there is rejected by the immutability rule, the enum constraint, or
+// both.
 func TestIntegration_CRD_CELOnly_RejectsTypeChange(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -168,14 +180,11 @@ func TestIntegration_CRD_CELOnly_RejectsTypeChange(t *testing.T) {
 
 		got := &CinderBackend{}
 		g.Expect(c.Get(ctx, types.NamespacedName{Name: "backend", Namespace: ns}, got)).To(Succeed())
-		got.Spec.Type = CinderBackendType("Ceph")
+		got.Spec.Type = CinderBackendTypeRBD
+		got.Spec.NFS = nil
+		got.Spec.RBD = validRBDCinderBackend().Spec.RBD
 
-		err := c.Update(ctx, got)
-		g.Expect(err).To(HaveOccurred(), "changing type must be rejected on update")
-		g.Expect(err.Error()).To(SatisfyAny(
-			ContainSubstring("type is immutable"),
-			ContainSubstring("Unsupported value"),
-		))
+		expectRejected(t, c.Update(ctx, got), "type is immutable")
 	})
 
 	t.Run("CinderBackupBackend", func(t *testing.T) {
@@ -218,6 +227,110 @@ func TestIntegration_CRD_CELOnly_RejectsNFSUnionMissingBlock(t *testing.T) {
 		b := integrationBackupBackend("backup", ns, "cinder-a")
 		b.Spec.NFS = nil
 		expectRejected(t, c.Create(ctx, b), "exactly one backup backend block matching spec.type")
+	})
+}
+
+// TestIntegration_CRD_CELOnly_RejectsRBDUnionMismatch pins the second half of
+// the union rule: a type-RBD backend without spec.rbd, and a type-NFS backend
+// that carries spec.rbd beside spec.nfs, are both rejected by the CEL rule alone.
+func TestIntegration_CRD_CELOnly_RejectsRBDUnionMismatch(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	const want = "exactly one backend block matching spec.type must be set (type NFS requires spec.nfs, type RBD requires spec.rbd)"
+
+	t.Run("type RBD without the block", func(t *testing.T) {
+		ns := newNamespace(t, ctx, c, "rbd-union-")
+		b := integrationRBDBackend("backend", ns, "cinder-a")
+		b.Spec.RBD = nil
+		expectRejected(t, c.Create(ctx, b), want)
+	})
+
+	t.Run("type NFS with both blocks", func(t *testing.T) {
+		ns := newNamespace(t, ctx, c, "rbd-union-")
+		b := integrationBackend("backend", ns, "cinder-a")
+		b.Spec.RBD = validRBDCinderBackend().Spec.RBD
+		expectRejected(t, c.Create(ctx, b), want)
+	})
+}
+
+// TestIntegration_CRD_CELOnly_RBDFieldPatterns pins the RBD field rules on the
+// CRD alone: every value reaches a file, a command line or an ipBlock verbatim,
+// so the schema must hold them while the webhook is down.
+func TestIntegration_CRD_CELOnly_RBDFieldPatterns(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(rbd *RBDBackendSpec)
+		want   []string
+	}{
+		{
+			name:   "user with the client. prefix",
+			mutate: func(rbd *RBDBackendSpec) { rbd.User = "client.cinder" },
+			want:   []string{"spec.rbd.user", "user is the cephx name without its client. prefix (write cinder, not client.cinder)"},
+		},
+		{
+			name:   "empty monitors",
+			mutate: func(rbd *RBDBackendSpec) { rbd.Monitors = []string{} },
+			want:   []string{"spec.rbd.monitors", "should have at least 1 items"},
+		},
+		{
+			name:   "network without a prefix length",
+			mutate: func(rbd *RBDBackendSpec) { rbd.Networks = []string{"10.244.0.0"} },
+			want:   []string{"spec.rbd.networks[0]", "should match"},
+		},
+		{
+			name:   "uppercase key Secret name",
+			mutate: func(rbd *RBDBackendSpec) { rbd.KeySecretRef.Name = "Ceph_Key" },
+			want:   []string{"spec.rbd.keySecretRef.name", "should match"},
+		},
+		{
+			name:   "secretUUID that is no UUID",
+			mutate: func(rbd *RBDBackendSpec) { rbd.SecretUUID = "not-a-uuid" },
+			want:   []string{"spec.rbd.secretUUID", "should match"},
+		},
+		{
+			name:   "pool with a space",
+			mutate: func(rbd *RBDBackendSpec) { rbd.Pool = "my pool" },
+			want:   []string{"spec.rbd.pool", "should match"},
+		},
+		{
+			name:   "clusterName with a path separator",
+			mutate: func(rbd *RBDBackendSpec) { rbd.ClusterName = "ceph/../x" },
+			want:   []string{"spec.rbd.clusterName", "should match"},
+		},
+		{
+			name:   "monitor carrying a comma",
+			mutate: func(rbd *RBDBackendSpec) { rbd.Monitors = []string{"mon-a,mon-b"} },
+			want:   []string{"spec.rbd.monitors[0]", "should match"},
+		},
+		{
+			name:   "IPv6 monitor literal",
+			mutate: func(rbd *RBDBackendSpec) { rbd.Monitors = []string{"[fd00::1]:6789"} },
+			want:   []string{"spec.rbd.monitors[0]", "should match"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "rbd-fields-")
+			b := integrationRBDBackend("backend", ns, "cinder-a")
+			tc.mutate(b.Spec.RBD)
+			err := c.Create(ctx, b)
+			for _, want := range tc.want {
+				expectRejected(t, err, want)
+			}
+		})
+	}
+
+	t.Run("a well-formed block is accepted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "rbd-fields-")
+		b := integrationRBDBackend("backend", ns, "cinder-a")
+		b.Spec.RBD.Monitors = []string{"10.96.12.3:6789", "ceph-mon-b.rook-ceph.svc"}
+		b.Spec.RBD.SecretUUID = "457eb676-33da-42ec-9a8c-9293d545c337"
+		g.Expect(c.Create(ctx, b)).To(Succeed())
 	})
 }
 
@@ -431,7 +544,44 @@ func TestIntegration_CRD_MountOptionsDefaultMaterialized(t *testing.T) {
 		"CRD default must materialize the mount options")
 }
 
+// TestIntegration_CRD_RBDClusterNameDefaultMaterialized proves the CRD schema
+// default is materialized without the mutating webhook: an rbd block that omits
+// clusterName comes back with ceph.
+func TestIntegration_CRD_RBDClusterNameDefaultMaterialized(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "clustername-default-")
+
+	b := integrationRBDBackend("backend", ns, "cinder-a")
+	b.Spec.RBD.ClusterName = ""
+	g.Expect(c.Create(ctx, b)).To(Succeed(), "backend without clusterName should be accepted")
+
+	got := &CinderBackend{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "backend", Namespace: ns}, got)).To(Succeed())
+	g.Expect(got.Spec.RBD.ClusterName).To(Equal(DefaultRBDClusterName),
+		"CRD default must materialize the cluster name")
+}
+
 // --- Live admission round-trip (webhooks running) ---
+
+// TestIntegration_WebhookRejectsRBDNetworkWithHostBits proves the webhook
+// answers what the pattern cannot: 10.128.0.1/22 is shaped like a CIDR, but the
+// API server would reject it as an ipBlock.cidr, so the webhook refuses it at
+// admission instead.
+func TestIntegration_WebhookRejectsRBDNetworkWithHostBits(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTest(t)
+	ns := newNamespace(t, ctx, c, "rbd-host-bits-")
+
+	b := integrationRBDBackend("backend", ns, "cinder-a")
+	b.Spec.RBD.Networks = []string{"10.128.0.1/22"}
+	err := c.Create(ctx, b)
+	expectRejected(t, err, "spec.rbd.networks[0]")
+	expectRejected(t, err, "must be a canonical IPv4 CIDR such as 10.128.0.0/16 (host bits zero)")
+}
 
 // TestIntegration_WebhookDefaultsServiceUser proves the mutating webhook fills
 // the service-user identity defaults and the secretRef key on a minimal CR that
