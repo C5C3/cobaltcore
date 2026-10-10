@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseName is immutable (root CEL transition rule over the effective
+# name): the name identifies a live schema. The error carries 'databaseName
+# is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: mdb-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  databaseName: other_db
+  deletionPolicy: Retain
