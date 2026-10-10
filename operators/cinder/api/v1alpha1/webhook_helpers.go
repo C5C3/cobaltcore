@@ -99,15 +99,39 @@ func validateNFSExport(fldPath *field.Path, path, mountOptions string) field.Err
 // RBDBackendSpec.User, repeated verbatim by its webhook twin.
 const rbdUserClientPrefixMessage = "user is the cephx name without its client. prefix (write cinder, not client.cinder)"
 
+// rbdBackupUserClientPrefixMessage is the message of the CEL rule on
+// RBDBackupBackendSpec.User, repeated verbatim by its webhook twin. It differs
+// from rbdUserClientPrefixMessage in its example alone.
+const rbdBackupUserClientPrefixMessage = "user is the cephx name without its client. prefix " +
+	"(write cinder-backup, not client.cinder-backup)"
+
 // validateRBDBackend is the defense-in-depth twin of the markers on
-// RBDBackendSpec, plus the rules a pattern cannot express: a monitor port inside
-// 1 to 65535 and a network in canonical form. The canonical form matters because
-// the API server rejects an ipBlock.cidr with host bits set, and that rejection
-// would surface as a failing NetworkPolicy step on the Cinder rather than here.
-// Every value reaches the backend section, the projected ceph.conf or keyring,
-// or a NetworkPolicy verbatim, so a newline or a carriage return is rejected on
-// every field the renderer writes.
+// RBDBackendSpec; validateRBDFields carries the rules.
 func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorList {
+	return validateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, rbdUserClientPrefixMessage)
+}
+
+// validateRBDBackupBackend is the defense-in-depth twin of the markers on
+// RBDBackupBackendSpec; validateRBDFields carries the rules.
+func validateRBDBackupBackend(fldPath *field.Path, rbd *RBDBackupBackendSpec) field.ErrorList {
+	return validateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, rbdBackupUserClientPrefixMessage)
+}
+
+// validateRBDFields checks the Ceph fields an RBD volume backend and an RBD
+// backup target share: the twin of their markers, plus the rules a pattern
+// cannot express: a monitor port inside 1 to 65535 and a network in canonical
+// form. The canonical form matters because the API server rejects an
+// ipBlock.cidr with host bits set, and that rejection would surface as a failing
+// NetworkPolicy step on the Cinder rather than here. Every value reaches the
+// rendered section, the projected ceph.conf or keyring, or a NetworkPolicy
+// verbatim, so a newline or a carriage return is rejected on every field the
+// renderer writes. clientPrefixMessage is the message of the kind's CEL rule on
+// the user field.
+func validateRBDFields(fldPath *field.Path, pool, user, clusterName string, monitors, networks []string,
+	keySecretName, clientPrefixMessage string,
+) field.ErrorList {
 	var errs field.ErrorList
 	const verbatimMsg = "must not contain a newline or carriage return: the value is rendered " +
 		"verbatim into the backend section and the Ceph configuration"
@@ -115,19 +139,19 @@ func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorLis
 	for _, f := range []struct {
 		name, value string
 	}{
-		{"pool", rbd.Pool},
-		{"user", rbd.User},
-		{"clusterName", rbd.ClusterName},
+		{"pool", pool},
+		{"user", user},
+		{"clusterName", clusterName},
 	} {
 		if validation.HasControlChars(f.value) {
 			errs = append(errs, field.Invalid(fldPath.Child(f.name), f.value, verbatimMsg))
 		}
 	}
-	if strings.HasPrefix(rbd.User, "client.") {
-		errs = append(errs, field.Invalid(fldPath.Child("user"), rbd.User, rbdUserClientPrefixMessage))
+	if strings.HasPrefix(user, "client.") {
+		errs = append(errs, field.Invalid(fldPath.Child("user"), user, clientPrefixMessage))
 	}
 
-	for i, monitor := range rbd.Monitors {
+	for i, monitor := range monitors {
 		monPath := fldPath.Child("monitors").Index(i)
 		if validation.HasControlChars(monitor) {
 			errs = append(errs, field.Invalid(monPath, monitor, verbatimMsg))
@@ -143,7 +167,7 @@ func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorLis
 		}
 	}
 
-	for i, network := range rbd.Networks {
+	for i, network := range networks {
 		ip, ipnet, err := net.ParseCIDR(network)
 		if err != nil || ip.To4() == nil || ipnet.String() != network {
 			errs = append(errs, field.Invalid(fldPath.Child("networks").Index(i), network,
@@ -151,9 +175,9 @@ func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorLis
 		}
 	}
 
-	if msgs := k8svalidation.IsDNS1123Subdomain(rbd.KeySecretRef.Name); len(msgs) > 0 {
+	if msgs := k8svalidation.IsDNS1123Subdomain(keySecretName); len(msgs) > 0 {
 		errs = append(errs, field.Invalid(fldPath.Child("keySecretRef", "name"),
-			rbd.KeySecretRef.Name, strings.Join(msgs, "; ")))
+			keySecretName, strings.Join(msgs, "; ")))
 	}
 	return errs
 }
