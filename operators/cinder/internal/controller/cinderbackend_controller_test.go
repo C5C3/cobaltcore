@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +126,188 @@ func TestCinderBackendReconcile_CredentialsNotRequiredForNFS(t *testing.T) {
 	g.Expect(ready).NotTo(BeNil())
 	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
+}
+
+// reconcileRBDBackend runs one pass of the backend controller over an RBD
+// backend that already carries its finalizer, next to the shared Cinder and
+// objs, and returns the result, the re-read backend and the error.
+func reconcileRBDBackend(t *testing.T, backend *cinderv1alpha1.CinderBackend, objs ...client.Object) (
+	reconcile.Result, *cinderv1alpha1.CinderBackend, error,
+) {
+	t.Helper()
+	backend.Finalizers = []string{CinderBackendServiceRemoveFinalizer}
+	r := newCinderBackendTestReconciler(append([]client.Object{validCinder(), backend}, objs...)...)
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	return result, getCinderBackend(t, r.Client, backend.Name), err
+}
+
+// expectRBDKeyWaiting asserts the gate held an RBD backend on its key: the pass
+// polls, CredentialsReady is False with the given message, and the projection
+// observation never ran.
+func expectRBDKeyWaiting(t *testing.T, result reconcile.Result, err error,
+	updated *cinderv1alpha1.CinderBackend, wantMessage string,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	g.Expect(err).NotTo(HaveOccurred(), "a key that is not there yet is a waiting state, not a failure")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
+		"an absent Secret emits no event, so the gate polls")
+
+	creds := backendCondition(updated, conditionTypeCredentialsReady)
+	g.Expect(creds).NotTo(BeNil())
+	g.Expect(creds.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(creds.Reason).To(Equal(conditionReasonWaitingForCredentials))
+	g.Expect(creds.Message).To(Equal(wantMessage))
+	g.Expect(backendCondition(updated, conditionTypeConfigProjected)).To(BeNil(),
+		"the parent never projects a backend that is not credential-ready, so there is nothing to observe")
+	g.Expect(backendCondition(updated, "Ready").Status).To(Equal(metav1.ConditionFalse))
+}
+
+// An RBD backend whose key Secret does not exist, and that no ExternalSecret is
+// about to produce, waits on the gate rather than reaching the projection.
+func TestCinderBackendReconcile_RBDKeySecretMissingWaits(t *testing.T) {
+	result, updated, err := reconcileRBDBackend(t, testRBDCinderBackend("rbd1"))
+	expectRBDKeyWaiting(t, result, err, updated, "RBD key ExternalSecret openstack/rbd1-key not found yet")
+}
+
+// A Secret under the name the backend references that carries no userKey, while
+// the ExternalSecret producing it already reports Ready, is a malformed Secret
+// rather than one still syncing.
+func TestCinderBackendReconcile_RBDKeySecretWithoutKeyWaits(t *testing.T) {
+	secret := rbdKeySecret("rbd1", testRBDKey)
+	secret.Data = map[string][]byte{"key": []byte(testRBDKey)}
+	es := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbd1-key", Namespace: testNamespace},
+		Status: esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
+				{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	result, updated, err := reconcileRBDBackend(t, testRBDCinderBackend("rbd1"), secret, es)
+	expectRBDKeyWaiting(t, result, err, updated, "RBD key Secret exists but is missing expected keys")
+}
+
+// A userKey of whitespace alone is an empty key once trimmed: copied into the
+// keyring it would fail every connection the driver opens.
+func TestCinderBackendReconcile_RBDKeyEmptyWaits(t *testing.T) {
+	result, updated, err := reconcileRBDBackend(t, testRBDCinderBackend("rbd1"), rbdKeySecret("rbd1", " \n"))
+	expectRBDKeyWaiting(t, result, err, updated, `Secret "rbd1-key" carries an empty userKey`)
+}
+
+// A value that is not the base64 a cephx key is printed as is refused before it
+// reaches the keyring, and the message never repeats the value.
+func TestCinderBackendReconcile_RBDKeyNotBase64Waits(t *testing.T) {
+	result, updated, err := reconcileRBDBackend(t, testRBDCinderBackend("rbd1"), rbdKeySecret("rbd1", "not a key!"))
+	expectRBDKeyWaiting(t, result, err, updated,
+		`Secret "rbd1-key" carries a userKey that is not a cephx key (base64 expected)`)
+}
+
+// The admission union rule guarantees spec.rbd on a type-RBD backend; one
+// written past it has no key to resolve.
+func TestCinderBackendReconcile_RBDBlockMissingWaits(t *testing.T) {
+	backend := testRBDCinderBackend("rbd1")
+	backend.Spec.RBD = nil
+	result, updated, err := reconcileRBDBackend(t, backend)
+	expectRBDKeyWaiting(t, result, err, updated, "spec.rbd is not set; no RBD key to resolve")
+}
+
+// A type the operator does not render cannot become credential-ready.
+func TestCinderBackendReconcile_UnknownTypeWaits(t *testing.T) {
+	backend := testRBDCinderBackend("rbd1")
+	backend.Spec.Type = cinderv1alpha1.CinderBackendType("Ceph")
+	result, updated, err := reconcileRBDBackend(t, backend)
+	expectRBDKeyWaiting(t, result, err, updated, "spec.type Ceph is not a type this operator renders")
+}
+
+// A usable key opens the gate, and the pass goes on to observe the projection
+// exactly as it does for an NFS backend.
+func TestCinderBackendReconcile_RBDKeyPresentIsCredentialsAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	result, updated, err := reconcileRBDBackend(t, testRBDCinderBackend("rbd1"),
+		rbdKeySecret("rbd1", testRBDKey+"\n"))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
+		"nothing is projected yet, so the projection gate polls")
+	creds := backendCondition(updated, conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(creds.Reason).To(Equal(conditionReasonCredentialsAvailable))
+	g.Expect(creds.Message).To(Equal(`RBD key Secret "rbd1-key" carries the userKey data key`))
+
+	projected := backendCondition(updated, conditionTypeConfigProjected)
+	g.Expect(projected).NotTo(BeNil(), "the projection observation ran")
+	g.Expect(projected.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(projected.Reason).To(Equal(conditionReasonWaitingForProjection))
+}
+
+// A Secret Get that fails for any reason other than NotFound establishes
+// nothing about the key, so a standing CredentialsReady=True stays: the
+// Cinder-side projection gates on it, and demoting it on a cache blip would
+// stop the backend's volume service.
+func TestCinderBackendReconcile_RBDSecretReadErrorKeepsTheStandingClaim(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := credentialReadyRBDBackend("rbd1")
+	backend.Finalizers = []string{CinderBackendServiceRemoveFinalizer}
+	boom := errors.New("the apiserver is briefly unreachable")
+	r := &CinderBackendReconciler{
+		Client: cinderFakeClientBuilder(validCinder(), backend, rbdKeySecret("rbd1", testRBDKey)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+					obj client.Object, opts ...client.GetOption,
+				) error {
+					if _, ok := obj.(*corev1.Secret); ok {
+						return boom
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}).Build(),
+		Scheme:   testScheme(),
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).To(MatchError(boom))
+	creds := backendCondition(getCinderBackend(t, r.Client, "rbd1"), conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionTrue), "unreadable is not missing")
+}
+
+// The gate reads the Secret a second time for the value's shape. A failure of
+// that read is wrapped with the backend's name and keeps the standing claim as
+// the first read's failure does.
+func TestCinderBackendReconcile_RBDKeyValueReadErrorIsWrapped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := credentialReadyRBDBackend("rbd1")
+	backend.Finalizers = []string{CinderBackendServiceRemoveFinalizer}
+	boom := errors.New("the apiserver is briefly unreachable")
+	secretGets := 0
+	r := &CinderBackendReconciler{
+		Client: cinderFakeClientBuilder(validCinder(), backend, rbdKeySecret("rbd1", testRBDKey)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+					obj client.Object, opts ...client.GetOption,
+				) error {
+					if _, ok := obj.(*corev1.Secret); ok {
+						if secretGets++; secretGets == 2 {
+							return boom
+						}
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}).Build(),
+		Scheme:   testScheme(),
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).To(MatchError(ContainSubstring(`reading the RBD key of backend "rbd1"`)))
+	g.Expect(errors.Is(err, boom)).To(BeTrue(), "the cause stays on the chain")
+	creds := backendCondition(getCinderBackend(t, r.Client, "rbd1"), conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionTrue), "unreadable is not missing")
 }
 
 // A parent that does not exist stops the pass at the first gate: without one
