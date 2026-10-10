@@ -157,6 +157,7 @@ deletions.
 | [multi-backend](#multi-backend) | `cinder-multi` | One `cinder-volume` Deployment per backend, a per-pod `enabled_backends` overlay, volume-type placement on the second export |
 | [backend-detach](#backend-detach) | `cinder-detach` | `CinderBackend` deletion: volume Deployment removed first, service-remove Job run, finalizer released, service registry and `status.volumeServices` follow |
 | [backup-nfs](#backup-nfs) | `cinder-backup` | Backup round trip on an NFS target: the two backup conditions, the `cinder-backup` Deployment, backup, restore, delete, detach |
+| [backup-rbd](#backup-rbd) | `cinder-bkrbd` | RBD backup target without a Ceph: the credentials gate, the projected driver block, `ceph.conf` and keyring, the volume backend's keyring in the backup pod, the Ceph egress union, the roll on a replaced backup key and on a replaced volume key |
 | [scale](#scale) | `cinder-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, scheduler and volume service left at one replica |
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile of the Cinder and of its backend |
@@ -170,7 +171,7 @@ deletions.
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
 | [invalid-cr](../cinder/cinder-crd.md) | (rejected at admission) | `Cinder` rejection corpus: the release pattern and the release floor, the image and database and cache and messaging union rules, the messaging TLS rule, the db-purge bounds, the Keystone-pairing rules, the volume replica cap, the backup strategy, both `extraConfig` guards, the name bound, the gateway rule and the `verticalAutoscaling` rules |
 | [invalid-cinderbackend-cr](../cinder/cinder-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackend` rejection corpus: the union rule, the reserved name, a relative export path, an export path carrying a newline, both `extraOptions` guards, the `cinderRef` transition rule, and the two name bounds; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
-| [invalid-cinderbackupbackend-cr](../cinder/cinder-backup-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackupBackend` rejection corpus: the union rule, the chunk-size minimum, the compression enum, the `extraOptions` denylist, the `cinderRef` transition rule, the second-backup rule, and an export path carrying a newline |
+| [invalid-cinderbackupbackend-cr](../cinder/cinder-backup-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackupBackend` rejection corpus: the union rule, the chunk-size minimum, the compression enum, the `extraOptions` denylist, the `cinderRef` transition rule, the second-backup rule, and an export path carrying a newline; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
 
 ---
 
@@ -372,6 +373,43 @@ volume, and the backup backend is detached again.
 through the API before the backup backend is detached, because deleting a backup
 is work the `cinder-backup` service does and the detach is what takes that
 service away.
+
+---
+
+### backup-rbd
+
+**File:** `tests/e2e/cinder/backup-rbd/chainsaw-test.yaml`
+
+**Purpose:** Proves the operator mechanics of an RBD backup target on a kind
+cluster that runs no Ceph: the credentials gate on the key Secret, the projected
+Ceph backup driver section, `ceph.conf` and keyring, the backup pod's
+`/etc/ceph` with the target's files and the RBD volume backend's keyring, the
+NFS volume backend's export still mounted, the union of the Ceph networks in
+one egress rule, and the roll of the backup service when the backup key or the
+volume key is replaced. Backups are written to RBD only by the lab run of the
+[RBD backup guide](../../guides/cinder/configure-rbd-backups.md).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-bkrbd …`, then `00-cinder-cr.yaml` (`cinder-bkrbd` with `spec.networkPolicy`), `01-key-secret-volume.yaml` (`bkrbd-rbd1-key`), `02-cinderbackend-rbd-cr.yaml` (`bkrbd-rbd1`), `03-cinderbackend-nfs-cr.yaml` (`bkrbd-nfs1`) and `04-cinderbackupbackend-cr.yaml` (`bkrbd-rbdbk`), whose key Secret does not exist yet |
+| 2 | Walk the credentials gate of the backup target | `assert` (5m) + `script` + `apply` | `bkrbd-rbdbk` reports `WaitingForCredentials` with `not found yet` and `Ready=False/NotAllReady`; the Cinder `Waiting for backup backends: bkrbd-rbdbk`, `BackupServiceReady=True/BackupNotConfigured` and both `volumeServices` entries; no backup Deployment exists; an empty `userKey` (`05-key-secret-backup-empty.yaml`) reports `carries an empty userKey`; a patch sets the backup key |
+| 3 | Assert the projection, the backup pod's mounts and the policy | `assert` (5m) | `bkrbd-rbdbk` with `CredentialsAvailable`, `ConfigProjected` and `Ready=True/AllReady`; the Cinder with `BackupBackendProjected`, `BackupServiceReady` and `NetworkPolicyReady`; Deployment `cinder-bkrbd-backup` available with no `backup-share` volume, a `ceph` projected volume of two sources mounted read-only at `/etc/ceph`, and the `share-bkrbd-nfs1` export; NetworkPolicy `cinder-bkrbd` with the 2049 rule followed by the Ceph rule to `10.244.0.0/16` and `10.96.0.0/12` on TCP 3300, 6789 and 6800 to 7300 |
+| 4 | Read the projected files and the driver's attempt | `script` (5m) | Through the Secret the `backup` volume names: exactly `backup.conf`, `ceph.conf` and `keyring`; the six options of the Ceph driver section with `host = cinder-bkrbd-backup` and no `backup_file_size`, `backup_compression_algorithm` or `backup_share`; the five `ceph.conf` lines; the keyring section and key; in the pod `ceph.conf`, `ceph.client.cinder-backup.keyring` and `ceph.client.cinder.keyring` carrying the volume key, and no `rbdmap`; the pod log carries `_setup_backup_driver` and `error connecting to the cluster`, and no `conf_read_file` |
+| 5 | Replace the backup key, then the volume key | `script` (5m) | A new backup key moves the `backup` volume to a Secret of a new name, keeps the previous one and rolls the pod; a new volume key moves the second `ceph` source to a new Secret, rolls the pod again, and `/etc/ceph/ceph.client.cinder.keyring` in the pod carries it |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-key-secret-volume.yaml`,
+`02-cinderbackend-rbd-cr.yaml`, `03-cinderbackend-nfs-cr.yaml`,
+`04-cinderbackupbackend-cr.yaml`, `05-key-secret-backup-empty.yaml`
+
+**Design note:** the monitor `ceph-mon.openstack.svc.cluster.local` resolves
+to nothing, so the Ceph backup driver's one setup attempt fails in librados
+after about 15 seconds. `cinder-backup` runs that setup once at start in a
+looping call that stops on the first failure, logs the failure and starts its
+RPC server anyway, so the pod passes the AMQP readiness probe while the driver
+never connects. The volume backend's `rados_*` options bound its own setup the
+way they do in `rbd-backend`.
 
 ---
 
@@ -822,6 +860,14 @@ tests/e2e/cinder/
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-backup
 │   ├── 01-cinderbackend-cr.yaml        Volume backend backup-nfs1
 │   └── 02-cinderbackupbackend-cr.yaml  Backup backend backup-nfsbk
+├── backup-rbd/
+│   ├── chainsaw-test.yaml              RBD backup target mechanics without a Ceph
+│   ├── 00-cinder-cr.yaml               Cinder CR cinder-bkrbd with spec.networkPolicy
+│   ├── 01-key-secret-volume.yaml       Key Secret bkrbd-rbd1-key of the volume backend
+│   ├── 02-cinderbackend-rbd-cr.yaml    RBD volume backend bkrbd-rbd1
+│   ├── 03-cinderbackend-nfs-cr.yaml    NFS volume backend bkrbd-nfs1
+│   ├── 04-cinderbackupbackend-cr.yaml  RBD backup target bkrbd-rbdbk, applied before its key
+│   └── 05-key-secret-backup-empty.yaml Key Secret bkrbd-rbdbk-key with an empty userKey
 ├── basic-deployment/
 │   ├── chainsaw-test.yaml              Happy path on 2026.1
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-basic
@@ -857,7 +903,7 @@ tests/e2e/cinder/
 ├── invalid-cinderbackupbackend-cr/
 │   ├── chainsaw-test.yaml              CinderBackupBackend rejection corpus
 │   ├── _generate.py                    Generator for the fixtures below
-│   └── 00-…-08-….yaml                  Nine rejection fixtures
+│   └── 00-…-16-….yaml                  Seventeen rejection fixtures
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              Cinder rejection corpus
 │   ├── _generate.py                    Generator for the fixtures below
