@@ -70,7 +70,7 @@ type NeutronMetadataAgentSpec struct {
 	// option catalog spec.extraConfig is validated against.
 	//
 	// The pattern matches the OpenStack date-based release scheme (YYYY.N where N
-	// is 1 or 2, the two-releases-per-year cadence, e.g. 2025.2, 2026.1). The
+	// is 1 or 2, the two-releases-per-year cadence, e.g. 2026.1, 2026.2). The
 	// [12] minor class keeps this CRD pattern, the validating webhook, and
 	// release.ParseRelease in agreement so a non-cadence minor (e.g. 2025.9) is
 	// rejected at every layer.
@@ -105,11 +105,11 @@ type NeutronMetadataAgentSpec struct {
 	NovaMetadata *NovaMetadataSpec `json:"novaMetadata,omitempty"`
 
 	// MetadataWorkers is rendered as [DEFAULT] metadata_workers. It defaults to
-	// 4, resolved when the config is rendered and never written into the CR. In
-	// 2026.1 the value sizes the thread pool the agent serves metadata requests
-	// from, and 0 serves them one at a time in the main process, which is
-	// upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread
-	// per request. The count does not follow the node's CPU count.
+	// 4, resolved when the config is rendered and never written into the CR. On
+	// every supported release the value sizes the thread pool the agent serves
+	// metadata requests from, and 0 serves them one at a time in the main
+	// process, which is upstream's ML2/OVN default. The count does not follow
+	// the node's CPU count.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	MetadataWorkers *int32 `json:"metadataWorkers,omitempty"`

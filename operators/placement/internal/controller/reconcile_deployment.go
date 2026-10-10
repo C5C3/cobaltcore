@@ -58,10 +58,9 @@ const (
 )
 
 // placementWSGIScriptPath is the uWSGI entry script shipped by images/placement.
-// The image generates it by hand under the upstream name because 2025.2 declares
-// it as a PBR wsgi_scripts entry the install mode does not materialise and
-// 2026.1 declares no WSGI script at all; the two paths must stay in lockstep
-// with the image.
+// The image generates it by hand under the upstream name because the supported
+// releases declare no WSGI script; the two paths must stay in lockstep with the
+// image.
 const placementWSGIScriptPath = "/var/lib/openstack/bin/placement-api"
 
 // Pod-template annotation keys stamped with content digests so an env-var-

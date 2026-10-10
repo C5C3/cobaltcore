@@ -1820,7 +1820,7 @@ spec:
                     type: string
                   tag:
                     description: |-
-                      Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                      Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                       up to 128 characters of word characters, dots, and dashes, and must not
                       begin with a dot or dash. Optional: exactly one of Tag or Digest must be
                       set. The pattern is enforced only when a tag is present.
