@@ -42,8 +42,8 @@ OpenStack releases follow a `YYYY.N` naming convention, with two releases per ye
 
 | Component | Format | Examples |
 | --- | --- | --- |
-| Base release | `YYYY.N` where N is 1 or 2 | `2025.1`, `2025.2`, `2026.1` |
-| Patch release | `YYYY.N-suffix` | `2025.2-p1`, `2026.1-hotfix` |
+| Base release | `YYYY.N` where N is 1 or 2 | `2026.1`, `2026.2`, `2027.1` |
+| Patch release | `YYYY.N-suffix` | `2026.1-p1`, `2026.1-hotfix` |
 
 The operator parses version strings using `ParseRelease()` in
 `operators/keystone/internal/controller/version.go`. Parsing rules:
@@ -63,16 +63,14 @@ release step forward:
 
 | From | To | Valid | Reason |
 | --- | --- | --- | --- |
-| `2025.1` | `2025.2` | Yes | Same year, minor +1 |
-| `2025.2` | `2026.1` | Yes | Year +1, from minor 2 to minor 1 |
 | `2026.1` | `2026.2` | Yes | Same year, minor +1 |
-| `2024.2` | `2026.1` | **No** | Skip-level (skips 2025.x entirely) |
-| `2025.2` | `2026.2` | **No** | Skip-level (skips 2026.1) |
-| `2026.1` | `2025.2` | **No** | Downgrade |
+| `2026.2` | `2027.1` | Yes | Year +1, from minor 2 to minor 1 |
+| `2026.1` | `2027.1` | **No** | Skip-level (skips 2026.2) |
+| `2026.2` | `2026.1` | **No** | Downgrade |
 
 ### Patch Revisions
 
-Tag changes that differ only in patch suffix (e.g., `2025.2` to `2025.2-p1`) are
+Tag changes that differ only in patch suffix (e.g., `2026.1` to `2026.1-p1`) are
 **not** treated as upgrades. They use the simple `db_sync` path because patch
 revisions do not change the database schema.
 
@@ -211,7 +209,7 @@ The `DatabaseReady` condition reflects upgrade state with specific reasons:
 | `UpgradeTargetChanged` | Any active phase | `spec.image.tag` was changed during an active upgrade to a value that is neither `targetRelease` nor `installedRelease` |
 
 All condition messages include the source and target release version strings for
-operator visibility (e.g., `"Expand phase running: 2025.2 -> 2026.1"`).
+operator visibility (e.g., `"Expand phase running: 2026.1 -> 2026.2"`).
 
 ---
 
@@ -467,7 +465,7 @@ output:
 ```bash
 kubectl get keystones
 # NAME       READY   ENDPOINT                                            RELEASE   AGE
-# keystone   True    http://keystone.openstack.svc:5000/v3               2025.2    7d
+# keystone   True    http://keystone.openstack.svc:5000/v3               2026.1    7d
 ```
 
 ### Inspecting Conditions
@@ -486,7 +484,7 @@ version strings:
   "type": "DatabaseReady",
   "status": "False",
   "reason": "MigrateInProgress",
-  "message": "Migrate phase running: 2025.2 -> 2026.1",
+  "message": "Migrate phase running: 2026.1 -> 2026.2",
   "observedGeneration": 3
 }
 ```
@@ -520,27 +518,22 @@ kubectl logs job/<name>-db-contract
 
 **Symptom:** `DatabaseReady=False`, reason `UpgradePathInvalid`.
 
-**Cause:** The operator detected a non-sequential upgrade (e.g., `2024.2` to
-`2026.1`).
+**Cause:** The operator detected a non-sequential upgrade (e.g., `2026.1` to
+`2027.1`).
 
 **Resolution:** Only sequential upgrades are supported. Upgrade through each
 intermediate release in order:
 
 ```yaml
-# Step 1: 2024.2 -> 2025.1
+# Step 1: 2026.1 -> 2026.2
 spec:
   image:
-    tag: "2025.1"
+    tag: "2026.2"
 # Wait for upgrade to complete, then:
-# Step 2: 2025.1 -> 2025.2
+# Step 2: 2026.2 -> 2027.1 (applies once 2027.1 is wired under releases/)
 spec:
   image:
-    tag: "2025.2"
-# Wait for upgrade to complete, then:
-# Step 3: 2025.2 -> 2026.1
-spec:
-  image:
-    tag: "2026.1"
+    tag: "2027.1"
 ```
 
 #### VersionParseError
@@ -599,7 +592,7 @@ patched directly:
 ```bash
 # Reset upgrade state (use with caution)
 kubectl patch keystone <name> --type=merge --subresource=status \
-  -p '{"status":{"upgradePhase":"","targetRelease":"","installedRelease":"2025.2"}}'
+  -p '{"status":{"upgradePhase":"","targetRelease":"","installedRelease":"2026.1"}}'
 ```
 
 ::: warning

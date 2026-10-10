@@ -136,19 +136,19 @@ Cinder CR. For the phase machine see
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `UpgradeInitiated` | Normal | An accepted release bump starts the upgrade | `Upgrade initiated: 2025.2 to 2026.1` |
-| `ExpandComplete` | Normal | The expand phase Job succeeded | `Expand phase complete: 2025.2 to 2026.1` |
-| `MigrateComplete` | Normal | The migrate phase Job succeeded | `Migrate phase complete: 2025.2 to 2026.1` |
+| `UpgradeInitiated` | Normal | An accepted release bump starts the upgrade | `Upgrade initiated: 2026.1 to 2026.2` |
+| `ExpandComplete` | Normal | The expand phase Job succeeded | `Expand phase complete: 2026.1 to 2026.2` |
+| `MigrateComplete` | Normal | The migrate phase Job succeeded | `Migrate phase complete: 2026.1 to 2026.2` |
 | `UpgradeCheckCompleted` | Normal | The migrate phase's `cinder-status upgrade check` exited 0, or its exit code could not be read off the pod | `cinder-status upgrade check exit 0` |
 | `UpgradeCheckWarnings` | Warning | The same check exited 1 (warnings) or 2 (a failed check, typically a volume whose `service_uuid` is still NULL); neither wedges the upgrade | `cinder-status upgrade check exit 2` |
-| `DeploymentRolloutComplete` | Normal | The API Deployment rolled out; the phase flips to Contracting | `Deployment rollout complete during upgrade 2025.2 to 2026.1` |
-| `UpgradeComplete` | Normal | The contract phase Job succeeded; the upgrade finished | `Upgrade complete: 2025.2 to 2026.1` |
-| `UpgradeAborted` | Normal | `spec.openStackRelease` reverted to the installed release, cancelling the upgrade | `Upgrade 2025.2 to 2026.1 aborted: spec release reverted to installed release 2025.2` |
+| `DeploymentRolloutComplete` | Normal | The API Deployment rolled out; the phase flips to Contracting | `Deployment rollout complete during upgrade 2026.1 to 2026.2` |
+| `UpgradeComplete` | Normal | The contract phase Job succeeded; the upgrade finished | `Upgrade complete: 2026.1 to 2026.2` |
+| `UpgradeAborted` | Normal | `spec.openStackRelease` reverted to the installed release, cancelling the upgrade | `Upgrade 2026.1 to 2026.2 aborted: spec release reverted to installed release 2026.1` |
 | `UpgradeCheckEventEmissionDeferred` | Warning | Patching the last-observed Job UID annotation failed, deferring the upgrade-check report to the next reconcile | `Patching last-observed db-migrate-check Job UID failed; metric emission deferred to the next reconcile: <error>` |
 | `VersionParseError` | Warning | The installed or target release is not a valid `YYYY.N` string | `Failed to parse target release "latest": ...` |
-| `DowngradeNotSupported` | Warning | The target release is older than the installed release | `Downgrade from 2026.1 to 2025.2 is not supported` |
+| `DowngradeNotSupported` | Warning | The target release is older than the installed release | `Downgrade from 2026.2 to 2026.1 is not supported` |
 | `UpgradePathInvalid` | Warning | The requested jump is not a single sequential step | `Upgrade from 2024.2 to 2026.1 is not sequential` |
-| `UpgradeTargetChanged` | Warning | `spec.openStackRelease` changed to a third value during an active upgrade | `Spec release changed to 2026.2 during active upgrade 2025.2 to 2026.1` |
+| `UpgradeTargetChanged` | Warning | `spec.openStackRelease` changed to a third value during an active upgrade | `Spec release changed to 2027.1 during active upgrade 2026.1 to 2026.2` |
 | `ExpandFailed` | Warning | The expand phase Job failed permanently | `Expand job cinder-db-expand failed: ...` |
 | `MigrateFailed` | Warning | The migrate phase Job failed permanently | `Migrate job cinder-db-migrate failed: ...` |
 | `ContractFailed` | Warning | The contract phase Job failed permanently | `Contract job cinder-db-contract failed: ...` |

@@ -44,7 +44,7 @@ that backfill what the new schema needs.
 ## Trigger
 
 An upgrade starts when `spec.openStackRelease` moves one release forward, for
-example `2025.2` to `2026.1`. The release field drives tracking and upgrade
+example `2026.1` to `2026.2`. The release field drives tracking and upgrade
 detection, while every phase Job and every workload runs `spec.image`. The image
 reference is therefore bumped in the same edit, and the operator refuses to
 advance while the two disagree; see
@@ -63,7 +63,7 @@ year:
 
 | Component | Format | Examples |
 | --- | --- | --- |
-| Release | `YYYY.N` where N is 1 or 2 | `2025.1`, `2025.2`, `2026.1` |
+| Release | `YYYY.N` where N is 1 or 2 | `2026.1`, `2026.2`, `2027.1` |
 
 The CRD pattern, the validating webhook, and `release.ParseRelease` agree on
 this shape, so a non-cadence minor such as `2025.9` is rejected at admission.
@@ -76,12 +76,10 @@ downgrade are both refused:
 
 | From | To | Accepted | Reason |
 | --- | --- | --- | --- |
-| `2025.1` | `2025.2` | Yes | Same year, minor +1 |
-| `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
 | `2026.1` | `2026.2` | Yes | Same year, minor +1 |
-| `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
-| `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
-| `2026.1` | `2025.2` | No | Downgrade |
+| `2026.2` | `2027.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2027.1` | No | Skip-level (skips `2026.2`) |
+| `2026.2` | `2026.1` | No | Downgrade |
 
 ---
 
