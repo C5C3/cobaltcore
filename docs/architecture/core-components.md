@@ -31,6 +31,7 @@ resources, and aggregates their readiness.
 | `KeystoneCatalogEntry` | `c5c3.io/v1alpha1` | Orders one catalog entry, a service row and its endpoints, from an assigned namespace that admits catalog entries ([CRD reference](../reference/c5c3/keystonecatalogentry-crd.md)) |
 | `KeystoneApplicationCredential` | `c5c3.io/v1alpha1` | Orders one application credential for an ordered user on an ordered project, rotates it on a schedule, and delivers it as a Secret beside the order ([CRD reference](../reference/c5c3/keystoneapplicationcredential-crd.md)) |
 | `MariaDBDatabase` | `c5c3.io/v1alpha1` | Orders one database on the ControlPlane's shared MariaDB from an assigned namespace, with a user the OpenBao database engine issues and replaces every day, and delivers its credential as a Secret beside the order ([CRD reference](../reference/c5c3/mariadbdatabase-crd.md)) |
+| `RabbitMQVhost` | `c5c3.io/v1alpha1` | Orders one vhost and a user on the ControlPlane's managed message bus from an assigned namespace, rotates the user on a schedule, and delivers the credentials as a Secret beside the order ([CRD reference](../reference/c5c3/rabbitmqvhost-crd.md)) |
 
 ## Service operators
 

@@ -25,16 +25,17 @@ The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
 this level; the reconciler is deferred). All four are documented here. The
-registration kind `KeystoneService` and the six order kinds, which order
-Keystone pieces and a database from an
+registration kind `KeystoneService` and the seven order kinds, which order
+Keystone pieces, a database and message-bus vhosts from an
 [assigned namespace](#namespaceassignmentspec), have pages of their own:
 [KeystoneService CRD](./keystoneservice-crd.md),
 [KeystoneUser CRD](./keystoneuser-crd.md),
 [KeystoneProject CRD](./keystoneproject-crd.md),
 [KeystoneRoleAssignment CRD](./keystoneroleassignment-crd.md),
 [KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md),
-[KeystoneApplicationCredential CRD](./keystoneapplicationcredential-crd.md) and
-[MariaDBDatabase CRD](./mariadbdatabase-crd.md).
+[KeystoneApplicationCredential CRD](./keystoneapplicationcredential-crd.md),
+[MariaDBDatabase CRD](./mariadbdatabase-crd.md) and
+[RabbitMQVhost CRD](./rabbitmqvhost-crd.md).
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -290,6 +291,7 @@ notes](#infrastructurespec) below.
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
 | `messaging` | [`*commonv1.MessagingSpec`](#messagingspec) | No | `nil` (the defaulting webhook never materializes the block) | The shared RabbitMQ message bus. **Opt-in**: a ControlPlane that omits the block provisions no broker, and the webhook invents nothing for it, unlike `database` and `cache`. In managed mode (`clusterRef`) the reconciler provisions **one** `RabbitmqCluster` in the ControlPlane's own namespace whether or not a service consumes it: a bus is shared across services by nature, so declaring it is what asks for it. Brownfield mode (`secretRef`) attaches to an existing broker and provisions nothing. Adding the block to a live ControlPlane is allowed; removing it is rejected in **both** modes. See [MessagingSpec](#messagingspec). |
 | `publishedDatabaseEndpoint` | `string` | No | `""` | The `host:port` a consumer on another cluster than the MariaDB's reaches the shared database at (`MaxLength=262`, and a pattern that admits a host of `[a-zA-Z0-9._-]` characters or a bracketed IPv6 literal, a colon, and a port from 1 to 65535 without a leading zero). The operator publishes nothing itself: the platform operator exposes the port by their own means, for example a LoadBalancer Service or a TCPRoute. Only [`MariaDBDatabase`](./mariadbdatabase-crd.md#orders-on-a-target-cluster) orders read it: an order on a cluster other than Keystone's receives this address, and without it reports `DatabaseNotPublished`. Under `tls.mode: verify-full` the MariaDB server certificate must carry the host as a subject alternative name. No webhook rule applies. |
+| `publishedMessagingEndpoint` | `string` | No | `""` | The AMQP address, `host:port`, a consumer on another cluster than the broker's reaches the managed bus at (`MaxLength=262`, pattern `^([a-zA-Z0-9._-]+\|\[[0-9a-fA-F:.]+\]):[0-9]{1,5}$`, an IPv6 host in brackets). The operator publishes nothing itself: the platform operator exposes the broker port by their own means and records the address here. [RabbitMQVhost](./rabbitmqvhost-crd.md#orders-on-a-target-cluster) orders on a target cluster alone read it; without it they report `MessagingNotPublished`. No webhook rule. |
 
 <!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
      defaulting webhook now constructs a managed-mode block when the field is omitted.
@@ -360,6 +362,12 @@ Managed mode (`clusterRef`) hands the bus to the
 The reconciler create-or-updates one owned `RabbitmqCluster` CR of that name.
 Brownfield mode (`secretRef`) points at a Secret that already holds a complete
 `rabbit://` transport URL, and nothing is provisioned.
+
+A managed bus also serves [RabbitMQVhost](./rabbitmqvhost-crd.md) orders: a
+vhost and a user of its own per order, created through the RabbitMQ Messaging
+Topology Operator. A brownfield bus serves none, because the operator holds no
+admin account on it. An order on a target cluster reaches the bus at
+[`publishedMessagingEndpoint`](#infrastructurespec).
 
 The managed bus is the one backing-service class enumerated at the
 **ControlPlane's own namespace** regardless of consumers. `database` and `cache`
@@ -2447,7 +2455,7 @@ namespace, and it lists the Keystone roles such an order may request. The
 c5c3-operator reports every entry in `status.namespaceAssignments` (see
 [NamespaceAssignmentStatus](#namespaceassignmentstatus)).
 
-Six order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
+Seven order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
 an unscoped Keystone user and delivers its credentials as a Secret beside the
 order. [`KeystoneProject`](./keystoneproject-crd.md) orders a project in the
 admin domain. [`KeystoneRoleAssignment`](./keystoneroleassignment-crd.md)
@@ -2459,9 +2467,12 @@ orders an application credential for an ordered user on an ordered project,
 rotates it on a schedule, and delivers it as a Secret beside the order.
 [`MariaDBDatabase`](./mariadbdatabase-crd.md) orders a schema on the shared
 MariaDB with a user OpenBao issues and replaces every day, and delivers its
-credential as a Secret beside the order. The
+credential as a Secret beside the order.
+[`RabbitMQVhost`](./rabbitmqvhost-crd.md) orders a vhost and a user on the
+managed message bus, rotates the user on a schedule, and delivers the
+credentials as a Secret beside the order. The
 [Order a Service User](../../guides/order-a-service-user.md) guide walks all
-six.
+seven.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
