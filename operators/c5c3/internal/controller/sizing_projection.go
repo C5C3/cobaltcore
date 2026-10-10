@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
@@ -221,26 +220,12 @@ func projectJobs(j *c5c3v1alpha1.JobSizingSpec) *commonv1.JobSpec {
 }
 
 // glanceAPIServer returns the spec.apiServer block of the Glance child for
-// the processes and threads of its API sizing. From release 2026.1 Glance
-// runs under uWSGI and takes both counts as spec.apiServer.uwsgi; below it
-// runs the eventlet server, which takes the process count as
-// spec.apiServer.workers and has no thread count. The rule is the one the
-// Glance webhook warns on (warnInertLaunchModeKnobs), so the child never
-// carries an inert knob. It returns nil when nothing applies, including an
-// unparseable release.
-func glanceAPIServer(openStackRelease string, p c5c3v1alpha1.ProcessSizingSpec) *glancev1alpha1.APIServerSpec {
-	rel, err := release.ParseRelease(openStackRelease)
-	if err != nil {
-		return nil
+// the processes and threads of its API sizing. Glance runs under uWSGI and
+// takes both counts as spec.apiServer.uwsgi. It returns nil when the sizing
+// sets neither count.
+func glanceAPIServer(p c5c3v1alpha1.ProcessSizingSpec) *glancev1alpha1.APIServerSpec {
+	if u := projectUWSGI(p); u != nil {
+		return &glancev1alpha1.APIServerSpec{UWSGI: u}
 	}
-	if rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1) {
-		if u := projectUWSGI(p); u != nil {
-			return &glancev1alpha1.APIServerSpec{UWSGI: u}
-		}
-		return nil
-	}
-	if p.Processes == nil {
-		return nil
-	}
-	return &glancev1alpha1.APIServerSpec{Workers: ptr.To(*p.Processes)}
+	return nil
 }

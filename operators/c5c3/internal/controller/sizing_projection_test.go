@@ -319,17 +319,15 @@ func TestGlanceAPIServer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	both := c5c3v1alpha1.ProcessSizingSpec{Processes: ptr.To[int32](2), Threads: ptr.To[int32](3)}
 
-	g.Expect(glanceAPIServer("2026.1", both)).To(Equal(&glancev1alpha1.APIServerSpec{
+	// Both counts land in the uwsgi block and nothing else is projected, so the
+	// deprecated workers field stays unset.
+	g.Expect(glanceAPIServer(both)).To(Equal(&glancev1alpha1.APIServerSpec{
 		UWSGI: &commonv1.UWSGISpec{Processes: 2, Threads: 3},
 	}))
-	g.Expect(glanceAPIServer("2026.2", both).Workers).To(BeNil())
-	// Below 2026.1 the eventlet server takes the process count as workers and
-	// has no thread count.
-	g.Expect(glanceAPIServer("2025.2", both)).To(Equal(&glancev1alpha1.APIServerSpec{Workers: ptr.To[int32](2)}))
-	g.Expect(glanceAPIServer("2025.2", c5c3v1alpha1.ProcessSizingSpec{Threads: ptr.To[int32](3)})).To(BeNil())
-	g.Expect(glanceAPIServer("2026.1", c5c3v1alpha1.ProcessSizingSpec{})).To(BeNil())
-	g.Expect(glanceAPIServer("2025.2", c5c3v1alpha1.ProcessSizingSpec{})).To(BeNil())
-	g.Expect(glanceAPIServer("not-a-release", both)).To(BeNil())
+	g.Expect(glanceAPIServer(c5c3v1alpha1.ProcessSizingSpec{Threads: ptr.To[int32](3)})).To(Equal(&glancev1alpha1.APIServerSpec{
+		UWSGI: &commonv1.UWSGISpec{Threads: 3},
+	}))
+	g.Expect(glanceAPIServer(c5c3v1alpha1.ProcessSizingSpec{})).To(BeNil())
 }
 
 // TestReconcileServices_SizingProjectsVerticalAutoscaling follows the
