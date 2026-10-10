@@ -251,6 +251,15 @@ func (f *fakeOpenBao) Close(context.Context) error {
 	return nil
 }
 
+// role returns the stored role name, read under the lock: the envtest manager
+// writes it from its own goroutine.
+func (f *fakeOpenBao) role(name string) (openbao.DatabaseRole, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	role, ok := f.roles[name]
+	return role, ok
+}
+
 // recorded returns the calls so far.
 func (f *fakeOpenBao) recorded() []string {
 	f.mu.Lock()
@@ -439,7 +448,8 @@ func TestMariaDBDatabase_WithdrawnAssignmentFreezes(t *testing.T) {
 	g.Expect(string(delivered.Data["password"])).To(Equal("edited"), "a frozen order repairs nothing")
 	g.Expect(mdbLabelled(t, h.mgmt)).To(Equal(3), "the Database CR and the ESO objects stay")
 	g.Expect(h.bao.recorded()).To(HaveLen(callsBefore), "the role is neither read nor removed")
-	g.Expect(h.bao.roles).To(HaveKey(mariaDBDatabaseRoleName("default", order, "")))
+	_, kept := h.bao.role(mariaDBDatabaseRoleName("default", order, ""))
+	g.Expect(kept).To(BeTrue(), "the role stays while the order is frozen")
 }
 
 // TestMariaDBDatabase_DynamicUnavailable refuses the four ControlPlane shapes
@@ -650,7 +660,8 @@ func TestMariaDBDatabase_DeleteRevokesThenDeletesThenSweeps(t *testing.T) {
 	g.Expect(h.bao.configs[0].Role).To(Equal(openBaoOperatorAuthRole))
 	g.Expect(h.bao.configs[0].JWT).To(Equal("operator-jwt"))
 	g.Expect(h.bao.configs[0].ClientCert).To(Equal([]byte("client-cert")))
-	g.Expect(h.bao.roles).NotTo(HaveKey(roleName))
+	_, kept := h.bao.role(roleName)
+	g.Expect(kept).To(BeFalse(), "the role is deleted")
 	g.Expect(mdbLabelled(t, h.mgmt)).To(BeZero(), "the ESO objects and the Database CR are deleted")
 	err = h.order.Get(context.Background(), client.ObjectKeyFromObject(mdbDeliveredSecret(order)), &corev1.Secret{})
 	g.Expect(err).To(HaveOccurred(), "the delivered Secret is deleted")
