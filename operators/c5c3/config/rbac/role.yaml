@@ -93,6 +93,7 @@ rules:
   - keystoneservices/finalizers
   - keystoneusers/finalizers
   - mariadbdatabases/finalizers
+  - rabbitmqvhosts/finalizers
   verbs:
   - update
 - apiGroups:
@@ -107,6 +108,7 @@ rules:
   - keystoneservices/status
   - keystoneusers/status
   - mariadbdatabases/status
+  - rabbitmqvhosts/status
   verbs:
   - get
   - patch
@@ -120,6 +122,7 @@ rules:
   - keystoneroleassignments
   - keystoneusers
   - mariadbdatabases
+  - rabbitmqvhosts
   verbs:
   - get
   - list
@@ -382,7 +385,10 @@ rules:
 - apiGroups:
   - rabbitmq.com
   resources:
+  - permissions
   - rabbitmqclusters
+  - users
+  - vhosts
   verbs:
   - create
   - delete

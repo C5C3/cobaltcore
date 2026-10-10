@@ -76,6 +76,7 @@ tests:
               - keystoneroleassignments
               - keystoneusers
               - mariadbdatabases
+              - rabbitmqvhosts
             verbs:
               - get
               - list
@@ -152,6 +153,7 @@ tests:
               - c5c3.io
             resources:
               - mariadbdatabases
+              - rabbitmqvhosts
             verbs:
               - get
               - list

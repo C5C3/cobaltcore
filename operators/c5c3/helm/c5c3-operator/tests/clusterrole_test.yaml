@@ -46,6 +46,7 @@ tests:
               - keystoneroleassignments
               - keystoneusers
               - mariadbdatabases
+              - rabbitmqvhosts
             verbs:
               - get
               - list
@@ -67,6 +68,7 @@ tests:
               - keystoneservices/status
               - keystoneusers/status
               - mariadbdatabases/status
+              - rabbitmqvhosts/status
             verbs:
               - get
               - patch
@@ -85,6 +87,7 @@ tests:
               - keystoneservices/finalizers
               - keystoneusers/finalizers
               - mariadbdatabases/finalizers
+              - rabbitmqvhosts/finalizers
             verbs:
               - update
       - notContains:
@@ -99,6 +102,7 @@ tests:
               - keystoneroleassignments
               - keystoneusers
               - mariadbdatabases
+              - rabbitmqvhosts
             verbs:
               - create
               - delete
@@ -120,6 +124,30 @@ tests:
             resources:
               - databases
               - mariadbs
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  # The ControlPlane projects the RabbitmqCluster of a managed bus, and the
+  # RabbitMQVhost controller writes the topology operator's Vhost, User and
+  # Permission children; those write verbs are the order's only new reach.
+  - it: should grant full CRUD on the rabbitmq.com kinds the operator writes
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rabbitmq.com
+            resources:
+              - permissions
+              - rabbitmqclusters
+              - users
+              - vhosts
             verbs:
               - create
               - delete

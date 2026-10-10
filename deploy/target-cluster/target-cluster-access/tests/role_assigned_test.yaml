@@ -74,6 +74,7 @@ tests:
                 - keystoneroleassignments
                 - keystoneusers
                 - mariadbdatabases
+                - rabbitmqvhosts
               verbs:
                 - get
                 - list
@@ -89,6 +90,7 @@ tests:
                 - keystoneroleassignments/status
                 - keystoneusers/status
                 - mariadbdatabases/status
+                - rabbitmqvhosts/status
               verbs:
                 - get
                 - update
@@ -102,6 +104,7 @@ tests:
                 - keystoneroleassignments/finalizers
                 - keystoneusers/finalizers
                 - mariadbdatabases/finalizers
+                - rabbitmqvhosts/finalizers
               verbs:
                 - update
             - apiGroups:

@@ -1,13 +1,13 @@
 {{/*
 One Role per assigned namespace, holding what the c5c3-operator needs to serve
 the order kinds there (KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
-KeystoneCatalogEntry, KeystoneApplicationCredential, MariaDBDatabase) and
-nothing else: it reads the orders, writes their status and finalizers, and
-writes the Secret a KeystoneUser, KeystoneApplicationCredential or
-MariaDBDatabase delivers beside it. It also reads the mariadb-operator's
-Database CRs, which the operator watches in every namespace of the
-registration. A MariaDBDatabase's Database CR lives beside the MariaDB, in a
-placed namespace, whose Role grants the writes.
+KeystoneCatalogEntry, KeystoneApplicationCredential, MariaDBDatabase,
+RabbitMQVhost) and nothing else: it reads the orders, writes their status and
+finalizers, and writes the Secret a KeystoneUser, KeystoneApplicationCredential,
+MariaDBDatabase or RabbitMQVhost delivers beside it. It also reads the
+mariadb-operator's Database CRs, which the operator watches in every namespace
+of the registration. A MariaDBDatabase's Database CR lives beside the MariaDB,
+in a placed namespace, whose Role grants the writes.
 No workload kind is granted, so whoever holds the registration kubeconfig
 cannot run anything in a namespace that belongs to a service owner.
 
@@ -53,6 +53,7 @@ rules:
       - keystoneroleassignments
       - keystoneusers
       - mariadbdatabases
+      - rabbitmqvhosts
     verbs:
       - get
       - list
@@ -69,6 +70,7 @@ rules:
       - keystoneroleassignments/status
       - keystoneusers/status
       - mariadbdatabases/status
+      - rabbitmqvhosts/status
     verbs:
       - get
       - update
@@ -83,6 +85,7 @@ rules:
       - keystoneroleassignments/finalizers
       - keystoneusers/finalizers
       - mariadbdatabases/finalizers
+      - rabbitmqvhosts/finalizers
     verbs:
       - update
   # k8s.mariadb.com - databases (read-only)
