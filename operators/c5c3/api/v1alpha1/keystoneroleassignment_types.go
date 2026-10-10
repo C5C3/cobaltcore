@@ -42,7 +42,10 @@ import (
 // older one and projects nothing.
 //
 // While the order exists, deleting the referenced KeystoneUser or
-// KeystoneProject holds on ReferencedByRoleAssignments.
+// KeystoneProject holds on ReferencedByRoleAssignments. Deleting the order
+// itself holds on ReferencedByApplicationCredentials while a
+// KeystoneApplicationCredential in the same namespace names the same userRef
+// and projectRef.
 //
 // The kind has no webhook, because a target cluster runs none: every admission
 // rule is a schema rule. An empty spec.controlPlaneRef.namespace means the

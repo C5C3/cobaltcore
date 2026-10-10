@@ -46,6 +46,12 @@ import (
 // is rewritten with the new one, and status.passwordGeneration reports the
 // generation Keystone holds.
 //
+// Deleting the order holds while a KeystoneRoleAssignment in the same namespace
+// names it as userRef, reporting ReferencedByRoleAssignments, and while a
+// KeystoneApplicationCredential does, reporting
+// ReferencedByApplicationCredentials. The user stays until those orders are
+// deleted.
+//
 // The kind has no webhook, because a target cluster runs none: every
 // admission rule is a schema rule. An empty spec.userName means metadata.name,
 // and an empty spec.controlPlaneRef.namespace means the order's own namespace;

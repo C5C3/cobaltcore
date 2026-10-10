@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -112,9 +113,11 @@ type KeystoneRoleAssignmentReconciler struct {
 // deletes one. It reads the KeystoneUser and KeystoneProject orders an
 // assignment references, which the markers of those kinds grant. The K-ORC Roles
 // and RoleAssignments it writes are granted by the ControlPlane's marker block.
+// The teardown hold reads the KeystoneApplicationCredentials beside the order.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch
 
 // Reconcile drives one KeystoneRoleAssignment: the gates, finalizer
 // installation, the projection and the teardown.
@@ -442,9 +445,34 @@ func keystoneRoleAssignmentAssignmentRef(order *c5c3v1alpha1.KeystoneRoleAssignm
 // created and releases the finalizer. K-ORC unassigns the role in Keystone
 // before its finalizer releases the RoleAssignment, and orderTeardown waits for
 // that while the ControlPlane exists.
+//
+// The teardown holds while a KeystoneApplicationCredential in the order's
+// namespace names the same user and project: K-ORC mints and deletes its
+// credentials with a token scoped to the project, which needs the role. Every
+// assignment of the pair holds, not only the last one, so the rule is
+// predictable: the credential order goes first.
 func (r *KeystoneRoleAssignmentReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneRoleAssignment, cluster string,
 ) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(order, keystoneRoleAssignmentFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+	credentials, err := referencingApplicationCredentials(ctx, oc, order.Namespace,
+		func(ac *c5c3v1alpha1.KeystoneApplicationCredential) bool {
+			return roleAssignmentBindsCredentialPair(order, ac)
+		})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(credentials) > 0 {
+		statusBefore := order.Status.DeepCopy()
+		keystoneRoleAssignmentFail(order)(reasonOrderReferencedByApplicationCredentials,
+			orderReferencedByApplicationCredentialsMessage(credentials, order.Namespace, "role assignment",
+				"the credentials are minted and deleted with a token scoped to the project, which needs the role"))
+		return r.updateStatus(ctx, oc, order, statusBefore,
+			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
+	}
+
 	ref := keystoneRoleAssignmentRef(order, cluster)
 	return orderTeardown(ctx, r.Client, oc, order, keystoneRoleAssignmentFinalizerName,
 		orderControlPlaneKey(order.Spec.ControlPlaneRef, order.Namespace),
@@ -560,6 +588,42 @@ func referencedOrderToRoleAssignmentRequests(
 	}
 }
 
+// applicationCredentialToRoleAssignmentRequests is the event-handler factory of
+// the hold leg: it maps a KeystoneApplicationCredential to every assignment in
+// its namespace binding the same user and project, listing through the cache of
+// the cluster the event came from. A List failure is logged and maps to
+// nothing.
+func applicationCredentialToRoleAssignmentRequests() mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return func(clusterName mcruntime.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(
+			func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				ac, ok := obj.(*c5c3v1alpha1.KeystoneApplicationCredential)
+				if !ok {
+					return nil
+				}
+				// The items are only read, matched and dropped, so no copy is taken.
+				var orders c5c3v1alpha1.KeystoneRoleAssignmentList
+				if err := cl.GetClient().List(ctx, &orders, client.InNamespace(ac.Namespace),
+					client.UnsafeDisableDeepCopy); err != nil {
+					log.FromContext(ctx).Error(err, "listing KeystoneRoleAssignments for a KeystoneApplicationCredential",
+						"cluster", clusterName, "order", client.ObjectKeyFromObject(ac))
+					return nil
+				}
+				var requests []mcreconcile.Request
+				for i := range orders.Items {
+					ra := &orders.Items[i]
+					if roleAssignmentBindsCredentialPair(ra, ac) {
+						requests = append(requests, mcreconcile.Request{
+							Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ra)},
+							ClusterName: clusterName,
+						})
+					}
+				}
+				return requests
+			})
+	}
+}
+
 // keystoneRoleAssignmentReferencePredicate passes the updates of a referenced
 // order an assignment's gates read: a spec change, which moves the generation,
 // a deletion, and a change of the Ready condition or the sub-condition the gate
@@ -611,6 +675,8 @@ func (r *KeystoneRoleAssignmentReconciler) SetupWithManager(mgr mcmanager.Manage
 //   - KeystoneUser and KeystoneProject: the assignments in the referenced
 //     order's namespace that name it, on the referenced order's cluster, on the
 //     updates keystoneRoleAssignmentReferencePredicate passes.
+//   - KeystoneApplicationCredential: the assignments of the same user and
+//     project, so a credential order leaving wakes a held teardown.
 //   - ControlPlane: the orders on the management cluster that reference it, on
 //     the updates orderControlPlanePredicate passes.
 //
@@ -643,6 +709,9 @@ func (r *KeystoneRoleAssignmentReconciler) setupWithOptions(mgr mcmanager.Manage
 			referencedOrderToRoleAssignmentRequests(roleAssignmentProjectName),
 			referencePredicate, engageLocal, engageProviders,
 			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneProjectGVK))).
+		Watches(&c5c3v1alpha1.KeystoneApplicationCredential{}, applicationCredentialToRoleAssignmentRequests(),
+			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
+			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneApplicationCredentialGVK))).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneRoleAssignmentsMapper(local.GetClient())),
 			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).
