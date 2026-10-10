@@ -57,6 +57,11 @@ func allExpectedCRDs() []expectedCRD {
 		{name: "passwords.generators.external-secrets.io", group: "generators.external-secrets.io", version: "v1alpha1", kind: "Password", namespaced: true},
 		{name: "pushsecrets.external-secrets.io", group: "external-secrets.io", version: "v1alpha1", kind: "PushSecret", namespaced: true},
 		{name: "rabbitmqclusters.rabbitmq.com", group: "rabbitmq.com", version: "v1beta1", kind: "RabbitmqCluster", namespaced: true},
+		// The RabbitMQ Messaging Topology Operator kinds a RabbitMQVhost order is
+		// provisioned through.
+		{name: "vhosts.rabbitmq.com", group: "rabbitmq.com", version: "v1beta1", kind: "Vhost", namespaced: true},
+		{name: "users.rabbitmq.com", group: "rabbitmq.com", version: "v1beta1", kind: "User", namespaced: true},
+		{name: "permissions.rabbitmq.com", group: "rabbitmq.com", version: "v1beta1", kind: "Permission", namespaced: true},
 		{name: "secretstores.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "SecretStore", namespaced: true},
 		{name: "users.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "User", namespaced: true},
 	}

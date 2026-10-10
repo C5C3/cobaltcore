@@ -1081,7 +1081,7 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 		}
 	}
 
-	return unstructuredConditionTrue(u, "AllReplicasReady"), nil
+	return unstructuredConditionTrue(u, messaging.RabbitmqClusterReadyCondition), nil
 }
 
 // rabbitMQDefaultResources is the spec.resources the RabbitmqCluster CRD

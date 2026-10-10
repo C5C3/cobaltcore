@@ -40,6 +40,10 @@ var RabbitmqClusterGVK = schema.GroupVersionKind{
 	Kind:    "RabbitmqCluster",
 }
 
+// RabbitmqClusterReadyCondition is the condition the RabbitMQ Cluster Operator
+// reports a running broker with. It sets no Ready condition.
+const RabbitmqClusterReadyCondition = "AllReplicasReady"
+
 // TransportURLEnvVarName is the oslo.config env override key for
 // [DEFAULT].transport_url. The OS_<GROUP>__<OPTION> form wins over the ConfigMap
 // value at runtime, so service containers read the transport URL (which carries

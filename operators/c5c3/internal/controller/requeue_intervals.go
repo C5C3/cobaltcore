@@ -80,6 +80,11 @@ const (
 	// missing K-ORC CRD keeps the sub-reconciler from making progress
 	korcRequeueAfter = 10 * time.Second
 
+	// rabbitMQVhostRequeueAfter is the backoff the RabbitMQVhost reconciler uses
+	// while the managed bus, the tenant store, a topology child or the backup
+	// PushSecret has not converged yet.
+	rabbitMQVhostRequeueAfter = 10 * time.Second
+
 	// korcTransportUnlatchBackoff is the minimum interval between two clears of
 	// the same child's latched transport error, measured against the
 	// korcTransportUnlatchedAtAnnotation the unlatcher stamps on that child. The
