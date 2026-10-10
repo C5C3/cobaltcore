@@ -5742,6 +5742,164 @@ func TestIntegration_KeystoneCatalogEntry_SchemaValidation(t *testing.T) {
 	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
 }
 
+// TestIntegration_KeystoneApplicationCredential_SchemaValidation pins every
+// admission rule of the KeystoneApplicationCredential CRD, the CEL duration
+// rules of spec.rotation included, and the defaults the server stores; the
+// substrings are the ones the invalid-keystoneapplicationcredential-cr chainsaw
+// corpus asserts on.
+func TestIntegration_KeystoneApplicationCredential_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "KeystoneApplicationCredential"
+	base := map[string]any{
+		"controlPlaneRef":      map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"userRef":              map[string]any{"name": "workflow"},
+		"projectRef":           map[string]any{"name": "workflow-project"},
+		"credentialGeneration": int64(2),
+	}
+	without := func(field string) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		delete(spec, field)
+		return spec
+	}
+	with := func(field string, value any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec[field] = value
+		return spec
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing userRef", spec: without("userRef"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing projectRef", spec: without("projectRef"), wantErrSub: "Required value"},
+		orderSchemaCase{
+			name: "an empty userRef.name", spec: with("userRef", map[string]any{"name": ""}),
+			wantErrSub: "should be at least 1 chars",
+		},
+		orderSchemaCase{
+			name: "a zero credentialGeneration", spec: with("credentialGeneration", int64(0)),
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		orderSchemaCase{
+			name: "a 30s rotation.interval", spec: with("rotation", map[string]any{"interval": "30s"}),
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		orderSchemaCase{
+			name: "an 87601h rotation.interval", spec: with("rotation", map[string]any{"interval": "87601h"}),
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
+		orderSchemaCase{
+			name:       "a gracePeriod as long as the interval",
+			spec:       with("rotation", map[string]any{"interval": "1h", "gracePeriod": "1h"}),
+			wantErrSub: "rotation.gracePeriod must be shorter than rotation.interval",
+		},
+		orderSchemaCase{
+			name: "a negative gracePeriod", spec: with("rotation", map[string]any{"gracePeriod": "-1h"}),
+			wantErrSub: "rotation.gracePeriod is not negative",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed userRef",
+			mutate:     func(spec map[string]any) { spec["userRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "userRef is immutable; delete and re-create the KeystoneApplicationCredential to bind another user",
+		},
+		orderSchemaCase{
+			name:       "a changed projectRef",
+			mutate:     func(spec map[string]any) { spec["projectRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "projectRef is immutable; delete and re-create the KeystoneApplicationCredential to bind another project",
+		},
+		orderSchemaCase{
+			name:       "a lowered credentialGeneration",
+			mutate:     func(spec map[string]any) { spec["credentialGeneration"] = int64(1) },
+			wantErrSub: "credentialGeneration may only increase",
+		},
+		orderSchemaCase{
+			name:   "a raised credentialGeneration",
+			mutate: func(spec map[string]any) { spec["credentialGeneration"] = int64(5) },
+		},
+		orderSchemaCase{
+			name: "a 0s interval with any non-negative gracePeriod",
+			mutate: func(spec map[string]any) {
+				spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "2160h"}
+			},
+		},
+		orderSchemaCase{
+			name:   "a 0s interval with a 0s gracePeriod",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "0s"} },
+		},
+		orderSchemaCase{
+			name:   "the longest interval",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "87600h"} },
+		},
+	)
+	minimal := with("controlPlaneRef", map[string]any{"name": "cp"})
+	delete(minimal, "credentialGeneration")
+	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
+
+	newNamespace := func(g *WithT) string {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-kac-default-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		return ns.Name
+	}
+	refs := c5c3v1alpha1.KeystoneApplicationCredentialSpec{
+		ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"},
+		UserRef:         c5c3v1alpha1.KeystoneOrderRef{Name: "workflow"},
+		ProjectRef:      c5c3v1alpha1.KeystoneOrderRef{Name: "workflow-project"},
+	}
+
+	t.Run("an order without the optional fields stores the default literals", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		u := &unstructured.Unstructured{Object: map[string]any{"spec": runtime.DeepCopyJSON(minimal)}}
+		u.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind(kind))
+		u.SetName("minimal")
+		u.SetNamespace(newNamespace(g))
+		g.Expect(c.Create(ctx, u)).To(Succeed())
+
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(u), stored)).To(Succeed())
+		spec := stored.Object["spec"].(map[string]any)
+		g.Expect(spec["credentialGeneration"]).To(BeEquivalentTo(1))
+		g.Expect(spec["rotation"]).To(Equal(map[string]any{"interval": "720h", "gracePeriod": "24h"}))
+	})
+
+	t.Run("a typed order stores the Go serialization of the durations", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &c5c3v1alpha1.KeystoneApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: "typed", Namespace: newNamespace(g)},
+			Spec:       *refs.DeepCopy(),
+		}
+		order.Spec.Rotation = c5c3v1alpha1.KeystoneApplicationCredentialRotationSpec{
+			Interval:    &metav1.Duration{Duration: 720 * time.Hour},
+			GracePeriod: &metav1.Duration{Duration: 24 * time.Hour},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed(), "the CEL rules accept 720h0m0s and 24h0m0s")
+
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Object["spec"].(map[string]any)["rotation"]).
+			To(Equal(map[string]any{"interval": "720h0m0s", "gracePeriod": "24h0m0s"}))
+	})
+
+	t.Run("a typed order with the block left zero stores the defaults", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &c5c3v1alpha1.KeystoneApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: "zero", Namespace: newNamespace(g)},
+			Spec:       *refs.DeepCopy(),
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		stored := &c5c3v1alpha1.KeystoneApplicationCredential{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.CredentialGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
+		g.Expect(stored.Spec.Rotation.GracePeriod).To(Equal(&metav1.Duration{Duration: 24 * time.Hour}))
+	})
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on
