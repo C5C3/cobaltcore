@@ -19,6 +19,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/satellite"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
@@ -58,15 +59,22 @@ const (
 // artefact, this allows rollback to 3 previous configurations.
 const defaultConfigMapRetainCount = 3
 
-// The data keys of one backend's projection Secret. The three files are mounted
-// by that backend's cinder-volume Deployment: the backend section it drives, the
-// NFS export list the driver reads its share from, and the [DEFAULT] overlay
-// that names the single backend this process serves.
+// The data keys of one backend's projection Secret. The files are mounted by
+// that backend's cinder-volume Deployment: the backend section it drives, the
+// [DEFAULT] overlay that names the single backend this process serves, and the
+// driver's own files: the NFS export list the driver reads its share from, or
+// the Ceph client configuration and keyring of an RBD backend.
 const (
 	backendConfDataKey   = "backend.conf"
 	sharesDataKey        = "shares"
 	volumeOverlayDataKey = "volume.conf"
+	cephConfDataKey      = "ceph.conf"
+	keyringDataKey       = "keyring"
 )
+
+// cephConfigDir is the directory librados and the Ceph tools read
+// <cluster>.conf from, and where the projected keyring lives beside it.
+const cephConfigDir = "/etc/ceph"
 
 // nfsMountPointBase is the in-pod directory a cinder-volume mounts its export
 // under. The volumes it serves are files inside it, so it has to be the same
@@ -80,19 +88,44 @@ const nfsEgressPort = 2049
 
 // backendProjection is what the backend sub-reconciler hands downstream (the
 // deployment and networkpolicy steps): one entry per projected CinderBackend,
-// sorted by name.
+// sorted by name. name, backendType and secretName are set for every type;
+// server, path and mountOptions only for an NFS backend, rbd only for an RBD
+// one.
 type backendProjection struct {
 	// name is the CinderBackend's name, which is also its cinder.conf section
 	// and its volume_backend_name.
 	name string
+	// backendType is the driver the backend was rendered for.
+	backendType cinderv1alpha1.CinderBackendType
 	// server and path are the NFS export the backend's cinder-volume mounts.
 	server string
 	path   string
 	// mountOptions is the option string the export is mounted with.
 	mountOptions string
-	// secretName is the content-hashed Secret carrying this backend's three
-	// projected files.
+	// rbd carries what the volume Deployment and the NetworkPolicy need of an
+	// RBD backend.
+	rbd *rbdProjection
+	// secretName is the content-hashed Secret carrying this backend's projected
+	// files.
 	secretName string
+}
+
+// rbdProjection is the RBD half of a backendProjection: the cluster name and the
+// user the projected files are named by, and the networks the Ceph egress rule
+// opens.
+type rbdProjection struct {
+	clusterName string
+	user        string
+	networks    []string
+}
+
+// renderedBackend is one backend rendered for projection: the data of its
+// projection Secret, the projection without its Secret name, and the egress
+// host its volume service mounts from ("" when it mounts nothing).
+type renderedBackend struct {
+	data       map[string][]byte
+	projection backendProjection
+	host       string
 }
 
 // backendSecretBaseName returns the base name of one backend's projection
@@ -117,9 +150,11 @@ func backendSecretBaseName(cinder *cinderv1alpha1.Cinder, name string) string {
 // state rather than a violated invariant.
 //
 // CONTRACT: this step never returns a requeue and never returns an error for
-// waiting states (pending backends, control-char values) — the CinderBackend
-// watch wakes the parent when a backend's status flips. Only genuine
-// infrastructure failures (List/create/prune errors) surface as errors.
+// waiting states (pending backends, control-char values, an RBD key Secret that
+// vanished after its gate or carries a key the gate refuses) — the
+// CinderBackend watch wakes the parent when a backend's status flips. Only
+// genuine infrastructure failures (List, Get, create and prune errors) surface
+// as errors.
 func (r *CinderReconciler) reconcileBackends(ctx context.Context, children client.Client,
 	cinder *cinderv1alpha1.Cinder,
 ) (ctrl.Result, []backendProjection, []string, error) {
@@ -149,9 +184,10 @@ func (r *CinderReconciler) reconcileBackends(ctx context.Context, children clien
 	})
 
 	// Render every credential-ready backend, isolating per-backend faults: a
-	// backend whose rendered section carries a control character is added to the
-	// pending set and warned about rather than failing the step and taking its
-	// healthy siblings down with it.
+	// backend without the block its type needs, whose rendered files carry a
+	// control character, or whose RBD key Secret vanished or lost its cephx key
+	// after its gate is added to the pending set and warned about rather than
+	// failing the step and taking its healthy siblings down with it.
 	var projections []backendProjection
 	var hosts []string
 	var pending []string
@@ -160,42 +196,29 @@ func (r *CinderReconciler) reconcileBackends(ctx context.Context, children clien
 			pending = append(pending, backend.Name)
 			continue
 		}
-		nfs := backend.Spec.NFS
-		if nfs == nil {
-			// The schema union rule guarantees spec.nfs for a type-NFS backend; a
-			// bypassed admission leaves nothing to render.
-			r.skipBackend(ctx, cinder, backend.Name,
-				fmt.Sprintf("backend %s has type %s but no nfs block", backend.Name, backend.Spec.Type))
-			pending = append(pending, backend.Name)
-			continue
+		var rendered *renderedBackend
+		var skip string
+		switch backend.Spec.Type {
+		case cinderv1alpha1.CinderBackendTypeNFS:
+			rendered, skip = renderNFSBackend(cinder, backend)
+		case cinderv1alpha1.CinderBackendTypeRBD:
+			var err error
+			rendered, skip, err = renderRBDBackend(ctx, children, cinder, backend)
+			if err != nil {
+				return ctrl.Result{}, nil, nil, err
+			}
+		default:
+			skip = fmt.Sprintf("backend %s has type %s, which this operator does not render", backend.Name, backend.Spec.Type)
 		}
-
-		section := renderBackendSection(cinder, backend)
-		if err := config.CheckNoControlChars(backend.Name, section); err != nil {
-			r.skipBackend(ctx, cinder, backend.Name, err.Error())
-			pending = append(pending, backend.Name)
-			continue
-		}
-
-		// The export is the one rendered value the section does not carry: the
-		// shares file is assembled from server and path directly, so it needs a
-		// pass of its own. A newline in either would add a second export line to
-		// the file the driver reads, naming a share the operator never mounted or
-		// derived an egress rule for.
-		shares := nfs.Server + ":" + nfs.Path
-		if err := config.CheckNoControlChars(backend.Name, map[string]string{sharesDataKey: shares}); err != nil {
-			r.skipBackend(ctx, cinder, backend.Name, err.Error())
+		if skip != "" {
+			r.skipBackend(ctx, cinder, backend.Name, skip)
 			pending = append(pending, backend.Name)
 			continue
 		}
 
 		baseName := backendSecretBaseName(cinder, backend.Name)
 		secretName, err := config.CreateImmutableSecret(ctx, children, r.Scheme, cinder,
-			baseName, cinder.Namespace, map[string][]byte{
-				backendConfDataKey:   []byte(config.RenderINI(map[string]map[string]string{backend.Name: section})),
-				sharesDataKey:        []byte(shares + "\n"),
-				volumeOverlayDataKey: []byte("[DEFAULT]\nenabled_backends = " + backend.Name + "\n"),
-			})
+			baseName, cinder.Namespace, rendered.data)
 		if err != nil {
 			return ctrl.Result{}, nil, nil, fmt.Errorf("creating backend secret for %q: %w", backend.Name, err)
 		}
@@ -208,14 +231,12 @@ func (r *CinderReconciler) reconcileBackends(ctx context.Context, children clien
 			return ctrl.Result{}, nil, nil, fmt.Errorf("pruning backend Secrets for %q: %w", backend.Name, err)
 		}
 
-		projections = append(projections, backendProjection{
-			name:         backend.Name,
-			server:       nfs.Server,
-			path:         nfs.Path,
-			mountOptions: nfs.MountOptions,
-			secretName:   secretName,
-		})
-		hosts = append(hosts, fmt.Sprintf("tcp://%s:%d", nfs.Server, nfsEgressPort))
+		projection := rendered.projection
+		projection.secretName = secretName
+		projections = append(projections, projection)
+		if rendered.host != "" {
+			hosts = append(hosts, rendered.host)
+		}
 		logger.V(1).Info("projected CinderBackend", "backend", backend.Name, "secret", secretName)
 	}
 
@@ -288,11 +309,139 @@ func credentialsReady(conds []metav1.Condition) bool {
 	return cond != nil && cond.Status == metav1.ConditionTrue
 }
 
-// renderBackendSection renders one backend's [<name>] section: the NFS driver
-// wiring, the optional image-volume cache bounds, and the backend's extraOptions
-// merged WITHOUT overriding an operator key (operator keys win on collision —
-// the webhook denylist normally guarantees disjointness, this is the fail-closed
-// backstop for a bypassed webhook).
+// renderNFSBackend renders the projection of an NFS backend: its section, the
+// shares file the driver reads its export from, and the [DEFAULT] overlay. A
+// non-empty skip reason leaves the backend out of the projection.
+func renderNFSBackend(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1.CinderBackend) (*renderedBackend, string) {
+	nfs := backend.Spec.NFS
+	if nfs == nil {
+		// The schema union rule guarantees spec.nfs for a type-NFS backend; a
+		// bypassed admission leaves nothing to render.
+		return nil, fmt.Sprintf("backend %s has type %s but no nfs block", backend.Name, backend.Spec.Type)
+	}
+
+	section := renderBackendSection(cinder, backend)
+	if fault := controlCharFault(backend.Name, section); fault != "" {
+		return nil, fault
+	}
+
+	// The export is the one rendered value the section does not carry: the
+	// shares file is assembled from server and path directly, so it needs a
+	// pass of its own. A newline in either would add a second export line to
+	// the file the driver reads, naming a share the operator never mounted or
+	// derived an egress rule for.
+	shares := nfs.Server + ":" + nfs.Path
+	if fault := controlCharFault(backend.Name, map[string]string{sharesDataKey: shares}); fault != "" {
+		return nil, fault
+	}
+
+	return &renderedBackend{
+		data: map[string][]byte{
+			backendConfDataKey:   []byte(config.RenderINI(map[string]map[string]string{backend.Name: section})),
+			sharesDataKey:        []byte(shares + "\n"),
+			volumeOverlayDataKey: volumeOverlay(backend.Name),
+		},
+		projection: backendProjection{
+			name:         backend.Name,
+			backendType:  cinderv1alpha1.CinderBackendTypeNFS,
+			server:       nfs.Server,
+			path:         nfs.Path,
+			mountOptions: nfs.MountOptions,
+		},
+		host: fmt.Sprintf("tcp://%s:%d", nfs.Server, nfsEgressPort),
+	}, ""
+}
+
+// renderRBDBackend renders the projection of an RBD backend: its section, the
+// Ceph client configuration and keyring the driver connects with, and the
+// [DEFAULT] overlay. The key is read from the backend's key Secret on children,
+// where the volume pods mount the keyring, so a replaced key changes the
+// content-hashed Secret name and rolls the volume service.
+//
+// A non-empty skip reason leaves the backend out of the projection. A Secret or
+// data key that vanished between the gate and this pass is such a skip, and so
+// is a key the gate would refuse (cephxKeyFault): a rotation reaches this pass
+// through the Secret watch without re-running the gate. The next gate pass
+// reports either on the backend. Any other read failure is returned.
+func renderRBDBackend(ctx context.Context, children client.Client, cinder *cinderv1alpha1.Cinder,
+	backend *cinderv1alpha1.CinderBackend,
+) (*renderedBackend, string, error) {
+	rbd := backend.Spec.RBD
+	if rbd == nil {
+		// The schema union rule guarantees spec.rbd for a type-RBD backend; a
+		// bypassed admission leaves nothing to render.
+		return nil, fmt.Sprintf("backend %s has type %s but no rbd block", backend.Name, backend.Spec.Type), nil
+	}
+
+	keySecret := rbd.KeySecretRef.Name
+	key, err := secrets.GetSecretValue(ctx, children,
+		client.ObjectKey{Namespace: cinder.Namespace, Name: keySecret}, cinderv1alpha1.RBDKeySecretDataKey)
+	if err != nil {
+		if secrets.IsMissingSecretOrKey(err) {
+			return nil, fmt.Sprintf("RBD key Secret %q or its %s data key is missing",
+				keySecret, cinderv1alpha1.RBDKeySecretDataKey), nil
+		}
+		return nil, "", fmt.Errorf("reading the RBD key of backend %q: %w", backend.Name, err)
+	}
+	key = strings.TrimSpace(key)
+
+	section := renderRBDBackendSection(cinder, backend)
+	if fault := controlCharFault(backend.Name, section); fault != "" {
+		return nil, fault, nil
+	}
+	// The two Ceph files are assembled from these values directly, so they need
+	// a pass of their own; the fault names the section, never a value, so the
+	// key does not reach the event.
+	if fault := controlCharFault(backend.Name+"/ceph", map[string]string{
+		"mon_host": strings.Join(rbd.Monitors, ","),
+		"cluster":  rbd.ClusterName,
+		"user":     rbd.User,
+		"key":      key,
+	}); fault != "" {
+		return nil, fault, nil
+	}
+	if fault := cephxKeyFault(keySecret, key); fault != "" {
+		return nil, fault, nil
+	}
+
+	return &renderedBackend{
+		data: map[string][]byte{
+			backendConfDataKey:   []byte(config.RenderINI(map[string]map[string]string{backend.Name: section})),
+			cephConfDataKey:      []byte(renderCephConf(rbd)),
+			keyringDataKey:       []byte(renderKeyring(rbd.User, key)),
+			volumeOverlayDataKey: volumeOverlay(backend.Name),
+		},
+		projection: backendProjection{
+			name:        backend.Name,
+			backendType: cinderv1alpha1.CinderBackendTypeRBD,
+			rbd: &rbdProjection{
+				clusterName: rbd.ClusterName,
+				user:        rbd.User,
+				networks:    rbd.Networks,
+			},
+		},
+	}, "", nil
+}
+
+// controlCharFault returns the skip reason of a backend whose options under
+// section carry a newline or a carriage return, or "" when they are clean. The
+// reason names the section, never a value.
+func controlCharFault(section string, options map[string]string) string {
+	if err := config.CheckNoControlChars(section, options); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// volumeOverlay renders the [DEFAULT] overlay that names the single backend a
+// cinder-volume serves.
+func volumeOverlay(name string) []byte {
+	return []byte("[DEFAULT]\nenabled_backends = " + name + "\n")
+}
+
+// renderBackendSection renders one NFS backend's [<name>] section: the NFS
+// driver wiring, the optional image-volume cache bounds, and the backend's
+// extraOptions (applyCacheAndExtraOptions).
 //
 // The caller has checked that spec.nfs is set.
 func renderBackendSection(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1.CinderBackend) map[string]string {
@@ -313,7 +462,43 @@ func renderBackendSection(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1
 		"nfs_sparsed_volumes":         "true",
 		"nfs_qcow2_volumes":           "false",
 	}
+	applyCacheAndExtraOptions(section, backend)
+	return section
+}
 
+// renderRBDBackendSection renders one RBD backend's [<name>] section: the RBD
+// driver wiring, rbd_secret_uuid only when spec.rbd.secretUUID is set (the
+// driver otherwise uses the cluster FSID), the optional image-volume cache
+// bounds, and the backend's extraOptions (applyCacheAndExtraOptions).
+//
+// The caller has checked that spec.rbd is set.
+func renderRBDBackendSection(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1.CinderBackend) map[string]string {
+	rbd := backend.Spec.RBD
+	section := map[string]string{
+		"volume_driver":       "cinder.volume.drivers.rbd.RBDDriver",
+		"volume_backend_name": backend.Name,
+		// The host identity, as in the NFS section.
+		"backend_host":     cinder.Name,
+		"rbd_ceph_conf":    cephConfigDir + "/" + cephConfFile(rbd.ClusterName),
+		"rbd_cluster_name": rbd.ClusterName,
+		"rbd_pool":         rbd.Pool,
+		"rbd_user":         rbd.User,
+	}
+	if rbd.SecretUUID != "" {
+		section["rbd_secret_uuid"] = rbd.SecretUUID
+	}
+	applyCacheAndExtraOptions(section, backend)
+	return section
+}
+
+// applyCacheAndExtraOptions adds the optional image-volume cache bounds to a
+// rendered backend section, then merges the backend's extraOptions WITHOUT
+// overriding an operator key and without any key the webhook denies for the
+// backend's type. The webhook denylist normally keeps extraOptions disjoint from
+// the rendered keys; this is the fail-closed backstop for a bypassed webhook,
+// and the denylist check also drops a denied key the section does not render,
+// such as rbd_keyring_conf.
+func applyCacheAndExtraOptions(section map[string]string, backend *cinderv1alpha1.CinderBackend) {
 	if cache := backend.Spec.ImageVolumeCache; cache != nil && cache.Enabled {
 		section["image_volume_cache_enabled"] = "true"
 		if cache.MaxSizeGB != nil {
@@ -324,13 +509,50 @@ func renderBackendSection(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1
 		}
 	}
 
+	denied := cinderv1alpha1.ExtraOptionsDenylist(backend.Spec.Type)
 	for k, v := range backend.Spec.ExtraOptions {
 		if _, exists := section[k]; exists {
 			continue
 		}
+		if _, deny := denied[k]; deny {
+			continue
+		}
 		section[k] = v
 	}
-	return section
+}
+
+// renderCephConf renders the Ceph client configuration of an RBD backend, the
+// file rbd_ceph_conf names. librados finds the key through its keyring line.
+// log_file and admin_socket replace two defaults the service user cannot honour:
+// it can write neither /var/log/ceph nor /var/run/ceph, and librados would log a
+// warning for each on every connection the driver opens, which is one per
+// operation. The dollar signs are Ceph metavariables written verbatim, which
+// librados expands per process.
+func renderCephConf(rbd *cinderv1alpha1.RBDBackendSpec) string {
+	return "[global]\n" +
+		"mon_host = " + strings.Join(rbd.Monitors, ",") + "\n" +
+		"keyring = " + cephConfigDir + "/" + cephKeyringFile(rbd.ClusterName, rbd.User) + "\n" +
+		"log_file = /dev/null\n" +
+		"admin_socket = /tmp/$cluster-$name.$pid.$cctid.asok\n"
+}
+
+// renderKeyring renders the keyring file of the cephx user client.<user>.
+func renderKeyring(user, key string) string {
+	return "[client." + user + "]\n\tkey = " + key + "\n"
+}
+
+// cephConfFile returns the file name the Ceph client configuration of the
+// cluster clusterName is projected under in cephConfigDir, the name librados
+// reads by default.
+func cephConfFile(clusterName string) string {
+	return clusterName + ".conf"
+}
+
+// cephKeyringFile returns the file name the keyring of client.<user> is
+// projected under in cephConfigDir, the name the Ceph tools look for by
+// default.
+func cephKeyringFile(clusterName, user string) string {
+	return clusterName + ".client." + user + ".keyring"
 }
 
 // pruneStaleSatelliteSecrets removes every historical Secret of a satellite that

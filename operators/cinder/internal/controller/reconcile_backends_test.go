@@ -343,3 +343,237 @@ func TestReconcileBackends_CreateFailureIsWrapped(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("the previous pass"),
 		"an infrastructure failure leaves the condition the last pass wrote")
 }
+
+// An RBD backend projects its section, the Ceph client configuration and the
+// keyring into one Secret, and mounts no export: no shares file is written and
+// no egress host is reported, because the Ceph rule is derived from the
+// networks the projection carries.
+func TestReconcileBackends_RBDBackendProjects(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	backend := credentialReadyRBDBackend("rbd-a")
+	backend.Spec.RBD.Monitors = []string{"10.96.12.3:6789", "ceph-mon-b.rook-ceph.svc"}
+	backend.Spec.RBD.Networks = []string{"10.244.0.0/16", "10.96.0.0/12"}
+	r := newCinderTestReconciler(cinder, backend, rbdKeySecret("rbd-a", "  "+testRBDKey+"\n"))
+
+	res, projections, hosts, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(hosts).To(BeNil(), "an RBD backend mounts no export")
+	g.Expect(projections).To(HaveLen(1))
+	g.Expect(projections[0].name).To(Equal("rbd-a"))
+	g.Expect(projections[0].backendType).To(Equal(cinderv1alpha1.CinderBackendTypeRBD))
+	g.Expect(projections[0].server).To(BeEmpty())
+	g.Expect(projections[0].path).To(BeEmpty())
+	g.Expect(projections[0].rbd).To(Equal(&rbdProjection{
+		clusterName: "ceph",
+		user:        "cinder",
+		networks:    []string{"10.244.0.0/16", "10.96.0.0/12"},
+	}))
+	g.Expect(projections[0].secretName).To(HavePrefix("cinder-backend-rbd-a-"))
+
+	secret := projectedSecret(t, r, projections[0].secretName)
+	g.Expect(secret.Data).To(HaveLen(4))
+	g.Expect(secret.Data).NotTo(HaveKey(sharesDataKey))
+	g.Expect(string(secret.Data[backendConfDataKey])).To(Equal(`[rbd-a]
+backend_host = cinder
+rbd_ceph_conf = /etc/ceph/ceph.conf
+rbd_cluster_name = ceph
+rbd_pool = volumes
+rbd_user = cinder
+volume_backend_name = rbd-a
+volume_driver = cinder.volume.drivers.rbd.RBDDriver
+`))
+	g.Expect(string(secret.Data[cephConfDataKey])).To(Equal(`[global]
+mon_host = 10.96.12.3:6789,ceph-mon-b.rook-ceph.svc
+keyring = /etc/ceph/ceph.client.cinder.keyring
+log_file = /dev/null
+admin_socket = /tmp/$cluster-$name.$pid.$cctid.asok
+`))
+	g.Expect(string(secret.Data[keyringDataKey])).To(Equal("[client.cinder]\n\tkey = "+testRBDKey+"\n"),
+		"the key is trimmed of the whitespace a hand-made Secret picks up")
+	g.Expect(string(secret.Data[volumeOverlayDataKey])).To(Equal("[DEFAULT]\nenabled_backends = rbd-a\n"))
+
+	cond := cinderCondition(cinder, conditionTypeBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
+}
+
+// The cluster name names the configuration and keyring files the section and
+// ceph.conf point at, and rbd_secret_uuid is rendered only when it is set.
+func TestReconcileBackends_RBDSecretUUIDRendered(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	backend := credentialReadyRBDBackend("rbd1")
+	backend.Spec.RBD.ClusterName = "site-b"
+	backend.Spec.RBD.SecretUUID = "457eb676-33da-42ec-9a8c-9293d545c337"
+	r := newCinderTestReconciler(cinder, backend, rbdKeySecret("rbd1", testRBDKey))
+
+	_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	secret := projectedSecret(t, r, projections[0].secretName)
+	conf := string(secret.Data[backendConfDataKey])
+	g.Expect(conf).To(ContainSubstring("rbd_secret_uuid = 457eb676-33da-42ec-9a8c-9293d545c337\n"))
+	g.Expect(conf).To(ContainSubstring("rbd_cluster_name = site-b\n"))
+	g.Expect(conf).To(ContainSubstring("rbd_ceph_conf = /etc/ceph/site-b.conf\n"))
+	g.Expect(string(secret.Data[cephConfDataKey])).
+		To(ContainSubstring("keyring = /etc/ceph/site-b.client.cinder.keyring\n"))
+
+	// Unset, the driver falls back to the cluster FSID it reads at start.
+	r = newCinderTestReconciler(cinder, credentialReadyRBDBackend("rbd1"), rbdKeySecret("rbd1", testRBDKey))
+	_, projections, _, err = r.reconcileBackends(context.Background(), r.Client, cinder)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(projectedSecret(t, r, projections[0].secretName).Data[backendConfDataKey])).
+		NotTo(ContainSubstring("rbd_secret_uuid"))
+}
+
+// A CR written past the webhook keeps its free-form options, but neither one
+// that collides with an operator key nor one the webhook denies for the type:
+// rbd_keyring_conf is rendered by nobody, and the denylist alone keeps it out.
+func TestReconcileBackends_RBDExtraOptionsCannotOverrideOperatorKeys(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	backend := credentialReadyRBDBackend("rbd1")
+	backend.Spec.ExtraOptions = map[string]string{
+		"rados_connect_timeout": "5",
+		"rbd_pool":              "images",
+		"rbd_keyring_conf":      "/tmp/other.keyring",
+	}
+	r := newCinderTestReconciler(cinder, backend, rbdKeySecret("rbd1", testRBDKey))
+
+	_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	conf := string(projectedSecret(t, r, projections[0].secretName).Data[backendConfDataKey])
+	g.Expect(conf).To(ContainSubstring("rados_connect_timeout = 5\n"))
+	g.Expect(conf).To(ContainSubstring("rbd_pool = volumes\n"), "the typed pool wins")
+	g.Expect(conf).NotTo(ContainSubstring("images"))
+	g.Expect(conf).NotTo(ContainSubstring("rbd_keyring_conf"))
+}
+
+// The gate saw the key, but the Secret is gone by the time the parent renders.
+// The backend is skipped like any per-backend fault, and the warning names the
+// Secret and the data key without ever carrying a key.
+func TestReconcileBackends_RBDKeyVanishedBetweenGateAndRenderSkips(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	r := newCinderTestReconciler(cinder, credentialReadyRBDBackend("rbd1"), credentialReadyBackend("nfs1"))
+
+	res, projections, hosts, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred(), "a vanished key is a waiting state, not a failure")
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(projections).To(HaveLen(1), "the healthy sibling is still projected")
+	g.Expect(projections[0].name).To(Equal("nfs1"))
+	g.Expect(hosts).To(ConsistOf("tcp://nfs1.nfs.example.com:2049"))
+
+	events := collectEvents(r.Recorder.(*record.FakeRecorder))
+	g.Expect(events).To(ConsistOf(
+		`Warning CinderBackendSkipped Skipping backend rbd1: RBD key Secret "rbd1-key" or its userKey data key is missing`))
+
+	cond := cinderCondition(cinder, conditionTypeBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForBackends))
+	g.Expect(cond.Message).To(Equal("Waiting for backends: rbd1"))
+}
+
+// A read that fails for another reason is an infrastructure fault: it surfaces
+// as an error so the workqueue backs off.
+func TestReconcileBackends_RBDKeyReadErrorIsWrapped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	c := cinderFakeClientBuilder(cinder, credentialReadyRBDBackend("rbd1"), rbdKeySecret("rbd1", testRBDKey)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+	_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`reading the RBD key of backend "rbd1":`))
+	g.Expect(apierrors.IsInternalError(err)).To(BeTrue(), "the cause stays on the chain")
+	g.Expect(projections).To(BeNil())
+}
+
+// The admission union rule guarantees spec.rbd on a type-RBD backend; one
+// written past it has nothing to render.
+func TestReconcileBackends_RBDBlockMissingSkips(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	backend := credentialReadyRBDBackend("rbd1")
+	backend.Spec.RBD = nil
+	r := newCinderTestReconciler(cinder, backend)
+
+	_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projections).To(BeEmpty())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		"Warning CinderBackendSkipped Skipping backend rbd1: backend rbd1 has type RBD but no rbd block"))
+	g.Expect(cinderCondition(cinder, conditionTypeBackendsReady).Message).To(Equal("Waiting for backends: rbd1"))
+}
+
+// The key reaches the keyring file verbatim, outside the rendered section, so a
+// newline inside it would add a line the gate never saw. The render-time check
+// skips the backend, and the warning names the files, never the key.
+func TestReconcileBackends_RBDKeyControlCharSkips(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	poisoned := "AQDHlkVoYx3QKRAA\n[client.admin]"
+	r := newCinderTestReconciler(cinder, credentialReadyRBDBackend("rbd1"), rbdKeySecret("rbd1", poisoned))
+
+	_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projections).To(BeEmpty())
+	events := collectEvents(r.Recorder.(*record.FakeRecorder))
+	g.Expect(events).To(ConsistOf(ContainSubstring("Skipping backend rbd1:")))
+	g.Expect(events[0]).To(ContainSubstring("rbd1/ceph"))
+	g.Expect(events[0]).NotTo(ContainSubstring("AQDHlkVoYx3QKRAA"))
+}
+
+// A rotation reaches the render through the parent's Secret watch while the
+// gate's CredentialsReady=True from before the rotation still stands. A key the
+// gate would refuse is refused here as well, so it never reaches a keyring, and
+// the warning names the Secret and the data key without the value.
+func TestReconcileBackends_RBDKeyRotatedToANonCephxValueSkips(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, wantFault string
+	}{
+		{
+			name:      "empty",
+			key:       " \n",
+			wantFault: `Secret "rbd1-key" carries an empty userKey`,
+		},
+		{
+			name:      "not base64",
+			key:       "key = " + testRBDKey,
+			wantFault: `Secret "rbd1-key" carries a userKey that is not a cephx key (base64 expected)`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cinder := validCinder()
+			r := newCinderTestReconciler(cinder, credentialReadyRBDBackend("rbd1"), rbdKeySecret("rbd1", tc.key))
+
+			_, projections, _, err := r.reconcileBackends(context.Background(), r.Client, cinder)
+
+			g.Expect(err).NotTo(HaveOccurred(), "a refused key is a waiting state, not a failure")
+			g.Expect(projections).To(BeEmpty())
+			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+				"Warning CinderBackendSkipped Skipping backend rbd1: " + tc.wantFault))
+			g.Expect(cinderCondition(cinder, conditionTypeBackendsReady).Message).
+				To(Equal("Waiting for backends: rbd1"))
+		})
+	}
+}

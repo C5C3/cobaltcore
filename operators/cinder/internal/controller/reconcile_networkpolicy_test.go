@@ -333,7 +333,10 @@ func TestBuildCinderNetworkPolicy_PodSelectorCoversEveryComponent(t *testing.T) 
 
 	g.Expect(podSelector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
 	selector := labels.SelectorFromSet(podSelector.MatchLabels)
-	backend := backendProjection{name: "nfs-a", server: "a.nfs.example.com", path: "/exports/a", secretName: "s"}
+	backend := backendProjection{
+		name: "nfs-a", backendType: cinderv1alpha1.CinderBackendTypeNFS,
+		server: "a.nfs.example.com", path: "/exports/a", secretName: "s",
+	}
 	backup := &backupProjection{name: "backup-a", secretName: "b"}
 	covered := map[string]map[string]string{
 		"API": buildCinderDeployment(cinder, workloadArtifacts(), workloadDigests{}).Spec.Template.Labels,
