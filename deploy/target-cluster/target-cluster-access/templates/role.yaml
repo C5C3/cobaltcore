@@ -379,6 +379,7 @@ rules:
       - keystoneroleassignments
       - keystoneusers
       - mariadbdatabases
+      - rabbitmqvhosts
     verbs:
       - get
       - list
