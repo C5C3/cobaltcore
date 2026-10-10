@@ -374,3 +374,35 @@ func TestAtLeast(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSupported(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{input: "2026.1", want: true},
+		{input: "2026.1-p1", want: true},
+		{input: "2026.2", want: true},
+		{input: "2027.1", want: true},
+		{input: "2025.2", want: false},
+		{input: "2025.2-p1", want: false},
+		{input: "2025.1", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			rel, err := ParseRelease(tt.input)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(rel.IsSupported()).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestMinimumSupported_RawMatchesItsParts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(MinimumSupported.Raw).To(Equal("2026.1"))
+	parsed, err := ParseRelease(MinimumSupported.Raw)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(parsed).To(Equal(MinimumSupported))
+}
