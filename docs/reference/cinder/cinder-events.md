@@ -53,7 +53,8 @@ All events follow these conventions:
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
 | `CinderBackendSkipped` | Warning | An attached volume backend carries no `spec.nfs` or `spec.rbd` block matching its type, a rendered value carries a control character, or the RBD key Secret vanished or stopped carrying a cephx key between the gate and the render; the backend is skipped while its healthy siblings keep projecting | `Skipping backend nfs-a: <error>` |
-| `CinderBackupBackendSkipped` | Warning | The attached backup backend carries no `spec.nfs` block, or its rendered section carries a control character; nothing is projected and `BackupBackendReady` stays in its waiting state | `Skipping backup backend nfs-backups: <error>` |
+| `CinderBackupBackendSkipped` | Warning | The attached backup backend carries no `spec.nfs` or `spec.rbd` block matching its type, a rendered value carries a control character, or the RBD key Secret vanished or stopped carrying a cephx key between the gate and the render; nothing is projected and `BackupBackendReady` stays in its waiting state | `Skipping backup backend nfs-backups: <error>` |
+| `CephKeyringConflict` | Warning | Two sources of the backup pod's `/etc/ceph` (the RBD backup target and the RBD volume backends) project a keyring under one file name with different keys; the first writer, the target and then the backends in name order, keeps the file, and the other source's keyring is not applied there | `backend rbd-b projects the keyring /etc/ceph/ceph.client.cinder.keyring that backend rbd-a already projects into the backup service with a different key, so its keyring is not applied there` |
 | `SharedExportMountOptionsIgnored` | Warning | Two volume backends serve the same export, which the backup pod mounts once, and their `mountOptions` differ; the backup service mounts it with the options of the backend projected first, and the other backend's are not applied there | `Backend nfs-b serves the export nfs.example.com:/exports/volumes that backend nfs-a already mounts with "nfsvers=4.1,soft,timeo=30,retrans=2" in the backup service, so its own mountOptions "nfsvers=3,soft" are not applied there` |
 
 **Source:** `reconcileBackends` in `reconcile_backends.go`;
@@ -297,8 +298,9 @@ CinderReconciler.Reconcile()
   │     └─ Job-UID patch fails         → Warning ServiceRemoveMetricEmissionDeferred
   │
   ├── reconcileBackupService()
-  │     └─ shared export, divergent mountOptions
-  │                                    → Warning SharedExportMountOptionsIgnored
+  │     ├─ shared export, divergent mountOptions
+  │     │                              → Warning SharedExportMountOptionsIgnored
+  │     └─ one keyring file, two keys  → Warning CephKeyringConflict
   │
   ├── reconcileDeployment()
   │     └─ rollout ready mid-upgrade   → Normal  DeploymentRolloutComplete
