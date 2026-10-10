@@ -16,9 +16,11 @@ password up to OpenBao, and writes the credentials into a Secret beside the
 order. Nothing in the owner's namespace can reach OpenBao: the owner receives a
 Secret and nothing else.
 
-Beside the user the owner can order a project, a role for the user on it, and a
-catalog entry, each as a CR of its own. None of them delivers a Secret: the
-user's Secret scopes a token to the project once the role is assigned.
+Beside the user the owner can order a project, a role for the user on it, a
+catalog entry and an application credential, each as a CR of its own. The
+user's Secret scopes a token to the project once the role is assigned. Of the
+further orders only the application credential delivers a Secret, which the
+operator rotates on a schedule.
 
 The example orders a user for a fictional `workflow` service from a namespace
 of the same name.
@@ -49,6 +51,8 @@ examples below is one that devstack produces.
 | The order and the delivered Secret `workflow-credentials` | `workflow` | The credentials are delivered where the service that reads them runs |
 | The K-ORC Project, Role import, RoleAssignment, Service, Region import and Endpoints of the further orders | `openstack` | K-ORC reads the admin credential there |
 | The `KeystoneProject`, `KeystoneRoleAssignment` and `KeystoneCatalogEntry` orders | `workflow` | They live beside the user they belong to |
+| The K-ORC ApplicationCredentials, their secrets, the user's `mint-cloud` document, the source Secret and the PushSecret of the application credential | `openstack` | K-ORC creates and deletes the credentials there, authenticated as the user |
+| The `KeystoneApplicationCredential` order and its Secret `workflow-appcred-credentials` | `workflow` | The credential is delivered where the service that reads it runs |
 
 The objects in `openstack` cannot carry an owner reference to an order in
 another namespace, so they carry the labels `c5c3.io/keystoneuser-name`,
@@ -317,6 +321,109 @@ The token table now names the project. Taking the role off the list later
 freezes the order and revokes nothing: the assignment stays in Keystone until
 the order is deleted.
 
+## Order an application credential
+
+An application credential lets the service authenticate without the user's
+password, and the operator replaces it on a schedule without an outage. The
+operator creates it as the user, with a token scoped to the project, and that
+token needs the role of the previous section. Order it for the user on the
+project:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneApplicationCredential
+metadata:
+  name: workflow-appcred
+  namespace: workflow
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+EOF
+kubectl wait --for=condition=Ready keystoneapplicationcredential/workflow-appcred -n workflow --timeout=15m
+kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}{" "}{.status.credentialID}{" "}{.status.nextRotation}{"\n"}'
+```
+
+Without the role the order reports `CredentialReady=False/NoRoleOnProject` and
+creates nothing. Once it is `Ready`, the Secret `workflow-appcred-credentials`
+carries `clouds.yaml`, `application_credential_id` and
+`application_credential_secret`:
+
+```bash
+kubectl get secret workflow-appcred-credentials -n workflow \
+  -o jsonpath='{.data.clouds\.yaml}' | base64 -d
+```
+
+```yaml
+clouds:
+  "admin":
+    auth:
+      auth_url: "http://controlplane-keystone.openstack.svc:5000/v3"
+      application_credential_id: "<id>"
+      application_credential_secret: "<generated>"
+    auth_type: v3applicationcredential
+    region_name: "RegionOne"
+    endpoint_type: internal
+    identity_api_version: 3
+```
+
+A token issued with this document is scoped to `workflow-project` and carries
+the user's roles there, with no further variables. Rerun the Verification Job
+with the Secret it mounts replaced:
+
+```yaml
+      volumes:
+        - name: clouds
+          secret:
+            secretName: workflow-appcred-credentials
+```
+
+The token table names the project.
+
+The schedule rotates the credential every 720 hours. The operator creates a
+successor, switches the Secret once Keystone holds it, and deletes the
+superseded credential 24 hours later, so the Secret never names an invalid
+credential. During those 24 hours the status names the superseded one:
+
+```bash
+kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.previousCredentialID}{" "}{.status.previousCredentialDeleteAt}{"\n"}'
+```
+
+A service reads the Secret again within that grace period. Every credential
+expires in Keystone at its creation time plus the interval plus the grace
+period, so one the operator fails to delete stops working on its own.
+`spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule;
+the grace period stays shorter than the interval.
+
+Rotate at once by raising `spec.credentialGeneration` above the generation the
+status reports:
+
+```bash
+gen=$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}')
+kubectl patch keystoneapplicationcredential workflow-appcred -n workflow --type merge \
+  -p "{\"spec\":{\"credentialGeneration\":$((gen + 1))}}"
+```
+
+An interval of `0s` turns the schedule off, and `status.nextRotation`
+disappears:
+
+```bash
+kubectl patch keystoneapplicationcredential workflow-appcred -n workflow --type merge \
+  -p '{"spec":{"rotation":{"interval":"0s"}}}'
+```
+
+The live credential keeps its expiry and is rotated once it expires. Raise the
+generation once more to replace it right away with a credential that does not
+expire.
+
 ## Register a catalog entry
 
 A catalog row is visible to every cloud user, so the entry has to admit catalog
@@ -428,19 +535,23 @@ kubectl wait --for=condition=Ready keystoneuser/workflow -n workflow --timeout=1
 
 ## Revoking the user
 
-Deleting the order is what revokes. Delete the role assignment first: a user or
-a project that an assignment names holds its deletion and reports
-`ReferencedByRoleAssignments` until the assignment is gone.
+Deleting the order is what revokes. Delete the application credential first,
+then the role assignment. A user, a project or an assignment that a credential
+order uses holds its deletion and reports `ReferencedByApplicationCredentials`,
+and a user or a project that an assignment names reports
+`ReferencedByRoleAssignments`, until the order that uses it is gone.
 
 ```bash
+kubectl delete keystoneapplicationcredential workflow-appcred -n workflow
 kubectl delete keystoneroleassignment workflow-member -n workflow
 kubectl delete keystonecatalogentry workflow-dns -n workflow
 kubectl delete keystoneproject workflow-project -n workflow
 kubectl delete keystoneuser workflow -n workflow
 ```
 
-K-ORC unassigns the role, removes the catalog rows and deletes the project
-before each order goes.
+K-ORC deletes the application credentials, unassigns the role, removes the
+catalog rows and deletes the project before each order goes, and ESO removes
+the credential's backup from OpenBao.
 
 The last command blocks while K-ORC deletes the user from Keystone and ESO
 removes the password from OpenBao. Afterwards the Secret is gone from `workflow` and
@@ -489,7 +600,8 @@ through the identity API directly.
 - [KeystoneUser CRD: Conditions](../reference/c5c3/keystoneuser-crd.md#conditions): every reason the two conditions report.
 - [KeystoneUser Reconciler Architecture](../reference/c5c3/keystoneuser-reconciler.md): the gates, the steps and the teardown order.
 - [KeystoneProject CRD](../reference/c5c3/keystoneproject-crd.md), [KeystoneRoleAssignment CRD](../reference/c5c3/keystoneroleassignment-crd.md) and [KeystoneCatalogEntry CRD](../reference/c5c3/keystonecatalogentry-crd.md): the further orders, their consent and their conditions.
-- [Keystone Orders Reconciler Architecture](../reference/c5c3/keystone-orders-reconciler.md): the scaffold the four order kinds share, and the holds.
+- [KeystoneApplicationCredential CRD](../reference/c5c3/keystoneapplicationcredential-crd.md): the rotation schedule, the Secret contract and the holds the credential order puts on the user, the project and the assignment.
+- [Keystone Orders Reconciler Architecture](../reference/c5c3/keystone-orders-reconciler.md): the scaffold the five order kinds share, and the holds.
 - [ControlPlane CRD: NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec): the assignment field and its validation.
 - [Register a Service the ControlPlane Does Not Manage](./register-a-foreign-service.md): a KeystoneService with a catalog entry and roles.
 - [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suite behind this guide.
@@ -507,9 +619,14 @@ It orders a user from an assigned namespace and authenticates with the Secret
 from a Job there, repairs an edited and a deleted Secret, and rotates the
 password. It then orders a project, a role assignment and a catalog entry, sees
 the role and the entry refused, admits both, scopes a token to the project and
-reads the entry out of the catalog. It refuses an order from an unassigned
-namespace, freezes every order by withdrawing the assignment, restores it, and
-deletes the orders, the user first to see it hold on the assignment. Against a
+reads the entry out of the catalog. It orders an application credential, sees
+it refused before the role is assigned, authenticates with it, and observes a
+scheduled rotation on a three-minute interval, the superseded credential
+failing after its grace period, and a rotation by hand. It refuses an order
+from an unassigned namespace, freezes every order by withdrawing the
+assignment, restores it, and deletes the orders: the assignment first to see
+it hold on the credential order, and the user to see it hold on the
+assignment. Against a
 full ControlPlane stack, run the suite with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`.
 
@@ -537,4 +654,12 @@ suites never collide.
 
 ::: details The catalog entry the suite orders
 <<< @/../tests/e2e/c5c3/keystone-user/06-keystonecatalogentry-tenant.yaml#keystonecatalogentry-workflow-dns
+:::
+
+::: details The application credential the suite orders
+<<< @/../tests/e2e/c5c3/keystone-user/10-keystoneapplicationcredential-tenant.yaml#keystoneapplicationcredential-workflow-appcred
+:::
+
+::: details The Job the suite authenticates with the application credential from
+<<< @/../tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml#appcred-verify-job
 :::

@@ -50,9 +50,12 @@ using that password."
   (`{cp}-admin-password-cloud`) and re-mints it on rotation. This sketch
   repeats that shape per service account.
 - A [`KeystoneUser`](../reference/c5c3/keystoneuser-crd.md) order delivers a
-  password `clouds.yaml` without a project into an assigned namespace, and the
-  application-credential order of #1330 builds on that user. The project and
-  the role such a credential scopes to come from a
+  password `clouds.yaml` without a project into an assigned namespace. A
+  [`KeystoneApplicationCredential`](../reference/c5c3/keystoneapplicationcredential-crd.md)
+  order creates an application credential for that user, authenticated as the
+  user itself, delivers it beside the order, and rotates it on a schedule with
+  an overlap and a Keystone expiry. The project and the role such a credential
+  scopes to come from a
   [`KeystoneProject`](../reference/c5c3/keystoneproject-crd.md) and a
   [`KeystoneRoleAssignment`](../reference/c5c3/keystoneroleassignment-crd.md)
   ordered from the same namespace.
@@ -143,10 +146,13 @@ catalogs, and the rotation target.
 
 ## Risks and open questions
 
-- **K-ORC mint as a non-admin.** The `ApplicationCredential` actuator has only
-  been exercised with admin credentials. Whether it behaves correctly when
-  authenticated as the service user itself (including list and adoption
-  behavior) is the open spike before anything else.
+- **K-ORC as a non-admin.** The `KeystoneApplicationCredential` order runs the
+  `ApplicationCredential` actuator authenticated as the service user itself,
+  with a password `clouds.yaml` scoped to the user's project, and the
+  `keystone-user` e2e suite exercises that path against a live Keystone:
+  creation, the list K-ORC adopts through, and deletion after a rotation. The
+  built-in service accounts would take the same path; what remains open for
+  them is the move of their registrations, not the actuator.
 - **User disable is destructive.** An accidental disable of a service user
   deletes its credentials with no recovery path. The operator should have no
   disable path for service accounts, and the re-mint flow must heal the case

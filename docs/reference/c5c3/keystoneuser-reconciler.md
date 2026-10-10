@@ -236,6 +236,13 @@ While one names the order as its `userRef`, `UserReady` reads
 requeues after a minute. K-ORC guards a User with a finalizer while a
 RoleAssignment references it, so the sweep would wedge.
 
+It then lists the KeystoneApplicationCredentials the same way
+(`referencingApplicationCredentials`). While one names the order as its
+`userRef`, `UserReady` reads `ReferencedByApplicationCredentials` naming them,
+and the pass deletes nothing and requeues after a minute: deleting the user
+deletes its credentials in Keystone, and K-ORC could no longer delete them. The
+`KeystoneApplicationCredential` watch wakes the held teardown when one goes.
+
 Past the hold, `orderTeardown` runs the `c5c3.io/keystoneuser-teardown`
 finalizer without consulting the assignment, so a frozen order tears down too.
 It issues the deletes in this order, in the resolved `controlPlaneRef`

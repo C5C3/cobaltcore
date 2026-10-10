@@ -1433,14 +1433,17 @@ step writes its JUnit XML under a distinct report name so each survives in the
 uploaded artifact.
 
 A third chainsaw step runs `tests/e2e/c5c3/keystone-user/`, the Keystone order
-suite, in nine steps: against a Keystone-only ControlPlane of its own that
+suite, in ten steps: against a Keystone-only ControlPlane of its own that
 assigns one namespace, it proves the Secret delivered beside the user order, its
 repair and a rotation through `spec.passwordGeneration`; a project, a role
 assignment and a catalog entry ordered beside the user, refused until the entry
-admits the role and the catalog, then scoping a token and listing the entry; the
-refusal of an unassigned namespace, the freeze when the assignment is
-withdrawn, and the teardown, which holds the user on its assignment, down to
-the OpenBao path. It writes its JUnit XML as `chainsaw-report-keystone-user`.
+admits the role and the catalog, then scoping a token and listing the entry; an
+application credential created as the user, its scheduled rotation on a
+three-minute interval, the superseded credential failing after its grace
+period, and a rotation by hand; the refusal of an unassigned namespace, the
+freeze when the assignment is withdrawn, and the teardown, which holds the
+assignment on the credential order and the user on its assignment, down to the
+OpenBao paths. It writes its JUnit XML as `chainsaw-report-keystone-user`.
 
 A fourth chainsaw step runs `tests/e2e/c5c3/keystone-service/`, the own-namespace
 `KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own and
@@ -1483,7 +1486,7 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 280-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 300-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
@@ -1491,13 +1494,14 @@ overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
 and the `cleanup` budget runs after all three. Each of the four suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 85, 80, 90 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 85, 80, 100 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 280 minutes cover roughly 40 minutes of bring-up, the
+no JUnit XML. The 300 minutes cover roughly 40 minutes of bring-up, the
 85-minute ceiling of the full-chain suite, roughly 25 minutes for the
-foreign-namespace pass and 35 for the keystone-user pass, and the 90-minute
-ceiling of the last suite, 275 minutes in all; the bring-up and the two pass terms are
+foreign-namespace pass and 45 for the keystone-user pass, and the 100-minute
+ceiling of the keystone-user suite, the largest of the four, 295 minutes in
+all; the bring-up and the two pass terms are
 estimates, so confirm them against the first green run of the leg and re-derive
 the wall if one overruns.
 

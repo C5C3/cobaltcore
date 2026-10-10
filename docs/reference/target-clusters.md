@@ -327,7 +327,8 @@ placed CR in `Terminating`. Upgrade the release on every registered target
 cluster before the service operators, with the command above.
 
 The same holds for the order kinds in `c5c3.io` (`keystoneusers`,
-`keystoneprojects`, `keystoneroleassignments` and `keystonecatalogentries`),
+`keystoneprojects`, `keystoneroleassignments`, `keystonecatalogentries` and
+`keystoneapplicationcredentials`),
 which the chart gained with the Keystone orders. On a target cluster that
 serves one of them, the c5c3-operator lists and watches its orders in every
 namespace of the registration. Without read on it in every placed Role the
@@ -611,26 +612,30 @@ with a `spec.namespaceAssignments` entry naming the cluster. The owner orders
 Keystone pieces there: a user with a [KeystoneUser](./c5c3/keystoneuser-crd.md),
 whose credentials Secret the c5c3-operator writes beside it, and a
 [KeystoneProject](./c5c3/keystoneproject-crd.md), a
-[KeystoneRoleAssignment](./c5c3/keystoneroleassignment-crd.md) and a
-[KeystoneCatalogEntry](./c5c3/keystonecatalogentry-crd.md). Every order lives
-on the target cluster. The chart serves that with three things:
+[KeystoneRoleAssignment](./c5c3/keystoneroleassignment-crd.md), a
+[KeystoneCatalogEntry](./c5c3/keystonecatalogentry-crd.md) and a
+[KeystoneApplicationCredential](./c5c3/keystoneapplicationcredential-crd.md),
+whose Secret the c5c3-operator writes beside it as well. Every order lives on
+the target cluster. The chart serves that with three things:
 
 - `values.assignedNamespaces` lists the assigned namespaces. Each gets a Role
   `<release>-target-cluster-access-assigned` that grants Secret writes and the
   order verbs (`get`, `list`, `watch`, `update` and `patch` on
-  `keystonecatalogentries`, `keystoneprojects`, `keystoneroleassignments` and
-  `keystoneusers`, with their `status` and `finalizers` subresources), and no
-  workload kind. The chart creates none of these namespaces, and an entry may
-  not also be in `values.namespaces`: a namespace is either placed into or
-  assigned. The Role of every placed namespace grants read on the four order
-  kinds as well, because the operator's order watches list every namespace of
-  the registration.
+  `keystoneapplicationcredentials`, `keystonecatalogentries`,
+  `keystoneprojects`, `keystoneroleassignments` and `keystoneusers`, with their
+  `status` and `finalizers` subresources), and no workload kind. The chart
+  creates none of these namespaces, and an entry may not also be in
+  `values.namespaces`: a namespace is either placed into or assigned. The Role
+  of every placed namespace grants read on the five order kinds as well,
+  because the operator's order watches list every namespace of the
+  registration.
 - The registration Secret's `namespaces` key lists every assigned namespace
   beside the placed ones.
 - The chart ships the CRDs of the order kinds in `crds/`:
   `c5c3.io_keystoneusers.yaml`, `c5c3.io_keystoneprojects.yaml`,
-  `c5c3.io_keystoneroleassignments.yaml` and
-  `c5c3.io_keystonecatalogentries.yaml`. Helm installs a chart's `crds/`
+  `c5c3.io_keystoneroleassignments.yaml`,
+  `c5c3.io_keystonecatalogentries.yaml` and
+  `c5c3.io_keystoneapplicationcredentials.yaml`. Helm installs a chart's `crds/`
   directory on the first install and never upgrades it, so apply the files
   with `kubectl apply -f` on an upgrade that changes one.
 

@@ -87,7 +87,9 @@ frozen: nothing is provisioned, repaired or swept, and the Keystone project it
 already has stays. Deleting the order still tears it down.
 
 While a KeystoneRoleAssignment in the order's namespace names the order as its
-`projectRef`, deleting the order holds on `ReferencedByRoleAssignments`. See
+`projectRef`, deleting the order holds on `ReferencedByRoleAssignments`, and
+while a [KeystoneApplicationCredential](./keystoneapplicationcredential-crd.md)
+does, on `ReferencedByApplicationCredentials`. See
 [Deletion Semantics](#deletion-semantics).
 
 ## Status
@@ -112,6 +114,7 @@ While a KeystoneRoleAssignment in the order's namespace names the order as its
 | `ProjectReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Project failed. |
 | `ProjectReady` | False | `ProjectError` | A Kubernetes-level failure projecting the project. |
 | `ProjectReady` | False | `ReferencedByRoleAssignments` | The order is being deleted while KeystoneRoleAssignments in its namespace still name it. The message lists them. |
+| `ProjectReady` | False | `ReferencedByApplicationCredentials` | The order is being deleted while KeystoneApplicationCredentials in its namespace still name it. The message lists them. |
 | `ProjectReady` | False | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve, for an order on the management cluster. |
 | `ProjectReady` | False | `NamespaceNotAssigned` | No `spec.namespaceAssignments` entry assigns the order's namespace on its cluster, or, for an order on a target cluster, `spec.controlPlaneRef` does not resolve. The order is frozen. |
 | `ProjectReady` | False | `ClusterNameTooLong` | The order lives on a target cluster whose name is longer than the 63 characters a label value carries. |
@@ -176,6 +179,11 @@ While one names the order as its `projectRef`, the order reads
 again every minute and whenever an assignment changes. K-ORC guards a Project
 with a finalizer while a RoleAssignment references it, and removing the project
 would take the assignment with it. Delete the assignments first.
+
+The teardown holds the same way while a KeystoneApplicationCredential names the
+order as its `projectRef`, reading
+`ProjectReady=False/ReferencedByApplicationCredentials`: the credentials are
+scoped to the project. Delete the credential orders first.
 
 Past the hold the teardown is the KeystoneUser one: patient while the
 ControlPlane exists, failing open once it is gone, and not consulting the
