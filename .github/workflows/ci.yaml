@@ -2455,7 +2455,7 @@ jobs:
   # pins its catch and its finally explicitly, which puts the ceilings at
   # 65+5+5+5+2+3 = 85m (full-chain, where the compute leg added a third finally
   # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace),
-  # 60+5+20+15 = 100m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
+  # 70+5+20+15 = 110m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
   # Unpinned, catch and finally would inherit the exec budget and the
   # own-namespace ceiling alone would be 165m.
   #
@@ -2481,10 +2481,13 @@ jobs:
   # 60m, its ceiling to 100m and its pass estimate to ~45m. The last suite is
   # now the own-namespace one at 90m, but the stall the wall has to absorb is
   # the largest ceiling of any suite, so the wall moved to 300m:
-  # 40+85+25+45+100 = 295m. The bring-up and the two pass terms are the
+  # 40+85+25+45+100 = 295m. Its database leg orders, refreshes and tears down
+  # a MariaDBDatabase, which raised its exec budget 60m -> 70m, its ceiling to
+  # 110m and its pass estimate to ~55m, so the wall moved to 320m:
+  # 40+85+25+55+110 = 315m. The bring-up and the two pass terms are the
   # estimates in that sum —
   # confirm them against the first green run of this leg and re-derive if one
-  # overruns. The worst case holds the runner for five hours, which
+  # overruns. The worst case holds the runner for over five hours, which
   # is the price of a stalled suite reporting as a failure rather than a
   # cancellation.
   e2e-controlplane:
@@ -2501,7 +2504,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 300
+    timeout-minutes: 320
     continue-on-error: false
     permissions:
       contents: read
