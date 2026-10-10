@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseName carrying a dash is rejected by the CRD pattern of a MySQL
+# identifier. The error carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: mdb-invalid-databasename-dash
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  databaseName: my-db

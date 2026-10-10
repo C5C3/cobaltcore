@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# controlPlaneRef.namespace is immutable (CEL transition rule), also when
+# the base left it to the order's own namespace. The error carries
+# 'controlPlaneRef.namespace is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: mdb-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+    namespace: elsewhere
+  databaseName: svc_db
+  deletionPolicy: Retain

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# deletionPolicy Drop is outside the CRD enum Retain;Delete. The error
+# carries 'Unsupported value'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: mdb-invalid-deletionpolicy
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  deletionPolicy: Drop
