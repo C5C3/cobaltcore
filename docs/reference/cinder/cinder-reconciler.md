@@ -54,7 +54,7 @@ draws that pattern with every step of the Keystone operator.
 | Database | Provisions and migrates the schema (MariaDB gate, `Database`/`User`/`Grant`, one `cinder-manage db sync` Job); a release bump instead runs the expand-migrate-contract flow; promotes `installedRelease`; sizes the SQL user's connection cap | `DatabaseReady` |
 | Scheduler | Ensures the `{name}-scheduler` Deployment. No Service, no PodDisruptionBudget, no autoscaling: the scheduler takes its work off the bus | `SchedulerReady` |
 | VolumeServices | Ensures one `{name}-volume-{backend}` Deployment per projected backend, deletes the Deployments of backends that left, reports `status.volumeServices`, and drives the detach of the backends that are being deleted | `VolumeServicesReady` |
-| BackupService | Ensures the `{name}-backup` Deployment, or deletes it when no backup target is projected. It mounts every volume backend's export as well, because a backup reads the source volume itself | `BackupServiceReady` |
+| BackupService | Ensures the `{name}-backup` Deployment, or deletes it when no backup target is projected. It mounts every NFS volume backend's export and projects every RBD volume backend's keyring as well, because a backup reads the source volume itself | `BackupServiceReady` |
 | Deployment | Ensures the API Deployment, its Service (port 8776) and the PDB, and stamps `status.endpoint`. Mid-upgrade it flips the `RollingUpdate` phase to `Contracting` once the rollout has fully converged | `DeploymentReady` |
 | DBPurge | Projects the `{name}-db-purge` CronJob and reports the newest terminal run it spawned. It runs before the parallel group rather than inside it, because it needs only the rendered config the Config step produced | `DBPurgeReady` |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
@@ -322,10 +322,14 @@ Beyond the owned set it watches:
   `spec.messaging.secretRef.name`) or own them through an owner reference, and
   to the parent Cinder of every `CinderBackend` whose key Secret they are,
   through the CinderBackend `spec.secretRefs.name` field index
+  (`spec.rbd.keySecretRef.name`), and to the parent Cinder of the
+  `CinderBackupBackend` whose key Secret they are, through the
+  CinderBackupBackend `spec.secretRefs.name` field index
   (`spec.rbd.keySecretRef.name`). A Secret an RBD backend references therefore
   enqueues the backend's parent, so a rotated key re-renders the backend's
-  Secret and rolls its volume service. A Secret both legs match yields one
-  request.
+  Secret and rolls its volume service and the backup service; a Secret an RBD
+  backup target references re-renders the target's Secret and rolls the backup
+  service. A Secret several legs match yields one request.
 - MariaDB clusters referenced by `spec.database.clusterRef`, so an upstream
   database outage reflects in `DatabaseReady` without waiting for a periodic
   requeue.

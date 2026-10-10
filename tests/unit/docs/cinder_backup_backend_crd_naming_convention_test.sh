@@ -12,18 +12,21 @@
 # the rendered section carries, and the extraOptions denylist.
 #
 #   1. The "## Conditions" section exists and documents every condition type
-#      and reason: CredentialsReady with CredentialsNotRequired and
-#      WaitingForParent, ConfigProjected with WaitingForProjection, the
-#      aggregate Ready with AllReady / NotAllReady, and the Cinder-side
-#      BackupBackendReady with BackupBackendProjected / NoBackupBackend /
-#      WaitingForBackupBackend / MultipleBackupBackends, plus the
-#      CinderBackupBackendSkipped fault event.
+#      and reason: CredentialsReady with CredentialsNotRequired,
+#      CredentialsAvailable, WaitingForCredentials and WaitingForParent,
+#      ConfigProjected with WaitingForProjection, the aggregate Ready with
+#      AllReady / NotAllReady, and the Cinder-side BackupBackendReady with
+#      BackupBackendProjected / NoBackupBackend / WaitingForBackupBackend /
+#      MultipleBackupBackends, plus the CinderBackupBackendSkipped fault event
+#      and the CephKeyringConflict event of the backup pod's /etc/ceph.
 #   2. The "## Retained Artefacts" section documents the content-hashed
-#      <cinder>-backup-<name>-<hash> Secret and its backup.conf data key.
+#      <cinder>-backup-<name>-<hash> Secret and its backup.conf, ceph.conf and
+#      keyring data keys.
 #   3. The typed defaults and bounds of the chunk size and the compression
 #      algorithm are documented.
-#   4. The extraOptions denylist names the keys the projection owns, and the
-#      at-most-one rule names its admission message.
+#   4. The extraOptions denylist names the keys the projection owns, among
+#      them backup_ceph_pool of an RBD target, and the at-most-one rule names
+#      its admission message.
 #
 # Usage: bash tests/unit/docs/cinder_backup_backend_crd_naming_convention_test.sh
 
@@ -57,6 +60,10 @@ test_conditions_documented() {
     "$CRD_DOC" 'CredentialsReady'
   assert_file_contains "documents the CredentialsNotRequired reason" \
     "$CRD_DOC" 'CredentialsNotRequired'
+  assert_file_contains "documents the CredentialsAvailable reason" \
+    "$CRD_DOC" 'CredentialsAvailable'
+  assert_file_contains "documents the WaitingForCredentials reason" \
+    "$CRD_DOC" 'WaitingForCredentials'
   assert_file_contains "documents the WaitingForParent reason" \
     "$CRD_DOC" 'WaitingForParent'
   assert_file_contains "documents ConfigProjected" \
@@ -77,6 +84,8 @@ test_conditions_documented() {
     "$CRD_DOC" 'MultipleBackupBackends'
   assert_file_contains "documents the CinderBackupBackendSkipped fault event" \
     "$CRD_DOC" 'CinderBackupBackendSkipped'
+  assert_file_contains "documents the CephKeyringConflict event" \
+    "$CRD_DOC" 'CephKeyringConflict'
 }
 
 # --- Test 2: retained-artefact Secret naming convention ---
@@ -89,6 +98,10 @@ test_retained_artefact_naming() {
     "$CRD_DOC" '<cinder>-backup-<name>-<hash>'
   assert_file_contains "documents the backup.conf data key" \
     "$CRD_DOC" 'backup.conf'
+  assert_file_contains "documents the ceph.conf data key" \
+    "$CRD_DOC" '^| `ceph\.conf` |'
+  assert_file_contains "documents the keyring data key" \
+    "$CRD_DOC" '^| `keyring` |'
 }
 
 # --- Test 3: the typed defaults and bounds ---
@@ -121,6 +134,8 @@ test_denylist_and_single_attachment() {
     "$CRD_DOC" 'backup_file_size'
   assert_file_contains "documents the backup_compression_algorithm key" \
     "$CRD_DOC" 'backup_compression_algorithm'
+  assert_file_contains "documents the backup_ceph_pool key" \
+    "$CRD_DOC" 'backup_ceph_pool'
   assert_file_contains "documents the admission message of the at-most-one rule" \
     "$CRD_DOC" 'already has CinderBackupBackend'
 }
