@@ -26,7 +26,7 @@ checklist, and where it and this list disagree, the inventory and
 ## What auto-extends and what does not
 
 The repo carries eight services (`source-refs.yaml` keys), six
-Tempest-covered services (eighteen legs across three releases), seven
+Tempest-covered services (twelve legs across two releases), seven
 `release-upgrade` suites, and seven operators with option catalogs. Every
 hand-maintained row applies once per service.
 
@@ -45,7 +45,7 @@ hand-maintained row applies once per service.
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment-<slug>/` for each of the eight services | **no** — hand-cloned, hard-coded names and image refs |
 | Upgrade-path e2e | seven `release-upgrade/`, keystone `upgrade-flow/` and `upgrade-abort/` | **no** — must move to the newest transition |
 | Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` and the ci.yaml `e2e-multicluster` preloads | **no** — one pinned release; bumped only when that pin moves |
-| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
+| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
 
 ## Procedure
 
@@ -56,7 +56,9 @@ bash .claude/skills/prepare-new-release/scripts/inventory-release-touchpoints.sh
 ```
 
 It prints `[DONE]`/`[TODO]` per touch point for the target version plus
-the global decision points with their current values. For a fresh
+the global decision points with their current values, the release floor
+(`release.MinimumSupported`, `<unparsed>` when its shape changed)
+included. For a fresh
 release everything is `[TODO]` by design; re-run it mid-effort to catch
 partial wiring. Without an argument it inventories every existing
 release. It exits `1` when `ALL_TEMPEST_SERVICES` cannot be parsed from
@@ -74,8 +76,8 @@ Copy `releases/<newest>/` as the template and adjust:
   pins (keystone, barbican, neutron, cinder `-tempest-plugin`) at
   versions current at the release date that the new
   `upper-constraints.txt` can install. `renovate.json` holds
-  `neutron-tempest-plugin` for 2025.2 (`<3.1.0`, testtools) and 2026.1
-  (`<3.3.0`, `neutron_lib.services.pvlan`); 2026.2 needs none. Decide per
+  `neutron-tempest-plugin` for 2026.1 (`<3.3.0`,
+  `neutron_lib.services.pvlan`); 2026.2 needs none. Decide per
   release, state the reason in a comment above the pin, and add a
   `packageRules` entry only when a hold is needed. Majors are disabled
   under `releases/**/test-refs.yaml`, so older releases keep their
@@ -121,8 +123,7 @@ Copy `releases/<newest>/` as the template and adjust:
   (`jq -r '.sections | to_entries[] | .key as $s | .value.opts[] | "[\($s)] \(.)"'`
   on both, sorted, `comm -23`) and resolve every dropped option the
   operator renders (`config_ownership.go`): gate it on a release
-  predicate (`glanceReleaseDropsWorkersOption`,
-  `keystoneReleaseEnforcesScopeAlways`) with a `reconcile_config` case
+  predicate (`keystoneReleaseEnforcesScopeAlways`) with a `reconcile_config` case
   per release. An option the catalog dropped but the service still reads
   (neutron `[DEFAULT] api_paste_config` at 29.0.0) stays rendered, pinned
   by a golden.
@@ -167,8 +168,8 @@ Copy `releases/<newest>/` as the template and adjust:
   same three-form rename (CR and helper-CR names, databases,
   `keystone-basic-<slug>-*`-style assertions in `chainsaw-test.yaml`,
   `ghcr.io/c5c3/<svc>:<version>` poke-command refs). Leave
-  `ghcr.io/c5c3/tempest:2025.2` alone: the e2e legs load that one tempest
-  tag for every suite. A missed rename silently tests the wrong release.
+  `ghcr.io/c5c3/tempest:<default>` alone (`tempest:2026.1` today): the e2e
+  legs load that one tempest tag for every suite. A missed rename silently tests the wrong release.
   The rename reaches only names that carry the previous slug: the horizon,
   glance, placement and barbican 2026-1 variants name their CR
   `<svc>-basic-2026` and database `<svc>_basic_2026`, and a clone that
@@ -227,22 +228,35 @@ None of these are mechanical; decide and record each:
   (`deploy/kind/controlplane/controlplane.yaml`), the
   `hack/deploy-infra.sh` preload, the `${VAR:-YYYY.N}` fallbacks
   (`RELEASE` in three `hack/` scripts, `IMAGE_TAG` in
-  `perf-reconcile-benchmark.sh`), the `ci.yaml` image-tag pins across
+  `perf-reconcile-benchmark.sh`), the `CONFIG_DIR` and `SERVICE_K8S_NAME`
+  slug fallbacks of `hack/ci-run-tempest.sh`, the two nova refs of
+  `deploy/kind/fake-compute/fake-compute.yaml`, the metal-stack lab
+  manifests (`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`,
+  `deploy/lab/metal-stack/hypervisor/compute.yaml`; the lab may lag, #1321
+  D4), the `ci.yaml` image-tag pins across
   eight e2e jobs, the tempest client image the e2e fixtures run, and
   ~900 fixture pins under `tests/e2e*/` all name the default. Moving it
   is one coordinated sweep — the inventory prints every current value
   and the pin count.
-- **Retire the oldest release?** Deleting `releases/<old>/` auto-shrinks
-  the matrices, but leaves orphans: six Tempest directories, eight e2e
-  variants (or, when the default retires, eight plain suites to re-pin),
-  seven option catalogs, `overrides/<old>/`, `patches/*/<old>/`, the
-  placed-services pins and their ci.yaml preloads, the
-  `tests/unit/renovate/` probes and the `renovate.json` hold that name
-  `releases/<old>/`, and the docs code-import of
-  `tests/tempest/glance-2025-2/02-glance-cr.yaml` in
-  `docs/guides/glance/filter-web-download-imports.md`. Run
-  [[check-release-wiring]] after the removal — its L1–L6 checks exist
-  precisely for this.
+- **Retire the oldest release?** Four ordered steps, one pull request
+  each, because the Tempest matrix generator and the catalog verifier
+  fail on a half-removed release (`docs/contributing/adding-a-new-release.md`,
+  `## Removing an old release`, lists every touch point and gate).
+  First move the default off the old release, when it is the default:
+  every reference above, the `-upgraded` retag, every `tests/e2e*/` pin
+  and the plain suites, deleting the new default's `basic-deployment-<slug>`
+  variants. Then remove the release in one pull request: six Tempest
+  directories, eight e2e variants, seven option catalogs with their
+  `HaveLen`/`HaveKey` assertions, `overrides/<old>/`, `patches/*/<old>/`,
+  the renovate probes and hold, the Go fixtures that pin it, and the docs
+  code-import of `tests/tempest/glance-2026-1/02-glance-cr.yaml` when
+  2026.1 retires. Then move the floor (`release.MinimumSupported`) with
+  the `*-below-floor.yaml` fixtures and remove the code only the old
+  release reached. Last, sweep the docs and skills and run the gates.
+  Run [[check-release-wiring]] after each step; its L8 fails on a floor
+  that still names the removed release, so the step-2 pull request runs it
+  with `ALLOW_FLOOR_LAG=1`, which reports that one-release lag as an
+  `[INFO]`.
 - **CI budget** (#1276 D6) — the first run with the new release records
   the minutes of `build-e2e-images`, every `e2e-operator` leg and every
   Tempest leg, and the `=== Disk use on the kind node(s) ===` block of
@@ -296,8 +310,9 @@ audit for everything this skill sets up; run it as the gate on the PR.
   `neutron-tempest-plugin` holds) — when a probed release is retired,
   repoint the probe before deleting the directory or `make test-shell`
   breaks.
-- **Go tests enumerate releases** — eight `[]string{"2025.2", "2026.1"}`
-  loops and five nova pin goldens skipped 2026.2 until #1281; the grep in
+- **Go tests enumerate releases** — one-line `[]string{"<release>", …}`
+  loops miss a new release until someone extends them (eight such loops
+  and five nova pin goldens skipped 2026.2 until #1281); the grep in
   step 3 finds every one-line `[]string` list, and the inventory checks
   those. Neither sees a multi-line list or a `{release: "…"}` table row.
 - **Two shell suites pin counts** —
