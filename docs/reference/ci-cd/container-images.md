@@ -310,15 +310,19 @@ config discovery to the two mounted `--config-dir` roots instead.
 
 **Stage 2 (runtime)** — extends `python-base`:
 
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64` and `qemu-utils`:
-  the venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which python-base
-  does not ship (the same rationale as horizon), and the `image_conversion` image-import
-  plugin shells out to `qemu-img info` and `qemu-img convert` on the staged image.
-  Glance is otherwise pure Python at runtime
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`, `qemu-utils`,
+  `python3-rados` and `python3-rbd`: the venv-builder-compiled uwsgi binary links
+  `libpython3.12.so.1.0`, which python-base does not ship (the same rationale as
+  horizon), and the `image_conversion` image-import plugin shells out to `qemu-img info`
+  and `qemu-img convert` on the staged image. The two bindings carry the `rados` and
+  `rbd` modules of the RBD store. The store runs no `ceph` or `rbd` binary, so the
+  image carries no `ceph-common`
 - Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
 - Copies the `glance-wsgi-api` uWSGI entry script to
   `/var/lib/openstack/bin/glance-wsgi-api` (the path the glance-operator's
   `--wsgi-file` flag references)
+- Links the Ceph bindings into `/var/lib/openstack/ceph-bindings` and writes
+  `ceph-bindings.pth` into the virtualenv's `site-packages` (see below)
 - Sets `USER openstack` for non-root execution
 
 The image stays config-free: the glance-operator mounts `glance-api.conf`,
@@ -331,6 +335,31 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 | --- | --- |
 | `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
 | `qemu-utils` | `qemu-img`, which the `image_conversion` image-import plugin runs on the staged image (`qemu-img info`, `qemu-img convert`) |
+| `python3-rados` | The `rados` module. `glance_store/_drivers/rbd.py` imports it behind a guard, and `configure_add` raises `BadStoreConfiguration` ("The required libraries(rbd and rados) are not available") without it |
+| `python3-rbd` | The `rbd` module, imported behind the same guard and checked by the same `configure_add` test |
+
+**Ceph bindings in the virtualenv:** `images/venv-builder/Dockerfile` creates
+the virtualenv with `python3 -m venv`, which excludes the system site
+packages. The Ceph bindings have no PyPI wheels: noble installs `rados` and
+`rbd` into `/usr/lib/python3/dist-packages`, a directory
+`/var/lib/openstack/bin/python` never searches. It stays that way, because the
+directory also receives every other `python3-*` package an apt entry pulls in,
+at versions the upper constraints never resolved. After the package install,
+the runtime stage links the two extension modules (`rados.cpython-*.so`,
+`rbd.cpython-*.so`) into `/var/lib/openstack/ceph-bindings` and writes
+`ceph-bindings.pth` into the directory that `sysconfig.get_path("purelib")`
+reports inside the virtualenv
+(`/var/lib/openstack/lib/python3.12/site-packages`), with the single line
+`/var/lib/openstack/ceph-bindings`. Python's `site` module appends that
+directory to `sys.path`. `rados` and `rbd` resolve, and no other module from
+`dist-packages` does. The step runs outside the build-arg guard. Without
+`--build-arg EXTRA_APT_PACKAGES` the two globs match nothing, and the entry
+names an empty directory. When `python3-rbd` is installed, the step imports
+`rados` and `rbd` with `/var/lib/openstack/bin/python` (`rbd` imports
+`rados`), so a module file the globs miss or a failed link fails the build. On
+a push to `main` the verify scripts run only after the tag is published, so
+this check is the one that keeps such an image from shipping. The cinder and
+nova-compute images write the same file and run the same check.
 
 **Source patch:**
 `patches/glance/2025.2/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch`
@@ -417,7 +446,16 @@ above removes; a run of the patched tree in the venv-builder container
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
 On 2025.2 and 2026.1, its Test 12 fails against an image built without the
-source patch above.
+source patch above. Test 13 covers the RBD store's bindings with the checks
+of `tests/lib/ceph_bindings.sh`, which the cinder and nova-compute scripts
+share: `ceph-bindings.pth` holds its single line, `rados` and `rbd` import and
+resolve to the files in `/usr/lib/python3/dist-packages`, and that directory is
+absent from the virtualenv's `sys.path`. The store's guard attributes `rbd` and
+`rados` must not be `None`, and `command -v ceph` and `command -v rbd` must
+fail, so a manifest edit that adds `ceph-common` to the glance image fails the
+build. Against an image built
+without `--build-arg EXTRA_APT_PACKAGES`, the script fails tests 8, 9 and 13,
+and Test 13 names `No module named 'rados'`.
 
 ### placement
 
@@ -683,15 +721,19 @@ because `initialize_application()` reads `CONF(sys.argv[1:])`. The PBR
 
 **Stage 2 (runtime)** extends `python-base`:
 
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries three packages: the shared
-  libpython the venv-builder-compiled uwsgi links against, plus the
-  `mount.nfs` and `qemu-img` binaries the volume drivers reach for. The `sudo`
-  of the root helper comes from `python-base`
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries six packages: the shared
+  libpython the venv-builder-compiled uwsgi links against, the `mount.nfs` and
+  `qemu-img` binaries the volume drivers reach for, and the Ceph client the RBD
+  volume and backup drivers use (`ceph-common` for the `ceph` and `rbd` tools,
+  `python3-rados` and `python3-rbd` for the bindings). The `sudo` of the root
+  helper comes from `python-base`
 - Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
 - Creates the five state directories under `/var/lib/cinder`, empty and owned
   by UID/GID 42424
 - Copies `cinder-amqp-ready` to `/var/lib/openstack/bin/cinder-amqp-ready`
   with mode 0755
+- Links the Ceph bindings and writes `ceph-bindings.pth`, as the
+  [glance](#glance) image does
 - Sets `USER openstack` for non-root execution
 
 The image stays config-free. The package data files `api-paste.ini`,
@@ -710,7 +752,26 @@ those absolute paths.
 | `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
 | `nfs-common` | `mount.nfs`, which `NfsDriver.do_setup` probes for through the root helper (`cinder/volume/drivers/nfs.py`) and raises `NfsException` without. Under the restricted posture the pod never mounts and the probe's non-zero exit is tolerated, but the binary has to exist |
 | `qemu-utils` | `qemu-img`, which create-from-image, clone and extend shell out to (`fetch_to_raw`, `resize_image`, `convert_image` in `cinder/image/image_utils.py`), along with the LUKS qcow2 pre-create in `cinder/volume/drivers/remotefs.py` |
+| `ceph-common` | `ceph` and `rbd`. The RBD volume driver (`cinder/volume/drivers/rbd.py`) runs `ceph mon dump --format=json` in `_get_mon_addrs`, `rbd import` in `_create_encrypted_volume` and `_copy_image_to_volume`, `rbd export` in `copy_volume_to_image` and `rbd status` in `_get_image_status`. The Ceph backup driver (`cinder/backup/drivers/ceph.py`) pipes `rbd export-diff` into `rbd import-diff` in `_rbd_diff_transfer` |
+| `python3-rados` | The `rados` module. Both drivers import it behind a guard, and `check_for_setup_error` raises "rados and rbd python libraries not found" without it (`VolumeBackendAPIException` in the volume driver, `BackupDriverException` in the backup driver). `ceph-common` depends on it; the list names it because the drivers import it |
+| `python3-rbd` | The `rbd` module, imported behind the same guard and named for the same reason |
 | `sudo` | The root helper is `sudo cinder-rootwrap` and the image carries no sudoers entry. `sudo` comes from `python-base`, not from `extra-packages.yaml` |
+
+**Ceph client:** the image writes the `ceph-bindings.pth` of the
+[glance](#glance) section, because the virtualenv does not search
+`/usr/lib/python3/dist-packages`, the only directory noble installs the two
+bindings into. `ceph-common` also brings `python3-requests`, `python3-yaml`
+and their dependencies, `python3-chardet` among them, into that directory, and
+the virtualenv imports none of them. The postinst of `ceph-common` adds the
+system user `ceph` (UID 64045) and the directories `/var/lib/ceph` (mode 0750)
+and `/var/log/ceph` (mode 3770), both owned by it. The service user 42424 can
+write neither. Where the client logs
+and whether it opens an admin socket is up to the `ceph.conf` the
+cinder-operator renders for an RBD backend (issue #1341). noble serves Ceph
+19.2.3 (Squid). Its `librbd` reads cephx keys of the classic `aes` type and not
+the `aes256k` keys a fresh Ceph Tentacle prefers. The cipher pin therefore
+belongs to the lab's Ceph (decision D7 of issue #1338), and the image does not
+set it.
 
 **Source patch:**
 `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
@@ -871,14 +932,28 @@ first run of the 29.0.0 suite counted 19,003 tests with no failure (18,984
 passed, 19 skipped).
 
 **Image contract check:** `tests/container-images/verify_cinder.sh` is the
-hard gate. Its 16 tests cover `cinder-manage --version` and
+hard gate. Its 16 test functions cover `cinder-manage --version` and
 `cinder-status --help`, the importability of `cinder` and of `cinder.wsgi.wsgi`
 together with the driver and backend libraries (`os_brick`, castellan's
 Barbican key manager, `boto3`, `tooz`, `taskflow`, `oslo_privsep`), the four
 package data files, and `--help` on `cinder-scheduler`, `cinder-volume`,
 `cinder-backup` and `cinder-api`. `mount.nfs` being present and executable,
 `qemu-img --version`, `sudo --version` and a refused `sudo -n true` prove the
-apt wiring. The probe test covers its presence and executability, the exit 1
+apt wiring. The Ceph test, which runs right after it as test 16, runs the
+bindings checks of the [glance](#glance) Test 13. After
+`cinder.objects.register_all()`, the guard attributes `rados` and `rbd` of
+`cinder.volume.drivers.rbd` and `cinder.backup.drivers.ceph` must not be
+`None`. `ceph --version` and
+`rbd --version` must print a line starting with `ceph version `; the script
+logs that line for the cipher revisit of decision D7 of issue #1338 and
+asserts no version. `rbd help export-diff` and `rbd help import-diff` must exit
+0, and `ceph --conf /nonexistent --connect-timeout 1 mon dump` must fail fast
+with `error calling conf_read_file`, which is what a cinder-volume pod with a
+broken `ceph.conf` shows. An image without `ceph-bindings.pth` fails the `.pth`
+and import assertions while the tools still run. An image built without
+`--build-arg EXTRA_APT_PACKAGES` fails tests 8, 14 and 16, and test 16 names
+`No module named 'rados'`. The probe test covers its presence and
+executability, the exit 1
 that names port 5672 in a bare container, that it honours
 `CINDER_AMQP_PORT=1`, that a `CINDER_AMQP_PORT` carrying a URL is refused
 without a traceback, the exit 0 against a connection the container itself
@@ -892,9 +967,8 @@ covers the create-from-image path: the `run_as_root` with which the volume
 manager (`CreateVolumeFromSpecTask._create_from_image_cache_or_download`) and
 `image_utils.fetch_verify_image` inspect the downloaded image has to come out
 `False`. The remaining tests check non-root execution, the absence of build
-tools, that uwsgi runs, the five state directories, empty and owned by
-42424 along with their parent, and that `pkg_resources` imports, together
-with `os_win` where the installed cinder requires `os-win`. The WSGI check
+tools, that uwsgi runs, and the five state directories, empty and owned by
+42424 along with their parent. The WSGI check
 inspects `cinder.wsgi.api` instead of
 importing it: an import runs `initialize_application()` at module level and
 dies with `oslo_service.wsgi.ConfigNotFound` in a bare image. So it pairs
@@ -1144,9 +1218,9 @@ four tags as `ghcr.io/c5c3/nova` (see
 and `nova:2025.2` therefore carry the same nova. On top of nova the image
 carries the libvirt binding and client libraries, `qemu-img`, the host tools
 for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
-with) runs, `mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`
-and `genisoimage`, and a rootwrap and sudo posture that lets the unprivileged
-`openstack` user start nova's privileged helpers.
+with) runs, `mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`,
+`genisoimage`, the Ceph client, and a rootwrap and sudo posture that lets the
+unprivileged `openstack` user start nova's privileged helpers.
 The [nova](#nova) control-plane image carries none of it (decision D14 of
 issue #1014). Its consumer is the [NovaCompute](../nova/novacompute-crd.md)
 node pool, which runs it under the tag of the Nova's installed release.
@@ -1181,6 +1255,8 @@ step.
 - Installs the runtime packages, then removes the node identities they bake
   (see below). The removal sits outside the build-arg guard, so a build
   without `--build-arg EXTRA_APT_PACKAGES` stays a clean no-op
+- Links the Ceph bindings and writes `ceph-bindings.pth`, as the
+  [glance](#glance) image does
 - Creates the two state directories under `/var/lib/nova`, empty and owned by
   UID/GID 42424, as the nova image does
 - Generates `/etc/nova/rootwrap.conf`, copies the sudoers file and checks it
@@ -1205,10 +1281,18 @@ releases):
 | `nfs-common` | `mount.nfs`, the helper `mount -t nfs` runs. nova mounts a Cinder NFS export itself, without os-brick: `LibvirtNFSVolumeDriver` (`nova/virt/libvirt/volume/nfs.py`) goes through `nova/virt/libvirt/volume/mount.py` to `mount` in `nova/privsep/fs.py`, below `[libvirt] nfs_mount_point_base` (default `$state_path/mnt`) |
 | `cryptsetup-bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
 | `genisoimage` | The default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
+| `ceph-common` | `ceph` and `rbd` (`nova/storage/rbd_utils.py`): `ceph mon dump` in `get_mon_addrs`, `rbd import` in `import_image`, `rbd export` in `export_image` and `ceph df` in `get_pool_info` |
+| `python3-rados` | The `rados` module. `nova/storage/rbd_utils.py` imports it behind a guard, and `RBDDriver.__init__` raises `RuntimeError('rbd python libraries not found')` through `_check_for_import_failure` without it. `ceph-common` depends on it; the list names it because nova imports it |
+| `python3-rbd` | The `rbd` module, imported behind the same guard and named for the same reason |
 
 `open-iscsi` and `multipath-tools` pull `systemd`, `initramfs-tools` and
 `sg3-utils` as hard dependencies. The 2025.2 image is about 170 MB larger than
-the nova image. `nfs-common` pulls `rpcbind`, `keyutils`, `libnfsidmap1`,
+the nova image. The Ceph client adds about 167 MB on amd64 (166,989,790 bytes):
+`docker image inspect` on two `linux/amd64` builds of this package layer on
+the pinned `ubuntu:noble` base, one with and one without `ceph-common`,
+`python3-rados` and `python3-rbd`. On arm64 the same probe gives 161,471,190
+bytes, equal to the delta between the 2026.1 image and a build of it without
+the three packages. `nfs-common` pulls `rpcbind`, `keyutils`, `libnfsidmap1`,
 `libevent-core-2.1-7t64`, `libwrap0` and `ucf`, about 3 MB together. No
 process in the pod starts `rpcbind` or `rpc.statd`; an NFSv4 mount needs
 neither, and the in-cluster server of `deploy/kind/nfs/nfs-server.yaml` speaks
@@ -1226,7 +1310,21 @@ all four files, and `iscsiadm --version` and `nvme version` still run without
 them. `nfs-common` and `rpcbind` bake none: their postinst scripts create the
 `statd` and `_rpc` users and install `/etc/idmapd.conf`,
 `/etc/default/nfs-common` and `/etc/nfs.conf`, and none of these names the
-node.
+node. `ceph-common` bakes none either: its postinst installs
+`/etc/ceph/rbdmap`, `/etc/default/ceph` and `/etc/logrotate.d/ceph-common`,
+none of which names the node, so the removal list has no Ceph entry.
+
+**Ceph client:** the image writes the `ceph-bindings.pth` of the
+[glance](#glance) section, because the virtualenv does not search
+`/usr/lib/python3/dist-packages`, the only directory noble installs the two
+bindings into. `ceph-common` also brings `python3-requests`, `python3-yaml`
+and their dependencies, `python3-chardet` among them, into that directory, and
+the virtualenv imports none of them. The postinst of `ceph-common` adds the
+system user `ceph` (UID 64045) and the directories `/var/lib/ceph` (mode 0750)
+and `/var/log/ceph` (mode 3770), both owned by it. The `openstack` user (UID
+42424) can write neither. The
+NovaCompute still offers no `imagesType: rbd`, because it carries no Ceph
+credential contract (see the [NovaCompute reference](../nova/novacompute-crd.md)).
 
 **Rootwrap and sudo posture:** nova's root helper is
 `sudo nova-rootwrap <[DEFAULT] rootwrap_config>`, and `rootwrap_config`
@@ -1319,8 +1417,8 @@ spec that meets it):
 - `sudo` present with the one `nova-rootwrap` rule
 
 **Image contract check:** `tests/container-images/verify_nova_compute.sh` runs
-inline on pull requests and in `verify-nova-compute-image` on push. Its nine
-tests:
+inline on pull requests and in `verify-nova-compute-image` on push. Its ten
+tests, of which test 10 runs right after test 4:
 
 1. `nova-compute`, `nova-manage`, `nova-rootwrap` and `privsep-helper` are
    executable, and `nova-compute --help` exits 0.
@@ -1336,8 +1434,8 @@ tests:
    pin each fail with a message naming the value.
 3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
    LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
-4. The nine host tools run, one assertion per tool, so a missing package
-   names itself.
+4. The eleven host tools run, `ceph --version` and `rbd --version` among
+   them, one assertion per tool, so a missing package names itself.
 5. The four identity files are absent.
 6. The posture holds: the two `rootwrap.conf` lines, `compute.filters`, six
    trusted paths that the service user cannot write, one `NOPASSWD` entry in
@@ -1351,12 +1449,20 @@ tests:
 7. The container runs as `openstack`.
 8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
 9. The state directories match `verify_nova.sh` test 13.
+10. The bindings checks of the [glance](#glance) Test 13 pass.
+    `nova.storage.rbd_utils.rbd` and `nova.storage.rbd_utils.rados`, the
+    attributes `RBDDriver.__init__` checks, are not `None`. `rbd help export`
+    and `rbd help import` exit 0, and the
+    `ceph --version` line starts with `ceph version `; the script logs that
+    line and asserts no version.
 
-All three release images pass all 48 assertions. Pointed at the nova control-plane
-image, the script exits 1: test 2 reports
-`ModuleNotFoundError: No module named 'libvirt'` and test 4 fails once per
-tool. A build without any `--build-arg` succeeds and fails the same two tests,
-which is how a missing `nova-compute` block in `extra-packages.yaml` shows up.
+The 2026.1 and 2026.2 images pass all 61 assertions. Pointed at the nova
+control-plane image, the script exits 1: test 2 reports
+`ModuleNotFoundError: No module named 'libvirt'`, test 4 fails once per tool,
+and test 10 fails on the missing `ceph-bindings.pth` and
+`No module named 'rados'`. A build without any `--build-arg` succeeds and fails
+the same three tests, which is how a missing `nova-compute` block in
+`extra-packages.yaml` shows up.
 
 ## Release-independent images
 
