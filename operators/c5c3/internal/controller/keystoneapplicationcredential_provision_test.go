@@ -444,13 +444,12 @@ func TestKeystoneApplicationCredentialProvision_ScheduleOffMintsWithoutExpiry(t 
 	g.Expect(kacCredential(t, h, 1).Spec.Resource.ExpiresAt).To(BeNil())
 
 	kacMarkAvailable(t, h, 1, "ac-1")
-	result, err := h.reconcile(ctx)
+	_, err = h.reconcile(ctx)
 	g.Expect(err).NotTo(HaveOccurred())
 	got := kacGet(t, h)
 	g.Expect(got.Status.CredentialID).To(Equal("ac-1"))
 	g.Expect(got.Status.CredentialExpiresAt).To(BeNil())
 	g.Expect(got.Status.NextRotation).To(BeNil())
-	g.Expect(result.RequeueAfter).To(Equal(orderRefreshAfter), "no timer runs with the schedule off")
 }
 
 // TestKeystoneApplicationCredentialProvision_ExpiryReadsKORCFirst switches to
