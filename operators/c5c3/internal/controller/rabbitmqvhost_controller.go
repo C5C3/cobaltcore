@@ -216,7 +216,8 @@ func (r *RabbitMQVhostReconciler) now() time.Time {
 	return time.Now().Truncate(time.Second)
 }
 
-// reconcileNormal runs the admission gates and the messaging gate.
+// reconcileNormal runs the admission gates, the messaging gate, then the
+// provision.
 //
 // The freeze of #1327 D2 is the assignment gate of orderAdmission: without an
 // entry the pass returns before anything is read or written in the
@@ -242,7 +243,22 @@ func (r *RabbitMQVhostReconciler) reconcileNormal(
 	if err != nil || !ok {
 		return rabbitMQVhostPassResult(order, cluster, result), err
 	}
-	return rabbitMQVhostPassResult(order, cluster, ctrl.Result{}), nil
+
+	provisioned := false
+	provisionResult, err := instrumenter.Instrument(ctx, "RabbitMQVhostProvision",
+		func(ctx context.Context) (ctrl.Result, error) {
+			ok, res, err := r.provisionVhost(ctx, order, cp, cluster)
+			provisioned = ok
+			return res, err
+		})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !provisioned {
+		rabbitMQVhostFail(order, conditionTypeRabbitMQVhostDeliveryReady)(reasonRabbitMQVhostWaitingForPassword,
+			"the vhost and its user are not provisioned yet; nothing is delivered")
+	}
+	return rabbitMQVhostPassResult(order, cluster, provisionResult), nil
 }
 
 // rabbitMQVhostPassResult decides when the next pass runs once the legs had
