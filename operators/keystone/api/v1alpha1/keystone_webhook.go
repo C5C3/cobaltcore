@@ -213,9 +213,16 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 }
 
 // ValidateCreate implements admission.Validator[*Keystone].
+//
+// Keystone carries no spec.openStackRelease, so the release floor
+// (validation.OpenStackReleaseFloor) applies to spec.image.tag when the tag
+// parses as a release; a digest-pinned image or a tag such as "latest" names
+// none and is skipped.
 func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
-	catalogWarnings, catalogErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
-	return append(warnCleartextTrustedDashboards(obj), catalogWarnings...), w.validate(ctx, obj, catalogErrs)
+	catalogWarnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "", obj.Spec.Image.Tag)
+	createErrs = append(createErrs, floorErrs...)
+	return append(warnCleartextTrustedDashboards(obj), catalogWarnings...), w.validate(ctx, obj, createErrs)
 }
 
 // ValidateUpdate implements admission.Validator[*Keystone].
@@ -228,6 +235,11 @@ func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (ad
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on KeystoneSpec.
+//
+// spec.image.tag is held to the release floor when it parses as a release: a
+// change to a release below release.MinimumSupported is rejected, and an
+// unchanged tag below it is admitted with a warning, so an unrelated edit never
+// wedges the CR.
 //
 // An update to a CR that is being deleted and leaves its spec alone is admitted
 // without validation. That is the finalizer removal reconcileDelete issues, and
@@ -258,7 +270,11 @@ func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Ke
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)...)
-	return append(warnCleartextTrustedDashboards(newObj), catalogWarnings...), w.validate(ctx, newObj, updateErrs)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "image", "tag"), oldObj.Spec.Image.Tag, newObj.Spec.Image.Tag)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings := append(warnCleartextTrustedDashboards(newObj), catalogWarnings...)
+	return append(warnings, floorWarnings...), w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Keystone spec.
