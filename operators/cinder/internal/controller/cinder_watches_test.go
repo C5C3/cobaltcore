@@ -42,6 +42,7 @@ func namedSecret(name string) *corev1.Secret {
 func mapperClient(objs ...client.Object) client.Client {
 	return cinderFakeClientBuilder(objs...).
 		WithIndex(&cinderv1alpha1.Cinder{}, CinderSecretNameIndexKey, cinderSecretNameExtractor).
+		WithIndex(&cinderv1alpha1.CinderBackend{}, CinderBackendSecretNameIndexKey, cinderBackendSecretNameExtractor).
 		Build()
 }
 
@@ -95,9 +96,52 @@ func TestSecretToCinderMapper(t *testing.T) {
 	}}
 	g.Expect(mapper(context.Background(), derived)).To(ConsistOf(cinderRequest))
 
-	// An NFS backend references no Secret, so nothing reaches a Cinder through
-	// one.
+	// A Secret nothing references reaches no Cinder.
 	g.Expect(mapper(context.Background(), namedSecret("unrelated"))).To(BeEmpty())
+}
+
+func TestCinderBackendSecretNameExtractor(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// An RBD backend references its key Secret.
+	g.Expect(cinderBackendSecretNameExtractor(testRBDCinderBackend("rbd1"))).To(Equal([]string{"rbd1-key"}))
+
+	// An RBD backend with an empty Secret name indexes nothing rather than "".
+	unnamed := testRBDCinderBackend("rbd1")
+	unnamed.Spec.RBD.KeySecretRef.Name = ""
+	g.Expect(cinderBackendSecretNameExtractor(unnamed)).To(BeNil())
+
+	// A type-RBD backend written past admission without its block.
+	blockless := testRBDCinderBackend("rbd1")
+	blockless.Spec.RBD = nil
+	g.Expect(cinderBackendSecretNameExtractor(blockless)).To(BeNil())
+
+	// An NFS backend references no Secret.
+	g.Expect(cinderBackendSecretNameExtractor(testCinderBackend("nfs1"))).To(BeNil())
+
+	// controller-runtime never calls the extractor with another type; a nil
+	// return is safer than a panic if it ever does.
+	g.Expect(cinderBackendSecretNameExtractor(validCinder())).To(BeNil())
+}
+
+// The satellite leg: the key Secret of an RBD backend wakes the backend's parent,
+// whose re-render picks the rotated key up. The two legs are unioned, so a
+// Secret both the Cinder and a backend reference wakes the parent once.
+func TestSecretToCinderWithBackendsMapper(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shared := testRBDCinderBackend("rbd2")
+	shared.Spec.RBD.KeySecretRef.Name = "cinder-db"
+	c := mapperClient(validCinder(), testRBDCinderBackend("rbd1"), shared, testCinderBackend("nfs1"))
+	mapper := secretToCinderWithBackendsMapper(c)
+
+	g.Expect(mapper(context.Background(), namedSecret("rbd1-key"))).To(ConsistOf(cinderRequest))
+	g.Expect(mapper(context.Background(), namedSecret("cinder-db"))).To(ConsistOf(cinderRequest))
+	g.Expect(mapper(context.Background(), namedSecret("unrelated"))).To(BeEmpty())
+
+	// The leg resolves within the Secret's namespace only.
+	elsewhere := namedSecret("rbd1-key")
+	elsewhere.Namespace = "other"
+	g.Expect(mapper(context.Background(), elsewhere)).To(BeEmpty())
 }
 
 func TestMariaDBToCinderMapper(t *testing.T) {
