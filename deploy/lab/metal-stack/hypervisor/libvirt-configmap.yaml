@@ -8,7 +8,7 @@
 # host-prepare.sh runs in the init container: it loads vhost_net from the
 # host's module tree and fails the pod on a node without /dev/kvm.
 #
-# libvirtd.sh runs in the main container. It waits for the TLS files
+# libvirtd.sh runs in the container libvirtd. It waits for the TLS files
 # kvm-node-agent installs, then starts libvirtd in a host scope
 # (systemd-run --scope --slice=system), so that libvirtd and the QEMU
 # processes it forks leave the pod's cgroup and outlive a restart of the pod.
@@ -25,6 +25,18 @@
 # modified") knowingly. /run is a tmpfs, so a reboot removes the units, and
 # the script removes them whenever it ends. A libvirtd an earlier container
 # left in the host scope is stopped before the next one starts.
+#
+# ceph-secret.sh runs in the third container. It defines the libvirt secret
+# 090e4a3c-6c20-4e74-82dc-1a70382babe8 for client.cinder from the Secret
+# openstack/ceph-client-cinder, mounted at /etc/ceph-client-cinder, sets its
+# value again whenever the key changes, and undefines it when the Secret goes.
+# QEMU authenticates to Ceph with that secret when it opens a Cinder volume on
+# RBD. The UUID is the one the lab's RBD volume backend (#1346) sets as
+# spec.rbd.secretUUID. Nova stores that UUID in the connection_info of every
+# attachment and reuses it when a server starts, so the UUID stays fixed once
+# a volume is attached; a change needs both UUIDs defined until every
+# attachment has been refreshed. A server that holds an attached RBD volume
+# keeps the key its QEMU started with until it is live-migrated or restarted.
 #
 # libvirtd.conf listens for TLS on the node's address only (@HOST_IP@ is
 # replaced with status.hostIP). The socket's group is the numeric 108, the
@@ -190,6 +202,112 @@ data:
 
     # 7. Exit with libvirtd's status.
     exit_with_libvirtd
+
+  ceph-secret.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # The lab's RBD volume backend (#1346) carries this UUID as
+    # spec.rbd.secretUUID, so the rbd_secret_uuid Cinder sends names the
+    # secret defined here. Nova stores that UUID in the connection_info of
+    # every attachment and reuses it when a server starts, so the UUID stays
+    # fixed once a volume is attached; a change needs both UUIDs defined
+    # until every attachment has been refreshed.
+    uuid=090e4a3c-6c20-4e74-82dc-1a70382babe8
+    usage_name=client.cinder
+    secret_ref=openstack/ceph-client-cinder
+    key_file=/etc/ceph-client-cinder/userKey
+    xml_file=/tmp/ceph-secret.xml
+    interval=10
+
+    # TERM or INT: the pod is being deleted, and libvirtd.sh stops libvirtd
+    # with it. The secret is left as it is; the next pod's container defines
+    # it again.
+    trap 'exit 0' TERM INT
+
+    # virsh_or_retry <subcommand> [<argument>...]
+    # One virsh call. A failure (libvirtd restarting, the socket gone) prints
+    # the retry line after virsh's error, waits the interval and returns 1,
+    # and the caller skips the rest of the pass, its state unchanged.
+    virsh_or_retry() {
+      if ! virsh -c qemu:///system "$@" >/dev/null; then
+        echo "ceph-secret: virsh $1 failed; retrying in ${interval}s"
+        sleep "${interval}"
+        return 1
+      fi
+    }
+
+    # defined: whether libvirtd has the secret. A restarted libvirtd has
+    # lost it.
+    defined() {
+      virsh -c qemu:///system secret-dumpxml "${uuid}" >/dev/null 2>&1
+    }
+
+    echo "ceph-secret: libvirt secret ${uuid} for ${usage_name} follows the Secret ${secret_ref}"
+
+    # No timeout, for the reason libvirtd.sh gives: a pod that is Running but
+    # not Ready is the signal, and readiness here is libvirtd's.
+    if [[ ! -S /run/libvirt/libvirt-sock ]]; then
+      echo "ceph-secret: waiting for /run/libvirt/libvirt-sock"
+      until [[ -S /run/libvirt/libvirt-sock ]]; do
+        sleep "${interval}"
+      done
+    fi
+
+    last_sha=""
+    last_state=""
+    while true; do
+      # One read per pass decides whether the key is there and gives its
+      # digest: a missing or empty file counts as absent, and a file the
+      # kubelet replaces during a pass is read whole on the next one.
+      key="$(tr -d '[:space:]' 2>/dev/null <"${key_file}")" || key=""
+      if [[ -n "${key}" ]]; then
+        sha="$(printf '%s' "${key}" | sha256sum | cut -c1-12)"
+        if ! defined; then
+          # private='yes': libvirt refuses secret-get-value, so the key goes
+          # from the Secret into libvirtd and QEMU alone. ephemeral='yes':
+          # libvirtd keeps the value in memory and writes no file under
+          # /etc/libvirt/secrets, where QEMU, which runs as root, could read
+          # it and the node's disk would keep it in the container's layer.
+          # libvirtd.sh ends with libvirtd, so a restarted libvirtd runs in a
+          # new container without the secret either way, and the next pass
+          # defines it again.
+          cat >"${xml_file}" <<EOF
+    <secret ephemeral='yes' private='yes'>
+      <uuid>${uuid}</uuid>
+      <description>Ceph key of ${usage_name} from the Secret ${secret_ref}</description>
+      <usage type='ceph'>
+        <name>${usage_name}</name>
+      </usage>
+    </secret>
+    EOF
+          virsh_or_retry secret-define "${xml_file}" || continue
+          echo "ceph-secret: defined libvirt secret ${uuid} for ${usage_name}"
+          last_sha=""
+        fi
+        # --file reads the base64 text and stores the decoded key. The key
+        # never appears on a command line, which hostPID shows to every
+        # process on the node through /proc/<pid>/cmdline, and the log carries
+        # the first twelve hex characters of its SHA-256, never the key.
+        if [[ "${sha}" != "${last_sha}" ]]; then
+          virsh_or_retry secret-set-value "${uuid}" --file "${key_file}" || continue
+          echo "ceph-secret: set the value of libvirt secret ${uuid} from ${secret_ref} (sha256 ${sha})"
+          last_sha="${sha}"
+        fi
+        last_state=present
+      else
+        if defined; then
+          virsh_or_retry secret-undefine "${uuid}" || continue
+          echo "ceph-secret: undefined libvirt secret ${uuid} because ${secret_ref} is gone"
+        fi
+        last_sha=""
+        if [[ "${last_state}" != absent ]]; then
+          echo "ceph-secret: waiting for the Secret ${secret_ref} (deployed by WITH_CEPH=true); no libvirt secret is defined"
+        fi
+        last_state=absent
+      fi
+      sleep "${interval}"
+    done
 
   libvirtd.conf: |
     listen_tls = 1

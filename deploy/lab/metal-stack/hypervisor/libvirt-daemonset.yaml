@@ -22,11 +22,25 @@
 # liveness probe either: a restart on a slow answer would interrupt them. The
 # readiness probe asks libvirtd for its version over the local socket.
 #
+# The third container, ceph-secret, runs ceph-secret.sh: it defines the
+# libvirt secret QEMU authenticates to Ceph with, from the key in the Secret
+# ceph-client-cinder, and follows that Secret. It runs as root, which reads
+# the key file the kubelet writes root-owned with mode 0400 and reaches the
+# socket, 0770 with the group 108, but unprivileged and without a capability:
+# virsh over the Unix socket needs no device, module or host namespace. The
+# Secret is a volume marked optional, so the pod starts without it, and the
+# kubelet writes the file once the Secret appears and rewrites it on every
+# change (its periodic sync, about a minute). A watch through the API would
+# need a ServiceAccount, a Role on Secrets in openstack and a token in a pod
+# that runs in the host's namespaces; the volume needs none of that, so the
+# token stays off. No probe of its own: readiness stays libvirtd's, and a lab
+# without WITH_CEPH=true has no Secret and stays Ready.
+#
 # The image is pinned by its keeper tag and digest,
 # <libvirt-package-version>-r<N>@sha256:<digest>. hack/ci-tag-libvirt-keeper.sh
 # mints the tag once on main and never moves it, and the nightly prune keeps
 # every version that carries one. Renovate proposes a new tag as one pull
-# request that moves all seven lines naming the image: the two containers
+# request that moves all eight lines naming the image: the three containers
 # here, the NFS module load test (../probe/nfs-module-load.yaml), the two
 # containers of nfs-client-modules (../nfs/client-modules-daemonset.yaml) and
 # the two of chaos-mesh-modules (../chaos-mesh/modules-daemonset.yaml).
@@ -140,10 +154,41 @@ spec:
             - name: run-dbus
               mountPath: /run/dbus
               readOnly: true
+        - name: ceph-secret
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/etc/libvirt-lab/ceph-secret.sh"]
+          securityContext:
+            privileged: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          # No subPath: a subPath mount never receives a Secret update.
+          volumeMounts:
+            - name: scripts
+              mountPath: /etc/libvirt-lab
+              readOnly: true
+            - name: run-libvirt
+              mountPath: /run/libvirt
+            - name: ceph-client-cinder
+              mountPath: /etc/ceph-client-cinder
+              readOnly: true
       volumes:
         - name: scripts
           configMap:
             name: libvirt-lab
+        - name: ceph-client-cinder
+          secret:
+            secretName: ceph-client-cinder
+            optional: true
+            defaultMode: 0400
         - name: run-libvirt
           hostPath:
             path: /run/libvirt

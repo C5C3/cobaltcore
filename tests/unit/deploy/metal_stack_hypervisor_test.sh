@@ -17,10 +17,13 @@
 #   4. The libvirt DaemonSet runs in the host's namespaces, OnDelete, with the
 #      image pinned by its keeper tag and digest and pulled IfNotPresent, the
 #      hostPaths and the mount propagation libvirtd and nova-compute share,
-#      and without a liveness probe.
+#      and without a liveness probe. Its third container, ceph-secret, runs
+#      unprivileged without a capability, has no probe, and mounts the
+#      optional Secret ceph-client-cinder without a subPath.
 #   5. libvirtd.conf and qemu.conf carry every key and value the lab needs.
 #   6. libvirtd.sh starts libvirtd in a host scope, writes both host units and
-#      starts no virtlogd, and the scripts carry their log messages.
+#      starts no virtlogd, ceph-secret.sh passes the key to virsh in a file,
+#      and the scripts carry their log messages.
 #   7. The CA, its Issuer and the three compute CRs carry their fields: the
 #      metadata agent and the pool name no resources, and the pool names the
 #      CPU model Nova's live-migration pre-check accepts; NovaCompute has no
@@ -47,7 +50,7 @@
 #  11. Each chart tag names the commit its image's resolver prints: the hvo
 #      tag hack/ci-resolve-hvo-commit.sh's, the kna tag
 #      hack/ci-resolve-kna-commit.sh's.
-#  12. Both scripts parse, and pass shellcheck when it is on PATH.
+#  12. The three scripts parse, and pass shellcheck when it is on PATH.
 #  13. libvirtd.sh, run against stubs, removes the host units and stops
 #      libvirtd however it ends, starts no virtlogd, stops a libvirtd an
 #      earlier container left in the scope before it starts its own, and
@@ -277,7 +280,7 @@ test_hypervisor_render_objects() {
 test_libvirt_daemonset() {
   echo "Test: the libvirt DaemonSet"
 
-  render "$HYPERVISOR_DIR" 24 || return
+  render "$HYPERVISOR_DIR" 31 || return
 
   local pod='.spec.template.spec'
   assert_eq "the DaemonSet lives in openstack" "openstack" \
@@ -299,30 +302,39 @@ test_libvirt_daemonset() {
     "$(val DaemonSet libvirt '.spec.template.metadata.labels["app.kubernetes.io/part-of"]')"
 
   # The keeper tag <libvirt-package-version>-r<N> of
-  # hack/ci-tag-libvirt-keeper.sh, pinned by digest, on both containers. The
+  # hack/ci-tag-libvirt-keeper.sh, pinned by digest, on all containers. The
   # version shape is the script's version_shape without its anchors.
   local images shape pinned
   shape="$(sed -n "s/^version_shape='^\(.*\)\$'$/\1/p" "$PROJECT_ROOT/hack/ci-tag-libvirt-keeper.sh")"
   pinned="^ghcr\\.io/c5c3/libvirt:${shape}-r[0-9]+@sha256:[0-9a-f]{64}\$"
   images="$(containers '.image')"
-  if [[ -n "$shape" && "$(sed -n 1p <<<"$images")" =~ $pinned && "$(grep -c . <<<"$images")" -eq 2 &&
+  if [[ -n "$shape" && "$(sed -n 1p <<<"$images")" =~ $pinned && "$(grep -c . <<<"$images")" -eq 3 &&
     "$(sort -u <<<"$images" | grep -c .)" -eq 1 ]]; then
-    echo "  PASS: both containers run one ghcr.io/c5c3/libvirt:<keeper tag>@sha256:<digest>"
+    echo "  PASS: all three containers run one ghcr.io/c5c3/libvirt:<keeper tag>@sha256:<digest>"
     PASS=$((PASS + 1))
   else
     echo "  FAIL: the containers do not run one image matching '$pinned':"
     sed 's/^/    /' <<<"$images"
     FAIL=$((FAIL + 1))
   fi
-  assert_eq "both containers pull IfNotPresent" \
-    "$(printf '%s\n' host-prepare=IfNotPresent libvirtd=IfNotPresent)" \
+  assert_eq "all containers pull IfNotPresent" \
+    "$(printf '%s\n' host-prepare=IfNotPresent libvirtd=IfNotPresent ceph-secret=IfNotPresent)" \
     "$(containers '.name + "=" + .imagePullPolicy')"
-  assert_eq "both containers are privileged" \
-    "$(printf '%s\n' host-prepare=true libvirtd=true)" \
+  assert_eq "host-prepare and libvirtd are privileged, ceph-secret is not" \
+    "$(printf '%s\n' host-prepare=true libvirtd=true ceph-secret=false)" \
     "$(containers '.name + "=" + (.securityContext.privileged | tostring)')"
-  assert_eq "both containers run as uid 0" \
-    "$(printf '%s\n' host-prepare=0 libvirtd=0)" \
+  assert_eq "all containers run as uid 0" \
+    "$(printf '%s\n' host-prepare=0 libvirtd=0 ceph-secret=0)" \
     "$(containers '.name + "=" + (.securityContext.runAsUser | tostring)')"
+  # Root for the key file, root-owned with mode 0400, and the socket of the
+  # group 108; nothing else.
+  assert_eq "ceph-secret drops every capability and forbids privilege escalation" \
+    "drop=ALL escalation=false" \
+    "$(containers 'select(.name == "ceph-secret") | "drop=" + (.securityContext.capabilities.drop | join(","))
+      + " escalation=" + (.securityContext.allowPrivilegeEscalation | tostring)')"
+  assert_eq "ceph-secret requests 10m and 16Mi and is limited to 64Mi" "10m 16Mi 64Mi" \
+    "$(containers 'select(.name == "ceph-secret") |
+      .resources.requests.cpu + " " + .resources.requests.memory + " " + .resources.limits.memory')"
   assert_eq "HOST_IP comes from status.hostIP" "status.hostIP" \
     "$(val DaemonSet libvirt "$pod.containers[0].env[] | select(.name == \"HOST_IP\") | .valueFrom.fieldRef.fieldPath")"
 
@@ -346,12 +358,37 @@ test_libvirt_daemonset() {
 
   assert_eq "the init container runs host-prepare.sh" "/bin/bash /etc/libvirt-lab/host-prepare.sh" \
     "$(val DaemonSet libvirt "$pod.initContainers[0].command | join(\" \")")"
-  assert_eq "the main container runs libvirtd.sh" "/bin/bash /etc/libvirt-lab/libvirtd.sh" \
+  assert_eq "the libvirtd container runs libvirtd.sh" "/bin/bash /etc/libvirt-lab/libvirtd.sh" \
     "$(val DaemonSet libvirt "$pod.containers[0].command | join(\" \")")"
   assert_eq "readiness asks libvirtd for its version" "virsh -c qemu:///system version" \
     "$(val DaemonSet libvirt "$pod.containers[0].readinessProbe.exec.command | join(\" \")")"
   assert_eq "no container has a liveness probe" "" \
     "$(containers 'select(has("livenessProbe")) | .name')"
+  # A lab without the Secret keeps its pods Ready.
+  assert_eq "only libvirtd has a readiness probe" "libvirtd" \
+    "$(containers 'select(has("readinessProbe")) | .name')"
+
+  # ceph-secret reads the key from a Secret volume, which the kubelet rewrites
+  # on every change; a subPath mount would never see one.
+  assert_eq "ceph-secret runs ceph-secret.sh" "/bin/bash /etc/libvirt-lab/ceph-secret.sh" \
+    "$(containers 'select(.name == "ceph-secret") | .command | join(" ")')"
+  assert_eq "ceph-secret mounts the scripts and the key read-only, the socket directory, no subPath" \
+    "$(printf '%s\n' '/etc/ceph-client-cinder readOnly=true subPath=false' \
+      '/etc/libvirt-lab readOnly=true subPath=false' '/run/libvirt readOnly=false subPath=false')" \
+    "$(containers 'select(.name == "ceph-secret") | .volumeMounts[] | .mountPath
+      + " readOnly=" + ((.readOnly // false) | tostring) + " subPath=" + (has("subPath") | tostring)' | sort)"
+  local socket_volume key_volume
+  socket_volume="$(containers 'select(.name == "libvirtd") | .volumeMounts[] |
+    select(.mountPath == "/run/libvirt") | .name')"
+  assert_eq "ceph-secret's /run/libvirt is the volume libvirtd opens its socket in" "${socket_volume:-none}" \
+    "$(containers 'select(.name == "ceph-secret") | .volumeMounts[] | select(.mountPath == "/run/libvirt") | .name')"
+  key_volume="$(containers 'select(.name == "ceph-secret") | .volumeMounts[] |
+    select(.mountPath == "/etc/ceph-client-cinder") | .name')"
+  assert_eq "the volume at /etc/ceph-client-cinder is the optional Secret ceph-client-cinder, mode 0400" \
+    "secret=ceph-client-cinder optional=true defaultMode=256" \
+    "$(val DaemonSet libvirt "$pod.volumes[] | select(.name == \"${key_volume:-none}\") |
+      \"secret=\" + .secret.secretName + \" optional=\" + (.secret.optional | tostring)
+      + \" defaultMode=\" + (.secret.defaultMode | tostring)")"
 }
 
 # --- Test 5: libvirtd.conf and qemu.conf ---
@@ -390,11 +427,11 @@ LINES
 
 # --- Test 6: the scripts ---
 test_scripts() {
-  echo "Test: libvirtd.sh and host-prepare.sh"
+  echo "Test: libvirtd.sh, host-prepare.sh and ceph-secret.sh"
 
   if [[ ! -f "$CONFIGMAP_FILE" ]]; then
     echo "  FAIL: $CONFIGMAP_FILE does not exist"
-    FAIL=$((FAIL + 16))
+    FAIL=$((FAIL + 32))
     return
   fi
   local fixed
@@ -416,8 +453,26 @@ echo "libvirtd: waiting for the TLS files kvm-node-agent installs under /etc/pki
 echo "libvirtd: /run/libvirt/libvirt-sock did not appear within 60s"
 echo "host-prepare: cannot load vhost_net from /lib/modules/$(uname -r)"
 echo "host-prepare: /dev/kvm is missing on this node"
+uuid=090e4a3c-6c20-4e74-82dc-1a70382babe8
+key_file=/etc/ceph-client-cinder/userKey
+<secret ephemeral='yes' private='yes'>
+if ! virsh -c qemu:///system "$@" >/dev/null; then
+virsh -c qemu:///system secret-dumpxml "${uuid}" >/dev/null 2>&1
+virsh_or_retry secret-define "${xml_file}" || continue
+virsh_or_retry secret-set-value "${uuid}" --file "${key_file}" || continue
+virsh_or_retry secret-undefine "${uuid}" || continue
+echo "ceph-secret: libvirt secret ${uuid} for ${usage_name} follows the Secret ${secret_ref}"
+echo "ceph-secret: waiting for /run/libvirt/libvirt-sock"
+echo "ceph-secret: defined libvirt secret ${uuid} for ${usage_name}"
+echo "ceph-secret: set the value of libvirt secret ${uuid} from ${secret_ref} (sha256 ${sha})"
+echo "ceph-secret: undefined libvirt secret ${uuid} because ${secret_ref} is gone"
+echo "ceph-secret: waiting for the Secret ${secret_ref} (deployed by WITH_CEPH=true); no libvirt secret is defined"
+echo "ceph-secret: virsh $1 failed; retrying in ${interval}s"
 FIXED
   assert_file_not_contains "libvirt-configmap.yaml starts no virtlogd" "$CONFIGMAP_FILE" '^[^#]*virtlogd'
+  # hostPID shows every command line on the node to every process on it.
+  assert_file_not_contains "ceph-secret.sh passes the key in a file, never on a command line" \
+    "$CONFIGMAP_FILE" '^[^#]*secret-set-value.*--base64'
 }
 
 # --- Test 7: the CA and the compute CRs ---
@@ -696,14 +751,14 @@ test_chart_lockstep() {
 
 # --- Test 12: the scripts parse and pass shellcheck ---
 test_scripts_lint() {
-  echo "Test: host-prepare.sh and libvirtd.sh parse and pass shellcheck"
+  echo "Test: host-prepare.sh, libvirtd.sh and ceph-secret.sh parse and pass shellcheck"
 
-  render "$HYPERVISOR_DIR" 4 || return
+  render "$HYPERVISOR_DIR" 6 || return
 
   local tmp key out
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
-  for key in host-prepare.sh libvirtd.sh; do
+  for key in host-prepare.sh libvirtd.sh ceph-secret.sh; do
     conf_lines "$key" >"$tmp/$key"
     if out="$(bash -n "$tmp/$key" 2>&1)"; then
       echo "  PASS: ${key} parses"
@@ -716,11 +771,11 @@ test_scripts_lint() {
   done
 
   if ! command -v shellcheck >/dev/null 2>&1; then
-    echo "  SKIP: shellcheck not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
+    echo "  SKIP: shellcheck not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
-  for key in host-prepare.sh libvirtd.sh; do
+  for key in host-prepare.sh libvirtd.sh ceph-secret.sh; do
     if out="$(shellcheck --severity=warning "$tmp/$key" 2>&1)"; then
       echo "  PASS: shellcheck reports no warnings in ${key}"
       PASS=$((PASS + 1))
