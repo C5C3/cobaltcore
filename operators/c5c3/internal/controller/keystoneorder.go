@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -146,9 +147,15 @@ func claimOrderChild(obj client.Object, o orderRef) {
 	obj.SetLabels(labels)
 }
 
+// errOrderAdoptRefused marks the error ensureOrderChild returns for a live
+// object of the child's name that the order did not create, so a caller can
+// report the refusal under a reason of its own.
+var errOrderAdoptRefused = errors.New("refusing to adopt pre-existing")
+
 // ensureOrderChild applies a child in the ControlPlane's namespace with
 // Server-Side Apply. A live object of that name the order did not create is
-// refused: the apply would overwrite its spec and the teardown would delete it.
+// refused with errOrderAdoptRefused: the apply would overwrite its spec and the
+// teardown would delete it.
 func ensureOrderChild(
 	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, o orderRef, obj client.Object,
 ) error {
@@ -160,8 +167,8 @@ func ensureOrderChild(
 			obj, client.ObjectKeyFromObject(obj), err)
 	default:
 		if !isOrderChild(live, owner, o) {
-			return fmt.Errorf("refusing to adopt pre-existing %T %s: it was not created by this order",
-				obj, client.ObjectKeyFromObject(obj))
+			return fmt.Errorf("%w %T %s: it was not created by this order",
+				errOrderAdoptRefused, obj, client.ObjectKeyFromObject(obj))
 		}
 	}
 	claimOrderChild(obj, o)
@@ -561,21 +568,32 @@ func orderReferencedByApplicationCredentialsMessage(names []string, namespace, n
 
 // --- watches ---
 
-// orderControlPlanePredicate passes the ControlPlane updates an order reads: a
-// spec change, which moves the generation, a deletion, and a flip of
-// AdminCredentialReady, the one status condition the gates consult. The plane's
-// other status writes, of which a rollout makes many, would wake every order on
-// the management cluster for nothing.
+// orderControlPlanePredicate passes the ControlPlane updates a Keystone order
+// reads: a spec change, which moves the generation, a deletion, and a flip of
+// AdminCredentialReady, the one status condition its gates consult.
 func orderControlPlanePredicate() predicate.Funcs {
-	adminCredentialReady := func(obj client.Object) bool {
-		cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
-		return ok && conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	return orderControlPlanePredicateFor(conditionTypeAdminCredentialReady)
+}
+
+// orderControlPlanePredicateFor passes the ControlPlane updates an order kind
+// reads: a spec change, which moves the generation, a deletion, and a flip of
+// condType, the status condition the kind's gates consult. The plane's other
+// status writes, of which a rollout makes many, would wake every order on the
+// management cluster for nothing.
+func orderControlPlanePredicateFor(condType string) predicate.Funcs {
+	flipped := func(oldObj, newObj client.Object) bool {
+		oldCP, okOld := oldObj.(*c5c3v1alpha1.ControlPlane)
+		newCP, okNew := newObj.(*c5c3v1alpha1.ControlPlane)
+		if !okOld || !okNew {
+			return false
+		}
+		return conditions.AllTrue(oldCP.Status.Conditions, condType) != conditions.AllTrue(newCP.Status.Conditions, condType)
 	}
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
 				!e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp()) ||
-				adminCredentialReady(e.ObjectOld) != adminCredentialReady(e.ObjectNew)
+				flipped(e.ObjectOld, e.ObjectNew)
 		},
 	}
 }
