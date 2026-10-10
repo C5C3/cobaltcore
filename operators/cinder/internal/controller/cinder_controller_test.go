@@ -509,16 +509,17 @@ func (r *recordingFieldIndexer) IndexField(_ context.Context, _ client.Object, f
 	return nil
 }
 
-// The two satellite kinds index under the same field path, so the registration
-// has to be counted per kind rather than per key name: a helper that registered
-// only one of them would leave the other's fan-out listing every CR.
+// The two satellite kinds index under the same field path, and so do the
+// Cinder's Secret names and an RBD backend's key Secret name, so the
+// registration has to be counted per kind rather than per key name: a helper
+// that registered only one of a pair would leave the other's lookup failing.
 func TestRegisterCinderIndexes_RegistersOnePerIndexedKind(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	idx := &recordingFieldIndexer{}
 	g.Expect(registerCinderIndexes(context.Background(), idx)).To(Succeed())
 
-	g.Expect(idx.keys).To(ConsistOf(CinderSecretNameIndexKey,
+	g.Expect(idx.keys).To(ConsistOf(CinderSecretNameIndexKey, CinderBackendSecretNameIndexKey,
 		CinderBackendCinderRefIndexKey, CinderBackupBackendCinderRefIndexKey))
 }
 
