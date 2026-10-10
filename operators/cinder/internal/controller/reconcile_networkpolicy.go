@@ -11,6 +11,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -26,17 +27,28 @@ const (
 	conditionReasonNetworkPolicyNotRequired = networkpolicy.ReasonNetworkPolicyNotRequired
 )
 
+// The Ceph ports the volume services of an RBD backend connect to: the monitor
+// on msgr2 and on msgr1 (a bare monitor address tries 3300 first and then
+// 6789), and the range the OSDs bind their ports in.
+const (
+	cephMonMsgr2Port int32 = 3300
+	cephMonMsgr1Port int32 = 6789
+	cephOSDPortFirst int32 = 6800
+	cephOSDPortLast  int32 = 7300
+)
+
 // reconcileNetworkPolicy ensures the NetworkPolicy for the Cinder pods matches
 // the desired state, via the shared network-policy flow. It keeps only the
 // service-specific parts: the desired policy builder and the backend identity.
 //
-// It takes the broker port and the export hosts because neither is reachable
-// through a label selector: egressPort is the port of the transport URL the
-// messaging step materialised, shareHosts are the NFS exports the backends step
-// projected. Both are zero-valued on the waiting paths of their steps, and the
+// It takes the broker port, the export hosts and the Ceph networks because none
+// of them is reachable through a label selector: egressPort is the port of the
+// transport URL the messaging step materialised, shareHosts are the NFS exports
+// and cephNetworks the networks of the RBD backends the backends step
+// projected. All are zero-valued on the waiting paths of their steps, and the
 // builder then omits the rule they would have opened.
 func (r *CinderReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client,
-	cinder *cinderv1alpha1.Cinder, egressPort int32, shareHosts []string,
+	cinder *cinderv1alpha1.Cinder, egressPort int32, shareHosts, cephNetworks []string,
 ) (ctrl.Result, error) {
 	// buildCinderNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
@@ -46,7 +58,7 @@ func (r *CinderReconciler) reconcileNetworkPolicy(ctx context.Context, children 
 	if cinder.Spec.NetworkPolicy != nil {
 		ingressCount = len(cinder.Spec.NetworkPolicy.Ingress)
 		if ingressCount > 0 {
-			desired = buildCinderNetworkPolicy(cinder, r.OperatorNamespace, egressPort, shareHosts)
+			desired = buildCinderNetworkPolicy(cinder, r.OperatorNamespace, egressPort, shareHosts, cephNetworks)
 		}
 	}
 	return networkpolicy.Reconcile(ctx, children, r.Scheme, cinder, networkpolicy.FlowParams{
@@ -64,15 +76,16 @@ func (r *CinderReconciler) reconcileNetworkPolicy(ctx context.Context, children 
 // buildCinderNetworkPolicy constructs the desired NetworkPolicy for the Cinder
 // pods. It restricts ingress to the API port from the specified sources and
 // auto-derives egress rules for DNS (UDP+TCP 53), the database, the cache, the
-// Keystone endpoint, the Glance and Barbican endpoints, the message bus and the
-// NFS exports. AdditionalEgress rules are appended after the auto-derived rules.
+// Keystone endpoint, the Glance and Barbican endpoints, the message bus, the
+// NFS exports and the Ceph networks the RBD backends name. AdditionalEgress
+// rules are appended after the auto-derived rules.
 //
 // operatorNamespace is the Namespace the operator Pod runs in. When non-empty,
 // an ingress peer selecting that Namespace is appended so the operator's own
 // health check can reach the Cinder API. When empty (namespace unknown) no such
 // peer is added.
 func buildCinderNetworkPolicy(cinder *cinderv1alpha1.Cinder, operatorNamespace string,
-	egressPort int32, shareHosts []string,
+	egressPort int32, shareHosts, cephNetworks []string,
 ) *networkingv1.NetworkPolicy {
 	npSpec := cinder.Spec.NetworkPolicy
 
@@ -104,7 +117,7 @@ func buildCinderNetworkPolicy(cinder *cinderv1alpha1.Cinder, operatorNamespace s
 	}
 
 	// Auto-derive egress rules, then append user-specified additional rules.
-	egressRules := buildAutoEgressRules(cinder, egressPort, shareHosts)
+	egressRules := buildAutoEgressRules(cinder, egressPort, shareHosts, cephNetworks)
 	egressRules = append(egressRules, npSpec.AdditionalEgress...)
 
 	return &networkingv1.NetworkPolicy{
@@ -134,12 +147,12 @@ func buildCinderNetworkPolicy(cinder *cinderv1alpha1.Cinder, operatorNamespace s
 
 // buildAutoEgressRules constructs the auto-derived egress rules in a
 // deterministic order: DNS, database, cache, Keystone, the Glance and Barbican
-// endpoints, the message bus, the NFS exports. The database rule is always
-// emitted (Cinder always has a database); every other rule is emitted only when
-// its input yields a port, which is what keeps a Keystone-free deployment from
-// opening a Keystone port nothing dials.
+// endpoints, the message bus, the NFS exports, the Ceph networks. The database
+// rule is always emitted (Cinder always has a database); every other rule is
+// emitted only when its input yields a port, which is what keeps a Keystone-free
+// deployment from opening a Keystone port nothing dials.
 func buildAutoEgressRules(cinder *cinderv1alpha1.Cinder, egressPort int32,
-	shareHosts []string,
+	shareHosts, cephNetworks []string,
 ) []networkingv1.NetworkPolicyEgressRule {
 	tcp := corev1.ProtocolTCP
 
@@ -202,6 +215,30 @@ func buildAutoEgressRules(cinder *cinderv1alpha1.Cinder, egressPort int32,
 	// backend opens 2049 once; a Cinder with none opens nothing.
 	if rule, ok := networkpolicy.HostPortsEgressRule(shareHosts); ok {
 		rules = append(rules, rule)
+	}
+
+	// Ceph egress: the monitors (msgr2 on 3300, msgr1 on 6789) and the OSD port
+	// range 6800 to 7300 the volume services of the RBD backends connect to.
+	// Unlike every rule above it is not port-only: its peers are the networks
+	// the RBD backends name in spec.rbd.networks (D8 of #1338), so the OSD range
+	// opens towards the Ceph cluster alone. An empty list emits nothing, because
+	// no RBD backend is projected.
+	if len(cephNetworks) > 0 {
+		peers := make([]networkingv1.NetworkPolicyPeer, 0, len(cephNetworks))
+		for _, cidr := range cephNetworks {
+			peers = append(peers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
+		}
+		msgr2 := intstr.FromInt32(cephMonMsgr2Port)
+		msgr1 := intstr.FromInt32(cephMonMsgr1Port)
+		osdFirst := intstr.FromInt32(cephOSDPortFirst)
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To: peers,
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &msgr2},
+				{Protocol: &tcp, Port: &msgr1},
+				{Protocol: &tcp, Port: &osdFirst, EndPort: ptr.To(cephOSDPortLast)},
+			},
+		})
 	}
 
 	return rules

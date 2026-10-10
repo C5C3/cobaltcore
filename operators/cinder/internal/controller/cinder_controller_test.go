@@ -523,6 +523,26 @@ func TestRegisterCinderIndexes_RegistersOnePerIndexedKind(t *testing.T) {
 		CinderBackendCinderRefIndexKey, CinderBackupBackendCinderRefIndexKey))
 }
 
+// The Ceph rule opens the union of the networks the projected RBD backends
+// name, once each and in a stable order, so two backends on one Ceph cluster
+// yield one peer per network and a reordered list does not re-render the policy.
+func TestPipelineState_CephNetworks(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	first := testRBDBackendProjection("rbd-a")
+	first.rbd.networks = []string{"10.244.0.0/16"}
+	second := testRBDBackendProjection("rbd-b")
+	second.rbd.networks = []string{"10.128.0.0/22", "10.244.0.0/16"}
+	state := &pipelineState{backends: []backendProjection{first, testBackendProjection("nfs"), second}}
+	g.Expect(state.cephNetworks()).To(Equal([]string{"10.128.0.0/22", "10.244.0.0/16"}))
+	g.Expect(second.rbd.networks).To(Equal([]string{"10.128.0.0/22", "10.244.0.0/16"}),
+		"the union is built on a copy, never on a backend's own list")
+
+	nfsOnly := &pipelineState{backends: []backendProjection{testBackendProjection("nfs")}}
+	g.Expect(nfsOnly.cephNetworks()).To(BeNil())
+	g.Expect((&pipelineState{}).cephNetworks()).To(BeNil())
+}
+
 // TestSubConditionTypes_PinsTheAggregatedVocabulary keeps the Ready contract
 // deliberate: every entry is a condition some sub-reconciler sets, and
 // ExtraConfigHealthy stays out because a user-owned overlay must not depool an
