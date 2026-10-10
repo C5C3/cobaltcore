@@ -29,6 +29,15 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 # libvirt-clients brings virsh and virt-admin (the TLS reload).
 # kmod is for loading vhost_net from the host's module tree.
 # dmidecode is what libvirt reads the host's SMBIOS data with.
+# qemu-block-extra carries QEMU's rbd block module block-rbd.so under
+# /usr/lib/<multiarch>/qemu/. It depends on librbd1 and librados2, 19.2.3 on
+# noble, which decode aes keys and not aes256k (D7 of #1338). The package also
+# ships the curl, iscsi, nfs and ssh modules. QEMU would load one for a disk
+# or a backing file that names such a URL and connect to it from the node's
+# address. Nothing here uses them, so the install step deletes the four .so
+# files. QEMU's NBD client is compiled into qemu-system-x86_64 and qemu-img, so
+# a disk or a backing file that names an NBD server still makes QEMU connect to
+# it. Nova rejects a downloaded Glance image that has a backing file.
 # iproute2 brings ip, a Recommends of libvirt-daemon-system that
 # --no-install-recommends drops.
 # systemd comes in as a dependency and brings systemd-run.
@@ -50,9 +59,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libvirt-clients \
     libvirt-daemon-system \
     ovmf \
+    qemu-block-extra \
     qemu-system-x86 \
     qemu-utils \
-    && rm -f /etc/libvirt/qemu/networks/autostart/default.xml
+    && rm -f /etc/libvirt/qemu/networks/autostart/default.xml \
+    && rm -f /usr/lib/*-linux-gnu/qemu/block-curl.so /usr/lib/*-linux-gnu/qemu/block-iscsi.so \
+        /usr/lib/*-linux-gnu/qemu/block-nfs.so /usr/lib/*-linux-gnu/qemu/block-ssh.so
 
 # DEVIATION from the original build-pipeline design:
 # This image keeps root. It has no USER instruction and creates no generic
