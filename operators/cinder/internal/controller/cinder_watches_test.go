@@ -43,6 +43,8 @@ func mapperClient(objs ...client.Object) client.Client {
 	return cinderFakeClientBuilder(objs...).
 		WithIndex(&cinderv1alpha1.Cinder{}, CinderSecretNameIndexKey, cinderSecretNameExtractor).
 		WithIndex(&cinderv1alpha1.CinderBackend{}, CinderBackendSecretNameIndexKey, cinderBackendSecretNameExtractor).
+		WithIndex(&cinderv1alpha1.CinderBackupBackend{}, CinderBackupBackendSecretNameIndexKey,
+			cinderBackupBackendSecretNameExtractor).
 		Build()
 }
 
@@ -140,6 +142,61 @@ func TestSecretToCinderWithBackendsMapper(t *testing.T) {
 
 	// The leg resolves within the Secret's namespace only.
 	elsewhere := namedSecret("rbd1-key")
+	elsewhere.Namespace = "other"
+	g.Expect(mapper(context.Background(), elsewhere)).To(BeEmpty())
+}
+
+func TestCinderBackupBackendSecretNameExtractor(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// An RBD backup target references its key Secret.
+	g.Expect(cinderBackupBackendSecretNameExtractor(testRBDCinderBackupBackend("rbdbk"))).
+		To(Equal([]string{"rbdbk-key"}))
+
+	// An RBD backup target with an empty Secret name indexes nothing rather
+	// than "".
+	unnamed := testRBDCinderBackupBackend("rbdbk")
+	unnamed.Spec.RBD.KeySecretRef.Name = ""
+	g.Expect(cinderBackupBackendSecretNameExtractor(unnamed)).To(BeNil())
+
+	// A type-RBD target written past admission without its block.
+	blockless := testRBDCinderBackupBackend("rbdbk")
+	blockless.Spec.RBD = nil
+	g.Expect(cinderBackupBackendSecretNameExtractor(blockless)).To(BeNil())
+
+	// An NFS target references no Secret.
+	g.Expect(cinderBackupBackendSecretNameExtractor(testCinderBackupBackend("backups"))).To(BeNil())
+
+	// controller-runtime never calls the extractor with another type; a nil
+	// return is safer than a panic if it ever does.
+	g.Expect(cinderBackupBackendSecretNameExtractor(testRBDCinderBackend("rbd1"))).To(BeNil())
+}
+
+// The backup target leg: the key Secret of an RBD backup target wakes its
+// parent, whose re-render picks the rotated key up. All legs are unioned, so a
+// Secret a volume backend and the backup target of one Cinder both reference
+// wakes the parent once.
+func TestSecretToCinderWithSatellitesMapper(t *testing.T) {
+	g := NewGomegaWithT(t)
+	sharedBackend := testRBDCinderBackend("rbd1")
+	sharedBackend.Spec.RBD.KeySecretRef.Name = "ceph-shared"
+	sharedTarget := testRBDCinderBackupBackend("rbdbk2")
+	sharedTarget.Spec.RBD.KeySecretRef.Name = "ceph-shared"
+	c := mapperClient(validCinder(), testRBDCinderBackupBackend("rbdbk"), sharedBackend, sharedTarget,
+		testCinderBackupBackend("backups"))
+	mapper := secretToCinderWithSatellitesMapper(c)
+
+	g.Expect(mapper(context.Background(), namedSecret("rbdbk-key"))).To(ConsistOf(cinderRequest))
+	g.Expect(mapper(context.Background(), namedSecret("ceph-shared"))).To(ConsistOf(cinderRequest))
+	g.Expect(mapper(context.Background(), namedSecret("unrelated"))).To(BeEmpty())
+
+	// The volume backend leg still answers through the wider mapper.
+	withBackend := mapperClient(validCinder(), testRBDCinderBackend("rbd1"))
+	g.Expect(secretToCinderWithSatellitesMapper(withBackend)(context.Background(), namedSecret("rbd1-key"))).
+		To(ConsistOf(cinderRequest))
+
+	// The leg resolves within the Secret's namespace only.
+	elsewhere := namedSecret("rbdbk-key")
 	elsewhere.Namespace = "other"
 	g.Expect(mapper(context.Background(), elsewhere)).To(BeEmpty())
 }

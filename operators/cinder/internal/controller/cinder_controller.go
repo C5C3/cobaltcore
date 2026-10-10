@@ -193,10 +193,11 @@ func markConfigFailed(cinder *cinderv1alpha1.Cinder, err error) {
 	})
 }
 
-// registerCinderIndexes registers the four field indexers this operator relies
-// on: the Cinder Secret-name union and the CinderBackend key Secret name the
-// Secret watch resolves through, and the two satellite parent references the
-// projections list their attached CinderBackends and CinderBackupBackends by. It
+// registerCinderIndexes registers the five field indexers this operator relies
+// on: the Cinder Secret-name union and the key Secret names of the
+// CinderBackends and CinderBackupBackends the Secret watch resolves through,
+// and the two satellite parent references the projections list their attached
+// CinderBackends and CinderBackupBackends by. It
 // is the single registration site for the operator: main.go and the envtest
 // helper set the Cinder reconciler up before the two satellite ones, so all
 // three controllers find the indexes in place.
@@ -207,6 +208,10 @@ func registerCinderIndexes(ctx context.Context, indexer client.FieldIndexer) err
 	}
 	if err := watch.RegisterSecretNameIndex(ctx, indexer, &cinderv1alpha1.CinderBackend{},
 		CinderBackendSecretNameIndexKey, cinderBackendSecretNameExtractor); err != nil {
+		return err
+	}
+	if err := watch.RegisterSecretNameIndex(ctx, indexer, &cinderv1alpha1.CinderBackupBackend{},
+		CinderBackupBackendSecretNameIndexKey, cinderBackupBackendSecretNameExtractor); err != nil {
 		return err
 	}
 	if err := watch.RegisterParentRefIndex(ctx, indexer, &cinderv1alpha1.CinderBackend{},
@@ -852,11 +857,11 @@ func (r *CinderReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontro
 	}
 
 	// Watch Secrets and map to the Cinder CRs that reference them by name or own
-	// them, or whose CinderBackends reference them (an RBD key Secret). ESO-managed
-	// Secrets are owned by the ExternalSecret controller, not the Cinder CR, so
-	// EnqueueRequestForOwner would never match them.
+	// them, or whose CinderBackends or CinderBackupBackend reference them (an RBD
+	// key Secret). ESO-managed Secrets are owned by the ExternalSecret controller,
+	// not the Cinder CR, so EnqueueRequestForOwner would never match them.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
-		secretToCinderWithBackendsMapper(local.GetClient()))
+		secretToCinderWithSatellitesMapper(local.GetClient()))
 	if err != nil {
 		return err
 	}

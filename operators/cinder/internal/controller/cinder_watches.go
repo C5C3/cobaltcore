@@ -81,6 +81,26 @@ func cinderBackendSecretNameExtractor(obj client.Object) []string {
 	return []string{backend.Spec.RBD.KeySecretRef.Name}
 }
 
+// CinderBackupBackendSecretNameIndexKey is the field-indexer key under which
+// CinderBackupBackend CRs are indexed by their referenced key Secret name
+// (spec.rbd.keySecretRef.name). Used by secretToCinderWithSatellitesMapper so a
+// rotated backup key re-renders the backup target's projection through its
+// parent Cinder.
+// #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
+const CinderBackupBackendSecretNameIndexKey = "spec.secretRefs.name"
+
+// cinderBackupBackendSecretNameExtractor returns the key Secret name an RBD
+// CinderBackupBackend references, or nil for a wrong-type object, an NFS
+// target, a nil rbd block or an empty name.
+func cinderBackupBackendSecretNameExtractor(obj client.Object) []string {
+	backupBackend, ok := obj.(*cinderv1alpha1.CinderBackupBackend)
+	if !ok || backupBackend.Spec.Type != cinderv1alpha1.CinderBackupBackendTypeRBD ||
+		backupBackend.Spec.RBD == nil || backupBackend.Spec.RBD.KeySecretRef.Name == "" {
+		return nil
+	}
+	return []string{backupBackend.Spec.RBD.KeySecretRef.Name}
+}
+
 // cinderBackendParentName returns the name of the Cinder a CinderBackend
 // attaches to (spec.cinderRef.name), or "" for an object of another type.
 func cinderBackendParentName(o client.Object) string {
@@ -109,7 +129,8 @@ func cinderBackupBackendParentName(o client.Object) string {
 // db-connection and transport-url Secrets, and the per-backend projections). It
 // binds the shared watch.SecretToOwnersMapper to the Cinder types; the
 // group-only owner-ref match and the cached staleness Get live there.
-// secretToCinderWithBackendsMapper adds the satellite leg.
+// secretToCinderWithBackendsMapper and secretToCinderWithSatellitesMapper add
+// the satellite legs.
 func secretToCinderMapper(c client.Reader) handler.MapFunc {
 	return watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
 		IndexKey:   CinderSecretNameIndexKey,
@@ -126,8 +147,7 @@ func secretToCinderMapper(c client.Reader) handler.MapFunc {
 // backend's parent Cinder (spec.cinderRef.name), so a rotated key re-renders the
 // backend's Secret and rolls its volume service. It binds the shared
 // watch.SecretToParentsViaSatellitesMapper to the Cinder and CinderBackend types;
-// the request union and the log-and-continue contract live there. An NFS backup
-// target references no Secret, so CinderBackupBackends have no leg.
+// the request union and the log-and-continue contract live there.
 func secretToCinderWithBackendsMapper(c client.Reader) handler.MapFunc {
 	return watch.SecretToParentsViaSatellitesMapper(
 		secretToCinderMapper(c), c,
@@ -135,6 +155,24 @@ func secretToCinderWithBackendsMapper(c client.Reader) handler.MapFunc {
 		CinderBackendSecretNameIndexKey,
 		"listing CinderBackends for Secret watch",
 		cinderBackendParentName,
+	)
+}
+
+// secretToCinderWithSatellitesMapper extends secretToCinderWithBackendsMapper
+// with the backup target leg: a Secret an RBD CinderBackupBackend references
+// (its key Secret, resolved via the CinderBackupBackendSecretNameIndexKey field
+// indexer) enqueues the backup target's parent Cinder, so a rotated backup key
+// re-renders the target's Secret and rolls the backup service. The legs are
+// unioned, so a Secret a volume backend and the backup target of one Cinder
+// both reference yields one request. It is the mapper the Cinder's Secret watch
+// registers.
+func secretToCinderWithSatellitesMapper(c client.Reader) handler.MapFunc {
+	return watch.SecretToParentsViaSatellitesMapper(
+		secretToCinderWithBackendsMapper(c), c,
+		func() client.ObjectList { return &cinderv1alpha1.CinderBackupBackendList{} },
+		CinderBackupBackendSecretNameIndexKey,
+		"listing CinderBackupBackends for Secret watch",
+		cinderBackupBackendParentName,
 	)
 }
 
