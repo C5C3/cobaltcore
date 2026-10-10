@@ -7,6 +7,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,6 +28,7 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/satellite"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
@@ -45,6 +48,11 @@ const (
 	// still reported, because the Cinder-side projection gates on this very
 	// condition and an absent one would read as "not ready yet".
 	conditionReasonCredentialsNotRequired = "CredentialsNotRequired"
+	// conditionReasonWaitingForCredentials and conditionReasonCredentialsAvailable
+	// are the two outcomes of an RBD backend's gate on the userKey of its key
+	// Secret.
+	conditionReasonWaitingForCredentials = "WaitingForCredentials"
+	conditionReasonCredentialsAvailable  = "CredentialsAvailable"
 	// conditionReasonWaitingForParent is set while the referenced Cinder does
 	// not exist: without it the cluster this satellite belongs on is unknown.
 	conditionReasonWaitingForParent = "WaitingForParent"
@@ -56,6 +64,27 @@ const (
 	// held by the service-remove finalizer.
 	conditionReasonDetaching = "Detaching"
 )
+
+// cephxKeyPattern is the shape of a cephx key as "ceph auth get-key" prints it:
+// the base64 encoding of the key blob. cephxKeyFault refuses anything else, so a
+// Secret that carries a keyring file or a stray value under userKey reads as
+// waiting rather than reaching the projected keyring.
+var cephxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)
+
+// cephxKeyFault returns why the trimmed userKey of the key Secret secret is not
+// a cephx key, or "" when it is one. The message never repeats the value. Both
+// the gate and the parent's render call it: a rotation reaches the render
+// through the parent's Secret watch without re-running the gate.
+func cephxKeyFault(secret, key string) string {
+	switch {
+	case key == "":
+		return fmt.Sprintf("Secret %q carries an empty %s", secret, cinderv1alpha1.RBDKeySecretDataKey)
+	case !cephxKeyPattern.MatchString(key):
+		return fmt.Sprintf("Secret %q carries a %s that is not a cephx key (base64 expected)",
+			secret, cinderv1alpha1.RBDKeySecretDataKey)
+	}
+	return ""
+}
 
 // eventReasonServiceRemoveSkipped is recorded on a deleting CinderBackend whose
 // parent Cinder is already gone: the service registry lives in that Cinder's
@@ -83,7 +112,8 @@ var cinderBackendSkeleton = commonreconcile.Skeleton[*cinderv1alpha1.CinderBacke
 // finalizer a detaching backend is held by. It is the SINGLE writer of
 // CinderBackend status; the Cinder-side sub-reconciler only reads it (a
 // credential-ready backend gates the projection) and writes an aggregated
-// condition onto the Cinder CR instead.
+// condition onto the Cinder CR instead. CredentialsReady is True by construction
+// for an NFS backend and follows the RBD key Secret's userKey for an RBD one.
 //
 // The finalizer is added here and removed by the Cinder-side volume step: the
 // host identity to unregister lives in the parent's database, and only a Job
@@ -116,9 +146,9 @@ type CinderBackendReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile drives one CinderBackend CR: hold it with the service-remove
-// finalizer, report that its export needs no credentials, observe whether the
-// parent's volume service mounts this backend's rendered section, and persist
-// the aggregated status.
+// finalizer, gate on its credentials (none for an NFS export, the key Secret for
+// an RBD pool), observe whether the parent's volume service mounts this
+// backend's rendered section, and persist the aggregated status.
 func (r *CinderBackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var backend cinderv1alpha1.CinderBackend
 	if err := r.Get(ctx, req.NamespacedName, &backend); err != nil {
@@ -202,15 +232,28 @@ func (r *CinderBackendReconciler) reconcileDeleting(ctx context.Context, backend
 }
 
 // reconcileNormal reports the credential gate and observes the config
-// projection. Both steps read objects that belong to the parent Cinder, so it
-// opens by resolving that parent's target cluster into the children client.
+// projection. It short-circuits before the projection observation while the
+// credentials are not ready: the parent never projects a backend that is not
+// credential-ready, so there is nothing to observe yet. Both steps read objects
+// that belong to the parent Cinder, so it opens by resolving that parent's
+// target cluster into the children client.
 func (r *CinderBackendReconciler) reconcileNormal(ctx context.Context, backend *cinderv1alpha1.CinderBackend) (ctrl.Result, error) {
 	children, parent, result, err := r.resolveChildren(ctx, backend)
 	if children == nil {
 		return result, err
 	}
 
-	r.gateCredentials(backend)
+	ready, err := r.gateCredentials(ctx, children, backend)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !ready {
+		// The key Secret is absent, misses its key or carries an unusable one. The
+		// parent's Secret watch re-renders on rotation, but a genuinely absent
+		// Secret emits no event, so poll as the liveness backstop; the Cinder
+		// watch wakes this controller once the projection lands.
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
 	return r.observeConfigProjected(ctx, children, parent, backend)
 }
 
@@ -258,15 +301,77 @@ func (r *CinderBackendReconciler) resolveChildren(ctx context.Context, backend *
 	return children, &parent, result, err
 }
 
-// gateCredentials reports CredentialsReady for an NFS export, which is ready by
-// construction: the mount authenticates with the pod's own identity, so there is
-// no Secret to resolve and nothing that could be missing. NFS is the only
-// backend type this API admits; a type that carried credentials would gate on
-// them here instead.
-func (r *CinderBackendReconciler) gateCredentials(backend *cinderv1alpha1.CinderBackend) {
+// gateCredentials maintains CredentialsReady by backend type and reports
+// whether the backend is credential-ready.
+//
+// An NFS export is ready by construction: the mount authenticates with the
+// pod's own identity, so there is no Secret to resolve and nothing that could
+// be missing. An RBD backend is ready once the Secret spec.rbd.keySecretRef
+// names carries a cephx key under userKey (gateRBDKey).
+func (r *CinderBackendReconciler) gateCredentials(ctx context.Context, children client.Client,
+	backend *cinderv1alpha1.CinderBackend,
+) (bool, error) {
+	switch backend.Spec.Type {
+	case cinderv1alpha1.CinderBackendTypeNFS:
+		r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionTrue,
+			conditionReasonCredentialsNotRequired,
+			"the NFS export is mounted with the pod's own identity, so no credentials are required")
+		return true, nil
+	case cinderv1alpha1.CinderBackendTypeRBD:
+		return r.gateRBDKey(ctx, children, backend)
+	default:
+		r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			conditionReasonWaitingForCredentials,
+			fmt.Sprintf("spec.type %s is not a type this operator renders", backend.Spec.Type))
+		return false, nil
+	}
+}
+
+// gateRBDKey is the RBD half of gateCredentials. The materialized-Secret-then-
+// ExternalSecret ladder is secrets.GateCredential's, which sets the False
+// condition with a precise message; the value is then read and checked for
+// shape, because a present but empty or malformed key would be copied into the
+// projected keyring and fail every connection the driver opens. A client error
+// is propagated so the workqueue backs off without demoting a standing True.
+//
+// The Secret is read on the children cluster: the volume pods mount the
+// projected keyring where they run.
+func (r *CinderBackendReconciler) gateRBDKey(ctx context.Context, children client.Client,
+	backend *cinderv1alpha1.CinderBackend,
+) (bool, error) {
+	if backend.Spec.RBD == nil {
+		// The schema union rule guarantees spec.rbd for a type-RBD backend; a
+		// bypassed admission leaves nothing to gate on.
+		r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			conditionReasonWaitingForCredentials, "spec.rbd is not set; no RBD key to resolve")
+		return false, nil
+	}
+
+	key := client.ObjectKey{Namespace: backend.Namespace, Name: backend.Spec.RBD.KeySecretRef.Name}
+	ready, err := secrets.GateCredential(ctx, children, secrets.CredentialGateSpec{
+		Key:          key,
+		Reason:       conditionReasonWaitingForCredentials,
+		Noun:         "RBD key",
+		WaitingMsg:   "waiting for the RBD key Secret to carry the " + cinderv1alpha1.RBDKeySecretDataKey + " data key",
+		ExpectedKeys: []string{cinderv1alpha1.RBDKeySecretDataKey},
+	}, &backend.Status.Conditions, backend.Generation, conditionTypeCredentialsReady)
+	if err != nil || !ready {
+		return false, err
+	}
+
+	value, err := secrets.GetSecretValue(ctx, children, key, cinderv1alpha1.RBDKeySecretDataKey)
+	if err != nil {
+		return false, fmt.Errorf("reading the RBD key of backend %q: %w", backend.Name, err)
+	}
+	if fault := cephxKeyFault(key.Name, strings.TrimSpace(value)); fault != "" {
+		r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			conditionReasonWaitingForCredentials, fault)
+		return false, nil
+	}
 	r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionTrue,
-		conditionReasonCredentialsNotRequired,
-		"the NFS export is mounted with the pod's own identity, so no credentials are required")
+		conditionReasonCredentialsAvailable,
+		fmt.Sprintf("RBD key Secret %q carries the %s data key", key.Name, cinderv1alpha1.RBDKeySecretDataKey))
+	return true, nil
 }
 
 // observeConfigProjected derives the ConfigProjected condition from the single
@@ -362,7 +467,11 @@ func (r *CinderBackendReconciler) setupWithOptions(mgr ctrl.Manager, opts crcont
 		// Watch the referenced Cinder WITHOUT a generation predicate: Cinder
 		// status flips (the backend section landing in the volume Deployment) are
 		// exactly the wake signal the ConfigProjected gate waits on. No own Secret
-		// watch: an NFS backend references none.
+		// watch: an NFS backend references none, and the key Secret of an RBD
+		// backend reaches its parent Cinder through the satellite leg of that
+		// controller's Secret watch, whose re-render and status flip arrive here
+		// through this Cinder watch. A key Secret that appears after a False gate
+		// is seen by the RequeueSecretPolling poll.
 		Watches(&cinderv1alpha1.Cinder{}, handler.EnqueueRequestsFromMapFunc(
 			cinderToCinderBackendsMapper(mgr.GetClient()),
 		)).

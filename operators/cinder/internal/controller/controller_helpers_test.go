@@ -262,6 +262,52 @@ func credentialReadyBackend(name string) *cinderv1alpha1.CinderBackend {
 	return backend
 }
 
+// testRBDKey is a syntactically valid cephx key no Ceph cluster knows.
+const testRBDKey = "AQDHlkVoYx3QKRAAk9m6j4QzG8w2yK0hfr9c6g=="
+
+// testRBDCinderBackend returns a minimal RBD CinderBackend attached to the shared
+// Cinder fixture, carrying the cluster name admission materializes. Its key
+// Secret is "<name>-key" (rbdKeySecret).
+func testRBDCinderBackend(name string) *cinderv1alpha1.CinderBackend {
+	return &cinderv1alpha1.CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  testNamespace,
+			UID:        types.UID("backend-uid-" + name),
+			Generation: 1,
+		},
+		Spec: cinderv1alpha1.CinderBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: testCinderName},
+			Type:      cinderv1alpha1.CinderBackendTypeRBD,
+			RBD: &cinderv1alpha1.RBDBackendSpec{
+				Pool:         "volumes",
+				User:         "cinder",
+				Monitors:     []string{"ceph-mon.openstack.svc.cluster.local"},
+				Networks:     []string{"10.244.0.0/16"},
+				ClusterName:  cinderv1alpha1.DefaultRBDClusterName,
+				KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: name + "-key"},
+			},
+		},
+	}
+}
+
+// credentialReadyRBDBackend builds an RBD CinderBackend whose CredentialsReady
+// condition is already True.
+func credentialReadyRBDBackend(name string) *cinderv1alpha1.CinderBackend {
+	backend := testRBDCinderBackend(name)
+	backend.Status.Conditions = readyCredentials()
+	return backend
+}
+
+// rbdKeySecret returns the key Secret of the RBD backend name, carrying key
+// under the userKey data key.
+func rbdKeySecret(name, key string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-key", Namespace: testNamespace},
+		Data:       map[string][]byte{cinderv1alpha1.RBDKeySecretDataKey: []byte(key)},
+	}
+}
+
 // testCinderBackupBackend returns a minimal NFS CinderBackupBackend attached to
 // the shared Cinder fixture, carrying the compression and mount options
 // admission materializes. It leaves fileSize unset so the fixture exercises the
