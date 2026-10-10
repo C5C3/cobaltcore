@@ -69,7 +69,10 @@ negative patterns exclude `tests/container-images/verify_build_images_workflow.s
 `verify_spdx_headers.sh`: those four belong to
 [Verify Container Images](#verify-container-images-workflow), which runs them, while
 this workflow never does. GitHub evaluates the list in order, so each negation follows
-the positive `tests/container-images/**` entry it carves out of.
+the positive `tests/container-images/**` entry it carves out of. Both lists also name
+`tests/lib/ceph_bindings.sh`, the helper the glance, cinder and nova-compute verify
+scripts source, and so do the `svc_glance`, `svc_cinder` and `svc_nova` filters of the
+[`changes`](#changes) job.
 
 > **Fork PRs are not supported.** Base images must be pushed to GHCR on every run
 > (because downstream `docker-image://` URIs require registry availability), but fork
