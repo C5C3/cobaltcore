@@ -157,9 +157,16 @@ patches:
                   limits:
                     memory: 128Mi
 
-  # The RabbitMQ cluster operator is placed only: its installer already sizes
-  # the manager (requests and limits 200m / 500Mi), and an add on
-  # containers/0/resources would replace that block whole.
+  # The RabbitMQ cluster operator: the placement plus the two request
+  # operations the base release
+  # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml) already
+  # carries. spec.patches is a list, and the merge patch replaces the base's
+  # list whole (merge rule 1 in
+  # docs/reference/infrastructure/infrastructure-manifests.md), so an entry
+  # that named the placement alone would drop the base's 100m / 128Mi
+  # requests and put the installer's 200m / 500Mi back. The limits stay the
+  # installer's: an add on containers/0/resources would replace that block
+  # whole, an add on one member of requests sets that member alone.
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1
@@ -191,6 +198,12 @@ patches:
               - op: add
                 path: /spec/template/spec/priorityClassName
                 value: cobaltcore-platform
+              - op: add
+                path: /spec/template/spec/containers/0/resources/requests/cpu
+                value: 100m
+              - op: add
+                path: /spec/template/spec/containers/0/resources/requests/memory
+                value: 128Mi
 
   # The FluxInstance: spec.kustomize.patches (flux-operator v0.60.0, the
   # version hack/deploy-infra.sh installs) patches the Flux controllers the

@@ -26,7 +26,9 @@
 #   4. rabbitmq-cluster-operator in full, not only its CRD: the ControlPlane's
 #      shared message bus is projected into the ControlPlane's own namespace on
 #      this cluster, so the controller that turns a RabbitmqCluster into running
-#      RabbitMQ pods has to run here as well.
+#      RabbitMQ pods has to run here as well. The messaging-topology-operator
+#      runs beside it: RabbitMQVhost orders are provisioned through its Vhost,
+#      User and Permission kinds in the ControlPlane's namespace on this cluster.
 #
 # What it does NOT install: the operators themselves. Run
 # hack/ci-deploy-operator.sh for each of them afterwards, e.g.
@@ -247,8 +249,9 @@ main() {
   wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
   log "flux-operator installed and FluxInstance/flux is Ready."
 
-  # Step 3: Apply the pinned source/release pairs plus the rabbitmq-cluster-operator
-  # source/Kustomization pair, then wait for them. The files are applied one by
+  # Step 3: Apply the pinned source/release pairs plus the source/Kustomization
+  # pairs of the rabbitmq-cluster-operator and the messaging-topology-operator,
+  # then wait for them. The files are applied one by
   # one rather than through a kustomization: kustomize refuses `../` resource
   # references under its default load restrictor, so an overlay for this subset
   # would have to duplicate the manifests.
@@ -261,6 +264,8 @@ main() {
   done
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/sources/messaging-topology-operator.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/releases/messaging-topology-operator.yaml"
   reconcile_helmrepository_sources
 
   # cert-manager first and on its own: hack/ci-deploy-operator.sh depends on its
@@ -293,18 +298,28 @@ main() {
   fi
   log "rabbitmq-cluster-operator Kustomization is Ready."
 
-  # The Flux `images:` override in
-  # deploy/flux-system/releases/rabbitmq-cluster-operator.yaml keys on the image
+  # The messaging-topology-operator Kustomization depends on the Cluster
+  # Operator's, so its wait follows it.
+  log "Phase 3: Waiting for the messaging-topology-operator Kustomization..."
+  if ! kubectl wait kustomization/messaging-topology-operator -n flux-system \
+    --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
+    log "ERROR: kustomization/messaging-topology-operator did not become Ready within ${HELMRELEASE_TIMEOUT}s."
+    kubectl get kustomization -n flux-system 2>/dev/null || true
+    exit 1
+  fi
+  log "messaging-topology-operator Kustomization is Ready."
+
+  # The Flux `images:` overrides of the two RabbitMQ operators key on the image
   # NAME upstream's ./config/installation resolves to, and kustomize silently
-  # NO-OPS when no resource matches that name. If upstream re-points the base at
-  # a different image (it already moved once), the override matches nothing,
-  # kustomize reports no error, and the cluster runs the mutable `latest` tag for
-  # a controller holding cluster-wide RBAC over RabbitmqClusters, StatefulSets
-  # and Secrets. Nothing in the release file's diff shows that; the rendered
-  # Deployment does, so assert the digest pin on the object that actually ran.
-  # rabbitmq-system is the operator's own namespace (the upstream base declares
-  # it and namespaces every resource into it), so every image running there is
-  # one this override has to have reached.
+  # NO-OPS when no resource matches that name. If upstream re-points a base at a
+  # different image (the Cluster Operator already moved once), the override
+  # matches nothing, kustomize reports no error, and the cluster runs the mutable
+  # `latest` tag for a controller holding cluster-wide RBAC over
+  # RabbitmqClusters, StatefulSets and Secrets. Nothing in the release file's
+  # diff shows that; the rendered Deployment does, so assert the digest pin on
+  # the object that actually ran. rabbitmq-system is the namespace both upstream
+  # bases declare and namespace every resource into, so every image running
+  # there is one that one of the two overrides has to have reached.
   local rabbit_image rabbit_image_seen=false
   for rabbit_image in $(kubectl get deployment -n rabbitmq-system \
     -o 'jsonpath={.items[*].spec.template.spec.containers[*].image}'); do
@@ -312,14 +327,15 @@ main() {
     if [[ "${rabbit_image}" != *"@sha256:"* ]]; then
       log "ERROR: a rabbitmq-system image is not digest-pinned: ${rabbit_image}"
       log "       The spec.images override in deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-      log "       no longer matches the image name upstream's ./config/installation resolves to."
+      log "       or deploy/flux-system/releases/messaging-topology-operator.yaml no longer matches"
+      log "       the image name upstream's ./config/installation resolves to."
       exit 1
     fi
-    log "rabbitmq-cluster-operator image is digest-pinned: ${rabbit_image}"
+    log "rabbitmq-system image is digest-pinned: ${rabbit_image}"
   done
   if [[ "${rabbit_image_seen}" != "true" ]]; then
     log "ERROR: no Deployment found in namespace rabbitmq-system; the digest pin"
-    log "       of the rabbitmq-cluster-operator image could not be verified."
+    log "       of the RabbitMQ operator images could not be verified."
     exit 1
   fi
 

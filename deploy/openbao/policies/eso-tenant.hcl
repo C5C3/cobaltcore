@@ -146,3 +146,19 @@ path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEM
 path "kv-v2/metadata/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/service-accounts/+" {
   capabilities = ["create", "update", "read"]
 }
+
+# --- RabbitMQVhost credentials backup ---
+# The backup PushSecret of a RabbitMQVhost order lives in the ControlPlane's
+# namespace and pushes the order's broker credentials to
+# openstack/rabbitmq/{ns}/<name>-<hash>-vhost/credentials through that
+# namespace's own store. It runs DeletionPolicy=Delete, so the data path carries
+# delete and the metadata path keeps the asymmetry of the service-account pair
+# above (create/update/read, no delete). The {ns}/+ glob ends at the literal
+# /credentials leaf, so nothing else under openstack/rabbitmq is writable.
+path "kv-v2/data/openstack/rabbitmq/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/credentials" {
+  capabilities = ["create", "update", "read", "delete"]
+}
+
+path "kv-v2/metadata/openstack/rabbitmq/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/credentials" {
+  capabilities = ["create", "update", "read"]
+}

@@ -28,9 +28,10 @@ deploy/
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
     │   ├── k-orc.yaml                    K-ORC GitRepository (commit pinned)
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator GitRepository (tag + commit pinned)
+    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator GitRepository (tag + commit pinned)
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
     │   └── garage-operator.yaml          Garage Operator OCI chart registry
-    ├── releases/                         HelmRelease CRs and two Flux Kustomizations
+    ├── releases/                         HelmRelease CRs and three Flux Kustomizations
     │   ├── cert-manager.yaml             cert-manager
     │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
     │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
@@ -51,6 +52,7 @@ deploy/
     │   ├── nova-operator.yaml            Nova Operator (from c5c3-charts)
     │   ├── k-orc.yaml                    K-ORC (Flux Kustomization over config/default)
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
+    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator (Flux Kustomization over config/installation)
     │   └── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
     └── infrastructure/                   CRD-dependent infrastructure resources
         ├── kustomization.yaml            Infrastructure kustomization, also lists ../../eso
@@ -101,7 +103,7 @@ created.
 | `openbao-operator-system` | openbao-operator controller. It stays out of `shared-services` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
 | `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
-| `rabbitmq-system` | RabbitMQ Cluster Operator controller and its webhook certificates. A `RabbitmqCluster` a ControlPlane declares lives in that ControlPlane's own namespace, not here |
+| `rabbitmq-system` | RabbitMQ Cluster Operator and RabbitMQ Messaging Topology Operator controllers and their webhook certificates. A `RabbitmqCluster` a ControlPlane declares, and the `Vhost`, `User` and `Permission` CRs of a `RabbitMQVhost` order, live in that ControlPlane's own namespace, not here |
 
 `shared-services` is a trust zone, not just a placement bucket. It holds the
 credentials that unlock every other secret in the stack — `openbao-init-keys` (the root
@@ -304,7 +306,7 @@ entry, and the two dotted arrows are dependencies that no manifest can
 declare. The table lists every entry of every release, in the order of the
 layers.
 
-![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 | Release | `dependsOn` |
 | --- | --- |
@@ -357,6 +359,11 @@ That is also why `neutron-operator`, `cinder-operator` and `nova-operator` carry
 no edge to it: the Neutron agents, the Cinder services and every Nova process
 talk over the shared message bus, but a HelmRelease cannot depend on a
 Kustomization.
+
+The `messaging-topology-operator` Kustomization is outside the table as well. It
+is the one Flux Kustomization of the directory that declares a `dependsOn`:
+`rabbitmq-cluster-operator`, whose `RabbitmqCluster` CRD its controller watches.
+Its own cert-manager objects converge over `retryInterval` the same way.
 
 The `c5c3-operator` HelmRelease is in the last layer: it `dependsOn`
 four of the operators whose CRs it projects (keystone-operator,
@@ -824,7 +831,10 @@ share.
 
 The base at `./config/installation` installs the `rabbitmq-system` Namespace, the
 `rabbitmqclusters.rabbitmq.com` CRD (served version `v1beta1`), the operator's
-RBAC, the manager Deployment (requests and limits `200m` / `500Mi`), the two
+RBAC, the manager Deployment (the installer requests and limits it at `200m` /
+`500Mi`; the Kustomization's `spec.patches` lowers the requests to `100m` /
+`128Mi` and keeps the limits, see the [Messaging Topology
+Operator](#rabbitmq-messaging-topology-operator) for why), the two
 admission webhooks it has shipped since v2.22.0, and the self-signed `Issuer` plus
 the `Certificate`s that back them. cert-manager has been required since v2.20.
 
@@ -869,6 +879,70 @@ anchor on the literal YAML shape (the paired lines adjacent, both values
 double-quoted), which
 `tests/unit/renovate/rabbitmq_cluster_operator_source_custommanager_test.sh` and
 `tests/unit/renovate/rabbitmq_cluster_operator_image_custommanager_test.sh` guard.
+
+### RabbitMQ Messaging Topology Operator
+
+**File:** `deploy/flux-system/releases/messaging-topology-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
+| Target namespace | `rabbitmq-system` (the upstream base self-namespaces) |
+| Source | `messaging-topology-operator` `GitRepository` (tag `v1.20.3`, commit `2d780409f494944b3a2786c6687cebddef5bfb33`) |
+| Path | `./config/installation` |
+| Image | `ghcr.io/rabbitmq/messaging-topology-operator`, `newTag: "1.20.3"`, `digest: "sha256:f377d3c3e2215a8dfb8a7a5ab953ef7f180f295c401e5d2c2060f3b0748fefd6"` |
+| Dependencies | `rabbitmq-cluster-operator`; cert-manager is an implicit one |
+
+The RabbitMQ Messaging Topology Operator serves the `rabbitmq.com/v1beta1`
+topology CRDs. The c5c3-operator writes three of them for every
+[`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order: a `Vhost`, and per
+credential generation a `User` and a `Permission`, all in the ControlPlane's
+namespace beside the `RabbitmqCluster` they name. This operator creates them on
+the broker through its management API, with the admin credential the
+`RabbitmqCluster` reports in its `status.binding` Secret.
+
+The base at `./config/installation` installs the `rabbitmq-system` Namespace, the
+thirteen topology CRDs, the operator's RBAC, the manager Deployment (the
+installer requests `300m` / `128Mi` and limits `500m` / `512Mi`; the
+Kustomization's `spec.patches` lowers the requests to `50m` / `64Mi` and keeps
+the limits), its validating and mutating admission webhooks, and the
+self-signed `Issuer` plus the two `Certificate`s that back the webhook and the
+metrics endpoint. Every name carries the base's `namePrefix`
+`messaging-topology-`, so it shares `rabbitmq-system` with the Cluster Operator
+without a collision.
+
+Both RabbitMQ operators run below their installers' requests because the
+upstream figures pushed the full stack over the 16Gi node budget that
+`hack/ci-check-node-budget.sh` enforces on the `e2e-controlplane` job (16498Mi
+against 16384Mi with both at upstream sizing). Each patch adds one member under
+`requests` at a time, so the installer's limits stay in place.
+
+The Kustomization `dependsOn` `rabbitmq-cluster-operator`: the controller watches
+the `RabbitmqCluster` kind, so its CRD has to be served first. cert-manager is the
+same implicit dependency the Cluster Operator has, for the same reason.
+
+**Accepted posture.** Upstream is the Cluster Operator's (VMware/Broadcom, Mozilla
+Public License 2.0) and publishes no cosign signature either. Both halves are
+pinned by content: the Git commit in the source, the image digest here. The inner
+kustomization rewrites the placeholder
+`rabbitmqoperator/messaging-topology-operator` to
+`ghcr.io/rabbitmq/messaging-topology-operator` with the mutable tag `latest`, so
+the `images` override keys on that resolved name. `newTag` records the tag the
+digest was resolved from (`crane digest
+ghcr.io/rabbitmq/messaging-topology-operator:<tag>`). The name-keyed override has
+the weak point the Cluster Operator section describes, and the same check covers
+it: both deploy scripts read every image of every Deployment in `rabbitmq-system`
+after the two Kustomizations are Ready and abort unless each one carries an
+`@sha256:` digest.
+
+**Renovate.** Two customManagers track the pair the way they track the Cluster
+Operator's, one on the source (`github-tags`) and one on the image (`docker`).
+Their two packageRules share
+`groupName: "rabbitmq messaging-topology-operator"`, with `automerge: false` and
+`minimumReleaseAge: "3 days"`, so the four values move in one reviewed PR.
+`tests/unit/renovate/messaging_topology_operator_source_custommanager_test.sh`
+and `tests/unit/renovate/messaging_topology_operator_image_custommanager_test.sh`
+guard the YAML shape the managers anchor on.
 
 ### c5c3-operator
 
@@ -1520,7 +1594,7 @@ These resources depend on no CRD that an operator of this stack installs. The Fl
 kinds among them need the flux-operator, which registers the `FluxInstance` kind and,
 once it has reconciled the instance, the Flux toolkit kinds.
 
-**Resource count:** 33 files producing 53 Kubernetes resources.
+**Resource count:** 35 files producing 55 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
@@ -1528,10 +1602,10 @@ once it has reconciled the instance, the Flux toolkit kinds.
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | OCIRepository | 1 | openbao-operator |
-| GitRepository | 2 | k-orc, rabbitmq-cluster-operator |
+| GitRepository | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
 | HelmRelease | 19 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator, c5c3-operator |
-| Kustomization | 2 | k-orc, rabbitmq-cluster-operator |
-| **Total** | **53** | |
+| Kustomization | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
+| **Total** | **55** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -1591,9 +1665,10 @@ Flux toolkit CRDs only when it reconciles the instance. Apply `namespaces.yaml` 
 `fluxinstance.yaml` first and wait for the instance, as Step 2 of
 `hack/deploy-infra.sh` does.
 
-This applies 53 resources: 21 namespaces, 1 FluxInstance, 10 sources
-(7 HelmRepository, 1 OCIRepository, 2 GitRepository), 19 HelmReleases and
-2 Flux Kustomizations (K-ORC and the RabbitMQ Cluster Operator). FluxCD resolves the dependency graph between
+This applies 55 resources: 21 namespaces, 1 FluxInstance, 11 sources
+(7 HelmRepository, 1 OCIRepository, 3 GitRepository), 19 HelmReleases and
+3 Flux Kustomizations (K-ORC, the RabbitMQ Cluster Operator and the RabbitMQ
+Messaging Topology Operator). FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
 
@@ -1765,10 +1840,14 @@ or the flux-operator applies to the rendered Deployment:
 - A FluxInstance entry names one controller Deployment, for example
   `target: {kind: Deployment, name: helm-controller}`.
 - `op: add` sets a member whether or not it exists, and replaces the whole
-  value when it does. The patch therefore replaces the upstream `resources`
+  value when it does. A patch on `resources` therefore replaces the upstream
   block instead of merging into it. The example sizes the K-ORC manager this
-  way and leaves the RabbitMQ cluster operator's upstream `200m` / `500Mi` in
-  place.
+  way. For the RabbitMQ cluster operator it adds one member at a time under
+  `requests`, repeating the `100m` / `128Mi` the base release already sets,
+  and leaves the installer's `200m` / `500Mi` limits in place: `spec.patches`
+  is a list, so the merge patch replaces the base's list whole (merge rule 1
+  below), and an entry that named the placement alone would put the
+  installer's requests back.
 - The Flux manifests run the source, kustomize and helm controllers with
   `priorityClassName: system-cluster-critical`, which ranks above
   `cobaltcore-platform`, so the example's FluxInstance patch leaves the helm
