@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RBD volume backend of the cinder-bkrbd CR, the rbd-backend suite's
+# backend under this suite's prefix.
+#
+# No Service named ceph-mon exists in the namespace and the kind cluster runs no
+# Ceph, so every connection the driver opens fails on DNS. The three rados_*
+# options bound that failure to seconds; the volume service then serves RPC
+# without an initialized driver.
+#
+# spec.rbd.clusterName is left out, so the schema default ceph applies, and the
+# keyring reaches the backup pod as /etc/ceph/ceph.client.cinder.keyring.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: bkrbd-rbd1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-bkrbd
+  type: RBD
+  rbd:
+    pool: volumes
+    user: cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: bkrbd-rbd1-key
+  extraOptions:
+    rados_connect_timeout: "5"
+    rados_connection_retries: "1"
+    rados_connection_interval: "1"
