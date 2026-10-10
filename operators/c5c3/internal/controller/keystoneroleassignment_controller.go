@@ -185,24 +185,7 @@ func (r *KeystoneRoleAssignmentReconciler) reconcileNormal(
 	user := &c5c3v1alpha1.KeystoneUser{}
 	project := &c5c3v1alpha1.KeystoneProject{}
 	cpKey := orderControlPlaneKey(order.Spec.ControlPlaneRef, order.Namespace)
-	for _, reference := range []roleAssignmentReference{
-		{
-			kind: "KeystoneUser", noun: "user", name: order.Spec.UserRef.Name, obj: user,
-			notFound: reasonKeystoneRoleAssignmentUserNotFound, waiting: reasonKeystoneRoleAssignmentWaitingForUser,
-			ready: func() *metav1.Condition {
-				return conditions.GetCondition(user.Status.Conditions, conditionTypeKeystoneUserUserReady)
-			},
-			controlPlaneRef: func() c5c3v1alpha1.ControlPlaneRefSpec { return user.Spec.ControlPlaneRef },
-		},
-		{
-			kind: "KeystoneProject", noun: "project", name: order.Spec.ProjectRef.Name, obj: project,
-			notFound: reasonKeystoneRoleAssignmentProjectNotFound, waiting: reasonKeystoneProjectWaiting,
-			ready: func() *metav1.Condition {
-				return conditions.GetCondition(project.Status.Conditions, conditionTypeKeystoneProjectProjectReady)
-			},
-			controlPlaneRef: func() c5c3v1alpha1.ControlPlaneRefSpec { return project.Spec.ControlPlaneRef },
-		},
-	} {
+	for _, reference := range userAndProjectReferences(order.Spec.UserRef.Name, order.Spec.ProjectRef.Name, user, project) {
 		admitted, err := reference.gate(ctx, oc, order.Namespace, ref.location(), cpKey, fail)
 		if err != nil || !admitted {
 			return refused, err
@@ -239,6 +222,33 @@ type roleAssignmentReference struct {
 	notFound, waiting string
 	ready             func() *metav1.Condition
 	controlPlaneRef   func() c5c3v1alpha1.ControlPlaneRefSpec
+}
+
+// userAndProjectReferences returns the gates of an order naming the
+// KeystoneUser userName and the KeystoneProject projectName, loading them into
+// user and project: a KeystoneRoleAssignment and a
+// KeystoneApplicationCredential reference the same two kinds.
+func userAndProjectReferences(
+	userName, projectName string, user *c5c3v1alpha1.KeystoneUser, project *c5c3v1alpha1.KeystoneProject,
+) []roleAssignmentReference {
+	return []roleAssignmentReference{
+		{
+			kind: "KeystoneUser", noun: "user", name: userName, obj: user,
+			notFound: reasonKeystoneRoleAssignmentUserNotFound, waiting: reasonKeystoneRoleAssignmentWaitingForUser,
+			ready: func() *metav1.Condition {
+				return conditions.GetCondition(user.Status.Conditions, conditionTypeKeystoneUserUserReady)
+			},
+			controlPlaneRef: func() c5c3v1alpha1.ControlPlaneRefSpec { return user.Spec.ControlPlaneRef },
+		},
+		{
+			kind: "KeystoneProject", noun: "project", name: projectName, obj: project,
+			notFound: reasonKeystoneRoleAssignmentProjectNotFound, waiting: reasonKeystoneProjectWaiting,
+			ready: func() *metav1.Condition {
+				return conditions.GetCondition(project.Status.Conditions, conditionTypeKeystoneProjectProjectReady)
+			},
+			controlPlaneRef: func() c5c3v1alpha1.ControlPlaneRefSpec { return project.Spec.ControlPlaneRef },
+		},
+	}
 }
 
 // gate reads the referenced order into obj from namespace on the assignment's

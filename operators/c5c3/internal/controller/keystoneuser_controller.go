@@ -454,21 +454,12 @@ func (r *KeystoneUserReconciler) sweepKeystoneUserChildren(
 	if err != nil {
 		return 0, err
 	}
-
-	delivered := &corev1.Secret{}
-	deliveredKey := types.NamespacedName{Namespace: order.Namespace, Name: keystoneUserCredentialsSecretName(order)}
-	switch err := oc.Get(ctx, deliveredKey, delivered); {
-	case apierrors.IsNotFound(err):
-	case err != nil:
-		return 0, fmt.Errorf("reading delivered Secret %s: %w", deliveredKey, err)
-	case metav1.IsControlledBy(delivered, order):
-		log.FromContext(ctx).Info("removing the delivered KeystoneUser Secret", "secret", deliveredKey)
-		if err := client.IgnoreNotFound(oc.Delete(ctx, delivered)); err != nil {
-			return 0, fmt.Errorf("deleting delivered Secret %s: %w", deliveredKey, err)
-		}
-		remaining++
+	delivered, err := sweepDeliveredSecret(ctx, oc, order,
+		types.NamespacedName{Namespace: order.Namespace, Name: keystoneUserCredentialsSecretName(order)})
+	if err != nil {
+		return 0, err
 	}
-	return remaining, nil
+	return remaining + delivered, nil
 }
 
 // --- manager setup ---
