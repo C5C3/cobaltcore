@@ -11,6 +11,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/database"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -363,6 +364,22 @@ func keystoneEndpointFor(cp *c5c3v1alpha1.ControlPlane, ref *commonv1.TargetClus
 		return keystoneEndpointURL(cp)
 	}
 	return keystonePublicEndpoint(cp.Spec.Services.Keystone)
+}
+
+// mariaDBDatabaseEndpoint returns the host:port a MariaDBDatabase order on
+// cluster reaches the shared database db at. On the cluster the database runs
+// on, which is Keystone's, that is the in-cluster MariaDB Service in Keystone's
+// namespace. On any other cluster it is
+// spec.infrastructure.publishedDatabaseEndpoint, the one address the platform
+// operator publishes off that cluster, and the empty string while it is unset.
+func mariaDBDatabaseEndpoint(cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, cluster string) string {
+	if sameTargetCluster(orderRef{Cluster: cluster}.clusterRef(), cp.KeystoneTargetClusterRef()) {
+		return database.ResolveHost(db, cp.KeystoneNamespace())
+	}
+	if cp.Spec.Infrastructure == nil {
+		return ""
+	}
+	return cp.Spec.Infrastructure.PublishedDatabaseEndpoint
 }
 
 // intervalToCron converts a rotation interval into a cron expression suitable

@@ -302,11 +302,12 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
 ) error {
 	// server/mountPath come from the SHARED cluster store, not the tenant stores
 	// this method is building — a tenant store cannot describe its own OpenBao
-	// connection. openBaoConnection falls back to the documented defaults when the
-	// shared store is unreadable, which match the tenant stores' connection anyway.
+	// connection. openBaoConnectionFor falls back to the documented defaults when
+	// the shared store is unreadable, which match the tenant stores' connection
+	// anyway.
 	// Every tenant store copies the same connection by construction, so it is
 	// resolved once for all of them.
-	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
+	server, mountPath := openBaoConnectionFor(ctx, r.Client, cp.Namespace, secrets.EffectiveStoreRef(nil))
 
 	for _, ns := range controlPlaneNamespaces(cp) {
 		for _, c := range r.esoTenantStoreClusters(cp, ns, children[ns]) {
@@ -505,7 +506,7 @@ func (r *ControlPlaneReconciler) reconcileRegistrationTenantStores(
 	// foreign object holding the store's name — and returning an error would put the
 	// whole ControlPlane reconcile into exponential backoff for it, which is the
 	// blast radius this sub-reconciler is separate in order to avoid.
-	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
+	server, mountPath := openBaoConnectionFor(ctx, r.Client, cp.Namespace, secrets.EffectiveStoreRef(nil))
 	var failed []string
 	var errs []error
 	for _, ns := range targets {

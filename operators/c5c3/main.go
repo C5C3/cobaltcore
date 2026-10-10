@@ -204,6 +204,16 @@ func main() {
 				}).SetupWithManager(mcMgr); err != nil {
 					return err
 				}
+				// OpenBaoDial and ServiceAccountToken stay nil: the reconciler logs
+				// in with openbao.Login and the pod's mounted ServiceAccount token.
+				if err := (&controller.MariaDBDatabaseReconciler{
+					Client:                  mgr.GetClient(),
+					Scheme:                  mgr.GetScheme(),
+					Resolver:                mcMgr,
+					MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
+				}).SetupWithManager(mcMgr); err != nil {
+					return err
+				}
 			}
 			if opts.Webhooks {
 				// DECISION Client must be non-nil for the

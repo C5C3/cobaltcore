@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,12 +36,15 @@ import (
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // orderFakeClient builds a fake client with the status subresources of the
-// order kinds, which the reconcilers write through Status().Update. The K-ORC
+// order kinds, which the reconcilers write through Status().Update, and of the
+// mariadb-operator Database and the ESO ExternalSecret, whose status an apply
+// must leave alone as the API server does. The K-ORC
 // kinds carry no status subresource, so a test seeds and edits their status in
 // place.
 func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Object) client.Client {
@@ -47,7 +52,8 @@ func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Obje
 	b := fake.NewClientBuilder().WithScheme(korcTestScheme(t)).WithObjects(objs...).
 		WithStatusSubresource(&c5c3v1alpha1.KeystoneUser{}, &c5c3v1alpha1.KeystoneProject{},
 			&c5c3v1alpha1.KeystoneRoleAssignment{}, &c5c3v1alpha1.KeystoneCatalogEntry{},
-			&c5c3v1alpha1.KeystoneApplicationCredential{})
+			&c5c3v1alpha1.KeystoneApplicationCredential{}, &c5c3v1alpha1.MariaDBDatabase{},
+			&mariadbv1alpha1.Database{}, &esov1.ExternalSecret{})
 	if funcs != nil {
 		b = b.WithInterceptorFuncs(*funcs)
 	}
@@ -234,6 +240,50 @@ func TestEnsureOrderChild_RefusesAnObjectTheOrderDidNotCreate(t *testing.T) {
 	err := ensureOrderChild(context.Background(), c, c.Scheme(), owner, o,
 		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: stranger.Name, Namespace: "default"}})
 	g.Expect(err).To(MatchError(ContainSubstring("it was not created by this order")))
+	g.Expect(errors.Is(err, errOrderAdoptRefused)).To(BeTrue(), "a caller tells the refusal apart without matching text")
+	g.Expect(err.Error()).To(HavePrefix("refusing to adopt pre-existing *v1alpha1.User default/"))
+}
+
+// TestOrderControlPlanePredicateFor pins that a kind's predicate passes a flip
+// of the conditions it names and no other, while orderControlPlanePredicate
+// keeps passing AdminCredentialReady alone.
+func TestOrderControlPlanePredicateFor(t *testing.T) {
+	base := ksControlPlane()
+	base.Generation = 3
+	conditions.SetCondition(&base.Status.Conditions, metav1.Condition{
+		Type: conditionTypeDBCredentialsReady, Status: metav1.ConditionTrue, Reason: "Synced",
+	})
+	flip := func(condType string) func(cp *c5c3v1alpha1.ControlPlane) {
+		return func(cp *c5c3v1alpha1.ControlPlane) {
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type: condType, Status: metav1.ConditionFalse, Reason: "Flipped",
+			})
+		}
+	}
+	cases := []struct {
+		name                string
+		mutate              func(cp *c5c3v1alpha1.ControlPlane)
+		wantDB, wantDefault bool
+	}{
+		{name: "DBCredentialsReady flips", mutate: flip(conditionTypeDBCredentialsReady), wantDB: true, wantDefault: false},
+		{name: "AdminCredentialReady flips", mutate: flip(conditionTypeAdminCredentialReady), wantDB: false, wantDefault: true},
+		{name: "a condition neither reads flips", mutate: flip("KeystoneReady"), wantDB: false, wantDefault: false},
+		{name: "a spec change", mutate: func(cp *c5c3v1alpha1.ControlPlane) { cp.Generation = 4 }, wantDB: true, wantDefault: true},
+		{name: "a deletion", mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+			cp.DeletionTimestamp = ptr.To(metav1.Now())
+		}, wantDB: true, wantDefault: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			updated := base.DeepCopy()
+			tc.mutate(updated)
+			e := event.UpdateEvent{ObjectOld: base, ObjectNew: updated}
+
+			g.Expect(orderControlPlanePredicateFor(conditionTypeDBCredentialsReady).Update(e)).To(Equal(tc.wantDB))
+			g.Expect(orderControlPlanePredicate().Update(e)).To(Equal(tc.wantDefault))
+		})
+	}
 }
 
 func TestOrderChildToRequests(t *testing.T) {

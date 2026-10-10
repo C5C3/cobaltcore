@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the delivered database credential is a live one, from inside the
+# namespace it was delivered to: the Job logs in with the keys of
+# workflow-db-credentials, creates a table in the ordered schema, writes a row
+# and reads it back, and checks that the login reaches no other schema.
+#
+# The image is the Keystone image, which ships pymysql. It is pinned to the tag
+# the e2e-controlplane job loads into kind, with IfNotPresent so it uses that
+# copy rather than pulling from GHCR. The Secret is mounted as well, so the Job
+# connects over TLS with the delivered ca.crt when the plane's database runs
+# TLS. The test script applies the Job, waits for it, and deletes it again
+# before the next run.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region mariadb-verify-job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workflow-db-verify
+  namespace: "@TENANT_NS@"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: mysql
+        image: ghcr.io/c5c3/keystone:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DB_HOST
+          valueFrom: {secretKeyRef: {name: workflow-db-credentials, key: host}}
+        - name: DB_PORT
+          valueFrom: {secretKeyRef: {name: workflow-db-credentials, key: port}}
+        - name: DB_NAME
+          valueFrom: {secretKeyRef: {name: workflow-db-credentials, key: database}}
+        - name: DB_USER
+          valueFrom: {secretKeyRef: {name: workflow-db-credentials, key: username}}
+        - name: DB_PASSWORD
+          valueFrom: {secretKeyRef: {name: workflow-db-credentials, key: password}}
+        command: ["python3", "-c"]
+        args:
+        - |
+          import os
+          import pymysql
+
+          ca = "/etc/db-credentials/ca.crt"
+          conn = pymysql.connect(
+              host=os.environ["DB_HOST"],
+              port=int(os.environ["DB_PORT"]),
+              user=os.environ["DB_USER"],
+              password=os.environ["DB_PASSWORD"],
+              database=os.environ["DB_NAME"],
+              ssl={"ca": ca} if os.path.exists(ca) else None,
+              connect_timeout=10,
+          )
+          with conn.cursor() as cur:
+              cur.execute("CREATE TABLE IF NOT EXISTS probe (id INT)")
+              cur.execute("INSERT INTO probe (id) VALUES (1)")
+              conn.commit()
+              cur.execute("SELECT COUNT(*) FROM probe WHERE id = 1")
+              print("rows:", cur.fetchone()[0])
+              cur.execute("SHOW DATABASES")
+              schemas = {row[0] for row in cur.fetchall()}
+              if "keystone" in schemas:
+                  raise SystemExit("the login sees the ControlPlane's keystone schema")
+              try:
+                  cur.execute("USE keystone")
+              except pymysql.err.OperationalError:
+                  pass
+              else:
+                  raise SystemExit("the login can use the ControlPlane's keystone schema")
+          conn.close()
+          print("OK: the delivered database credential reaches its schema and no other")
+        volumeMounts:
+        - name: credentials
+          mountPath: /etc/db-credentials
+          readOnly: true
+      volumes:
+      - name: credentials
+        secret:
+          secretName: workflow-db-credentials
+# endregion mariadb-verify-job

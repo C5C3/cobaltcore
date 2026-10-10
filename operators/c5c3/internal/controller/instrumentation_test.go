@@ -141,7 +141,7 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	for _, list := range [][]string{
 		subConditionTypes, keystoneServiceSubConditionTypes, keystoneUserSubConditionTypes,
 		keystoneProjectSubConditionTypes, keystoneRoleAssignmentSubConditionTypes, keystoneCatalogEntrySubConditionTypes,
-		keystoneApplicationCredentialSubConditionTypes,
+		keystoneApplicationCredentialSubConditionTypes, mariaDBDatabaseSubConditionTypes,
 	} {
 		for _, ct := range list {
 			known[ct] = struct{}{}
@@ -164,6 +164,15 @@ func TestSubReconcilerConditionTypes_KeystoneApplicationCredentialLegs(t *testin
 
 	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("KeystoneApplicationCredentialProvision", "CredentialReady"))
 	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("KeystoneApplicationCredentialDelivery", "DeliveryReady"))
+}
+
+// TestSubReconcilerConditionTypes_MariaDBDatabaseLegs pins the two legs of
+// the database order kind to the conditions they drive.
+func TestSubReconcilerConditionTypes_MariaDBDatabaseLegs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("MariaDBDatabaseProvision", "DatabaseReady"))
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("MariaDBDatabaseDelivery", "DeliveryReady"))
 }
 
 // TestInstrumenterInstrument_KeystoneServiceLabelPairs proves the two

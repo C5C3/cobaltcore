@@ -5900,6 +5900,128 @@ func TestIntegration_KeystoneApplicationCredential_SchemaValidation(t *testing.T
 	})
 }
 
+// TestIntegration_MariaDBDatabase_SchemaValidation pins every admission rule of
+// the MariaDBDatabase CRD against the real envtest API server, and the pattern
+// of the ControlPlane's spec.infrastructure.publishedDatabaseEndpoint the kind
+// reads. The kind has no webhook, so these schema rules are all there is; the
+// substrings are the ones the invalid-mariadbdatabase-cr chainsaw corpus
+// asserts on.
+func TestIntegration_MariaDBDatabase_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "MariaDBDatabase"
+	ref := map[string]any{"name": "cp", "namespace": "cp-ns"}
+	base := map[string]any{"controlPlaneRef": ref, "databaseName": "svc_db", "deletionPolicy": "Retain"}
+	with := func(field string, value any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec[field] = value
+		return spec
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a dash in databaseName", spec: with("databaseName", "my-db"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty databaseName", spec: with("databaseName", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "a 65-byte databaseName", spec: with("databaseName", strings.Repeat("a", 65)),
+			wantErrSub: "Too long",
+		},
+		orderSchemaCase{name: "an unknown deletionPolicy", spec: with("deletionPolicy", "Drop"), wantErrSub: "Unsupported value"},
+		orderSchemaCase{
+			name: "a name that is no MySQL identifier without databaseName", objName: "app.v1",
+			spec:       map[string]any{"controlPlaneRef": ref},
+			wantErrSub: "metadata.name is not a MySQL identifier once its dashes are underscores; set spec.databaseName",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed explicit databaseName",
+			mutate:     func(spec map[string]any) { spec["databaseName"] = "other_db" },
+			wantErrSub: "databaseName is immutable; delete and re-create the MariaDBDatabase to order another database",
+		},
+		orderSchemaCase{
+			name:   "a flipped deletionPolicy",
+			mutate: func(spec map[string]any) { spec["deletionPolicy"] = "Delete" },
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}}
+	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
+
+	newNamespace := func(g *WithT) string {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mdb-default-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		return ns.Name
+	}
+
+	t.Run("the schema defaults deletionPolicy to Retain and admits a dotted name with databaseName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(g)
+		order := &c5c3v1alpha1.MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "app.v1", Namespace: ns},
+			Spec: c5c3v1alpha1.MariaDBDatabaseSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"},
+				DatabaseName:    "app_v1",
+			},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+		stored := &c5c3v1alpha1.MariaDBDatabase{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.DeletionPolicy).To(Equal("Retain"))
+	})
+
+	// The databaseName rule compares the EFFECTIVE name, so spelling out the
+	// metadata.name default is not a change, and naming anything else is.
+	t.Run("update compares the effective databaseName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &c5c3v1alpha1.MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow-db", Namespace: newNamespace(g)},
+			Spec:       c5c3v1alpha1.MariaDBDatabaseSpec{ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		order.Spec.DatabaseName = "other_db"
+		err := c.Update(ctx, order)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("databaseName is immutable"))
+
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), order)).To(Succeed())
+		order.Spec.DatabaseName = "workflow_db"
+		g.Expect(c.Update(ctx, order)).To(Succeed(), "the default spelled out is admitted")
+	})
+
+	endpointCases := []struct {
+		endpoint string
+		admitted bool
+	}{
+		{endpoint: "db.example.com:3306", admitted: true},
+		{endpoint: "[::1]:3306", admitted: true},
+		{endpoint: "db.example.com:65535", admitted: true},
+		{endpoint: "db.example.com"},
+		{endpoint: "https://db:3306"},
+		{endpoint: "db.example.com:0"},
+		{endpoint: "db.example.com:65536"},
+		{endpoint: "db.example.com:99999"},
+	}
+	for _, tc := range endpointCases {
+		t.Run("publishedDatabaseEndpoint "+tc.endpoint, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := integrationManagedControlPlane("cp-published", newNamespace(g))
+			cp.Spec.Infrastructure.PublishedDatabaseEndpoint = tc.endpoint
+
+			err := c.Create(ctx, cp, client.DryRunAll)
+			if tc.admitted {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.publishedDatabaseEndpoint"))
+			g.Expect(err.Error()).To(ContainSubstring("should match"))
+		})
+	}
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on

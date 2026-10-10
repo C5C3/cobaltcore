@@ -292,6 +292,8 @@ export default defineConfig({
               { text: 'KeystoneCatalogEntry CRD', link: '/reference/c5c3/keystonecatalogentry-crd' },
               { text: 'KeystoneApplicationCredential CRD', link: '/reference/c5c3/keystoneapplicationcredential-crd' },
               { text: 'Keystone Orders Reconciler', link: '/reference/c5c3/keystone-orders-reconciler' },
+              { text: 'MariaDBDatabase CRD', link: '/reference/c5c3/mariadbdatabase-crd' },
+              { text: 'MariaDBDatabase Reconciler', link: '/reference/c5c3/mariadbdatabase-reconciler' },
             ],
           },
           {

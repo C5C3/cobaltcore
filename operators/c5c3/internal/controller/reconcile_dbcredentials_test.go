@@ -208,7 +208,7 @@ func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 // from the per-CP KV path) and projects no VaultDynamicSecret generator.
 // readyTenantSecretStore builds a Ready namespaced SecretStore in the given
 // namespace, optionally carrying a Vault provider with a custom server and
-// kubernetes-auth mount so openBaoConnection can read them.
+// kubernetes-auth mount so openBaoConnectionFor can read them.
 func readyTenantSecretStore(name, namespace, server, mount string) *esov1.SecretStore {
 	store := &esov1.SecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -231,7 +231,7 @@ func readyTenantSecretStore(name, namespace, server, mount string) *esov1.Secret
 	return store
 }
 
-// TestOpenBaoConnection_ReadsFromNamespacedStore verifies openBaoConnection
+// TestOpenBaoConnection_ReadsFromNamespacedStore verifies openBaoConnectionFor
 // resolves the ControlPlane's selected namespaced SecretStore (in the child
 // namespace) and copies its Vault server/mount, rather than the cluster store.
 func TestOpenBaoConnection_ReadsFromNamespacedStore(t *testing.T) {
@@ -247,7 +247,7 @@ func TestOpenBaoConnection_ReadsFromNamespacedStore(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	server, mount := r.openBaoConnection(context.Background(), cp, effectiveControlPlaneStoreRef(cp))
+	server, mount := openBaoConnectionFor(context.Background(), r.Client, cp.Namespace, effectiveControlPlaneStoreRef(cp))
 	g.Expect(server).To(Equal("https://openbao.tenant.svc:8200"))
 	g.Expect(mount).To(Equal("kubernetes/tenant"))
 }
@@ -265,9 +265,51 @@ func TestOpenBaoConnection_FallsBackToDefaultsWhenStoreMissing(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	server, mount := r.openBaoConnection(context.Background(), cp, effectiveControlPlaneStoreRef(cp))
+	server, mount := openBaoConnectionFor(context.Background(), r.Client, cp.Namespace, effectiveControlPlaneStoreRef(cp))
 	g.Expect(server).To(Equal(openBaoDefaultServer))
 	g.Expect(mount).To(Equal(openBaoDefaultKubernetesMount))
+}
+
+// TestOpenBaoConnectionFor_ReadsTheStoreOfTheGivenNamespace verifies the free
+// form resolves a namespaced store in the namespace it is handed and the
+// cluster store by name.
+func TestOpenBaoConnectionFor_ReadsTheStoreOfTheGivenNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := readyTenantSecretStore("openbao-tenant-store", "tenant-ns",
+		"https://openbao.tenant.svc:8200", "kubernetes/tenant")
+	c := fake.NewClientBuilder().WithScheme(korcTestScheme(t)).WithObjects(store).Build()
+	ref := commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store"}
+
+	server, mount := openBaoConnectionFor(context.Background(), c, "tenant-ns", ref)
+	g.Expect(server).To(Equal("https://openbao.tenant.svc:8200"))
+	g.Expect(mount).To(Equal("kubernetes/tenant"))
+
+	server, mount = openBaoConnectionFor(context.Background(), c, "other-ns", ref)
+	g.Expect(server).To(Equal(openBaoDefaultServer), "a store of another namespace is not read")
+	g.Expect(mount).To(Equal(openBaoDefaultKubernetesMount))
+}
+
+// TestDBCredentialGeneratorExternalSecret_TargetLabels pins that the built-in
+// targets render no target template, so their projected ExternalSecrets do not
+// change, and that a target with labels renders them in a template that keeps
+// the generator's keys.
+func TestDBCredentialGeneratorExternalSecret_TargetLabels(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	builtin := dbCredentialGeneratorExternalSecret(keystoneDBCredentialTarget(dbCredManagedControlPlane()))
+	g.Expect(builtin.Spec.Target.Template).To(BeNil())
+
+	labels := map[string]string{"c5c3.io/mariadbdatabase-name": "app", "c5c3.io/mariadbdatabase-cluster": ""}
+	labelled := dbCredentialGeneratorExternalSecret(dbCredentialTarget{
+		namespace: "default", secretName: "app-0011aabb-database-credentials", targetLabels: labels,
+	})
+	g.Expect(labelled.Spec.Target.Template).NotTo(BeNil())
+	g.Expect(labelled.Spec.Target.Template.Metadata.Labels).To(Equal(labels))
+	g.Expect(labelled.Spec.Target.Template.MergePolicy).To(Equal(esov1.MergePolicyMerge))
+	g.Expect(labelled.Spec.Target.Template.Data).To(BeEmpty())
+	g.Expect(labelled.Spec.Target.Name).To(Equal("app-0011aabb-database-credentials"))
+	g.Expect(labelled.Spec.RefreshInterval.Duration).To(Equal(dbCredentialRefreshInterval))
 }
 
 func TestReconcileDBCredentials_Static_ProjectsKVExternalSecret(t *testing.T) {

@@ -378,6 +378,7 @@ rules:
       - keystoneprojects
       - keystoneroleassignments
       - keystoneusers
+      - mariadbdatabases
     verbs:
       - get
       - list

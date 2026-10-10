@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The database order under test: a schema and a user on the plane's shared
+# MariaDB, ordered from the assigned namespace.
+#
+# databaseName is left to default to metadata.name with its dash as an
+# underscore ("workflow_db"). The suite orders it first with Retain, which
+# keeps the schema on deletion, and once more with Delete, which drops it;
+# @DELETION_POLICY@ is substituted with the one under test. controlPlaneRef
+# names the plane's namespace explicitly, because the order lives in another
+# one.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region mariadbdatabase-workflow-db
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: workflow-db
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  deletionPolicy: "@DELETION_POLICY@"
+# endregion mariadbdatabase-workflow-db

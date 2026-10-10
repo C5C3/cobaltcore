@@ -86,7 +86,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
-| [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` | Keystone orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion holds the assignment on the credential order and the user on the assignment and removes everything down to the OpenBao paths |
+| [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [e2e-autoscaling](#e2e-autoscaling) | `cp-autoscaling` | The API autoscaler with metrics-server and the VPA: token load scales Keystone from one pod to its HPA maximum and back within 240 s, the budget admits an eviction at the minimum, every database-backed API fits its SQL connection cap at its maximum, and the opted-in workloads get their VerticalPodAutoscalers |
@@ -105,6 +105,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | invalid-keystoneroleassignment-cr | multiple (rejected) | Every `KeystoneRoleAssignment` CRD rule pinned to a deterministic admission failure (fixtures `00` to `15`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 | invalid-keystonecatalogentry-cr | multiple (rejected) | Every `KeystoneCatalogEntry` CRD rule pinned to a deterministic admission failure (fixtures `00` to `16`); the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 | invalid-keystoneapplicationcredential-cr | multiple (rejected) | Every `KeystoneApplicationCredential` CRD rule pinned to a deterministic admission failure (fixtures `00` to `16`), the rotation's duration rules included; the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
+| invalid-mariadbdatabase-cr | multiple (rejected) | Every `MariaDBDatabase` CRD rule pinned to a deterministic admission failure (fixtures `00` to `11`), the MySQL-identifier rule for an order without `databaseName` included; the kind has no webhook. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 | invalid-sizingprofile-cr | multiple (rejected, cluster-scoped) | Every `SizingProfile` marker and webhook rejection path pinned to a deterministic admission failure (fixtures `00` to `12`). Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
 
 ## Test Suite Details
@@ -975,20 +976,22 @@ the fourth chainsaw step of the `e2e-controlplane` CI job.
 ### keystone-user
 
 Covers the order kinds: a `KeystoneUser` from a namespace the ControlPlane
-assigns through `spec.namespaceAssignments`, and the `KeystoneProject`,
+assigns through `spec.namespaceAssignments`, the `KeystoneProject`,
 `KeystoneRoleAssignment`, `KeystoneCatalogEntry` and
-`KeystoneApplicationCredential` ordered beside it. The user and the
-application credential arrive without a tenant store: the operator writes each
-Secret beside its order itself and backs it up through the ControlPlane
-namespace's own store. The application credential is created by K-ORC
-authenticated as the ordered user, not as the admin. Unit tests and envtest see
-neither Keystone nor OpenBao nor ESO, so this suite is where the three meet.
+`KeystoneApplicationCredential` ordered beside it, and a `MariaDBDatabase`.
+The user and the application credential arrive without a tenant store: the
+operator writes each Secret beside its order itself and backs it up through the
+ControlPlane namespace's own store. The application credential is created by
+K-ORC authenticated as the ordered user, not as the admin. The database order's
+OpenBao role is written by the operator through its own OpenBao login, and its
+credential is issued by the database engine. Unit tests and envtest see neither
+Keystone nor OpenBao nor ESO, so this suite is where the three meet.
 
 The plane is a Keystone-only `cp` in the ephemeral namespace that assigns one
 namespace, `<namespace>-tenant`, and nothing else; it carries no
 `allowedNamespaces`, and its entry starts without roles and without
 `allowCatalogEntries`. The suite seeds the plane's two OpenBao prerequisites
-itself, as the foreign-namespace suite does, and runs ten steps:
+itself, as the foreign-namespace suite does, and runs eleven steps:
 
 1. **Delivery**: the order `workflow` reaches `Ready=True` with
    `UserReady=True/UserProvisioned` and `DeliveryReady=True/Delivered`,
@@ -1040,22 +1043,54 @@ itself, as the foreign-namespace suite does, and runs ten steps:
    and a Job on a copy of the generation-1 document fails. Raising
    `credentialGeneration` to 3 creates a credential with a new id and no
    expiry, and a Job authenticates with it.
-7. **Pieces freeze**: `allowedRoles: []` flips the assignment to
+7. **Database**: `workflow-db` with `deletionPolicy: Retain` reads
+   `Ready=True` within 10 min with `DatabaseReady=True/DatabaseProvisioned` and
+   `DeliveryReady=True/Delivered`, `status.databaseName` `workflow_db`, the five
+   keys in `status.secretKeys`, a `status.roleName` matching
+   `^order\.<namespace>\.workflow-db-[0-9a-f]{8}-database$`, and the host
+   `openstack-db.<namespace>.svc` on port 3306. One labelled Database CR with
+   `spec.name` `workflow_db` and `cleanupPolicy` `Skip`, one labelled
+   VaultDynamicSecret and one labelled ExternalSecret sit in the plane's
+   namespace beside `order-db-creds` and `order-db-openbao-client`, and
+   `bao read` on the role reports `db_name` `keystone-<namespace>`. A token of
+   `order-db-creds` logged in as `order-db` reads the order's creds path and is
+   denied with `permission denied` on `order.<namespace>-b.probe` and
+   `order.kube-system.probe`; the operator's ServiceAccount logged in as
+   `c5c3-operator` reads the order role and is denied on
+   `database/mariadb/config/keystone-<namespace>` and on the built-in role
+   `keystone-<namespace>`. Both tokens are revoked afterwards. The owner's
+   namespace holds no store, certificate or ESO object and no ServiceAccount
+   besides `default`, and the delivered Secret is owned by the order and
+   carries a `v-` username. A Job there creates a table in `workflow_db`,
+   writes and reads a row, and cannot reach the `keystone` schema. A patched
+   and a deleted Secret come back within 120 s, and a `force-sync` annotation on
+   the ExternalSecret delivers a new username within 5 min, moves
+   `status.credentialsRefreshedAt`, and the Job succeeds again.
+8. **Pieces freeze**: `allowedRoles: []` flips the assignment to
    `RoleNotAllowed` while its RoleAssignment stays and the scoped Job still
    authenticates; `allowCatalogEntries: false` flips the entry to
    `CatalogNotAllowed` while its Service stays. Restoring the entry returns both
    to `Ready=True`.
-8. **Refusal**: an order `outsider` in `<namespace>-outsider`, which no entry
+9. **Refusal**: an order `outsider` in `<namespace>-outsider`, which no entry
    assigns, holds at `NamespaceNotAssigned` on both conditions with a message
    naming `spec.namespaceAssignments`, and nothing carrying its labels appears,
    re-checked after a settle.
-9. **Freeze**: removing `namespaceAssignments` flips `workflow` to
-   `NamespaceNotAssigned` on both conditions, and the four pieces to it too,
-   while the Secrets, the K-ORC User and the pieces' K-ORC children stay, and a
-   password patched to `Zm9v` still reads `Zm9v` 90 s later. Restoring the full
-   entry, roles and flag included, returns all five orders to `Ready=True`, the
-   credential order at the generation and id it had.
-10. **Teardown**: deleting `workflow-member` first holds it at
+10. **Freeze**: removing `namespaceAssignments` flips `workflow` to
+    `NamespaceNotAssigned` on both conditions, and the four pieces and
+    `workflow-db` to it too, while the Secrets, the K-ORC User, the pieces'
+    K-ORC children, the database order's Database CR, ESO objects and OpenBao
+    role stay, and passwords patched to `Zm9v` in the user's and the database's
+    Secrets still read `Zm9v` 90 s later. Restoring the full entry, roles and
+    flag included, returns all six orders to `Ready=True`, the credential order
+    at the generation and id it had and the database Secret with its current
+    password.
+11. **Teardown**: `workflow-db` goes first, after a login probe proves its last
+    credential: its Database CR, VaultDynamicSecret, ExternalSecret and Secret
+    are gone, `bao read` on its role fails, the last credential no longer
+    authenticates, and a root login still lists `workflow_db`. A re-order with
+    `deletionPolicy: Delete` reaches `Ready=True` with `cleanupPolicy` `Delete`
+    on its Database CR, and deleting it drops `workflow_db`. Deleting
+    `workflow-member` then holds it at
     `ReferencedByApplicationCredentials` naming `workflow-appcred`, with its
     RoleAssignment in place, and deleting `workflow` then holds it at
     `ReferencedByRoleAssignments` naming `workflow-member`, with its K-ORC User
@@ -1135,6 +1170,11 @@ tests/e2e/c5c3/
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
 │   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
 │   └── NN-*.yaml                       One rejected KeystoneApplicationCredential per rule
+├── invalid-mariadbdatabase-cr/
+│   ├── chainsaw-test.yaml              MariaDBDatabase admission rejections (no webhook)
+│   ├── _generate.py                    Canonical scaffold + generator for the fixtures
+│   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
+│   └── NN-*.yaml                       One rejected MariaDBDatabase per rule
 ├── invalid-keystonecatalogentry-cr/
 │   ├── chainsaw-test.yaml              KeystoneCatalogEntry admission rejections (no webhook)
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
@@ -1175,7 +1215,7 @@ tests/e2e/c5c3/
 │   ├── 02-keystoneservice-outsider.yaml  The refused registration (outsider)
 │   └── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
 ├── keystone-user/
-│   ├── chainsaw-test.yaml              Keystone orders, ten steps
+│   ├── chainsaw-test.yaml              Keystone and database orders, eleven steps
 │   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; @TENANT_NS@ assigned)
 │   ├── 01-keystoneuser-tenant.yaml     The assigned order (workflow)
 │   ├── 02-keystoneuser-outsider.yaml   The refused order (outsider)
@@ -1187,7 +1227,9 @@ tests/e2e/c5c3/
 │   ├── 08-keystoneroleassignment-duplicate.yaml  The duplicate order (workflow-member-dup)
 │   ├── 09-keystonecatalogentry-collision.yaml  The colliding order (workflow-dns-dup)
 │   ├── 10-keystoneapplicationcredential-tenant.yaml  The credential order (workflow-appcred)
-│   └── 11-openstack-appcred-verify-job.yaml  Token issue on the delivered application credential
+│   ├── 11-openstack-appcred-verify-job.yaml  Token issue on the delivered application credential
+│   ├── 12-mariadbdatabase-tenant.yaml  The database order (workflow-db; @DELETION_POLICY@ token)
+│   └── 13-mariadb-verify-job.yaml      pymysql row write and read on the delivered database Secret
 ├── messaging/
 │   ├── chainsaw-test.yaml              Shared RabbitMQ bus: provisioned, owned, sized, ready, torn down
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)

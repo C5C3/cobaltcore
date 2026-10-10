@@ -38,7 +38,7 @@ import (
 // cp's child namespace with a Ready status, so a store-gated sub-reconciler under
 // test passes the ESOTenantStore gate without an ESO controller — the default
 // store a nil-ref ControlPlane resolves to. The provider is bare so
-// openBaoConnection falls back to the documented defaults.
+// openBaoConnectionFor falls back to the documented defaults.
 func readyTenantStoreFor(cp *c5c3v1alpha1.ControlPlane) *esov1.SecretStore {
 	return readyTenantSecretStore(esoTenantStoreName, childNamespace(cp), "", "")
 }
@@ -68,8 +68,8 @@ func TestReconcileESOTenantStore_ProvisionsObjects(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	// A custom shared-store provider so we can assert openBaoConnection is sourced
-	// from the SHARED store, never the tenant store this reconciler builds.
+	// A custom shared-store provider so we can assert openBaoConnectionFor is
+	// sourced from the SHARED store, never the tenant store this reconciler builds.
 	sharedStore := &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
 		Spec: esov1.SecretStoreSpec{Provider: &esov1.SecretStoreProvider{Vault: &esov1.VaultProvider{

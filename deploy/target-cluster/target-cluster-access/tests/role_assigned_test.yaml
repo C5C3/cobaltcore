@@ -39,7 +39,7 @@ tests:
   # The whole rule set is pinned: an assigned namespace belongs to a service
   # owner, so a workload kind (deployments, jobs, mariadbs) appearing here
   # would let the registration kubeconfig run code in it.
-  - it: should grant the four order rules and nothing else
+  - it: should grant the four order rules, the Database read and nothing else
     set:
       namespaces:
         - openstack
@@ -49,7 +49,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 4
+          count: 5
       - equal:
           path: rules
           value:
@@ -73,6 +73,7 @@ tests:
                 - keystoneprojects
                 - keystoneroleassignments
                 - keystoneusers
+                - mariadbdatabases
               verbs:
                 - get
                 - list
@@ -87,6 +88,7 @@ tests:
                 - keystoneprojects/status
                 - keystoneroleassignments/status
                 - keystoneusers/status
+                - mariadbdatabases/status
               verbs:
                 - get
                 - update
@@ -99,8 +101,17 @@ tests:
                 - keystoneprojects/finalizers
                 - keystoneroleassignments/finalizers
                 - keystoneusers/finalizers
+                - mariadbdatabases/finalizers
               verbs:
                 - update
+            - apiGroups:
+                - k8s.mariadb.com
+              resources:
+                - databases
+              verbs:
+                - get
+                - list
+                - watch
         documentIndex: 1
 
   - it: should carry the chart labels

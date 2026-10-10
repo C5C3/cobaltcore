@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A 65-byte databaseName is rejected by the CRD maximum, MySQL's 64-character
+# identifier limit. The error carries 'Too long'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: mdb-invalid-databasename-too-long
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  databaseName: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

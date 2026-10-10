@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name app.v1 without a databaseName is rejected by the root CEL
+# rule: its default schema name would carry a dot, which no MySQL identifier
+# does. The error carries 'metadata.name is not a MySQL identifier'.
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: app.v1
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
