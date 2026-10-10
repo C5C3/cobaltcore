@@ -1,8 +1,9 @@
 {{/*
 One Role per assigned namespace, holding what the c5c3-operator needs to serve
 the order kinds there (KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
-KeystoneCatalogEntry) and nothing else: it reads the orders, writes their
-status and finalizers, and writes the Secret a KeystoneUser delivers beside it.
+KeystoneCatalogEntry, KeystoneApplicationCredential) and nothing else: it reads
+the orders, writes their status and finalizers, and writes the Secret a
+KeystoneUser or KeystoneApplicationCredential delivers beside it.
 No workload kind is granted, so whoever holds the registration kubeconfig
 cannot run anything in a namespace that belongs to a service owner.
 
@@ -42,6 +43,7 @@ rules:
   - apiGroups:
       - c5c3.io
     resources:
+      - keystoneapplicationcredentials
       - keystonecatalogentries
       - keystoneprojects
       - keystoneroleassignments
@@ -56,6 +58,7 @@ rules:
   - apiGroups:
       - c5c3.io
     resources:
+      - keystoneapplicationcredentials/status
       - keystonecatalogentries/status
       - keystoneprojects/status
       - keystoneroleassignments/status
@@ -68,6 +71,7 @@ rules:
   - apiGroups:
       - c5c3.io
     resources:
+      - keystoneapplicationcredentials/finalizers
       - keystonecatalogentries/finalizers
       - keystoneprojects/finalizers
       - keystoneroleassignments/finalizers
