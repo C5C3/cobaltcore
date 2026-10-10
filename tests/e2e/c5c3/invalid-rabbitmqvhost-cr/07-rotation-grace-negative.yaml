@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A negative grace period is rejected by the CEL rule on the field. The
+# error carries 'rotation.gracePeriod is not negative'.
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: rmv-invalid-grace-negative
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  rotation:
+    gracePeriod: -1h
