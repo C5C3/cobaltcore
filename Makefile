@@ -490,6 +490,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-keystoneproject-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-keystoneroleassignment-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-keystonecatalogentry-cr/_generate.py --check
+	@python3 tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-sizingprofile-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py --check
@@ -515,6 +516,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-keystoneproject-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-keystoneroleassignment-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-keystonecatalogentry-cr/test_generate.py
+	@python3 tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-sizingprofile-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py

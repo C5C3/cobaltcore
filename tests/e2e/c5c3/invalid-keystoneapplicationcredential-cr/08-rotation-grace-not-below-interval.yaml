@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A grace period as long as the interval is rejected by the CEL rule on the
+# block: the superseded credential must be gone before the next rotation is
+# due. The error carries 'rotation.gracePeriod must be shorter than
+# rotation.interval'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneApplicationCredential
+metadata:
+  name: kac-invalid-grace-interval
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  rotation:
+    interval: 1h
+    gracePeriod: 1h
