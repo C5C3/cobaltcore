@@ -31,14 +31,32 @@ const (
 	testBackupPath   = "/backups"
 )
 
-// testBackupProjection returns what reconcileBackupBackend hands the backup step.
+// testBackupProjection returns what reconcileBackupBackend hands the backup step
+// for an NFS target.
 func testBackupProjection() *backupProjection {
 	return &backupProjection{
 		name:         "backups",
+		backupType:   cinderv1alpha1.CinderBackupBackendTypeNFS,
 		server:       testBackupServer,
 		path:         testBackupPath,
 		mountOptions: cinderv1alpha1.DefaultNFSMountOptions,
 		secretName:   "cinder-backup-backups-def456",
+	}
+}
+
+// testRBDBackupProjection returns what reconcileBackupBackend hands the backup
+// step for an RBD target of the cluster ceph and the user cinder-backup.
+func testRBDBackupProjection() *backupProjection {
+	return &backupProjection{
+		name:       "rbdbk",
+		backupType: cinderv1alpha1.CinderBackupBackendTypeRBD,
+		rbd: &rbdProjection{
+			clusterName: "ceph",
+			user:        "cinder-backup",
+			networks:    []string{"10.244.0.0/16", "10.96.0.0/12"},
+			keyDigest:   "5f7c6b3f0f4d2e1a9c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f",
+		},
+		secretName: "cinder-backup-rbdbk-def456",
 	}
 }
 
@@ -93,6 +111,7 @@ func TestBuildBackupDeployment(t *testing.T) {
 	}))
 	g.Expect(volumes[backupShareVolumeName].CSI.VolumeAttributes).To(HaveKeyWithValue("share", testBackupPath))
 	g.Expect(volumes["share-nfs"].CSI.VolumeAttributes).To(HaveKeyWithValue("share", testSharePath))
+	g.Expect(volumes).NotTo(HaveKey(cephVolumeName), "nothing is RBD, so /etc/ceph stays the image's own")
 
 	mounts := map[string]corev1.VolumeMount{}
 	for _, mount := range container.VolumeMounts {
@@ -133,11 +152,13 @@ func TestBuildBackupDeployment_SharedExportMountedOnce(t *testing.T) {
 		"the shared export stays mounted once, under the first backend that names it")
 }
 
-// TestBuildBackupDeployment_SkipsRBDVolumeBackends covers a Cinder serving an
-// NFS and an RBD backend. Only the NFS backend has an export to mount: an RBD
-// projection carries no server or path, and mounting one would derive a mount
-// path from the empty export ":".
-func TestBuildBackupDeployment_SkipsRBDVolumeBackends(t *testing.T) {
+// TestBuildBackupDeployment_ProjectsRBDVolumeKeyrings covers a Cinder serving an
+// NFS and an RBD backend behind an NFS target. Only the NFS backend has an
+// export to mount: an RBD projection carries no server or path, and mounting
+// one would derive a mount path from the empty export ":". The RBD backend's
+// keyring is projected into /etc/ceph instead, because a backup of its volume
+// reads it through os-brick with that backend's user.
+func TestBuildBackupDeployment_ProjectsRBDVolumeKeyrings(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	deploy := buildBackupDeployment(workloadCinder(), testBackupProjection(),
@@ -157,6 +178,19 @@ func TestBuildBackupDeployment_SkipsRBDVolumeBackends(t *testing.T) {
 		g.Expect(mount.MountPath).NotTo(Equal(emptyExport), "no mount is derived from an empty export")
 	}
 
+	ceph := podVolume(pod, cephVolumeName)
+	g.Expect(ceph).NotTo(BeNil())
+	g.Expect(ceph.Projected).NotTo(BeNil())
+	g.Expect(ceph.Projected.Sources).To(Equal([]corev1.VolumeProjection{{
+		Secret: &corev1.SecretProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "cinder-backend-rbd-abc123"},
+			Items:                []corev1.KeyToPath{{Key: keyringDataKey, Path: "ceph.client.cinder.keyring"}},
+		},
+	}}), "the volume backend's ceph.conf is not projected: os-brick builds its own")
+	g.Expect(podMount(pod, cephVolumeName)).To(Equal(&corev1.VolumeMount{
+		Name: cephVolumeName, MountPath: "/etc/ceph", ReadOnly: true,
+	}))
+
 	t.Run("two RBD backends are neither mounted nor in conflict", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		rbdBackends := []backendProjection{testRBDBackendProjection("rbd-a"), testRBDBackendProjection("rbd-b")}
@@ -171,6 +205,167 @@ func TestBuildBackupDeployment_SkipsRBDVolumeBackends(t *testing.T) {
 		g.Expect(collectEvents(recorder)).To(BeEmpty(),
 			"two RBD backends share no export, whatever their empty fields compare as")
 	})
+}
+
+// podVolume returns the pod's volume of the given name, or nil.
+func podVolume(pod corev1.PodSpec, name string) *corev1.Volume {
+	for i := range pod.Volumes {
+		if pod.Volumes[i].Name == name {
+			return &pod.Volumes[i]
+		}
+	}
+	return nil
+}
+
+// podMount returns the first container's mount of the given volume, or nil.
+func podMount(pod corev1.PodSpec, name string) *corev1.VolumeMount {
+	for i := range pod.Containers[0].VolumeMounts {
+		if pod.Containers[0].VolumeMounts[i].Name == name {
+			return &pod.Containers[0].VolumeMounts[i]
+		}
+	}
+	return nil
+}
+
+// TestBuildBackupDeployment_RBDTarget covers an RBD target: it mounts no export,
+// and the Ceph backup driver finds its configuration and keyring in /etc/ceph,
+// projected from the target's own Secret. The backup volume keeps its shape,
+// because the CinderBackupBackend controller observes the projection by that
+// volume's Secret name.
+func TestBuildBackupDeployment_RBDTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildBackupDeployment(workloadCinder(), testRBDBackupProjection(), nil,
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+	pod := deploy.Spec.Template.Spec
+
+	g.Expect(podVolume(pod, backupShareVolumeName)).To(BeNil(), "an RBD target has no export")
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		g.Expect(mount.MountPath).NotTo(HavePrefix(backupMountPointBase))
+	}
+
+	backup := podVolume(pod, backupVolumeName)
+	g.Expect(backup.Secret).NotTo(BeNil(), "the backup volume stays a plain Secret volume")
+	g.Expect(backup.Secret.SecretName).To(Equal("cinder-backup-rbdbk-def456"))
+	g.Expect(backup.Secret.Items).To(Equal([]corev1.KeyToPath{{Key: backupConfDataKey, Path: backupConfDataKey}}))
+
+	ceph := podVolume(pod, cephVolumeName)
+	g.Expect(ceph).NotTo(BeNil())
+	g.Expect(ceph.Projected.Sources).To(Equal([]corev1.VolumeProjection{{
+		Secret: &corev1.SecretProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "cinder-backup-rbdbk-def456"},
+			Items: []corev1.KeyToPath{
+				{Key: cephConfDataKey, Path: "ceph.conf"},
+				{Key: keyringDataKey, Path: "ceph.client.cinder-backup.keyring"},
+			},
+		},
+	}}))
+	g.Expect(podMount(pod, cephVolumeName)).To(Equal(&corev1.VolumeMount{
+		Name: cephVolumeName, MountPath: "/etc/ceph", ReadOnly: true,
+	}))
+}
+
+// TestBackupCephProjection_DedupesAndReportsConflicts covers the paths two
+// sources would project one keyring file under. The API server refuses a
+// projected volume that maps two items to one path, so the first writer keeps
+// the path; a later source with the same key is dropped silently, one with a
+// different key is dropped and reported.
+func TestBackupCephProjection_DedupesAndReportsConflicts(t *testing.T) {
+	keyringOf := func(sources []corev1.VolumeProjection) map[string]string {
+		owners := map[string]string{}
+		for _, source := range sources {
+			for _, item := range source.Secret.Items {
+				owners[item.Path] = source.Secret.Name
+			}
+		}
+		return owners
+	}
+
+	t.Run("two backends sharing one user and one key project one keyring", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		first := testRBDBackendProjection("rbd-a")
+		second := testRBDBackendProjection("rbd-b")
+
+		sources, conflicts := backupCephProjection(testRBDBackupProjection(), []backendProjection{first, second})
+
+		g.Expect(conflicts).To(BeEmpty())
+		g.Expect(sources).To(HaveLen(2), "the target's source and the first backend's; the second is left empty")
+		g.Expect(keyringOf(sources)).To(Equal(map[string]string{
+			"ceph.conf":                         "cinder-backup-rbdbk-def456",
+			"ceph.client.cinder-backup.keyring": "cinder-backup-rbdbk-def456",
+			"ceph.client.cinder.keyring":        "cinder-backend-rbd-a-abc123",
+		}))
+	})
+
+	t.Run("two backends with different keys keep the first and report the second", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		first := testRBDBackendProjection("rbd-a")
+		second := testRBDBackendProjection("rbd-b")
+		second.rbd.keyDigest = strings.Repeat("f", 64)
+
+		sources, conflicts := backupCephProjection(testRBDBackupProjection(), []backendProjection{first, second})
+
+		g.Expect(keyringOf(sources)).To(HaveKeyWithValue("ceph.client.cinder.keyring", "cinder-backend-rbd-a-abc123"))
+		g.Expect(conflicts).To(Equal([]cephKeyringConflict{{
+			path:   "/etc/ceph/ceph.client.cinder.keyring",
+			first:  "backend rbd-a",
+			second: "backend rbd-b",
+		}}))
+	})
+
+	t.Run("the target keeps its keyring over a backend on the same path", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		backend := testRBDBackendProjection("rbd-a")
+		backend.rbd.user = "cinder-backup"
+
+		sources, conflicts := backupCephProjection(testRBDBackupProjection(), []backendProjection{backend})
+
+		g.Expect(sources).To(HaveLen(1), "the backend's source is left without items")
+		g.Expect(keyringOf(sources)).To(HaveKeyWithValue("ceph.client.cinder-backup.keyring",
+			"cinder-backup-rbdbk-def456"))
+		g.Expect(conflicts).To(Equal([]cephKeyringConflict{{
+			path:   "/etc/ceph/ceph.client.cinder-backup.keyring",
+			first:  "backup backend rbdbk",
+			second: "backend rbd-a",
+		}}))
+	})
+
+	t.Run("nothing RBD projects nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		sources, conflicts := backupCephProjection(testBackupProjection(),
+			[]backendProjection{testBackendProjection("nfs")})
+		g.Expect(sources).To(BeNil())
+		g.Expect(conflicts).To(BeNil())
+
+		sources, conflicts = backupCephProjection(nil, nil)
+		g.Expect(sources).To(BeNil())
+		g.Expect(conflicts).To(BeNil())
+	})
+}
+
+// TestReconcileBackupService_CephKeyringConflictWarns covers the half of that
+// dedup the rendered pod spec cannot show: the keyring a backend does not get
+// into the backup pod is named in a Warning event, because a backup of its
+// volume then fails with os-brick's "Keyring path ... is not readable".
+func TestReconcileBackupService_CephKeyringConflictWarns(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cinder := workloadCinder()
+	r := newCinderTestReconciler(cinder)
+	second := testRBDBackendProjection("rbd-b")
+	second.rbd.keyDigest = strings.Repeat("f", 64)
+
+	_, err := r.reconcileBackupService(ctx, r.Client, cinder, testRBDBackupProjection(),
+		[]backendProjection{testRBDBackendProjection("rbd-a"), second, testRBDBackendProjection("rbd-c")},
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		"Warning CephKeyringConflict backend rbd-b projects the keyring /etc/ceph/ceph.client.cinder.keyring "+
+			"that backend rbd-a already projects into the backup service with a different key, "+
+			"so its keyring is not applied there"),
+		"rbd-c carries rbd-a's key and loses nothing")
 }
 
 // TestReconcileBackupService_SharedExportMountOptions covers the half of that

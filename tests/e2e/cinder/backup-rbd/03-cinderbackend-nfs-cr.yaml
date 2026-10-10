@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The NFS volume backend of the cinder-bkrbd CR. The backup pod mounts its
+# export whatever the target's type, because a backup reads the source volume
+# itself; an RBD target changes nothing about that. The /volumes export is the
+# one every NFS suite of this tree shares.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: bkrbd-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-bkrbd
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

@@ -11,8 +11,8 @@ uWSGI, the scheduler, one `cinder-volume` process per attached
 [`CinderBackupBackend`](./cinder-backup-backend-crd.md) is attached. All three
 kinds live in `cinder.openstack.c5c3.io/v1alpha1`. `Cinder` describes the
 service, and the two satellites describe storage: a volume backend and the one
-backup driver. The volume backend ships the NFS and the RBD drivers, the
-backup backend the NFS driver.
+backup driver. The volume backend and the backup backend each ship the NFS and
+the RBD drivers.
 
 Storage attaches out-of-band, the inverted attachment
 [`GlanceBackend`](../glance/glance-backend-crd.md) established: the backend

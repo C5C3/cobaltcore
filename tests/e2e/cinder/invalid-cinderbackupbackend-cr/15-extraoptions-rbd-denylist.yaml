@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions carrying backup_ceph_pool on an RBD target is rejected
+# by the validating webhook's per-type denylist: the operator renders the
+# option from spec.rbd.pool. The schema has no counterpart; past the
+# webhook, the renderer keeps the typed value instead.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-rbd-denylist
+spec:
+  cinderRef:
+    name: cinder
+  type: RBD
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder-backup
+  extraOptions:
+    backup_ceph_pool: "images"

@@ -381,10 +381,11 @@ Four caveats come with the RBD driver:
   count only their own volumes, so the over-subscription check sees less
   provisioned capacity than the pool holds. Set
   `rbd_exclusive_cinder_pool: "false"` in `extraOptions` for a shared pool.
-- `cinder-backup` cannot read a volume on an RBD backend yet. The backup pod
-  carries no Ceph client configuration and no keyring
-  ([#1342](https://github.com/C5C3/cobaltcore/issues/1342)), so a backup of
-  such a volume fails even while a `CinderBackupBackend` is attached.
+- `cinder-backup` reads a volume on an RBD backend through os-brick with the
+  backend's own user, so the backup pod carries the backend's keyring at
+  `/etc/ceph/<cluster>.client.<user>.keyring` beside the backup target's files
+  ([Ceph files in the backup pod](./cinder-backup-backend-crd.md#ceph-files-in-the-backup-pod)).
+  A replaced key rolls the backup pod as well as the volume service.
 
 ## Detaching a backend
 

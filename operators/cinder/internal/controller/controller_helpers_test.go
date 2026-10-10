@@ -341,6 +341,41 @@ func credentialReadyBackupBackend(name string) *cinderv1alpha1.CinderBackupBacke
 	return backupBackend
 }
 
+// testRBDCinderBackupBackend returns a minimal RBD CinderBackupBackend attached
+// to the shared Cinder fixture, carrying the cluster name and the compression
+// admission materializes. Its key Secret is "<name>-key" (rbdKeySecret).
+func testRBDCinderBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
+	return &cinderv1alpha1.CinderBackupBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  testNamespace,
+			UID:        types.UID("backup-backend-uid-" + name),
+			Generation: 1,
+		},
+		Spec: cinderv1alpha1.CinderBackupBackendSpec{
+			CinderRef:   cinderv1alpha1.CinderRefSpec{Name: testCinderName},
+			Type:        cinderv1alpha1.CinderBackupBackendTypeRBD,
+			Compression: cinderv1alpha1.DefaultBackupCompression,
+			RBD: &cinderv1alpha1.RBDBackupBackendSpec{
+				Pool:         "backups",
+				User:         "cinder-backup",
+				Monitors:     []string{"ceph-mon.openstack.svc.cluster.local"},
+				Networks:     []string{"10.244.0.0/16"},
+				ClusterName:  cinderv1alpha1.DefaultRBDClusterName,
+				KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: name + "-key"},
+			},
+		},
+	}
+}
+
+// credentialReadyRBDBackupBackend builds an RBD CinderBackupBackend whose
+// CredentialsReady condition is already True.
+func credentialReadyRBDBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
+	backupBackend := testRBDCinderBackupBackend(name)
+	backupBackend.Status.Conditions = readyCredentials()
+	return backupBackend
+}
+
 // readyCredentials is the satellite status the cinder-side projections gate on.
 func readyCredentials() []metav1.Condition {
 	return []metav1.Condition{{

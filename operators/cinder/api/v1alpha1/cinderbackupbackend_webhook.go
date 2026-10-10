@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,21 +28,61 @@ import (
 // outside them fails every backup at runtime rather than at admission.
 var backupCompressionAlgorithms = []string{"none", "zlib", "bz2", "zstd"}
 
-// nfsBackupExtraOptionsDenylist enumerates the backup-section option names
-// spec.extraOptions must never carry, mapped to the spec field or component that
-// owns each. The operator renders all of them from the typed fields, so a
-// duplicate would silently shadow — or be shadowed by — the typed value depending
-// on render order.
+// sharedBackupExtraOptionsDenylist enumerates the backup-section option names
+// spec.extraOptions must never carry on a backup target of any type, mapped to
+// the spec field or component that owns each. The operator renders all of them
+// from the typed fields, so a duplicate would silently shadow — or be shadowed
+// by — the typed value depending on render order.
+var sharedBackupExtraOptionsDenylist = map[string]string{
+	"backup_driver":        "spec.type",
+	"backup_use_same_host": "the operator (backup service wiring)",
+	"host":                 "the operator (the host identity this deployment's backups are recorded against)",
+}
+
+// nfsBackupExtraOptionsDenylist adds the NFS backup driver options the operator
+// renders on a backup target of type NFS.
 var nfsBackupExtraOptionsDenylist = map[string]string{
-	"backup_driver":                "spec.type",
 	"backup_share":                 "spec.nfs.server and spec.nfs.path",
 	"backup_mount_point_base":      "the operator (the mount path the cinder-backup pod carries)",
 	"backup_mount_options":         "spec.nfs.mountOptions",
 	"backup_file_size":             "spec.fileSize",
 	"backup_compression_algorithm": "spec.compression",
-	"backup_use_same_host":         "the operator (backup service wiring)",
-	"host":                         "the operator (the host identity this deployment's backups are recorded against)",
 }
+
+// rbdBackupExtraOptionsDenylist adds the Ceph backup driver options the operator
+// renders on a backup target of type RBD. The chunk, stripe and journal options
+// stay reachable through extraOptions.
+//
+// #nosec G101 -- option names mapped to the fields that own them, not credentials.
+var rbdBackupExtraOptionsDenylist = map[string]string{
+	"backup_ceph_conf": "the operator (the ceph.conf it projects into /etc/ceph)",
+	"backup_ceph_user": "spec.rbd.user",
+	"backup_ceph_pool": "spec.rbd.pool",
+}
+
+// BackupExtraOptionsDenylist returns the spec.extraOptions denylist of a backup
+// target of type t: the options every backup target renders plus the ones its
+// driver renders. A type the operator does not know gets the shared options
+// alone. The result is a fresh map the caller may keep.
+//
+// It is exported because the backup renderer drops the same keys from
+// extraOptions, so a CR written past the validating webhook never carries a
+// denied option into its section.
+func BackupExtraOptionsDenylist(t CinderBackupBackendType) map[string]string {
+	denylist := maps.Clone(sharedBackupExtraOptionsDenylist)
+	switch t {
+	case CinderBackupBackendTypeNFS:
+		maps.Copy(denylist, nfsBackupExtraOptionsDenylist)
+	case CinderBackupBackendTypeRBD:
+		maps.Copy(denylist, rbdBackupExtraOptionsDenylist)
+	}
+	return denylist
+}
+
+// backupBackendUnionMessage is the message of the union CEL rule on
+// CinderBackupBackendSpec, repeated verbatim by its webhook twin.
+const backupBackendUnionMessage = "exactly one backup backend block matching spec.type must be set " +
+	"(type NFS requires spec.nfs, type RBD requires spec.rbd)"
 
 // CinderBackupBackendWebhook implements defaulting and validation webhooks for
 // the CinderBackupBackend CRD. Client is injected at startup for the
@@ -93,6 +134,9 @@ func (w *CinderBackupBackendWebhook) Default(_ context.Context, obj *CinderBacku
 	if obj.Spec.NFS != nil && obj.Spec.NFS.MountOptions == "" {
 		obj.Spec.NFS.MountOptions = DefaultNFSMountOptions
 	}
+	if obj.Spec.RBD != nil && obj.Spec.RBD.ClusterName == "" {
+		obj.Spec.RBD.ClusterName = DefaultRBDClusterName
+	}
 	return nil
 }
 
@@ -120,13 +164,13 @@ func (w *CinderBackupBackendWebhook) validate(ctx context.Context, b *CinderBack
 	specPath := field.NewPath("spec")
 
 	// Defense-in-depth union check alongside the spec-level CEL rule: exactly one
-	// backup backend block, matching spec.type.
+	// backup backend block, matching spec.type. Each half reports on the block it
+	// is about.
 	if (b.Spec.Type == CinderBackupBackendTypeNFS) != (b.Spec.NFS != nil) {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("nfs"),
-			b.Spec.Type,
-			"exactly one backup backend block matching spec.type must be set (type NFS requires spec.nfs)",
-		))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("nfs"), b.Spec.Type, backupBackendUnionMessage))
+	}
+	if (b.Spec.Type == CinderBackupBackendTypeRBD) != (b.Spec.RBD != nil) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("rbd"), b.Spec.Type, backupBackendUnionMessage))
 	}
 
 	// Defense-in-depth bounds on the chunk size alongside the Minimum and
@@ -162,10 +206,13 @@ func (w *CinderBackupBackendWebhook) validate(ctx context.Context, b *CinderBack
 		allErrs = append(allErrs, validateNFSExport(
 			specPath.Child("nfs"), b.Spec.NFS.Path, b.Spec.NFS.MountOptions)...)
 	}
+	if b.Spec.RBD != nil {
+		allErrs = append(allErrs, validateRBDBackupBackend(specPath.Child("rbd"), b.Spec.RBD)...)
+	}
 
 	allErrs = append(allErrs, validation.ExtraOptions(
 		specPath.Child("extraOptions"), b.Spec.ExtraOptions, validation.ExtraOptionsRules{
-			Denylist: nfsBackupExtraOptionsDenylist,
+			Denylist: BackupExtraOptionsDenylist(b.Spec.Type),
 		})...)
 	allErrs = append(allErrs, w.validateSingleAttachment(ctx, specPath, b)...)
 

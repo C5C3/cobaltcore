@@ -2060,9 +2060,11 @@ type CinderBackupBackendEntry struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Type selects the backup driver. Phase 1 supports NFS only; the enum mirrors
-	// the CinderBackupBackend CR's own type enum so an entry admitted here can
-	// never be rejected downstream by the CinderBackupBackend CRD.
+	// Type selects the backup driver. The ControlPlane projects NFS only; the
+	// enum is a subset of the CinderBackupBackend CR's own (NFS, RBD), so an
+	// entry admitted here can never be rejected downstream by the
+	// CinderBackupBackend CRD. An RBD backup target is applied as a
+	// CinderBackupBackend CR directly.
 	// +kubebuilder:validation:Enum=NFS
 	Type string `json:"type"`
 
