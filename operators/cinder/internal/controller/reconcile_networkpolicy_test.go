@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/naming"
@@ -70,7 +71,7 @@ func TestReconcileNetworkPolicy_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = testNamespace
 	r := newCinderTestReconciler(cinder, stale)
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -91,7 +92,7 @@ func TestReconcileNetworkPolicy_EnabledAppliesPolicy(t *testing.T) {
 	r := newNetworkPolicyTestReconciler(cinder)
 	r.OperatorNamespace = "cinder-system"
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -115,7 +116,7 @@ func TestReconcileNetworkPolicy_EmptyIngressFailsClosed(t *testing.T) {
 	cinder.Spec.NetworkPolicy = &cinderv1alpha1.NetworkPolicySpec{}
 	r := newCinderTestReconciler(cinder)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, cinder, testEgressPort, testShareHosts, nil)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to create NetworkPolicy that would allow all ingress"))
@@ -129,7 +130,7 @@ func TestBuildCinderNetworkPolicy_IngressAndEgressOrder(t *testing.T) {
 	cinder := validCinder()
 	cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 
-	np := buildCinderNetworkPolicy(cinder, "cinder-system", testEgressPort, testShareHosts)
+	np := buildCinderNetworkPolicy(cinder, "cinder-system", testEgressPort, testShareHosts, nil)
 
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(Equal(selectorLabels(cinder)))
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
@@ -165,12 +166,78 @@ func TestBuildCinderNetworkPolicy_ExportEgressFollowsTheAttachedBackends(t *test
 			cinder := validCinder()
 			cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 
-			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, tc.hosts)
+			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, tc.hosts, nil)
 
 			g.Expect(egressPorts(np)).To(Equal(tc.wantPorts))
 		})
 	}
 }
+
+// The Ceph rule is the one auto-derived rule with peers: it opens the monitor
+// and OSD ports towards the networks the RBD backends name, after the export
+// rule and before the operator's additional rules, and it is absent when no RBD
+// backend is projected.
+func TestBuildCinderNetworkPolicy_CephEgressFollowsTheRBDBackends(t *testing.T) {
+	additional := networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{{Port: ptrIntOrString(intstr.FromInt32(9999))}},
+	}
+	for _, tc := range []struct {
+		name      string
+		hosts     []string
+		networks  []string
+		wantPorts []int
+	}{
+		{
+			name:      "RBD backends alone",
+			networks:  []string{"10.128.0.0/22", "10.244.0.0/16"},
+			wantPorts: []int{53, 53, 3306, 11211, 5000, 5672, 3300, 6789, 6800, 9999},
+		},
+		{
+			name:      "no RBD backend",
+			hosts:     testShareHosts,
+			wantPorts: []int{53, 53, 3306, 11211, 5000, 5672, 2049, 9999},
+		},
+		{
+			name:      "NFS and RBD backends together",
+			hosts:     testShareHosts,
+			networks:  []string{"10.128.0.0/22", "10.244.0.0/16"},
+			wantPorts: []int{53, 53, 3306, 11211, 5000, 5672, 2049, 3300, 6789, 6800, 9999},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cinder := validCinder()
+			cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
+			cinder.Spec.NetworkPolicy.AdditionalEgress = []networkingv1.NetworkPolicyEgressRule{additional}
+
+			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, tc.hosts, tc.networks)
+
+			g.Expect(egressPorts(np)).To(Equal(tc.wantPorts))
+			g.Expect(np.Spec.Egress[len(np.Spec.Egress)-1]).To(Equal(additional), "the additional rules stay last")
+			if len(tc.networks) == 0 {
+				for _, rule := range np.Spec.Egress {
+					g.Expect(rule.To).To(BeEmpty(), "no rule carries peers without an RBD backend")
+				}
+				return
+			}
+
+			tcp := corev1.ProtocolTCP
+			ceph := np.Spec.Egress[len(np.Spec.Egress)-2]
+			g.Expect(ceph.To).To(Equal([]networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: "10.128.0.0/22"}},
+				{IPBlock: &networkingv1.IPBlock{CIDR: "10.244.0.0/16"}},
+			}))
+			g.Expect(ceph.Ports).To(Equal([]networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptrIntOrString(intstr.FromInt32(3300))},
+				{Protocol: &tcp, Port: ptrIntOrString(intstr.FromInt32(6789))},
+				{Protocol: &tcp, Port: ptrIntOrString(intstr.FromInt32(6800)), EndPort: ptr.To(int32(7300))},
+			}))
+		})
+	}
+}
+
+// ptrIntOrString returns a pointer to v, the shape NetworkPolicyPort.Port takes.
+func ptrIntOrString(v intstr.IntOrString) *intstr.IntOrString { return &v }
 
 // The bus rule is port-only and follows the transport URL: a broker on the TLS
 // port opens 5671, and the waiting pass, which materialised no transport URL and
@@ -190,7 +257,7 @@ func TestBuildCinderNetworkPolicy_MessagingEgressFollowsTheTransportURLPort(t *t
 			cinder := validCinder()
 			cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 
-			np := buildCinderNetworkPolicy(cinder, "", tc.egressPort, testShareHosts)
+			np := buildCinderNetworkPolicy(cinder, "", tc.egressPort, testShareHosts, nil)
 
 			g.Expect(egressPorts(np)).To(Equal(tc.wantPorts))
 			if tc.egressPort == 0 {
@@ -227,7 +294,7 @@ func TestBuildCinderNetworkPolicy_KeystoneEgress(t *testing.T) {
 			cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 			cinder.Spec.KeystoneEndpoint = tc.endpoint
 
-			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts)
+			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil)
 
 			g.Expect(egressPorts(np)).To(ContainElement(tc.wantPort),
 				"the Keystone endpoint port must be reachable from the Cinder pods")
@@ -239,7 +306,7 @@ func TestBuildCinderNetworkPolicy_KeystoneEgress(t *testing.T) {
 		cinder := keystoneFreeCinder()
 		cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 
-		np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts)
+		np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil)
 
 		g.Expect(egressPorts(np)).To(Equal([]int{53, 53, 3306, 11211, 5672, 2049}))
 	})
@@ -286,7 +353,7 @@ func TestBuildCinderNetworkPolicy_ServiceEgressFollowsTheConfiguredEndpoints(t *
 				}
 			}
 
-			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts)
+			np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil)
 
 			g.Expect(egressPorts(np)).To(Equal(tc.wantPorts))
 		})
@@ -299,7 +366,7 @@ func TestBuildCinderNetworkPolicy_OmitsCacheWhenAbsent(t *testing.T) {
 	cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 	cinder.Spec.Cache = commonv1.CacheSpec{}
 
-	np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts)
+	np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil)
 
 	g.Expect(egressPorts(np)).To(Equal([]int{53, 53, 3306, 5000, 5672, 2049}))
 }
@@ -314,7 +381,7 @@ func TestBuildCinderNetworkPolicy_AdditionalEgressAppendedLast(t *testing.T) {
 		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port9999}},
 	}}
 
-	np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts)
+	np := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil)
 
 	g.Expect(egressPorts(np)).To(Equal([]int{53, 53, 3306, 11211, 5000, 5672, 2049, 9999}))
 }
@@ -329,7 +396,7 @@ func TestBuildCinderNetworkPolicy_PodSelectorCoversEveryComponent(t *testing.T) 
 	cinder := workloadCinder()
 	cinder.Spec.NetworkPolicy = cinderNetworkPolicySpec()
 
-	podSelector := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts).Spec.PodSelector
+	podSelector := buildCinderNetworkPolicy(cinder, "", testEgressPort, testShareHosts, nil).Spec.PodSelector
 
 	g.Expect(podSelector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
 	selector := labels.SelectorFromSet(podSelector.MatchLabels)

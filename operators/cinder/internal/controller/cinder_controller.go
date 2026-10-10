@@ -464,6 +464,21 @@ func (s *pipelineState) policyShareHosts() []string {
 		fmt.Sprintf("tcp://%s:%d", s.backup.server, nfsEgressPort))
 }
 
+// cephNetworks returns the networks the Ceph egress rule opens: the sorted,
+// deduplicated union of spec.rbd.networks over the projected RBD backends, nil
+// when none is projected. Sorting keeps the rendered policy stable when two
+// backends name the same networks in a different order.
+func (s *pipelineState) cephNetworks() []string {
+	var networks []string
+	for _, backend := range s.backends {
+		if backend.backendType == cinderv1alpha1.CinderBackendTypeRBD {
+			networks = append(networks, backend.rbd.networks...)
+		}
+	}
+	slices.Sort(networks)
+	return slices.Compact(networks)
+}
+
 // pipelineSteps returns the ordered sub-reconciler pipeline for one Cinder. Each
 // step runs in dependency order; the first to return a non-zero result or an
 // error short-circuits the chain and funnels through updateStatus. state is the
@@ -616,7 +631,8 @@ func (r *CinderReconciler) parallelSteps(children client.Client,
 			Name:          "NetworkPolicy",
 			ConditionType: conditionTypeNetworkPolicyReady,
 			Fn: func(ctx context.Context, c *cinderv1alpha1.Cinder) (ctrl.Result, error) {
-				return r.reconcileNetworkPolicy(ctx, children, c, state.egressPort, state.policyShareHosts())
+				return r.reconcileNetworkPolicy(ctx, children, c, state.egressPort, state.policyShareHosts(),
+					state.cephNetworks())
 			},
 		},
 	}
