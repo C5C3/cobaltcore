@@ -453,16 +453,17 @@ func (s *pipelineState) digests() workloadDigests {
 }
 
 // policyShareHosts returns the NFS exports the networkpolicy member opens egress
-// to: the volume backends' shares plus the backup target's, because the backup
-// service mounts its own export alongside the volumes it reads and a Cinder that
-// only backs up would otherwise get no export rule at all.
+// to: the volume backends' shares plus the backup target's when it is NFS,
+// because the backup service mounts its own export alongside the volumes it
+// reads and a Cinder that only backs up would otherwise get no export rule at
+// all. An RBD backup target mounts no export; cephNetworks carries its egress.
 //
 // The repeated host a shared NFS server produces needs no deduplication:
 // networkpolicy.HostPortsEgressRule keys the rule on the distinct ports it
 // parses out of these URLs and leaves the destination unrestricted, so every
 // export contributes the same single 2049 port whatever its host.
 func (s *pipelineState) policyShareHosts() []string {
-	if s.backup == nil {
+	if s.backup == nil || s.backup.backupType != cinderv1alpha1.CinderBackupBackendTypeNFS {
 		return s.shareHosts
 	}
 	return append(slices.Clone(s.shareHosts),
@@ -470,15 +471,19 @@ func (s *pipelineState) policyShareHosts() []string {
 }
 
 // cephNetworks returns the networks the Ceph egress rule opens: the sorted,
-// deduplicated union of spec.rbd.networks over the projected RBD backends, nil
-// when none is projected. Sorting keeps the rendered policy stable when two
-// backends name the same networks in a different order.
+// deduplicated union of spec.rbd.networks over the projected RBD backends and
+// the projected RBD backup target, nil when none is projected. Sorting keeps the
+// rendered policy stable when two of them name the same networks in a
+// different order.
 func (s *pipelineState) cephNetworks() []string {
 	var networks []string
 	for _, backend := range s.backends {
 		if backend.backendType == cinderv1alpha1.CinderBackendTypeRBD {
 			networks = append(networks, backend.rbd.networks...)
 		}
+	}
+	if s.backup != nil && s.backup.backupType == cinderv1alpha1.CinderBackupBackendTypeRBD {
+		networks = append(networks, s.backup.rbd.networks...)
 	}
 	slices.Sort(networks)
 	return slices.Compact(networks)

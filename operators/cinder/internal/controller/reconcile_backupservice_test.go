@@ -31,14 +31,32 @@ const (
 	testBackupPath   = "/backups"
 )
 
-// testBackupProjection returns what reconcileBackupBackend hands the backup step.
+// testBackupProjection returns what reconcileBackupBackend hands the backup step
+// for an NFS target.
 func testBackupProjection() *backupProjection {
 	return &backupProjection{
 		name:         "backups",
+		backupType:   cinderv1alpha1.CinderBackupBackendTypeNFS,
 		server:       testBackupServer,
 		path:         testBackupPath,
 		mountOptions: cinderv1alpha1.DefaultNFSMountOptions,
 		secretName:   "cinder-backup-backups-def456",
+	}
+}
+
+// testRBDBackupProjection returns what reconcileBackupBackend hands the backup
+// step for an RBD target of the cluster ceph and the user cinder-backup.
+func testRBDBackupProjection() *backupProjection {
+	return &backupProjection{
+		name:       "rbdbk",
+		backupType: cinderv1alpha1.CinderBackupBackendTypeRBD,
+		rbd: &rbdProjection{
+			clusterName: "ceph",
+			user:        "cinder-backup",
+			networks:    []string{"10.244.0.0/16", "10.96.0.0/12"},
+			keyDigest:   "5f7c6b3f0f4d2e1a9c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f",
+		},
+		secretName: "cinder-backup-rbdbk-def456",
 	}
 }
 

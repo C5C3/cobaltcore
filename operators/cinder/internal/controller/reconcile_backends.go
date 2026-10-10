@@ -6,6 +6,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -110,13 +112,16 @@ type backendProjection struct {
 	secretName string
 }
 
-// rbdProjection is the RBD half of a backendProjection: the cluster name and the
-// user the projected files are named by, and the networks the Ceph egress rule
-// opens.
+// rbdProjection is the RBD half of a backendProjection or a backupProjection:
+// the cluster name and the user the projected files are named by, the networks
+// the Ceph egress rule opens, and the digest of the projected key
+// (cephxKeyDigest), which tells two sources apart that would project one
+// keyring file into the backup pod. No code prints the digest.
 type rbdProjection struct {
 	clusterName string
 	user        string
 	networks    []string
+	keyDigest   string
 }
 
 // renderedBackend is one backend rendered for projection: the data of its
@@ -373,41 +378,25 @@ func renderRBDBackend(ctx context.Context, children client.Client, cinder *cinde
 		return nil, fmt.Sprintf("backend %s has type %s but no rbd block", backend.Name, backend.Spec.Type), nil
 	}
 
-	keySecret := rbd.KeySecretRef.Name
-	key, err := secrets.GetSecretValue(ctx, children,
-		client.ObjectKey{Namespace: cinder.Namespace, Name: keySecret}, cinderv1alpha1.RBDKeySecretDataKey)
-	if err != nil {
-		if secrets.IsMissingSecretOrKey(err) {
-			return nil, fmt.Sprintf("RBD key Secret %q or its %s data key is missing",
-				keySecret, cinderv1alpha1.RBDKeySecretDataKey), nil
-		}
-		return nil, "", fmt.Errorf("reading the RBD key of backend %q: %w", backend.Name, err)
+	key, skip, err := readRBDKey(ctx, children, cinder.Namespace, rbd.KeySecretRef.Name,
+		fmt.Sprintf("backend %q", backend.Name))
+	if err != nil || skip != "" {
+		return nil, skip, err
 	}
-	key = strings.TrimSpace(key)
 
 	section := renderRBDBackendSection(cinder, backend)
 	if fault := controlCharFault(backend.Name, section); fault != "" {
 		return nil, fault, nil
 	}
-	// The two Ceph files are assembled from these values directly, so they need
-	// a pass of their own; the fault names the section, never a value, so the
-	// key does not reach the event.
-	if fault := controlCharFault(backend.Name+"/ceph", map[string]string{
-		"mon_host": strings.Join(rbd.Monitors, ","),
-		"cluster":  rbd.ClusterName,
-		"user":     rbd.User,
-		"key":      key,
-	}); fault != "" {
-		return nil, fault, nil
-	}
-	if fault := cephxKeyFault(keySecret, key); fault != "" {
+	if fault := cephFilesFault(backend.Name+"/ceph", rbd.Monitors, rbd.ClusterName, rbd.User,
+		rbd.KeySecretRef.Name, key); fault != "" {
 		return nil, fault, nil
 	}
 
 	return &renderedBackend{
 		data: map[string][]byte{
 			backendConfDataKey:   []byte(config.RenderINI(map[string]map[string]string{backend.Name: section})),
-			cephConfDataKey:      []byte(renderCephConf(rbd)),
+			cephConfDataKey:      []byte(renderCephConf(rbd.Monitors, rbd.ClusterName, rbd.User)),
 			keyringDataKey:       []byte(renderKeyring(rbd.User, key)),
 			volumeOverlayDataKey: volumeOverlay(backend.Name),
 		},
@@ -418,9 +407,43 @@ func renderRBDBackend(ctx context.Context, children client.Client, cinder *cinde
 				clusterName: rbd.ClusterName,
 				user:        rbd.User,
 				networks:    rbd.Networks,
+				keyDigest:   cephxKeyDigest(key),
 			},
 		},
 	}, "", nil
+}
+
+// readRBDKey reads and trims the userKey of the key Secret keySecret on
+// children. A missing Secret or data key is a skip reason; any other read
+// failure is returned, wrapped with subject.
+func readRBDKey(ctx context.Context, children client.Client, namespace, keySecret, subject string) (string, string, error) {
+	key, err := secrets.GetSecretValue(ctx, children,
+		client.ObjectKey{Namespace: namespace, Name: keySecret}, cinderv1alpha1.RBDKeySecretDataKey)
+	if err != nil {
+		if secrets.IsMissingSecretOrKey(err) {
+			return "", fmt.Sprintf("RBD key Secret %q or its %s data key is missing",
+				keySecret, cinderv1alpha1.RBDKeySecretDataKey), nil
+		}
+		return "", "", fmt.Errorf("reading the RBD key of %s: %w", subject, err)
+	}
+	return strings.TrimSpace(key), "", nil
+}
+
+// cephFilesFault returns the skip reason of an RBD target whose Ceph files
+// would carry a control character or a key the gate refuses, or "" when they
+// are clean. The two files are assembled from these values directly, so they
+// need a pass of their own beside the section's; the fault names label, never
+// a value, so the key does not reach the event.
+func cephFilesFault(label string, monitors []string, clusterName, user, keySecret, key string) string {
+	if fault := controlCharFault(label, map[string]string{
+		"mon_host": strings.Join(monitors, ","),
+		"cluster":  clusterName,
+		"user":     user,
+		"key":      key,
+	}); fault != "" {
+		return fault
+	}
+	return cephxKeyFault(keySecret, key)
 }
 
 // controlCharFault returns the skip reason of a backend whose options under
@@ -521,17 +544,17 @@ func applyCacheAndExtraOptions(section map[string]string, backend *cinderv1alpha
 	}
 }
 
-// renderCephConf renders the Ceph client configuration of an RBD backend, the
-// file rbd_ceph_conf names. librados finds the key through its keyring line.
-// log_file and admin_socket replace two defaults the service user cannot honour:
-// it can write neither /var/log/ceph nor /var/run/ceph, and librados would log a
-// warning for each on every connection the driver opens, which is one per
-// operation. The dollar signs are Ceph metavariables written verbatim, which
-// librados expands per process.
-func renderCephConf(rbd *cinderv1alpha1.RBDBackendSpec) string {
+// renderCephConf renders the Ceph client configuration of an RBD backend or an
+// RBD backup target, the file rbd_ceph_conf or backup_ceph_conf names. librados
+// finds the key through its keyring line. log_file and admin_socket replace two
+// defaults the service user cannot honour: it can write neither /var/log/ceph
+// nor /var/run/ceph, and librados would log a warning for each on every
+// connection the driver opens, which is one per operation. The dollar signs are
+// Ceph metavariables written verbatim, which librados expands per process.
+func renderCephConf(monitors []string, clusterName, user string) string {
 	return "[global]\n" +
-		"mon_host = " + strings.Join(rbd.Monitors, ",") + "\n" +
-		"keyring = " + cephConfigDir + "/" + cephKeyringFile(rbd.ClusterName, rbd.User) + "\n" +
+		"mon_host = " + strings.Join(monitors, ",") + "\n" +
+		"keyring = " + cephConfigDir + "/" + cephKeyringFile(clusterName, user) + "\n" +
 		"log_file = /dev/null\n" +
 		"admin_socket = /tmp/$cluster-$name.$pid.$cctid.asok\n"
 }
@@ -539,6 +562,13 @@ func renderCephConf(rbd *cinderv1alpha1.RBDBackendSpec) string {
 // renderKeyring renders the keyring file of the cephx user client.<user>.
 func renderKeyring(user, key string) string {
 	return "[client." + user + "]\n\tkey = " + key + "\n"
+}
+
+// cephxKeyDigest returns the lower-case hex SHA-256 of a trimmed cephx key, the
+// keyDigest of an rbdProjection.
+func cephxKeyDigest(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
 }
 
 // cephConfFile returns the file name the Ceph client configuration of the

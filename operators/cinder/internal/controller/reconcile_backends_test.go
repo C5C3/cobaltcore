@@ -6,6 +6,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -366,11 +368,13 @@ func TestReconcileBackends_RBDBackendProjects(t *testing.T) {
 	g.Expect(projections[0].backendType).To(Equal(cinderv1alpha1.CinderBackendTypeRBD))
 	g.Expect(projections[0].server).To(BeEmpty())
 	g.Expect(projections[0].path).To(BeEmpty())
+	keySum := sha256.Sum256([]byte(testRBDKey))
 	g.Expect(projections[0].rbd).To(Equal(&rbdProjection{
 		clusterName: "ceph",
 		user:        "cinder",
 		networks:    []string{"10.244.0.0/16", "10.96.0.0/12"},
-	}))
+		keyDigest:   hex.EncodeToString(keySum[:]),
+	}), "the digest is taken over the trimmed key")
 	g.Expect(projections[0].secretName).To(HavePrefix("cinder-backend-rbd-a-"))
 
 	secret := projectedSecret(t, r, projections[0].secretName)
