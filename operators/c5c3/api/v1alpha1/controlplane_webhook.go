@@ -2898,6 +2898,8 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	warnings = append(warnings, catalogWarnings...)
 
 	allErrs := w.validate(obj)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	allErrs = append(allErrs, floorErrs...)
 	allErrs = append(allErrs, ownershipErrs...)
 	allErrs = append(allErrs, catalogErrs...)
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
@@ -2927,9 +2929,11 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 // region would re-point the projection at the now-immutable Keystone child
 // fields and wedge the reconcile loop (#466). It additionally rejects an
 // openStackRelease downgrade (validateReleaseNotDowngraded), since Keystone DB
-// migrations are forward-only. Spec errors, immutability errors, and the
-// downgrade error are accumulated into a single Invalid response so a reviewer
-// sees all problems at once.
+// migrations are forward-only, and a change to a release below
+// release.MinimumSupported (validation.OpenStackReleaseFloor); an unchanged
+// release below the floor is admitted with a warning. Spec errors,
+// immutability errors, and the downgrade and floor errors are accumulated into
+// a single Invalid response so a reviewer sees all problems at once.
 //
 // It finally re-runs the cluster-wide namespace-claim check when — and only
 // when — this update changed the claim set, because the declared-before carve-out
@@ -2945,6 +2949,10 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateReleaseNotDowngraded(oldObj, newObj)...)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	allErrs = append(allErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 
 	// Family A (shape/ownership) always re-runs: it depends on nothing a
 	// regenerated catalog can invalidate, and a newly-derived Horizon endpoint
@@ -3042,7 +3050,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("openStackRelease"),
 			cp.Spec.OpenStackRelease,
-			"must match the OpenStack release pattern ^\\d{4}\\.[12]$ (e.g. 2025.2)",
+			"must match the OpenStack release pattern ^\\d{4}\\.[12]$ (e.g. 2026.1)",
 		))
 	}
 
