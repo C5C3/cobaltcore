@@ -60,7 +60,7 @@ func TestBuildAppCredCloudsYAML_ManagedGolden(t *testing.T) {
 	g := NewWithT(t)
 	cp := korcControlPlane()
 
-	g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret")).To(Equal(managedAppCredCloudsYAMLGolden),
+	g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", nil)).To(Equal(managedAppCredCloudsYAMLGolden),
 		"managed-mode app-credential clouds.yaml must stay byte-identical")
 }
 
@@ -84,7 +84,7 @@ func TestBuildCloudsYAML_ManagedIgnoresExternalBlock(t *testing.T) {
 		EndpointType: c5c3v1alpha1.ExternalEndpointTypeAdmin,
 	}
 
-	g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret")).To(Equal(managedAppCredCloudsYAMLGolden))
+	g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", nil)).To(Equal(managedAppCredCloudsYAMLGolden))
 	g.Expect(buildPasswordCloudsYAML(cp, testAdminPassword)).To(Equal(managedPasswordCloudsYAMLGolden))
 }
 
@@ -133,7 +133,7 @@ func TestBuildAppCredCloudsYAML_External(t *testing.T) {
 			cp.Spec.Region = tc.region
 			cp.Spec.Services.Keystone.External.EndpointType = tc.endpointType
 
-			got := buildAppCredCloudsYAML(cp, "ac-id", "ac-secret")
+			got := buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", nil)
 
 			g.Expect(got).To(ContainSubstring(`auth_url: "https://keystone.example.com/v3"`),
 				"External mode must dial the external authURL, never the Service DNS")
@@ -202,8 +202,10 @@ var cloudsYAMLBuilders = []struct {
 	build func(*c5c3v1alpha1.ControlPlane) string
 }{
 	{
-		name:  "app-credential",
-		build: func(cp *c5c3v1alpha1.ControlPlane) string { return buildAppCredCloudsYAML(cp, "ac-id", "ac-secret") },
+		name: "app-credential",
+		build: func(cp *c5c3v1alpha1.ControlPlane) string {
+			return buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", nil)
+		},
 	},
 	{
 		name:  "password",
@@ -443,6 +445,49 @@ func TestBuildUserCloudsYAML(t *testing.T) {
 	}
 }
 
+func TestBuildApplicationCredentialCloudsYAML(t *testing.T) {
+	t.Run("a nil ref renders the admin document byte for byte", func(t *testing.T) {
+		g := NewWithT(t)
+		g.Expect(buildAppCredCloudsYAML(korcControlPlane(), "ac-id", "ac-secret", nil)).
+			To(Equal(managedAppCredCloudsYAMLGolden))
+	})
+
+	edge1 := &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	cases := []struct {
+		name string
+		cp   func() *c5c3v1alpha1.ControlPlane
+		ref  *commonv1.TargetClusterRefSpec
+		want string
+	}{
+		{
+			name: "a target cluster gets the published endpoint",
+			cp: func() *c5c3v1alpha1.ControlPlane {
+				cp := korcControlPlane()
+				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.test/v3"
+				return cp
+			},
+			ref:  edge1,
+			want: "https://keystone.example.test/v3",
+		},
+		{name: "a target cluster without a publication gets no URL", cp: korcControlPlane, ref: edge1, want: ""},
+		{name: "external mode carries the external authURL", cp: korcExternalControlPlane, ref: edge1, want: "https://keystone.example.com/v3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cp := tc.cp()
+
+			rendered := buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", tc.ref)
+
+			clouds := parseCloudsYAML(g, rendered)
+			g.Expect(clouds[korcCloudName(cp)].Auth.AuthURL).To(Equal(tc.want))
+			g.Expect(rendered).To(ContainSubstring("auth_type: v3applicationcredential"))
+			g.Expect(rendered).To(ContainSubstring(`application_credential_id: "ac-id"`))
+			g.Expect(rendered).To(ContainSubstring(`application_credential_secret: "ac-secret"`))
+		})
+	}
+}
+
 // --- webhook-bypass fallbacks ---
 //
 // The defaulting webhook normally materializes endpointType, cloudName and the
@@ -497,7 +542,7 @@ func TestKORCResolvers_WebhookBypassFallbacks(t *testing.T) {
 
 		g.Expect(korcCloudName(cp)).To(Equal("admin"))
 		g.Expect(buildPasswordCloudsYAML(cp, testAdminPassword)).To(ContainSubstring("\n  \"admin\":\n"))
-		g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret")).To(ContainSubstring("\n  \"admin\":\n"))
+		g.Expect(buildAppCredCloudsYAML(cp, "ac-id", "ac-secret", nil)).To(ContainSubstring("\n  \"admin\":\n"))
 	})
 
 	t.Run("empty identities default to the stock Keystone bootstrap ones", func(t *testing.T) {
