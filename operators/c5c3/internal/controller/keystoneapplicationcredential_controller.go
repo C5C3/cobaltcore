@@ -61,7 +61,7 @@ var keystoneApplicationCredentialSubConditionTypes = []string{
 
 // keystoneApplicationCredentialFinalizerName gates the teardown of everything
 // an order created.
-const keystoneApplicationCredentialFinalizerName = "c5c3.io/keystoneapplicationcredential-teardown"
+const keystoneApplicationCredentialFinalizerName = "c5c3.io/keystoneapplicationcredential-teardown" //nolint:gosec // G101 false positive: finalizer name, not a credential.
 
 // keystoneApplicationCredentialLabelKeys are the ownership labels an order's
 // children carry, for the reason keystoneUserLabelKeys gives.
@@ -94,7 +94,7 @@ const (
 const (
 	// reasonKeystoneApplicationCredentialMinted is CredentialReady's True
 	// reason, also while a successor is being minted.
-	reasonKeystoneApplicationCredentialMinted = "CredentialMinted"
+	reasonKeystoneApplicationCredentialMinted = "CredentialMinted" //nolint:gosec // G101 false positive: condition reason name, not a credential.
 	// reasonKeystoneApplicationCredentialNoRoleOnProject reports that no
 	// KeystoneRoleAssignment in the namespace has assigned the user a role on the
 	// project.
@@ -104,13 +104,13 @@ const (
 	reasonKeystoneApplicationCredentialWaiting = "WaitingForCredential"
 	// reasonKeystoneApplicationCredentialFailed reports a terminal K-ORC error
 	// on a credential generation.
-	reasonKeystoneApplicationCredentialFailed = "CredentialFailed"
+	reasonKeystoneApplicationCredentialFailed = "CredentialFailed" //nolint:gosec // G101 false positive: condition reason name, not a credential.
 	// reasonKeystoneApplicationCredentialWaitingForCABundle reports a Keystone
 	// CA bundle the mint document cannot carry yet.
 	reasonKeystoneApplicationCredentialWaitingForCABundle = "WaitingForCABundle"
 	// reasonKeystoneApplicationCredentialError reports a Kubernetes-level failure
 	// writing or reading the credential's children.
-	reasonKeystoneApplicationCredentialError = "CredentialError"
+	reasonKeystoneApplicationCredentialError = "CredentialError" //nolint:gosec // G101 false positive: condition reason name, not a credential.
 )
 
 // KeystoneApplicationCredentialReconciler owns the
