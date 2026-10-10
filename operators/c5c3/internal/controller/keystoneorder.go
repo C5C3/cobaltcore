@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -53,6 +54,11 @@ import (
 // KeystoneProject whose deletion holds while a KeystoneRoleAssignment from the
 // same namespace still references it.
 const reasonOrderReferencedByRoleAssignments = "ReferencedByRoleAssignments"
+
+// reasonOrderReferencedByApplicationCredentials reports a KeystoneUser,
+// KeystoneProject or KeystoneRoleAssignment whose deletion holds while a
+// KeystoneApplicationCredential from the same namespace still uses it.
+const reasonOrderReferencedByApplicationCredentials = "ReferencedByApplicationCredentials"
 
 // orderLabelKeys are the three ownership label keys of one order kind.
 type orderLabelKeys struct{ Name, Namespace, Cluster string }
@@ -518,6 +524,41 @@ func orderReferencedMessage(names []string, namespace, noun string) string {
 		"because deleting the %s would take their assignments with it", names, namespace, noun, noun)
 }
 
+// referencingApplicationCredentials returns the sorted names of the
+// KeystoneApplicationCredentials in namespace that matches selects, read
+// through the order's cluster client. A cluster that does not serve the kind
+// has none.
+func referencingApplicationCredentials(
+	ctx context.Context, oc client.Client, namespace string,
+	matches func(*c5c3v1alpha1.KeystoneApplicationCredential) bool,
+) ([]string, error) {
+	var list c5c3v1alpha1.KeystoneApplicationCredentialList
+	if err := oc.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing KeystoneApplicationCredentials in %q: %w", namespace, err)
+	}
+	var names []string
+	for i := range list.Items {
+		if matches(&list.Items[i]) {
+			names = append(names, list.Items[i].Name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// orderReferencedByApplicationCredentialsMessage is the
+// ReferencedByApplicationCredentials message of an order whose deletion holds
+// while the KeystoneApplicationCredentials names lists still use it. noun names
+// the held order ("user", "project", "role assignment"), and why says why the
+// owner deletes the credential orders first.
+func orderReferencedByApplicationCredentialsMessage(names []string, namespace, noun, why string) string {
+	return fmt.Sprintf("KeystoneApplicationCredential(s) %q in namespace %q still reference this %s; delete them first, "+
+		"because %s", names, namespace, noun, why)
+}
+
 // --- watches ---
 
 // orderControlPlanePredicate passes the ControlPlane updates an order reads: a
@@ -565,4 +606,20 @@ func orderChildRequests(keys orderLabelKeys) mchandler.TypedEventHandlerFunc[cli
 	return func(_ mcruntime.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 		return mchandler.TypedEnqueueRequestsFromMapFuncWithClusterPreservation(orderChildToRequests(keys))
 	}
+}
+
+// applicationCredentialToReferencedOrderRequests is the event-handler factory
+// of the user and project legs that wake a held teardown: it maps a
+// KeystoneApplicationCredential to the order refName reads from it, in the
+// credential order's namespace, on the cluster the event came from.
+func applicationCredentialToReferencedOrderRequests(
+	refName func(*c5c3v1alpha1.KeystoneApplicationCredential) string,
+) mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return mchandler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+		ac, ok := obj.(*c5c3v1alpha1.KeystoneApplicationCredential)
+		if !ok || refName(ac) == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ac.Namespace, Name: refName(ac)}}}
+	})
 }

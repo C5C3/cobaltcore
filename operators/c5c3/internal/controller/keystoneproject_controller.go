@@ -100,11 +100,13 @@ type KeystoneProjectReconciler struct {
 // deletes one. The K-ORC Projects it writes and the ControlPlane reads are
 // granted by the ControlPlane's marker block. On a target cluster the
 // target-cluster-access chart's Role for an assigned namespace grants the same
-// verbs. The teardown hold reads the KeystoneRoleAssignments beside the order.
+// verbs. The teardown holds read the KeystoneRoleAssignments and
+// KeystoneApplicationCredentials beside the order.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch
 
 // Reconcile drives one KeystoneProject: the gates, finalizer installation, the
 // provision and the teardown.
@@ -341,7 +343,9 @@ func keystoneProjectName(order *c5c3v1alpha1.KeystoneProject) string {
 // orderTeardown waits for it while the ControlPlane exists.
 //
 // The teardown holds while a KeystoneRoleAssignment in the order's namespace
-// names it as projectRef, for the reason the KeystoneUser teardown gives.
+// names it as projectRef, for the reason the KeystoneUser teardown gives, and
+// while a KeystoneApplicationCredential does, whose credentials are scoped to
+// the project.
 func (r *KeystoneProjectReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneProject, cluster string,
 ) (ctrl.Result, error) {
@@ -357,6 +361,21 @@ func (r *KeystoneProjectReconciler) reconcileDelete(
 		statusBefore := order.Status.DeepCopy()
 		keystoneProjectFail(order)(reasonOrderReferencedByRoleAssignments,
 			orderReferencedMessage(referencing, order.Namespace, "project"))
+		return r.updateStatus(ctx, oc, order, statusBefore,
+			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
+	}
+	credentials, err := referencingApplicationCredentials(ctx, oc, order.Namespace,
+		func(ac *c5c3v1alpha1.KeystoneApplicationCredential) bool {
+			return ac.Spec.ProjectRef.Name == order.Name
+		})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(credentials) > 0 {
+		statusBefore := order.Status.DeepCopy()
+		keystoneProjectFail(order)(reasonOrderReferencedByApplicationCredentials,
+			orderReferencedByApplicationCredentialsMessage(credentials, order.Namespace, "project",
+				"the credentials are scoped to the project"))
 		return r.updateStatus(ctx, oc, order, statusBefore,
 			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
 	}
@@ -433,8 +452,8 @@ func (r *KeystoneProjectReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 //     cluster that serves the kind.
 //   - The Project children in the ControlPlane's namespace, mapped back by their
 //     labels.
-//   - KeystoneRoleAssignment: the project an assignment names, on the
-//     assignment's cluster, so an assignment leaving wakes a held teardown.
+//   - KeystoneRoleAssignment and KeystoneApplicationCredential: the project
+//     one names, on its cluster, so an order leaving wakes a held teardown.
 //   - ControlPlane: the orders on the management cluster that reference it, on
 //     the updates orderControlPlanePredicate passes.
 //
@@ -459,6 +478,10 @@ func (r *KeystoneProjectReconciler) setupWithOptions(mgr mcmanager.Manager, opts
 		Watches(&c5c3v1alpha1.KeystoneRoleAssignment{}, keystoneProjectReferenceRequests(),
 			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
 			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneRoleAssignmentGVK))).
+		Watches(&c5c3v1alpha1.KeystoneApplicationCredential{},
+			applicationCredentialToReferencedOrderRequests(applicationCredentialProjectName),
+			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
+			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneApplicationCredentialGVK))).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneProjectsMapper(local.GetClient())),
 			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).

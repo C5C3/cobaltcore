@@ -548,6 +548,104 @@ func TestKeystoneRoleAssignment_DeleteRemovesTheAssignmentThenTheRole(t *testing
 	}
 }
 
+// TestKeystoneRoleAssignment_DeleteHoldsWhileApplicationCredentialsUseIt pins
+// the hold: a credential order of the same user and project keeps the
+// assignment, one of another project does not, and the teardown runs once the
+// credential order is gone.
+func TestKeystoneRoleAssignment_DeleteHoldsWhileApplicationCredentialsUseIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	order := keystoneRoleAssignmentCR()
+	order.DeletionTimestamp = ptr.To(metav1.Now())
+	credential := keystoneApplicationCredentialCR()
+	credential.Finalizers = nil
+	otherProject := keystoneApplicationCredentialCR()
+	otherProject.Name = "other-project-appcred"
+	otherProject.Spec.ProjectRef.Name = "other-project"
+	var deleted []string
+	h := newKRAHarness(t, kuTestCluster, &interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleted = append(deleted, obj.GetName())
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, nil, append([]client.Object{order, credential, otherProject, kraControlPlane(kuTestCluster, "member")},
+		kraConvergedChildren(order, kuTestCluster)...)...)
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+	g.Expect(deleted).To(BeEmpty(), "a held teardown deletes nothing")
+	cond := kraCondition(kraGet(t, h))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonOrderReferencedByApplicationCredentials))
+	g.Expect(cond.Message).To(Equal(orderReferencedByApplicationCredentialsMessage(
+		[]string{"workflow-appcred"}, kuTestNamespace, "role assignment",
+		"the credentials are minted and deleted with a token scoped to the project, which needs the role")))
+
+	g.Expect(h.order.Delete(ctx, credential)).To(Succeed())
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	prefix := keystoneRoleAssignmentRef(order, kuTestCluster).childPrefix()
+	g.Expect(deleted).To(Equal([]string{prefix + "assignment", prefix + "role"}),
+		"a credential order of another project does not hold the assignment")
+}
+
+func TestKeystoneRoleAssignment_DeleteHoldListErrorIsReturned(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	boom := errors.New("boom")
+	order := keystoneRoleAssignmentCR()
+	order.DeletionTimestamp = ptr.To(metav1.Now())
+	h := newKRAHarness(t, c5c3v1alpha1.ManagementCluster, &interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*c5c3v1alpha1.KeystoneApplicationCredentialList); ok {
+				return boom
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	}, nil, append([]client.Object{order, kraControlPlane("", "member")}, kraConvergedChildren(order, "")...)...)
+
+	_, err := h.reconcile(context.Background())
+
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(ContainSubstring(`listing KeystoneApplicationCredentials in "tenant-a"`))
+	g.Expect(kraGet(t, h).Finalizers).To(ContainElement(keystoneRoleAssignmentFinalizerName))
+}
+
+func TestApplicationCredentialToRoleAssignmentRequests(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	matching := keystoneRoleAssignmentCR()
+	reader := keystoneRoleAssignmentCR()
+	reader.Name = "workflow-reader"
+	reader.Spec.Role = "reader"
+	otherProject := keystoneRoleAssignmentCR()
+	otherProject.Name = "other-project"
+	otherProject.Spec.ProjectRef.Name = "other"
+	c := orderFakeClient(t, nil, matching, reader, otherProject)
+	request := func(ra client.Object) mcreconcile.Request {
+		return mcreconcile.Request{
+			Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(ra)}, ClusterName: kuTestCluster,
+		}
+	}
+
+	g.Expect(kacEnqueued(applicationCredentialToRoleAssignmentRequests(), kuTestCluster, c,
+		keystoneApplicationCredentialCR())).To(ConsistOf(request(matching), request(reader)),
+		"every assignment of the pair holds")
+	g.Expect(kacEnqueued(applicationCredentialToRoleAssignmentRequests(), kuTestCluster, c,
+		keystoneUserCR(kuTestNamespace))).To(BeEmpty(), "an object of another kind maps to nothing")
+
+	failing := orderFakeClient(t, &interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("cache not synced")
+		},
+	})
+	g.Expect(kacEnqueued(applicationCredentialToRoleAssignmentRequests(), kuTestCluster, failing,
+		keystoneApplicationCredentialCR())).To(BeEmpty())
+}
+
 func TestKeystoneRoleAssignmentReferenceMapper(t *testing.T) {
 	g := NewGomegaWithT(t)
 

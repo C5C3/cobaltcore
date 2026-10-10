@@ -23,11 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -612,4 +614,85 @@ func TestStampOrderPushAndFresh(t *testing.T) {
 		}
 		g.Expect(orderPushFresh(ps, hashKey, beforeKey, "h1")).To(BeFalse())
 	})
+}
+
+func TestReferencingApplicationCredentials(t *testing.T) {
+	credential := func(name, user string) *c5c3v1alpha1.KeystoneApplicationCredential {
+		ac := keystoneApplicationCredentialCR()
+		ac.Name = name
+		ac.Spec.UserRef.Name = user
+		return ac
+	}
+	byUser := func(ac *c5c3v1alpha1.KeystoneApplicationCredential) bool { return ac.Spec.UserRef.Name == kuTestName }
+
+	t.Run("matching names are sorted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := orderFakeClient(t, nil, credential("b-batch", kuTestName), credential("a-api", kuTestName),
+			credential("other", "someone-else"))
+		names, err := referencingApplicationCredentials(context.Background(), c, kuTestNamespace, byUser)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(names).To(Equal([]string{"a-api", "b-batch"}))
+	})
+
+	t.Run("a cluster that does not serve the kind has none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := orderFakeClient(t, &interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return &meta.NoKindMatchError{GroupKind: keystoneApplicationCredentialGVK.GroupKind()}
+			},
+		})
+		names, err := referencingApplicationCredentials(context.Background(), c, kuTestNamespace, byUser)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(names).To(BeNil())
+	})
+
+	t.Run("a list error is wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		boom := errors.New("boom")
+		c := orderFakeClient(t, &interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error { return boom },
+		})
+		_, err := referencingApplicationCredentials(context.Background(), c, kuTestNamespace, byUser)
+		g.Expect(err).To(MatchError(boom))
+		g.Expect(err.Error()).To(ContainSubstring(`listing KeystoneApplicationCredentials in "tenant-a"`))
+	})
+}
+
+func TestOrderReferencedByApplicationCredentialsMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(orderReferencedByApplicationCredentialsMessage([]string{"workflow-appcred"}, kuTestNamespace,
+		"project", "the credentials are scoped to the project")).
+		To(Equal(`KeystoneApplicationCredential(s) ["workflow-appcred"] in namespace "tenant-a" still reference ` +
+			"this project; delete them first, because the credentials are scoped to the project"))
+}
+
+func TestApplicationCredentialToReferencedOrderRequests(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	enqueued := func(refName func(*c5c3v1alpha1.KeystoneApplicationCredential) string, obj client.Object) []mcreconcile.Request {
+		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[mcreconcile.Request]())
+		defer queue.ShutDown()
+		applicationCredentialToReferencedOrderRequests(refName)(kuTestCluster, nil).
+			Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: obj}, queue)
+		var requests []mcreconcile.Request
+		for queue.Len() > 0 {
+			request, _ := queue.Get()
+			requests = append(requests, request)
+			queue.Done(request)
+		}
+		return requests
+	}
+
+	order := keystoneApplicationCredentialCR()
+	g.Expect(enqueued(applicationCredentialUserName, order)).To(Equal([]mcreconcile.Request{{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: kuTestNamespace, Name: kuTestName}},
+		ClusterName: kuTestCluster,
+	}}))
+	g.Expect(enqueued(applicationCredentialProjectName, order)).To(Equal([]mcreconcile.Request{{
+		Request:     reconcile.Request{NamespacedName: types.NamespacedName{Namespace: kuTestNamespace, Name: kpTestName}},
+		ClusterName: kuTestCluster,
+	}}))
+	g.Expect(enqueued(applicationCredentialUserName, keystoneUserCR(kuTestNamespace))).
+		To(BeNil(), "an object of another kind maps to nothing")
 }

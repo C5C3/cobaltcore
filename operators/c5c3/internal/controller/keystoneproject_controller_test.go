@@ -525,3 +525,42 @@ func TestKeystoneProject_DeleteHoldsWhileRoleAssignmentsReferenceIt(t *testing.T
 	g.Expect(deleted).To(Equal([]string{prefix + "project", prefix + "project-probe"}),
 		"with the assignment gone the teardown proceeds")
 }
+
+func TestKeystoneProject_DeleteHoldsWhileApplicationCredentialsReferenceIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	order, seeded := kpDeletingOrder(kuTestCluster)
+	credential := keystoneApplicationCredentialCR()
+	credential.Finalizers = nil
+	otherProject := keystoneApplicationCredentialCR()
+	otherProject.Name = "other-project-appcred"
+	otherProject.Spec.ProjectRef.Name = "other-project"
+	var deleted []string
+	h := newKPHarness(t, kuTestCluster, &interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleted = append(deleted, obj.GetName())
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, append([]client.Object{
+		order, credential, otherProject, keystoneUserControlPlane(assignOn(kuTestNamespace, kuTestCluster)),
+	}, seeded...)...)
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+	g.Expect(deleted).To(BeEmpty(), "a held teardown deletes nothing")
+	cond := kpCondition(kpGet(t, h))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonOrderReferencedByApplicationCredentials))
+	g.Expect(cond.Message).To(Equal(orderReferencedByApplicationCredentialsMessage(
+		[]string{"workflow-appcred"}, kuTestNamespace, "project", "the credentials are scoped to the project")))
+
+	g.Expect(h.order.Delete(ctx, credential)).To(Succeed())
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	prefix := keystoneProjectRef(order, kuTestCluster).childPrefix()
+	g.Expect(deleted).To(Equal([]string{prefix + "project", prefix + "project-probe"}),
+		"with the credential order gone the teardown proceeds")
+}

@@ -131,12 +131,13 @@ type KeystoneUserReconciler struct {
 // The kinds it writes in the ControlPlane's namespace (K-ORC users, Secrets,
 // PushSecrets) and the ControlPlane reads are granted by the ControlPlane's
 // marker block. On a target cluster the target-cluster-access chart's Role for
-// an assigned namespace grants the same verbs. The teardown hold reads the
-// KeystoneRoleAssignments beside the order.
+// an assigned namespace grants the same verbs. The teardown holds read the
+// KeystoneRoleAssignments and KeystoneApplicationCredentials beside the order.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneusers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch
 
 // Reconcile drives one KeystoneUser: the gates, finalizer installation, the
 // provision and delivery, and the teardown.
@@ -402,7 +403,10 @@ func (r *KeystoneUserReconciler) keystoneUserEnsure(order *c5c3v1alpha1.Keystone
 // The teardown holds while a KeystoneRoleAssignment in the order's namespace
 // names it as userRef. K-ORC guards a User with a finalizer while a
 // RoleAssignment references it, so a sweep would wedge, and the user's removal
-// would take the assignment with it; the order says why it waits instead.
+// would take the assignment with it; the order says why it waits instead. It
+// holds as well while a KeystoneApplicationCredential names it: deleting the
+// user deletes its credentials in Keystone, and K-ORC could no longer delete
+// them.
 func (r *KeystoneUserReconciler) reconcileDelete(
 	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cluster string,
 ) (ctrl.Result, error) {
@@ -418,6 +422,20 @@ func (r *KeystoneUserReconciler) reconcileDelete(
 		statusBefore := order.Status.DeepCopy()
 		keystoneUserFail(order, conditionTypeKeystoneUserUserReady)(reasonOrderReferencedByRoleAssignments,
 			orderReferencedMessage(referencing, order.Namespace, "user"))
+		return r.updateStatus(ctx, oc, order, statusBefore,
+			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
+	}
+	credentials, err := referencingApplicationCredentials(ctx, oc, order.Namespace,
+		func(ac *c5c3v1alpha1.KeystoneApplicationCredential) bool { return ac.Spec.UserRef.Name == order.Name })
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(credentials) > 0 {
+		statusBefore := order.Status.DeepCopy()
+		keystoneUserFail(order, conditionTypeKeystoneUserUserReady)(reasonOrderReferencedByApplicationCredentials,
+			orderReferencedByApplicationCredentialsMessage(credentials, order.Namespace, "user",
+				"deleting the user destroys its application credentials in Keystone and K-ORC cannot delete a "+
+					"credential whose user is gone"))
 		return r.updateStatus(ctx, oc, order, statusBefore,
 			ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}, nil)
 	}
@@ -534,8 +552,8 @@ func (r *KeystoneUserReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 //     or a deletion brings the order back with the event's cluster.
 //   - The User, Secret and PushSecret children in the ControlPlane's namespace,
 //     mapped back by their labels.
-//   - KeystoneRoleAssignment: the user an assignment names, on the assignment's
-//     cluster, so an assignment leaving wakes a held teardown.
+//   - KeystoneRoleAssignment and KeystoneApplicationCredential: the user one
+//     names, on its cluster, so an order leaving wakes a held teardown.
 //   - ControlPlane: the orders on the management cluster that reference it,
 //     on the updates orderControlPlanePredicate passes.
 //
@@ -566,6 +584,10 @@ func (r *KeystoneUserReconciler) setupWithOptions(mgr mcmanager.Manager, opts cr
 		Watches(&c5c3v1alpha1.KeystoneRoleAssignment{}, keystoneUserReferenceRequests(),
 			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
 			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneRoleAssignmentGVK))).
+		Watches(&c5c3v1alpha1.KeystoneApplicationCredential{},
+			applicationCredentialToReferencedOrderRequests(applicationCredentialUserName),
+			mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageProviders,
+			mcbuilder.WithClusterFilter(commonmulticluster.ClusterServesKind(keystoneApplicationCredentialGVK))).
 		Watches(&c5c3v1alpha1.ControlPlane{},
 			commonmulticluster.LocalRequests(controlPlaneToKeystoneUsersMapper(local.GetClient())),
 			mcbuilder.WithPredicates(orderControlPlanePredicate()), engageLocal, engageNoProviders).

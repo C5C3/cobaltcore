@@ -934,6 +934,49 @@ func TestKeystoneUser_DeleteHoldsWhileRoleAssignmentsReferenceIt(t *testing.T) {
 	}), "with the assignment gone the teardown runs")
 }
 
+// TestKeystoneUser_DeleteHoldsWhileApplicationCredentialsReferenceIt pins the
+// second hold: a deleting user that a credential order in its namespace names
+// keeps every child, and tears down once the credential order is gone.
+func TestKeystoneUser_DeleteHoldsWhileApplicationCredentialsReferenceIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := keystoneUserControlPlane(assignOn(kuTestNamespace, ""))
+	order, seeded := kuDeletingOrder(cp)
+	credential := keystoneApplicationCredentialCR()
+	credential.Finalizers = nil
+	other := keystoneApplicationCredentialCR()
+	other.Name = "someone-elses-appcred"
+	other.Spec.UserRef.Name = "someone"
+	var deleted []string
+	h := newKUHarness(t, c5c3v1alpha1.ManagementCluster, &interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleted = append(deleted, obj.GetName())
+			return cl.Delete(ctx, obj, opts...)
+		},
+	}, nil, append([]client.Object{order, cp, credential, other}, seeded...)...)
+	before := kuLabelled(t, h.mgmt)
+
+	result, err := h.reconcile(ctx)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+	g.Expect(deleted).To(BeEmpty(), "a held teardown deletes nothing")
+	cond := kuCondition(h.get(t), conditionTypeKeystoneUserUserReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonOrderReferencedByApplicationCredentials))
+	g.Expect(cond.Message).To(Equal(orderReferencedByApplicationCredentialsMessage(
+		[]string{"workflow-appcred"}, kuTestNamespace, "user", "deleting the user destroys its application credentials "+
+			"in Keystone and K-ORC cannot delete a credential whose user is gone")))
+	g.Expect(kuLabelled(t, h.mgmt)).To(Equal(before))
+
+	g.Expect(h.mgmt.Delete(ctx, credential)).To(Succeed())
+	deleted = nil
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(deleted).NotTo(BeEmpty(), "with the credential order gone the teardown runs")
+}
+
 func TestKeystoneUser_DeleteFailsOpenWithoutTheControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
 
