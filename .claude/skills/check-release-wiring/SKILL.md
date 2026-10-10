@@ -35,7 +35,7 @@ scans `releases/*/`, services come from `source-refs.yaml` keys, the e2e
 legs load `<svc>:<release>` for every release `hack/ci-service-image-releases.sh`
 prints, and the Renovate globs cover `releases/**`) — but several touch
 points are enumerated by hand and drift silently. The repo carries eight
-services (`source-refs.yaml` keys), six Tempest-covered services (eighteen legs),
+services (`source-refs.yaml` keys), six Tempest-covered services (twelve legs),
 and seven `release-upgrade` suites; every table row below applies per service.
 
 | Layer | Where it lives | Source of truth |
@@ -47,7 +47,8 @@ and seven `release-upgrade` suites; every table row below applies per service.
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment` (pins the default release) plus `basic-deployment-<slug>/` for every other release, for each of the eight services | hand-maintained fixtures with hard-coded names and image refs; [[check-service-parity]] P6 checks the latest-release variant exists |
 | E2E fixture release pins | every `tag:`, `openStackRelease:`, `installedRelease:`, and `ghcr.io/c5c3/<img>:<YYYY.N>` in `tests/e2e*/` (~1,000 today, the tempest client image included) | the `releases/` directory set |
 | Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`repository:` + `tag:`) and the ci.yaml `e2e-multicluster` job's image preloads | hand-maintained; the suite runs one release, not a matrix |
-| Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
+| Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/lab/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
+| Release floor | `release.MinimumSupported` in `internal/common/release/release.go` and the `*-openstackrelease-below-floor.yaml` / `*-image-tag-below-floor.yaml` rejection fixtures of the `invalid-*` corpora | the oldest `releases/<version>/` directory |
 | Renovate | `tests/unit/renovate/*_test.sh` probes and the per-release `packageRules` in `renovate.json` (the `neutron-tempest-plugin` holds) | the `releases/` directory set |
 | Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/` | `release.IsSequentialUpgrade` and the sorted release list |
 | Version pattern | the `+kubebuilder:validation:Pattern` on every `OpenStackRelease` field (ControlPlane and seven service CRDs), `controlPlaneReleaseRegexp`, the `release.ParseRelease` minor guard, 16 generated CRD YAMLs | the three-layer agreement documented at `operators/c5c3/api/v1alpha1/controlplane_types.go` |
@@ -108,17 +109,27 @@ inventory. Interpret:
   each other release. Variants must pin their own release in every field
   and service image ref, carry only their own slug in names, and not
   outlive their release. The tempest client image is exempt: the e2e legs
-  load one tempest tag (`ghcr.io/c5c3/tempest:2025.2` today) and every
+  load one tempest tag (`ghcr.io/c5c3/tempest:2026.1` today) and every
   e2e fixture's Jobs run it, whatever release the suite deploys. Then a sweep over every `tests/e2e*/` fixture: each
   release a pin names must exist (the skip-level and stuck-upgrade
-  fixtures are excluded; L6 checks them). Last, each placed-services
+  fixtures are excluded, L6 checks them; so are the
+  `*-openstackrelease-below-floor.yaml` and `*-image-tag-below-floor.yaml`
+  rejection fixtures of the `tests/e2e/*/invalid-*/` corpora, L8 checks
+  them). Last, each placed-services
   `repository:` + `tag:` pair must appear as `/<img>:<tag>` in the ci.yaml
   `e2e-multicluster` job, and each release-tagged preload there must
   match the fixture pin.
 - **L4** — every default-release reference resolves to an existing
   release: the kind quick-start ControlPlane, the deploy-infra image
-  preload, every `${VAR:-YYYY.N}` fallback in `hack/*.sh`, and every
-  `:<YYYY.N>` image tag hard-coded in `ci.yaml`.
+  preload, every `${VAR:-YYYY.N}` fallback in `hack/*.sh`, the
+  `CONFIG_DIR` and `SERVICE_K8S_NAME` slug fallbacks of
+  `hack/ci-run-tempest.sh`, the two nova image refs of
+  `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of
+  the two metal-stack lab manifests, and every `:<YYYY.N>` image tag
+  hard-coded in `ci.yaml`. The fake compute's nova tags must also equal
+  the kind ControlPlane default; the lab manifests need only name a
+  wired release, because the lab may lag the kind default (decision D4
+  of #1321).
 - **L5** — the Renovate regression tests and the `releases/<v>/` paths in
   `renovate.json` `matchFileNames` name only existing releases. A retired
   probe breaks `make test-shell`; a retired rule is dead config.
@@ -140,6 +151,22 @@ inventory. Interpret:
   it, every generated CRD with an `openStackRelease` property carries the
   pattern, and `release.ParseRelease` still enforces the `{1,2}` minor
   set the `[12]` class encodes.
+- **L8** — the release floor, parsed from `release.MinimumSupported` in
+  `internal/common/release/release.go`, equals the oldest
+  `releases/<version>/` directory. A floor above it was moved before the
+  release was removed and is a `[FAIL]`. A floor below it admits a
+  release with no catalogs or images and is a `[FAIL]` too. A retirement
+  removes the release one pull request before it moves the floor, so that
+  step-2 pull request runs the audit with `ALLOW_FLOOR_LAG=1`, which turns
+  a floor exactly one release below into an `[INFO]`. Every
+  `*-openstackrelease-below-floor.yaml` and
+  `*-image-tag-below-floor.yaml` rejection fixture under
+  `tests/e2e/*/invalid-*/` must pin the field it is named for below the
+  floor (`openStackRelease`, or the lowest `tag:`), and every other pin
+  it carries, such as the image tag of an `openStackRelease` fixture,
+  must name a wired release. A tree without such a fixture is an
+  `[INFO]`, and a `MinimumSupported` line the parser no longer reads is
+  a `[FAIL]`.
 
 ### 2. Cross-reference the inventory
 
@@ -166,7 +193,7 @@ confirm by hand:
 5. Docs that enumerate releases: `docs/reference/testing/tempest-test-infrastructure.md`
    lists every `tests/tempest/<svc>-<slug>/` and the generator's
    per-entry table; `docs/guides/glance/filter-web-download-imports.md`
-   code-imports `tests/tempest/glance-2025-2/02-glance-cr.yaml`. When
+   code-imports `tests/tempest/glance-2026-1/02-glance-cr.yaml`. When
    the default moves, sweep `docs/` examples for the old tag
    ([[check-doc-drift]] covers the load-bearing pages).
 
@@ -179,7 +206,7 @@ GITHUB_OUTPUT=/dev/null GITHUB_EVENT_NAME=pull_request bash hack/ci-generate-bui
 GITHUB_OUTPUT=/dev/null bash hack/ci-generate-tempest-matrix.sh
 ```
 
-Trust these over the L1–L7 smoke checks when they disagree.
+Trust these over the L1–L8 smoke checks when they disagree.
 
 ### 4. Report
 
@@ -228,11 +255,13 @@ These recurring shapes are worth grepping for first:
    `upgrade-abort` avoids it by pulling the target from `registry.invalid`.
 5. **Upgrade suites stuck on the previous transition.** A new release is
    added but some of the eight upgrade suites still test the old pair.
-6. **Removed release, orphan references.** `releases/2025.2/` is deleted
-   but ~900 fixture pins, the plain basic-deployment suites, the kind
-   ControlPlane default, the `RELEASE:-2025.2` fallbacks, the option
-   catalogs, `overrides/2025.2/`, `patches/*/2025.2/`, the renovate
-   probes and hold rule, and the docs code-import still name it.
+6. **Removed release, orphan references.** `releases/<old>/` is deleted
+   but the fixture pins, the plain basic-deployment suites, the kind
+   ControlPlane default, the `RELEASE:-<old>` fallbacks, the option
+   catalogs, `overrides/<old>/`, `patches/*/<old>/`, the renovate
+   probes and hold rule, and the docs code-import still name it, or the
+   floor still sits at `<old>` (L8 reports it below the oldest wired
+   release).
 7. **Pattern widened in one layer only.** A future `YYYY.3` cadence
    change edits `release.ParseRelease` but not the eight CRD markers (or
    vice versa) — the API server and the webhook disagree about which
@@ -249,7 +278,9 @@ These recurring shapes are worth grepping for first:
   `release-upgrade/`, `upgrade-flow/`, and `upgrade-abort/` directory.
   A new service or suite is picked up without editing the script, as
   long as it keeps the `NN-<svc>-cr.yaml` / `NN-patch-upgrade.yaml` file
-  naming.
+  naming. L8 finds the release-floor fixtures by name, so a new one
+  follows the `NN-openstackrelease-below-floor.yaml` or
+  `NN-image-tag-below-floor.yaml` shape.
 - Pair this with [[check-renovate-coverage]] — that skill checks the
   release pins are *trackable* by Renovate; this skill checks the
   release directories are *wired*. With [[check-service-parity]] for the
