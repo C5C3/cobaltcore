@@ -70,6 +70,11 @@ VALID_IMAGE = """\
     repository: ghcr.io/c5c3/horizon
     tag: "2026.1\""""
 
+# Image whose tag names 2025.2, a release below the 2026.1 floor.
+IMAGE_TAG_BELOW_FLOOR = """\
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2\""""
+
 VALID_CACHE = """\
     clusterRef:
       name: openstack-memcached"""
@@ -421,6 +426,16 @@ FIXTURES: tuple[Fixture, ...] = (
             "      updateMode: Auto\n"
             "      minReplicas: 0"
         ),
+    ),
+    Fixture(
+        filename="22-image-tag-below-floor.yaml",
+        comment=(
+            "spec.image.tag naming 2025.2, below the 2026.1 release floor, passes the CRD\n"
+            "tag pattern and is rejected by the validating webhook\n"
+            "(validation.OpenStackReleaseFloor)."
+        ),
+        name="horizon-invalid-image-tag-below-floor",
+        image=IMAGE_TAG_BELOW_FLOOR,
     ),
 )
 

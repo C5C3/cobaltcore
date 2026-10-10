@@ -495,3 +495,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.image.pullPolicy')): true
             (contains($error, 'Unsupported value')): true
+  # spec.image.tag naming a release below the 2026.1 release floor passes the
+  # CRD tag pattern and must be rejected by the validating webhook.
+  - try:
+    - apply:
+        file: 39-image-tag-below-floor.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image.tag')): true
+            (contains($error, '2026.1 or later')): true
