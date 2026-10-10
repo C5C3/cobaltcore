@@ -207,6 +207,53 @@ test_qemu_rbd_driver() {
   assert_contains "qemu-img reaches librados, which finds no monitor" "$output" "error connecting"
 }
 
+# --- Test 11: libvirtd keeps a private, ephemeral ceph secret ---
+test_ceph_secret() {
+  echo "Test: virsh defines a private, ephemeral ceph secret and sets it from a base64 file"
+  local output exit_code=0 key=AQDhK2VnAAAAABAA7q3+8z9Hq1lnO4JmNo2Gkw==
+  # The calls of the lab's ceph-secret.sh
+  # (deploy/lab/metal-stack/hypervisor/libvirt-configmap.yaml) against this
+  # libvirtd, with a made-up key and the trailing newline a Secret volume
+  # carries. A second secret, not private, reads the value back:
+  # secret-get-value prints the stored bytes as base64, so it equals the
+  # file's text only when --file decoded it.
+  # shellcheck disable=SC2016 # expanded by the container's shell
+  output=$(docker run --rm -e KEY="$key" "$IMAGE" sh -c '
+    libvirtd -d || { echo "libvirtd -d exited non-zero"; exit 1; }
+    waited=0
+    while [ ! -S /run/libvirt/libvirt-sock ]; do
+      if [ "$waited" -ge 30 ]; then
+        echo "libvirtd did not open /run/libvirt/libvirt-sock within 30s"
+        exit 1
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    printf "%s\n" "$KEY" >/tmp/key
+    # secret <uuid> <private> <usage name>
+    secret() {
+      printf "<secret ephemeral=\"yes\" private=\"%s\"><uuid>%s</uuid><usage type=\"ceph\"><name>%s</name></usage></secret>\n" \
+        "$2" "$1" "$3" >/tmp/secret.xml
+      virsh -c qemu:///system secret-define /tmp/secret.xml >/dev/null &&
+        virsh -c qemu:///system secret-set-value "$1" --file /tmp/key >/dev/null
+    }
+    secret 090e4a3c-6c20-4e74-82dc-1a70382babe8 yes client.cinder && echo "private set"
+    secret 6f2b1c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d no client.probe && echo "public set"
+    virsh -c qemu:///system secret-get-value 090e4a3c-6c20-4e74-82dc-1a70382babe8 >/dev/null 2>&1 ||
+      echo "private value refused"
+    echo "public value [$(virsh -c qemu:///system secret-get-value 6f2b1c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d)]"
+    echo "files under /etc/libvirt/secrets [$(ls /etc/libvirt/secrets)]"
+  ' 2>&1) || exit_code=$?
+
+  assert_eq "the secret test exits 0" "0" "$exit_code"
+  assert_contains "a private ephemeral ceph secret is defined and set from the file" "$output" "private set"
+  assert_contains "a private secret refuses secret-get-value" "$output" "private value refused"
+  assert_contains "--file decodes the base64 key and ignores its trailing newline" \
+    "$output" "public value [$key]"
+  assert_contains "ephemeral secrets leave no file under /etc/libvirt/secrets" \
+    "$output" "files under /etc/libvirt/secrets []"
+}
+
 # --- Run all tests ---
 echo "=== libvirt container verification tests ==="
 echo "Image: $IMAGE"
@@ -230,6 +277,8 @@ echo ""
 test_daemon_smoke
 echo ""
 test_qemu_rbd_driver
+echo ""
+test_ceph_secret
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

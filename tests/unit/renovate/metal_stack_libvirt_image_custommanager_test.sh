@@ -8,7 +8,7 @@
 # packageRules:
 #   - the docker-datasource matchStrings regex captures the depName, the whole
 #     keeper tag (currentValue) and the whole digest (currentDigest) of all
-#     seven image: lines across the four manifests (2, 1, 2, 2), and the
+#     eight image: lines across the four manifests (3, 1, 2, 2), and the
 #     versioning is deb, which compares the -r<N> suffix and the Ubuntu
 #     revision numerically;
 #   - allowedVersions accepts the keeper shape <libvirt-package-version>-r<N>
@@ -18,7 +18,7 @@
 #     never automerged, without a minimumReleaseAge: this repository's own
 #     main builds the image, and the bump is the review the pin exists for;
 #   - the manager and all three rules name the four manifests and no other
-#     file, so one group moves all seven lines and no list names a file that
+#     file, so one group moves all eight lines and no list names a file that
 #     carries no pin.
 #
 # This is the regression test the check-renovate-coverage skill requires for
@@ -47,7 +47,7 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 LIBVIRT_PACKAGE="ghcr.io/c5c3/libvirt"
 
 # Each manifest and the number of libvirt image: lines it carries.
-MANIFESTS="deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml 2
+MANIFESTS="deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml 3
 deploy/lab/metal-stack/probe/nfs-module-load.yaml 1
 deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml 2
 deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml 2"
@@ -69,9 +69,9 @@ libvirt_rule() {
     | select($1)" "$RENOVATE_FILE" | head -1
 }
 
-# --- Test 1: the manager captures the whole pin of all seven lines ---
+# --- Test 1: the manager captures the whole pin of all eight lines ---
 test_custom_manager_captures_every_pin() {
-  echo "Test: customManagers regex captures depName, tag and digest of all seven libvirt image lines"
+  echo "Test: customManagers regex captures depName, tag and digest of all eight libvirt image lines"
 
   if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
     echo "  SKIP: jq or perl not installed (7 checks skipped)"
@@ -121,12 +121,12 @@ test_custom_manager_captures_every_pin() {
     fi
   done <<<"$MANIFESTS"
 
-  # The seven lines name one reference, so one group bump moves them together.
+  # The eight lines name one reference, so one group bump moves them together.
   local all_lines
   all_lines="$(while read -r path count; do
     grep -hE '^[[:space:]]*image: ghcr\.io/c5c3/libvirt' "$PROJECT_ROOT/$path" || true
   done <<<"$MANIFESTS" | sed -E 's/^[[:space:]]*//' | sort -u)"
-  assert_eq "the seven lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
+  assert_eq "the eight lines name one reference" "1" "$(grep -c . <<<"$all_lines")"
 }
 
 # --- Test 2: allowedVersions admits the keeper shape alone ---
