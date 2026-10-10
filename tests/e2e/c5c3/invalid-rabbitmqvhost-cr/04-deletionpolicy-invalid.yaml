@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# deletionPolicy 'Drop' is outside the Retain and Delete enum (CRD marker).
+# The error carries 'Unsupported value'.
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: rmv-invalid-deletion-policy
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  deletionPolicy: Drop
