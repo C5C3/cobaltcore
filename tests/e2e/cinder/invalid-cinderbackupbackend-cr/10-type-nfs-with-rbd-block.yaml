@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# type NFS carrying a spec.rbd block beside spec.nfs violates the union CEL
+# rule: exactly one backup backend block, matching spec.type. The schema
+# answers before the webhook twin.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-nfs-and-rbd
+spec:
+  cinderRef:
+    name: cinder
+  type: NFS
+  nfs:
+    server: nfs.example.com
+    path: /exports/cinder-backup
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder-backup

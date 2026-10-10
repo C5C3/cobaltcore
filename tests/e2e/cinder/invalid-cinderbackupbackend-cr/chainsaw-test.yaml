@@ -11,13 +11,13 @@
 # and asserts the message substring.
 #
 # Fixture categories:
-#   - Create-rejection fixtures (00-03) are each applied once and rejected.
-#   - The cinderRef-immutability pair: 04-immutable-cinderref-base is the valid
-#     base CR applied first, and 05-immutable-cinderref is applied as an UPDATE
-#     that the CRD CEL transition rule (self == oldSelf, evaluated only on
-#     UPDATE) rejects. A type-immutability update fixture is deliberately
-#     absent: NFS is the only Phase-1 enum value, so a changed type is already
-#     rejected by the Enum marker.
+#   - Create-rejection fixtures (00-03, 08-15) are each applied once and
+#     rejected.
+#   - The immutability updates: 04-immutable-cinderref-base is the valid base
+#     CR applied first, and 05-immutable-cinderref (cinderRef) and
+#     16-immutable-type (NFS to RBD) are applied as UPDATEs of it that the CRD
+#     CEL transition rules (self == oldSelf, evaluated only on UPDATE) reject.
+#     Each rejection leaves the base in place for the next.
 #   - The single-attachment pair: 06-second-backup-base is a valid backup
 #     backend applied first, and 07-second-backup-backend attaches a second one
 #     to the same Cinder, which the validating webhook's sibling List rejects.
@@ -93,6 +93,19 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'cinderRef is immutable')): true
+  # type is immutable (CEL transition rule, UPDATE-only): the base is moved from
+  # NFS to RBD. The update reaches the object as a merge patch, which leaves the
+  # base's nfs block in place, so the merged object also trips the exactly-one
+  # rule; the API server returns both messages and the step asserts on the
+  # transition rule's. TestIntegration_CRD_CELOnly_RejectsBackupTypeChange is the
+  # isolated case.
+  - try:
+    - apply:
+        file: 16-immutable-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type is immutable')): true
   # ── single-attachment block ─────────────────────────────────────────────
   # The valid base CR is applied first and must SUCCEED.
   - try:
@@ -118,3 +131,65 @@ spec:
             ($error != null): true
             (contains($error, 'nfs.path')): true
             (contains($error, 'should match')): true
+  # type RBD without spec.rbd must be rejected (union rule, second half).
+  - try:
+    - apply:
+        file: 09-type-rbd-without-rbd-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backup backend block matching spec.type')): true
+  # type NFS carrying spec.rbd beside spec.nfs must be rejected (union rule).
+  - try:
+    - apply:
+        file: 10-type-nfs-with-rbd-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backup backend block matching spec.type')): true
+  # spec.rbd.user with the client. prefix must be rejected by the field-level
+  # CEL rule: the keyring section is client.<user>.
+  - try:
+    - apply:
+        file: 11-rbd-user-client-prefix.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'without its client. prefix')): true
+  # An empty spec.rbd.monitors must be rejected by MinItems.
+  - try:
+    - apply:
+        file: 12-rbd-monitors-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'monitors')): true
+            (contains($error, 'should have at least 1 items')): true
+  # A spec.rbd.networks entry that is no IPv4 CIDR must be rejected by the item
+  # pattern: each entry becomes an ipBlock peer.
+  - try:
+    - apply:
+        file: 13-rbd-network-not-cidr.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'networks')): true
+            (contains($error, 'should match')): true
+  # spec.rbd.keySecretRef.name must be a DNS-1123 subdomain.
+  - try:
+    - apply:
+        file: 14-rbd-key-secret-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keySecretRef.name')): true
+            (contains($error, 'should match')): true
+  # extraOptions on an RBD target must not carry backup_ceph_pool: the
+  # webhook's per-type denylist rejects it.
+  - try:
+    - apply:
+        file: 15-extraoptions-rbd-denylist.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "backup_ceph_pool" is owned by')): true

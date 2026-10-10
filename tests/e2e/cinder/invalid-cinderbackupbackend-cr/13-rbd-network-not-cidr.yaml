@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.rbd.networks entry without a prefix length violates the IPv4 CIDR
+# item pattern. Each entry becomes an ipBlock peer of the Ceph egress rule,
+# where the API server would reject it on the Cinder's NetworkPolicy; the
+# webhook twin also rejects host bits, which the pattern cannot see.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-rbd-bad-network
+spec:
+  cinderRef:
+    name: cinder
+  type: RBD
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - "10.244.0.0"
+    keySecretRef:
+      name: ceph-client-cinder-backup

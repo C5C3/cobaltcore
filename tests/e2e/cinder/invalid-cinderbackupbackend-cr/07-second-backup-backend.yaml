@@ -6,8 +6,7 @@
 # 06-second-backup-base. The backup driver is a property of the single
 # cinder-backup Deployment rather than one of several backends it serves,
 # so the validating webhook's sibling List rejects the newcomer. Applied
-# AFTER 06-second-backup-base. This substitutes for the untestable
-# type-immutability update (NFS is the only enum value).
+# AFTER 06-second-backup-base.
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackupBackend
 metadata:

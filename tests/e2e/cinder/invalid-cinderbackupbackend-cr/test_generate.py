@@ -35,11 +35,12 @@ _GENERATOR = _HERE / "_generate.py"
 _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
 # Number of fixtures emitted by _generate.py: four create-rejection fixtures
-# (00-03), the cinderRef-immutability pair (04-base, 05-update), the
-# single-attachment pair (06-base, 07-second) and the export-injection fixture
-# (08). Bumping this value requires adding the matching Fixture entry AND the
+# (00-03), the immutability base and its two updates (04-base, 05-cinderRef,
+# 16-type), the single-attachment pair (06-base, 07-second), the
+# export-injection fixture (08) and the RBD create-rejection fixtures (09-15).
+# Bumping this value requires adding the matching Fixture entry AND the
 # matching `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 9
+_EXPECTED_FIXTURE_COUNT = 17
 
 # The fixtures Chainsaw applies expecting success. They persist for the rest of
 # the run, so the single-attachment rule must not see them as siblings of each

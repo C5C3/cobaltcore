@@ -15,12 +15,12 @@ Three fixture categories share this scaffold:
 
 * Create-rejection fixtures are each applied once and rejected at admission by
   a CEL XValidation rule, a kubebuilder marker, or webhook.validate().
-* The cinderRef immutability pair: ``04-immutable-cinderref-base`` is the valid
-  base CR applied first, and ``05-immutable-cinderref`` reuses its name so it is
-  applied as an UPDATE that re-points spec.cinderRef.name, which the CRD CEL
-  transition rule (self == oldSelf, evaluated only on UPDATE) rejects. A
-  type-immutability update fixture is deliberately absent: NFS is the only
-  Phase-1 enum value, so a changed type is already rejected by the Enum marker.
+* The immutability updates: ``04-immutable-cinderref-base`` is the valid base
+  CR applied first, and ``05-immutable-cinderref`` and ``16-immutable-type``
+  reuse its name so each is applied as an UPDATE, the first re-pointing
+  spec.cinderRef.name and the second changing spec.type from NFS to RBD. The CRD
+  CEL transition rules (self == oldSelf, evaluated only on UPDATE) reject both,
+  so the base stays in place for the second.
 * The single-attachment pair: ``06-second-backup-base`` is a valid backup
   backend applied first, and ``07-second-backup-backend`` attaches a second one
   to the same Cinder, which the validating webhook rejects. It is the
@@ -69,8 +69,9 @@ LICENSE_HEADER = """\
 # CinderBackupBackendSpec must be added below AND verified against every
 # fixture.
 # Placeholders: {name} CR name, {cinder_ref} spec.cinderRef.name, {type}
-# spec.type value, {nfs} the nfs block body (empty string to omit it), {extra}
-# trailing spec additions (fileSize, compression, extraOptions).
+# spec.type value, {nfs} the nfs block body and {rbd} the rbd block body (empty
+# string to omit either), {extra} trailing spec additions (fileSize,
+# compression, extraOptions).
 SCAFFOLD = """\
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackupBackend
@@ -80,7 +81,7 @@ spec:
   cinderRef:
     name: {cinder_ref}
   type: {type}
-{nfs}{extra}"""
+{nfs}{rbd}{extra}"""
 
 # Valid nfs block (required exactly when type is NFS). Carries its trailing
 # newline so a fixture that appends {extra} stays well-formed.
@@ -89,6 +90,31 @@ VALID_NFS = """\
     server: nfs.example.com
     path: /exports/cinder-backup
 """
+
+# Valid rbd block (required exactly when type is RBD). Carries its trailing
+# newline for the same reason as VALID_NFS.
+VALID_RBD = """\
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder-backup
+"""
+
+
+def _rbd_with(old: str, new: str) -> str:
+    """Return VALID_RBD with one line changed, failing loudly on a miss.
+
+    A replacement that matched nothing would render a valid block, and the
+    fixture would be admitted instead of pinning the rule it names.
+    """
+    if old not in VALID_RBD:
+        raise ValueError(f"{old!r} is not part of VALID_RBD")
+    return VALID_RBD.replace(old, new)
 
 
 @dataclass(frozen=True)
@@ -101,6 +127,7 @@ class Fixture:
     cinder_ref: str = "cinder"
     backend_type: str = "NFS"
     nfs: str = VALID_NFS
+    rbd: str = ""
     extra: str = ""
 
     def render(self) -> str:
@@ -109,6 +136,7 @@ class Fixture:
             cinder_ref=self.cinder_ref,
             type=self.backend_type,
             nfs=self.nfs,
+            rbd=self.rbd,
             extra=self.extra,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -207,8 +235,7 @@ FIXTURES: tuple[Fixture, ...] = (
             "06-second-backup-base. The backup driver is a property of the single\n"
             "cinder-backup Deployment rather than one of several backends it serves,\n"
             "so the validating webhook's sibling List rejects the newcomer. Applied\n"
-            "AFTER 06-second-backup-base. This substitutes for the untestable\n"
-            "type-immutability update (NFS is the only enum value)."
+            "AFTER 06-second-backup-base."
         ),
         name="cinderbackupbackend-b",
         cinder_ref="cinder-single",
@@ -228,6 +255,113 @@ FIXTURES: tuple[Fixture, ...] = (
             "    server: nfs.example.com\n"
             '    path: "/exports/cinder-backup\\nbackup_driver = swift"\n'
         ),
+    ),
+    Fixture(
+        filename="09-type-rbd-without-rbd-block.yaml",
+        comment=(
+            "type RBD without a spec.rbd block violates the second half of the union\n"
+            "CEL rule ((self.type == 'RBD') == has(self.rbd)); the webhook mirrors it\n"
+            "with the same message, but the schema answers first."
+        ),
+        name="cinderbackupbackend-no-rbd",
+        backend_type="RBD",
+        nfs="",
+    ),
+    Fixture(
+        filename="10-type-nfs-with-rbd-block.yaml",
+        comment=(
+            "type NFS carrying a spec.rbd block beside spec.nfs violates the union CEL\n"
+            "rule: exactly one backup backend block, matching spec.type. The schema\n"
+            "answers before the webhook twin."
+        ),
+        name="cinderbackupbackend-nfs-and-rbd",
+        rbd=VALID_RBD,
+    ),
+    Fixture(
+        filename="11-rbd-user-client-prefix.yaml",
+        comment=(
+            "spec.rbd.user with the client. prefix violates the field-level CEL rule\n"
+            "on RBDBackupBackendSpec.User: the value is the cephx name the backup\n"
+            "driver passes as --id and names the keyring section client.<user>, so the\n"
+            "prefix would be doubled. The webhook twin carries the same message; the\n"
+            "schema answers first."
+        ),
+        name="cinderbackupbackend-rbd-client-prefix",
+        backend_type="RBD",
+        nfs="",
+        rbd=_rbd_with("    user: cinder-backup\n", "    user: client.cinder-backup\n"),
+    ),
+    Fixture(
+        filename="12-rbd-monitors-empty.yaml",
+        comment=(
+            "An empty spec.rbd.monitors list violates its MinItems=1 marker: the\n"
+            "backup driver would have no monitor to connect to. The schema is the\n"
+            "only gate for the count."
+        ),
+        name="cinderbackupbackend-rbd-no-monitors",
+        backend_type="RBD",
+        nfs="",
+        rbd=_rbd_with("    monitors:\n    - ceph-mon.openstack.svc.cluster.local\n", "    monitors: []\n"),
+    ),
+    Fixture(
+        filename="13-rbd-network-not-cidr.yaml",
+        comment=(
+            "A spec.rbd.networks entry without a prefix length violates the IPv4 CIDR\n"
+            "item pattern. Each entry becomes an ipBlock peer of the Ceph egress rule,\n"
+            "where the API server would reject it on the Cinder's NetworkPolicy; the\n"
+            "webhook twin also rejects host bits, which the pattern cannot see."
+        ),
+        name="cinderbackupbackend-rbd-bad-network",
+        backend_type="RBD",
+        nfs="",
+        rbd=_rbd_with("    - 10.244.0.0/16\n", '    - "10.244.0.0"\n'),
+    ),
+    Fixture(
+        filename="14-rbd-key-secret-name-invalid.yaml",
+        comment=(
+            "spec.rbd.keySecretRef.name that is no DNS-1123 subdomain violates the\n"
+            "object-name pattern: no Secret can carry the name, so the gate would wait\n"
+            "forever. The schema answers before the webhook twin."
+        ),
+        name="cinderbackupbackend-rbd-bad-secret",
+        backend_type="RBD",
+        nfs="",
+        rbd=_rbd_with("      name: ceph-client-cinder-backup\n", "      name: Ceph_Key\n"),
+    ),
+    Fixture(
+        filename="15-extraoptions-rbd-denylist.yaml",
+        comment=(
+            "spec.extraOptions carrying backup_ceph_pool on an RBD target is rejected\n"
+            "by the validating webhook's per-type denylist: the operator renders the\n"
+            "option from spec.rbd.pool. The schema has no counterpart; past the\n"
+            "webhook, the renderer keeps the typed value instead."
+        ),
+        name="cinderbackupbackend-rbd-denylist",
+        backend_type="RBD",
+        nfs="",
+        rbd=VALID_RBD,
+        extra=(
+            "  extraOptions:\n"
+            '    backup_ceph_pool: "images"\n'
+        ),
+    ),
+    Fixture(
+        filename="16-immutable-type.yaml",
+        comment=(
+            "Update of the cinderbackupbackend-immutable base CR (04) that changes\n"
+            "spec.type from NFS to RBD with a well-formed spec.rbd block. The\n"
+            "spec-level CEL transition rule (self.type == oldSelf.type) rejects the\n"
+            "change on UPDATE: a restore reads a backup with the driver that wrote it.\n"
+            "It is applied after 05, whose rejected update leaves the base in place.\n"
+            "The merge patch leaves the base's nfs block in place, so the merged object\n"
+            "also trips the exactly-one rule. The API server evaluates every CEL rule\n"
+            "and returns both messages, and the suite asserts on the transition one."
+        ),
+        name="cinderbackupbackend-immutable",
+        cinder_ref="cinder-immutable",
+        backend_type="RBD",
+        nfs="",
+        rbd=VALID_RBD,
     ),
 )
 

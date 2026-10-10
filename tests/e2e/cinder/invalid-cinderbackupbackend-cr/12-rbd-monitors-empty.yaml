@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An empty spec.rbd.monitors list violates its MinItems=1 marker: the
+# backup driver would have no monitor to connect to. The schema is the
+# only gate for the count.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: cinderbackupbackend-rbd-no-monitors
+spec:
+  cinderRef:
+    name: cinder
+  type: RBD
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors: []
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder-backup
