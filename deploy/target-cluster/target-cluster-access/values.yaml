@@ -13,10 +13,10 @@ namespaces: []
 
 # The namespaces assigned to service owners on this cluster: the entries of a
 # ControlPlane's spec.namespaceAssignments that name this cluster. An owner
-# orders a Keystone user there with a KeystoneUser, and the c5c3-operator writes
-# the credentials Secret beside the order. Each entry gets one Role that reads
-# and updates KeystoneUser orders and writes Secrets, and nothing else: no
-# workload kind.
+# orders a Keystone user there with a KeystoneUser, or a database with a
+# MariaDBDatabase, and the c5c3-operator writes the credentials Secret beside
+# the order. Each entry gets one Role that reads and updates the orders and
+# writes Secrets, and nothing else: no workload kind.
 #
 # Each entry must also be in the registration Secret's namespaces key; the
 # chart cannot check that. The chart creates none of them. An empty entry, and
@@ -25,8 +25,8 @@ namespaces: []
 #
 # The CRDs of the order kinds ship in this chart's crds/ directory:
 # c5c3.io_keystoneusers.yaml, c5c3.io_keystoneprojects.yaml,
-# c5c3.io_keystoneroleassignments.yaml, c5c3.io_keystonecatalogentries.yaml
-# and c5c3.io_keystoneapplicationcredentials.yaml.
+# c5c3.io_keystoneroleassignments.yaml, c5c3.io_keystonecatalogentries.yaml,
+# c5c3.io_keystoneapplicationcredentials.yaml and c5c3.io_mariadbdatabases.yaml.
 # Helm installs them with the first install and never upgrades them, so apply
 # the crds/ files with kubectl on an upgrade that changes one. Install the chart
 # before the cluster is registered: the operator watches a kind only on a
