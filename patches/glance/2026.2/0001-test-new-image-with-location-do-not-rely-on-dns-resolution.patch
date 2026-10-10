@@ -1,0 +1,63 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+test_new_image_with_location: Do not rely on DNS resolution
+
+Backport of upstream commit a37c43135e (master, 2026-09-28, Change-Id
+I8ec68ff70e18fab68ed6a90fe30a1bbfc28c715c), cherry-picked to
+stable/2026.2 as a3e5f490b7 (2026-09-30). No glance tag contains it:
+33.0.0 is the newest 33.x tag as of 2026-10-10, and it resolves to the
+same commit as 33.0.0.0rc1.
+
+`TestImageFactory.test_new_image_with_location`
+(glance/tests/unit/test_store_image.py) builds an image whose location
+is `http://storeurl.com/container/<uuid>` (BASE_URI). Glance 33.0.0
+added an SSRF filter for HTTP(S) locations: `_check_location_uri`
+(glance/location.py) calls `store_utils.validate_external_location`,
+which for `http` and `https` returns `validate_uri`
+(glance/common/utils.py), and `get_validated_address` resolves the host
+with `socket.getaddrinfo`. The domain storeurl.com answers NXDOMAIN
+since about 2026-10-09, so the lookup raises `socket.gaierror`, the
+location is rejected before any store backend runs, and the test fails
+with `BadStoreUri: Invalid location`. The test-service-images job of
+the Build Images workflow has been red on every run since, on main and
+on every pull request, with this one failure out of 2423 tests. A suite
+that has to resolve a public host cannot pass without DNS either.
+
+The upstream change mocks `glance.common.utils.socket.getaddrinfo` for
+that one test and returns a single fake address, so the validation
+never touches the resolver. The hunk is carried verbatim, comment text
+and fake address included, so that the patch reverse-applies on the
+first tag that contains the upstream commit and can be retired then.
+
+The patch changes a test module only and nothing in the built image,
+so tests/container-images/verify_glance.sh carries no assertion for
+it.
+
+No 2026.1 twin: glance 32.0.0 has no validate_uri, so the test never
+resolves the host and the 2026.1 leg stays green.
+
+Applies to glance 33.0.0 (2026.2).
+
+Upstream status: merged on master as a37c43135e, backported to
+stable/2026.2 as a3e5f490b7 (2026-09-30).
+
+diff --git a/glance/tests/unit/test_store_image.py b/glance/tests/unit/test_store_image.py
+index a00832f..185ee69 100644
+--- a/glance/tests/unit/test_store_image.py
++++ b/glance/tests/unit/test_store_image.py
+@@ -1323,7 +1323,13 @@ class TestImageFactory(unit_test_base.StoreClearingUnitTest):
+         self.assertEqual('private', image.visibility)
+         self.assertEqual([], image.locations)
+ 
+-    def test_new_image_with_location(self):
++    @mock.patch("glance.common.utils.socket.getaddrinfo")
++    def test_new_image_with_location(self, mock_getaddrinfo):
++        # This avoid internet access in validate_external_location()
++        # (ie: DNS resolution of storeurl.com)
++        mock_getaddrinfo.return_value = [
++            (None, None, None, None, ('93.184.216.34', 80))
++        ]
+         locations = [{'url': '%s/%s' % (BASE_URI, UUID1),
+                       'metadata': {}}]
+         image = self.image_factory.new_image(locations=locations)
