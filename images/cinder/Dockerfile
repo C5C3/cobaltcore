@@ -89,7 +89,7 @@ RUN mkdir -p /var/lib/cinder/mnt \
 COPY --chmod=0755 cinder-amqp-ready /var/lib/openstack/bin/cinder-amqp-ready
 
 # Runtime system packages required by Cinder. CI passes them from
-# releases/<release>/extra-packages.yaml, which carries three entries.
+# releases/<release>/extra-packages.yaml, which carries six entries.
 # libpython3.12t64: the venv-builder-compiled uwsgi binary links
 # libpython3.12.so.1.0, which python-base does not ship (the same rationale as
 # the other service images).
@@ -102,6 +102,17 @@ COPY --chmod=0755 cinder-amqp-ready /var/lib/openstack/bin/cinder-amqp-ready
 # qemu-utils: create-from-image, clone and extend go through
 # cinder/image/image_utils.py (fetch_to_raw, resize_image, convert_image) and
 # the LUKS qcow2 pre-create in cinder/volume/drivers/remotefs.py.
+# ceph-common: the ceph and rbd tools. The RBD volume driver
+# (cinder/volume/drivers/rbd.py) runs ceph mon dump, rbd import, rbd export
+# and rbd status; the Ceph backup driver (cinder/backup/drivers/ceph.py) pipes
+# rbd export-diff into rbd import-diff. Its postinst adds the system user ceph
+# and the directories /var/lib/ceph and /var/log/ceph, owned by it and not
+# writable by 42424.
+# python3-rados, python3-rbd: the rados and rbd modules both drivers import
+# behind a guard; check_for_setup_error raises "rados and rbd python libraries
+# not found" without them. ceph-common depends on both, and the list names
+# them because the drivers import them. The step after this one makes the
+# venv see them.
 # The guard keeps local builds without --build-arg EXTRA_APT_PACKAGES a clean
 # no-op. /var/lib/apt/lists is a cache mount for the duration of the RUN, so
 # its contents never reach the layer and the sibling images' trailing
@@ -112,6 +123,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     if [ -n "${EXTRA_APT_PACKAGES}" ]; then \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES}; \
+    fi
+
+# ceph-bindings.pth makes the venv see rados and rbd alone, for the rationale
+# in images/glance/Dockerfile. Here ceph-common also pulls python3-requests,
+# python3-yaml and their dependencies (python3-chardet among them) into
+# /usr/lib/python3/dist-packages; the venv imports none of them.
+RUN site_packages="$(/var/lib/openstack/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" && \
+    mkdir -p /var/lib/openstack/ceph-bindings && \
+    for so in /usr/lib/python3/dist-packages/rados.cpython-*.so \
+        /usr/lib/python3/dist-packages/rbd.cpython-*.so; do \
+    if [ -e "$so" ]; then ln -s "$so" /var/lib/openstack/ceph-bindings/ || exit 1; fi; \
+    done && \
+    echo /var/lib/openstack/ceph-bindings > "${site_packages}/ceph-bindings.pth" && \
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' python3-rbd 2>/dev/null)" = installed ]; then \
+    /var/lib/openstack/bin/python -c 'import rados, rbd'; \
     fi
 
 # Static OCI Image Spec annotations for local builds (runtime stage only).
