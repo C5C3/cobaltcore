@@ -405,11 +405,13 @@ volume key is replaced. Backups are written to RBD only by the lab run of the
 
 **Design note:** the monitor `ceph-mon.openstack.svc.cluster.local` resolves
 to nothing, so the Ceph backup driver's one setup attempt fails in librados
-after about 15 seconds. `cinder-backup` runs that setup once at start in a
-looping call that stops on the first failure, logs the failure and starts its
-RPC server anyway, so the pod passes the AMQP readiness probe while the driver
-never connects. The volume backend's `rados_*` options bound its own setup the
-way they do in `rbd-backend`.
+right after the service starts: the cluster DNS answers that the name does not
+exist, librados prints `server name not found`, and the driver raises
+`error connecting to the cluster`. `cinder-backup` runs that setup once at
+start in a looping call that stops on the first failure, logs the failure and
+starts its RPC server anyway, so the pod passes the AMQP readiness probe while
+the driver never connects. The volume backend's `rados_*` options bound its
+own setup the way they do in `rbd-backend`.
 
 ---
 
