@@ -228,6 +228,19 @@ type MariaDBDatabaseReconciler struct {
 	ServiceAccountToken func() (string, error)
 }
 
+// RBAC for the MariaDBDatabase kind: the controller reads the orders and
+// updates them to install and release its finalizer; it never creates or
+// deletes one. It writes the order's mariadb-operator Database CR beside the
+// MariaDB. The ServiceAccount, Certificate, VaultDynamicSecret, ExternalSecret
+// and Secrets it writes in the ControlPlane's namespace, and the ControlPlane
+// and MariaDB reads, are granted by the ControlPlane's marker block. On a target
+// cluster the target-cluster-access chart's Role for an assigned namespace
+// grants the same verbs on the order.
+// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases,verbs=get;list;watch;create;update;patch;delete
+
 // Reconcile drives one MariaDBDatabase: the gates, finalizer installation, the
 // provision and delivery, and the teardown.
 func (r *MariaDBDatabaseReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
