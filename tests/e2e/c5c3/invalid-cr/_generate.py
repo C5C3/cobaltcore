@@ -3051,6 +3051,16 @@ FIXTURES: tuple[Fixture, ...] = (
         keystone="      mode: Managed\n",
         infrastructure=MANAGED_INFRA + "    publishedDatabaseEndpoint: db.example.com:65536\n",
     ),
+    Fixture(
+        filename="157-published-messaging-endpoint-invalid.yaml",
+        comment=(
+            "spec.infrastructure.publishedMessagingEndpoint without a port violates the\n"
+            "Pattern marker: the field is a host:port address. Schema-only, no webhook twin."
+        ),
+        name="cp-published-messaging-endpoint-invalid",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA + "    publishedMessagingEndpoint: broker.example.com\n",
+    ),
     # --- Cinder RBD entries (still the create-rejection matrix). Each fixture
     #     mutates one aspect of the valid RBD entry rbd1 (or the RBD backup entry
     #     rbdbk); every ControlPlane name stays at or under 36 characters, the

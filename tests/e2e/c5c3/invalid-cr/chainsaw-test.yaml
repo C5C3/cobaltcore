@@ -1285,6 +1285,15 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'spec.infrastructure.publishedDatabaseEndpoint')): true
+  # spec.infrastructure.publishedMessagingEndpoint must be a host:port address;
+  # a bare host fails the Pattern marker (schema-only, no webhook twin).
+  - try:
+    - apply:
+        file: 157-published-messaging-endpoint-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'publishedMessagingEndpoint')): true
             (contains($error, 'should match')): true
   # A services.cinder.backends entry of type RBD without an rbd block must be
   # rejected by the CEL union rule on the entry (CRD schema). The validating
