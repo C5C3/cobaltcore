@@ -20,7 +20,9 @@ Beside the user the owner can order a project, a role for the user on it, a
 catalog entry and an application credential, each as a CR of its own. The
 user's Secret scopes a token to the project once the role is assigned. Of the
 further orders only the application credential delivers a Secret, which the
-operator rotates on a schedule.
+operator rotates on a schedule. Apart from Keystone, the owner can order a vhost
+of their own on the ControlPlane's message bus with a `RabbitMQVhost`; its
+Secret carries a broker user the operator rotates the same way.
 
 The example orders a user for a fictional `workflow` service from a namespace
 of the same name.
@@ -53,6 +55,8 @@ examples below is one that devstack produces.
 | The `KeystoneProject`, `KeystoneRoleAssignment` and `KeystoneCatalogEntry` orders | `workflow` | They live beside the user they belong to |
 | The K-ORC ApplicationCredentials, their secrets, the user's `mint-cloud` document, the source Secret and the PushSecret of the application credential | `openstack` | K-ORC creates and deletes the credentials there, authenticated as the user |
 | The `KeystoneApplicationCredential` order and its Secret `workflow-appcred-credentials` | `workflow` | The credential is delivered where the service that reads it runs |
+| The topology operator's `Vhost`, `User` and `Permission` CRs, the password Secrets, the source Secret and the PushSecret of a vhost order | `openstack` | The RabbitMQ Messaging Topology Operator creates them on the broker that runs there, and the PushSecret pushes the credentials through that namespace's own store |
+| The `RabbitMQVhost` order and its Secret `workflow-bus-credentials` | `workflow` | The credentials are delivered where the service that reads them runs |
 
 The objects in `openstack` cannot carry an owner reference to an order in
 another namespace, so they carry the labels `c5c3.io/keystoneuser-name`,
@@ -424,6 +428,84 @@ The live credential keeps its expiry and is rotated once it expires. Raise the
 generation once more to replace it right away with a credential that does not
 expire.
 
+## Order a message-bus vhost
+
+A service that talks over the ControlPlane's message bus gets a vhost of its
+own, with a user that reaches that vhost and nothing else. The devstack
+ControlPlane declares the managed bus `openstack-rabbitmq` (`messaging: {}`),
+which is the only kind of bus that serves the order. Order a vhost from the
+assigned namespace:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: workflow-bus
+  namespace: workflow
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+EOF
+kubectl wait --for=condition=Ready rabbitmqvhost/workflow-bus -n workflow --timeout=10m
+kubectl get rabbitmqvhost workflow-bus -n workflow \
+  -o jsonpath='{.status.vhost}{" "}{.status.username}{" "}{.status.passwordGeneration}{"\n"}'
+```
+
+The vhost is named after the order with a hash, `workflow-bus-<8 hex>`, and
+the user after the vhost and the generation, `workflow-bus-<8 hex>-v1`. The
+Secret `workflow-bus-credentials` carries `transport_url`, `host`, `port`,
+`username`, `password` and `vhost`. Point oslo.messaging at the URL:
+
+```bash
+kubectl get secret workflow-bus-credentials -n workflow \
+  -o jsonpath='{.data.transport_url}' | base64 -d
+```
+
+```text
+rabbit://workflow-bus-<8 hex>-v1:<generated>@openstack-rabbitmq.openstack.svc:5672/workflow-bus-<8 hex>
+```
+
+The broker accepts the user and lists the vhost as its only permission. Check
+both from the broker pod:
+
+```bash
+vhost=$(kubectl get rabbitmqvhost workflow-bus -n workflow -o jsonpath='{.status.vhost}')
+user=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.username}' | base64 -d)
+password=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.password}' | base64 -d)
+kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
+  rabbitmqctl authenticate_user "$user" "$password"
+kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
+  rabbitmqctl list_user_permissions "$user"
+```
+
+The first command reports `Success`, and the second lists `$vhost` with `.*`
+for configure, write and read.
+
+The user rotates on the schedule the application credential follows: every 720
+hours the operator creates the successor user `<vhost>-v2`, switches the Secret
+once the broker holds it, and deletes the superseded user 24 hours later. The
+superseded user keeps working through those 24 hours, so a service reads the
+Secret again within them. `spec.rotation.interval` and
+`spec.rotation.gracePeriod` change the schedule, `interval: 0s` turns it off,
+and raising `spec.passwordGeneration` above `status.passwordGeneration`
+rotates at once.
+
+Deleting the order deletes the user and its backup either way. The vhost and
+the queues and messages in it stay under the default `spec.deletionPolicy:
+Retain`, and an order re-created with the same name finds them again. Set
+`Delete` before deleting the order to remove them as well:
+
+```bash
+kubectl patch rabbitmqvhost workflow-bus -n workflow --type merge \
+  -p '{"spec":{"deletionPolicy":"Delete"}}'
+kubectl delete rabbitmqvhost workflow-bus -n workflow
+```
+
+A retained vhost is removed by hand with `rabbitmqctl delete_vhost` in the
+broker pod. See the [RabbitMQVhost CRD](../reference/c5c3/rabbitmqvhost-crd.md).
+
 ## Register a catalog entry
 
 A catalog row is visible to every cloud user, so the entry has to admit catalog
@@ -582,6 +664,12 @@ that cluster:
    without one the order reports `KeystoneNotPublished`.
 4. The order is applied on the target cluster, with `controlPlaneRef.namespace:
    openstack`, and the Secret appears beside it there with the public URL.
+5. For a `RabbitMQVhost` the ControlPlane records the address it publishes the
+   broker at by its own means in
+   `spec.infrastructure.publishedMessagingEndpoint`, as `host:port`. Without one
+   the vhost and its user are provisioned and the order reports
+   `MessagingNotPublished`; with one the Secret carries that host and port. The
+   `target-cluster-access` chart ships the RabbitMQVhost CRD as well.
 
 See [Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
 
@@ -601,10 +689,11 @@ through the identity API directly.
 - [KeystoneUser Reconciler Architecture](../reference/c5c3/keystoneuser-reconciler.md): the gates, the steps and the teardown order.
 - [KeystoneProject CRD](../reference/c5c3/keystoneproject-crd.md), [KeystoneRoleAssignment CRD](../reference/c5c3/keystoneroleassignment-crd.md) and [KeystoneCatalogEntry CRD](../reference/c5c3/keystonecatalogentry-crd.md): the further orders, their consent and their conditions.
 - [KeystoneApplicationCredential CRD](../reference/c5c3/keystoneapplicationcredential-crd.md): the rotation schedule, the Secret contract and the holds the credential order puts on the user, the project and the assignment.
-- [Keystone Orders Reconciler Architecture](../reference/c5c3/keystone-orders-reconciler.md): the scaffold the five order kinds share, and the holds.
+- [Keystone Orders Reconciler Architecture](../reference/c5c3/keystone-orders-reconciler.md): the scaffold the order kinds share, and the holds.
+- [RabbitMQVhost CRD](../reference/c5c3/rabbitmqvhost-crd.md) and [RabbitMQVhost Reconciler Architecture](../reference/c5c3/rabbitmqvhost-reconciler.md): the vhost order, its rotation, its deletion policy and its Secret contract.
 - [ControlPlane CRD: NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec): the assignment field and its validation.
 - [Register a Service the ControlPlane Does Not Manage](./register-a-foreign-service.md): a KeystoneService with a catalog entry and roles.
-- [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suite behind this guide.
+- [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suites behind this guide.
 - [Quick Start (ControlPlane)](../quick-start-controlplane.md): the devstack this guide builds on.
 
 ## Tested by
@@ -662,4 +751,24 @@ suites never collide.
 
 ::: details The Job the suite authenticates with the application credential from
 <<< @/../tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml#appcred-verify-job
+:::
+
+The vhost order mirrors a second suite, the one with a live managed bus:
+
+```bash
+chainsaw test --test-dir tests/e2e/c5c3/messaging
+```
+
+It orders a vhost from an assigned namespace, checks the six keys and the
+OpenBao backup, and proves with `rabbitmqctl` in the broker pod that the user
+authenticates and holds `.*` on its vhost alone. It repairs an edited and a
+deleted Secret, observes a rotation on a three-minute interval with both users
+valid during the one-minute grace period and the superseded one refused
+afterwards, and rotates by hand with the schedule off. It deletes one order
+under `Retain`, whose vhost stays on the broker, and one under `Delete`, whose
+vhost goes, and freezes an order by withdrawing the assignment. The suite runs
+on the `e2e-operator (c5c3)` job; its plane is `cp` and its order `workflow`.
+
+::: details The vhost order the messaging suite applies
+<<< @/../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
 :::
