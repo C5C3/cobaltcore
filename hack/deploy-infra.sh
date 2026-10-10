@@ -3764,18 +3764,33 @@ main() {
   fi
   log "rabbitmq-cluster-operator Kustomization is Ready."
 
-  # The Flux `images:` override in
-  # deploy/flux-system/releases/rabbitmq-cluster-operator.yaml keys on the image
-  # NAME upstream's ./config/installation resolves to, and kustomize silently
-  # NO-OPS when no resource matches that name. If upstream re-points the base at
-  # a different image (it already moved once), the override matches nothing,
-  # kustomize reports no error, and the cluster runs the mutable `latest` tag for
-  # a controller holding cluster-wide RBAC over RabbitmqClusters, StatefulSets
-  # and Secrets. Nothing in the release file's diff shows that; the rendered
-  # Deployment does, so assert the digest pin on the object that actually ran.
-  # rabbitmq-system is the operator's own namespace (the upstream base declares
-  # it and namespaces every resource into it), so every image running there is
-  # one this override has to have reached.
+  # The RabbitMQ Messaging Topology Operator arrives the same way
+  # (deploy/flux-system/releases/messaging-topology-operator.yaml) and depends
+  # on the Cluster Operator's Kustomization. It serves the Vhost, User and
+  # Permission CRDs RabbitMQVhost orders are provisioned through, so it is on
+  # every cluster this script provisions as well.
+  log "Phase 3b: Waiting for the messaging-topology-operator Kustomization..."
+  if ! kubectl wait kustomization/messaging-topology-operator -n flux-system \
+    --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
+    log "ERROR: kustomization/messaging-topology-operator did not become Ready within ${HELMRELEASE_TIMEOUT}s."
+    kubectl get kustomization -n flux-system 2>/dev/null || true
+    exit 1
+  fi
+  log "messaging-topology-operator Kustomization is Ready."
+
+  # The Flux `images:` overrides in
+  # deploy/flux-system/releases/rabbitmq-cluster-operator.yaml and
+  # deploy/flux-system/releases/messaging-topology-operator.yaml key on the
+  # image NAME upstream's ./config/installation resolves to, and kustomize
+  # silently NO-OPS when no resource matches that name. If upstream re-points a
+  # base at a different image (the Cluster Operator already moved once), the
+  # override matches nothing, kustomize reports no error, and the cluster runs
+  # the mutable `latest` tag for a controller holding cluster-wide RBAC over
+  # RabbitmqClusters, StatefulSets and Secrets. Nothing in the release file's
+  # diff shows that; the rendered Deployment does, so assert the digest pin on
+  # the object that actually ran. rabbitmq-system is the namespace both upstream
+  # bases declare and namespace every resource into, so every image running
+  # there is one that one of the two overrides has to have reached.
   local rabbit_image rabbit_image_seen=false
   for rabbit_image in $(kubectl get deployment -n rabbitmq-system \
     -o 'jsonpath={.items[*].spec.template.spec.containers[*].image}'); do
@@ -3783,14 +3798,15 @@ main() {
     if [[ "${rabbit_image}" != *"@sha256:"* ]]; then
       log "ERROR: a rabbitmq-system image is not digest-pinned: ${rabbit_image}"
       log "       The spec.images override in deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-      log "       no longer matches the image name upstream's ./config/installation resolves to."
+      log "       or deploy/flux-system/releases/messaging-topology-operator.yaml no longer matches"
+      log "       the image name upstream's ./config/installation resolves to."
       exit 1
     fi
-    log "rabbitmq-cluster-operator image is digest-pinned: ${rabbit_image}"
+    log "rabbitmq-system image is digest-pinned: ${rabbit_image}"
   done
   if [[ "${rabbit_image_seen}" != "true" ]]; then
     log "ERROR: no Deployment found in namespace rabbitmq-system; the digest pin"
-    log "       of the rabbitmq-cluster-operator image could not be verified."
+    log "       of the RabbitMQ operator images could not be verified."
     exit 1
   fi
 
@@ -3838,6 +3854,10 @@ main() {
   # Kustomization (Phase 3b above); the c5c3 operator watches it under a
   # discovery guard and restarts when it appears later, so waiting here keeps a
   # WITH_CONTROLPLANE deploy from paying that restart.
+  # vhosts, users and permissions.rabbitmq.com are registered by the
+  # messaging-topology-operator Kustomization (Phase 3b above) and are the kinds
+  # the RabbitMQVhost order kind provisions through; the c5c3 operator guards
+  # their watches the same way.
   wait_for_crds "${POD_TIMEOUT}" \
     memcacheds.memcached.c5c3.io \
     clustersecretstores.external-secrets.io \
@@ -3848,7 +3868,10 @@ main() {
     garagebuckets.garage.rajsingh.info \
     garagekeys.garage.rajsingh.info \
     openbaoclusters.openbao.org \
-    rabbitmqclusters.rabbitmq.com
+    rabbitmqclusters.rabbitmq.com \
+    vhosts.rabbitmq.com \
+    users.rabbitmq.com \
+    permissions.rabbitmq.com
 
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.

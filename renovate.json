@@ -241,6 +241,32 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/flux-system/sources/messaging-topology-operator\\.yaml$/"
+      ],
+      "matchStrings": [
+        "tag: \"(?<currentValue>v[^\"]+)\"\\n\\s*commit: \"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "rabbitmq/messaging-topology-operator",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "rabbitmq/messaging-topology-operator",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/flux-system/releases/messaging-topology-operator\\.yaml$/"
+      ],
+      "matchStrings": [
+        "newTag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "ghcr.io/rabbitmq/messaging-topology-operator",
+      "datasourceTemplate": "docker",
+      "packageNameTemplate": "ghcr.io/rabbitmq/messaging-topology-operator",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/deploy/kind/infrastructure/openbao-instance\\.yaml$/"
       ],
       "matchStrings": [
@@ -681,6 +707,22 @@
     },
     {
       "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/sources/messaging-topology-operator.yaml"],
+      "matchPackageNames": ["rabbitmq/messaging-topology-operator"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "rabbitmq messaging-topology-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/releases/messaging-topology-operator.yaml"],
+      "matchPackageNames": ["ghcr.io/rabbitmq/messaging-topology-operator"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "rabbitmq messaging-topology-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
       "matchFileNames": [
         "deploy/kind/infrastructure/openbao-instance.yaml",
         "operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
@@ -1104,9 +1146,11 @@
       "matchManagers": ["flux"],
       "matchFileNames": [
         "deploy/flux-system/sources/k-orc.yaml",
+        "deploy/flux-system/sources/messaging-topology-operator.yaml",
         "deploy/flux-system/sources/openbao-operator.yaml",
         "deploy/flux-system/sources/rabbitmq-cluster-operator.yaml",
         "deploy/flux-system/releases/k-orc.yaml",
+        "deploy/flux-system/releases/messaging-topology-operator.yaml",
         "deploy/flux-system/releases/rabbitmq-cluster-operator.yaml",
         "deploy/kind/base/flux-web.yaml",
         "deploy/kind/infrastructure/openbao-instance.yaml",

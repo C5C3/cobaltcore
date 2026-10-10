@@ -754,7 +754,11 @@ The shared message bus a ControlPlane declares at
 [`spec.infrastructure.messaging`](./c5c3/controlplane-crd.md#messagingspec) is
 provisioned in the ControlPlane's own namespace, so the controller that turns
 that `RabbitmqCluster` into a broker has to run on the management cluster. No
-part of the bus is written to a target.
+part of the bus is written to a target. The RabbitMQ Messaging Topology Operator
+runs on the management cluster only, beside the Cluster Operator: the `Vhost`,
+`User` and `Permission` CRs of a [`RabbitMQVhost`](./c5c3/rabbitmqvhost-crd.md)
+order live in the ControlPlane's namespace there, and nothing of the topology
+operator is installed on a target.
 
 See [Infrastructure Manifests](./infrastructure/infrastructure-manifests.md) for
 the Flux sources and the dependency order these four ride in.
