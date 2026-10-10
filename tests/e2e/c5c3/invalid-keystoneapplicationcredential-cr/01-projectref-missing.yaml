@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An order without a projectRef is rejected by the CRD required list. The
+# error carries 'Required value'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneApplicationCredential
+metadata:
+  name: kac-invalid-projectref-missing
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  userRef:
+    name: workflow

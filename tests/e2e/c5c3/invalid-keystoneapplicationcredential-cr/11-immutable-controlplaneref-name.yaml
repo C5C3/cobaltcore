@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# controlPlaneRef.name is immutable (CEL transition rule): the edit would
+# strand the credentials the order minted on the old plane. The error
+# carries 'controlPlaneRef.name is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneApplicationCredential
+metadata:
+  name: kac-immutable
+spec:
+  controlPlaneRef:
+    name: cp-other
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  credentialGeneration: 2

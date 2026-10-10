@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the KeystoneApplicationCredential admission surface.
+# Pins the CRD minimums, required fields and CEL rules in
+# operators/c5c3/api/v1alpha1/keystoneapplicationcredential_types.go to
+# deterministic admission failures against a real API server, the duration
+# rules of spec.rotation included.
+#
+# The kind has no webhook, defaulting or validating: an order may live on a
+# target cluster, and no c5c3 webhook runs there. Every rejection below is the
+# schema's own, so no step needs an arm ruling a webhook denial out.
+#
+# Fixtures carry NO metadata.namespace: Chainsaw runs the Test in its own
+# ephemeral namespace and injects it.
+#
+# The referenced ControlPlane `cp-invalid-cr-absent` never exists, by design,
+# and neither do the referenced orders. Admission tolerates the dangling
+# references, and the reconciler parks the one admitted order on
+# ControlPlaneNotFound, mints nothing and installs no
+# `c5c3.io/keystoneapplicationcredential-teardown` finalizer
+# (operators/c5c3/internal/controller/keystoneapplicationcredential_controller.go),
+# so Chainsaw's namespace cleanup cannot wedge.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` and `test_generate.py`, so a hand-edit to a generated fixture fails
+# the build before the cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-keystoneapplicationcredential-cr
+spec:
+  steps:
+  # An order without a userRef (CRD required list).
+  - try:
+    - apply:
+        file: 00-userref-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef')): true
+            (contains($error, 'Required value')): true
+  # An order without a projectRef (CRD required list).
+  - try:
+    - apply:
+        file: 01-projectref-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'projectRef')): true
+            (contains($error, 'Required value')): true
+  # An empty userRef.name (CRD minimum).
+  - try:
+    - apply:
+        file: 02-userref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef.name')): true
+            (contains($error, 'should be at least 1 chars')): true
+  # credentialGeneration 0 (CRD minimum).
+  - try:
+    - apply:
+        file: 03-credentialgeneration-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'credentialGeneration')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # A 64-byte metadata.name (root CEL rule): the name is a label value on the
+  # order's children.
+  - try:
+    - apply:
+        file: 04-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name must be at most 63 bytes')): true
+  # A controlPlaneRef without a name (CRD required list). No defaulting webhook
+  # fills it in first.
+  - try:
+    - apply:
+        file: 05-controlplaneref-name-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name')): true
+            (contains($error, 'Required value')): true
+  # controlPlaneRef.namespace outside the RFC-1123 label shape (CRD pattern).
+  - try:
+    - apply:
+        file: 06-controlplaneref-namespace-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'namespace')): true
+            (contains($error, 'should match')): true
+  # A 30s rotation interval (CEL rule on the field).
+  - try:
+    - apply:
+        file: 07-rotation-interval-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.interval is 0s or at least 1m')): true
+  # A grace period as long as the interval (CEL rule on the block).
+  - try:
+    - apply:
+        file: 08-rotation-grace-not-below-interval.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.gracePeriod must be shorter than rotation.interval')): true
+  # A negative grace period (CEL rule on the field).
+  - try:
+    - apply:
+        file: 09-rotation-grace-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.gracePeriod is not negative')): true
+  # The immutability wave: the base is admitted, and every later fixture
+  # changes one field of it, so Chainsaw applies it as an UPDATE and the CEL
+  # transition rules evaluate.
+  - try:
+    - apply:
+        file: 10-immutable-base.yaml
+  - try:
+    - apply:
+        file: 11-immutable-controlplaneref-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name is immutable')): true
+  - try:
+    - apply:
+        file: 12-immutable-controlplaneref-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.namespace is immutable')): true
+  - try:
+    - apply:
+        file: 13-immutable-userref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userRef is immutable')): true
+  - try:
+    - apply:
+        file: 14-immutable-projectref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'projectRef is immutable')): true
+  - try:
+    - apply:
+        file: 15-credentialgeneration-decrease.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'credentialGeneration may only increase')): true
+  # An 87601h rotation interval (CEL rule on the field).
+  - try:
+    - apply:
+        file: 16-rotation-interval-above-maximum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.interval is at most 87600h')): true
