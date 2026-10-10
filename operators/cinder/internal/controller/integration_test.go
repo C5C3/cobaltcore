@@ -67,12 +67,16 @@ const (
 	integrationCinderName        = "cinder"
 	integrationBackendName       = "nfs"
 	integrationBackupBackendName = "backups"
+	integrationRBDBackendName    = "rbd"
 	integrationMariaDBName       = "mariadb"
 
 	// #nosec G101 -- Secret object names, not credentials.
 	integrationDBSecretName  = "cinder-db"
 	integrationBusSecretName = "cinder-bus"
 	integrationBusURL        = "rabbit://user:pass@rabbit.openstack.svc:5672/"
+	// integrationRBDKeySecretName names the key Secret of the RBD backend; the
+	// key it carries is testRBDKey.
+	integrationRBDKeySecretName = "rbd-key"
 
 	// integrationImageRepository is the repository every workload and every Job
 	// of these suites runs; the tag is the release under test.
@@ -360,6 +364,26 @@ func integrationBackendCR(name, ns, cinderName string) *cinderv1alpha1.CinderBac
 			NFS: &cinderv1alpha1.NFSBackendSpec{
 				Server: integrationNFSServer,
 				Path:   integrationVolumePath,
+			},
+		},
+	}
+}
+
+// integrationRBDBackendCR returns an RBD backend whose key lives in the Secret
+// integrationRBDKeySecretName. No Ceph answers its monitor; the suites only
+// read what the operator projects for it.
+func integrationRBDBackendCR(name, ns, cinderName string) *cinderv1alpha1.CinderBackend {
+	return &cinderv1alpha1.CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: cinderv1alpha1.CinderBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: cinderName},
+			Type:      cinderv1alpha1.CinderBackendTypeRBD,
+			RBD: &cinderv1alpha1.RBDBackendSpec{
+				Pool:         "volumes",
+				User:         "cinder",
+				Monitors:     []string{"ceph-mon.openstack.svc.cluster.local"},
+				Networks:     []string{"10.244.0.0/16"},
+				KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: integrationRBDKeySecretName},
 			},
 		},
 	}

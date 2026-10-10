@@ -295,6 +295,54 @@ func TestIntegration_Multicluster_CinderTargetCluster(t *testing.T) {
 		}}), "the host identity is reported on the CR, wherever its volume service runs")
 	})
 
+	t.Run("targeted RBD backend gates on the key Secret of the target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		rbdKey := types.NamespacedName{Name: integrationRBDBackendName, Namespace: targetNamespace}
+		keySecret := func() *corev1.Secret {
+			return &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: integrationRBDKeySecretName, Namespace: targetNamespace},
+				Data:       map[string][]byte{cinderv1alpha1.RBDKeySecretDataKey: []byte(testRBDKey)},
+			}
+		}
+
+		// The volume pods mount the keyring where they run, so the gate reads
+		// the target cluster: a Secret of the right name on the management
+		// cluster, beside the CR, satisfies nothing.
+		g.Expect(mgmtClient.Create(ctx, keySecret())).To(Succeed(), "create the key Secret on the management cluster")
+		g.Expect(mgmtClient.Create(ctx, integrationRBDBackendCR(
+			integrationRBDBackendName, targetNamespace, integrationCinderName))).
+			To(Succeed(), "create the RBD CinderBackend CR")
+		cond := waitForBackendCondition(t, ctx, mgmtClient, rbdKey, conditionTypeCredentialsReady,
+			metav1.ConditionFalse, eventuallyTimeout)
+		g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCredentials))
+		g.Expect(cond.Message).To(ContainSubstring("not found yet"))
+
+		g.Expect(targetClient.Create(ctx, keySecret())).To(Succeed(), "create the key Secret on the target cluster")
+		cond = waitForBackendCondition(t, ctx, mgmtClient, rbdKey, conditionTypeCredentialsReady,
+			metav1.ConditionTrue, eventuallyLongTimeout)
+		g.Expect(cond.Reason).To(Equal(conditionReasonCredentialsAvailable))
+
+		// The projection reads the key on the target too and lands there.
+		volumeKey := client.ObjectKey{
+			Namespace: targetNamespace,
+			Name:      integrationCinderName + "-" + componentVolumePrefix + integrationRBDBackendName,
+		}
+		volume := &appsv1.Deployment{}
+		eventuallyExists(t, ctx, targetClient, volumeKey, volume, "RBD volume Deployment", eventuallyLongTimeout)
+		markDeploymentReady(t, ctx, targetClient, volumeKey)
+		multiclusterExpectAbsent(t, ctx, mgmtClient, volumeKey, &appsv1.Deployment{}, "RBD volume Deployment")
+
+		secretName := mountedSecretName(&volume.Spec.Template.Spec, cephVolumeName)
+		g.Expect(secretName).To(HavePrefix(integrationCinderName + "-backend-" + integrationRBDBackendName + "-"))
+		secretKey := client.ObjectKey{Namespace: targetNamespace, Name: secretName}
+		projection := &corev1.Secret{}
+		g.Expect(targetClient.Get(ctx, secretKey, projection)).To(Succeed())
+		g.Expect(string(projection.Data[keyringDataKey])).To(ContainSubstring(testRBDKey))
+		multiclusterExpectAbsent(t, ctx, mgmtClient, secretKey, &corev1.Secret{}, "RBD projection Secret")
+
+		waitForBackendCondition(t, ctx, mgmtClient, rbdKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+	})
+
 	t.Run("a Cinder naming an unregistered cluster creates nothing and carries no finalizer", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 
