@@ -463,6 +463,50 @@ func TestValidateCreate_ReleaseFloor(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// TestValidateCreate_ServiceImageTagFloor pins the release floor on the
+// Keystone and Horizon image tag overrides, which the reconciler projects
+// unchanged into children whose webhooks refuse a below-floor spec.image.tag.
+func TestValidateCreate_ServiceImageTagFloor(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		name     string
+		mutate   func(cp *ControlPlane, img *commonv1.ImageSpec)
+		wantPath string
+	}{
+		{
+			name:     "keystone",
+			mutate:   func(cp *ControlPlane, img *commonv1.ImageSpec) { cp.Spec.Services.Keystone.Image = img },
+			wantPath: "spec.services.keystone.image.tag",
+		},
+		{
+			name: "horizon",
+			mutate: func(cp *ControlPlane, img *commonv1.ImageSpec) {
+				cp.Spec.Services.Horizon = &ServiceHorizonSpec{Image: img}
+			},
+			wantPath: "spec.services.horizon.image.tag",
+		},
+	} {
+		t.Run(tc.name+" override below the floor rejected", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			tc.mutate(cp, &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/" + tc.name, Tag: "2025.2"})
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+		})
+
+		t.Run(tc.name+" override at the floor accepted", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			tc.mutate(cp, &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/" + tc.name, Tag: "2026.1"})
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
 func TestValidateCreate_AcceptsNamespacedSecretStoreRef(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -1182,6 +1226,153 @@ func TestValidateUpdate_ReleaseFloor(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.openStackRelease"))
 		g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
+	})
+}
+
+// TestValidateUpdate_ServiceImageTagFloor pins the release floor on the
+// Keystone and Horizon image tag overrides on update: an override that keeps a
+// below-floor tag is admitted with one warning, and one that sets or changes
+// the tag to a value below the floor is rejected.
+func TestValidateUpdate_ServiceImageTagFloor(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	keystoneImage := func(tag string) *commonv1.ImageSpec {
+		return &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: tag}
+	}
+
+	t.Run("unchanged keystone override below the floor warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.Services.Keystone.Image = keystoneImage("2025.2")
+		newCP := oldCP.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveExactElements(
+			And(ContainSubstring("spec.services.keystone.image.tag"), ContainSubstring("below 2026.1"))))
+	})
+
+	t.Run("keystone override set below the floor rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.Image = keystoneImage("2025.2")
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	t.Run("horizon override changed below the floor rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Horizon.Image.Tag = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	// Without an override the child's tag is spec.openStackRelease, so removing
+	// an override on a stored below-floor release changes the projected tag.
+	t.Run("keystone digest override removed on a below-floor release rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		oldCP.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/keystone",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.Image = nil
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	t.Run("horizon override removed on a below-floor release rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		oldCP.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Horizon.Image = nil
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	t.Run("keystone override keeping the projected below-floor tag warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "registry.example.com/keystone", Tag: "2025.2"}
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(
+			And(ContainSubstring("spec.services.keystone.image.tag"), ContainSubstring("below 2026.1"))))
+	})
+
+	// No Horizon child exists before the block is set, so its create sees the
+	// override's tag as new even when it equals spec.openStackRelease.
+	t.Run("horizon enabled with a below-floor override rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2025.2"},
+		}
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	// Without an override the new child's tag is the unchanged
+	// spec.openStackRelease, which its own floor only warns about.
+	t.Run("horizon enabled without an override on a below-floor release rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Horizon = &ServiceHorizonSpec{}
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	t.Run("keystone re-added without an override on a below-floor release rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		newCP := oldCP.DeepCopy()
+		oldCP.Spec.Services.Keystone = nil
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
+	})
+
+	t.Run("horizon block removed on a below-floor release admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		oldCP.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Image: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.1"},
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Horizon = nil
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
 	})
 }
 

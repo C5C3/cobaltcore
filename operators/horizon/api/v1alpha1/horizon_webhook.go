@@ -161,29 +161,42 @@ func defaultMultiDomain(md *MultiDomainSpec) {
 }
 
 // ValidateCreate implements admission.Validator[*Horizon].
+//
+// Horizon carries no spec.openStackRelease, so the release floor
+// (validation.OpenStackReleaseFloor) applies to spec.image.tag when the tag
+// parses as a release; a digest-pinned image or a tag such as "latest" names
+// none and is skipped.
 func (w *HorizonWebhook) ValidateCreate(ctx context.Context, obj *Horizon) (admission.Warnings, error) {
-	return nil, w.validate(ctx, obj, nil)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "", obj.Spec.Image.Tag)
+	return nil, w.validate(ctx, obj, floorErrs)
 }
 
 // ValidateUpdate implements admission.Validator[*Horizon].
 //
 // spec.targetClusterRef is compared across both revisions here, the webhook-layer
 // twin of the two transition CEL rules on HorizonSpec.
+//
+// spec.image.tag is held to the release floor when it parses as a release: a
+// change to a release below release.MinimumSupported is rejected, and an
+// unchanged tag below it is admitted with a warning, so an unrelated edit never
+// wedges the CR.
 func (w *HorizonWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Horizon) (admission.Warnings, error) {
 	updateErrs := validation.TargetClusterRefImmutable(
 		field.NewPath("spec", "targetClusterRef"),
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)
-	return nil, w.validate(ctx, newObj, updateErrs)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "image", "tag"), oldObj.Spec.Image.Tag, newObj.Spec.Image.Tag)
+	return floorWarnings, w.validate(ctx, newObj, append(updateErrs, floorErrs...))
 }
 
 // validate runs all validation rules against the Horizon spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
-// extra carries the errors accumulated by the caller (on update the
-// targetClusterRef immutability check) so they aggregate into the single Invalid
-// error alongside the rest.
+// extra carries the errors accumulated by the caller (the release floor, and on
+// update the targetClusterRef immutability check) so they aggregate into the
+// single Invalid error alongside the rest.
 func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")

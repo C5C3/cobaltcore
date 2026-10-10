@@ -2900,6 +2900,8 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs := w.validate(obj)
 	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
 	allErrs = append(allErrs, floorErrs...)
+	imageFloorErrs, _ := validateServiceImageTagFloor(nil, obj)
+	allErrs = append(allErrs, imageFloorErrs...)
 	allErrs = append(allErrs, ownershipErrs...)
 	allErrs = append(allErrs, catalogErrs...)
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
@@ -2930,8 +2932,10 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 // fields and wedge the reconcile loop (#466). It additionally rejects an
 // openStackRelease downgrade (validateReleaseNotDowngraded), since Keystone DB
 // migrations are forward-only, and a change to a release below
-// release.MinimumSupported (validation.OpenStackReleaseFloor); an unchanged
-// release below the floor is admitted with a warning. Spec errors,
+// release.MinimumSupported (validation.OpenStackReleaseFloor), on
+// spec.openStackRelease and on the image tag projected into the Keystone and
+// Horizon children (validateServiceImageTagFloor); an unchanged value below
+// the floor is admitted with a warning. Spec errors,
 // immutability errors, and the downgrade and floor errors are accumulated into
 // a single Invalid response so a reviewer sees all problems at once.
 //
@@ -2953,6 +2957,9 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
 	allErrs = append(allErrs, floorErrs...)
 	warnings = append(warnings, floorWarnings...)
+	imageFloorErrs, imageFloorWarnings := validateServiceImageTagFloor(oldObj, newObj)
+	allErrs = append(allErrs, imageFloorErrs...)
+	warnings = append(warnings, imageFloorWarnings...)
 
 	// Family A (shape/ownership) always re-runs: it depends on nothing a
 	// regenerated catalog can invalidate, and a newly-derived Horizon endpoint
@@ -5070,6 +5077,76 @@ func validateReleaseNotDowngraded(oldObj, newObj *ControlPlane) field.ErrorList 
 		)}
 	}
 	return nil
+}
+
+// validateServiceImageTagFloor applies the release floor
+// (validation.OpenStackReleaseFloor) to the image tag the ControlPlane projects
+// into the Keystone and Horizon children, whose webhooks enforce the floor on
+// spec.image.tag; without this mirror the ControlPlane admits an update the
+// child create or update then refuses on every reconcile. The projected tag is
+// the spec.services.<service>.image override's tag, or spec.openStackRelease
+// when the override is unset, so adding or removing an override can change it.
+// oldObj is nil on create.
+func validateServiceImageTagFloor(oldObj, newObj *ControlPlane) (field.ErrorList, []string) {
+	create := oldObj == nil
+	oldKeystone, oldHorizon := projectedChildImages(oldObj)
+	newKeystone, newHorizon := projectedChildImages(newObj)
+	allErrs, warnings := childImageTagFloor(
+		field.NewPath("spec", "services", "keystone", "image", "tag"), create, oldKeystone, newKeystone)
+	horizonErrs, horizonWarnings := childImageTagFloor(
+		field.NewPath("spec", "services", "horizon", "image", "tag"), create, oldHorizon, newHorizon)
+	return append(allErrs, horizonErrs...), append(warnings, horizonWarnings...)
+}
+
+// childImage is the image a ControlPlane projects into one child. The zero
+// value means no child is projected.
+type childImage struct {
+	projected bool
+	// overridden reports that spec.services.<service>.image is set.
+	overridden bool
+	// tag is the child's spec.image.tag: the override's tag ("" for a digest
+	// pin) or, without an override, spec.openStackRelease.
+	tag string
+}
+
+// projectedChildImages returns the images cp projects into its Keystone and
+// Horizon children. Each is the zero childImage when cp is nil or projects no
+// such child: the service block is unset, or Keystone is in External mode.
+func projectedChildImages(cp *ControlPlane) (keystone, horizon childImage) {
+	if cp == nil {
+		return keystone, horizon
+	}
+	project := func(override *commonv1.ImageSpec) childImage {
+		if override == nil {
+			return childImage{projected: true, tag: cp.Spec.OpenStackRelease}
+		}
+		return childImage{projected: true, overridden: true, tag: override.Tag}
+	}
+	if ks := cp.Spec.Services.Keystone; ks != nil && !cp.IsExternalKeystone() {
+		keystone = project(ks.Image)
+	}
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		horizon = project(hz.Image)
+	}
+	return keystone, horizon
+}
+
+// childImageTagFloor applies the release floor to the tag projected into one
+// child. An oldImage that projects no child stands for the child create, whose
+// old tag is "". A child that newImage does not project is skipped, and so is
+// one projected without an override both before and after the update, or
+// without an override by the ControlPlane create: its tag is
+// spec.openStackRelease, whose own floor rejects that value on create and on
+// every change. A child an update creates without an override is checked: the
+// unchanged spec.openStackRelease only warns, but the child create refuses it.
+func childImageTagFloor(fldPath *field.Path, create bool, oldImage, newImage childImage) (field.ErrorList, []string) {
+	if !newImage.projected {
+		return nil, nil
+	}
+	if !newImage.overridden && (create || (oldImage.projected && !oldImage.overridden)) {
+		return nil, nil
+	}
+	return validation.OpenStackReleaseFloor(fldPath, oldImage.tag, newImage.tag)
 }
 
 // validateUniqueInNamespace enforces the one-ControlPlane-per-namespace contract

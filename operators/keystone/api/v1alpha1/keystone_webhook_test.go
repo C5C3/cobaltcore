@@ -3384,6 +3384,69 @@ func TestValidate_ImageDigestOnlyAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// TestValidate_ImageTagReleaseFloor pins the release floor on spec.image.tag,
+// the only release a Keystone carries: on create a tag that parses as a release
+// below 2026.1 is rejected naming the field and the floor, a tag at or above
+// the floor is admitted with or without a suffix, and a tag that names no
+// release is left to the other rules.
+func TestValidate_ImageTagReleaseFloor(t *testing.T) {
+	cases := []struct {
+		tag     string
+		wantErr bool
+	}{
+		{tag: "2025.2", wantErr: true},
+		{tag: "2026.1", wantErr: false},
+		{tag: "2026.1-upgraded", wantErr: false},
+		{tag: "2026.2", wantErr: false},
+		{tag: "latest", wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &KeystoneWebhook{}
+			k := validKeystone()
+			k.Spec.Image.Tag = tc.tag
+
+			_, err := w.ValidateCreate(context.Background(), k)
+			if !tc.wantErr {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.image.tag"))
+			g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
+		})
+	}
+}
+
+// TestValidateUpdate_ImageTagReleaseFloor pins the release floor on an update:
+// a tag kept below 2026.1 is admitted with one warning, so the Keystone stays
+// editable, and a change of the tag to a release below the floor is rejected.
+func TestValidateUpdate_ImageTagReleaseFloor(t *testing.T) {
+	w := &KeystoneWebhook{}
+
+	t.Run("unchanged tag below the floor warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldObj := validKeystone()
+		oldObj.Spec.Image.Tag = "2025.2"
+		newObj := oldObj.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveExactElements(ContainSubstring("below 2026.1")))
+	})
+
+	t.Run("change to a tag below the floor rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldObj := validKeystone()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.Image.Tag = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.image.tag"))
+		g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
+	})
+}
+
 func TestValidate_TLSDisabledWithoutSecretRefsAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}

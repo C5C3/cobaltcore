@@ -327,6 +327,11 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "spec.deployment.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
 		},
+		{
+			name:    "image tag below the release floor rejected",
+			mutate:  func(h *Horizon) { h.Spec.Image.Tag = "2025.2" },
+			wantSub: `spec.image.tag: Invalid value: "2025.2": must be 2026.1 or later`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -341,6 +346,56 @@ func TestValidateCreate_RejectionTable(t *testing.T) {
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
 		})
 	}
+}
+
+// TestValidate_ImageTagReleaseFloor pins the release floor on spec.image.tag,
+// the only release a Horizon carries: a tag at or above 2026.1, with or without
+// a suffix, and a digest-only image are admitted on create; an update that
+// keeps a tag below the floor is admitted with one warning; a change of the tag
+// to a release below the floor is rejected.
+func TestValidate_ImageTagReleaseFloor(t *testing.T) {
+	w := &HorizonWebhook{}
+
+	for _, tag := range []string{"2026.1", "2026.1-upgraded", "2026.2"} {
+		t.Run("create with tag "+tag+" accepted", func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			h := validHorizon()
+			h.Spec.Image.Tag = tag
+			warnings, err := w.ValidateCreate(context.Background(), h)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(warnings).To(gomega.BeEmpty())
+		})
+	}
+
+	t.Run("create with a digest-only image accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		h := validHorizon()
+		h.Spec.Image.Tag = ""
+		h.Spec.Image.Digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		_, err := w.ValidateCreate(context.Background(), h)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	t.Run("update keeping a tag below the floor warns", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validHorizon()
+		oldObj.Spec.Image.Tag = "2025.2"
+		newObj := oldObj.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).To(gomega.HaveExactElements(gomega.ContainSubstring("below 2026.1")))
+	})
+
+	t.Run("update to a tag below the floor rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validHorizon()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.Image.Tag = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("spec.image.tag"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("2026.1 or later"))
+	})
 }
 
 // TestValidateCreate_RunsAllValidations breaks every independently breakable
