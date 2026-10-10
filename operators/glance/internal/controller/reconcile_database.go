@@ -33,11 +33,11 @@ const (
 	conditionReasonDatabaseWaitingForBackends = "WaitingForBackends"
 	// conditionReasonImageReleaseMismatch flags the operator error where the
 	// tag-pinned spec.image names a different OpenStack release than
-	// spec.openStackRelease. Release tracking, the API launch mode, and the
-	// expand-migrate-contract upgrade detection all key on spec.openStackRelease
-	// while every migration Job and the Deployment run spec.image; the reconcile
-	// refuses to advance until the two agree rather than promoting an installed-
-	// release marker for a release the image is not.
+	// spec.openStackRelease. Release tracking and the expand-migrate-contract
+	// upgrade detection both key on spec.openStackRelease while every migration
+	// Job and the Deployment run spec.image; the reconcile refuses to advance
+	// until the two agree rather than promoting an installed-release marker for a
+	// release the image is not.
 	conditionReasonImageReleaseMismatch = "ImageReleaseMismatch"
 )
 
@@ -58,50 +58,19 @@ const (
 // per process.
 const glanceTaskPoolConnections int32 = 5
 
-// glanceEventletWorkerConnections is one eventlet worker's ceiling: the
-// glanceEventletMaxPoolSize plus glanceEventletMaxOverflow operatorDefaults pins
-// below 2026.1. With the pin one worker held 5 connections; unpinned it opened
-// 30 to 32 (1 worker) and 18 to 21 (2 workers), following client concurrency.
-const glanceEventletWorkerConnections = glanceEventletMaxPoolSize + glanceEventletMaxOverflow
-
-// effectiveEventletWorkers resolves the eventlet [DEFAULT] workers count that
-// operatorDefaults renders and the connection cap sizes for:
-// spec.apiServer.workers when set to at least 1, otherwise
-// glancev1alpha1.DefaultEventletWorkers.
-func effectiveEventletWorkers(glance *glancev1alpha1.Glance) int32 {
-	if s := glance.Spec.APIServer; s != nil && s.Workers != nil && *s.Workers >= 1 {
-		return *s.Workers
-	}
-	return glancev1alpha1.DefaultEventletWorkers
-}
-
-// glanceConnectionsPerPod is the connection ceiling of one API pod running the
-// given OpenStack release, over the processes and threads glanceAPIConcurrency
-// resolves for it. Under uWSGI (2026.1+) it is processes × (threads +
-// glanceTaskPoolConnections). Under eventlet (below 2026.1, or an empty or
-// unparseable release) it is the effectiveEventletWorkers processes ×
-// glanceEventletWorkerConnections. The defaults give 12 and 10.
-func glanceConnectionsPerPod(glance *glancev1alpha1.Glance, openStackRelease string) int32 {
-	processes, threads := glanceAPIConcurrency(glance, openStackRelease)
-	if glanceReleaseUsesUWSGI(openStackRelease) {
-		return processes * (threads + glanceTaskPoolConnections)
-	}
-	return processes * glanceEventletWorkerConnections
+// glanceConnectionsPerPod is the connection ceiling of one API pod, over the
+// processes and threads glanceAPIConcurrency resolves for it: processes ×
+// (threads + glanceTaskPoolConnections). The defaults give 12.
+func glanceConnectionsPerPod(glance *glancev1alpha1.Glance) int32 {
+	processes, threads := glanceAPIConcurrency(glance)
+	return processes * (threads + glanceTaskPoolConnections)
 }
 
 // glanceMaxUserConnections sizes the SQL user's max_user_connections cap for
-// the CR's own topology: (pods + 1) × perPod + 2. pods is the autoscaling
-// ceiling when an HPA owns the replica count, and the extra pod is the rollout
-// surge (maxSurge=1, maxUnavailable=0). The defaults size to 50 at 2026.1
-// ((3+1)×2×(1+5)+2) and 42 below it ((3+1)×2×5+2).
-//
-// perPod is the largest glanceConnectionsPerPod over spec.openStackRelease,
-// status.installedRelease and status.targetRelease, skipping empty status
-// fields. The launch modes mix only across a release boundary: during the
-// RollingUpdate phase of a 2025.2 → 2026.1 upgrade old eventlet pods run beside
-// new uWSGI pods, and an abort mixes them the other way. Sized from the spec
-// release alone, a 2025.2 Glance with workers: 8 would drop to a cap of 50
-// mid-upgrade while its old pods hold up to 120.
+// the CR's own topology: (pods + 1) × glanceConnectionsPerPod + 2. pods is the
+// autoscaling ceiling when an HPA owns the replica count, and the extra pod is
+// the rollout surge (maxSurge=1, maxUnavailable=0). The defaults size to 50
+// ((3+1)×2×(1+5)+2).
 //
 // The trailing 2 covers one migration Job (db-sync, or the one active expand,
 // migrate or contract phase Job) plus an overlapping {name}-db-purge CronJob
@@ -117,16 +86,7 @@ func glanceMaxUserConnections(glance *glancev1alpha1.Glance) int32 {
 	if glance.Spec.Autoscaling != nil {
 		pods = glance.Spec.Autoscaling.MaxReplicas
 	}
-	// The spec release always counts, even when empty: an empty release launches
-	// the eventlet server, so it sizes as one rather than collapsing the cap to
-	// the Job headroom.
-	perPod := glanceConnectionsPerPod(glance, glance.Spec.OpenStackRelease)
-	for _, rel := range []string{glance.Status.InstalledRelease, glance.Status.TargetRelease} {
-		if rel != "" {
-			perPod = max(perPod, glanceConnectionsPerPod(glance, rel))
-		}
-	}
-	return (pods+1)*perPod + 2
+	return (pods+1)*glanceConnectionsPerPod(glance) + 2
 }
 
 // reconcileDatabase provisions and migrates the Glance database schema and
@@ -185,9 +145,8 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, children clien
 		// target-changed guard only watches spec.openStackRelease, so a lone
 		// spec.image.tag edit to an inconsistent release would otherwise slip
 		// through and dispatch phase Jobs built from the wrong image (every phase
-		// Job runs spec.image) while re-rendering the RollingUpdate Deployment in
-		// the target release's launch mode against an image that cannot launch that
-		// way. Skip the check when spec.openStackRelease has been reverted to the
+		// Job runs spec.image) while re-rendering the RollingUpdate Deployment with
+		// an image of another release. Skip the check when spec.openStackRelease has been reverted to the
 		// installed release: that is the shared flow's abort trigger (SpecRelease ==
 		// InstalledRelease in ReconcileUpgrade), which must stay reachable even while
 		// the two fields disagree so a wedged upgrade can always be unstuck.
@@ -234,15 +193,15 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, children clien
 
 // checkImageReleaseMismatch enforces the decoupled-field contract between
 // spec.openStackRelease and spec.image. spec.openStackRelease drives release
-// tracking, the API launch mode, and the upgrade detection, but every migration
-// Job and the Deployment run spec.image — the two fields are deliberately separate
-// (digest pinning, launch-mode selection) and nothing else enforces they agree. A
+// tracking and the upgrade detection, but every migration Job and the Deployment
+// run spec.image — the two fields are deliberately separate (digest pinning) and
+// nothing else enforces they agree. A
 // tag-pinned image whose tag names a different OpenStack release would run the
 // wrong glance-manage binary against a schema already at its own HEAD: the
 // expand/migrate/contract Jobs exit 0 as no-ops while the flow promotes
 // status.installedRelease to a release the pods neither run nor migrated to, and
-// the RollingUpdate phase re-renders the Deployment in the target release's launch
-// mode against an image that cannot launch that way.
+// the RollingUpdate phase re-renders the Deployment with an image of another
+// release.
 //
 // When the two disagree it sets DatabaseReady=False/ImageReleaseMismatch and
 // returns (requeue, true) so the caller refuses to advance until the image is

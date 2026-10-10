@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -37,8 +38,8 @@ func validProjection() backendsProjection {
 }
 
 // glanceForConfig returns a Glance with the webhook-defaulted service-user
-// identity, a region, a worker count, and an injected middleware so the config
-// render exercises every branch.
+// identity, a region, and an injected middleware so the config render exercises
+// every branch.
 func glanceForConfig() *glancev1alpha1.Glance {
 	glance := testGlance()
 	glance.Spec.ServiceUser.Username = "glance"
@@ -46,13 +47,25 @@ func glanceForConfig() *glancev1alpha1.Glance {
 	glance.Spec.ServiceUser.UserDomainName = "Default"
 	glance.Spec.ServiceUser.ProjectDomainName = "Default"
 	glance.Spec.Region = "RegionOne"
-	glance.Spec.APIServer = &glancev1alpha1.APIServerSpec{Workers: ptr.To(int32(4))}
 	glance.Spec.Middleware = []commonv1.MiddlewareSpec{{
 		Name:          "audit",
 		FilterFactory: "audit_middleware:filter_factory",
 		Position:      commonv1.PipelinePositionAfter,
 	}}
 	return glance
+}
+
+// decodeAPIServer decodes a spec.apiServer block from its JSON form, the way a
+// stored Glance reaches the controller. The tests that set the deprecated
+// workers field use it instead of naming the field in Go, which staticcheck
+// reports (SA1019) outside the API package. The fixtures are constants, so a
+// decode error is a broken test and panics.
+func decodeAPIServer(raw string) *glancev1alpha1.APIServerSpec {
+	apiServer := &glancev1alpha1.APIServerSpec{}
+	if err := json.Unmarshal([]byte(raw), apiServer); err != nil {
+		panic(fmt.Sprintf("decoding apiServer fixture %s: %v", raw, err))
+	}
+	return apiServer
 }
 
 // renderedConfig returns the glance-api.conf produced by reconcileConfig for the
@@ -91,7 +104,6 @@ func TestReconcileConfig_RendersGlanceAPIConf(t *testing.T) {
 	conf := renderedConfig(t, r, art)
 	// [DEFAULT].
 	g.Expect(conf).To(ContainSubstring("enabled_backends = store:s3"))
-	g.Expect(conf).To(ContainSubstring("workers = 4"))
 	g.Expect(conf).To(ContainSubstring("enabled_import_methods = [web-download,copy-image]"))
 	// [keystone_authtoken]: identity + region + memcached, www_authenticate_uri
 	// falls back to auth_url when no public endpoint is set, and NO password.
@@ -324,108 +336,38 @@ func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("enabled_backends = rogue:file"))
 }
 
-// TestReconcileConfig_PoolPinOverrideReported verifies that both keys of the
-// eventlet pool pin are ordinary Reported keys: a raised [database]
-// max_pool_size or max_overflow in spec.extraConfig replaces the operator's
-// value in the rendered glance-api.conf, and ExtraConfigHealthy plus a Warning
-// event name it, because either value lets a worker open connections past the
-// sized max_user_connections.
-func TestReconcileConfig_PoolPinOverrideReported(t *testing.T) {
-	tests := []struct {
-		key      string
-		override string
-		pinned   string
-	}{
-		{key: "max_pool_size", override: "20", pinned: "5"},
-		{key: "max_overflow", override: "10", pinned: "0"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.key, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			glance := glanceForConfig()
-			atRelease(glance, "2025.2")
-			glance.Spec.ExtraConfig = map[string]map[string]string{
-				"database": {tc.key: tc.override},
-			}
-			r := newGlanceTestReconciler(glance)
+// TestReconcileConfig_NoWorkersOnAnyRelease pins the rendered glance-api.conf
+// on both supported releases, and on 2025.2 (below the release floor, admitted
+// unchanged on a stored CR), with and without spec.apiServer.workers: the
+// deprecated field renders no [DEFAULT] workers, and neither [database]
+// max_pool_size nor max_overflow is rendered.
+func TestReconcileConfig_NoWorkersOnAnyRelease(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+		for _, tc := range []struct {
+			name      string
+			apiServer *glancev1alpha1.APIServerSpec
+		}{
+			{name: "workers set", apiServer: decodeAPIServer(`{"workers": 4}`)},
+			{name: "no apiServer"},
+		} {
+			t.Run(release+" "+tc.name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				glance := glanceForConfig()
+				atRelease(glance, release)
+				glance.Spec.APIServer = tc.apiServer
+				r := newGlanceTestReconciler(glance)
 
-			_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
-			g.Expect(err).NotTo(HaveOccurred())
+				_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+				g.Expect(err).NotTo(HaveOccurred())
 
-			cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
-			g.Expect(cond).NotTo(BeNil())
-			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
-			g.Expect(cond.Message).To(ContainSubstring("[database] " + tc.key))
-			g.Expect(cond.Message).To(ContainSubstring("max_user_connections"))
-
-			events := collectEvents(r.Recorder.(*record.FakeRecorder))
-			g.Expect(events).To(ContainElement(And(
-				ContainSubstring("Warning"),
-				ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
-				ContainSubstring("[database] "+tc.key),
-			)))
-
-			conf := renderedConfig(t, r, art)
-			g.Expect(conf).To(ContainSubstring(tc.key + " = " + tc.override))
-			g.Expect(conf).NotTo(ContainSubstring(tc.key + " = " + tc.pinned))
-		})
-	}
-}
-
-// TestReconcileConfig_WorkersByRelease pins the rendered glance-api.conf on
-// both sides of the 2026.2 boundary for a Glance that sets
-// spec.apiServer.workers: 2026.1 still writes the inert [DEFAULT] workers line,
-// and 2026.2, whose glance dropped the option, writes none.
-func TestReconcileConfig_WorkersByRelease(t *testing.T) {
-	for _, tc := range []struct {
-		release     string
-		wantWorkers bool
-	}{
-		{release: "2026.1", wantWorkers: true},
-		{release: "2026.2", wantWorkers: false},
-	} {
-		t.Run(tc.release, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			glance := glanceForConfig()
-			atRelease(glance, tc.release)
-			r := newGlanceTestReconciler(glance)
-
-			_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
-			g.Expect(err).NotTo(HaveOccurred())
-
-			conf := renderedConfig(t, r, art)
-			g.Expect(conf).To(ContainSubstring("enabled_backends = store:s3"))
-			if tc.wantWorkers {
-				g.Expect(conf).To(MatchRegexp(`(?m)^workers = 4$`))
-			} else {
+				conf := renderedConfig(t, r, art)
+				g.Expect(conf).To(ContainSubstring("enabled_backends = store:s3"))
 				g.Expect(conf).NotTo(MatchRegexp(`(?m)^workers = `))
-			}
-		})
+				g.Expect(conf).NotTo(MatchRegexp(`(?m)^max_pool_size = `))
+				g.Expect(conf).NotTo(MatchRegexp(`(?m)^max_overflow = `))
+			})
+		}
 	}
-}
-
-// TestReconcileConfig_WorkersOverrideNamesTheCap verifies that an eventlet
-// [DEFAULT] workers override in spec.extraConfig, which the rendered config
-// honours while the connection cap still counts spec.apiServer.workers, is
-// reported with an impact naming max_user_connections.
-func TestReconcileConfig_WorkersOverrideNamesTheCap(t *testing.T) {
-	g := NewGomegaWithT(t)
-	glance := glanceForConfig()
-	atRelease(glance, "2025.2")
-	glance.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"workers": "8"},
-	}
-	r := newGlanceTestReconciler(glance)
-
-	_, _, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
-	g.Expect(err).NotTo(HaveOccurred())
-
-	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] workers"))
-	g.Expect(cond.Message).To(ContainSubstring("max_user_connections"))
 }
 
 // TestReconcileConfig_ImportFilteringOverrideReported verifies the controller's
@@ -542,94 +484,6 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty())
-}
-
-// TestOperatorDefaults_EventletWorkers pins the launch-mode-conditional worker
-// count: below 2026.1 (eventlet) an unset spec.apiServer.workers must still
-// render a bounded [DEFAULT] workers so the count never silently scales with the
-// node's CPU count and OOMs the container; an explicit value wins, and one
-// below 1 renders the default, as effectiveEventletWorkers resolves it for the
-// connection cap. From 2026.1 (uWSGI) the key is inert, so an unset workers
-// renders nothing. From 2026.2 glance no longer registers the option, so not
-// even an explicit value renders.
-func TestOperatorDefaults_EventletWorkers(t *testing.T) {
-	makeGlance := func(release string, workers *int32) *glancev1alpha1.Glance {
-		glance := testGlance()
-		glance.Spec.OpenStackRelease = release
-		if workers != nil {
-			glance.Spec.APIServer = &glancev1alpha1.APIServerSpec{Workers: workers}
-		}
-		return glance
-	}
-
-	expectedDefault := fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
-
-	tests := []struct {
-		name        string
-		release     string
-		workers     *int32
-		wantWorkers string // "" means the key must be absent
-	}{
-		{"eventlet unset renders bounded default", "2025.2", nil, expectedDefault},
-		{"eventlet explicit wins over default", "2025.2", ptr.To(int32(4)), "4"},
-		{"eventlet zero renders the default the cap sizes", "2025.2", ptr.To(int32(0)), expectedDefault},
-		{"uwsgi unset renders nothing", "2026.1", nil, ""},
-		{"uwsgi explicit still rendered inert", "2026.1", ptr.To(int32(4)), "4"},
-		{"2026.2 unset renders nothing", "2026.2", nil, ""},
-		{"2026.2 explicit not rendered, glance dropped the option", "2026.2", ptr.To(int32(4)), ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			defaults := operatorDefaults(makeGlance(tc.release, tc.workers), validProjection())
-			got, present := defaults["DEFAULT"]["workers"]
-			if tc.wantWorkers == "" {
-				g.Expect(present).To(BeFalse(), "workers must not render")
-				return
-			}
-			g.Expect(present).To(BeTrue(), "workers must render")
-			g.Expect(got).To(Equal(tc.wantWorkers))
-		})
-	}
-}
-
-// TestOperatorDefaults_EventletPoolPin pins the launch-mode-conditional pool
-// pin: below 2026.1 (eventlet) [database] max_pool_size renders as 5 and
-// max_overflow as 0, so a worker holds at most 5 connections and the sized
-// max_user_connections is a real bound. An unparseable release launches the
-// eventlet server and is pinned too. From 2026.1 (uWSGI) the thread count
-// bounds demand, so both keys are absent and oslo.db's own defaults apply.
-func TestOperatorDefaults_EventletPoolPin(t *testing.T) {
-	pin := []struct{ key, want string }{
-		{key: "max_pool_size", want: "5"},
-		{key: "max_overflow", want: "0"},
-	}
-	tests := []struct {
-		name    string
-		release string
-		pinned  bool
-	}{
-		{name: "eventlet pins the pool", release: "2025.2", pinned: true},
-		{name: "unparseable release falls back to eventlet and is pinned", release: "garbage", pinned: true},
-		{name: "uwsgi renders no pin", release: "2026.1", pinned: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			glance := testGlance()
-			atRelease(glance, tc.release)
-			defaults := operatorDefaults(glance, validProjection())
-			for _, p := range pin {
-				got, present := defaults["database"][p.key]
-				if !tc.pinned {
-					g.Expect(present).To(BeFalse(), "%s must not render under uWSGI", p.key)
-					continue
-				}
-				g.Expect(present).To(BeTrue(), "%s must render below 2026.1", p.key)
-				g.Expect(got).To(Equal(p.want), p.key)
-			}
-		})
-	}
 }
 
 // TestEffectiveImportFiltering pins the render-time resolution of
@@ -1168,16 +1022,14 @@ func TestOperatorDefaults_ImportPluginsRendering(t *testing.T) {
 // operatorDefaults to glancev1alpha1.OwnedConfigKeys: every key the operator
 // renders must be registered (forward) and every registered key must be
 // rendered (reverse), so the registry and the renderer cannot drift apart.
-// Both checks run against the union of a 2026.2 and a 2026.1 (uWSGI) render and
-// a 2025.2 (eventlet) render, because some keys render in one launch mode or
-// release only: [database] max_pool_size and max_overflow render only in the
-// eventlet fixture, and [DEFAULT] workers only below 2026.2.
+// Both checks run against the union of a 2026.2 and a 2026.1 render, the two
+// supported releases.
 func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	render := func(release string) map[string]map[string]string {
 		glance := glanceForConfig()
 		atRelease(glance, release)
-		// glanceForConfig already sets Region=RegionOne (emits region_name),
-		// Workers (emits workers), and Cache.Servers (emits memcached_servers).
+		// glanceForConfig already sets Region=RegionOne (emits region_name) and
+		// Cache.Servers (emits memcached_servers).
 		// Add json logging with per-logger levels and debug so
 		// log_config_append, default_log_levels, and debug all render.
 		glance.Spec.Logging = &glancev1alpha1.LoggingSpec{
@@ -1203,7 +1055,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	}
 
 	defaults := map[string]map[string]string{}
-	for _, release := range []string{"2026.2", "2026.1", "2025.2"} {
+	for _, release := range []string{"2026.2", "2026.1"} {
 		for section, kvs := range render(release) {
 			if defaults[section] == nil {
 				defaults[section] = map[string]string{}

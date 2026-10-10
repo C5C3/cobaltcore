@@ -209,9 +209,9 @@ func integrationGlance(name, ns string) *glancev1alpha1.Glance {
 	return &glancev1alpha1.Glance{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: glancev1alpha1.GlanceSpec{
-			OpenStackRelease: "2025.2",
+			OpenStackRelease: "2026.1",
 			Deployment:       glancev1alpha1.DeploymentSpec{Replicas: 1},
-			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/glance", Tag: "2025.2"},
+			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/glance", Tag: "2026.1"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -459,7 +459,7 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 }
 
 // TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract drives a full glance
-// release upgrade (2025.2 → 2026.1) through the shared expand-migrate-contract
+// release upgrade (2026.1 → 2026.2) through the shared expand-migrate-contract
 // flow end to end against envtest, mirroring keystone's upgrade-cycle test. It
 // locks four properties no unit test observes together:
 //
@@ -468,9 +468,8 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 //     target-release image;
 //   - the rollout-gated contract flip: the phase stays RollingUpdate until the
 //     re-imaged Deployment reports ready, then advances to Contracting;
-//   - the eventlet → uWSGI launch-command switch the Deployment template takes on
-//     the release bump (glanceReleaseUsesUWSGI derives the mode from
-//     openStackRelease);
+//   - the uWSGI launch command the Deployment template keeps across the release
+//     bump, which re-images it;
 //   - the post-upgrade steady-state db-sync Job re-running with the new image on
 //     pod-spec-hash drift, so its db load_metadefs step loads the new release's
 //     definitions.
@@ -485,7 +484,7 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	ns := createTestNamespace(t, ctx, c)
 	createGlancePrerequisites(t, ctx, c, ns)
 
-	// Brownfield glance at release 2025.2 with spec.openStackRelease and
+	// Brownfield glance at release 2026.1 with spec.openStackRelease and
 	// spec.image.tag in lockstep (the operator's existing bump contract).
 	glance := integrationGlance("glance", ns)
 	g.Expect(c.Create(ctx, glance)).To(Succeed(), "create Glance CR")
@@ -500,7 +499,7 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	deployKey := client.ObjectKey{Namespace: ns, Name: "glance"}
 	dbSyncKey := client.ObjectKey{Namespace: ns, Name: "glance-db-sync"}
 
-	// Drive the initial 2025.2 install to Ready: simulate the db-sync Job complete
+	// Drive the initial 2026.1 install to Ready: simulate the db-sync Job complete
 	// and the Deployment ready, exactly as the file's other tests do.
 	g.Eventually(func() error {
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
@@ -518,19 +517,17 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	waitForGlanceCondition(t, ctx, c, glanceKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
 
 	// The initial release is tracked, no upgrade is in flight, and the Deployment
-	// runs the pre-2026.1 eventlet launch (glance-api server, no uWSGI).
+	// runs the uWSGI launch.
 	initial := &glancev1alpha1.Glance{}
 	g.Expect(c.Get(ctx, glanceKey, initial)).To(Succeed())
-	g.Expect(initial.Status.InstalledRelease).To(Equal("2025.2"),
-		"installedRelease should be 2025.2 after the initial install")
+	g.Expect(initial.Status.InstalledRelease).To(Equal("2026.1"),
+		"installedRelease should be 2026.1 after the initial install")
 	g.Expect(string(initial.Status.UpgradePhase)).To(Equal(""),
 		"no upgrade should be in flight after a fresh install")
 	g.Expect(c.Get(ctx, deployKey, &deploy)).To(Succeed())
 	initialCmd := deploy.Spec.Template.Spec.Containers[0].Command
-	g.Expect(initialCmd).To(ContainElement("glance-api"),
-		"2025.2 Deployment should run the eventlet glance-api launch")
-	g.Expect(initialCmd).NotTo(ContainElement("uwsgi"),
-		"2025.2 Deployment must not run the uWSGI launch")
+	g.Expect(initialCmd).To(ContainElement("uwsgi"),
+		"2026.1 Deployment should run the uWSGI launch")
 
 	// --- Trigger the upgrade: bump spec.openStackRelease and spec.image.tag in
 	// lockstep. The Get→Update loop retries on the conflict a concurrent status
@@ -540,10 +537,10 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		if err := c.Get(ctx, glanceKey, cur); err != nil {
 			return err
 		}
-		cur.Spec.OpenStackRelease = "2026.1"
-		cur.Spec.Image.Tag = "2026.1"
+		cur.Spec.OpenStackRelease = "2026.2"
+		cur.Spec.Image.Tag = "2026.2"
 		return c.Update(ctx, cur)
-	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump glance to release 2026.1")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump glance to release 2026.2")
 
 	// Phase 1: Expanding — the db-expand Job carries the target-release image and
 	// the glance-manage db expand command.
@@ -558,7 +555,7 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	upgrading := &glancev1alpha1.Glance{}
 	g.Expect(c.Get(ctx, glanceKey, upgrading)).To(Succeed())
-	g.Expect(upgrading.Status.TargetRelease).To(Equal("2026.1"),
+	g.Expect(upgrading.Status.TargetRelease).To(Equal("2026.2"),
 		"targetRelease should record the in-flight upgrade")
 
 	expandKey := client.ObjectKey{Namespace: ns, Name: "glance-db-expand"}
@@ -567,7 +564,7 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-expand Job should appear")
 	expandJob := &batchv1.Job{}
 	g.Expect(c.Get(ctx, expandKey, expandJob)).To(Succeed())
-	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.2"),
 		"db-expand Job should run the target-release image")
 	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Command).To(ContainElements("glance-manage", "db", "expand"),
 		"db-expand Job should run glance-manage db expand")
@@ -593,8 +590,9 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"db-migrate Job should run glance-manage db migrate")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, migrateKey)).To(Succeed(), "simulate db-migrate Job completion")
 
-	// Phase 3: RollingUpdate — the Deployment template flips to the 2026.1 uWSGI
-	// launch, which resets its simulated readiness.
+	// Phase 3: RollingUpdate — the Deployment template flips to the 2026.2 image
+	// and keeps the uWSGI launch; the template change resets its simulated
+	// readiness.
 	g.Eventually(func() commonv1.UpgradePhase {
 		cur := &glancev1alpha1.Glance{}
 		if err := c.Get(ctx, glanceKey, cur); err != nil {
@@ -607,12 +605,12 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g.Eventually(func(ig Gomega) {
 		d := &appsv1.Deployment{}
 		ig.Expect(c.Get(ctx, deployKey, d)).To(Succeed())
-		ig.Expect(d.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
-			"Deployment should carry the 2026.1 image during RollingUpdate")
+		ig.Expect(d.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.2"),
+			"Deployment should carry the 2026.2 image during RollingUpdate")
 		ig.Expect(d.Spec.Template.Spec.Containers[0].Command).To(ContainElement("uwsgi"),
-			"Deployment should switch to the uWSGI launch on the release bump")
+			"Deployment should keep the uWSGI launch across the release bump")
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"Deployment should flip to the 2026.1 uWSGI launch during RollingUpdate")
+		"Deployment should flip to the 2026.2 image under uWSGI during RollingUpdate")
 
 	// Rollout-gated contract (Acceptance Criterion): while the re-imaged Deployment
 	// is not ready (the template bump reset its simulated readiness), the phase
@@ -657,8 +655,8 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 			return ""
 		}
 		return cur.Status.InstalledRelease
-	}, eventuallyTimeout, pollInterval).Should(Equal("2026.1"),
-		"installedRelease should advance to 2026.1 after the contract phase")
+	}, eventuallyTimeout, pollInterval).Should(Equal("2026.2"),
+		"installedRelease should advance to 2026.2 after the contract phase")
 
 	completed := &glancev1alpha1.Glance{}
 	g.Expect(c.Get(ctx, glanceKey, completed)).To(Succeed())
@@ -668,14 +666,14 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"targetRelease should be cleared once the upgrade completes")
 
 	// Post-upgrade steady state: the db-sync Job re-runs with the new image on
-	// pod-spec-hash drift (its db load_metadefs step then loads the 2026.1
+	// pod-spec-hash drift (its db load_metadefs step then loads the 2026.2
 	// definitions). Its recreation is a delete-and-create, so the Get may miss it
 	// transiently — Eventually rides that out.
 	g.Eventually(func(ig Gomega) {
 		j := &batchv1.Job{}
 		ig.Expect(c.Get(ctx, dbSyncKey, j)).To(Succeed())
-		ig.Expect(j.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
-			"steady-state db-sync Job should be re-created with the 2026.1 image")
+		ig.Expect(j.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.2"),
+			"steady-state db-sync Job should be re-created with the 2026.2 image")
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed(),
 		"steady-state db-sync Job should re-run with the new image")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate post-upgrade db-sync completion")

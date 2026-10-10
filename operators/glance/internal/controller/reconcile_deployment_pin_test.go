@@ -181,148 +181,6 @@ spec:
 status: {}
 `
 
-const pinGlanceDeploymentEventletGolden = `metadata:
-  labels:
-    app.kubernetes.io/component: api
-    app.kubernetes.io/instance: test-glance
-    app.kubernetes.io/managed-by: glance-operator
-    app.kubernetes.io/name: glance
-  name: test-glance
-  namespace: default
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app.kubernetes.io/instance: test-glance
-      app.kubernetes.io/name: glance
-  strategy:
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-    type: RollingUpdate
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: api
-        app.kubernetes.io/instance: test-glance
-        app.kubernetes.io/managed-by: glance-operator
-        app.kubernetes.io/name: glance
-    spec:
-      containers:
-      - command:
-        - glance-api
-        - --config-dir
-        - /etc/glance/glance-api.conf.d/
-        - --config-dir
-        - /etc/glance/backends.conf.d/
-        env:
-        - name: OS_DATABASE__CONNECTION
-          valueFrom:
-            secretKeyRef:
-              key: connection
-              name: test-glance-db-connection
-        - name: OS_KEYSTONE_AUTHTOKEN__PASSWORD
-          valueFrom:
-            secretKeyRef:
-              key: password
-              name: glance-service-user
-        image: ghcr.io/c5c3/glance:2026.1
-        imagePullPolicy: Always
-        lifecycle:
-          preStop:
-            exec:
-              command:
-              - /bin/sh
-              - -c
-              - sleep 5
-        livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          timeoutSeconds: 10
-        name: glance-api
-        ports:
-        - containerPort: 9292
-          name: glance-api
-        readinessProbe:
-          failureThreshold: 3
-          httpGet:
-            path: /healthcheck
-            port: 9292
-          initialDelaySeconds: 10
-          periodSeconds: 15
-          timeoutSeconds: 10
-        resources:
-          limits:
-            memory: 2064Mi
-          requests:
-            cpu: 70m
-            memory: 2064Mi
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - ALL
-          readOnlyRootFilesystem: true
-          runAsGroup: 42424
-          runAsNonRoot: true
-          runAsUser: 42424
-          seccompProfile:
-            type: RuntimeDefault
-        startupProbe:
-          failureThreshold: 30
-          httpGet:
-            path: /healthcheck
-            port: 9292
-          periodSeconds: 10
-          timeoutSeconds: 8
-        volumeMounts:
-        - mountPath: /etc/glance/glance-api.conf.d/
-          name: config
-          readOnly: true
-        - mountPath: /etc/glance/backends.conf.d/
-          name: backends
-          readOnly: true
-        - mountPath: /var/lib/glance/staging
-          name: staging
-        - mountPath: /var/lib/glance/tasks-work
-          name: tasks-work
-      securityContext:
-        fsGroup: 42424
-      terminationGracePeriodSeconds: 30
-      topologySpreadConstraints:
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
-      volumes:
-      - configMap:
-          name: test-glance-config-abc
-        name: config
-      - name: backends
-        secret:
-          secretName: test-glance-backends-abc
-      - emptyDir:
-          sizeLimit: 10Gi
-        name: staging
-      - emptyDir:
-          sizeLimit: 10Gi
-        name: tasks-work
-status: {}
-`
-
 const pinGlanceDeploymentImageCacheGolden = `metadata:
   labels:
     app.kubernetes.io/component: api
@@ -1081,11 +939,11 @@ func pinArtifacts() configArtifacts {
 }
 
 // TestPinGlanceDeployment pins the rendered Deployment across the variants that
-// change the pod template: the uWSGI default (2026.1), the eventlet launch mode
-// (2025.2), the image cache with its extra volume and maintenance sidecar, the
-// database-TLS projection, the autoscaling case with both digest annotations
-// (where .spec.replicas must stay absent so the HPA owns it), and the deliberate
-// opt-out that leaves the scratch emptyDirs unbounded.
+// change the pod template: the uWSGI default (2026.1), the image cache with its
+// extra volume and maintenance sidecar, the database-TLS projection, the
+// autoscaling case with both digest annotations (where .spec.replicas must stay
+// absent so the HPA owns it), and the deliberate opt-out that leaves the scratch
+// emptyDirs unbounded.
 func TestPinGlanceDeployment(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -1098,15 +956,6 @@ func TestPinGlanceDeployment(t *testing.T) {
 			name:   "default-uwsgi",
 			glance: testGlance,
 			golden: pinGlanceDeploymentDefaultGolden,
-		},
-		{
-			name: "eventlet",
-			glance: func() *glancev1alpha1.Glance {
-				gl := testGlance()
-				gl.Spec.OpenStackRelease = "2025.2"
-				return gl
-			},
-			golden: pinGlanceDeploymentEventletGolden,
 		},
 		{
 			name: "image-cache",
