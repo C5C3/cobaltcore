@@ -443,6 +443,26 @@ func TestValidateCreate_RejectsBadOpenStackRelease(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("openStackRelease"))
 }
 
+// TestValidateCreate_ReleaseFloor pins the release floor on a ControlPlane
+// create: 2025.2 passes the release pattern and is rejected naming the field
+// and the floor, and 2026.1 is admitted.
+func TestValidateCreate_ReleaseFloor(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	below := validControlPlane()
+	below.Spec.OpenStackRelease = "2025.2"
+	_, err := w.ValidateCreate(context.Background(), below)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.openStackRelease"))
+	g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
+
+	atFloor := validControlPlane()
+	atFloor.Spec.OpenStackRelease = "2026.1"
+	_, err = w.ValidateCreate(context.Background(), atFloor)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidateCreate_AcceptsNamespacedSecretStoreRef(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -1121,6 +1141,9 @@ func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
 	_, err := w.ValidateUpdate(context.Background(), oldCP, yearDown)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
+	// 2025.1 is below the release floor too, and both rules answer in the one
+	// aggregated Invalid response.
+	g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
 
 	// Same-year minor downgrade: 2026.2 -> 2026.1.
 	minorOld := managedControlPlane()
@@ -1130,6 +1153,36 @@ func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
 	_, err = w.ValidateUpdate(context.Background(), minorOld, minorDown)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
+}
+
+// TestValidateUpdate_ReleaseFloor pins the release floor on a ControlPlane
+// update: one that keeps a stored release below 2026.1 is admitted with one
+// warning, so the ControlPlane stays editable, and one that changes the release
+// to a value below the floor is rejected.
+func TestValidateUpdate_ReleaseFloor(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("unchanged release below the floor warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2025.2"
+		newCP := oldCP.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveExactElements(ContainSubstring("below 2026.1")))
+	})
+
+	t.Run("change to a release below the floor rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2026.1"
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.OpenStackRelease = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.openStackRelease"))
+		g.Expect(err.Error()).To(ContainSubstring("2026.1 or later"))
+	})
 }
 
 // TestValidateUpdate_RejectsNonCadenceReleaseMinor guards the regression where a
