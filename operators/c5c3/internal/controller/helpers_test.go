@@ -132,6 +132,64 @@ func TestSameTargetCluster(t *testing.T) {
 	}
 }
 
+// TestMariaDBDatabaseEndpoint pins the address a database order receives: the
+// in-cluster Service on the database's own cluster, the published endpoint on
+// any other, and nothing while none is published.
+func TestMariaDBDatabaseEndpoint(t *testing.T) {
+	published := func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.ControlPlane {
+		cp.Spec.Infrastructure.PublishedDatabaseEndpoint = "db.example.com:3306"
+		return cp
+	}
+	tests := []struct {
+		name    string
+		cp      *c5c3v1alpha1.ControlPlane
+		cluster string
+		want    string
+	}{
+		{
+			name: "an order on the management cluster of an unplaced plane",
+			cp:   published(dbCredManagedControlPlane()), cluster: c5c3v1alpha1.ManagementCluster,
+			want: "openstack-db.openstack.svc:3306",
+		},
+		{
+			name: "an order on the target cluster Keystone is placed on",
+			cp:   published(placedKeystoneControlPlane("edge-1")), cluster: "edge-1",
+			want: "openstack-db.identity.svc:3306",
+		},
+		{
+			name: "an order on a target cluster of an unplaced plane",
+			cp:   published(dbCredManagedControlPlane()), cluster: "edge-1",
+			want: "db.example.com:3306",
+		},
+		{
+			name: "an order on the management cluster of a placed plane",
+			cp:   published(placedKeystoneControlPlane("edge-1")), cluster: c5c3v1alpha1.ManagementCluster,
+			want: "db.example.com:3306",
+		},
+		{
+			name: "an order off the database's cluster while nothing is published",
+			cp:   dbCredManagedControlPlane(), cluster: "edge-1",
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mariaDBDatabaseEndpoint(tc.cp, effectiveKeystoneDatabase(tc.cp), tc.cluster); got != tc.want {
+				t.Errorf("mariaDBDatabaseEndpoint() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a plane without an infrastructure block", func(t *testing.T) {
+		cp := dbCredManagedControlPlane()
+		db := cp.Spec.Infrastructure.Database
+		cp.Spec.Infrastructure = nil
+		if got := mariaDBDatabaseEndpoint(cp, &db, "edge-1"); got != "" {
+			t.Errorf("mariaDBDatabaseEndpoint() = %q, want the empty string", got)
+		}
+	})
+}
+
 func TestIntervalToCron(t *testing.T) {
 	tests := []struct {
 		name     string
