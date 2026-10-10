@@ -35,7 +35,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires
 # adding the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 58
+_EXPECTED_FIXTURE_COUNT = 59
 
 
 def _load_generator() -> types.ModuleType:

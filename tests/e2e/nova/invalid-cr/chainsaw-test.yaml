@@ -472,3 +472,13 @@ spec:
             ($error != null): true
             (contains($error, 'spec.api.deployment.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # spec.openStackRelease below the 2026.1 release floor passes the CRD pattern
+  # and must be rejected by the validating webhook.
+  - try:
+    - apply:
+        file: 42-openstackrelease-below-floor.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'openStackRelease')): true
+            (contains($error, '2026.1 or later')): true

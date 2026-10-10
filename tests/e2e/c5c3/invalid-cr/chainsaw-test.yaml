@@ -1256,6 +1256,26 @@ spec:
             ($error != null): true
             (contains($error, 'spec.imagePullPolicy')): true
             (contains($error, 'Unsupported value')): true
+  # spec.openStackRelease below the 2026.1 release floor passes the CRD pattern
+  # and must be rejected by the validating webhook.
+  - try:
+    - apply:
+        file: 142-openstackrelease-below-floor.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'openStackRelease')): true
+            (contains($error, '2026.1 or later')): true
+  # services.keystone.image.tag below the 2026.1 release floor must be rejected
+  # by the validating webhook, the mirror of the Keystone child's floor.
+  - try:
+    - apply:
+        file: 143-keystone-image-tag-below-floor.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.keystone.image.tag')): true
+            (contains($error, 'must be 2026.1 or later')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.image.tag naming 2025.2, below the 2026.1 release floor, passes the CRD
+# tag pattern and is rejected by the validating webhook
+# (validation.OpenStackReleaseFloor).
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-image-tag-below-floor
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key

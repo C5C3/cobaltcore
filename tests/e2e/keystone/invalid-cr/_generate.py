@@ -175,6 +175,13 @@ IMAGE_EMPTY_TAG = """\
     tag: ""
 """
 
+# Image whose tag names 2025.2, a release below the 2026.1 floor. The tag
+# grammar admits it, and the validating webhook rejects it.
+IMAGE_TAG_BELOW_FLOOR = """\
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+"""
+
 # Image that sets BOTH a tag and a digest — rejected by the ImageSpec
 # tag/digest XOR XValidation rule (exactly one must be set).
 IMAGE_TAG_AND_DIGEST = """\
@@ -933,6 +940,16 @@ FIXTURES: list[Fixture] = [
 # ImageSpec.PullPolicy Enum marker. The rule is schema-only: a CRD older than
 # the operator prunes the field before a webhook sees it, so no webhook twin
 # exists. Admission must reject this CR with "Unsupported value".""",
+    ),
+    Fixture(
+        filename="39-image-tag-below-floor.yaml",
+        name="invalid-image-tag-below-floor",
+        image=IMAGE_TAG_BELOW_FLOOR,
+        comment="""\
+# Release floor: spec.image.tag names 2025.2, below the oldest release this
+# operator version supports. The CRD tag pattern admits it and the validating
+# webhook rejects it (validation.OpenStackReleaseFloor) with "image.tag" and
+# "2026.1 or later".""",
     ),
 ]
 

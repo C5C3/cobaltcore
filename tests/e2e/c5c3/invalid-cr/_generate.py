@@ -50,6 +50,7 @@ LICENSE_HEADER = """\
 # Canonical ControlPlane scaffold. Any future required field on ControlPlaneSpec
 # must be added below AND verified against every fixture. Placeholders:
 #   {name}                metadata.name
+#   {release}             spec.openStackRelease
 #   {region}              the spec.region line (indent 2) or ""
 #   {region_description}  the spec.regionDescription line (indent 2) or ""
 #   {global_extra_config} the spec.globalExtraConfig block (indent 2) or ""
@@ -71,13 +72,15 @@ LICENSE_HEADER = """\
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
 # required-field check runs, exactly as the minimal managed fixtures rely on.
+VALID_RELEASE = "2026.1"
+
 SCAFFOLD = """\
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: {name}
 spec:
-  openStackRelease: "2026.1"
+  openStackRelease: "{release}"
 {image_pull_policy}{region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}{placement}{barbican}{neutron}{cinder}{nova}{sizing}{namespace_assignments}  korc:
@@ -246,6 +249,8 @@ class Fixture:
     filename: str
     comment: str
     name: str
+    # The spec.openStackRelease value.
+    release: str = VALID_RELEASE
     keystone: str = VALID_EXTERNAL_KEYSTONE
     infrastructure: str = ""
     horizon: str = ""
@@ -273,6 +278,7 @@ class Fixture:
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            release=self.release,
             image_pull_policy=self.image_pull_policy,
             region=self.region,
             region_description=self.region_description,
@@ -2942,6 +2948,31 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         name="cp-image-pull-policy-unsupported",
         image_pull_policy="  imagePullPolicy: Sometimes\n",
+    ),
+    Fixture(
+        filename="142-openstackrelease-below-floor.yaml",
+        comment=(
+            "spec.openStackRelease below the 2026.1 release floor passes the CRD pattern\n"
+            "and is rejected by the validating webhook (validation.OpenStackReleaseFloor)."
+        ),
+        name="cp-release-below-floor",
+        release="2025.2",
+    ),
+    Fixture(
+        filename="143-keystone-image-tag-below-floor.yaml",
+        comment=(
+            "services.keystone.image.tag below the 2026.1 release floor is rejected by the\n"
+            "validating webhook (validation.OpenStackReleaseFloor), the mirror of the floor\n"
+            "the Keystone child applies to the spec.image.tag it is projected into."
+        ),
+        name="cp-keystone-image-below-floor",
+        keystone=(
+            "      mode: Managed\n"
+            "      image:\n"
+            "        repository: ghcr.io/c5c3/keystone\n"
+            '        tag: "2025.2"\n'
+        ),
+        infrastructure=MANAGED_INFRA,
     ),
 )
 

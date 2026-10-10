@@ -642,6 +642,15 @@ FIXTURES: tuple[Fixture, ...] = (
             "        minReplicas: 0\n"
         ),
     ),
+    Fixture(
+        filename="30-openstackrelease-below-floor.yaml",
+        comment=(
+            "spec.openStackRelease below the 2026.1 release floor passes the CRD pattern\n"
+            "and is rejected by the validating webhook (validation.OpenStackReleaseFloor)."
+        ),
+        name="cinder-invalid-release-floor",
+        release="2025.2",
+    ),
 )
 
 

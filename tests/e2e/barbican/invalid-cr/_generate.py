@@ -1088,6 +1088,15 @@ FIXTURES: tuple[Fixture, ...] = (
             "      minReplicas: 0"
         ),
     ),
+    Fixture(
+        filename="58-openstackrelease-below-floor.yaml",
+        comment=(
+            "spec.openStackRelease below the 2026.1 release floor passes the CRD pattern\n"
+            "and is rejected by the validating webhook (validation.OpenStackReleaseFloor)."
+        ),
+        name="barbican-invalid-release-floor",
+        release="2025.2",
+    ),
 )
 
 
