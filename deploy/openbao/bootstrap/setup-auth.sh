@@ -18,6 +18,11 @@ source "${SCRIPT_DIR}/common.sh"
 # Configuration
 ###############################################################################
 BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
+# The ServiceAccount the c5c3-operator pod runs as, and its namespace: the
+# c5c3-operator auth role is bound to exactly that identity. The defaults match
+# deploy/flux-system/releases/c5c3-operator.yaml.
+C5C3_OPERATOR_SERVICE_ACCOUNT="${C5C3_OPERATOR_SERVICE_ACCOUNT:-c5c3-operator}"
+C5C3_OPERATOR_NAMESPACE="${C5C3_OPERATOR_NAMESPACE:-c5c3-system}"
 
 CLUSTERS=(management control-plane hypervisor storage)
 
@@ -420,6 +425,43 @@ main() {
     token_ttl=1h \
     token_max_ttl=4h
   log "read-ceph-keys role written."
+
+  # order-db role on the management cluster's Kubernetes auth mount. The
+  # VaultDynamicSecret generator of every MariaDBDatabase order authenticates
+  # with the "order-db-creds" ServiceAccount the c5c3-operator projects into the
+  # ControlPlane's namespace, to read short-lived DB credentials at
+  # database/mariadb/creds/order.<namespace>.<order>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the order-db-dynamic policy templates the readable creds paths
+  # to the caller's OWN namespace.
+  #
+  # The token TTLs cover the credential lease for the reason the keystone-db
+  # role above gives: OpenBao revokes a lease together with the token that
+  # minted it, so a token shorter than the order role's 72h max_ttl would end
+  # every issued credential early.
+  log "Writing order-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/order-db" \
+    bound_service_account_names=order-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=order-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "order-db role written."
+
+  # c5c3-operator role on the management cluster's Kubernetes auth mount: the
+  # c5c3-operator's own identity, bound to its one ServiceAccount in its one
+  # namespace. It writes and deletes the database-engine roles of the
+  # MariaDBDatabase orders and revokes their leases (the c5c3-operator policy).
+  # The token mints no lease, so it is short, and the operator revokes it after
+  # each use.
+  log "Writing c5c3-operator role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/c5c3-operator" \
+    bound_service_account_names="${C5C3_OPERATOR_SERVICE_ACCOUNT}" \
+    bound_service_account_namespaces="${C5C3_OPERATOR_NAMESPACE}" \
+    token_policies=c5c3-operator \
+    token_ttl=15m \
+    token_max_ttl=15m
+  log "c5c3-operator role written."
 
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
