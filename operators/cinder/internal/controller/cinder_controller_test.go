@@ -510,9 +510,10 @@ func (r *recordingFieldIndexer) IndexField(_ context.Context, _ client.Object, f
 }
 
 // The two satellite kinds index under the same field path, and so do the
-// Cinder's Secret names and an RBD backend's key Secret name, so the
-// registration has to be counted per kind rather than per key name: a helper
-// that registered only one of a pair would leave the other's lookup failing.
+// Cinder's Secret names and the key Secret names of an RBD backend and an RBD
+// backup target, so the registration has to be counted per kind rather than per
+// key name: a helper that registered only one of a pair would leave the other's
+// lookup failing.
 func TestRegisterCinderIndexes_RegistersOnePerIndexedKind(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -520,7 +521,7 @@ func TestRegisterCinderIndexes_RegistersOnePerIndexedKind(t *testing.T) {
 	g.Expect(registerCinderIndexes(context.Background(), idx)).To(Succeed())
 
 	g.Expect(idx.keys).To(ConsistOf(CinderSecretNameIndexKey, CinderBackendSecretNameIndexKey,
-		CinderBackendCinderRefIndexKey, CinderBackupBackendCinderRefIndexKey))
+		CinderBackupBackendSecretNameIndexKey, CinderBackendCinderRefIndexKey, CinderBackupBackendCinderRefIndexKey))
 }
 
 // The Ceph rule opens the union of the networks the projected RBD backends
