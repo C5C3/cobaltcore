@@ -2359,37 +2359,26 @@ func TestReconcileGlance_NoSizingProjectsTodaysChild(t *testing.T) {
 	g.Expect(gl.Spec.Jobs).To(BeNil())
 }
 
-// TestReconcileGlance_SizingProjectsByLaunchMode projects Minimal: from 2026.1
-// the process and thread counts land in spec.apiServer.uwsgi, below it the
-// process count lands in spec.apiServer.workers and no uwsgi block is written.
-func TestReconcileGlance_SizingProjectsByLaunchMode(t *testing.T) {
-	for _, tc := range []struct {
-		release string
-		want    *glancev1alpha1.APIServerSpec
-	}{
-		{release: "2026.1", want: &glancev1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}},
-		{release: "2025.2", want: &glancev1alpha1.APIServerSpec{Workers: ptr.To[int32](1)}},
-	} {
-		t.Run(tc.release, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := glanceControlPlane()
-			cp.Spec.OpenStackRelease = tc.release
-			api := apiReplicas(2)
-			api.SpreadConstraints = hostSpread()
-			cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Glance: &c5c3v1alpha1.APIServiceSizingSpec{API: api}})
-			r := newGlanceTestReconciler(t, cp)
+// TestReconcileGlance_SizingProjectsUWSGI projects Minimal: the process and
+// thread counts land in spec.apiServer.uwsgi.
+func TestReconcileGlance_SizingProjectsUWSGI(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.OpenStackRelease = "2026.1"
+	api := apiReplicas(2)
+	api.SpreadConstraints = hostSpread()
+	cp.Spec.Sizing = minimalWith(c5c3v1alpha1.SizingSpec{Glance: &c5c3v1alpha1.APIServiceSizingSpec{API: api}})
+	r := newGlanceTestReconciler(t, cp)
 
-			_, err := r.reconcileGlance(context.Background(), cp)
-			g.Expect(err).NotTo(HaveOccurred())
-			gl := getProjectedGlance(t, r.Client, cp)
-			g.Expect(gl.Spec.APIServer).To(Equal(tc.want))
-			g.Expect(gl.Spec.Deployment.Replicas).To(Equal(int32(2)))
-			g.Expect(gl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
-			g.Expect(gl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
-				Equal(glancev1alpha1.APIPodSelector(gl.Name)))
-			g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
-		})
-	}
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.APIServer).To(Equal(&glancev1alpha1.APIServerSpec{UWSGI: &commonv1.UWSGISpec{Processes: 1, Threads: 1}}))
+	g.Expect(gl.Spec.Deployment.Replicas).To(Equal(int32(2)))
+	g.Expect(gl.Spec.Deployment.Resources.Requests.Cpu().String()).To(Equal("15m"))
+	g.Expect(gl.Spec.Deployment.TopologySpreadConstraints[0].LabelSelector.MatchLabels).To(
+		Equal(glancev1alpha1.APIPodSelector(gl.Name)))
+	g.Expect(gl.Spec.Jobs.Resources.Requests.Cpu().String()).To(Equal("15m"))
 }
 
 // TestReconcileGlance_ProjectsImagePullPolicy pins the projection of
