@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions carrying rbd_keyring_conf on an RBD backend is rejected
+# by the validating webhook's per-type denylist: the keyring is projected
+# into /etc/ceph, and naming it in cinder.conf is what OSSN-0085 removed.
+# The schema has no counterpart; past the webhook, the renderer drops the
+# key instead.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-rbd-denylist
+spec:
+  cinderRef:
+    name: cinder
+  type: RBD
+  rbd:
+    pool: volumes
+    user: cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder
+  extraOptions:
+    rbd_keyring_conf: "/etc/ceph/ceph.client.cinder.keyring"
