@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the delivered application credential is a live one, from inside the
+# namespace it was delivered to: `token issue` fails unless Keystone holds the
+# credential the Secret names, with the secret it carries. The token is scoped
+# to the credential's project. Only its expiry and project are printed: the
+# token id is a bearer credential and stays out of the pod log.
+#
+# The suite applies the Job a second time with the Secret name replaced by a
+# copy of a superseded credential's document, and expects that run to fail.
+#
+# The image is pinned to the tag the e2e-controlplane job loads into kind, with
+# IfNotPresent so it uses that copy rather than pulling from GHCR. The test
+# script applies the Job, waits for it, and deletes it again before the next
+# run.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region appcred-verify-job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workflow-appcred-verify
+  namespace: "@TENANT_NS@"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "== openstack --os-cloud admin token issue =="
+          openstack --os-cloud admin token issue -c expires -c project_id
+          echo "OK: the delivered application credential authenticates"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: workflow-appcred-credentials
+# endregion appcred-verify-job
