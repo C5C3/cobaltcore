@@ -138,6 +138,7 @@ export default defineConfig({
               { text: 'Attach an NFS Backend to Cinder', link: '/guides/cinder/attach-an-nfs-backend' },
               { text: 'Attach an RBD Backend to Cinder', link: '/guides/cinder/attach-an-rbd-backend' },
               { text: 'Configure NFS Volume Backups', link: '/guides/cinder/configure-nfs-backups' },
+              { text: 'Configure RBD Volume Backups', link: '/guides/cinder/configure-rbd-backups' },
               { text: 'Enable Volume Encryption with Barbican', link: '/guides/cinder/enable-volume-encryption-with-barbican' },
               { text: 'Enable the Image-Volume Cache', link: '/guides/cinder/enable-image-volume-cache' },
               { text: 'Migrate Cinder DB to Dynamic Credentials', link: '/guides/cinder/migrate-cinder-db-to-dynamic-credentials' },
