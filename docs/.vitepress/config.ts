@@ -290,6 +290,7 @@ export default defineConfig({
               { text: 'KeystoneProject CRD', link: '/reference/c5c3/keystoneproject-crd' },
               { text: 'KeystoneRoleAssignment CRD', link: '/reference/c5c3/keystoneroleassignment-crd' },
               { text: 'KeystoneCatalogEntry CRD', link: '/reference/c5c3/keystonecatalogentry-crd' },
+              { text: 'KeystoneApplicationCredential CRD', link: '/reference/c5c3/keystoneapplicationcredential-crd' },
               { text: 'Keystone Orders Reconciler', link: '/reference/c5c3/keystone-orders-reconciler' },
             ],
           },
