@@ -18,6 +18,19 @@ import (
 // carry, which markers cannot reference from a Go constant.
 const DefaultNFSMountOptions = "nfsvers=4.1,soft,timeo=30,retrans=2"
 
+// DefaultRBDClusterName is the Ceph cluster name rendered when an RBD backend
+// leaves clusterName empty. It is the name librados and the Ceph tools assume
+// when none is given, and it names the same literal the +kubebuilder:default
+// marker on RBDBackendSpec.ClusterName carries.
+const DefaultRBDClusterName = "ceph"
+
+// RBDKeySecretDataKey is the one data key the Secret referenced by
+// RBDBackendSpec.KeySecretRef must carry: the raw cephx key of the user, as
+// "ceph auth get-key client.<user>" prints it. The name is pinned by contract
+// (not configurable per CR) and is the key Rook's CephClient writes into the
+// Secret it produces, so that Secret works unchanged.
+const RBDKeySecretDataKey = "userKey"
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
@@ -26,10 +39,11 @@ const DefaultNFSMountOptions = "nfsvers=4.1,soft,timeo=30,retrans=2"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // CinderBackend is the Schema for the cinderbackends API. One CR attaches to a
-// Cinder CR via spec.cinderRef and describes one volume backend (Phase 1: NFS).
-// The Cinder-side sub-reconciler projects a dedicated cinder-volume Deployment
-// for each attached backend, so the backends a Cinder serves are added and
-// removed without editing the Cinder CR.
+// Cinder CR via spec.cinderRef and describes one volume backend, either an NFS
+// export (type NFS) or a Ceph RBD pool (type RBD). The Cinder-side
+// sub-reconciler projects a dedicated cinder-volume Deployment for each attached
+// backend, so the backends a Cinder serves are added and removed without editing
+// the Cinder CR.
 //
 // Detaching a backend is not a plain delete. A cinder-volume owns the volumes it
 // created under its host identity, and a host no service backs leaves those
@@ -54,13 +68,17 @@ type CinderBackendList struct {
 	Items           []CinderBackend `json:"items"`
 }
 
-// CinderBackendType enumerates the supported volume drivers. Phase 1 ships NFS.
-// +kubebuilder:validation:Enum=NFS
+// CinderBackendType enumerates the supported volume drivers.
+// +kubebuilder:validation:Enum=NFS;RBD
 type CinderBackendType string
 
 const (
 	// CinderBackendTypeNFS selects the Cinder NFS volume driver.
 	CinderBackendTypeNFS CinderBackendType = "NFS"
+
+	// CinderBackendTypeRBD selects the Cinder RBD volume driver, which keeps
+	// each volume as an RBD image in a Ceph pool.
+	CinderBackendTypeRBD CinderBackendType = "RBD"
 )
 
 // CinderBackendSpec defines the desired state of CinderBackend.
@@ -70,12 +88,14 @@ const (
 // volumes the old deployment created under a host identity nothing serves
 // anymore. The type rule freezes the driver for the same reason: the volumes
 // already on the backend were created by the driver that is being replaced.
-// Delete and recreate instead, which runs the service-remove Job. The type/nfs
-// union rule enforces "exactly one backend block matching spec.type" at the
-// schema layer so it holds even when the validating webhook is down.
+// Delete and recreate instead, which runs the service-remove Job. The union rule
+// enforces "exactly one backend block matching spec.type" at the schema layer,
+// for both halves (type NFS carries spec.nfs and no spec.rbd, type RBD carries
+// spec.rbd and no spec.nfs), so it holds even when the validating webhook is
+// down.
 // +kubebuilder:validation:XValidation:rule="self.cinderRef.name == oldSelf.cinderRef.name",message="cinderRef is immutable"
 // +kubebuilder:validation:XValidation:rule="self.type == oldSelf.type",message="type is immutable"
-// +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs)",message="exactly one backend block matching spec.type must be set (type NFS requires spec.nfs)"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs) && (self.type == 'RBD') == has(self.rbd)",message="exactly one backend block matching spec.type must be set (type NFS requires spec.nfs, type RBD requires spec.rbd)"
 type CinderBackendSpec struct {
 	// CinderRef names the Cinder CR in the same namespace this backend attaches
 	// to. The referenced CR does not have to exist at admission time (GitOps
@@ -83,13 +103,18 @@ type CinderBackendSpec struct {
 	// reference surfaces as Ready=False.
 	CinderRef CinderRefSpec `json:"cinderRef"`
 
-	// Type selects the volume driver. Phase 1 supports NFS only.
+	// Type selects the volume driver: NFS or RBD.
 	Type CinderBackendType `json:"type"`
 
 	// NFS configures the NFS volume driver. Required exactly when type is NFS
 	// (union rule above).
 	// +optional
 	NFS *NFSBackendSpec `json:"nfs,omitempty"`
+
+	// RBD configures the RBD volume driver. Required exactly when type is RBD
+	// (union rule above).
+	// +optional
+	RBD *RBDBackendSpec `json:"rbd,omitempty"`
 
 	// ImageVolumeCache turns on the per-backend image-volume cache: the first
 	// volume created from a given image is kept and later requests for the same
@@ -162,6 +187,92 @@ type NFSBackendSpec struct {
 	// +kubebuilder:validation:Pattern=`^[^\n\r]*$`
 	// +kubebuilder:default="nfsvers=4.1,soft,timeo=30,retrans=2"
 	MountOptions string `json:"mountOptions,omitempty"`
+}
+
+// RBDBackendSpec configures the Cinder RBD volume driver for one backend. The
+// operator creates no pool and no cephx user: both exist on the Ceph cluster
+// before the backend is applied, and the key of the user reaches the operator
+// through the Secret keySecretRef names. Every field below reaches a file, a
+// command line or a NetworkPolicy verbatim, which is why the patterns are
+// allowlists.
+type RBDBackendSpec struct {
+	// Pool is the Ceph pool the backend keeps its volumes in, rendered as
+	// rbd_pool.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	Pool string `json:"pool"`
+
+	// User is the cephx user the driver authenticates as, without its "client."
+	// prefix. It is rendered as rbd_user, reaches the Ceph tools as the --id
+	// argument, names the [client.<user>] section of the projected keyring and
+	// the keyring's file name /etc/ceph/<cluster>.client.<user>.keyring.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('client.')",message="user is the cephx name without its client. prefix (write cinder, not client.cinder)"
+	User string `json:"user"`
+
+	// Monitors lists the Ceph monitor addresses, each a hostname or an IPv4
+	// address with an optional port. The list is rendered comma-joined, in list
+	// order, as the mon_host line of the projected ceph.conf. A bare host is
+	// tried on the msgr2 port 3300 and then on the msgr1 port 6789. IPv6
+	// literals are not admitted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`
+	Monitors []string `json:"monitors"`
+
+	// Networks lists the IPv4 CIDRs the Ceph cluster answers on. They are the
+	// Ceph side of the Cinder's NetworkPolicy: each entry becomes an ipBlock peer
+	// of the egress rule that opens the monitor ports 3300 and 6789 and the OSD
+	// port range 6800 to 7300. The list has to cover the addresses the monitors
+	// and the OSDs answer on; for a Rook cluster in the same Kubernetes cluster
+	// that is the pod network and, because Rook advertises the monitors through
+	// Services, the service network. The field is required rather than optional
+	// so a backend admitted on a Cinder without spec.networkPolicy keeps its
+	// egress when the policy is enabled later.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Pattern=`^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`
+	Networks []string `json:"networks"`
+
+	// ClusterName is the Ceph cluster name. It is rendered as rbd_cluster_name,
+	// reaches the Ceph tools as the --cluster argument, and names the projected
+	// files /etc/ceph/<cluster>.conf and /etc/ceph/<cluster>.client.<user>.keyring.
+	// +optional
+	// +kubebuilder:default=ceph
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// KeySecretRef names the Secret that holds the cephx key of the user under
+	// the data key userKey (RBDKeySecretDataKey). The Secret lives in this
+	// backend's namespace on the cluster the Cinder's spec.targetClusterRef
+	// names, which is where the volume pods run.
+	KeySecretRef SecretNameRefSpec `json:"keySecretRef"`
+
+	// SecretUUID is the UUID of the libvirt secret the hypervisors look the key
+	// up by, rendered as rbd_secret_uuid only when set. Left unset, the driver
+	// uses the cluster FSID it reads at start; the libvirt secret on the
+	// hypervisors has to carry the same UUID either way.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	SecretUUID string `json:"secretUUID,omitempty"`
+}
+
+// SecretNameRefSpec references a Kubernetes Secret by name in the backend's
+// namespace. Unlike commonv1.SecretRefSpec it carries no key field: the data key
+// the Secret must expose is fixed by RBDKeySecretDataKey, so there is nothing to
+// select.
+type SecretNameRefSpec struct {
+	// Name is the referenced Secret's name, a DNS-1123 subdomain.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
 }
 
 // ImageVolumeCacheSpec bounds the per-backend image-volume cache. The cache

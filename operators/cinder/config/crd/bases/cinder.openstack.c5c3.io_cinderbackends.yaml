@@ -32,10 +32,11 @@ spec:
       openAPIV3Schema:
         description: |-
           CinderBackend is the Schema for the cinderbackends API. One CR attaches to a
-          Cinder CR via spec.cinderRef and describes one volume backend (Phase 1: NFS).
-          The Cinder-side sub-reconciler projects a dedicated cinder-volume Deployment
-          for each attached backend, so the backends a Cinder serves are added and
-          removed without editing the Cinder CR.
+          Cinder CR via spec.cinderRef and describes one volume backend, either an NFS
+          export (type NFS) or a Ceph RBD pool (type RBD). The Cinder-side
+          sub-reconciler projects a dedicated cinder-volume Deployment for each attached
+          backend, so the backends a Cinder serves are added and removed without editing
+          the Cinder CR.
 
           Detaching a backend is not a plain delete. A cinder-volume owns the volumes it
           created under its host identity, and a host no service backs leaves those
@@ -70,9 +71,11 @@ spec:
               volumes the old deployment created under a host identity nothing serves
               anymore. The type rule freezes the driver for the same reason: the volumes
               already on the backend were created by the driver that is being replaced.
-              Delete and recreate instead, which runs the service-remove Job. The type/nfs
-              union rule enforces "exactly one backend block matching spec.type" at the
-              schema layer so it holds even when the validating webhook is down.
+              Delete and recreate instead, which runs the service-remove Job. The union rule
+              enforces "exactly one backend block matching spec.type" at the schema layer,
+              for both halves (type NFS carries spec.nfs and no spec.rbd, type RBD carries
+              spec.rbd and no spec.nfs), so it holds even when the validating webhook is
+              down.
             properties:
               cinderRef:
                 description: |-
@@ -183,11 +186,111 @@ spec:
                 - path
                 - server
                 type: object
+              rbd:
+                description: |-
+                  RBD configures the RBD volume driver. Required exactly when type is RBD
+                  (union rule above).
+                properties:
+                  clusterName:
+                    default: ceph
+                    description: |-
+                      ClusterName is the Ceph cluster name. It is rendered as rbd_cluster_name,
+                      reaches the Ceph tools as the --cluster argument, and names the projected
+                      files /etc/ceph/<cluster>.conf and /etc/ceph/<cluster>.client.<user>.keyring.
+                    maxLength: 63
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  keySecretRef:
+                    description: |-
+                      KeySecretRef names the Secret that holds the cephx key of the user under
+                      the data key userKey (RBDKeySecretDataKey). The Secret lives in this
+                      backend's namespace on the cluster the Cinder's spec.targetClusterRef
+                      names, which is where the volume pods run.
+                    properties:
+                      name:
+                        description: Name is the referenced Secret's name, a DNS-1123
+                          subdomain.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  monitors:
+                    description: |-
+                      Monitors lists the Ceph monitor addresses, each a hostname or an IPv4
+                      address with an optional port. The list is rendered comma-joined, in list
+                      order, as the mon_host line of the projected ceph.conf. A bare host is
+                      tried on the msgr2 port 3300 and then on the msgr1 port 6789. IPv6
+                      literals are not admitted.
+                    items:
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[A-Za-z0-9.-]+(:[0-9]{1,5})?$
+                      type: string
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                  networks:
+                    description: |-
+                      Networks lists the IPv4 CIDRs the Ceph cluster answers on. They are the
+                      Ceph side of the Cinder's NetworkPolicy: each entry becomes an ipBlock peer
+                      of the egress rule that opens the monitor ports 3300 and 6789 and the OSD
+                      port range 6800 to 7300. The list has to cover the addresses the monitors
+                      and the OSDs answer on; for a Rook cluster in the same Kubernetes cluster
+                      that is the pod network and, because Rook advertises the monitors through
+                      Services, the service network. The field is required rather than optional
+                      so a backend admitted on a Cinder without spec.networkPolicy keeps its
+                      egress when the policy is enabled later.
+                    items:
+                      pattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+                      type: string
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                  pool:
+                    description: |-
+                      Pool is the Ceph pool the backend keeps its volumes in, rendered as
+                      rbd_pool.
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                  secretUUID:
+                    description: |-
+                      SecretUUID is the UUID of the libvirt secret the hypervisors look the key
+                      up by, rendered as rbd_secret_uuid only when set. Left unset, the driver
+                      uses the cluster FSID it reads at start; the libvirt secret on the
+                      hypervisors has to carry the same UUID either way.
+                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                    type: string
+                  user:
+                    description: |-
+                      User is the cephx user the driver authenticates as, without its "client."
+                      prefix. It is rendered as rbd_user, reaches the Ceph tools as the --id
+                      argument, names the [client.<user>] section of the projected keyring and
+                      the keyring's file name /etc/ceph/<cluster>.client.<user>.keyring.
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: user is the cephx name without its client. prefix (write
+                        cinder, not client.cinder)
+                      rule: '!self.startsWith(''client.'')'
+                required:
+                - keySecretRef
+                - monitors
+                - networks
+                - pool
+                - user
+                type: object
               type:
-                description: Type selects the volume driver. Phase 1 supports NFS
-                  only.
+                description: 'Type selects the volume driver: NFS or RBD.'
                 enum:
                 - NFS
+                - RBD
                 type: string
             required:
             - cinderRef
@@ -199,8 +302,9 @@ spec:
             - message: type is immutable
               rule: self.type == oldSelf.type
             - message: exactly one backend block matching spec.type must be set (type
-                NFS requires spec.nfs)
-              rule: (self.type == 'NFS') == has(self.nfs)
+                NFS requires spec.nfs, type RBD requires spec.rbd)
+              rule: (self.type == 'NFS') == has(self.nfs) && (self.type == 'RBD')
+                == has(self.rbd)
           status:
             description: |-
               CinderBackendStatus defines the observed state of CinderBackend. The dedicated
