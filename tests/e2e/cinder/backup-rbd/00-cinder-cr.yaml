@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the backup-rbd E2E test (2026.1 release).
+#
+# Same Keystone-free wiring as the rbd-backend fixture, on the schema
+# cinder_bkrbd, with one API replica: this suite holds five pods on the single
+# kind node, the API, the scheduler, two volume services and the backup
+# service.
+#
+# The networkPolicy block is the one of the network-policy suite's Cinder. It
+# is what makes the operator render the Ceph egress rule this suite asserts as
+# an object, with the networks of the RBD volume backend and of the RBD backup
+# target in one rule.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-bkrbd
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_bkrbd
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-bkrbd-messaging
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openstack
