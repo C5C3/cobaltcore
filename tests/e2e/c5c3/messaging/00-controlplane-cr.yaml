@@ -31,6 +31,10 @@
 #
 # There is no korc block: the defaulting webhook materializes it, as in the
 # sibling c5c3 fixtures.
+#
+# @TENANT_NS@ is substituted by the test with a namespace derived from the
+# ephemeral one: the RabbitMQVhost orders of the suite live there, and the
+# namespaceAssignments entry is their only consent.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -54,3 +58,5 @@ spec:
   services: {}
   sizing:
     profile: Minimal
+  namespaceAssignments:
+  - namespace: "@TENANT_NS@"
