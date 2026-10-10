@@ -1711,7 +1711,14 @@ installed and the four network modules are not, and runs
 `qemu-img info rbd:volumes/x`: without the module, qemu-img prints
 `Unable to load block driver rbd`; with it, librados runs and fails with
 `error connecting`, because no `ceph.conf` names a monitor. The test asserts
-the second message and the absence of the first.
+the second message and the absence of the first. Its secret test makes the
+calls of the lab's `ceph-secret.sh`
+([Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors))
+against `libvirtd`: it defines a private, ephemeral `ceph` secret, sets its
+value with `virsh secret-set-value --file` from a base64 key with a trailing
+newline, and checks that `secret-get-value` refuses it, that a second secret,
+not private, reads the key back unchanged, and that `/etc/libvirt/secrets`
+stays empty.
 
 Its build, verification and tag scheme are described in
 [build-libvirt / merge-libvirt-image](./build-images-workflow.md#build-libvirt-merge-libvirt-image).

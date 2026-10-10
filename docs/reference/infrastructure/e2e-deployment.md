@@ -690,7 +690,7 @@ deploy/lab/metal-stack/
 ├── hypervisor/                     The two workers as KVM hypervisors (#1142), applied by hand
 │   ├── kustomization.yaml          Lists ../migration-ports and the seven manifests below; the apply order and node labels in its header
 │   ├── libvirt-ca.yaml             The libvirt migration CA and Issuer nova-hypervisor-agents-ca-issuer
-│   ├── libvirt-configmap.yaml      host-prepare.sh, libvirtd.sh, libvirtd.conf, qemu.conf
+│   ├── libvirt-configmap.yaml      host-prepare.sh, libvirtd.sh, ceph-secret.sh, libvirtd.conf, qemu.conf
 │   ├── libvirt-daemonset.yaml      DaemonSet libvirt on the pool's nodes
 │   ├── compute.yaml                OVNChassis, NeutronMetadataAgent, NovaCompute
 │   ├── sources.yaml                OCIRepository of each chart, digest-pinned

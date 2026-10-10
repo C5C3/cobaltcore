@@ -371,7 +371,10 @@ Four caveats come with the RBD driver:
   one.
 - `rbd_secret_uuid` defaults to the FSID the driver reads at start. The libvirt
   secret on the hypervisors has to carry the same UUID, whether it is set here
-  or left to that default.
+  or left to that default. The lab's libvirt DaemonSet defines
+  `090e4a3c-6c20-4e74-82dc-1a70382babe8`
+  ([Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)),
+  so a lab backend sets `secretUUID` to it.
 - `rbd_exclusive_cinder_pool` stays at its default, `true`: the driver reports
   the capacity it provisioned from cinder's own volume records and does not list
   the pool. Two backends on one pool, or a pool shared with other users, each

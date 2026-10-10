@@ -412,6 +412,20 @@ once with `the server doesn't have a resource type` while the `Hypervisor` CRD
 is missing. A libvirt pod turns `Ready` once kvm-node-agent has written its
 node's TLS files.
 
+With `WITH_CEPH=true` the libvirt pods also carry the container `ceph-secret`.
+It defines the libvirt secret `090e4a3c-6c20-4e74-82dc-1a70382babe8` from the
+key in `openstack/ceph-client-cinder` and sets its value again after every
+rotation ([Lab hypervisors](./reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)).
+Each node logs one `set the value` line:
+
+```bash
+kubectl logs -n openstack -l app.kubernetes.io/name=libvirt -c ceph-secret
+```
+
+Without the flag the container waits for the Secret and the pod is `Ready`
+regardless. A server with an attached RBD volume keeps the key its QEMU started
+with until it is migrated or restarted.
+
 ### Step 4: Wait for onboarding {#hv-onboarding}
 
 ```bash
