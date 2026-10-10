@@ -191,7 +191,8 @@ run that paid for the lesson; the lesson itself is the part to carry.
   (sweep `nip.io/`, `http_code` and `expected 200` too, not only the port).
 - **Paste-deploy divergence between releases:** factory references
   (`API.factory` vs `API_factory`) and oslo.middleware healthcheck
-  semantics (filter tolerated in 2025.2, app-only in 2026.1) differ
+  semantics (filter tolerated below 2026.1, app-only from 2026.1; the switch
+  went with the retired release) differ
   between the pinned releases — pin the rendered paste config in unit
   tests and run the e2e/tempest legs against every release.
 - **Budget the bring-up, not the suite:** a Nova needs about 8 minutes to

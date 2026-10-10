@@ -54,9 +54,12 @@ bug?
 - **New fix** — write it against the newest affected release, then
   forward-port or backport it to the others.
 - **Backport of an upstream commit** — carry it only where the pinned tag
-  lacks it. The NetApp mutable-fakes backport (64754d84) was carried for
-  2025.2 only: 28.0.0 carries upstream `cc981d81b6`, 27.0.0 does not, and
-  no 27.0.x tag exists to pin instead.
+  lacks it. The DNS-free `test_new_image_with_location` backport
+  (`patches/glance/2026.2/0001-test-new-image-with-location-do-not-rely-on-dns-resolution.patch`,
+  8888ce38) is carried for 2026.2 only: 33.0.0 lacks upstream `a37c43135e`,
+  and 32.0.0 has no `validate_uri`, so the test never resolves a host there
+  (`docs/reference/ci-cd/container-images.md`, the glance Source patch
+  paragraphs).
   Prefer bumping `source-refs.yaml` to a tag that contains the fix whenever
   one exists.
 - **Twins** keep the same slug and, where possible, the same number. Cut each
@@ -95,7 +98,8 @@ patch may depend on an earlier one.
 ### 3. Carry the upstream test hunks
 
 `test-service-images` runs the upstream unit suite against the patched
-source (cinder 2025.2: about 17,900 tests, six minutes on four workers). A
+source (cinder 2026.1: 18,076 tests on the first 28.0.0 run,
+`releases/2026.1/test-excludes/cinder.txt:10-11`). A
 patch that changes behaviour turns that job red unless it also moves every
 upstream test that asserts the old behaviour. Cinder 0002 flipped
 `run_as_root` on `fetch_verify_image` and failed three tests in
@@ -162,7 +166,7 @@ Subjects of the previous patch commits:
 
 ```text
 fix(patches): run the NFS driver's qemu-img info as the service user          (0ed260e9)
-fix(patches): backport the NetApp mutable-fakes test fix for cinder 2025.2    (64754d84)
+fix(patches): backport the DNS-free test_new_image_with_location for glance 2026.2    (8888ce38)
 images(cinder): run create-from-image qemu-img as the service user            (45fe3122)
 ```
 

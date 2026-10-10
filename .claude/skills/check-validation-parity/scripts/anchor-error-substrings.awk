@@ -321,7 +321,7 @@ function tmatch_verb(r, k, lit, lw,    lr, L, val, q, rem, f, nf, lrem) {
     if (val !~ TC[k]) { if (TM[k]) break; continue }
     # A %s/%v/%q value must occur in the corpus or a fixture, unless it
     # starts with a digit: a rendered number, quantity, duration, or release
-    # (1Mi, 1m0s, 2025.2) is taken like a %d value.
+    # (1Mi, 1m0s, 2026.1) is taken like a %d value.
     if (TQ[k]) {
       q = val; gsub(/"/, "", q)
       if (q != "" && q !~ /^[0-9]/ && !hay_has(q, "any")) { if (TM[k]) break; continue }
