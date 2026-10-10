@@ -11,8 +11,9 @@
 # constraint overrides, the Tempest config directory of every service in
 # ALL_TEMPEST_SERVICES, the per-service basic-deployment e2e variant, the README
 # release list and the one-line Go []string release lists in *_test.go, and —
-# for the newest release — the upgrade-path suites, plus the global
-# default-release decision points.
+# for the newest release — the upgrade-path suites, plus the global decision
+# points: the default-release references and the release floor
+# (release.MinimumSupported).
 #
 # Usage: inventory-release-touchpoints.sh [<version>]
 #
@@ -355,6 +356,21 @@ printf '  [INFO] deploy-infra image preload: hack/deploy-infra.sh cp_release -> 
   "$(sed -nE 's/.*cp_release="([^"]+)".*/\1/p' hack/deploy-infra.sh | first)"
 grep -oHE '\$\{[A-Z_]+:-[0-9]{4}\.[12]\}' hack/*.sh 2>/dev/null \
   | sed -E 's/^([^:]+):\$\{([A-Z_]+):-([0-9.]+)\}$/  [INFO] \2 fallback: \1 -> \3/' || true
+# Each value is built on its own line first: Bash 3.2 misparses a pipeline
+# with nested quotes inside a quoted command substitution (see below).
+tempest_cfg="$(noncomment hack/ci-run-tempest.sh | sed -nE 's/^CONFIG_DIR=.*-([0-9]{4})-([12])\}.*/\1.\2/p' | first)"
+printf '  [INFO] CONFIG_DIR fallback slug: hack/ci-run-tempest.sh -> %s\n' "${tempest_cfg:-<unparsed>}"
+tempest_svc="$(noncomment hack/ci-run-tempest.sh | sed -nE 's/^SERVICE_K8S_NAME=.*-([0-9]{4})-([12])\}.*/\1.\2/p' | first)"
+printf '  [INFO] SERVICE_K8S_NAME fallback slug: hack/ci-run-tempest.sh -> %s\n' "${tempest_svc:-<unparsed>}"
+fake_compute="$(noncomment deploy/kind/fake-compute/fake-compute.yaml | grep -oE 'ghcr\.io/c5c3/nova:[0-9]{4}\.[12]' | sed 's/.*://' | tr '\n' ' ' || true)"
+printf '  [INFO] fake compute nova image tags: deploy/kind/fake-compute/fake-compute.yaml -> %s\n' "${fake_compute:-<unparsed>}"
+for lab in deploy/lab/metal-stack/controlplane/controlplane-lab.yaml \
+           deploy/lab/metal-stack/hypervisor/compute.yaml; do
+  lab_release="$(first_pin openStackRelease "${lab}")"
+  printf '  [INFO] lab manifest openStackRelease: %s -> %s\n' "${lab}" "${lab_release:-<unparsed>}"
+done
+floor="$(sed -nE 's/.*MinimumSupported = Release\{Year: ([0-9]{4}), Minor: ([12]).*/\1.\2/p' internal/common/release/release.go | first)"
+printf '  [INFO] release floor: internal/common/release/release.go MinimumSupported -> %s\n' "${floor:-<unparsed>}"
 printf '  [INFO] ci.yaml hard-coded image tags: %s\n' \
   "$(grep -oE ':[0-9]{4}\.[12]' .github/workflows/ci.yaml | tr -d ':' | sort -u | tr '\n' ' ' || true)"
 for svc in ${E2E_SERVICES}; do
