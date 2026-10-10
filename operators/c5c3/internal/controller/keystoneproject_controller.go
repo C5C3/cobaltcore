@@ -368,7 +368,7 @@ func (r *KeystoneProjectReconciler) reconcileDelete(
 		func(ctx context.Context, childNS string) (int, error) {
 			// The managed Project first, then the probe, both of the one kind.
 			return sweepOrderList(ctx, r.Client, order, ref, childNS, &orcv1alpha1.ProjectList{},
-				func(obj client.Object) bool { return obj.GetName() == managed })
+				func(obj client.Object) bool { return obj.GetName() == managed }, nil)
 		})
 }
 
