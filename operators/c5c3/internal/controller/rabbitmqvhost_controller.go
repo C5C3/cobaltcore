@@ -734,7 +734,7 @@ func (r *RabbitMQVhostReconciler) setupWithOptions(
 		Owns(&corev1.Secret{}, engageLocal, engageProviders, servesKind).
 		Watches(&corev1.Secret{}, children, engageLocal, engageNoProviders).
 		Watches(&esov1alpha1.PushSecret{}, children, engageLocal, engageNoProviders)
-	for _, gvk := range []schema.GroupVersionKind{messaging.VhostGVK, messaging.UserGVK, messaging.PermissionGVK} {
+	for _, gvk := range messaging.TopologyGVKs {
 		if !served[gvk] {
 			ctrl.Log.WithName("setup").V(1).Info(
 				"the management cluster serves no topology kind; RabbitMQVhost skips its watch", "kind", gvk.String())
