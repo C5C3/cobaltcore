@@ -142,6 +142,7 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 		subConditionTypes, keystoneServiceSubConditionTypes, keystoneUserSubConditionTypes,
 		keystoneProjectSubConditionTypes, keystoneRoleAssignmentSubConditionTypes, keystoneCatalogEntrySubConditionTypes,
 		keystoneApplicationCredentialSubConditionTypes, mariaDBDatabaseSubConditionTypes,
+		keystoneApplicationCredentialSubConditionTypes, rabbitMQVhostSubConditionTypes,
 	} {
 		for _, ct := range list {
 			known[ct] = struct{}{}
@@ -173,6 +174,15 @@ func TestSubReconcilerConditionTypes_MariaDBDatabaseLegs(t *testing.T) {
 
 	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("MariaDBDatabaseProvision", "DatabaseReady"))
 	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("MariaDBDatabaseDelivery", "DeliveryReady"))
+}
+
+// TestSubReconcilerConditionTypes_RabbitMQVhostLegs pins the two legs of the
+// vhost order kind to the conditions they drive.
+func TestSubReconcilerConditionTypes_RabbitMQVhostLegs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("RabbitMQVhostProvision", "VhostReady"))
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("RabbitMQVhostDelivery", "DeliveryReady"))
 }
 
 // TestInstrumenterInstrument_KeystoneServiceLabelPairs proves the two
