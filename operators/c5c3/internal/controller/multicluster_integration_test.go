@@ -159,7 +159,12 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		filepath.Join(orderCRDs, "c5c3.io_keystoneprojects.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystoneroleassignments.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystonecatalogentries.yaml"),
-		filepath.Join(orderCRDs, "c5c3.io_keystoneapplicationcredentials.yaml")))
+		filepath.Join(orderCRDs, "c5c3.io_keystoneapplicationcredentials.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_mariadbdatabases.yaml")))
+
+	// envtest runs no OpenBao: the database orders log in on a recording fake,
+	// which the subtests read back.
+	mcBao := newFakeOpenBao()
 
 	// --- Environment A: the management cluster, hosting the manager.
 	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
@@ -271,10 +276,19 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			}).setupWithOptions(mcMgr, opts); err != nil {
 				return err
 			}
-			return (&KeystoneApplicationCredentialReconciler{
+			if err := (&KeystoneApplicationCredentialReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			return (&MariaDBDatabaseReconciler{
+				Client:              mgr.GetClient(),
+				Scheme:              mgr.GetScheme(),
+				Resolver:            mcMgr,
+				OpenBaoDial:         mcBao.dial,
+				ServiceAccountToken: func() (string, error) { return "operator-jwt", nil },
 			}).setupWithOptions(mcMgr, opts)
 		},
 	})
@@ -1589,6 +1603,211 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 				ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(child.name), child.obj))).To(BeTrue(), child.name)
 			}
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "deleting the project and the entry removes their children")
+	})
+
+	t.Run("a MariaDBDatabase on the target cluster waits for the plane's DB credentials", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// A plane nothing drives never reaches DBCredentialsReady: envtest runs no
+		// ESO to sync its DB-credential ExternalSecret.
+		const waitNamespace, waitControlPlane = "mc-db-wait", "db-wait-cp"
+		mcEnsureNamespace(t, ctx, mgmtClient, waitNamespace)
+		mcEnsureNamespace(t, ctx, targetClient, mcAssignedNamespace)
+		waitCP := integrationManagedControlPlane(waitControlPlane, waitNamespace)
+		waitCP.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+			{Namespace: mcAssignedNamespace, TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: mcTargetCluster}},
+		}
+		g.Expect(mgmtClient.Create(ctx, waitCP)).To(Succeed(), "create the ControlPlane the order names")
+
+		order := &c5c3v1alpha1.MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "wait-db", Namespace: mcAssignedNamespace},
+			Spec: c5c3v1alpha1.MariaDBDatabaseSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: waitControlPlane, Namespace: waitNamespace},
+			},
+		}
+		g.Expect(targetClient.Create(ctx, order)).To(Succeed(), "create the order on the target cluster")
+		orderKey := client.ObjectKeyFromObject(order)
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.MariaDBDatabase{}
+			ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+			ig.Expect(live.Finalizers).To(ContainElement(mariaDBDatabaseFinalizerName))
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeMariaDBDatabaseDatabaseReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Reason).To(Equal(reasonMariaDBDatabaseWaitingForDBCredentials))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the order holds at the plane's DB credentials")
+
+		// Nothing of the order's is written at home before the gate passes.
+		mcExpectAbsent(t, ctx, mgmtClient, client.ObjectKey{Namespace: waitNamespace, Name: orderDBCredentialServiceAccountName},
+			&corev1.ServiceAccount{}, "shared order ServiceAccount")
+		selector := client.MatchingLabels{mariaDBDatabaseNameLabel: order.Name}
+		for _, list := range []client.ObjectList{
+			&esov1.ExternalSecretList{}, &esgenv1alpha1.VaultDynamicSecretList{}, &mariadbv1alpha1.DatabaseList{},
+		} {
+			g.Expect(mgmtClient.List(ctx, list, client.InNamespace(waitNamespace), selector)).To(Succeed())
+			g.Expect(meta.LenList(list)).To(BeZero(), "%T", list)
+		}
+		g.Expect(mcBao.recorded()).To(BeEmpty(), "nothing is written to OpenBao")
+
+		g.Expect(targetClient.Delete(ctx, order)).To(Succeed())
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(targetClient.Get(ctx, orderKey, &c5c3v1alpha1.MariaDBDatabase{}))
+		}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "an order that created nothing is released")
+	})
+
+	t.Run("a MariaDBDatabase on the target cluster is provisioned at home and delivered beside it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The plane of the KeystoneUser subtest reports DBCredentialsReady, and its
+		// shared MariaDB runs unplaced, on the management cluster.
+		orderCPKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: mcOrderControlPlane}
+		order := &c5c3v1alpha1.MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "pieces-db", Namespace: mcAssignedNamespace},
+			Spec: c5c3v1alpha1.MariaDBDatabaseSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: mcOrderControlPlane, Namespace: mcOrderNamespace},
+			},
+		}
+		g.Expect(targetClient.Create(ctx, order)).To(Succeed(), "create the order on the target cluster")
+		orderKey := client.ObjectKeyFromObject(order)
+		ref := mariaDBDatabaseRef(order, mcTargetCluster)
+		roleName := mariaDBDatabaseRoleName(mcOrderNamespace, order, mcTargetCluster)
+		childKey := func(name string) client.ObjectKey { return client.ObjectKey{Namespace: mcOrderNamespace, Name: name} }
+		expectCondition := func(condType string, status metav1.ConditionStatus, reason, what string) {
+			t.Helper()
+			g.Eventually(func(ig Gomega) {
+				live := &c5c3v1alpha1.MariaDBDatabase{}
+				ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+				cond := meta.FindStatusCondition(live.Status.Conditions, condType)
+				ig.Expect(cond).NotTo(BeNil())
+				ig.Expect(cond.Reason).To(Equal(reason), cond.Message)
+				ig.Expect(cond.Status).To(Equal(status))
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), what)
+		}
+		// No ControlPlane or child watch reaches an order on a target cluster for
+		// an edit that carries no order label; an annotation edit wakes it the way
+		// the refresh would.
+		nudge := func(value string) {
+			t.Helper()
+			g.Eventually(func() error {
+				live := &c5c3v1alpha1.MariaDBDatabase{}
+				if err := targetClient.Get(ctx, orderKey, live); err != nil {
+					return err
+				}
+				live.Annotations = map[string]string{"test.c5c3.io/nudge": value}
+				return targetClient.Update(ctx, live)
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "nudge the order")
+		}
+
+		// envtest runs no cert-manager: the order holds until the client
+		// certificate it projected is issued, with nothing of its own written.
+		expectCondition(conditionTypeMariaDBDatabaseDatabaseReady, metav1.ConditionFalse,
+			reasonMariaDBDatabaseWaitingForClientCertificate, "the order waits for the client certificate")
+		live := &c5c3v1alpha1.MariaDBDatabase{}
+		g.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+		g.Expect(live.Finalizers).To(ContainElement(mariaDBDatabaseFinalizerName))
+		mcEventuallyExists(t, ctx, mgmtClient, childKey(orderDBCredentialServiceAccountName), &corev1.ServiceAccount{},
+			"shared order ServiceAccount")
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		mcEventuallyExists(t, ctx, mgmtClient, childKey(orderDBClientCertName), cert, "shared OpenBao client Certificate")
+		g.Expect(cert.GetLabels()).NotTo(HaveKey(mariaDBDatabaseNameLabel), "the shared identity carries no order labels")
+		selector := client.MatchingLabels{mariaDBDatabaseNameLabel: order.Name}
+		databases := &mariadbv1alpha1.DatabaseList{}
+		g.Expect(mgmtClient.List(ctx, databases, client.InNamespace(mcOrderNamespace), selector)).To(Succeed())
+		g.Expect(databases.Items).To(BeEmpty(), "no Database CR before the role exists")
+
+		g.Expect(mgmtClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: orderDBClientCertName, Namespace: mcOrderNamespace},
+			Data: map[string][]byte{
+				"tls.crt": []byte("client-cert"), "tls.key": []byte("client-key"), "ca.crt": []byte("openbao-ca"),
+			},
+		})).To(Succeed(), "issue the client certificate by hand")
+		nudge("issued")
+
+		// The role is written through the operator's own login, and the Database CR
+		// lands beside the MariaDB on the management cluster.
+		expectCondition(conditionTypeMariaDBDatabaseDatabaseReady, metav1.ConditionFalse, "WaitingForDatabase",
+			"the order waits for the Database CR")
+		written, ok := mcBao.role(roleName)
+		g.Expect(ok).To(BeTrue(), "the operator wrote the order's role")
+		g.Expect(written.DBName).To(Equal("keystone-" + mcOrderNamespace))
+		database := &mariadbv1alpha1.Database{}
+		g.Expect(mgmtClient.Get(ctx, childKey(ref.childPrefix()+"database"), database)).To(Succeed())
+		g.Expect(database.Labels).To(Equal(ref.childLabels()))
+		g.Expect(database.Spec.Name).To(Equal("pieces_db"))
+		g.Expect(database.Spec.MariaDBRef.Name).To(Equal("openstack-db"))
+		g.Expect(database.Spec.CleanupPolicy).To(HaveValue(Equal(mariadbv1alpha1.CleanupPolicySkip)))
+		mcExpectAbsent(t, ctx, targetClient, childKey(ref.childPrefix()+"database"), &mariadbv1alpha1.Database{},
+			"Database CR on the target")
+
+		// The Database watch brings the order back from home once the schema exists.
+		g.Expect(simulators.SimulateDatabaseReady(ctx, mgmtClient, childKey(ref.childPrefix()+"database"))).To(Succeed())
+		expectCondition(conditionTypeMariaDBDatabaseDatabaseReady, metav1.ConditionFalse,
+			reasonMariaDBDatabaseWaitingForCredentials, "the order waits for ESO")
+		credentialsKey := childKey(ref.childPrefix() + "credentials")
+		es := &esov1.ExternalSecret{}
+		mcEventuallyExists(t, ctx, mgmtClient, credentialsKey, es, "order ExternalSecret")
+		g.Expect(es.Labels).To(Equal(ref.childLabels()))
+		g.Expect(es.Spec.Target.Template).NotTo(BeNil())
+		g.Expect(es.Spec.Target.Template.Metadata.Labels).To(Equal(ref.childLabels()))
+		vds := &esgenv1alpha1.VaultDynamicSecret{}
+		mcEventuallyExists(t, ctx, mgmtClient, credentialsKey, vds, "order VaultDynamicSecret")
+		g.Expect(vds.Spec.Path).To(Equal("database/mariadb/creds/" + roleName))
+
+		// envtest runs no ESO either: the sync and the Secret it materialises, with
+		// the template's labels, are written by hand.
+		g.Expect(mgmtClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: credentialsKey.Name, Namespace: mcOrderNamespace, Labels: ref.childLabels()},
+			Data:       map[string][]byte{"username": []byte("v-test-pieces"), "password": []byte("pw")},
+		})).To(Succeed())
+		g.Expect(simulators.SimulateExternalSecretSync(ctx, mgmtClient, credentialsKey)).To(Succeed())
+
+		// The order is on another cluster than the MariaDB and the plane publishes
+		// no database endpoint.
+		expectCondition(conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionFalse,
+			reasonMariaDBDatabaseNotPublished, "an unpublished database refuses the delivery")
+		expectCondition(conditionTypeMariaDBDatabaseDatabaseReady, metav1.ConditionTrue,
+			reasonMariaDBDatabaseProvisioned, "the database is provisioned")
+		secretKey := client.ObjectKey{Namespace: mcAssignedNamespace, Name: "pieces-db-credentials"}
+		mcExpectAbsent(t, ctx, targetClient, secretKey, &corev1.Secret{}, "delivered Secret")
+
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, orderCPKey, live); err != nil {
+				return err
+			}
+			live.Spec.Infrastructure.PublishedDatabaseEndpoint = "db.example.test:3306"
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "publish the database endpoint")
+		nudge("published")
+
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.MariaDBDatabase{}
+			ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+			ig.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, conditionTypeReady)).To(BeTrue())
+			secret := &corev1.Secret{}
+			ig.Expect(targetClient.Get(ctx, secretKey, secret)).To(Succeed())
+			ig.Expect(metav1.IsControlledBy(secret, live)).To(BeTrue(), "the order owns its Secret on the target")
+			ig.Expect(secret.Data).To(Equal(map[string][]byte{
+				"host": []byte("db.example.test"), "port": []byte("3306"), "database": []byte("pieces_db"),
+				"username": []byte("v-test-pieces"), "password": []byte("pw"),
+			}))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the credentials are delivered beside the order")
+		mcExpectAbsent(t, ctx, mgmtClient, secretKey, &corev1.Secret{}, "delivered Secret on the management cluster")
+
+		g.Expect(targetClient.Delete(ctx, order)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, orderKey, &c5c3v1alpha1.MariaDBDatabase{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(ref.childPrefix()+"database"),
+				&mariadbv1alpha1.Database{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, credentialsKey, &esov1.ExternalSecret{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, credentialsKey, &esgenv1alpha1.VaultDynamicSecret{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, secretKey, &corev1.Secret{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"deleting the order removes the Database CR, the ESO objects and the Secret")
+		g.Expect(mcBao.recorded()).To(ContainElement("revoke database/mariadb/creds/" + roleName))
+		g.Expect(mcBao.recorded()).To(ContainElement("delete database/mariadb " + roleName))
+		_, ok = mcBao.role(roleName)
+		g.Expect(ok).To(BeFalse(), "the teardown deleted the role")
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {

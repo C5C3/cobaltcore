@@ -159,7 +159,9 @@ func TestMariaDBDatabase_Provision_RewritesARoleThatDiffers(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(h.bao.count("write")).To(Equal(1))
-	g.Expect(h.bao.roles[roleName]).To(Equal(mariaDBDatabaseOpenBaoRole(cp, "app_db")))
+	repaired, ok := h.bao.role(roleName)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(repaired).To(Equal(mariaDBDatabaseOpenBaoRole(cp, "app_db")))
 
 	_, err = h.reconcile(context.Background())
 
