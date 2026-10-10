@@ -6,8 +6,12 @@ package v1alpha1
 
 import (
 	"fmt"
+	"net"
 	"reflect"
+	"strconv"
+	"strings"
 
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -87,6 +91,69 @@ func validateNFSExport(fldPath *field.Path, path, mountOptions string) field.Err
 		errs = append(errs, field.Invalid(fldPath.Child("mountOptions"), mountOptions,
 			"must not contain a newline or carriage return: the value is written verbatim "+
 				"into the rendered backend section and the NFS shares file"))
+	}
+	return errs
+}
+
+// rbdUserClientPrefixMessage is the message of the CEL rule on
+// RBDBackendSpec.User, repeated verbatim by its webhook twin.
+const rbdUserClientPrefixMessage = "user is the cephx name without its client. prefix (write cinder, not client.cinder)"
+
+// validateRBDBackend is the defense-in-depth twin of the markers on
+// RBDBackendSpec, plus the rules a pattern cannot express: a monitor port inside
+// 1 to 65535 and a network in canonical form. The canonical form matters because
+// the API server rejects an ipBlock.cidr with host bits set, and that rejection
+// would surface as a failing NetworkPolicy step on the Cinder rather than here.
+// Every value reaches the backend section, the projected ceph.conf or keyring,
+// or a NetworkPolicy verbatim, so a newline or a carriage return is rejected on
+// every field the renderer writes.
+func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorList {
+	var errs field.ErrorList
+	const verbatimMsg = "must not contain a newline or carriage return: the value is rendered " +
+		"verbatim into the backend section and the Ceph configuration"
+
+	for _, f := range []struct {
+		name, value string
+	}{
+		{"pool", rbd.Pool},
+		{"user", rbd.User},
+		{"clusterName", rbd.ClusterName},
+	} {
+		if validation.HasControlChars(f.value) {
+			errs = append(errs, field.Invalid(fldPath.Child(f.name), f.value, verbatimMsg))
+		}
+	}
+	if strings.HasPrefix(rbd.User, "client.") {
+		errs = append(errs, field.Invalid(fldPath.Child("user"), rbd.User, rbdUserClientPrefixMessage))
+	}
+
+	for i, monitor := range rbd.Monitors {
+		monPath := fldPath.Child("monitors").Index(i)
+		if validation.HasControlChars(monitor) {
+			errs = append(errs, field.Invalid(monPath, monitor, verbatimMsg))
+			continue
+		}
+		idx := strings.LastIndex(monitor, ":")
+		if idx < 0 {
+			continue
+		}
+		port, err := strconv.ParseInt(monitor[idx+1:], 10, 32)
+		if err != nil || port < 1 || port > 65535 {
+			errs = append(errs, field.Invalid(monPath, monitor, "port must be between 1 and 65535"))
+		}
+	}
+
+	for i, network := range rbd.Networks {
+		ip, ipnet, err := net.ParseCIDR(network)
+		if err != nil || ip.To4() == nil || ipnet.String() != network {
+			errs = append(errs, field.Invalid(fldPath.Child("networks").Index(i), network,
+				"must be a canonical IPv4 CIDR such as 10.128.0.0/16 (host bits zero)"))
+		}
+	}
+
+	if msgs := k8svalidation.IsDNS1123Subdomain(rbd.KeySecretRef.Name); len(msgs) > 0 {
+		errs = append(errs, field.Invalid(fldPath.Child("keySecretRef", "name"),
+			rbd.KeySecretRef.Name, strings.Join(msgs, "; ")))
 	}
 	return errs
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/cobaltcore/internal/common/job"
@@ -30,6 +31,26 @@ func validCinderBackend() *CinderBackend {
 				Server:       "nfs.example.com",
 				Path:         "/exports/volumes",
 				MountOptions: DefaultNFSMountOptions,
+			},
+		},
+	}
+}
+
+// validRBDCinderBackend returns a minimal valid RBD-typed CinderBackend, the RBD
+// counterpart of validCinderBackend.
+func validRBDCinderBackend() *CinderBackend {
+	return &CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbd1", Namespace: "openstack"},
+		Spec: CinderBackendSpec{
+			CinderRef: CinderRefSpec{Name: "cinder"},
+			Type:      CinderBackendTypeRBD,
+			RBD: &RBDBackendSpec{
+				Pool:         "volumes",
+				User:         "cinder",
+				Monitors:     []string{"ceph-mon.openstack.svc.cluster.local"},
+				Networks:     []string{"10.244.0.0/16"},
+				ClusterName:  DefaultRBDClusterName,
+				KeySecretRef: SecretNameRefSpec{Name: "ceph-client-cinder"},
 			},
 		},
 	}
@@ -73,6 +94,239 @@ func TestCinderBackendValidate_AcceptsValidBackend(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), validCinderBackend())
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+func TestCinderBackendDefault_ClusterName(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &CinderBackendWebhook{}
+
+	// Empty: filled with the name librados assumes.
+	empty := validRBDCinderBackend()
+	empty.Spec.RBD.ClusterName = ""
+	g.Expect(w.Default(context.Background(), empty)).To(gomega.Succeed())
+	g.Expect(empty.Spec.RBD.ClusterName).To(gomega.Equal("ceph"))
+
+	// Explicit value preserved.
+	explicit := validRBDCinderBackend()
+	explicit.Spec.RBD.ClusterName = "backup-site"
+	g.Expect(w.Default(context.Background(), explicit)).To(gomega.Succeed())
+	g.Expect(explicit.Spec.RBD.ClusterName).To(gomega.Equal("backup-site"))
+
+	// A CR without the rbd block has nothing to fill.
+	absent := validRBDCinderBackend()
+	absent.Spec.RBD = nil
+	g.Expect(w.Default(context.Background(), absent)).To(gomega.Succeed())
+	g.Expect(absent.Spec.RBD).To(gomega.BeNil())
+}
+
+func TestCinderBackendValidate_AcceptsValidRBDBackend(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &CinderBackendWebhook{}
+
+	b := validRBDCinderBackend()
+	b.Spec.RBD.Monitors = []string{"10.96.12.3:6789", "ceph-mon-b.rook-ceph.svc", "10.96.12.5:3300", "ceph-mon-c:65535"}
+	b.Spec.RBD.Networks = []string{"10.244.0.0/16", "10.96.0.0/12"}
+	b.Spec.RBD.SecretUUID = "457eb676-33da-42ec-9a8c-9293d545c337"
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// Both halves of the union, each reported on spec.rbd: type RBD without the
+// block, and type NFS carrying both blocks.
+func TestCinderBackendValidate_RejectsRBDUnionMismatch(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &CinderBackendWebhook{}
+
+	missingRBD := validRBDCinderBackend()
+	missingRBD.Spec.RBD = nil
+	_, err := w.ValidateCreate(context.Background(), missingRBD)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.rbd"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring(
+		"exactly one backend block matching spec.type must be set (type NFS requires spec.nfs, type RBD requires spec.rbd)"))
+
+	both := validCinderBackend()
+	both.Spec.RBD = validRBDCinderBackend().Spec.RBD
+	_, err = w.ValidateCreate(context.Background(), both)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.rbd"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("exactly one backend block matching spec.type"))
+}
+
+// Each RBD field reaches a file, a command line or an ipBlock verbatim. Every
+// shape below breaks exactly one rule, so the helper must return exactly one
+// error, on the path of the field that carries it.
+func TestCinderBackendValidate_RejectsRBDFieldShapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(rbd *RBDBackendSpec)
+		wantPath string
+		wantSub  string
+	}{
+		{
+			name:     "user with the client. prefix",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.User = "client.cinder" },
+			wantPath: "spec.rbd.user",
+			wantSub:  "without its client. prefix",
+		},
+		{
+			name:     "monitor port out of range",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Monitors = []string{"ceph-mon:70000"} },
+			wantPath: "spec.rbd.monitors[0]",
+			wantSub:  "port must be between 1 and 65535",
+		},
+		{
+			name:     "monitor port zero",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Monitors = []string{"ceph-mon:0"} },
+			wantPath: "spec.rbd.monitors[0]",
+			wantSub:  "port must be between 1 and 65535",
+		},
+		{
+			// The schema pattern refuses an empty port; a CR past it reaches the
+			// twin.
+			name:     "monitor with an empty port",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Monitors = []string{"ceph-mon:"} },
+			wantPath: "spec.rbd.monitors[0]",
+			wantSub:  "port must be between 1 and 65535",
+		},
+		{
+			name: "monitor with a newline",
+			mutate: func(rbd *RBDBackendSpec) {
+				rbd.Monitors = []string{"ceph-mon", "ceph-mon\nkeyring = /tmp/other"}
+			},
+			wantPath: "spec.rbd.monitors[1]",
+			wantSub:  "must not contain a newline or carriage return",
+		},
+		{
+			name:     "network with host bits set",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Networks = []string{"10.128.0.1/22"} },
+			wantPath: "spec.rbd.networks[0]",
+			wantSub:  "must be a canonical IPv4 CIDR",
+		},
+		{
+			name:     "network that is no CIDR",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Networks = []string{"10.244.0.0/16", "not-a-cidr"} },
+			wantPath: "spec.rbd.networks[1]",
+			wantSub:  "must be a canonical IPv4 CIDR",
+		},
+		{
+			// The pattern admits IPv4 only; the twin must too.
+			name:     "IPv6 network",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Networks = []string{"fd00::/8"} },
+			wantPath: "spec.rbd.networks[0]",
+			wantSub:  "must be a canonical IPv4 CIDR",
+		},
+		{
+			name:     "key Secret name that is no DNS-1123 subdomain",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.KeySecretRef.Name = "Ceph_Key" },
+			wantPath: "spec.rbd.keySecretRef.name",
+			wantSub:  "RFC 1123 subdomain",
+		},
+		{
+			name:     "pool with a carriage return",
+			mutate:   func(rbd *RBDBackendSpec) { rbd.Pool = "volumes\r" },
+			wantPath: "spec.rbd.pool",
+			wantSub:  "must not contain a newline or carriage return",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			b := validRBDCinderBackend()
+			tc.mutate(b.Spec.RBD)
+			errs := validateRBDBackend(field.NewPath("spec", "rbd"), b.Spec.RBD)
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantPath))
+			g.Expect(errs[0].Detail).To(gomega.ContainSubstring(tc.wantSub))
+
+			// The same rule answers through the admission entry point.
+			_, err := (&CinderBackendWebhook{}).ValidateCreate(context.Background(), b)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantPath))
+		})
+	}
+}
+
+// The denylist is selected by spec.type: the options the shared fields render
+// are denied everywhere, each driver's own options only on its own type.
+func TestCinderBackendValidate_ExtraOptionsDenylistPerType(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend func() *CinderBackend
+		option  string
+		wantSub string
+	}{
+		{
+			name:    "rbd_pool on RBD",
+			backend: validRBDCinderBackend,
+			option:  "rbd_pool",
+			wantSub: `option "rbd_pool" is owned by spec.rbd.pool`,
+		},
+		{
+			name:    "rbd_keyring_conf on RBD",
+			backend: validRBDCinderBackend,
+			option:  "rbd_keyring_conf",
+			wantSub: `option "rbd_keyring_conf" is owned by the operator (the keyring is projected into /etc/ceph`,
+		},
+		{
+			name:    "nfs_mount_options on NFS",
+			backend: validCinderBackend,
+			option:  "nfs_mount_options",
+			wantSub: `option "nfs_mount_options" is owned by spec.nfs.mountOptions`,
+		},
+		{
+			name:    "nfs_mount_options on RBD",
+			backend: validRBDCinderBackend,
+			option:  "nfs_mount_options",
+		},
+		{
+			name:    "volume_driver on NFS",
+			backend: validCinderBackend,
+			option:  "volume_driver",
+			wantSub: `option "volume_driver" is owned by spec.type`,
+		},
+		{
+			name:    "volume_driver on RBD",
+			backend: validRBDCinderBackend,
+			option:  "volume_driver",
+			wantSub: `option "volume_driver" is owned by spec.type`,
+		},
+		{
+			name:    "rados_connect_timeout on RBD",
+			backend: validRBDCinderBackend,
+			option:  "rados_connect_timeout",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &CinderBackendWebhook{}
+
+			b := tc.backend()
+			b.Spec.ExtraOptions = map[string]string{tc.option: "5"}
+			_, err := w.ValidateCreate(context.Background(), b)
+			if tc.wantSub == "" {
+				g.Expect(err).NotTo(gomega.HaveOccurred())
+				return
+			}
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
+		})
+	}
+
+	t.Run("an unknown type gets the shared options alone", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		g.Expect(ExtraOptionsDenylist(CinderBackendType("Other"))).To(gomega.Equal(sharedExtraOptionsDenylist))
+	})
+
+	t.Run("the result is a copy", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		denylist := ExtraOptionsDenylist(CinderBackendTypeRBD)
+		delete(denylist, "volume_driver")
+		g.Expect(sharedExtraOptionsDenylist).To(gomega.HaveKey("volume_driver"))
+	})
 }
 
 // Both directions of the type/nfs union: type NFS without spec.nfs, and spec.nfs

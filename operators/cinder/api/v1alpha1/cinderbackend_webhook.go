@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -51,26 +52,65 @@ const (
 	MaxBackendNameLength = 63 - len("last-service-remove-") - len("-job-uid")
 )
 
-// nfsExtraOptionsDenylist enumerates the [<name>] backend-section option names
-// spec.extraOptions must never carry, mapped to the spec field or component that
-// owns each. The operator renders all of them from the typed fields, so a
-// duplicate would silently shadow — or be shadowed by — the typed value depending
-// on render order.
-var nfsExtraOptionsDenylist = map[string]string{
+// sharedExtraOptionsDenylist enumerates the [<name>] backend-section option names
+// spec.extraOptions must never carry on a backend of any type, mapped to the
+// spec field or component that owns each. The operator renders all of them from
+// the typed fields, so a duplicate would silently shadow — or be shadowed by —
+// the typed value depending on render order.
+var sharedExtraOptionsDenylist = map[string]string{
 	"volume_driver":                  "spec.type",
 	"volume_backend_name":            "the operator (backend section wiring)",
 	"backend_host":                   "the operator (the host identity this backend's volumes are keyed by)",
-	"nfs_shares_config":              "spec.nfs.server and spec.nfs.path",
-	"nfs_mount_point_base":           "the operator (the mount path the cinder-volume pod carries)",
-	"nfs_mount_options":              "spec.nfs.mountOptions",
-	"nas_secure_file_operations":     "the operator (it follows the pod's security context)",
-	"nas_secure_file_permissions":    "the operator (it follows the pod's security context)",
-	"nfs_snapshot_support":           "the operator (NFS driver wiring)",
-	"nfs_sparsed_volumes":            "the operator (NFS driver wiring)",
-	"nfs_qcow2_volumes":              "the operator (NFS driver wiring)",
 	"image_volume_cache_enabled":     "spec.imageVolumeCache.enabled",
 	"image_volume_cache_max_size_gb": "spec.imageVolumeCache.maxSizeGB",
 	"image_volume_cache_max_count":   "spec.imageVolumeCache.maxCount",
+}
+
+// nfsExtraOptionsDenylist adds the NFS driver options the operator renders or
+// pins on a backend of type NFS.
+var nfsExtraOptionsDenylist = map[string]string{
+	"nfs_shares_config":           "spec.nfs.server and spec.nfs.path",
+	"nfs_mount_point_base":        "the operator (the mount path the cinder-volume pod carries)",
+	"nfs_mount_options":           "spec.nfs.mountOptions",
+	"nas_secure_file_operations":  "the operator (it follows the pod's security context)",
+	"nas_secure_file_permissions": "the operator (it follows the pod's security context)",
+	"nfs_snapshot_support":        "the operator (NFS driver wiring)",
+	"nfs_sparsed_volumes":         "the operator (NFS driver wiring)",
+	"nfs_qcow2_volumes":           "the operator (NFS driver wiring)",
+}
+
+// rbdExtraOptionsDenylist adds the RBD driver options the operator renders on a
+// backend of type RBD. rbd_keyring_conf is no option cinder registers, but the
+// driver still reads it for cinderlib; it is listed so the rejection names why
+// the keyring path is not the CR's to set.
+//
+// #nosec G101 -- option names mapped to the fields that own them, not credentials.
+var rbdExtraOptionsDenylist = map[string]string{
+	"rbd_pool":         "spec.rbd.pool",
+	"rbd_user":         "spec.rbd.user",
+	"rbd_cluster_name": "spec.rbd.clusterName",
+	"rbd_ceph_conf":    "the operator (the ceph.conf it projects into /etc/ceph)",
+	"rbd_secret_uuid":  "spec.rbd.secretUUID",
+	"rbd_keyring_conf": "the operator (the keyring is projected into /etc/ceph; naming it in cinder.conf is what OSSN-0085 removed)",
+}
+
+// ExtraOptionsDenylist returns the spec.extraOptions denylist of a backend of
+// type t: the options every backend type renders plus the ones its driver
+// renders. A type the operator does not know gets the shared options alone. The
+// result is a fresh map the caller may keep.
+//
+// It is exported because the backend renderer drops the same keys from
+// extraOptions, so a CR written past the validating webhook never carries a
+// denied option into its section.
+func ExtraOptionsDenylist(t CinderBackendType) map[string]string {
+	denylist := maps.Clone(sharedExtraOptionsDenylist)
+	switch t {
+	case CinderBackendTypeNFS:
+		maps.Copy(denylist, nfsExtraOptionsDenylist)
+	case CinderBackendTypeRBD:
+		maps.Copy(denylist, rbdExtraOptionsDenylist)
+	}
+	return denylist
 }
 
 // reservedBackendNames is the set of cinder.conf section names across every
@@ -135,6 +175,11 @@ func (w *CinderBackendWebhook) Default(_ context.Context, obj *CinderBackend) er
 	if obj.Spec.NFS != nil && obj.Spec.NFS.MountOptions == "" {
 		obj.Spec.NFS.MountOptions = DefaultNFSMountOptions
 	}
+	// Mirror the +kubebuilder:default marker on RBDBackendSpec.ClusterName the
+	// same way.
+	if obj.Spec.RBD != nil && obj.Spec.RBD.ClusterName == "" {
+		obj.Spec.RBD.ClusterName = DefaultRBDClusterName
+	}
 	return nil
 }
 
@@ -195,13 +240,13 @@ func (w *CinderBackendWebhook) validate(b *CinderBackend, extra field.ErrorList)
 	specPath := field.NewPath("spec")
 
 	// Defense-in-depth union check alongside the spec-level CEL rule: exactly one
-	// backend block, matching spec.type.
+	// backend block, matching spec.type. Each half reports on the block it is
+	// about.
 	if (b.Spec.Type == CinderBackendTypeNFS) != (b.Spec.NFS != nil) {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("nfs"),
-			b.Spec.Type,
-			"exactly one backend block matching spec.type must be set (type NFS requires spec.nfs)",
-		))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("nfs"), b.Spec.Type, backendUnionMessage))
+	}
+	if (b.Spec.Type == CinderBackendTypeRBD) != (b.Spec.RBD != nil) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("rbd"), b.Spec.Type, backendUnionMessage))
 	}
 
 	allErrs = append(allErrs, validateBackendName(b)...)
@@ -209,9 +254,12 @@ func (w *CinderBackendWebhook) validate(b *CinderBackend, extra field.ErrorList)
 		allErrs = append(allErrs, validateNFSExport(
 			specPath.Child("nfs"), b.Spec.NFS.Path, b.Spec.NFS.MountOptions)...)
 	}
+	if b.Spec.RBD != nil {
+		allErrs = append(allErrs, validateRBDBackend(specPath.Child("rbd"), b.Spec.RBD)...)
+	}
 	allErrs = append(allErrs, validation.ExtraOptions(
 		specPath.Child("extraOptions"), b.Spec.ExtraOptions, validation.ExtraOptionsRules{
-			Denylist: nfsExtraOptionsDenylist,
+			Denylist: ExtraOptionsDenylist(b.Spec.Type),
 		})...)
 	allErrs = append(allErrs, extra...)
 
@@ -224,6 +272,11 @@ func (w *CinderBackendWebhook) validate(b *CinderBackend, extra field.ErrorList)
 	}
 	return nil
 }
+
+// backendUnionMessage is the message of the union CEL rule on CinderBackendSpec,
+// repeated verbatim by its webhook twin.
+const backendUnionMessage = "exactly one backend block matching spec.type must be set " +
+	"(type NFS requires spec.nfs, type RBD requires spec.rbd)"
 
 // validateBackendName rejects a metadata.name the backend cannot carry into
 // cinder.conf. The name becomes three things at once: the [<name>] config
