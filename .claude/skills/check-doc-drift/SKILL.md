@@ -100,6 +100,10 @@ delegate the areas to parallel sub-agents for a large corpus.
   provisioning` with `keystoneapplicationcredential_provision.go`, and
   `## Application credential delivery` with
   `keystoneapplicationcredential_delivery.go`; in
+  `mariadbdatabase-reconciler.md` pair `## Database provisioning` with
+  `mariadbdatabase_provision.go`, `## Credential delivery` with
+  `mariadbdatabase_delivery.go`, and `## Deletion and Teardown` with
+  `mariadbdatabase_controller.go`; in
   `controlplane-reconciler.md` pair `### Built-in service
   registrations` with `builtin_registrations.go`.
 - **CRD reference** — for each Spec field listed in
