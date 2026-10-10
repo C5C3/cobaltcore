@@ -73,8 +73,10 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 
 # Runtime system packages: the libvirt client libraries, qemu-img, the os-brick
 # host tools for iSCSI, multipath and NVMe, the NFS client nova mounts Cinder
-# NFS exports with, cryptsetup and genisoimage. The extra-packages.yaml entries
-# name the code that runs each of them. No uWSGI runs here, so no
+# NFS exports with, cryptsetup, genisoimage and the Ceph client: ceph-common
+# for the ceph and rbd tools nova/storage/rbd_utils.py runs, python3-rados and
+# python3-rbd for the modules it imports. The extra-packages.yaml entries name
+# the code that runs each of them. No uWSGI runs here, so no
 # libpython3.12t64; sudo comes from python-base.
 # The postinst scripts of open-iscsi and nvme-cli generate
 # /etc/iscsi/initiatorname.iscsi, /etc/nvme/hostnqn and /etc/nvme/hostid at
@@ -86,8 +88,11 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # mounts the host's files (#1061). nfs-common and its dependency rpcbind add
 # nothing to that list: their postinst scripts create the statd and _rpc users
 # and install /etc/idmapd.conf, /etc/default/nfs-common and /etc/nfs.conf, none
-# of which names the node. The rm sits outside the guard, so a local build
-# without --build-arg EXTRA_APT_PACKAGES stays a clean no-op.
+# of which names the node. ceph-common bakes no node identity either: its
+# postinst adds the ceph user with /var/lib/ceph and /var/log/ceph and
+# installs /etc/ceph/rbdmap, /etc/default/ceph and
+# /etc/logrotate.d/ceph-common. The rm sits outside the guard, so a local
+# build without --build-arg EXTRA_APT_PACKAGES stays a clean no-op.
 # /var/lib/apt/lists is a cache mount for the duration of the RUN, so its
 # contents never reach the layer.
 # hadolint ignore=DL3008
@@ -99,6 +104,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fi && \
     rm -f /etc/iscsi/initiatorname.iscsi /etc/nvme/hostnqn /etc/nvme/hostid \
         /etc/multipath.conf
+
+# ceph-bindings.pth makes the venv see rados and rbd alone, for the rationale
+# in images/glance/Dockerfile. Here ceph-common also pulls python3-requests,
+# python3-yaml and their dependencies (python3-chardet among them) into
+# /usr/lib/python3/dist-packages; the venv imports none of them.
+RUN site_packages="$(/var/lib/openstack/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" && \
+    mkdir -p /var/lib/openstack/ceph-bindings && \
+    for so in /usr/lib/python3/dist-packages/rados.cpython-*.so \
+        /usr/lib/python3/dist-packages/rbd.cpython-*.so; do \
+    if [ -e "$so" ]; then ln -s "$so" /var/lib/openstack/ceph-bindings/ || exit 1; fi; \
+    done && \
+    echo /var/lib/openstack/ceph-bindings > "${site_packages}/ceph-bindings.pth" && \
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' python3-rbd 2>/dev/null)" = installed ]; then \
+    /var/lib/openstack/bin/python -c 'import rados, rbd'; \
+    fi
 
 # The state directories Nova writes to. /var/lib/nova is meant as [DEFAULT]
 # state_path, where a compute stores its node identity, compute_id; nova's

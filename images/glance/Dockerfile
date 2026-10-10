@@ -68,14 +68,17 @@ COPY --from=build --link /var/lib/openstack /var/lib/openstack
 # lockstep.
 COPY --chmod=0755 glance-wsgi-api /var/lib/openstack/bin/glance-wsgi-api
 
-# Runtime system packages required by Glance. Glance is otherwise pure Python
-# at runtime, but the venv-builder-compiled uwsgi binary links
-# libpython3.12.so.1.0, which python-base does not ship — CI passes
-# libpython3.12t64 from releases/<release>/extra-packages.yaml (the same
-# rationale as horizon). The image itself stays config-free: the operator
-# mounts glance-api.conf, glance-api-paste.ini, and policy, and provides the
-# staging/tasks paths as emptyDir mounts. The guard keeps local builds without
-# --build-arg EXTRA_APT_PACKAGES a clean no-op.
+# Runtime system packages required by Glance. The venv-builder-compiled uwsgi
+# binary links libpython3.12.so.1.0, which python-base does not ship — CI
+# passes libpython3.12t64 from releases/<release>/extra-packages.yaml (the
+# same rationale as horizon). python3-rados and python3-rbd carry the rados
+# and rbd modules the RBD store (glance_store/_drivers/rbd.py) imports behind
+# a guard. The store runs no ceph or rbd binary, so ceph-common stays out. The
+# step after this one makes the venv see the two modules. The image itself
+# stays config-free: the operator mounts glance-api.conf, glance-api-paste.ini,
+# and policy, and provides the staging/tasks paths as emptyDir mounts. The
+# guard keeps local builds without --build-arg EXTRA_APT_PACKAGES a clean
+# no-op.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -83,6 +86,32 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends ${EXTRA_APT_PACKAGES} && \
     rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# The venv of images/venv-builder/Dockerfile excludes the system site
+# packages, and the Ceph bindings ship only as noble packages, which install
+# into /usr/lib/python3/dist-packages. That directory also receives every
+# other python3-* package an apt entry pulls in, outside upper-constraints, so
+# the venv must not search it. The step links the two extension modules into
+# /var/lib/openstack/ceph-bindings, and a .pth file in the venv's
+# site-packages names that directory. Python's site module appends it to
+# sys.path: rados and rbd resolve, and no other module from dist-packages
+# does. sysconfig answers the site-packages path, so no Python version is
+# hard-coded. The step sits outside the guard: in a build without --build-arg
+# EXTRA_APT_PACKAGES the globs match nothing and the entry names an empty
+# directory. With python3-rbd installed, the step imports rados and rbd
+# through the venv (rbd imports rados), so a module file the globs miss or a
+# failed link fails the build. On a push to main, verify_glance.sh runs only
+# after the tag is published.
+RUN site_packages="$(/var/lib/openstack/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" && \
+    mkdir -p /var/lib/openstack/ceph-bindings && \
+    for so in /usr/lib/python3/dist-packages/rados.cpython-*.so \
+        /usr/lib/python3/dist-packages/rbd.cpython-*.so; do \
+    if [ -e "$so" ]; then ln -s "$so" /var/lib/openstack/ceph-bindings/ || exit 1; fi; \
+    done && \
+    echo /var/lib/openstack/ceph-bindings > "${site_packages}/ceph-bindings.pth" && \
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' python3-rbd 2>/dev/null)" = installed ]; then \
+    /var/lib/openstack/bin/python -c 'import rados, rbd'; \
     fi
 
 # Static OCI Image Spec annotations for local builds (runtime stage only).

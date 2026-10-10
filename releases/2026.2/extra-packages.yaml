@@ -42,13 +42,21 @@ glance:
     # merges into the constraints file this install is run against.
     - lhafile
   apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; glance is
-    # otherwise pure Python at runtime. Without this, uwsgi fails to load
-    # (python-base ships no libpython3.12.so.1.0).
+    # uWSGI is compiled in venv-builder against the shared libpython; without
+    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
     - libpython3.12t64
     # The image_conversion image-import plugin shells out to `qemu-img info`
     # and `qemu-img convert` on the staged image.
     - qemu-utils
+    # The rados and rbd modules of the RBD store. glance_store/_drivers/rbd.py
+    # imports both behind a guard, and configure_add raises
+    # BadStoreConfiguration ("The required libraries(rbd and rados) are not
+    # available") without them. The store runs no ceph or rbd binary, so the
+    # image carries no ceph-common. Both packages install into
+    # /usr/lib/python3/dist-packages, and the Dockerfile links the two
+    # modules onto the venv's path.
+    - python3-rados
+    - python3-rbd
 placement:
   pip_extras: []
   pip_packages: []
@@ -106,6 +114,24 @@ cinder:
     # cinder/image/image_utils.py (fetch_to_raw, resize_image, convert_image)
     # and the LUKS qcow2 pre-create in cinder/volume/drivers/remotefs.py.
     - qemu-utils
+    # ceph and rbd. The RBD volume driver (cinder/volume/drivers/rbd.py) runs
+    # `ceph mon dump --format=json` in _get_mon_addrs, `rbd import` in
+    # _create_encrypted_volume and _copy_image_to_volume, `rbd export` in
+    # copy_volume_to_image and `rbd status` in _get_image_status. The Ceph
+    # backup driver (cinder/backup/drivers/ceph.py) pipes `rbd export-diff`
+    # into `rbd import-diff` in _rbd_diff_transfer. The postinst adds the
+    # system user ceph and the directories /var/lib/ceph and /var/log/ceph,
+    # owned by it and not writable by 42424.
+    - ceph-common
+    # The rados and rbd modules. Both drivers import them behind a guard, and
+    # check_for_setup_error raises "rados and rbd python libraries not found"
+    # without them (VolumeBackendAPIException in the volume driver,
+    # BackupDriverException in the backup driver). ceph-common depends on
+    # both; they are named because the drivers import them. Both packages
+    # install into /usr/lib/python3/dist-packages, and the Dockerfile links
+    # the two modules onto the venv's path.
+    - python3-rados
+    - python3-rbd
 nova:
   pip_extras: []
   pip_packages:
@@ -171,3 +197,19 @@ nova-compute:
     # genisoimage, the default [DEFAULT] mkisofs_cmd
     # (nova/conf/configdrive.py), which builds config drives.
     - genisoimage
+    # ceph and rbd (nova/storage/rbd_utils.py): `ceph mon dump` in
+    # get_mon_addrs, `rbd import` in import_image, `rbd export` in
+    # export_image and `ceph df` in get_pool_info. The postinst adds the
+    # system user ceph and the directories /var/lib/ceph and /var/log/ceph,
+    # and installs /etc/ceph/rbdmap, /etc/default/ceph and
+    # /etc/logrotate.d/ceph-common. None of them names the node, so the
+    # Dockerfile removes nothing for it.
+    - ceph-common
+    # The rados and rbd modules. nova/storage/rbd_utils.py imports them
+    # behind a guard, and RBDDriver.__init__ raises RuntimeError("rbd python
+    # libraries not found") through _check_for_import_failure without them.
+    # ceph-common depends on both; they are named because nova imports them.
+    # Both packages install into /usr/lib/python3/dist-packages, and the
+    # Dockerfile links the two modules onto the venv's path.
+    - python3-rados
+    - python3-rbd
