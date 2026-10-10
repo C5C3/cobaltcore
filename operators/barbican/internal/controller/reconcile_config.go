@@ -19,7 +19,6 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/plugins"
 	"github.com/c5c3/cobaltcore/internal/common/policy"
-	"github.com/c5c3/cobaltcore/internal/common/release"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
@@ -238,54 +237,35 @@ func barbicanPublicEndpoint(barbican *barbicanv1alpha1.Barbican) string {
 // actually serves the API; the remaining pipelines, apps and filter factories are
 // merged in verbatim.
 func renderPasteINI(barbican *barbicanv1alpha1.Barbican) (string, error) {
-	requestID := pasteCarriesRequestID(barbican)
-
 	sections, err := plugins.RenderPastePipeline(plugins.PipelineSpec{
 		PipelineName: keystonePipelineName,
 		// apiapp terminates the pipeline directive; its [app:apiapp] section is
 		// supplied verbatim below with a paste.app_factory (not the egg: use
 		// directive the renderer would emit), so no AppFactory is set here.
 		AppName:     "apiapp",
-		BaseFilters: keystoneBaseFilters(requestID),
+		BaseFilters: keystoneBaseFilters(),
 		Middleware:  barbican.Spec.Middleware,
 	})
 	if err != nil {
 		return "", err
 	}
 
-	for name, section := range barbicanStaticPasteSections(requestID) {
+	for name, section := range barbicanStaticPasteSections() {
 		sections[name] = section
 	}
 	return config.RenderINI(sections), nil
 }
 
-// pasteCarriesRequestID reports whether the release ships the 2026.1 paste
-// layout: the oslo request_id filter in every pipeline, and no repoze.profile
-// pipeline or filter section. Both deltas ride on the same release boundary, so
-// they are decided once. An unparseable release falls back to the older layout,
-// which the CRD pattern and the validating webhook make unreachable.
-func pasteCarriesRequestID(barbican *barbicanv1alpha1.Barbican) bool {
-	rel, err := release.ParseRelease(barbican.Spec.OpenStackRelease)
-	if err != nil {
-		return false
-	}
-	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
-}
-
 // keystoneBaseFilters returns the filters of the keystone pipeline in pipeline
 // order, ahead of any spec.middleware the shared renderer positions around them.
-func keystoneBaseFilters(requestID bool) []string {
-	return append(pasteFrontFilters(requestID), "authtoken", "context", "microversion")
+func keystoneBaseFilters() []string {
+	return append(pasteFrontFilters(), "authtoken", "context", "microversion")
 }
 
 // pasteFrontFilters returns the filters every barbican pipeline starts with. The
-// request_id filter is 2026.1-only and sits directly behind cors, where the
-// shipped file places it.
-func pasteFrontFilters(requestID bool) []string {
-	if requestID {
-		return []string{"cors", "request_id", "http_proxy_to_wsgi"}
-	}
-	return []string{"cors", "http_proxy_to_wsgi"}
+// request_id filter sits directly behind cors, where the shipped file places it.
+func pasteFrontFilters() []string {
+	return []string{"cors", "request_id", "http_proxy_to_wsgi"}
 }
 
 // pasteLine joins a pipeline's front filters with the rest of its members into
@@ -306,10 +286,10 @@ func pasteLine(front []string, rest ...string) string {
 // Healthcheck is routed as an app under /healthcheck rather than as a pipeline
 // filter, which is what upstream ships and what keeps the probes outside
 // authtoken.
-func barbicanStaticPasteSections(requestID bool) map[string]map[string]string {
-	front := pasteFrontFilters(requestID)
+func barbicanStaticPasteSections() map[string]map[string]string {
+	front := pasteFrontFilters()
 
-	sections := map[string]map[string]string{
+	return map[string]map[string]string{
 		"composite:main": {
 			"use":          "egg:Paste#urlmap",
 			"/":            "barbican_version",
@@ -321,6 +301,9 @@ func barbicanStaticPasteSections(requestID bool) map[string]map[string]string {
 		},
 		"pipeline:barbican_api": {
 			"pipeline": pasteLine(front, "unauthenticated-context", "microversion", "apiapp"),
+		},
+		"pipeline:barbican-api-keystone-audit": {
+			"pipeline": pasteLine(front, "authtoken", "context", "microversion", "audit", "apiapp"),
 		},
 		"app:apiapp": {
 			"paste.app_factory": "barbican.api.app:create_main_app",
@@ -356,41 +339,13 @@ func barbicanStaticPasteSections(requestID bool) map[string]map[string]string {
 			"paste.filter_factory": "oslo_middleware.cors:filter_factory",
 			"oslo_config_project":  "barbican",
 		},
+		"filter:request_id": {
+			"paste.filter_factory": "oslo_middleware.request_id:RequestId.factory",
+		},
 		"filter:http_proxy_to_wsgi": {
 			"paste.filter_factory": "oslo_middleware:HTTPProxyToWSGI.factory",
 		},
 	}
-
-	if requestID {
-		sections["filter:request_id"] = map[string]string{
-			"paste.filter_factory": "oslo_middleware.request_id:RequestId.factory",
-		}
-		sections["pipeline:barbican-api-keystone-audit"] = map[string]string{
-			"pipeline": pasteLine(front, "authtoken", "context", "microversion", "audit", "apiapp"),
-		}
-		return sections
-	}
-
-	// The audit pipeline of the older file starts at http_proxy_to_wsgi: it
-	// predates the cors entry the 2026.1 file gained.
-	sections["pipeline:barbican-api-keystone-audit"] = map[string]string{
-		"pipeline": "http_proxy_to_wsgi authtoken context microversion audit apiapp",
-	}
-	// The repoze.profile pipeline and its filter, dropped upstream in 2026.1.
-	sections["pipeline:barbican-profile"] = map[string]string{
-		"pipeline": pasteLine(front, "unauthenticated-context", "microversion",
-			"egg:Paste#cgitb", "egg:Paste#httpexceptions", "profile", "apiapp"),
-	}
-	sections["filter:profile"] = map[string]string{
-		"use":                   "egg:repoze.profile",
-		"log_filename":          "myapp.profile",
-		"cachegrind_filename":   "cachegrind.out.myapp",
-		"discard_first_request": "true",
-		"path":                  "/__profile__",
-		"flush_at_shutdown":     "true",
-		"unwind":                "false",
-	}
-	return sections
 }
 
 // lastGoodConfigSecret returns the config Secret name the running Barbican
