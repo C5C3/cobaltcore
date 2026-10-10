@@ -176,7 +176,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// Persist the assembled clouds.yaml under appCredCloudsYAMLKey, leaving the
 	// "value" key untouched. Skip the write when it already matches so repeated
 	// reconciles do not churn the Secret (and wake ESO to re-push).
-	cloudsYAML := []byte(buildAppCredCloudsYAML(cp, acID, string(value)))
+	cloudsYAML := []byte(buildAppCredCloudsYAML(cp, acID, string(value), nil))
 	if !bytes.Equal(secret.Data[appCredCloudsYAMLKey], cloudsYAML) {
 		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
 		if err := r.Update(ctx, secret); err != nil {

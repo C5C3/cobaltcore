@@ -697,7 +697,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	// (syncedResourceVersion), so ESO re-materialises immediately rather than at the
 	// hourly refresh (closing the stale-credential window after a re-mint) and gets
 	// re-nudged once more after the re-push actually lands in OpenBao.
-	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret", nil)))
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
@@ -756,7 +756,7 @@ func TestReconcileAdminCredential_DefersUntilCloudsYamlMaterialized(t *testing.T
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYamlSync"))
 
-	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret", nil)))
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
@@ -781,7 +781,7 @@ func TestReconcileAdminCredential_SemanticMatchToleratesNormalizedCloudsYaml(t *
 
 	// Round-trip the assembled clouds.yaml through YAML to simulate an ESO/OpenBao
 	// re-serialisation: byte-different, semantically identical.
-	assembled := []byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret"))
+	assembled := []byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret", nil))
 	var generic map[string]interface{}
 	g.Expect(yaml.Unmarshal(assembled, &generic)).To(Succeed())
 	reserialized, err := yaml.Marshal(generic)
@@ -905,7 +905,7 @@ func TestReconcileAdminCredential_ForceSyncRekeyedAfterRepush(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 
-	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret", nil)))
 	hash := hex.EncodeToString(sum[:])
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
@@ -2410,7 +2410,7 @@ func materializedCloudsYamlSecret(cp *c5c3v1alpha1.ControlPlane, acID, value str
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Data: map[string][]byte{
-			appCredCloudsYAMLKey: []byte(buildAppCredCloudsYAML(cp, acID, value)),
+			appCredCloudsYAMLKey: []byte(buildAppCredCloudsYAML(cp, acID, value, nil)),
 		},
 	}
 }
@@ -2744,7 +2744,7 @@ func TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml(t *testing.T) 
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id", "minted-secret"))
+	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id", "minted-secret", nil))
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp)},
 		Data: map[string][]byte{
@@ -3052,7 +3052,7 @@ func TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml(t *testing.T)
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id-steady", "minted-secret-value"))
+	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id-steady", "minted-secret-value", nil))
 	// Fully steady-state app-cred Secret: owner ref + value + minted clouds.yaml, so
 	// ensureAppCredentialSecret and the seed are both no-ops and only a regression
 	// that re-writes clouds.yaml would bump the ResourceVersion.

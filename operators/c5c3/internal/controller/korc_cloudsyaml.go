@@ -143,7 +143,14 @@ func korcCloudName(cp *c5c3v1alpha1.ControlPlane) string {
 // options and drops Cloud.Interface (the `interface` key) — see vendored
 // internal/scope/provider.go NewProviderClient. An "interface:" value is therefore
 // ignored and the endpoint defaults to "public".
-func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) string {
+//
+// ref names the cluster the document is read on: a nil ref renders the document
+// K-ORC reads on the management cluster, and a KeystoneApplicationCredential
+// order on a target cluster gets the auth_url korcAuthURL resolves for that
+// cluster, which is the published endpoint off Keystone's own cluster.
+func buildAppCredCloudsYAML(
+	cp *c5c3v1alpha1.ControlPlane, acID, secret string, ref *commonv1.TargetClusterRefSpec,
+) string {
 	return fmt.Sprintf(`clouds:
   %q:
     auth:
@@ -154,7 +161,7 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, korcCloudName(cp), korcAuthURL(cp, nil), acID, secret, korcRegion(cp), korcEndpointType(cp))
+`, korcCloudName(cp), korcAuthURL(cp, ref), acID, secret, korcRegion(cp), korcEndpointType(cp))
 }
 
 // buildPasswordCloudsYAML assembles the password-based clouds.yaml the admin
