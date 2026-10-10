@@ -6,16 +6,18 @@
 # user from a namespace the ControlPlane assigns to them, and the credentials
 # arrive as a Secret beside the order. Beside the user the owner orders a
 # project, a role on it, a catalog entry, and an application credential the
-# operator mints as the user and rotates on a schedule.
+# operator mints as the user and rotates on a schedule, and a database on the
+# plane's shared MariaDB whose user OpenBao issues and ESO refreshes.
 #
 # Unit tests drive a fake client and envtest carries K-ORC as schema without a
 # controller; neither sees Keystone, OpenBao or ESO. This suite is where the
 # orders meet all three: K-ORC creates the user, the project, the role
 # assignment and the catalog rows in a live Keystone and mints the application
 # credential authenticated as the ordered user, ESO pushes the password and the
-# credential to OpenBao through the plane namespace's own store, and a Job in
-# the owner's namespace authenticates with the delivered Secrets and scopes to
-# the project.
+# credential to OpenBao through the plane namespace's own store, the operator
+# writes the database order's OpenBao role and the mariadb-operator its schema,
+# and a Job in the owner's namespace authenticates with the delivered Secrets,
+# scopes to the project and writes a row into the ordered database.
 #
 # ── Legs ─────────────────────────────────────────────────────────────────────
 #   DELIVERY  the order in the assigned namespace reaches Ready, its Secret
@@ -40,23 +42,34 @@
 #             schedule rotates it to generation 2, the superseded credential
 #             stops working after the grace period, the schedule is turned off,
 #             and raising credentialGeneration rotates it once more.
+#   DATABASE  a MariaDBDatabase is delivered with host, port, database,
+#             username and password; its OpenBao role, Database CR and ESO
+#             objects sit in the plane's namespace and nothing in the owner's; a
+#             Job writes and reads a row; an edited and a deleted Secret come
+#             back; a forced ESO refresh delivers a new user that works too.
 #   PIECES-FREEZE  taking the role off the list and clearing the catalog flag
 #             freeze the two orders without revoking anything.
 #   REFUSAL   an order from a namespace no entry assigns reads
 #             NamespaceNotAssigned and creates nothing.
 #   FREEZE    withdrawing the assignment freezes every order: the Secret, the
-#             Keystone user, the pieces' K-ORC children and the credential stay,
-#             and an edited Secret is not repaired. Restoring the entry recovers
-#             them.
-#   TEARDOWN  deleting the assignment holds while the credential order uses
-#             it, and deleting the user holds while the assignment references
-#             it; deleting the credential order releases both, and every order's
-#             deletion removes what it created, the OpenBao paths included.
+#             Keystone user, the pieces' K-ORC children, the credential and the
+#             database stay, and an edited Secret is not repaired. Restoring the
+#             entry recovers them.
+#   TEARDOWN  deleting the database order revokes its leases, removes its role,
+#             its Database CR and its ESO objects and keeps the schema under
+#             Retain; a re-order with Delete drops it. Deleting the assignment
+#             holds while the credential order uses it, and deleting the user
+#             holds while the assignment references it; deleting the credential
+#             order releases both, and every order's deletion removes what it
+#             created, the OpenBao paths included.
 #
 # ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
 # As the keystone-service-foreign-namespace suite: a Keystone-only plane in
 # chainsaw's ephemeral namespace, with the Model B admin password and the
-# database-engine role seeded by the scripts deploy-infra runs.
+# database-engine role seeded by the scripts deploy-infra runs. The onboarding
+# script also admits the plane's database-order roles on the Keystone
+# connection, which the operator writes through the c5c3-operator auth role
+# deploy-infra's setup-auth.sh run created.
 #
 # ── Presence guard ───────────────────────────────────────────────────────────
 # Mirrors the sibling c5c3 suites. The e2e-operator c5c3 matrix leg runs this
@@ -69,19 +82,20 @@ kind: Test
 metadata:
   name: keystone-user
 spec:
-  # The bring-up of an identity plane plus ten legs and a bounded teardown runs
-  # well past the suite defaults. The three legs of the pieces add three K-ORC
-  # convergences to the foreign-namespace suite's budget, the application
-  # credential's leg waits out a scheduled rotation and its grace period, and
-  # cleanup is generous for the same reason it is there.
+  # The bring-up of an identity plane plus eleven legs and a bounded teardown
+  # runs well past the suite defaults. The three legs of the pieces add three
+  # K-ORC convergences to the foreign-namespace suite's budget, the application
+  # credential's leg waits out a scheduled rotation and its grace period, the
+  # database leg adds a schema, two ESO syncs and four verify Jobs, and cleanup
+  # is generous for the same reason it is there.
   timeouts:
     assert: 5m
-    exec: 60m
+    exec: 70m
     cleanup: 15m
   steps:
   - try:
     - script:
-        timeout: 60m
+        timeout: 70m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
         shell: bash
         content: |
@@ -99,15 +113,19 @@ spec:
           APPCRED=workflow-appcred
           CREDS_SECRET=workflow-credentials
           APPCRED_SECRET=workflow-appcred-credentials
+          DB_ORDER=workflow-db
+          DB_SECRET=workflow-db-credentials
           ORDER_SELECTOR="c5c3.io/keystoneuser-name=${ORDER},c5c3.io/keystoneuser-namespace=${TENANT_NS}"
           OUTSIDER_SELECTOR="c5c3.io/keystoneuser-name=${OUTSIDER},c5c3.io/keystoneuser-namespace=${OUTSIDER_NS}"
           PROJECT_SELECTOR="c5c3.io/keystoneproject-name=${PROJECT},c5c3.io/keystoneproject-namespace=${TENANT_NS}"
           MEMBER_SELECTOR="c5c3.io/keystoneroleassignment-name=${MEMBER},c5c3.io/keystoneroleassignment-namespace=${TENANT_NS}"
           DNS_SELECTOR="c5c3.io/keystonecatalogentry-name=${DNS},c5c3.io/keystonecatalogentry-namespace=${TENANT_NS}"
           APPCRED_SELECTOR="c5c3.io/keystoneapplicationcredential-name=${APPCRED},c5c3.io/keystoneapplicationcredential-namespace=${TENANT_NS}"
+          DB_SELECTOR="c5c3.io/mariadbdatabase-name=${DB_ORDER},c5c3.io/mariadbdatabase-namespace=${TENANT_NS}"
           CHILD_KINDS=users.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io
           APPCRED_KINDS=applicationcredentials.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io
           PIECE_KINDS=roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
+          DB_KINDS=databases.k8s.mariadb.com,externalsecrets.external-secrets.io,vaultdynamicsecrets.generators.external-secrets.io
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
           skip_or_fail() { # <reason...>
@@ -130,8 +148,10 @@ spec:
             keystoneroleassignments.c5c3.io \
             keystonecatalogentries.c5c3.io \
             keystoneapplicationcredentials.c5c3.io \
+            mariadbdatabases.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             mariadbs.k8s.mariadb.com \
+            databases.k8s.mariadb.com \
             memcacheds.memcached.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             users.openstack.k-orc.cloud \
@@ -145,6 +165,7 @@ spec:
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
+            vaultdynamicsecrets.generators.external-secrets.io \
             certificates.cert-manager.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
@@ -550,6 +571,94 @@ spec:
               -o jsonpath='{range .items[?(@.spec.managementPolicy=="managed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
               | grep -c . || true
           }
+          db_status() { # <status field>
+            jsonpath_of mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" "{.status.$1}"
+          }
+          # Applies the database order with the given deletion policy.
+          apply_db_order() { # <Retain|Delete>
+            sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" -e "s|@DELETION_POLICY@|$1|g" \
+              12-mariadbdatabase-tenant.yaml | kubectl apply -f -
+          }
+          # Waits until a key of a Secret carries the given base64 value, or
+          # differs from it with "!=" as the third argument. Never printed.
+          wait_secret_key() { # <secret> <namespace> <key> <= or !=> <base64 value> <timeoutSeconds>
+            local secret="$1" ns="$2" key="$3" op="$4" want="$5" timeout="$6" deadline got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(secret_key "${secret}" "${ns}" "${key}")"
+              if [ -n "${got}" ] && { { [ "${op}" = "=" ] && [ "${got}" = "${want}" ]; } ||
+                { [ "${op}" = "!=" ] && [ "${got}" != "${want}" ]; }; }; then
+                echo "OK: ${secret} ${key} ${op} the reference value"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${secret} ${key} not ${op} the reference value within ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          # Runs the database verify Job from scratch and fails unless it wrote
+          # and read its row.
+          run_db_verify_job() { # <when>
+            local logs
+            kubectl delete job workflow-db-verify -n "${TENANT_NS}" --ignore-not-found --wait=true
+            sed -e "s|@TENANT_NS@|${TENANT_NS}|g" 13-mariadb-verify-job.yaml | kubectl apply -f -
+            if ! kubectl wait --for=condition=complete job/workflow-db-verify -n "${TENANT_NS}" --timeout=5m; then
+              echo "ERROR: the database verify Job did not complete ($1)"
+              kubectl logs -n "${TENANT_NS}" job/workflow-db-verify 2>&1 || true
+              exit 1
+            fi
+            # One capture, then here-strings, for the EPIPE reason run_verify_job
+            # gives.
+            logs="$(kubectl logs -n "${TENANT_NS}" job/workflow-db-verify)"
+            if ! grep -q "rows: " <<<"${logs}" ||
+              ! grep -q "the delivered database credential reaches its schema and no other" <<<"${logs}"; then
+              echo "ERROR: the database verify Job did not read its row back ($1)"
+              echo "${logs}"
+              exit 1
+            fi
+            echo "OK: a Job in the owner's namespace wrote and read a row in ${DB_ORDER//-/_} ($1)."
+          }
+          # Runs a throwaway pod beside the MariaDB with the Keystone image's
+          # pymysql. The script reads its secrets from stdin, so no password
+          # reaches the pod spec or the API server's audit log.
+          mysql_pod() { # <python script>
+            kubectl run "mariadb-probe-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2026.1 \
+              --image-pull-policy=IfNotPresent --rm -i --quiet --restart=Never -n "${CP_NS}" --command -- \
+              python3 -c "$1"
+          }
+          # Exits 0 iff the credential authenticates against the shared MariaDB.
+          db_login_probe() { # <username> <password>
+            printf '%s\n%s' "$1" "$2" | mysql_pod "import sys, pymysql
+          user, password = sys.stdin.read().split('\n', 1)
+          pymysql.connect(host='openstack-db.${CP_NS}.svc', port=3306, user=user, password=password,
+                          connect_timeout=10).close()"
+          }
+          # Prints schema-present or schema-absent for the schema, read as root.
+          # The root password is read the way setup-database-tenant.sh reads it.
+          root_schema_state() { # <schema>
+            local secret key pw
+            secret="$(jsonpath_of mariadb openstack-db "${CP_NS}" '{.spec.rootPasswordSecretKeyRef.name}')"
+            key="$(jsonpath_of mariadb openstack-db "${CP_NS}" '{.spec.rootPasswordSecretKeyRef.key}')"
+            pw="$(base64 -d <<<"$(secret_key "${secret}" "${CP_NS}" "${key:-password}")")"
+            printf '%s' "${pw}" | mysql_pod "import sys, pymysql
+          conn = pymysql.connect(host='openstack-db.${CP_NS}.svc', port=3306, user='root',
+                                 password=sys.stdin.read(), connect_timeout=10)
+          with conn.cursor() as cur:
+              cur.execute('SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s', ('$1',))
+              print('schema-present' if cur.fetchone() else 'schema-absent')"
+          }
+          # Asserts the schema's state as root sees it.
+          assert_schema() { # <schema> <schema-present|schema-absent> <description>
+            local out
+            out="$(root_schema_state "$1" 2>&1 || true)"
+            if ! grep -qx "$2" <<<"${out}"; then
+              echo "ERROR: $3 — expected $2 for $1, got: ${out}"
+              exit 1
+            fi
+            echo "OK: $3 ($1: $2)"
+          }
 
           # ── The two namespaces the plane does not own ─────────────────────
           kubectl create namespace "${TENANT_NS}"
@@ -844,7 +953,160 @@ spec:
           wait_delivered_appcred "${THIRD_ID}" 120
           run_appcred_verify_job "after the manual rotation"
 
-          # ══ LEG 7 — taking the role or the catalog consent away freezes ═══
+          # ══ LEG 7 — a database is ordered, refreshed and delivered ═══════
+          # The operator writes the order's OpenBao role, the mariadb-operator
+          # creates the schema, and ESO materialises the first credential before
+          # anything is delivered.
+          apply_db_order Retain
+          wait_condition mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" Ready True 600
+          assert_eq "the database is provisioned" "DatabaseProvisioned" \
+            "$(condition_reason mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" DatabaseReady)"
+          assert_eq "the credentials are delivered" "Delivered" \
+            "$(condition_reason mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" DeliveryReady)"
+          assert_eq "status names the schema" "workflow_db" "$(db_status databaseName)"
+          assert_eq "status names the five keys" "host port database username password" "$(db_status 'secretKeys[*]')"
+          assert_eq "status reports the in-cluster host" "openstack-db.${CP_NS}.svc" "$(db_status host)"
+          assert_eq "status reports the port" "3306" "$(db_status port)"
+          assert_nonempty "status reports the credential's refresh time" "$(db_status credentialsRefreshedAt)"
+          DB_ROLE="$(db_status roleName)"
+          if ! grep -qE "^order\.${CP_NS}\.${DB_ORDER}-[0-9a-f]{8}-database\$" <<<"${DB_ROLE}"; then
+            echo "ERROR: the OpenBao role '${DB_ROLE}' does not have the documented shape"; exit 1
+          fi
+          echo "OK: OpenBao role ${DB_ROLE} issues the order's users."
+
+          # The Database CR beside the MariaDB, the generator and the
+          # ExternalSecret in the plane's namespace, with the order's labels; the
+          # shared identity beside them without.
+          assert_eq "one Database CR carries the order's labels" "1" \
+            "$(count_of databases.k8s.mariadb.com "${CP_NS}" "${DB_SELECTOR}")"
+          DB_CR="$(kubectl get databases.k8s.mariadb.com -n "${CP_NS}" -l "${DB_SELECTOR}" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          DB_PREFIX="${DB_CR%database}"
+          assert_eq "the Database CR creates workflow_db" "workflow_db" \
+            "$(jsonpath_of databases.k8s.mariadb.com "${DB_CR}" "${CP_NS}" '{.spec.name}')"
+          assert_eq "the Database CR keeps the schema when it goes" "Skip" \
+            "$(jsonpath_of databases.k8s.mariadb.com "${DB_CR}" "${CP_NS}" '{.spec.cleanupPolicy}')"
+          assert_eq "one VaultDynamicSecret carries the order's labels" "1" \
+            "$(count_of vaultdynamicsecrets.generators.external-secrets.io "${CP_NS}" "${DB_SELECTOR}")"
+          assert_eq "one ExternalSecret carries the order's labels" "${DB_PREFIX}credentials" \
+            "$(kubectl get externalsecrets.external-secrets.io -n "${CP_NS}" -l "${DB_SELECTOR}" \
+              -o jsonpath='{.items[*].metadata.name}')"
+          kubectl get serviceaccount order-db-creds -n "${CP_NS}" >/dev/null
+          kubectl get secret order-db-openbao-client -n "${CP_NS}" >/dev/null
+          echo "OK: the shared order-db-creds ServiceAccount and client certificate sit in the plane's namespace."
+          assert_eq "the OpenBao role issues against the plane's Keystone connection" "keystone-${CP_NS}" \
+            "$(bao_exec bao read -format=json "database/mariadb/roles/${DB_ROLE}" | jq -r '.data.db_name')"
+
+          # The two policies hold on the live OpenBao. A token of the plane's
+          # order-db-creds ServiceAccount reads the order roles of its own
+          # namespace and of no other, and the operator's own token reaches the
+          # order roles but neither the engine connection nor a built-in role.
+          # Each allowed read runs first, so a denial cannot pass on a broken
+          # login. The tokens reach openbao-0 on stdin, never in argv, and are
+          # revoked afterwards, which drops the user the allowed read issued.
+          bao_login() { # <auth role> <ServiceAccount token>: prints the client token
+            printf '%s' "$2" | kubectl exec -i -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              bao write -field=token auth/kubernetes/management/login role="$1" jwt=-
+          }
+          bao_as() { # <client token> <bao args...>
+            local token="$1"
+            shift
+            printf '%s' "${token}" | kubectl exec -i -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              sh -c 'BAO_TOKEN="$(cat)"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          expect_denied() { # <description> <client token> <bao args...>
+            local what="$1" out
+            shift
+            if out="$(bao_as "$@" 2>&1)"; then
+              echo "ERROR: ${what} was allowed"; exit 1
+            fi
+            if ! grep -q 'permission denied' <<<"${out}"; then
+              echo "ERROR: ${what} failed without a permission denial: ${out}"; exit 1
+            fi
+            echo "OK: ${what} is denied."
+          }
+          ORDER_DB_TOKEN="$(bao_login order-db "$(kubectl create token order-db-creds -n "${CP_NS}" --duration=10m)")"
+          if [ -z "${ORDER_DB_TOKEN}" ]; then
+            echo "ERROR: the order-db login returned no token"; exit 1
+          fi
+          if ! bao_as "${ORDER_DB_TOKEN}" bao read "database/mariadb/creds/${DB_ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: the order-db token cannot read the order role ${DB_ROLE} of its own namespace"; exit 1
+          fi
+          echo "OK: the order-db token reads the order role of its own namespace."
+          expect_denied "an order-db read of a role of the namespace ${CP_NS}-b" "${ORDER_DB_TOKEN}" \
+            bao read "database/mariadb/creds/order.${CP_NS}-b.probe"
+          expect_denied "an order-db read of a role of another namespace" "${ORDER_DB_TOKEN}" \
+            bao read "database/mariadb/creds/order.kube-system.probe"
+          bao_as "${ORDER_DB_TOKEN}" bao token revoke -self >/dev/null
+          OPERATOR_IDENTITY="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o jsonpath='{.items[0].metadata.namespace}/{.items[0].spec.serviceAccountName}')"
+          OPERATOR_TOKEN="$(bao_login c5c3-operator \
+            "$(kubectl create token "${OPERATOR_IDENTITY#*/}" -n "${OPERATOR_IDENTITY%/*}" --duration=10m)")"
+          if [ -z "${OPERATOR_TOKEN}" ]; then
+            echo "ERROR: the c5c3-operator login returned no token"; exit 1
+          fi
+          if ! bao_as "${OPERATOR_TOKEN}" bao read "database/mariadb/roles/${DB_ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: the c5c3-operator token cannot read the order role ${DB_ROLE}"; exit 1
+          fi
+          echo "OK: the c5c3-operator token reads the order role."
+          expect_denied "a c5c3-operator read of the engine connection" "${OPERATOR_TOKEN}" \
+            bao read "database/mariadb/config/keystone-${CP_NS}"
+          expect_denied "a c5c3-operator read of the built-in Keystone role" "${OPERATOR_TOKEN}" \
+            bao read "database/mariadb/roles/keystone-${CP_NS}"
+          bao_as "${OPERATOR_TOKEN}" bao token revoke -self >/dev/null
+
+          # Nothing that reaches OpenBao is in the owner's namespace.
+          assert_eq "no store, certificate or ESO object in the owner's namespace" "0" \
+            "$(count_of secretstores.external-secrets.io,certificates.cert-manager.io,externalsecrets.external-secrets.io,vaultdynamicsecrets.generators.external-secrets.io "${TENANT_NS}")"
+          assert_eq "no ServiceAccount besides default in the owner's namespace" "default" \
+            "$(kubectl get serviceaccounts -n "${TENANT_NS}" -o jsonpath='{.items[*].metadata.name}')"
+          assert_eq "the delivered Secret is the only Secret labelled for the order" "${DB_SECRET}" \
+            "$(kubectl get secrets -n "${TENANT_NS}" -l c5c3.io/mariadbdatabase-name -o jsonpath='{.items[*].metadata.name}')"
+          assert_eq "the order owns its Secret" "MariaDBDatabase/${DB_ORDER}" \
+            "$(kubectl get secret "${DB_SECRET}" -n "${TENANT_NS}" \
+              -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
+          # The username is engine-issued; tested, never printed.
+          if ! grep -q '^v-' <<<"$(base64 -d <<<"$(secret_key "${DB_SECRET}" "${TENANT_NS}" username)")"; then
+            echo "ERROR: the delivered username is not engine-issued"; exit 1
+          fi
+          run_db_verify_job "after delivery"
+
+          # An edited and a deleted Secret come back with the current credential.
+          DB_PASSWORD="$(secret_key "${DB_SECRET}" "${TENANT_NS}" password)"
+          kubectl patch secret "${DB_SECRET}" -n "${TENANT_NS}" --type merge -p '{"data":{"password":"Zm9v"}}'
+          wait_secret_key "${DB_SECRET}" "${TENANT_NS}" password = "${DB_PASSWORD}" 120
+          kubectl delete secret "${DB_SECRET}" -n "${TENANT_NS}"
+          wait_secret_key "${DB_SECRET}" "${TENANT_NS}" password = "${DB_PASSWORD}" 120
+          assert_eq "the re-created Secret is owned by the order" "MariaDBDatabase/${DB_ORDER}" \
+            "$(kubectl get secret "${DB_SECRET}" -n "${TENANT_NS}" \
+              -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
+
+          # A forced ESO refresh issues a new user, which the delivered Secret
+          # follows; the 24-hour cadence does the same on its own.
+          DB_USER_BEFORE="$(secret_key "${DB_SECRET}" "${TENANT_NS}" username)"
+          DB_REFRESHED_BEFORE="$(db_status credentialsRefreshedAt)"
+          kubectl annotate externalsecrets.external-secrets.io "${DB_PREFIX}credentials" -n "${CP_NS}" \
+            force-sync="$(date +%s)" --overwrite
+          wait_secret_key "${DB_SECRET}" "${TENANT_NS}" username != "${DB_USER_BEFORE}" 300
+          REFRESH_DEADLINE=$(( $(date +%s) + 120 ))
+          until [ "$(db_status credentialsRefreshedAt)" != "${DB_REFRESHED_BEFORE}" ]; do
+            if [ "$(date +%s)" -ge "${REFRESH_DEADLINE}" ]; then
+              echo "ERROR: status.credentialsRefreshedAt did not move within 120s of the refresh"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the refreshed credential reached the Secret and status.credentialsRefreshedAt."
+          run_db_verify_job "after the refresh"
+
+          # ══ LEG 8 — taking the role or the catalog consent away freezes ═══
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type json \
             -p '[{"op":"replace","path":"/spec/namespaceAssignments/0/allowedRoles","value":[]}]'
           wait_reason keystoneroleassignment "${MEMBER}" "${TENANT_NS}" AssignmentReady RoleNotAllowed 300
@@ -863,7 +1125,7 @@ spec:
           wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
           echo "OK: the frozen pieces revoked nothing and recovered."
 
-          # ══ LEG 8 — an unassigned namespace is refused ════════════════════
+          # ══ LEG 9 — an unassigned namespace is refused ════════════════════
           sed -e "s|@OUTSIDER_NS@|${OUTSIDER_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
             02-keystoneuser-outsider.yaml | kubectl apply -f -
           wait_condition keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" Ready False 300
@@ -887,7 +1149,7 @@ spec:
           sleep 30
           assert_nothing_created "after a settle"
 
-          # ══ LEG 9 — withdrawing the assignment freezes the orders ═════════
+          # ══ LEG 10 — withdrawing the assignment freezes the orders ════════
           APPCRED_GEN="$(appcred_status credentialGeneration)"
           APPCRED_ID="$(appcred_status credentialID)"
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
@@ -901,8 +1163,16 @@ spec:
           for ctype in CredentialReady DeliveryReady; do
             wait_reason keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" "${ctype}" NamespaceNotAssigned 300
           done
+          for ctype in DatabaseReady DeliveryReady; do
+            wait_reason mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" "${ctype}" NamespaceNotAssigned 300
+          done
           kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null
           kubectl get secret "${APPCRED_SECRET}" -n "${TENANT_NS}" >/dev/null
+          kubectl get secret "${DB_SECRET}" -n "${TENANT_NS}" >/dev/null
+          assert_eq "the database order's Database CR and ESO objects stay while it is frozen" "3" \
+            "$(count_of "${DB_KINDS}" "${CP_NS}" "${DB_SELECTOR}")"
+          bao_exec bao read "database/mariadb/roles/${DB_ROLE}" >/dev/null
+          echo "OK: the database order's OpenBao role stays while it is frozen."
           assert_eq "the Keystone user stays while the order is frozen" "1" \
             "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
           assert_eq "the project stays while the order is frozen" "1" \
@@ -912,9 +1182,12 @@ spec:
           assert_eq "the catalog rows stay while the order is frozen" "3" \
             "$(count_of services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
           kubectl patch secret "${CREDS_SECRET}" -n "${TENANT_NS}" --type merge -p '{"data":{"password":"Zm9v"}}'
+          kubectl patch secret "${DB_SECRET}" -n "${TENANT_NS}" --type merge -p '{"data":{"password":"Zm9v"}}'
           sleep 90
           assert_eq "a frozen order does not repair its Secret" "Zm9v" \
             "$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)"
+          assert_eq "a frozen database order does not repair its Secret" "Zm9v" \
+            "$(secret_key "${DB_SECRET}" "${TENANT_NS}" password)"
           echo "OK: withdrawing the assignment froze the order and revoked nothing."
 
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
@@ -925,14 +1198,53 @@ spec:
           wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 300
           wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
           wait_condition keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" Ready True 300
+          wait_condition mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" Ready True 300
+          wait_secret_key "${DB_SECRET}" "${TENANT_NS}" password = \
+            "$(secret_key "${DB_PREFIX}credentials" "${CP_NS}" password)" 120
           assert_eq "the frozen credential order kept its generation" "${APPCRED_GEN}" \
             "$(appcred_status credentialGeneration)"
           assert_eq "the frozen credential order kept its credential" "${APPCRED_ID}" "$(appcred_status credentialID)"
           echo "OK: restoring the assignment recovered the orders."
 
-          # ══ LEG 10 — deleting the orders tears them down ══════════════════
-          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify -n "${TENANT_NS}" \
-            --ignore-not-found
+          # ══ LEG 11 — deleting the orders tears them down ═════════════════
+          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify workflow-db-verify \
+            -n "${TENANT_NS}" --ignore-not-found
+
+          # The database order goes first; nothing references it. The probe is
+          # proven against the live credential before the teardown revokes it.
+          DB_LAST_USER="$(base64 -d <<<"$(secret_key "${DB_SECRET}" "${TENANT_NS}" username)")"
+          DB_LAST_PASSWORD="$(base64 -d <<<"$(secret_key "${DB_SECRET}" "${TENANT_NS}" password)")"
+          if ! db_login_probe "${DB_LAST_USER}" "${DB_LAST_PASSWORD}"; then
+            echo "ERROR: the delivered database credential does not authenticate before the teardown"; exit 1
+          fi
+          echo "OK: the delivered database credential authenticates before the teardown."
+          kubectl delete mariadbdatabase "${DB_ORDER}" -n "${TENANT_NS}" --wait=false
+          wait_gone mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" 300
+          assert_eq "no Database CR, generator or ExternalSecret carries the order's labels" "0" \
+            "$(count_of "${DB_KINDS}" "${CP_NS}" "${DB_SELECTOR}")"
+          assert_absent secret "${DB_SECRET}" "${TENANT_NS}"
+          if bao_exec bao read "database/mariadb/roles/${DB_ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: the OpenBao role ${DB_ROLE} outlived its order"; exit 1
+          fi
+          echo "OK: the OpenBao role went with the order."
+          if db_login_probe "${DB_LAST_USER}" "${DB_LAST_PASSWORD}" >/dev/null 2>&1; then
+            echo "ERROR: the last delivered database credential still authenticates after the teardown"; exit 1
+          fi
+          unset DB_LAST_USER DB_LAST_PASSWORD
+          echo "OK: the teardown revoked the order's leases; the last credential no longer authenticates."
+          assert_schema workflow_db schema-present "Retain keeps the schema"
+
+          # A re-order with Delete drops the schema with the order.
+          apply_db_order Delete
+          wait_condition mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" Ready True 600
+          DB_CR="$(kubectl get databases.k8s.mariadb.com -n "${CP_NS}" -l "${DB_SELECTOR}" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          assert_eq "the re-ordered Database CR drops the schema when it goes" "Delete" \
+            "$(jsonpath_of databases.k8s.mariadb.com "${DB_CR}" "${CP_NS}" '{.spec.cleanupPolicy}')"
+          kubectl delete mariadbdatabase "${DB_ORDER}" -n "${TENANT_NS}" --wait=false
+          wait_gone mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" 300
+          assert_schema workflow_db schema-absent "Delete drops the schema"
+          echo "OK: the database order's teardown reached OpenBao, the Database CR and the schema."
           kubectl delete keystoneuser "${OUTSIDER}" -n "${OUTSIDER_NS}"
           wait_gone keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" 300
 
@@ -1016,7 +1328,7 @@ spec:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to every
         # script operation; a dump against a wedged apiserver must not inherit
-        # 60m.
+        # 70m.
         timeout: 5m
         shell: bash
         content: |
@@ -1027,7 +1339,7 @@ spec:
           kubectl get controlplane cp -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== Orders ==="
-          kubectl get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry,keystoneapplicationcredential \
+          kubectl get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry,keystoneapplicationcredential,mariadbdatabase \
             -A -o yaml 2>&1 || true
           echo "=== Order children in the plane's namespace ==="
           kubectl get users.openstack.k-orc.cloud,pushsecrets.external-secrets.io,secrets \
@@ -1042,15 +1354,20 @@ spec:
             -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           kubectl get pushsecrets.external-secrets.io -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name \
             -o jsonpath='{range .items[*]}{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
+          kubectl get databases.k8s.mariadb.com,externalsecrets.external-secrets.io,vaultdynamicsecrets.generators.external-secrets.io \
+            -n "${NAMESPACE}" -l c5c3.io/mariadbdatabase-name \
+            -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
+          kubectl get serviceaccount/order-db-creds,certificate/order-db-openbao-client -n "${NAMESPACE}" 2>&1 || true
           echo "=== The order namespaces ==="
           for ns in "${TENANT_NS}" "${OUTSIDER_NS}"; do
             echo "--- ${ns} ---"
-            kubectl get secretstore,serviceaccount,certificate,externalsecret,pushsecret,secret,job -n "${ns}" 2>&1 || true
+            kubectl get secretstore,serviceaccount,certificate,externalsecret,vaultdynamicsecret,pushsecret,secret,job -n "${ns}" 2>&1 || true
           done
           echo "=== Verify Jobs ==="
           kubectl logs -n "${TENANT_NS}" job/workflow-verify --tail=100 2>&1 || true
           kubectl logs -n "${TENANT_NS}" job/workflow-scoped-verify --tail=100 2>&1 || true
           kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify --tail=100 2>&1 || true
+          kubectl logs -n "${TENANT_NS}" job/workflow-db-verify --tail=100 2>&1 || true
           echo "=== c5c3-operator ==="
           OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
             -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
@@ -1069,16 +1386,17 @@ spec:
         # Pinned for the same reason as catch above. The waits below are bounded
         # and add up to 1170s; 20m covers them plus the deletes that drive them,
         # and keeps the suite's ceiling at exec + catch + finally + cleanup =
-        # 100m, which is the number .github/workflows/ci.yaml budgets against.
+        # 110m, which is the number .github/workflows/ci.yaml budgets against.
         timeout: 20m
         shell: bash
         content: |
           # When the try block reached its own teardown every delete below is a
           # no-op. When it died early this is the only teardown there is, and the
           # order matters for the reason the foreign-namespace suite gives: the
-          # orders first, while Keystone and the plane's store still serve the
-          # calls their finalizers make, then the plane, then the two namespaces
-          # this suite created itself. The pieces go before the user, the
+          # orders first, while Keystone, OpenBao and the plane's store still
+          # serve the calls their finalizers make, then the plane, then the two
+          # namespaces this suite created itself. The database order goes
+          # first, because nothing references it. The pieces go before the user, the
           # credential order first and the assignment next, because an assignment
           # a credential order uses, and a user or project an assignment or a
           # credential order references, hold their deletion. Every wait is
@@ -1101,8 +1419,11 @@ spec:
           # suite; the pod is shared with the other suites on this job.
           kubectl exec -n shared-services openbao-0 -- \
             rm -f /tmp/.bao-token 2>&1 || true
-          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify -n "${TENANT_NS}" \
-            --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify workflow-db-verify \
+            -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+
+          kubectl delete mariadbdatabase workflow-db -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within mariadbdatabase workflow-db "${TENANT_NS}" 30 || true
 
           kubectl delete keystoneapplicationcredential workflow-appcred -n "${TENANT_NS}" \
             --ignore-not-found --wait=false 2>&1 || true
@@ -1125,7 +1446,7 @@ spec:
           kubectl delete keystoneuser outsider -n "${OUTSIDER_NS}" --ignore-not-found --wait=false 2>&1 || true
           gone_within keystoneuser workflow "${TENANT_NS}" 120 || true
           # The refused one created nothing, so it has nothing to hand back.
-          gone_within keystoneuser outsider "${OUTSIDER_NS}" 60 || true
+          gone_within keystoneuser outsider "${OUTSIDER_NS}" 30 || true
 
           kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
           CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
