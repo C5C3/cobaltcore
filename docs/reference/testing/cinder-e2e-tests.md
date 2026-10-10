@@ -153,6 +153,7 @@ deletions.
 | [basic-deployment](#basic-deployment) | `cinder-basic` | Happy path on 2026.1: thirteen sub-conditions, the three Deployments and their owned children, the rendered `cinder.conf` and backend Secret, the API over HTTP |
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `cinder-basic-2026-2` | The same assertions against the 2026.2 image, so a difference between 2026.1 and 2026.2 fails here |
 | [nfs-backend](#nfs-backend) | `cinder-nfs` | Volume data path on one export: create, extend, clone and delete, each read back through the mount |
+| [rbd-backend](#rbd-backend) | `cinder-rbd` | RBD backend without a Ceph: the credentials gate, the projected `ceph.conf`, keyring and section, the Ceph egress rule, the roll on a replaced key, an empty key refused |
 | [multi-backend](#multi-backend) | `cinder-multi` | One `cinder-volume` Deployment per backend, a per-pod `enabled_backends` overlay, volume-type placement on the second export |
 | [backend-detach](#backend-detach) | `cinder-detach` | `CinderBackend` deletion: volume Deployment removed first, service-remove Job run, finalizer released, service registry and `status.volumeServices` follow |
 | [backup-nfs](#backup-nfs) | `cinder-backup` | Backup round trip on an NFS target: the two backup conditions, the `cinder-backup` Deployment, backup, restore, delete, detach |
@@ -168,7 +169,7 @@ deletions.
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `cinder-smoke` | `curl -k https://cinder.127-0-0-1.nip.io/` answers HTTP 300 with the Cinder version document |
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
 | [invalid-cr](../cinder/cinder-crd.md) | (rejected at admission) | `Cinder` rejection corpus: the release pattern, the image and database and cache and messaging union rules, the messaging TLS rule, the db-purge bounds, the Keystone-pairing rules, the volume replica cap, the backup strategy, both `extraConfig` guards, the name bound, the gateway rule and the `verticalAutoscaling` rules |
-| [invalid-cinderbackend-cr](../cinder/cinder-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackend` rejection corpus: the union rule, the reserved name, a relative export path, an export path carrying a newline, both `extraOptions` guards, the `cinderRef` transition rule, and the two name bounds |
+| [invalid-cinderbackend-cr](../cinder/cinder-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackend` rejection corpus: the union rule, the reserved name, a relative export path, an export path carrying a newline, both `extraOptions` guards, the `cinderRef` transition rule, and the two name bounds; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
 | [invalid-cinderbackupbackend-cr](../cinder/cinder-backup-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackupBackend` rejection corpus: the union rule, the chunk-size minimum, the compression enum, the `extraOptions` denylist, the `cinderRef` transition rule, the second-backup rule, and an export path carrying a newline |
 
 ---
@@ -253,6 +254,43 @@ steps.
 are both true, so the driver runs its file operations as the service user
 instead of through a root helper. The ownership and mode in steps 3 to 5 are
 that posture read off the share.
+
+---
+
+### rbd-backend
+
+**File:** `tests/e2e/cinder/rbd-backend/chainsaw-test.yaml`
+
+**Purpose:** Proves the operator mechanics of an RBD backend on a kind cluster
+that runs no Ceph: the credentials gate on the key Secret, the projected
+section, `ceph.conf` and keyring, the read-only `/etc/ceph` mount without an
+export, the Ceph egress rule, and the roll of the volume service onto a new
+projection Secret when the key is replaced. The volumes themselves are written
+to RBD only by the lab run of the
+[RBD guide](../../guides/cinder/attach-an-rbd-backend.md).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-rbd …`, then `00-cinder-cr.yaml` (`cinder-rbd` with `spec.networkPolicy`), `01-key-secret.yaml` (`rbdbe-rbd1-key`) and `02-cinderbackend-cr.yaml` (`rbdbe-rbd1`) |
+| 2 | Assert the gate, the projection, the mounts and the policy | `assert` (5m) | `rbdbe-rbd1` with `CredentialsReady=True/CredentialsAvailable`, `ConfigProjected=True` and `Ready=True/AllReady`; the Cinder with host `cinder-rbd@rbdbe-rbd1`, `BackendsReady`, `VolumeServicesReady` and `NetworkPolicyReady` True; Deployment `cinder-rbd-volume-rbdbe-rbd1` available with a read-only mount at `/etc/ceph`, no `share-` volume and no CSI volume; NetworkPolicy `cinder-rbd` whose egress ends with the rule to `10.244.0.0/16` on TCP 3300, 6789 and 6800 to 7300, with no 2049 rule |
+| 3 | Read the projected files and the driver's attempt | `script` (5m) | Through the Secret the `ceph` volume names: exactly the four data keys, the five `ceph.conf` lines, the keyring section and key, the RBD section with `rados_connect_timeout = 5` and no `rbd_secret_uuid`; both files present in `/etc/ceph` of the pod; the pod log carries `Failed to initialize driver` and `Error connecting to ceph cluster`, and no `conf_read_file`, `AdminSocket` or `unable to open log file` |
+| 4 | Replace the key and watch the volume service roll | `script` (5m) | `kubectl patch` sets a new `userKey`; the `ceph` volume names a different Secret, the new keyring carries the new key, the previous Secret is retained, and the pod is younger than before the patch |
+| 5 | Walk the gate of a second backend | `apply` + `assert` (5m) + `script` | `rbdbe-rbd2` without its Secret reports `WaitingForCredentials` with `not found yet`, the Cinder `Waiting for backends: rbdbe-rbd2`, and no volume Deployment exists; an empty `userKey` (`04-key-secret-b-empty.yaml`) reports `carries an empty userKey`; a usable key turns the gate `CredentialsAvailable`, adds a second `volumeServices` entry and an available `cinder-rbd-volume-rbdbe-rbd2` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-key-secret.yaml`,
+`02-cinderbackend-cr.yaml`, `03-cinderbackend-b-cr.yaml`,
+`04-key-secret-b-empty.yaml`
+
+**Design note:** the monitor `ceph-mon.openstack.svc.cluster.local` resolves
+to nothing, so every connection the driver opens fails on DNS at once. The
+backend's `extraOptions` set `rados_connect_timeout`, `rados_connection_retries`
+and `rados_connection_interval`, which bound the driver setup to seconds instead
+of librados' mount timeout and three retries. `cinder-volume` logs the failed
+setup and still starts its RPC server, so the pod passes the AMQP readiness
+probe, and the Ceph client of the service image is what reads the projected
+files.
 
 ---
 
@@ -815,7 +853,7 @@ tests/e2e/cinder/
 ├── invalid-cinderbackend-cr/
 │   ├── chainsaw-test.yaml              CinderBackend rejection corpus
 │   ├── _generate.py                    Generator for the fixtures below
-│   └── 00-…-09-….yaml                  Ten rejection fixtures
+│   └── 00-…-17-….yaml                  Eighteen rejection fixtures
 ├── invalid-cinderbackupbackend-cr/
 │   ├── chainsaw-test.yaml              CinderBackupBackend rejection corpus
 │   ├── _generate.py                    Generator for the fixtures below
@@ -855,6 +893,13 @@ tests/e2e/cinder/
 │   ├── 01-cinderbackend-cr.yaml        Backend pss-nfs1
 │   ├── 02-cinderbackupbackend-cr.yaml  Backup backend pss-nfsbk
 │   └── 03-cinder-cr.yaml               Cinder CR cinder-pss in brownfield mode
+├── rbd-backend/
+│   ├── chainsaw-test.yaml              RBD backend mechanics without a Ceph
+│   ├── 00-cinder-cr.yaml               Cinder CR cinder-rbd with spec.networkPolicy
+│   ├── 01-key-secret.yaml              Key Secret rbdbe-rbd1-key
+│   ├── 02-cinderbackend-cr.yaml        Backend rbdbe-rbd1
+│   ├── 03-cinderbackend-b-cr.yaml      Backend rbdbe-rbd2, applied before its key
+│   └── 04-key-secret-b-empty.yaml      Key Secret rbdbe-rbd2-key with an empty userKey
 ├── release-upgrade/
 │   ├── chainsaw-test.yaml              Cross-release upgrade 2026.1 to 2026.2
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-upgrade on 2026.1

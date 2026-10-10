@@ -44,7 +44,7 @@ part of this spec. Volume backends attach through
 | `internalTenant` | [`InternalTenantSpec`](#internaltenantspec) | no | The Keystone project and user Cinder owns its internal volumes as. The image-volume cache needs it: a cached volume belongs to the deployment rather than to the tenant whose request populated it |
 | `dbPurge` | [`DBPurgeSpec`](#dbpurgespec) | no | The recurring purge of the rows Cinder only soft-deletes. A nil block resolves exactly like an empty one: 30 days of retention, daily at `1 0 * * *`, not suspended |
 | `gateway` | `GatewaySpec` | no | External exposure through a Gateway API HTTPRoute on port 8776; requires `hostname` and `parentRef.name`. Setting it requires `keystoneEndpoint` (CEL rule): without it the API renders `auth_strategy = noauth`, so a Gateway would publish every volume operation unauthenticated |
-| `networkPolicy` | `NetworkPolicySpec` | no | Ingress restricted to TCP 8776 from the listed sources; egress auto-derived (DNS, database, cache, Keystone, Glance, Barbican, the broker port and the NFS exports). At least one ingress source is required (fail-closed) |
+| `networkPolicy` | `NetworkPolicySpec` | no | Ingress restricted to TCP 8776 from the listed sources; egress auto-derived (DNS, database, cache, Keystone, Glance, Barbican, the broker port, the NFS exports, and the Ceph monitor and OSD ports towards the networks the RBD backends name). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `AutoscalingSpec` | no | HPA bounds, CPU/memory utilization targets and scaling behavior. It reaches the API Deployment alone |
 | `logging` | `LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false` |
 | `policyOverrides` | `PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders `policy.yaml` and wires `[oslo_policy] policy_file` |
@@ -379,10 +379,11 @@ shared directory plus the overlays it alone may see.
 | --- | --- | --- |
 | `/etc/cinder/cinder.conf.d` | `cinder.conf`, plus `logging.ini` and `policy.yaml` when rendered | All four processes and every Job |
 | `/etc/cinder/scheduler.conf.d` | `scheduler.conf` | The scheduler pods |
-| `/etc/cinder/backends.conf.d` | `backend.conf` and `{backend}.shares` | The backend's `cinder-volume` |
+| `/etc/cinder/backends.conf.d` | `backend.conf`, and `{backend}.shares` for an NFS backend | The backend's `cinder-volume` |
 | `/etc/cinder/volume.conf.d` | `volume.conf`, the `enabled_backends` overlay | The backend's `cinder-volume` |
 | `/etc/cinder/backup.conf.d` | `backup.conf` | The backup pod |
 | `/var/lib/cinder` | `[DEFAULT] state_path`, an `emptyDir`; `conversion` and `tmp` live below it | All four processes |
+| `/etc/ceph` | `<cluster>.conf` and `<cluster>.client.<user>.keyring`, read-only | The `cinder-volume` of an RBD backend |
 | `/var/lib/cinder/mnt/<md5>` | One volume backend's NFS export | That backend's `cinder-volume`, and the backup pod |
 | `/var/lib/cinder/backup_mount/<md5>` | The backup target's NFS export | The backup pod |
 | `/tmp` | Writable scratch beside the read-only root filesystem | All four processes |
@@ -392,6 +393,9 @@ shared directory plus the overlays it alone may see.
 The figure shows the two NFS rows of the table: which pod mounts which export.
 
 ![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
+
+An RBD backend mounts no export: its `cinder-volume` reaches the Ceph cluster
+over the network, so the figure shows the NFS shape alone.
 
 The migration and service-remove Jobs mount the whole config ConfigMap at
 `/etc/cinder/cinder.conf.d`. The one extra file they see is `scheduler.conf`,

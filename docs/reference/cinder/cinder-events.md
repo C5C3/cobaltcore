@@ -52,7 +52,7 @@ All events follow these conventions:
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `CinderBackendSkipped` | Warning | An attached volume backend carries no `spec.nfs` block, or a rendered section value carries a control character; the backend is skipped while its healthy siblings keep projecting | `Skipping backend nfs-a: <error>` |
+| `CinderBackendSkipped` | Warning | An attached volume backend carries no `spec.nfs` or `spec.rbd` block matching its type, a rendered value carries a control character, or the RBD key Secret vanished or stopped carrying a cephx key between the gate and the render; the backend is skipped while its healthy siblings keep projecting | `Skipping backend nfs-a: <error>` |
 | `CinderBackupBackendSkipped` | Warning | The attached backup backend carries no `spec.nfs` block, or its rendered section carries a control character; nothing is projected and `BackupBackendReady` stays in its waiting state | `Skipping backup backend nfs-backups: <error>` |
 | `SharedExportMountOptionsIgnored` | Warning | Two volume backends serve the same export, which the backup pod mounts once, and their `mountOptions` differ; the backup service mounts it with the options of the backend projected first, and the other backend's are not applied there | `Backend nfs-b serves the export nfs.example.com:/exports/volumes that backend nfs-a already mounts with "nfsvers=4.1,soft,timeo=30,retrans=2" in the backup service, so its own mountOptions "nfsvers=3,soft" are not applied there` |
 

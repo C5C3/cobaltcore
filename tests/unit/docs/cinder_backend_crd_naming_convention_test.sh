@@ -8,20 +8,24 @@
 # A CinderBackend projects no Service of its own — it renders one backend
 # section and one cinder-volume Deployment under the referenced Cinder — so the
 # vocabulary it has to pin down is the condition set (per-backend plus the
-# Cinder-side aggregate), the content-hashed projection Secret with its three
-# data keys, the detach contract, and the extraOptions denylist.
+# Cinder-side aggregate), the content-hashed projection Secret with its data
+# keys, the detach contract, and the extraOptions denylist.
 #
 #   1. The "## Conditions" section exists and documents every condition type
-#      and reason: CredentialsReady with CredentialsNotRequired and
-#      WaitingForParent, ConfigProjected with WaitingForProjection, the
+#      and reason: CredentialsReady with CredentialsNotRequired,
+#      CredentialsAvailable, WaitingForCredentials and WaitingForParent,
+#      ConfigProjected with WaitingForProjection, the
 #      aggregate Ready with AllReady / NotAllReady / Detaching, the Cinder-side
 #      BackendsReady with AllBackendsProjected / WaitingForBackends /
 #      NoBackends, and the CinderBackendSkipped fault-isolation event.
 #   2. The "## Retained Artefacts" section documents the content-hashed
-#      <cinder>-backend-<name>-<hash> Secret and its three data keys.
+#      <cinder>-backend-<name>-<hash> Secret and its data keys: backend.conf,
+#      shares and volume.conf of an NFS backend, ceph.conf and keyring of an
+#      RBD one.
 #   3. The detach contract names the finalizer, the Job and the tolerated
 #      exit code.
-#   4. The extraOptions denylist names the keys the projection owns.
+#   4. The extraOptions denylist names the keys the projection owns, the RBD
+#      key rbd_pool among them.
 #
 # Usage: bash tests/unit/docs/cinder_backend_crd_naming_convention_test.sh
 
@@ -55,6 +59,10 @@ test_conditions_documented() {
     "$CRD_DOC" 'CredentialsReady'
   assert_file_contains "documents the CredentialsNotRequired reason" \
     "$CRD_DOC" 'CredentialsNotRequired'
+  assert_file_contains "documents the CredentialsAvailable reason" \
+    "$CRD_DOC" 'CredentialsAvailable'
+  assert_file_contains "documents the WaitingForCredentials reason" \
+    "$CRD_DOC" 'WaitingForCredentials'
   assert_file_contains "documents the WaitingForParent reason" \
     "$CRD_DOC" 'WaitingForParent'
   assert_file_contains "documents ConfigProjected" \
@@ -91,6 +99,10 @@ test_retained_artefact_naming() {
     "$CRD_DOC" '.shares'
   assert_file_contains "documents the volume.conf data key" \
     "$CRD_DOC" 'volume.conf'
+  assert_file_contains "documents the ceph.conf data key" \
+    "$CRD_DOC" '`ceph.conf`'
+  assert_file_contains "documents the keyring data key" \
+    "$CRD_DOC" '`keyring`'
 }
 
 # --- Test 3: the detach contract ---
@@ -121,6 +133,8 @@ test_extra_options_denylist() {
     "$CRD_DOC" 'nfs_shares_config'
   assert_file_contains "documents the image_volume_cache_enabled key" \
     "$CRD_DOC" 'image_volume_cache_enabled'
+  assert_file_contains "documents the rbd_pool key" \
+    "$CRD_DOC" 'rbd_pool'
 }
 
 # --- Run ---
