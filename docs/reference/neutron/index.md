@@ -26,8 +26,7 @@ Three long-running processes carry the service, plus the per-node agent:
 
 `neutron-rpc-server` is absent from that list. Nothing in this deployment
 consumes RPC, so the process has no work, and at `rpc_workers = 0` it exits 0 on
-2026.1 while crashing on 2025.2 with `AttributeError: 'NoneType' object has no
-attribute 'run'` (the `oslo.service` pin, not neutron). Both worker Deployments
+2026.1. Both worker Deployments
 serve no HTTP and get no Service, no HorizontalPodAutoscaler and no
 PodDisruptionBudget.
 

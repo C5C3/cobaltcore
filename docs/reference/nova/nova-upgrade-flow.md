@@ -124,16 +124,17 @@ reporting a finished rollout.
 
 | Phase | What runs | Job |
 | --- | --- | --- |
-| `Expanding` | `nova-status upgrade check`, then `nova-manage --config-dir /etc/nova/nova.conf.d api_db sync` and `nova-manage --config-dir /etc/nova/nova.conf.d db sync` on the target image, while every process still runs the installed release. Both migrations are additive, so the old release keeps running against the widened schemas. Between 2025.2 and 2026.1 neither schema takes a revision (decision D3 of [#1014](https://github.com/C5C3/cobaltcore/issues/1014), lab evidence in [#1015](https://github.com/C5C3/cobaltcore/issues/1015#issuecomment-5685726178), section (b)). Between 2026.1 and 2026.2 the api schema takes no revision and the cell schema takes `ab450ba04102` (two indexes on `migrations`, read at nova 34.0.0) | `{name}-db-expand` |
+| `Expanding` | `nova-status upgrade check`, then `nova-manage --config-dir /etc/nova/nova.conf.d api_db sync` and `nova-manage --config-dir /etc/nova/nova.conf.d db sync` on the target image, while every process still runs the installed release. Both migrations are additive, so the old release keeps running against the widened schemas. Between 2026.1 and 2026.2 the API schema takes no revision and the cell schema takes one additive revision, `ab450ba04102` (indexes on the source and destination compute columns of `migrations`, read at nova 34.0.0) | `{name}-db-expand` |
 | `Migrating` | `nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 list_cells`. Nova has no migrate verb of its own, so the phase is a read that proves the new code can address the `nova_api` schema the expand phase migrated | `{name}-db-migrate` |
 | `RollingUpdate` | No Job. The roles roll in the order `conductor -> scheduler -> metadata -> novncproxy -> api`, because that is the order the pipeline ensures them in: `{name}-conductor`, `{name}-scheduler`, `{name}-metadata`, `{name}-novncproxy` while the console proxy is enabled, then the API `{name}` | |
-| `Contracting` | `nova-manage --config-dir /etc/nova/nova.conf.d db online_data_migrations --max-count 1000` in a loop, first against the cell schema and then against cell0. Between 2025.2 and 2026.1 there is no data migration to run, so both loops finish on their first batch. The `online_migrations` tuple is unchanged at 34.0.0, so between 2026.1 and 2026.2 both loops again finish on their first batch | `{name}-db-contract` |
+| `Contracting` | `nova-manage --config-dir /etc/nova/nova.conf.d db online_data_migrations --max-count 1000` in a loop, first against the cell schema and then against cell0. The `online_migrations` tuple is unchanged at 34.0.0, so between 2026.1 and 2026.2 both loops finish on their first batch | `{name}-db-contract` |
 
 Every phase Job runs `spec.image`, the target-release image, with
 `backoffLimit: 4`, so a phase gets five tries before it fails. A try against a
 database the Job cannot reach is slow: `nova-manage api_db sync` retries its
-connection and exits 255 after 207 seconds (same lab evidence), so each such try
-costs about 3.5 minutes.
+connection and exits 255 after 207 seconds (lab evidence in
+[#1015](https://github.com/C5C3/cobaltcore/issues/1015#issuecomment-5685726178)),
+so each such try costs about 3.5 minutes.
 
 The figure draws the same four phases with what the table leaves out: the gate
 in front of them, the state a failed Job leaves, the hold on a changed target,

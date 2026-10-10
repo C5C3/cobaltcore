@@ -140,16 +140,12 @@ pipeline proceeds to `reconcileDeployment`, and Kubernetes rolls the pods onto
 the new image. Old pods keep serving the expanded schema until the new pods pass
 their readiness checks, so the API stays available.
 
-The launch mode derives from `spec.openStackRelease`: the eventlet `glance-api`
-server below `2026.1`, uWSGI from `2026.1` onward. A `2025.2` to `2026.1`
-upgrade therefore switches the container command from eventlet to uWSGI during
-this rollout. A `2026.1` to `2026.2` upgrade, the transition
-`tests/e2e/glance/release-upgrade/` runs, keeps uWSGI on both sides. A
-`spec.apiServer.workers` value renders `[DEFAULT] workers` under `2026.1` and
-stops rendering at `2026.2`, because glance 33.0.0 no longer registers the
-option. Both modes load the same two `--config-dir` roots; the reconciler
-reference covers the [launch modes](./glance-reconciler.md#launch-modes) in
-detail.
+Both sides of every supported upgrade run under uWSGI: the `2026.1` to `2026.2`
+transition, which `tests/e2e/glance/release-upgrade/` runs, keeps the same
+container command through the rollout. `spec.apiServer.workers` is deprecated
+and renders nothing on any release. Both releases load the same two
+`--config-dir` roots; the reconciler reference covers the
+[launch mode](./glance-reconciler.md#launch-mode) in detail.
 
 Once the Deployment reports ready, `reconcileDeployment` flips the phase from
 `RollingUpdate` to `Contracting`, emits `DeploymentRolloutComplete`, and
@@ -262,9 +258,9 @@ downgrade, which the operator rejects.
 
 ## Image and Release Lockstep
 
-`spec.image` and `spec.openStackRelease` are separate fields — the release
-drives tracking, the launch mode, and upgrade detection, while the phase Jobs and
-the Deployment run `spec.image` — so digest pinning stays possible. The
+`spec.image` and `spec.openStackRelease` are separate fields, so digest pinning
+stays possible: the release drives tracking and upgrade detection, while the
+phase Jobs and the Deployment run `spec.image`. The
 operator's contract is that the two are bumped together, and for a tag-pinned
 image the reconciler enforces it: when `spec.image.tag` parses as an OpenStack
 release that differs from `spec.openStackRelease` (the patch suffix is ignored,
@@ -279,8 +275,7 @@ declared `spec.openStackRelease`.
 Keystone keys its upgrade off the image tag and skips release detection for a
 digest-pinned image. Glance keys off `spec.openStackRelease`, which is always
 set, so a digest-pinned Glance still upgrades: on a release bump the phase Jobs
-run by digest. `spec.openStackRelease` also selects the launch mode, so a
-digest-pinned image resolves both a schema target and a launch command.
+run by digest.
 
 ---
 

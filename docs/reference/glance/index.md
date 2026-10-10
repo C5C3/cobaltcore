@@ -24,13 +24,10 @@ editing the Glance CR.
 
 The v1 operator resolves the onboarding decisions as follows:
 
-- **Release-switched launch mode.** `spec.openStackRelease` governs how the API
-  server launches: the eventlet `glance-api` server below `2026.1`, and uWSGI
-  from `2026.1` onward. The uWSGI mode loads the stock WSGI app through the
-  image-shipped `glance-wsgi-api` shim, because glance's own WSGI module ignores
-  `sys.argv` and cannot be pointed at the operator's config directories
-  directly. The launch mode is deliberately decoupled from the image tag so a
-  digest-pinned image still resolves a schema and launch mode. See
+- **uWSGI launch mode.** The API server launches under uWSGI on every supported
+  release through the image-shipped `glance-wsgi-api` shim, because glance's own
+  WSGI module ignores `sys.argv` and cannot be pointed at the operator's config
+  directories directly. See
   [Container Images](../ci-cd/container-images.md#glance).
 - **Always-rendered reserved stores.** Glance registers the
   `os_glance_staging_store` and `os_glance_tasks_store` filesystem stores at
@@ -93,7 +90,7 @@ The v1 operator resolves the onboarding decisions as follows:
   pod-template annotation so a rotation rolls the pods.
 - **`/healthcheck` probes.** Startup, readiness and liveness all GET
   `/healthcheck`, served by the oslo healthcheck middleware without touching
-  the database or Keystone, identical in both launch modes. The startup probe
+  the database or Keystone. The startup probe
   allows 300 seconds (30 probes 10 seconds apart, each with an 8-second
   timeout) before the liveness probe takes over, so a cold start slowed by a CPU
   limit set on the container or a contended node does not restart the

@@ -108,11 +108,11 @@ when `harakiri` is set. Keep-alive is on by default and an explicit
 `httpKeepAlive: false` drops both flags; `--harakiri` appears only when the field
 is set.
 
-The WSGI entry file is written by the operator's Placement image, because 2025.2
-declares `placement-api` as a PBR `wsgi_scripts` entry the install mode does not
-materialize and 2026.1 declares no WSGI script at all. The config location
-travels in the `OS_PLACEMENT_CONFIG_DIR=/etc/placement` environment variable: the
-entry calls `init_application()` with no arguments and placement's
+The WSGI entry file is written by the operator's Placement image, because 15.0.0
+(2026.1) declares no WSGI script and 16.0.0 (2026.2) declares only
+`placement-manage` and `placement-status` under `[project.scripts]`. The config
+location travels in the `OS_PLACEMENT_CONFIG_DIR=/etc/placement` environment
+variable: the entry calls `init_application()` with no arguments and placement's
 `_get_config_files` loads `$OS_PLACEMENT_CONFIG_DIR/placement.conf`, one file,
 with no directory scan and no `sys.argv` parsing. That is why the command carries
 no `--pyargv`, and why the config ConfigMap is mounted as the whole

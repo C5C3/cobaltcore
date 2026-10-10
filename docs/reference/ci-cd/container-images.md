@@ -284,14 +284,14 @@ its plugin tests).
 
 **Location:** `images/glance/Dockerfile`
 
-The Glance service image uses the same two-stage build as Keystone. Both launch
-modes ship in one image — 2025.2 starts the eventlet `glance-api` console
-script, and 2026.1+ runs uWSGI with the hand-shipped
-`/var/lib/openstack/bin/glance-wsgi-api` entry script. Glance's stock module
-path (`glance.wsgi.api:application`) is unusable under the operator's config
-layout: `wsgi_app.init_app()` ignores `sys.argv` (and so uWSGI's `--pyargv`)
-and reads only `$OS_GLANCE_CONFIG_DIR/glance-api.conf`, so the shim redirects
-config discovery to the two mounted `--config-dir` roots instead.
+The Glance service image uses the same two-stage build as Keystone. The
+operator runs the API under uWSGI on every supported release with the
+hand-shipped `/var/lib/openstack/bin/glance-wsgi-api` entry script. Glance's
+stock module path (`glance.wsgi.api:application`) is unusable under the
+operator's config layout: `wsgi_app.init_app()` ignores `sys.argv` (and so
+uWSGI's `--pyargv`) and reads only `$OS_GLANCE_CONFIG_DIR/glance-api.conf`, so
+the shim redirects config discovery to the two mounted `--config-dir` roots
+instead.
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
