@@ -152,7 +152,7 @@ Deleting the compute service through the API unmaps the host:
 openstack compute service delete <service-id>
 ```
 
-At nova 32.0.0 (the `2025.2` image) and 33.0.0 (`2026.1`) the delete also removes
+At nova 33.0.0 (the `2026.1` image) and 34.0.0 (`2026.2`) the delete also removes
 the host's mapping, deletes its resource provider in Placement with a cascade,
 and takes the host out of every aggregate it belongs to. It is refused with a
 conflict while the host still carries instances, or while a migration involving

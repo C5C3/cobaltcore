@@ -769,8 +769,7 @@ container carries the boto3-weighted S3 store driver. In the calibration run,
 two processes serving the image traffic of the Cinder Tempest leg on 2026.1
 reached a VPA memory target of 2063 MiB (see
 [Sizing Calibration](../testing/sizing-calibration.md)).
-Two uWSGI processes (2026.1 and later) and two eventlet workers (2025.2) both
-come to 2064Mi as memory request and limit.
+Two uWSGI processes come to 2064Mi as memory request and limit.
 
 The defaulting webhook leaves `spec.dbPurge` untouched for the same reason:
 its fields are resolved at reconcile time (see

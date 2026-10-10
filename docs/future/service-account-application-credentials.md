@@ -157,10 +157,9 @@ catalogs, and the rotation target.
   deletes its credentials with no recovery path. The operator should have no
   disable path for service accounts, and the re-mint flow must heal the case
   regardless.
-- **Glance backend gap.** `glance_store` supports application credentials for
-  the Swift and Cinder backends only from OpenStack 2026.1. On 2025.2 only
-  `[keystone_authtoken]` could switch; deployments using those backends need
-  a per-release distinction.
+- **Glance backend gap, closed by the release floor.** `glance_store` supports
+  application credentials for the Swift and Cinder backends on every supported
+  release (2026.1 and later), so no per-release distinction is needed.
 - **Keystone hardening.** Upstream tightened the application-credential trust
   model through 2026 (token rescoping blocked, an EC2 escalation fixed,
   delegation fixes in flight). Running service identities on application

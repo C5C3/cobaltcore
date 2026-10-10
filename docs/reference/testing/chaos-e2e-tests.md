@@ -1670,8 +1670,7 @@ the NetworkChaos as YAML. Steps 5, 6 and 8 also list the Garage storage pods in
   worker before the router gives up on the client, so no write survives into the
   recovered state. The value has to stay below the webhook's bound of
   `terminationGracePeriodSeconds - preStopSleepSeconds` (25 at the deployment
-  defaults). Below 2026.1 the eventlet server held the client until the probe's own
-  90-second timeout, and the cap is inert there.
+  defaults).
 - Every probe takes its verdict from the pod log. `kubectl run -i` carries only what
   the container writes after the attach is established, so a fast probe could reach
   its sentinel before the capture starts. The probe pod therefore runs without `--rm`,

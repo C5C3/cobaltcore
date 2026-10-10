@@ -886,7 +886,7 @@ this step stored, because the members of a parallel group keep only the
 conditions and metadata they write. `sizing_projection.go` holds the rules they
 share: the replica fallback, the placement fallback to the top-level
 `spec.sizing` values, the spread completion with the child's pod selector, and
-the uWSGI, Job and Glance launch-mode helpers. See
+the uWSGI, Job and Glance `apiServer` helpers. See
 [SizingSpec → Projection](./controlplane-crd.md#projection).
 
 ### reconcileNamespaces
@@ -1801,9 +1801,8 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
   `spec.services.glance.gateway` (a nil source clears it, tearing the HTTPRoute
   down); `spec.sizing.glance` projects onto `spec.deployment` (replicas falling
   back to `commonv1.DefaultReplicas`), `spec.autoscaling` and `spec.jobs`, and its
-  process and thread counts onto `spec.apiServer` by launch mode (`uwsgi` from
-  2026.1, the process count as `workers` below it); the resolved store selection
-  and `spec.region` are projected through.
+  process and thread counts onto `spec.apiServer.uwsgi`; the resolved store
+  selection and `spec.region` are projected through.
 
 A child placed outside the ControlPlane's namespace (`services.glance.namespace`)
 carries no owner reference — it is stamped with the ownership labels and applied
@@ -4610,7 +4609,7 @@ cross-namespace teardown assertions.
 | --- | --- |
 | `controlplane_controller_test.go` | `Reconcile` orchestration, sequential early-return, Ready aggregation, `updateStatus` error-join, idempotency |
 | `reconcile_sizing_test.go` | `reconcileSizing` for a built-in profile (no read), an existing, a missing and an unreadable `SizingProfile`; the pipeline stop; `sizingProfileToControlPlaneMapper` |
-| `sizing_projection_test.go` | The shared projection helpers: spread completion against the child's selector, the placement fallback, the replica default, uWSGI, Jobs, and the Glance launch mode |
+| `sizing_projection_test.go` | The shared projection helpers: spread completion against the child's selector, the placement fallback, the replica default, uWSGI, Jobs, and the Glance `apiServer` block |
 | `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration`, the backing-service sizing of `ensureMariaDB` / `ensureMemcached` / `ensureRabbitMQ` |
 | `reconcile_dbcredentials_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |

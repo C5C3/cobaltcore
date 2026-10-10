@@ -43,7 +43,7 @@ draws that pattern with every step of the Keystone operator.
 | Backends | Aggregates the attached, credential-ready `GlanceBackend`s into the content-hashed backends Secret. Waiting states never short-circuit the pipeline (first-install proceeds; a backend status flip re-enqueues via the watch) | `BackendsReady` |
 | Config | Renders `glance-api.conf` / `glance-api-paste.ini` (plus `policy.yaml` / `logging.conf` when applicable) into an immutable content-addressed ConfigMap. With `spec.imageCache` set it adds the three `[DEFAULT]` `image_cache_*` keys (the cache directory, the `sqlite` driver, and a pruner threshold at 80% of the volume bound) and injects the `cache` paste filter directly before the root app. An invalid projection keeps the live Deployment's last-good names instead of re-rendering. **Reports through `SecretsReady`** (failure reason `ConfigError`) | `SecretsReady` |
 | Database | Provisions/migrates the schema (MariaDB gate, `Database`/`User`/`Grant`, one `glance-manage db sync` Job); a release bump instead runs the shared expand-migrate-contract flow; promotes `installedRelease` | `DatabaseReady` |
-| Deployment | Ensures the API Deployment (both launch modes), Service (port 9292), and PDB; stamps `status.endpoint`. Both scratch `emptyDir`s (`staging`, `tasks-work`) carry the `sizeLimit` resolved from `spec.staging` — none at all when `spec.staging.unbounded` is set — so changing the bound rolls the Deployment. `spec.imageCache` adds a third `emptyDir`, `image-cache`, bounded by its own `sizeLimit` and mounted into `glance-api`, plus a `cache-maintenance` sidecar looping `glance-cache-pruner` and `glance-cache-cleaner`. That loop prunes on the cache's own size — polled every 30s against `image_cache_max_size` — and on `maintenanceInterval`, whichever comes first. It gets no condition type of its own, and no failure of it ever exits the sidecar: every failed run is absorbed and shows only as a `glance-cache-maintenance failed: <n> consecutive` line in `kubectl logs -c cache-maintenance`, because the loop shares the pod with `glance-api` and a `CrashLoopBackOff` would drop that API replica from the Service. A count that keeps climbing is a pruner that can never run, and since nothing else enforces `image_cache_max_size`, every replica's cache then grows to the `emptyDir` bound and the kubelet evicts it — outside the eviction API, so the PDB does not stagger it. This sub-reconciler reports that only as `WaitingForDeployment`; no condition, event, or metric names the cause. Mid-upgrade it flips the `RollingUpdate` phase to `Contracting` once the rolled-out Deployment reports ready | `DeploymentReady` |
+| Deployment | Ensures the API Deployment, Service (port 9292), and PDB; stamps `status.endpoint`. Both scratch `emptyDir`s (`staging`, `tasks-work`) carry the `sizeLimit` resolved from `spec.staging` — none at all when `spec.staging.unbounded` is set — so changing the bound rolls the Deployment. `spec.imageCache` adds a third `emptyDir`, `image-cache`, bounded by its own `sizeLimit` and mounted into `glance-api`, plus a `cache-maintenance` sidecar looping `glance-cache-pruner` and `glance-cache-cleaner`. That loop prunes on the cache's own size — polled every 30s against `image_cache_max_size` — and on `maintenanceInterval`, whichever comes first. It gets no condition type of its own, and no failure of it ever exits the sidecar: every failed run is absorbed and shows only as a `glance-cache-maintenance failed: <n> consecutive` line in `kubectl logs -c cache-maintenance`, because the loop shares the pod with `glance-api` and a `CrashLoopBackOff` would drop that API replica from the Service. A count that keeps climbing is a pruner that can never run, and since nothing else enforces `image_cache_max_size`, every replica's cache then grows to the `emptyDir` bound and the kubelet evicts it — outside the eviction API, so the PDB does not stagger it. This sub-reconciler reports that only as `WaitingForDeployment`; no condition, event, or metric names the cause. Mid-upgrade it flips the `RollingUpdate` phase to `Contracting` once the rolled-out Deployment reports ready | `DeploymentReady` |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition. The route renders `timeouts.request: "4h"`, so the gateway does not truncate a long image transfer and a stalled one releases its worker eventually. The bound is on duration only — nothing the operator renders caps how many requests may occupy the API's workers at once | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `GlanceAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
@@ -86,36 +86,29 @@ Both `DatabaseReady` and `DeploymentReady` carry a `WaitingForBackends` reason:
 the schema cannot be `db sync`-ed and the Deployment cannot be created until a
 ready default backend has produced a rendered config to run against.
 
-## Launch modes
+## Launch mode
 
-`spec.openStackRelease` selects the launch mode at the `2026.1` boundary: a
-release `>= 2026.1` launches under uWSGI, anything below runs the eventlet
-`glance-api` server. An unparseable release (a CR that bypassed the CRD pattern)
-falls back to the eventlet mode. Both modes load the **same two** oslo.config
-`--config-dir` roots — the immutable config ConfigMap
+The API container runs one command on every supported release: `uwsgi --http
+:9292 --http-auto-chunked --http-chunked-input --chunked-input-limit 16777216
+…`. The two chunked flags are always on because Glance streams image bodies with
+chunked transfer encoding, and the limit raises uWSGI's 1 MB cap on one request
+chunk to 16 MiB: glanceclient uploads a body of unknown size in 1 MiB chunks,
+which the default rejects with `OSError: unable to receive chunked part` and a
+500, so cinder's upload-to-image and nova's snapshot upload fail under the
+default. Keep-alive (`--http-keepalive`, and `--http-keepalive-timeout` when
+set) and `--harakiri` are emitted from the `spec.apiServer.uwsgi` fields. uWSGI
+loads the WSGI app through `--wsgi-file
+/var/lib/openstack/bin/glance-wsgi-api` (the image-shipped shim) and passes both
+oslo.config `--config-dir` roots, the immutable config ConfigMap
 (`/etc/glance/glance-api.conf.d/`) and the backends Secret
-(`/etc/glance/backends.conf.d/`).
+(`/etc/glance/backends.conf.d/`), via `--pyargv`, because glance's stock WSGI
+module ignores `sys.argv`.
 
-- **uWSGI (`>= 2026.1`).** The command is `uwsgi --http :9292
-  --http-auto-chunked --http-chunked-input --chunked-input-limit 16777216 …` —
-  the two chunked flags are always on because Glance streams image bodies with
-  chunked transfer encoding, and the limit raises uWSGI's 1 MB cap on one
-  request chunk to 16 MiB: glanceclient uploads a body of unknown size in 1 MiB
-  chunks, which the default rejects with `OSError: unable to receive chunked
-  part` and a 500, so cinder's upload-to-image and nova's snapshot upload fail
-  under the default while the eventlet mode has no such cap. Keep-alive
-  (`--http-keepalive`, and `--http-keepalive-timeout` when set) and `--harakiri`
-  are emitted from the `spec.apiServer.uwsgi` knobs. uWSGI loads the WSGI app
-  through `--wsgi-file /var/lib/openstack/bin/glance-wsgi-api` (the image-shipped
-  shim), passing both `--config-dir` roots via `--pyargv`, because glance's stock
-  WSGI module ignores `sys.argv`.
-- **eventlet (`< 2026.1`).** The command is `glance-api --config-dir
-  /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/`; the
-  worker count comes from `[DEFAULT] workers` in the config (from
-  `spec.apiServer.workers`), not the CLI.
-
-Setting the wrong knob for the active mode is legal but inert; the validating
-webhook returns an admission warning rather than rejecting.
+`spec.apiServer.workers` is deprecated: the operator renders no `[DEFAULT]
+workers`, and the validating webhook warns `spec.apiServer.workers is deprecated
+and has no effect: Glance runs under uWSGI on every supported release and the
+operator renders no [DEFAULT] workers; size the API with spec.apiServer.uwsgi
+instead.`
 
 ## Backends aggregation
 
@@ -167,8 +160,7 @@ for the CR's own topology. It owns the field and applies the computed figure on
 every reconcile, so a value edited on the `User` by hand is reset; the cap
 rises only with the counts in the formula below. The mariadb-operator default
 of 10 is too small for the default fleet: three 2026.1 pods of two uWSGI
-processes hold up to 30 connections, and a single eventlet worker without the
-pool pin described below opened 32. A cap below the fleet's demand does not
+processes hold up to 30 connections. A cap below the fleet's demand does not
 degrade gracefully. The process that opens the connection past it gets MySQL
 error 1226: at start-up its pod crash-loops, and under load the upload, import
 or snapshot it serves answers HTTP 500.
@@ -176,44 +168,28 @@ or snapshot it serves answers HTTP 500.
 ```text
 (apiPods + 1) x perPod + 2
 
-perPod under uWSGI (2026.1 and later):  uwsgiProcesses x (uwsgiThreads + 5)
-perPod under eventlet (below 2026.1):   workers x 5
+perPod = uwsgiProcesses x (uwsgiThreads + 5)
 ```
 
-The defaults size to 50 at 2026.1 and 42 below it. `apiPods` is the
+The defaults size to 50 ((3 + 1) x 2 x (1 + 5) + 2). `apiPods` is the
 autoscaling ceiling when an HPA owns the count, and the `+ 1` beside it is the
-rolling-update surge. Under uWSGI each request thread holds one connection, and
-the `+ 5` is what the per-process async import pool added on top while
-`web-download` imports ran. A heavier import mix pushes that term toward
-`[wsgi] task_pool_threads`, which defaults to 16 per process. Under eventlet
-each worker is bounded at a pool size of 5 by the pool pin.
-Each launch mode ignores the other's knob: `spec.apiServer.workers` is inert
-under uWSGI, and `spec.apiServer.uwsgi` is inert below 2026.1.
+rolling-update surge. Each request thread holds one connection, and the `+ 5` is
+what the per-process async import pool added on top while `web-download` imports
+ran. A heavier import mix pushes that term toward `[wsgi] task_pool_threads`,
+which defaults to 16 per process.
 
-`perPod` is the largest figure over `spec.openStackRelease`,
-`status.installedRelease` and `status.targetRelease`. The launch modes mix only
-across a release boundary. During the `RollingUpdate` phase of a 2025.2 to
-2026.1 upgrade the old eventlet pods run beside the new uWSGI pods, and an abort
-mixes them the other way. Sized from the spec release alone, a 2025.2 Glance
-with `workers: 8` would drop to a cap of 50 mid-upgrade while its old pods hold
-up to 120. The trailing `+ 2` is headroom for one migration Job (db-sync, or the
-active expand, migrate or contract Job) overlapping a `{name}-db-purge` run. The
-`cache-maintenance` sidecar opens no database connection.
+`perPod` is computed from `spec.apiServer.uwsgi` alone: `glanceConnectionsPerPod`
+(`operators/glance/internal/controller/reconcile_database.go`) takes no release,
+so the cap does not move across a release transition. The trailing `+ 2` is
+headroom for one migration Job (db-sync, or the active expand, migrate or
+contract Job) overlapping a `{name}-db-purge` run. The `cache-maintenance`
+sidecar opens no database connection.
 
-Below 2026.1 the operator renders `[database] max_pool_size = 5` and
-`max_overflow = 0`. The eventlet server runs every request as a greenthread on
-one pool per worker, so with oslo.db's default overflow of 50 a worker's
-connection count follows client concurrency, up to 55, and no topology figure
-bounds it. With the pin, greenthreads beyond five wait for a pooled connection,
-up to SQLAlchemy's `pool_timeout` of 30 s, instead of failing with error 1226.
-The pool size of 5 is oslo.db's default. The operator renders it anyway, so the
-figure the cap counts is one it sets rather than one it assumes. Measured
-against the 2025.2 image under 16 concurrent clients, the pinned worker served
-more requests than an unpinned one and logged no pool timeout. Under uWSGI
-neither key is rendered: the thread count bounds demand there, and the overflow
-pin would queue requests in any process running more than five threads. An
-`extraConfig` override of `[database] max_pool_size` or `max_overflow` is
-honoured and reported through `ExtraConfigHealthy`.
+The operator renders neither `[database] max_pool_size` nor `max_overflow`: the
+thread count bounds demand, and an overflow pin would queue requests in any
+process running more than five threads. An `extraConfig` override of
+`[database] max_pool_size` or `max_overflow` is honoured and reported through
+`ExtraConfigHealthy`.
 
 ## DBPurge
 

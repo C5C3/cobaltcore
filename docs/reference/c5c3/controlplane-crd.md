@@ -1789,7 +1789,7 @@ the graceful-termination timings are never written.
 | `keystone.api` | `spec.deployment.*`, `spec.uwsgi`, `spec.autoscaling` |
 | `keystone.jobs` / `keystone.federationProxy` | `spec.jobs` / `spec.federation.proxyResources` |
 | `horizon.api` | `spec.deployment.*`, `spec.autoscaling` |
-| `glance.api` | `spec.deployment.*`, `spec.autoscaling`; `processes` and `threads` as `spec.apiServer.uwsgi` from 2026.1, `processes` as `spec.apiServer.workers` below it (threads are not written there) |
+| `glance.api` | `spec.deployment.*`, `spec.autoscaling`; `processes` and `threads` as `spec.apiServer.uwsgi` |
 | `placement.api`, `barbican.api`, `neutron.api` | `spec.deployment.*`, `spec.apiServer.uwsgi` (only when a count is set), `spec.autoscaling` |
 | `neutron.workers` | `spec.workers.deployment`: replicas, resources, placement, `verticalAutoscaling` |
 | `cinder.api` / `cinder.scheduler` | `spec.api.deployment.*`, `spec.api.uwsgi`, `spec.autoscaling` / `spec.scheduler.deployment.*` |
