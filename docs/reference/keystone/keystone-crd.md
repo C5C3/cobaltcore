@@ -1349,8 +1349,8 @@ pattern:
 | `Contracting` | Destructive schema migrations running (drop old columns/tables) after the rollout completes. |
 
 `spec.image.tag` must be parseable by `ParseRelease` (`YYYY.N` or `YYYY.N-patch`).
-Sequential upgrades are limited to one minor step (`2025.1 → 2025.2`) or a
-year-boundary crossing (`2025.2 → 2026.1`); downgrades and skip-level upgrades
+Sequential upgrades are limited to one minor step (`2026.1 → 2026.2`) or a
+year-boundary crossing (`2026.2 → 2027.1`); downgrades and skip-level upgrades
 are rejected by the reconciler.
 
 ---

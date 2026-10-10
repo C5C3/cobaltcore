@@ -43,7 +43,7 @@ between migrate and contract.
 ## Trigger
 
 An upgrade starts when `spec.openStackRelease` moves one release forward, for
-example `2025.2` to `2026.1`. Glance keys the upgrade off this field rather than
+example `2026.1` to `2026.2`. Glance keys the upgrade off this field rather than
 the image tag, so the image reference must be bumped in the same edit: the phase
 Jobs run `spec.image`, and the new release's migration tree owns the schema
 deltas. See [Image and Release Lockstep](#image-and-release-lockstep) for the
@@ -62,7 +62,7 @@ year:
 
 | Component | Format | Examples |
 | --- | --- | --- |
-| Release | `YYYY.N` where N is 1 or 2 | `2025.1`, `2025.2`, `2026.1` |
+| Release | `YYYY.N` where N is 1 or 2 | `2026.1`, `2026.2`, `2027.1` |
 
 The CRD pattern `^\d{4}\.[12]$`, the validating webhook, and
 `release.ParseRelease` agree on this shape, so a non-cadence minor such as
@@ -75,12 +75,10 @@ single sequential step forward. Everything else is refused:
 
 | From | To | Accepted | Reason |
 | --- | --- | --- | --- |
-| `2025.1` | `2025.2` | Yes | Same year, minor +1 |
-| `2025.2` | `2026.1` | Yes | Year +1, minor 2 to minor 1 |
 | `2026.1` | `2026.2` | Yes | Same year, minor +1 |
-| `2024.2` | `2026.1` | No | Skip-level (skips `2025.x`) |
-| `2025.2` | `2026.2` | No | Skip-level (skips `2026.1`) |
-| `2026.1` | `2025.2` | No | Downgrade |
+| `2026.2` | `2027.1` | Yes | Year +1, minor 2 to minor 1 |
+| `2026.1` | `2027.1` | No | Skip-level (skips `2026.2`) |
+| `2026.2` | `2026.1` | No | Downgrade |
 
 ---
 
@@ -168,7 +166,7 @@ When the contract Job completes, `installedRelease` is promoted to
 
 Every phase reports through `DatabaseReady`; the upgrade adds no new condition
 types. The message carries the source and target release strings, for example
-`Migrate phase running: 2025.2 → 2026.1`.
+`Migrate phase running: 2026.1 → 2026.2`.
 
 ### In progress
 

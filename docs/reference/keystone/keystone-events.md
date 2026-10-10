@@ -65,12 +65,12 @@ All events follow these conventions:
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `UpgradeInitiated` | Normal | Upgrade validated and initiated with expand-migrate-contract pipeline | `Upgrade initiated: 2025.2 → 2026.1` |
+| `UpgradeInitiated` | Normal | Upgrade validated and initiated with expand-migrate-contract pipeline | `Upgrade initiated: 2026.1 → 2026.2` |
 | `VersionParseError` | Warning | Installed release or target release version string cannot be parsed | `Failed to parse installed release "invalid": <error>` |
-| `DowngradeNotSupported` | Warning | Target release is older than installed release | `Downgrade from 2026.1 to 2025.2 is not supported` |
-| `UpgradePathInvalid` | Warning | Target release skips an intermediate version (non-sequential upgrade) | `Upgrade from 2025.1 to 2026.1 is not sequential` |
-| `UpgradeTargetChanged` | Warning | `spec.image.tag` changed while an upgrade is already in progress | `Image tag changed to 2026.2 during active upgrade 2025.2 → 2026.1` |
-| `UpgradeAborted` | Normal | `spec.image.tag` reverted to the installed release while an upgrade was in progress; upgrade Jobs are deleted and phase/target reset | `Upgrade 2025.2 → 2026.1 aborted: spec.image.tag reverted to installed release 2025.2` |
+| `DowngradeNotSupported` | Warning | Target release is older than installed release | `Downgrade from 2026.2 to 2026.1 is not supported` |
+| `UpgradePathInvalid` | Warning | Target release skips an intermediate version (non-sequential upgrade) | `Upgrade from 2026.1 to 2027.1 is not sequential` |
+| `UpgradeTargetChanged` | Warning | `spec.image.tag` changed while an upgrade is already in progress | `Image tag changed to 2027.1 during active upgrade 2026.1 → 2026.2` |
+| `UpgradeAborted` | Normal | `spec.image.tag` reverted to the installed release while an upgrade was in progress; upgrade Jobs are deleted and phase/target reset | `Upgrade 2026.1 → 2026.2 aborted: spec.image.tag reverted to installed release 2026.1` |
 
 **Source:** `initiateUpgrade` in `reconcile_upgrade.go`; `UpgradeTargetChanged` and `UpgradeAborted` from `reconcileDatabase`/`abortUpgrade` in `reconcile_database.go`
 
@@ -78,11 +78,11 @@ All events follow these conventions:
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `ExpandComplete` | Normal | Expand phase Job completes successfully | `Expand phase complete: 2025.2 → 2026.1` |
+| `ExpandComplete` | Normal | Expand phase Job completes successfully | `Expand phase complete: 2026.1 → 2026.2` |
 | `ExpandFailed` | Warning | Expand phase Job fails | `Expand job <name> failed: <error>` |
-| `MigrateComplete` | Normal | Migrate phase Job completes successfully | `Migrate phase complete: 2025.2 → 2026.1` |
+| `MigrateComplete` | Normal | Migrate phase Job completes successfully | `Migrate phase complete: 2026.1 → 2026.2` |
 | `MigrateFailed` | Warning | Migrate phase Job fails | `Migrate job <name> failed: <error>` |
-| `UpgradeComplete` | Normal | Contract phase Job completes, finishing the entire upgrade | `Upgrade complete: 2025.2 → 2026.1` |
+| `UpgradeComplete` | Normal | Contract phase Job completes, finishing the entire upgrade | `Upgrade complete: 2026.1 → 2026.2` |
 | `ContractFailed` | Warning | Contract phase Job fails | `Contract job <name> failed: <error>` |
 
 **Source:** `reconcileExpand`, `reconcileMigrate`, `reconcileContract`, and the shared
@@ -183,7 +183,7 @@ and `OpenBaoCleanupStalled` from the adoption-wait and gone-wait passes in
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `DeploymentRolloutComplete` | Normal | Deployment becomes ready during the `UpgradePhaseRollingUpdate` phase of an upgrade | `Deployment rollout complete during upgrade 2025.2 → 2026.1` |
+| `DeploymentRolloutComplete` | Normal | Deployment becomes ready during the `UpgradePhaseRollingUpdate` phase of an upgrade | `Deployment rollout complete during upgrade 2026.1 → 2026.2` |
 
 **Source:** `reconcileDeployment` in `reconcile_deployment.go`
 

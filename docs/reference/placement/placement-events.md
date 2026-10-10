@@ -85,9 +85,9 @@ that refused it, and returns an error so the controller backs off.
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
 | `VersionParseError` | Warning | The installed or the requested release is not a valid `YYYY.N` string | `parsing requested release "latest": invalid release format "latest": expected YYYY.N` |
-| `DowngradeNotSupported` | Warning | The requested release is older than the installed one | `downgrade from 2026.1 to 2025.2 is not supported` |
+| `DowngradeNotSupported` | Warning | The requested release is older than the installed one | `downgrade from 2026.2 to 2026.1 is not supported` |
 | `UpgradePathInvalid` | Warning | The requested jump is more than one release | `upgrade from 2024.2 to 2026.1 is not sequential; upgrade one release at a time` |
-| `ImageReleaseMismatch` | Warning | The requested release bump leaves `spec.image` at the reference that migrated the installed schema, so no migration would run | `upgrade from 2025.2 to 2026.1 leaves spec.image unchanged (ghcr.io/c5c3/placement:2025.2), so no migration would run; bump spec.image in lockstep with spec.openStackRelease` |
+| `ImageReleaseMismatch` | Warning | The requested release bump leaves `spec.image` at the reference that migrated the installed schema, so no migration would run | `upgrade from 2026.1 to 2026.2 leaves spec.image unchanged (ghcr.io/c5c3/placement:2026.1), so no migration would run; bump spec.image in lockstep with spec.openStackRelease` |
 
 **Source:** `gateReleaseTransition` and `rejectReleaseTransition` in
 `reconcile_database.go`

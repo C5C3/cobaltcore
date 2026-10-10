@@ -89,7 +89,7 @@ off.
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
 | `VersionParseError` | Warning | The installed or the requested release is not a valid `YYYY.N` string | `parsing requested release "latest": invalid release format "latest": expected YYYY.N` |
-| `DowngradeNotSupported` | Warning | The requested release is older than the installed one | `downgrade from 2026.1 to 2025.2 is not supported` |
+| `DowngradeNotSupported` | Warning | The requested release is older than the installed one | `downgrade from 2026.2 to 2026.1 is not supported` |
 | `UpgradePathInvalid` | Warning | The requested jump is more than one release | `upgrade from 2024.2 to 2026.1 is not sequential; upgrade one release at a time` |
 | `ImageReleaseMismatch` | Warning | The requested release bump leaves `spec.image` at the reference that migrated the installed schema, so no migration would run | see the message below |
 
@@ -122,17 +122,17 @@ contract branch, and `status.upgradePhase` reports where a bump has got to.
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `UpgradeInitiated` | Normal | An accepted release bump starts the upgrade | `Upgrade initiated: 2025.2 → 2026.1` |
-| `ExpandComplete` | Normal | The `{name}-db-expand` Job succeeded | `Expand phase complete: 2025.2 → 2026.1` |
-| `MigrateComplete` | Normal | The `{name}-db-migrate` Job succeeded | `Migrate phase complete: 2025.2 → 2026.1` |
-| `DeploymentRolloutComplete` | Normal | The API Deployment rolled out onto the target-release image; the phase flips to Contracting | `Deployment rollout complete during upgrade 2025.2 → 2026.1` |
-| `UpgradeComplete` | Normal | The `{name}-db-contract` Job succeeded; the upgrade finished | `Upgrade complete: 2025.2 → 2026.1` |
-| `UpgradeAborted` | Normal | `spec.openStackRelease` reverted to the installed release, cancelling the upgrade and deleting the three phase Jobs | `Upgrade 2025.2 → 2026.1 aborted: spec release reverted to installed release 2025.2` |
-| `UpgradeTargetChanged` | Warning | `spec.openStackRelease` changed to a third value during an active upgrade | `Spec release changed to 2026.2 during active upgrade 2025.2 → 2026.1` |
+| `UpgradeInitiated` | Normal | An accepted release bump starts the upgrade | `Upgrade initiated: 2026.1 → 2026.2` |
+| `ExpandComplete` | Normal | The `{name}-db-expand` Job succeeded | `Expand phase complete: 2026.1 → 2026.2` |
+| `MigrateComplete` | Normal | The `{name}-db-migrate` Job succeeded | `Migrate phase complete: 2026.1 → 2026.2` |
+| `DeploymentRolloutComplete` | Normal | The API Deployment rolled out onto the target-release image; the phase flips to Contracting | `Deployment rollout complete during upgrade 2026.1 → 2026.2` |
+| `UpgradeComplete` | Normal | The `{name}-db-contract` Job succeeded; the upgrade finished | `Upgrade complete: 2026.1 → 2026.2` |
+| `UpgradeAborted` | Normal | `spec.openStackRelease` reverted to the installed release, cancelling the upgrade and deleting the three phase Jobs | `Upgrade 2026.1 → 2026.2 aborted: spec release reverted to installed release 2026.1` |
+| `UpgradeTargetChanged` | Warning | `spec.openStackRelease` changed to a third value during an active upgrade | `Spec release changed to 2027.1 during active upgrade 2026.1 → 2026.2` |
 | `ExpandFailed` | Warning | The expand phase Job failed permanently | `Expand job neutron-db-expand failed: <error>` |
 | `MigrateFailed` | Warning | The migrate phase Job failed permanently | `Migrate job neutron-db-migrate failed: <error>` |
 | `ContractFailed` | Warning | The contract phase Job failed permanently | `Contract job neutron-db-contract failed: <error>` |
-| `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid` | Warning | The same three rules, re-checked inside `InitiateUpgrade` | `Downgrade from 2026.1 to 2025.2 is not supported` |
+| `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid` | Warning | The same three rules, re-checked inside `InitiateUpgrade` | `Downgrade from 2026.2 to 2026.1 is not supported` |
 
 **Source:** the shared expand-migrate-contract flow in
 `internal/common/database/upgrade.go`, wired through `upgradeFlowParams` in
