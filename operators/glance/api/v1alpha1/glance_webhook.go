@@ -35,17 +35,6 @@ import (
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
-const (
-	// DefaultEventletWorkers is the eventlet [DEFAULT] workers count materialized
-	// when spec.apiServer.workers is nil below release 2026.1. It is the eventlet
-	// analog of commonv1.DefaultUWSGIProcesses: without it the eventlet glance-api
-	// server falls back to its own default of one worker per host CPU, which
-	// ignores the pod's CPU limit and overruns the memory limit under load.
-	// Pinning it keeps the worker count — and thus the memory footprint —
-	// deterministic, matching keystone's bounded process count.
-	DefaultEventletWorkers int32 = 2
-)
-
 // Database-purge defaults for the recurring glance-manage purge CronJob, which
 // hard-deletes the soft-deleted image rows and the import-task rows glance
 // itself never removes.
@@ -335,7 +324,7 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 	// Default zero-valued sub-fields of spec.apiServer.uwsgi when the block is
 	// non-nil. The leaf defaults are applied by the commonv1.UWSGISpec Default
 	// method so they cannot drift across operators; a nil pointer is a no-op
-	// there — the reconciler uses hardcoded defaults for the active launch mode.
+	// there — the reconciler uses the uWSGI defaults.
 	if obj.Spec.APIServer != nil {
 		obj.Spec.APIServer.UWSGI.Default()
 	}
@@ -353,7 +342,7 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 func (w *GlanceWebhook) ValidateCreate(ctx context.Context, obj *Glance) (admission.Warnings, error) {
 	catalogWarnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
 	createErrs = append(createErrs, validateNameLength(obj.Name)...)
-	warnings := append(warnInertLaunchModeKnobs(obj), catalogWarnings...)
+	warnings := append(warnDeprecatedWorkers(obj), catalogWarnings...)
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), obj.Spec.ImportFiltering,
 	)...)
@@ -418,7 +407,7 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)...)
-	warnings := append(warnInertLaunchModeKnobs(newObj), catalogWarnings...)
+	warnings := append(warnDeprecatedWorkers(newObj), catalogWarnings...)
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), newObj.Spec.ImportFiltering,
 	)...)
@@ -1491,38 +1480,18 @@ const (
 		"mirrors imports are supposed to use."
 )
 
-// warnInertLaunchModeKnobs flags an apiServer knob that has no effect under the
-// active launch mode. Glance runs the eventlet glance-api server below release
-// 2026.1 — where spec.apiServer.uwsgi is inert — and switches to uWSGI from
-// 2026.1, where spec.apiServer.workers is inert. Both knobs are legal in either
-// mode (the operator simply ignores the inert one), so this is a warning, not a
-// rejection. An unparseable release is left to the CRD pattern / release
-// tracking, so the warning is skipped rather than guessing a mode.
-func warnInertLaunchModeKnobs(g *Glance) admission.Warnings {
-	if g.Spec.APIServer == nil {
+// warnDeprecatedWorkers flags spec.apiServer.workers, which has no effect:
+// Glance runs under uWSGI on every supported release and the operator renders
+// no [DEFAULT] workers. The field stays in the schema so stored objects keep
+// validating, so setting it is a warning, not a rejection.
+func warnDeprecatedWorkers(g *Glance) admission.Warnings {
+	if g.Spec.APIServer == nil || g.Spec.APIServer.Workers == nil {
 		return nil
 	}
-	rel, err := release.ParseRelease(g.Spec.OpenStackRelease)
-	if err != nil {
-		return nil
+	return admission.Warnings{
+		"spec.apiServer.workers is deprecated and has no effect: Glance runs under uWSGI on every supported " +
+			"release and the operator renders no [DEFAULT] workers; size the API with spec.apiServer.uwsgi instead.",
 	}
-	uwsgiMode := rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
-	var warnings admission.Warnings
-	if g.Spec.APIServer.UWSGI != nil && !uwsgiMode {
-		warnings = append(warnings, fmt.Sprintf(
-			"spec.apiServer.uwsgi is set but release %q runs the eventlet glance-api server (below 2026.1), "+
-				"so the uWSGI knobs are inert; configure spec.apiServer.workers instead.",
-			g.Spec.OpenStackRelease,
-		))
-	}
-	if g.Spec.APIServer.Workers != nil && uwsgiMode {
-		warnings = append(warnings, fmt.Sprintf(
-			"spec.apiServer.workers is set but release %q runs under uWSGI (2026.1 or later), "+
-				"so the eventlet worker count is inert; configure spec.apiServer.uwsgi instead.",
-			g.Spec.OpenStackRelease,
-		))
-	}
-	return warnings
 }
 
 // validateExtraConfigOptions validates the option names in spec.extraConfig

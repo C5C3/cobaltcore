@@ -81,51 +81,50 @@ func argAfter(cmd []string, flag string) (string, bool) {
 	return "", false
 }
 
-func TestGlanceLaunchCommand_EventletBelow2026(t *testing.T) {
-	g := NewGomegaWithT(t)
+// TestGlanceLaunchCommand_UWSGIOnEveryRelease verifies the launch command does
+// not depend on spec.openStackRelease: every release, and an empty one, runs
+// the API under uWSGI. 2025.2 is below the release floor; a stored CR at it is
+// admitted unchanged and must render the same uWSGI launch the floor warning
+// promises.
+func TestGlanceLaunchCommand_UWSGIOnEveryRelease(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2", ""} {
+		t.Run("release "+release, func(t *testing.T) {
+			g := NewGomegaWithT(t)
 
-	cmd := glanceLaunchCommand(deployGlance("2025.2"))
-	g.Expect(cmd).To(Equal([]string{
-		"glance-api",
-		"--config-dir", glanceConfigDir,
-		"--config-dir", glanceBackendsConfigDir,
-	}), "eventlet mode launches glance-api with both config dirs and no uWSGI flags")
-}
-
-func TestGlanceLaunchCommand_UWSGIFrom2026(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	cmd := glanceLaunchCommand(deployGlance("2026.1"))
-	g.Expect(cmd[0]).To(Equal("uwsgi"))
-	// Fixed uWSGI flags for the WSGI launch mode. The entry point is the
-	// image-shipped shim, NOT glance.wsgi.api:application: the stock module
-	// ignores sys.argv (and so --pyargv), reading only
-	// $OS_GLANCE_CONFIG_DIR/glance-api.conf — the shim consumes the
-	// --config-dir flags asserted below.
-	g.Expect(cmd).To(ContainElements("--wsgi-file", glanceWSGIScriptPath))
-	g.Expect(cmd).NotTo(ContainElement("--module"))
-	g.Expect(cmd).To(ContainElements("--http-auto-chunked", "--http-chunked-input"))
-	// glanceclient streams uploads in 1 MiB chunks and uWSGI's default
-	// chunked-input limit is 1 MB, so without a raised limit every cinder
-	// upload-to-image and nova snapshot upload fails with a 500.
-	limit, ok := argAfter(cmd, "--chunked-input-limit")
-	g.Expect(ok).To(BeTrue())
-	g.Expect(limit).To(Equal("16777216"))
-	httpBind, ok := argAfter(cmd, "--http")
-	g.Expect(ok).To(BeTrue())
-	g.Expect(httpBind).To(Equal(":9292"))
-	pyargv, ok := argAfter(cmd, "--pyargv")
-	g.Expect(ok).To(BeTrue())
-	g.Expect(pyargv).To(Equal("--config-dir " + glanceConfigDir + " --config-dir " + glanceBackendsConfigDir))
-	// Webhook defaults apply when spec.apiServer is nil.
-	procs, _ := argAfter(cmd, "--processes")
-	g.Expect(procs).To(Equal("2"))
-	threads, _ := argAfter(cmd, "--threads")
-	g.Expect(threads).To(Equal("1"))
-	// httpKeepAlive defaults to true, harakiri and keepalive-timeout omitted.
-	g.Expect(cmd).To(ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
-	g.Expect(cmd).NotTo(ContainElement("--harakiri"))
+			deploy := buildGlanceDeployment(deployGlance(release), testArtifacts(), "", "")
+			cmd := deploy.Spec.Template.Spec.Containers[0].Command
+			g.Expect(cmd[0]).To(Equal("uwsgi"))
+			// Fixed uWSGI flags for the WSGI launch mode. The entry point is the
+			// image-shipped shim, NOT glance.wsgi.api:application: the stock module
+			// ignores sys.argv (and so --pyargv), reading only
+			// $OS_GLANCE_CONFIG_DIR/glance-api.conf — the shim consumes the
+			// --config-dir flags asserted below.
+			g.Expect(cmd).To(ContainElements("--wsgi-file", glanceWSGIScriptPath))
+			g.Expect(cmd).NotTo(ContainElement("--module"))
+			g.Expect(cmd).To(ContainElements("--http-auto-chunked", "--http-chunked-input"))
+			// glanceclient streams uploads in 1 MiB chunks and uWSGI's default
+			// chunked-input limit is 1 MB, so without a raised limit every cinder
+			// upload-to-image and nova snapshot upload fails with a 500.
+			limit, ok := argAfter(cmd, "--chunked-input-limit")
+			g.Expect(ok).To(BeTrue())
+			g.Expect(limit).To(Equal("16777216"))
+			httpBind, ok := argAfter(cmd, "--http")
+			g.Expect(ok).To(BeTrue())
+			g.Expect(httpBind).To(Equal(":9292"))
+			pyargv, ok := argAfter(cmd, "--pyargv")
+			g.Expect(ok).To(BeTrue())
+			g.Expect(pyargv).To(Equal("--config-dir " + glanceConfigDir + " --config-dir " + glanceBackendsConfigDir))
+			// Webhook defaults apply when spec.apiServer is nil.
+			procs, _ := argAfter(cmd, "--processes")
+			g.Expect(procs).To(Equal("2"))
+			threads, _ := argAfter(cmd, "--threads")
+			g.Expect(threads).To(Equal("1"))
+			// httpKeepAlive defaults to true, harakiri and keepalive-timeout omitted.
+			g.Expect(cmd).To(ContainElement("--http-keepalive"))
+			g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+			g.Expect(cmd).NotTo(ContainElement("--harakiri"))
+		})
+	}
 }
 
 func TestGlanceUWSGICommand_CustomKnobsHonored(t *testing.T) {
@@ -671,7 +670,7 @@ func TestBuildGlanceDeployment_HashAnnotations(t *testing.T) {
 }
 
 func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 
@@ -695,12 +694,12 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 }
 
 // TestBuildGlanceDeployment_StartupProbeCoversColdStart covers the cold start of
-// the API in both launch modes. Every worker imports glance, which under a CPU
+// the API on every release. Every worker imports glance, which under a CPU
 // limit set on the container or on a contended node took 66 to 90 seconds under
 // uWSGI (measured in a kind pod at 120m CPU). The liveness probe alone restarts
 // the container 55 seconds after it started, so the startup probe holds it back.
 func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
-	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 
@@ -1092,17 +1091,12 @@ func TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint(t *testing.T) {
 }
 
 // TestBuildGlanceDeployment_RendersResourceDefaults verifies that a CR whose
-// spec.deployment.resources names nothing renders 1Gi per process in both
-// launch modes, beside a 70m CPU request and no CPU limit. Two uWSGI processes
-// at 2026.1 and two eventlet workers at 2025.2 both come to 2064Mi. A
-// spec.apiServer that sets four eventlet workers and one uWSGI process shows
-// that each release counts only its own launch mode: 1040Mi at 2026.1, 4112Mi
-// at 2025.2.
+// spec.deployment.resources names nothing renders 1Gi per process, beside a 70m
+// CPU request and no CPU limit. Two uWSGI processes come to 2064Mi. A
+// spec.apiServer that sets four workers and one uWSGI process comes to 1040Mi:
+// the deprecated workers field counts for nothing.
 func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
-	splitCounts := &glancev1alpha1.APIServerSpec{
-		Workers: ptr.To(int32(4)),
-		UWSGI:   &glancev1alpha1.UWSGISpec{Processes: 1},
-	}
+	splitCounts := decodeAPIServer(`{"workers": 4, "uwsgi": {"processes": 1}}`)
 	for _, tc := range []struct {
 		name      string
 		release   string
@@ -1110,9 +1104,7 @@ func TestBuildGlanceDeployment_RendersResourceDefaults(t *testing.T) {
 		want      string
 	}{
 		{name: "uWSGI defaults", release: "2026.1", want: "2064Mi"},
-		{name: "eventlet defaults", release: "2025.2", want: "2064Mi"},
 		{name: "uWSGI counts uwsgi.processes", release: "2026.1", apiServer: splitCounts, want: "1040Mi"},
-		{name: "eventlet counts workers", release: "2025.2", apiServer: splitCounts, want: "4112Mi"},
 		{
 			name:      "uWSGI counts threads",
 			release:   "2026.1",

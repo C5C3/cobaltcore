@@ -65,15 +65,15 @@ func managedGlance() *glancev1alpha1.Glance {
 	return glance
 }
 
-// upgradingGlance returns a Glance mid-upgrade: the installed release is 2025.2,
-// the spec requests 2026.1 (both the OpenStack release and the image tag, per the
+// upgradingGlance returns a Glance mid-upgrade: the installed release is 2026.1,
+// the spec requests 2026.2 (both the OpenStack release and the image tag, per the
 // operator's bump-in-lockstep contract), and the given phase is active.
 func upgradingGlance(phase commonv1.UpgradePhase) *glancev1alpha1.Glance {
 	glance := testGlance()
-	glance.Spec.OpenStackRelease = "2026.1"
-	glance.Spec.Image.Tag = "2026.1"
-	glance.Status.InstalledRelease = "2025.2"
-	glance.Status.TargetRelease = "2026.1"
+	glance.Spec.OpenStackRelease = "2026.2"
+	glance.Spec.Image.Tag = "2026.2"
+	glance.Status.InstalledRelease = "2026.1"
+	glance.Status.TargetRelease = "2026.2"
 	glance.Status.UpgradePhase = phase
 	return glance
 }
@@ -170,62 +170,50 @@ func atRelease(glance *glancev1alpha1.Glance, openStackRelease string) {
 	glance.Spec.Image.Tag = openStackRelease
 }
 
-// TestGlanceReleaseUsesUWSGI pins the launch-mode boundary on a bare release
-// string: uWSGI from 2026.1 onward, the eventlet glance-api server below it and
-// for a release that does not parse. The connection-cap sizing asks it about
-// the installed and target releases, which can differ from the spec release
-// mid-upgrade.
-func TestGlanceReleaseUsesUWSGI(t *testing.T) {
+// TestGlanceConnectionsPerPod pins the per-pod connection ceiling: processes ×
+// (threads + glanceTaskPoolConnections), resolved the way the uWSGI command
+// resolves its counts, so non-positive counts fall back to the defaults.
+func TestGlanceConnectionsPerPod(t *testing.T) {
 	cases := []struct {
-		release string
-		want    bool
+		name      string
+		apiServer *glancev1alpha1.APIServerSpec
+		want      int32
 	}{
-		{release: "2026.1", want: true},
-		{release: "2026.2", want: true},
-		{release: "2027.1", want: true},
-		{release: "2025.2", want: false},
-		{release: "", want: false},
-		{release: "garbage", want: false},
+		{name: "defaults", want: 12},
+		{
+			name:      "processes multiply threads plus the import pool",
+			apiServer: &glancev1alpha1.APIServerSpec{UWSGI: &glancev1alpha1.UWSGISpec{Processes: 4, Threads: 2}},
+			want:      28,
+		},
+		{
+			name:      "zero counts fall back to the defaults",
+			apiServer: &glancev1alpha1.APIServerSpec{UWSGI: &glancev1alpha1.UWSGISpec{}},
+			want:      12,
+		},
+		{
+			name:      "the deprecated workers field counts for nothing",
+			apiServer: decodeAPIServer(`{"workers": 8}`),
+			want:      12,
+		},
 	}
 	for _, tc := range cases {
-		t.Run(tc.release, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			g.Expect(glanceReleaseUsesUWSGI(tc.release)).To(Equal(tc.want))
+			glance := testGlance()
+			glance.Spec.APIServer = tc.apiServer
+			g.Expect(glanceConnectionsPerPod(glance)).To(Equal(tc.want))
 		})
 	}
 }
 
-// TestGlanceReleaseDropsWorkersOption pins the release from which glance no
-// longer registers [DEFAULT] workers: 2026.2 onward, not below it and not for a
-// release that does not parse.
-func TestGlanceReleaseDropsWorkersOption(t *testing.T) {
-	cases := []struct {
-		release string
-		want    bool
-	}{
-		{release: "2026.2", want: true},
-		{release: "2027.1", want: true},
-		{release: "2026.1", want: false},
-		{release: "2025.2", want: false},
-		{release: "", want: false},
-		{release: "garbage", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.release, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			g.Expect(glanceReleaseDropsWorkersOption(tc.release)).To(Equal(tc.want))
-		})
-	}
-}
-
-// TestGlanceMaxUserConnections pins the connection-cap arithmetic in both launch
-// modes and across a mixed fleet. The cap is what the operator asks
-// mariadb-operator for, and a value below the real concurrency does not
-// degrade: the process that opens the connection past it gets MySQL error 1226
-// and the upload, import or snapshot it serves answers 500.
+// TestGlanceMaxUserConnections pins the connection-cap arithmetic. The cap is
+// what the operator asks mariadb-operator for, and a value below the real
+// concurrency does not degrade: the process that opens the connection past it
+// gets MySQL error 1226 and the upload, import or snapshot it serves answers
+// 500.
 func TestGlanceMaxUserConnections(t *testing.T) {
-	apiServer := func(uwsgi *glancev1alpha1.UWSGISpec, workers *int32) *glancev1alpha1.APIServerSpec {
-		return &glancev1alpha1.APIServerSpec{UWSGI: uwsgi, Workers: workers}
+	apiServer := func(uwsgi *glancev1alpha1.UWSGISpec) *glancev1alpha1.APIServerSpec {
+		return &glancev1alpha1.APIServerSpec{UWSGI: uwsgi}
 	}
 	cases := []struct {
 		name    string
@@ -233,7 +221,7 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 		want    int32
 		because string
 	}{
-		// uWSGI (2026.1): perPod = processes × (threads + 5).
+		// perPod = processes × (threads + 5).
 		{
 			name:    "uwsgi default topology",
 			want:    50,
@@ -245,12 +233,12 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 				gl.Spec.Autoscaling = &glancev1alpha1.AutoscalingSpec{MaxReplicas: 5}
 			},
 			want:    74,
-			because: "an HPA owns the replica count, so the cap is sized for its ceiling",
+			because: "an HPA owns the replica count, so the cap is sized for its ceiling: (5+1)*12+2",
 		},
 		{
 			name: "uwsgi processes multiply threads plus the import pool",
 			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 4, Threads: 2}, nil)
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 4, Threads: 2})
 			},
 			want:    114,
 			because: "(3+1)*4*(2+5)+2",
@@ -261,88 +249,23 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 			want:    26,
 			because: "the surge pod doubles a single-replica fleet during a rollout",
 		},
-		// Eventlet (2025.2): perPod = workers × 5.
-		{
-			name:    "eventlet default topology",
-			mutate:  func(gl *glancev1alpha1.Glance) { atRelease(gl, "2025.2") },
-			want:    42,
-			because: "2 pinned eventlet workers hold 5 connections each",
-		},
-		{
-			name: "eventlet workers multiply the pool size",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(4)))
-			},
-			want:    82,
-			because: "(3+1)*4*5+2",
-		},
-		{
-			name: "eventlet raised replica count",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.Deployment.Replicas = 5
-			},
-			want:    62,
-			because: "(5+1)*2*5+2",
-		},
-		{
-			name: "eventlet autoscaling raises the pod ceiling",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.Autoscaling = &glancev1alpha1.AutoscalingSpec{MaxReplicas: 5}
-			},
-			want:    62,
-			because: "an HPA owns the replica count, so the cap is sized for its ceiling",
-		},
-		// Each mode ignores the other mode's knob.
-		{
-			name: "eventlet ignores the inert uwsgi block",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 8}, nil)
-			},
-			want:    42,
-			because: "the eventlet server runs [DEFAULT] workers, not uWSGI processes",
-		},
 		{
 			name: "uwsgi ignores the inert workers field",
 			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
+				gl.Spec.APIServer = decodeAPIServer(`{"workers": 8}`)
 			},
 			want:    50,
-			because: "uWSGI runs its own processes and ignores [DEFAULT] workers",
-		},
-		// Mixed fleets during an upgrade or its abort.
-		{
-			name: "installed eventlet fleet outweighs the uwsgi target",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
-				gl.Status.InstalledRelease = "2025.2"
-				gl.Status.TargetRelease = "2026.1"
-			},
-			want:    162,
-			because: "the old eventlet pods of 8 workers hold 40 each until the RollingUpdate phase replaces them",
+			because: "uWSGI runs its own processes and the operator renders no [DEFAULT] workers",
 		},
 		{
-			name: "mixed fleet at defaults sizes for uwsgi",
+			name: "mid-upgrade 2026.1 to 2026.2 sizes as uwsgi",
 			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Status.InstalledRelease = "2025.2"
-				gl.Status.TargetRelease = "2026.1"
+				atRelease(gl, "2026.2")
+				gl.Status.InstalledRelease = "2026.1"
+				gl.Status.TargetRelease = "2026.2"
 			},
 			want:    50,
-			because: "a default uWSGI pod (12) holds more than a default eventlet pod (10)",
-		},
-		{
-			name: "uwsgi target outweighs the eventlet spec",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 4}, nil)
-				gl.Status.InstalledRelease = "2025.2"
-				gl.Status.TargetRelease = "2026.1"
-			},
-			want:    98,
-			because: "an abort leaves uWSGI pods of 4 processes (24 each) beside the eventlet ones",
+			because: "the old and the new pods both run under uWSGI, so the upgrade adds no other figure",
 		},
 		// Zero inputs fall back to the defaults.
 		{
@@ -352,18 +275,9 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 			because: "an unset replica count is the default of 3, never a fleet of zero",
 		},
 		{
-			name: "zero workers fall back to the default",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(0)))
-			},
-			want:    42,
-			because: "a worker count below 1 sizes as DefaultEventletWorkers",
-		},
-		{
 			name: "zero uwsgi counts fall back to the defaults",
 			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 0, Threads: 0}, nil)
+				gl.Spec.APIServer = apiServer(&glancev1alpha1.UWSGISpec{Processes: 0, Threads: 0})
 			},
 			want:    50,
 			because: "the command renders 2 processes and 1 thread for non-positive counts, and the cap follows it",
@@ -375,37 +289,18 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 			want:    50,
 			because: "an absent apiServer block runs the default 2 processes of 1 thread",
 		},
-		{
-			name: "eventlet nil apiServer",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				atRelease(gl, "2025.2")
-				gl.Spec.APIServer = nil
-			},
-			want:    42,
-			because: "an absent apiServer block runs DefaultEventletWorkers",
-		},
-		{
-			name: "empty status releases size from the spec release alone",
-			mutate: func(gl *glancev1alpha1.Glance) {
-				gl.Spec.APIServer = apiServer(nil, ptr.To(int32(8)))
-				gl.Status.InstalledRelease = ""
-				gl.Status.TargetRelease = ""
-			},
-			want:    50,
-			because: "a fresh install has no old pods, so the inert workers count must not size the cap",
-		},
-		// Releases that do not parse.
+		// Releases do not size the cap.
 		{
 			name:    "unparseable installed release",
 			mutate:  func(gl *glancev1alpha1.Glance) { gl.Status.InstalledRelease = "garbage" },
 			want:    50,
-			because: "garbage sizes as eventlet (10 per pod), which loses to uWSGI's 12",
+			because: "the status releases do not size the cap",
 		},
 		{
-			name:    "empty spec release sizes as eventlet",
+			name:    "empty spec release sizes as uwsgi",
 			mutate:  func(gl *glancev1alpha1.Glance) { gl.Spec.OpenStackRelease = "" },
-			want:    42,
-			because: "an empty release launches the eventlet server, so the cap never collapses to the Job headroom",
+			want:    50,
+			because: "an empty release launches uWSGI too, so the cap never collapses to the Job headroom",
 		},
 	}
 
@@ -422,20 +317,20 @@ func TestGlanceMaxUserConnections(t *testing.T) {
 }
 
 // TestReconcileDatabase_SizesTheUserConnectionCap verifies that the User CR the
-// provisioning flow creates carries the cap sized for the launch mode of the
-// CR's release. Left unset, the mariadb-operator CRD default of 10 applies,
-// which the default fleet exceeds under load in either mode.
+// provisioning flow creates carries the cap sized for the CR's topology on
+// either supported release. Left unset, the mariadb-operator CRD default of 10
+// applies, which the default fleet exceeds under load.
 func TestReconcileDatabase_SizesTheUserConnectionCap(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*glancev1alpha1.Glance)
 		want   int32
 	}{
-		{name: "uwsgi at 2026.1", want: 50},
+		{name: "at 2026.1", want: 50},
 		{
-			name:   "eventlet at 2025.2",
-			mutate: func(gl *glancev1alpha1.Glance) { atRelease(gl, "2025.2") },
-			want:   42,
+			name:   "at 2026.2",
+			mutate: func(gl *glancev1alpha1.Glance) { atRelease(gl, "2026.2") },
+			want:   50,
 		},
 	}
 
@@ -550,12 +445,12 @@ func TestReconcileDatabase_NoConfigWaitsForBackends(t *testing.T) {
 func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
-	// Both the release and the image tag name 2025.2 (bump-in-lockstep contract)
+	// Both the release and the image tag name 2026.1 (bump-in-lockstep contract)
 	// so the image/release-mismatch guard passes and the downgrade path is what is
 	// exercised.
-	glance.Spec.OpenStackRelease = "2025.2"
-	glance.Spec.Image.Tag = "2025.2"
-	glance.Status.InstalledRelease = "2026.1"
+	glance.Spec.OpenStackRelease = "2026.1"
+	glance.Spec.Image.Tag = "2026.1"
+	glance.Status.InstalledRelease = "2026.2"
 	r := newGlanceTestReconciler(glance)
 
 	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
@@ -576,8 +471,8 @@ func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 func TestReconcileDatabase_NonSequentialJumpRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
-	glance.Spec.OpenStackRelease = "2026.1"
-	glance.Status.InstalledRelease = "2025.1" // skips 2025.2
+	atRelease(glance, "2026.2")
+	glance.Status.InstalledRelease = "2025.2" // skips 2026.1
 	r := newGlanceTestReconciler(glance)
 
 	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
@@ -612,8 +507,8 @@ func TestReconcileDatabase_PatchOnlyAccepted(t *testing.T) {
 func TestReconcileDatabase_SequentialUpgradeAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
-	glance.Spec.OpenStackRelease = "2026.1"
-	glance.Status.InstalledRelease = "2025.2"
+	atRelease(glance, "2026.2")
+	glance.Status.InstalledRelease = "2026.1"
 	r := newGlanceTestReconciler(glance)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
@@ -623,7 +518,7 @@ func TestReconcileDatabase_SequentialUpgradeAccepted(t *testing.T) {
 	// Expanding phase are stamped and the reconcile requeues immediately.
 	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-	g.Expect(glance.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(glance.Status.TargetRelease).To(Equal("2026.2"))
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(database.ReasonExpandInProgress))
@@ -636,15 +531,15 @@ func TestReconcileDatabase_SequentialUpgradeAccepted(t *testing.T) {
 // blocks the database pass instead of initiating a no-op upgrade that would
 // falsely promote the installed-release marker. Regression guard for the
 // decoupled spec.image / spec.openStackRelease contract: the migration Jobs and
-// the Deployment run spec.image, but release tracking and the launch mode key on
+// the Deployment run spec.image, but release tracking keys on
 // spec.openStackRelease, so the two must name the same release.
 func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
 	// The operator bumped the release but left the image tag on the old release.
-	glance.Spec.OpenStackRelease = "2026.1"
-	glance.Spec.Image.Tag = "2025.2"
-	glance.Status.InstalledRelease = "2025.2"
+	glance.Spec.OpenStackRelease = "2026.2"
+	glance.Spec.Image.Tag = "2026.1"
+	glance.Status.InstalledRelease = "2026.1"
 	r := newGlanceTestReconciler(glance)
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
@@ -655,7 +550,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	// recorded, and the installed-release marker stays at the installed release.
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(glance.Status.TargetRelease).To(BeEmpty())
-	g.Expect(glance.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.1"))
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -838,7 +733,7 @@ func TestReconcileDatabase_UpgradeContractComplete_CompletesUpgrade(t *testing.T
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{}))
 
-	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(glance.Status.TargetRelease).To(BeEmpty())
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
 
@@ -876,8 +771,8 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := upgradingGlance(commonv1.UpgradePhaseExpanding)
 	// Revert both the release and the image tag to the installed release.
-	glance.Spec.OpenStackRelease = "2025.2"
-	glance.Spec.Image.Tag = "2025.2"
+	glance.Spec.OpenStackRelease = "2026.1"
+	glance.Spec.Image.Tag = "2026.1"
 	configMapName := "test-glance-config-abc"
 
 	// Seed all three phase Jobs so the abort has something to delete.
@@ -894,7 +789,7 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(glance.Status.TargetRelease).To(BeEmpty())
-	g.Expect(glance.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.1"))
 
 	for _, suffix := range []string{"db-expand", "db-migrate", "db-contract"} {
 		var jb batchv1.Job
@@ -920,10 +815,10 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 // UpgradeTargetChanged and leaves the upgrade state untouched.
 func TestReconcileDatabase_UpgradeTargetChanged_Blocks(t *testing.T) {
 	g := NewGomegaWithT(t)
-	glance := upgradingGlance(commonv1.UpgradePhaseExpanding) // target 2026.1
+	glance := upgradingGlance(commonv1.UpgradePhaseExpanding) // target 2026.2
 	// Someone flips the release to a third value mid-upgrade.
-	glance.Spec.OpenStackRelease = "2026.2"
-	glance.Spec.Image.Tag = "2026.2"
+	glance.Spec.OpenStackRelease = "2027.1"
+	glance.Spec.Image.Tag = "2027.1"
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
@@ -939,8 +834,8 @@ func TestReconcileDatabase_UpgradeTargetChanged_Blocks(t *testing.T) {
 
 	// Upgrade state is untouched.
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-	g.Expect(glance.Status.TargetRelease).To(Equal("2026.1"))
-	g.Expect(glance.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(glance.Status.TargetRelease).To(Equal("2026.2"))
+	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.1"))
 }
 
 // TestReconcileDatabase_MidUpgradeImageDriftBlocks verifies that editing
@@ -948,12 +843,11 @@ func TestReconcileDatabase_UpgradeTargetChanged_Blocks(t *testing.T) {
 // with ImageReleaseMismatch and dispatches no phase Job. The shared flow's
 // target-changed guard only watches spec.openStackRelease, so without the
 // mid-upgrade consistency check a lone image-tag drift would build phase Jobs from
-// the wrong image and re-render the Deployment in a launch mode the image cannot
-// run. Regression guard for the decoupled spec.image / spec.openStackRelease
+// the wrong image and re-render the Deployment with it. Regression guard for the decoupled spec.image / spec.openStackRelease
 // contract while a phase is in flight (keystone is immune: its release IS the tag).
 func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	g := NewGomegaWithT(t)
-	// Mid-upgrade to 2026.1 (openStackRelease and targetRelease agree), but the
+	// Mid-upgrade to 2026.2 (openStackRelease and targetRelease agree), but the
 	// image tag is drifted to a third release — an edit the shared flow's
 	// target-changed guard (which keys on spec.openStackRelease) would not catch.
 	glance := upgradingGlance(commonv1.UpgradePhaseExpanding)
@@ -971,7 +865,7 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
-	g.Expect(glance.Status.TargetRelease).To(Equal("2026.1"))
+	g.Expect(glance.Status.TargetRelease).To(Equal("2026.2"))
 
 	var expandJob batchv1.Job
 	getErr := r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-glance-db-expand"}, &expandJob)
@@ -984,11 +878,11 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 // abort the upgrade (clearing the phase) rather than wedging on the mismatch guard.
 func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 	g := NewGomegaWithT(t)
-	// Revert openStackRelease to the installed 2025.2 to abort, but the image tag
+	// Revert openStackRelease to the installed 2026.1 to abort, but the image tag
 	// still lags on the aborted target — the mismatch guard must not block the abort.
 	glance := upgradingGlance(commonv1.UpgradePhaseExpanding)
-	glance.Spec.OpenStackRelease = "2025.2"
-	glance.Spec.Image.Tag = "2026.1"
+	glance.Spec.OpenStackRelease = "2026.1"
+	glance.Spec.Image.Tag = "2026.2"
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
@@ -999,7 +893,7 @@ func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 	// The upgrade was aborted, not blocked on the mismatch.
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(glance.Status.TargetRelease).To(BeEmpty())
-	g.Expect(glance.Status.InstalledRelease).To(Equal("2025.2"))
+	g.Expect(glance.Status.InstalledRelease).To(Equal("2026.1"))
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
 	if cond != nil {
 		g.Expect(cond.Reason).NotTo(Equal(conditionReasonImageReleaseMismatch),
@@ -1054,8 +948,8 @@ func TestReconcileDatabase_UpgradeInProgress_ShortCircuitsBeforeDeployment(t *te
 
 	// A live Deployment still running the old release's pod template.
 	oldGlance := testGlance()
-	oldGlance.Spec.OpenStackRelease = "2025.2"
-	oldGlance.Spec.Image.Tag = "2025.2"
+	oldGlance.Spec.OpenStackRelease = "2026.1"
+	oldGlance.Spec.Image.Tag = "2026.1"
 	oldDeploy := buildGlanceDeployment(oldGlance, testArtifacts(), "", "")
 
 	r := newGlanceTestReconciler(glance, inProgress, oldDeploy)
@@ -1068,7 +962,7 @@ func TestReconcileDatabase_UpgradeInProgress_ShortCircuitsBeforeDeployment(t *te
 	// The Deployment's old pod template is unchanged by the database pass.
 	var fetched appsv1.Deployment
 	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(oldDeploy), &fetched)).To(Succeed())
-	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/glance:2025.2"))
+	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/c5c3/glance:2026.1"))
 }
 
 // TestGlanceJobs_PodSettings pins the pod settings of the db-sync Job, the upgrade phases and the db-purge CronJob: unset, every

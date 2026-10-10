@@ -20,10 +20,9 @@ import (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Glance is the Schema for the glances API. It deploys the Glance image service:
-// the API server (eventlet glance-api below release 2026.1, uWSGI from 2026.1),
-// its database and cache connections, and the Keystone integration. Image stores
-// (S3 today) attach out-of-band through GlanceBackend CRs rather than living in
-// this spec.
+// the API server under uWSGI, its database and cache connections, and the
+// Keystone integration. Image stores (S3 today) attach out-of-band through
+// GlanceBackend CRs rather than living in this spec.
 type Glance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -54,16 +53,15 @@ type GlanceList struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.autoscaling) && has(self.deployment) && has(self.deployment.verticalAutoscaling))",message="spec.deployment.verticalAutoscaling cannot be set while spec.autoscaling scales the same Deployment"
 type GlanceSpec struct {
 	// OpenStackRelease names the OpenStack release this operator deploys and
-	// drives. It governs two things: (a) the Glance API launch mode — the
-	// eventlet glance-api server below 2026.1, uWSGI from 2026.1 onward — and
-	// (b) install/upgrade release tracking (status.installedRelease is promoted
-	// to this value after a successful db-sync). It is deliberately kept separate
-	// from the image tag so digest-pinned images keep working: pinning
+	// drives. It governs install/upgrade release tracking (status.installedRelease
+	// is promoted to this value after a successful db-sync) and the option catalog
+	// spec.extraConfig is checked against. It is deliberately kept separate from
+	// the image tag so digest-pinned images keep working: pinning
 	// spec.image.digest disables tag-based release tracking, but this field still
-	// tells the operator which schema and launch mode to converge to.
+	// tells the operator which schema to converge to.
 	//
 	// The pattern matches the OpenStack date-based release scheme (YYYY.N where N
-	// is 1 or 2 — the two-releases-per-year cadence, e.g. 2025.2, 2026.1). The
+	// is 1 or 2 — the two-releases-per-year cadence, e.g. 2026.1, 2026.2). The
 	// [12] minor class keeps this CRD pattern, the validating webhook, and
 	// release.ParseRelease in agreement so a non-cadence minor (e.g. 2025.9) is
 	// rejected at every layer.
@@ -136,10 +134,9 @@ type GlanceSpec struct {
 	// +optional
 	Region string `json:"region,omitempty"`
 
-	// APIServer tunes the Glance API server process. Its two knobs are
-	// release-conditional: uwsgi applies only from 2026.1 (uWSGI launch mode) and
-	// workers only below 2026.1 (eventlet launch mode). When nil the operator uses
-	// hardcoded defaults for the active launch mode.
+	// APIServer tunes the Glance API server process through its uwsgi block;
+	// workers is deprecated and has no effect. When nil the operator uses the
+	// uWSGI defaults.
 	// +optional
 	APIServer *APIServerSpec `json:"apiServer,omitempty"`
 
@@ -349,25 +346,16 @@ type ServiceUserSpec struct {
 	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
 }
 
-// APIServerSpec tunes the Glance API server process. Which field takes effect
-// depends on spec.openStackRelease: uWSGI is the launch mode from 2026.1 (uwsgi
-// applies), the eventlet glance-api server below 2026.1 (workers applies). The
-// validating webhook warns on inert combinations (e.g. workers set on a uWSGI
-// release); it lands in a later commit on this branch.
+// APIServerSpec tunes the Glance API server process, which runs under uWSGI.
 type APIServerSpec struct {
-	// UWSGI configures the uWSGI application server parameters. Effective only
-	// from release 2026.1, where Glance launches under uWSGI; ignored below
-	// 2026.1 (eventlet launch mode).
+	// UWSGI configures the uWSGI application server parameters.
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
 
-	// Workers is the number of eventlet API worker processes, rendered as
-	// [DEFAULT] workers in glance-api.conf. Effective only below release 2026.1,
-	// where Glance launches the eventlet glance-api server; ignored from 2026.1
-	// (uWSGI launch mode, where uwsgi applies instead). When nil below 2026.1 the
-	// operator renders DefaultEventletWorkers rather than letting the eventlet
-	// server fall back to one worker per host CPU, so the worker count — and thus
-	// the memory footprint — stays deterministic regardless of node size.
+	// Deprecated: has no effect. Glance runs under uWSGI on every supported
+	// release, the operator renders no [DEFAULT] workers, and the validating
+	// webhook warns when the field is set. It stays in v1alpha1 so stored
+	// objects keep validating and goes with the next API version.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	Workers *int32 `json:"workers,omitempty"`

@@ -27,7 +27,6 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
-	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -37,7 +36,7 @@ import (
 // store sections load alongside glance-api.conf without colliding with the
 // immutable config ConfigMap: the two artefacts have independent content hashes
 // and must mount separately. The launch command references it as the second
-// --config-dir in both launch modes.
+// --config-dir.
 const glanceBackendsConfigDir = "/etc/glance/backends.conf.d/"
 
 // glanceAppName is the app.kubernetes.io/name label value applied to every
@@ -88,8 +87,8 @@ const (
 
 // glanceUWSGIPyargv is the argument vector uWSGI forwards to the WSGI entry
 // script via --pyargv: both oslo.config --config-dir entries (the immutable
-// config ConfigMap and the backends Secret), so the WSGI app loads the same
-// config the eventlet launch command loads. Glance's stock module path
+// config ConfigMap and the backends Secret), so the WSGI app loads both config
+// roots. Glance's stock module path
 // (glance.wsgi.api:application) ignores sys.argv — wsgi_app.init_app() parses
 // with CONF([], ...) and reads only $OS_GLANCE_CONFIG_DIR/glance-api.conf —
 // which is why the launch command loads glanceWSGIScriptPath instead: that
@@ -368,7 +367,7 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 			Name:            "glance-api",
 			Image:           glance.Spec.Image.Reference(),
 			ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
-			Command:         glanceLaunchCommand(glance),
+			Command:         glanceUWSGICommand(glance.Spec.APIServer),
 			Env: []corev1.EnvVar{
 				database.ConnectionEnvVar(glance.Name),
 				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
@@ -378,12 +377,11 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				ContainerPort: glanceAPIPort,
 			}},
 			// All three probes GET /healthcheck on the API port, served by the oslo
-			// healthcheck middleware without touching the database, identical in both
-			// launch modes. The startup probe carries the cold-start window: every
-			// worker imports glance, which under a CPU limit set on the container or
-			// on a contended node took 66 to 90 seconds under uWSGI (measured in a
-			// kind pod at 120m CPU), while the liveness probe alone restarts the
-			// container 55 seconds after it started. The timings are the sibling
+			// healthcheck middleware without touching the database. The startup probe
+			// carries the cold-start window: every worker imports glance, which under
+			// a CPU limit set on the container or on a contended node took 66 to 90
+			// seconds under uWSGI (measured in a kind pod at 120m CPU), while the
+			// liveness probe alone restarts the container 55 seconds after it started. The timings are the sibling
 			// operators': 30x10s of startup budget, and an 8s timeout because a
 			// cold-starting WSGI app can hold even a plain HTTP GET past the kubelet's
 			// 1s default.
@@ -670,19 +668,6 @@ func glanceHealthcheckProbeHandler() corev1.ProbeHandler {
 	}
 }
 
-// glanceLaunchCommand returns the container command for the Glance API,
-// switching on spec.openStackRelease: the eventlet glance-api server below
-// 2026.1 (worker count comes from [DEFAULT] workers in the config, not the CLI),
-// uWSGI from 2026.1 onward. Both launch modes load the same two --config-dir
-// roots so the rendered config and the projected backends stores apply
-// identically.
-func glanceLaunchCommand(glance *glancev1alpha1.Glance) []string {
-	if glanceReleaseUsesUWSGI(glance.Spec.OpenStackRelease) {
-		return glanceUWSGICommand(glance.Spec.APIServer)
-	}
-	return []string{"glance-api", "--config-dir", glanceConfigDir, "--config-dir", glanceBackendsConfigDir}
-}
-
 // glanceMemoryPerProcess is the memory one Glance API process adds on top of
 // the shared base, in place of the shared per-process figure. The glance-api
 // container carries the S3 store driver (boto3/botocore), which raises both the
@@ -695,54 +680,22 @@ var glanceMemoryPerProcess = resource.MustParse("1Gi")
 
 // glanceAPIMemory returns the memory the API container gets as request and
 // limit when spec.deployment.resources names no memory. It is sized from the
-// processes and threads glanceAPIConcurrency resolves for spec.openStackRelease.
+// processes and threads glanceAPIConcurrency resolves.
 func glanceAPIMemory(glance *glancev1alpha1.Glance) resource.Quantity {
-	processes, threads := glanceAPIConcurrency(glance, glance.Spec.OpenStackRelease)
+	processes, threads := glanceAPIConcurrency(glance)
 	return commonv1.MemoryForProcesses(glanceMemoryPerProcess, processes, threads)
 }
 
 // glanceAPIConcurrency resolves the processes, and the threads in each, that an
-// API container of the given OpenStack release runs. Under uWSGI (2026.1+)
-// they come from spec.apiServer.uwsgi with the command's default resolution,
-// and spec.apiServer.workers is inert. Under eventlet (below 2026.1, or an empty
-// or unparseable release) they are effectiveEventletWorkers processes of one
-// thread each, and spec.apiServer.uwsgi is inert. The memory default and the
-// connection cap both size from it, so the two cannot disagree on the launch
-// mode.
-func glanceAPIConcurrency(glance *glancev1alpha1.Glance, openStackRelease string) (processes, threads int32) {
-	if !glanceReleaseUsesUWSGI(openStackRelease) {
-		return effectiveEventletWorkers(glance), 1
-	}
+// API container runs: spec.apiServer.uwsgi with the command's default
+// resolution. The memory default and the connection cap both size from it, so
+// the two cannot disagree.
+func glanceAPIConcurrency(glance *glancev1alpha1.Glance) (processes, threads int32) {
 	var uwsgi *glancev1alpha1.UWSGISpec
 	if glance.Spec.APIServer != nil {
 		uwsgi = glance.Spec.APIServer.UWSGI
 	}
 	return deployment.EffectiveUWSGIConcurrency(uwsgi)
-}
-
-// glanceReleaseUsesUWSGI reports whether a Glance API of the given OpenStack
-// release launches under uWSGI: true from 2026.1 onward, false below it and for
-// an empty or unparseable release, which launch the eventlet glance-api server.
-// It takes a release string rather than the CR so the connection-cap sizing can
-// ask about status.installedRelease and status.targetRelease as well.
-func glanceReleaseUsesUWSGI(openStackRelease string) bool {
-	rel, err := release.ParseRelease(openStackRelease)
-	if err != nil {
-		return false
-	}
-	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
-}
-
-// glanceReleaseDropsWorkersOption reports whether the Glance of the given
-// OpenStack release no longer registers [DEFAULT] workers: true from 2026.2
-// onward, where glance 33.0.0 removed the option with the standalone glance-api
-// server, false below it and for an empty or unparseable release.
-func glanceReleaseDropsWorkersOption(openStackRelease string) bool {
-	rel, err := release.ParseRelease(openStackRelease)
-	if err != nil {
-		return false
-	}
-	return rel.AtLeast(2026, 2)
 }
 
 // glanceUWSGIChunkedInputLimit is the --chunked-input-limit the uWSGI launch
@@ -773,10 +726,9 @@ func glanceUWSGICommand(apiServer *glancev1alpha1.APIServerSpec) []string {
 		// of unknown size in exactly such chunks (glanceclient/common/http.py,
 		// CHUNKSIZE), so every cinder upload-to-image and every nova
 		// snapshot upload died in glance with "OSError: unable to receive
-		// chunked part" and a 500 under this launch mode, while the eventlet
-		// mode below 2026.1 has no such limit. 16 MiB leaves room for a
-		// client with a larger chunk; uWSGI grows the buffer only to the
-		// chunk it receives, so the limit costs nothing on its own.
+		// chunked part" and a 500. 16 MiB leaves room for a client with a
+		// larger chunk; uWSGI grows the buffer only to the chunk it receives,
+		// so the limit costs nothing on its own.
 		ArgsAfterHTTP: []string{
 			"--http-auto-chunked", "--http-chunked-input",
 			"--chunked-input-limit", glanceUWSGIChunkedInputLimit,

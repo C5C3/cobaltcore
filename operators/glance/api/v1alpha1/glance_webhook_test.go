@@ -1945,10 +1945,11 @@ func TestGlanceValidateDelete_AlwaysAccepts(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
-// TestGlanceWarnings_InertLaunchModeKnobs pins the launch-mode warning matrix:
-// uwsgi is inert below 2026.1 (eventlet) and workers is inert from 2026.1
-// (uWSGI). Both stay warnings, never errors.
-func TestGlanceWarnings_InertLaunchModeKnobs(t *testing.T) {
+// TestGlanceWarnings_DeprecatedWorkers pins the deprecation warning for
+// spec.apiServer.workers: it fires whenever the field is set, on every release,
+// and never for the uwsgi block or an absent apiServer. It stays a warning, never
+// an error.
+func TestGlanceWarnings_DeprecatedWorkers(t *testing.T) {
 	tests := []struct {
 		name     string
 		release  string
@@ -1956,33 +1957,27 @@ func TestGlanceWarnings_InertLaunchModeKnobs(t *testing.T) {
 		wantWarn bool
 	}{
 		{
-			name:     "uwsgi set on eventlet release warns",
-			release:  "2025.2",
-			mutate:   func(o *Glance) { o.Spec.APIServer = &APIServerSpec{UWSGI: &UWSGISpec{Processes: 2}} },
-			wantWarn: true,
-		},
-		{
-			name:     "workers set on uwsgi release warns",
+			name:     "workers set at 2026.1 warns",
 			release:  "2026.1",
 			mutate:   func(o *Glance) { o.Spec.APIServer = &APIServerSpec{Workers: ptr.To(int32(4))} },
 			wantWarn: true,
 		},
 		{
-			name:     "uwsgi set on uwsgi release does not warn",
+			name:     "workers set at 2026.2 warns",
+			release:  "2026.2",
+			mutate:   func(o *Glance) { o.Spec.APIServer = &APIServerSpec{Workers: ptr.To(int32(4))} },
+			wantWarn: true,
+		},
+		{
+			name:     "uwsgi set does not warn",
 			release:  "2026.1",
 			mutate:   func(o *Glance) { o.Spec.APIServer = &APIServerSpec{UWSGI: &UWSGISpec{Processes: 2}} },
 			wantWarn: false,
 		},
 		{
-			name:     "workers set on eventlet release does not warn",
-			release:  "2025.2",
-			mutate:   func(o *Glance) { o.Spec.APIServer = &APIServerSpec{Workers: ptr.To(int32(4))} },
-			wantWarn: false,
-		},
-		{
-			name:     "neither knob set does not warn",
-			release:  "2025.2",
-			mutate:   func(o *Glance) {},
+			name:     "nil apiServer does not warn",
+			release:  "2026.1",
+			mutate:   func(o *Glance) { o.Spec.APIServer = nil },
 			wantWarn: false,
 		},
 	}
@@ -1998,12 +1993,29 @@ func TestGlanceWarnings_InertLaunchModeKnobs(t *testing.T) {
 			warnings, err := w.ValidateCreate(context.Background(), obj)
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 			if tc.wantWarn {
-				g.Expect(warnings).NotTo(gomega.BeEmpty())
+				g.Expect(warnings).To(gomega.HaveExactElements(
+					gomega.ContainSubstring("spec.apiServer.workers is deprecated"),
+				))
 			} else {
 				g.Expect(warnings).To(gomega.BeEmpty())
 			}
 		})
 	}
+
+	t.Run("an update that keeps workers warns again", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &GlanceWebhook{}
+		oldObj := validGlance()
+		oldObj.Spec.APIServer = &APIServerSpec{Workers: ptr.To(int32(4))}
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.Deployment.Replicas = 2
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).To(gomega.HaveExactElements(
+			gomega.ContainSubstring("spec.apiServer.workers is deprecated"),
+		))
+	})
 }
 
 // --- extraConfig option-catalog validation ---
