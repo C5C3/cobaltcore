@@ -158,7 +158,8 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		filepath.Join(orderCRDs, "c5c3.io_keystoneusers.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystoneprojects.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystoneroleassignments.yaml"),
-		filepath.Join(orderCRDs, "c5c3.io_keystonecatalogentries.yaml")))
+		filepath.Join(orderCRDs, "c5c3.io_keystonecatalogentries.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_keystoneapplicationcredentials.yaml")))
 
 	// --- Environment A: the management cluster, hosting the manager.
 	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
@@ -263,7 +264,14 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			}).setupWithOptions(mcMgr, opts); err != nil {
 				return err
 			}
-			return (&KeystoneCatalogEntryReconciler{
+			if err := (&KeystoneCatalogEntryReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			return (&KeystoneApplicationCredentialReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Resolver: mcMgr,
@@ -1444,6 +1452,47 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		g.Expect(liveAssignment.Status.RoleID).To(Equal("member-role-id"))
 		g.Expect(liveAssignment.Status.UserID).To(Equal("pieces-user-id"))
 		g.Expect(liveAssignment.Status.ProjectID).To(Equal("pieces-project-id"))
+
+		// With the role assigned, an application credential is minted as the user:
+		// the mint document and generation 1 appear on the management cluster.
+		// envtest runs no K-ORC, so the credential never turns Available here.
+		credential := &c5c3v1alpha1.KeystoneApplicationCredential{
+			ObjectMeta: objMeta("pieces-appcred"),
+			Spec: c5c3v1alpha1.KeystoneApplicationCredentialSpec{
+				ControlPlaneRef: cpRef,
+				UserRef:         c5c3v1alpha1.KeystoneOrderRef{Name: user.Name},
+				ProjectRef:      c5c3v1alpha1.KeystoneOrderRef{Name: project.Name},
+			},
+		}
+		g.Expect(targetClient.Create(ctx, credential)).To(Succeed(), "create the credential order on the target cluster")
+		credentialRef := keystoneApplicationCredentialRef(credential, mcTargetCluster)
+		mintCloud := &corev1.Secret{}
+		expectClaimed(mintCloud, credentialRef.childPrefix()+"mint-cloud", credentialRef)
+		g.Expect(string(mintCloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring(`username: "pieces"`))
+		g.Expect(string(mintCloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring(`project_name: "pieces-project"`))
+		expectClaimed(&corev1.Secret{}, credentialRef.childPrefix()+"secret-v1", credentialRef)
+		applicationCredential := &orcv1alpha1.ApplicationCredential{}
+		expectClaimed(applicationCredential, credentialRef.childPrefix()+"credential-v1", credentialRef)
+		g.Expect(string(applicationCredential.Spec.Resource.UserRef)).To(Equal(userPrefix + "user"))
+		g.Expect(applicationCredential.Spec.CloudCredentialsRef.SecretName).To(Equal(credentialRef.childPrefix() + "mint-cloud"))
+		liveCredential := &c5c3v1alpha1.KeystoneApplicationCredential{}
+		credentialKey := client.ObjectKeyFromObject(credential)
+		expectCondition(liveCredential, credentialKey, func() []metav1.Condition { return liveCredential.Status.Conditions },
+			conditionTypeKeystoneApplicationCredentialCredentialReady, metav1.ConditionFalse,
+			reasonKeystoneApplicationCredentialWaiting, "the credential waits for K-ORC")
+
+		// The credential order goes before the pieces it uses.
+		g.Expect(targetClient.Delete(ctx, credential)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, credentialKey,
+				&c5c3v1alpha1.KeystoneApplicationCredential{}))).To(BeTrue())
+			for _, name := range []string{"mint-cloud", "secret-v1"} {
+				ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(credentialRef.childPrefix()+name),
+					&corev1.Secret{}))).To(BeTrue(), name)
+			}
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(credentialRef.childPrefix()+"credential-v1"),
+				&orcv1alpha1.ApplicationCredential{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "deleting the credential order removes its children")
 
 		// The entry has no catalog consent yet, and projects nothing.
 		liveEntry := &c5c3v1alpha1.KeystoneCatalogEntry{}
