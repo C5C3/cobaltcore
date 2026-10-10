@@ -172,6 +172,8 @@ func (w *NeutronWebhook) ValidateCreate(ctx context.Context, obj *Neutron) (admi
 	warnings, createErrs := validateExtraConfigOptions(
 		field.NewPath("spec"), obj.Spec.OpenStackRelease, obj.Spec.ExtraConfig, OwnedConfigKeys)
 	createErrs = append(createErrs, validateNeutronNameLength(obj.Name)...)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	createErrs = append(createErrs, floorErrs...)
 	return warnings, w.validate(ctx, obj, nil, createErrs)
 }
 
@@ -215,6 +217,11 @@ func validateNeutronNameLength(name string) field.ErrorList {
 // defaulting webhook has already run on newObj, so a copy of the stored object is
 // defaulted the same way before the two specs are compared: a default an operator
 // release added after the CR was last written is no spec change.
+//
+// spec.openStackRelease is held to the release floor
+// (validation.OpenStackReleaseFloor): a change to a release below
+// release.MinimumSupported is rejected, and an unchanged value below it is
+// admitted with a warning, so an unrelated edit never wedges the CR.
 func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neutron) (admission.Warnings, error) {
 	if newObj.DeletionTimestamp != nil {
 		stored := oldObj.DeepCopy()
@@ -242,6 +249,10 @@ func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neu
 	)...)
 	warnings = append(warnings, carriedRejectedKeyWarnings(
 		field.NewPath("spec"), newObj.Spec.ExtraConfig, oldObj.Spec.ExtraConfig, OwnedConfigKeys)...)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 	return warnings, w.validate(ctx, newObj, oldObj.Spec.ExtraConfig, updateErrs)
 }
 

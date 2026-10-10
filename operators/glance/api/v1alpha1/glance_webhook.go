@@ -346,6 +346,8 @@ func (w *GlanceWebhook) ValidateCreate(ctx context.Context, obj *Glance) (admiss
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), obj.Spec.ImportFiltering,
 	)...)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	createErrs = append(createErrs, floorErrs...)
 	return warnings, w.validate(ctx, obj, createErrs)
 }
 
@@ -386,6 +388,11 @@ func validateNameLength(name string) field.ErrorList {
 // defaulting webhook has already run on newObj, so a copy of the stored object is
 // defaulted the same way before the two specs are compared: a default an operator
 // release added after the CR was last written is no spec change.
+//
+// spec.openStackRelease is held to the release floor
+// (validation.OpenStackReleaseFloor): a change to a release below
+// release.MinimumSupported is rejected, and an unchanged value below it is
+// admitted with a warning, so an unrelated edit never wedges the CR.
 func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glance) (admission.Warnings, error) {
 	if newObj.DeletionTimestamp != nil {
 		stored := oldObj.DeepCopy()
@@ -412,6 +419,10 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 		field.NewPath("spec", "importFiltering"), newObj.Spec.ImportFiltering,
 	)...)
 	warnings = append(warnings, warnDBPurgeRetention(oldObj.Spec.DBPurge, newObj.Spec.DBPurge)...)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 

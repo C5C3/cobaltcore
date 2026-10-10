@@ -321,6 +321,8 @@ func (w *NovaWebhook) ValidateCreate(ctx context.Context, obj *Nova) (admission.
 		field.NewPath("spec"), obj.Spec.OpenStackRelease, obj.Spec.ExtraConfig, OwnedConfigKeys)
 	createErrs = append(createErrs, validateNameLength(obj.Name)...)
 	createErrs = append(createErrs, validateNameSuffix(obj.Name)...)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	createErrs = append(createErrs, floorErrs...)
 	return warnings, w.validate(ctx, obj, createErrs)
 }
 
@@ -388,6 +390,11 @@ func validateNameSuffix(name string) field.ErrorList {
 // the CR still carries. Rejecting the removal would hold the CR, and the target
 // cluster children its finalizer guards, in Terminating with nothing left to
 // edit.
+//
+// spec.openStackRelease is held to the release floor
+// (validation.OpenStackReleaseFloor): a change to a release below
+// release.MinimumSupported is rejected, and an unchanged value below it is
+// admitted with a warning, so an unrelated edit never wedges the CR.
 func (w *NovaWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Nova) (admission.Warnings, error) {
 	if newObj.DeletionTimestamp != nil && equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
 		return nil, nil
@@ -414,6 +421,10 @@ func (w *NovaWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Nova) 
 		field.NewPath("spec", "database"), "database", &oldObj.Spec.Database, &newObj.Spec.Database,
 		"the cell mappings store the schema name")...)
 	warnings = append(warnings, warnDBArchiveRetention(oldObj.Spec.DBArchive, newObj.Spec.DBArchive)...)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 

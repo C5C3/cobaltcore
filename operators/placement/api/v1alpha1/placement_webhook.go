@@ -120,6 +120,8 @@ func (w *PlacementWebhook) Default(_ context.Context, obj *Placement) error {
 // admissible name stays admissible.
 func (w *PlacementWebhook) ValidateCreate(ctx context.Context, obj *Placement) (admission.Warnings, error) {
 	warnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	createErrs = append(createErrs, floorErrs...)
 	return warnings, w.validate(ctx, obj, createErrs)
 }
 
@@ -142,6 +144,11 @@ func (w *PlacementWebhook) ValidateCreate(ctx context.Context, obj *Placement) (
 // defaulting webhook has already run on newObj, so a copy of the stored object is
 // defaulted the same way before the two specs are compared: a default an operator
 // release added after the CR was last written is no spec change.
+//
+// spec.openStackRelease is held to the release floor
+// (validation.OpenStackReleaseFloor): a change to a release below
+// release.MinimumSupported is rejected, and an unchanged value below it is
+// admitted with a warning, so an unrelated edit never wedges the CR.
 func (w *PlacementWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Placement) (admission.Warnings, error) {
 	if newObj.DeletionTimestamp != nil {
 		stored := oldObj.DeepCopy()
@@ -163,6 +170,10 @@ func (w *PlacementWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *P
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)...)
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 

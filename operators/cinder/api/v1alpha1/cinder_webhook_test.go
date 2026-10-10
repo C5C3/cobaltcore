@@ -595,6 +595,11 @@ func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: `spec.scheduler.deployment.verticalAutoscaling.minAllowed[ephemeral-storage]: Unsupported value: "ephemeral-storage"`,
 		},
+		{
+			name:    "openStackRelease below the release floor rejected",
+			mutate:  func(o *Cinder) { o.Spec.OpenStackRelease = "2025.2" },
+			wantSub: `spec.openStackRelease: Invalid value: "2025.2": must be 2026.1 or later`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -609,6 +614,53 @@ func TestCinderValidateCreate_RejectionTable(t *testing.T) {
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
 		})
 	}
+}
+
+// TestCinderValidate_ReleaseFloor pins the release floor on spec.openStackRelease:
+// a create at 2026.1 is admitted, a change to a release below it is rejected,
+// and an update that keeps a stored release below it is admitted with one
+// warning, so the CR stays editable.
+func TestCinderValidate_ReleaseFloor(t *testing.T) {
+	w := &CinderWebhook{}
+
+	t.Run("create at the floor accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		obj := validCinder()
+		obj.Spec.OpenStackRelease = "2026.1"
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	t.Run("update keeping a release below the floor warns", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validCinder()
+		oldObj.Spec.OpenStackRelease = "2025.2"
+		newObj := oldObj.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).To(gomega.HaveExactElements(gomega.ContainSubstring("below 2026.1")))
+	})
+
+	t.Run("update to a release below the floor rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validCinder()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.OpenStackRelease = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("openStackRelease"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("2026.1 or later"))
+	})
+
+	t.Run("update between supported releases accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validCinder()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.OpenStackRelease = "2026.2"
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).NotTo(gomega.ContainElement(gomega.ContainSubstring("below 2026.1")))
+	})
 }
 
 func TestCinderValidateCreate_NameLengthBoundedByPurgeCronJob(t *testing.T) {
@@ -762,8 +814,8 @@ func TestCinderValidate_ExtraConfigFailsOpenWithoutCatalog(t *testing.T) {
 		},
 		{
 			name:    "release with no embedded catalog",
-			release: "2024.2",
-			wantSub: `no catalog for release "2024.2" is embedded in this operator build`,
+			release: "2027.1",
+			wantSub: `no catalog for release "2027.1" is embedded in this operator build`,
 		},
 	}
 

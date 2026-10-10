@@ -108,6 +108,8 @@ func (w *NeutronMetadataAgentWebhook) ValidateCreate(_ context.Context, obj *Neu
 	warnings, createErrs := validateExtraConfigOptions(
 		field.NewPath("spec"), obj.Spec.OpenStackRelease, obj.Spec.ExtraConfig, MetadataAgentOwnedConfigKeys)
 	createErrs = append(createErrs, validateMetadataAgentNameLength(obj.Name)...)
+	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
+	createErrs = append(createErrs, floorErrs...)
 	return warnings, w.validate(obj, createErrs)
 }
 
@@ -136,6 +138,11 @@ func validateMetadataAgentNameLength(name string) field.ErrorList {
 // spec.targetClusterRef and spec.chassisRef are compared across both revisions
 // here, the webhook-layer twin of the three transition CEL rules on
 // NeutronMetadataAgentSpec.
+//
+// spec.openStackRelease is held to the release floor
+// (validation.OpenStackReleaseFloor): a change to a release below
+// release.MinimumSupported is rejected, and an unchanged value below it is
+// admitted with a warning, so an unrelated edit never wedges the CR.
 func (w *NeutronMetadataAgentWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *NeutronMetadataAgent) (admission.Warnings, error) {
 	var warnings admission.Warnings
 	var updateErrs field.ErrorList
@@ -162,6 +169,10 @@ func (w *NeutronMetadataAgentWebhook) ValidateUpdate(_ context.Context, oldObj, 
 		))
 	}
 
+	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
+		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
+	updateErrs = append(updateErrs, floorErrs...)
+	warnings = append(warnings, floorWarnings...)
 	return warnings, w.validate(newObj, updateErrs)
 }
 
