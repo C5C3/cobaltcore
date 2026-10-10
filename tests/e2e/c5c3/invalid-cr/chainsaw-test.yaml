@@ -1276,6 +1276,16 @@ spec:
             ($error != null): true
             (contains($error, 'spec.services.keystone.image.tag')): true
             (contains($error, 'must be 2026.1 or later')): true
+  # spec.infrastructure.publishedDatabaseEndpoint with a port above 65535 must be
+  # rejected by the CRD pattern: no client can connect to it.
+  - try:
+    - apply:
+        file: 144-published-database-endpoint-port-out-of-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.infrastructure.publishedDatabaseEndpoint')): true
+            (contains($error, 'should match')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.infrastructure.publishedDatabaseEndpoint with a port above 65535 is
+# rejected (CRD pattern): a MariaDBDatabase order off Keystone's cluster
+# receives the address in its credentials Secret, and no client can connect to
+# a port outside 1-65535. No webhook rule applies.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-published-database-endpoint-port
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    publishedDatabaseEndpoint: db.example.com:65536
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
