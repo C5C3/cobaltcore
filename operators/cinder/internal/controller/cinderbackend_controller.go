@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,7 +27,6 @@ import (
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/satellite"
-	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
@@ -327,15 +325,9 @@ func (r *CinderBackendReconciler) gateCredentials(ctx context.Context, children 
 	}
 }
 
-// gateRBDKey is the RBD half of gateCredentials. The materialized-Secret-then-
-// ExternalSecret ladder is secrets.GateCredential's, which sets the False
-// condition with a precise message; the value is then read and checked for
-// shape, because a present but empty or malformed key would be copied into the
-// projected keyring and fail every connection the driver opens. A client error
-// is propagated so the workqueue backs off without demoting a standing True.
-//
-// The Secret is read on the children cluster: the volume pods mount the
-// projected keyring where they run.
+// gateRBDKey is the RBD half of gateCredentials: gateRBDKeySecret on the Secret
+// spec.rbd.keySecretRef names, read on the children cluster where the volume
+// pods mount the projected keyring.
 func (r *CinderBackendReconciler) gateRBDKey(ctx context.Context, children client.Client,
 	backend *cinderv1alpha1.CinderBackend,
 ) (bool, error) {
@@ -348,30 +340,8 @@ func (r *CinderBackendReconciler) gateRBDKey(ctx context.Context, children clien
 	}
 
 	key := client.ObjectKey{Namespace: backend.Namespace, Name: backend.Spec.RBD.KeySecretRef.Name}
-	ready, err := secrets.GateCredential(ctx, children, secrets.CredentialGateSpec{
-		Key:          key,
-		Reason:       conditionReasonWaitingForCredentials,
-		Noun:         "RBD key",
-		WaitingMsg:   "waiting for the RBD key Secret to carry the " + cinderv1alpha1.RBDKeySecretDataKey + " data key",
-		ExpectedKeys: []string{cinderv1alpha1.RBDKeySecretDataKey},
-	}, &backend.Status.Conditions, backend.Generation, conditionTypeCredentialsReady)
-	if err != nil || !ready {
-		return false, err
-	}
-
-	value, err := secrets.GetSecretValue(ctx, children, key, cinderv1alpha1.RBDKeySecretDataKey)
-	if err != nil {
-		return false, fmt.Errorf("reading the RBD key of backend %q: %w", backend.Name, err)
-	}
-	if fault := cephxKeyFault(key.Name, strings.TrimSpace(value)); fault != "" {
-		r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionFalse,
-			conditionReasonWaitingForCredentials, fault)
-		return false, nil
-	}
-	r.setCondition(backend, conditionTypeCredentialsReady, metav1.ConditionTrue,
-		conditionReasonCredentialsAvailable,
-		fmt.Sprintf("RBD key Secret %q carries the %s data key", key.Name, cinderv1alpha1.RBDKeySecretDataKey))
-	return true, nil
+	return gateRBDKeySecret(ctx, children, key, &backend.Status.Conditions, backend.Generation,
+		fmt.Sprintf("backend %q", backend.Name))
 }
 
 // observeConfigProjected derives the ConfigProjected condition from the single

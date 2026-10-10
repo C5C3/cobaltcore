@@ -57,7 +57,9 @@ var cinderBackupBackendSkeleton = commonreconcile.Skeleton[
 // CredentialsReady / ConfigProjected / Ready conditions of the single backup
 // target a Cinder writes its backups to. It is the SINGLE writer of
 // CinderBackupBackend status; the Cinder-side sub-reconciler only reads it and
-// writes an aggregated condition onto the Cinder CR instead.
+// writes an aggregated condition onto the Cinder CR instead. CredentialsReady is
+// True by construction for an NFS target and follows the userKey of the RBD key
+// Secret for an RBD one.
 //
 // Deliberately there is NO finalizer: a backup backend holds no row in the
 // service registry — cinder-backup registers under the Cinder's own host
@@ -85,11 +87,13 @@ type CinderBackupBackendReconciler struct {
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinderbackupbackends/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-// Reconcile drives one CinderBackupBackend CR: report that its export needs no
-// credentials, observe whether the parent's backup service mounts this backend's
-// projection, and persist the aggregated status. A deleting backend returns
-// early doing nothing — there is nothing to clean up (see the type doc).
+// Reconcile drives one CinderBackupBackend CR: gate on its credentials (none
+// for an NFS export, the key Secret for an RBD pool), observe whether the
+// parent's backup service mounts this backend's projection, and persist the
+// aggregated status. A deleting backend returns early doing nothing — there is
+// nothing to clean up (see the type doc).
 func (r *CinderBackupBackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var backupBackend cinderv1alpha1.CinderBackupBackend
 	if err := r.Get(ctx, req.NamespacedName, &backupBackend); err != nil {
@@ -110,8 +114,11 @@ func (r *CinderBackupBackendReconciler) Reconcile(ctx context.Context, req ctrl.
 }
 
 // reconcileNormal reports the credential gate and observes the config
-// projection. Both steps read objects that belong to the parent Cinder, so it
-// opens by resolving that parent's target cluster into the children client.
+// projection. It short-circuits before the projection observation while the
+// credentials are not ready: the parent never projects a backup target that is
+// not credential-ready, so there is nothing to observe yet. Both steps read
+// objects that belong to the parent Cinder, so it opens by resolving that
+// parent's target cluster into the children client.
 func (r *CinderBackupBackendReconciler) reconcileNormal(ctx context.Context,
 	backupBackend *cinderv1alpha1.CinderBackupBackend,
 ) (ctrl.Result, error) {
@@ -120,7 +127,17 @@ func (r *CinderBackupBackendReconciler) reconcileNormal(ctx context.Context,
 		return result, err
 	}
 
-	r.gateCredentials(backupBackend)
+	ready, err := r.gateCredentials(ctx, children, backupBackend)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !ready {
+		// The key Secret is absent, misses its key or carries an unusable one. The
+		// parent's Secret watch re-renders on rotation, but a genuinely absent
+		// Secret emits no event, so poll as the liveness backstop; the Cinder
+		// watch wakes this controller once the projection lands.
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
 	return r.observeConfigProjected(ctx, children, parent, backupBackend)
 }
 
@@ -157,15 +174,40 @@ func (r *CinderBackupBackendReconciler) resolveChildren(ctx context.Context,
 	return children, &parent, result, err
 }
 
-// gateCredentials reports CredentialsReady for an NFS export, which is ready by
-// construction: the mount authenticates with the pod's own identity, so there is
-// no Secret to resolve and nothing that could be missing. NFS is the only backup
-// target type this API admits; a type that carried credentials would gate on
-// them here instead.
-func (r *CinderBackupBackendReconciler) gateCredentials(backupBackend *cinderv1alpha1.CinderBackupBackend) {
-	r.setCondition(backupBackend, conditionTypeCredentialsReady, metav1.ConditionTrue,
-		conditionReasonCredentialsNotRequired,
-		"the NFS export is mounted with the pod's own identity, so no credentials are required")
+// gateCredentials maintains CredentialsReady by backup target type and reports
+// whether the target is credential-ready.
+//
+// An NFS export is ready by construction: the mount authenticates with the
+// pod's own identity, so there is no Secret to resolve and nothing that could
+// be missing. An RBD target is ready once the Secret spec.rbd.keySecretRef
+// names carries a cephx key under userKey (gateRBDKeySecret), read on the
+// children cluster where the backup pod mounts the projected keyring.
+func (r *CinderBackupBackendReconciler) gateCredentials(ctx context.Context, children client.Client,
+	backupBackend *cinderv1alpha1.CinderBackupBackend,
+) (bool, error) {
+	switch backupBackend.Spec.Type {
+	case cinderv1alpha1.CinderBackupBackendTypeNFS:
+		r.setCondition(backupBackend, conditionTypeCredentialsReady, metav1.ConditionTrue,
+			conditionReasonCredentialsNotRequired,
+			"the NFS export is mounted with the pod's own identity, so no credentials are required")
+		return true, nil
+	case cinderv1alpha1.CinderBackupBackendTypeRBD:
+		if backupBackend.Spec.RBD == nil {
+			// The schema union rule guarantees spec.rbd for a type-RBD backup
+			// target; a bypassed admission leaves nothing to gate on.
+			r.setCondition(backupBackend, conditionTypeCredentialsReady, metav1.ConditionFalse,
+				conditionReasonWaitingForCredentials, "spec.rbd is not set; no RBD key to resolve")
+			return false, nil
+		}
+		key := client.ObjectKey{Namespace: backupBackend.Namespace, Name: backupBackend.Spec.RBD.KeySecretRef.Name}
+		return gateRBDKeySecret(ctx, children, key, &backupBackend.Status.Conditions, backupBackend.Generation,
+			fmt.Sprintf("backup backend %q", backupBackend.Name))
+	default:
+		r.setCondition(backupBackend, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			conditionReasonWaitingForCredentials,
+			fmt.Sprintf("spec.type %s is not a type this operator renders", backupBackend.Spec.Type))
+		return false, nil
+	}
 }
 
 // observeConfigProjected derives the ConfigProjected condition from the backup
