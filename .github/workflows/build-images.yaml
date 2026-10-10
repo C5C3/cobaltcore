@@ -24,14 +24,16 @@ name: Build Images
       - operators/nova/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
+      - tests/lib/ceph_bindings.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
   # The pull-request list is exactly what this workflow reads: the images and
   # their build inputs, the composite actions it reaches (directly or through
   # build-push-image, setup-docker-registry and merge-manifest-and-attest), the
-  # hack scripts it calls, and the per-image verify scripts. The four structural
-  # scripts under tests/container-images/ belong to verify-container-images.yaml,
-  # which runs them; this workflow never does, so they are excluded. GitHub
+  # hack scripts it calls, and the per-image verify scripts with the helper
+  # three of them source. The four structural scripts under
+  # tests/container-images/ belong to verify-container-images.yaml, which runs
+  # them; this workflow never does, so they are excluded. GitHub
   # evaluates the list in order, which is why the negations follow the positive
   # entry they carve out of, and quoted, because a bare "!" starts a YAML tag.
   pull_request:
@@ -74,6 +76,7 @@ name: Build Images
       - "!tests/container-images/verify_deviation_comments.sh"
       - "!tests/container-images/verify_release_config.sh"
       - "!tests/container-images/verify_spdx_headers.sh"
+      - tests/lib/ceph_bindings.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
 
@@ -145,6 +148,7 @@ jobs:
               - 'patches/glance/**'
               - 'operators/glance/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_glance.sh'
+              - 'tests/lib/ceph_bindings.sh'
             svc_placement:
               - 'images/placement/**'
               - 'patches/placement/**'
@@ -163,6 +167,7 @@ jobs:
               - 'patches/cinder/**'
               - 'operators/cinder/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_cinder.sh'
+              - 'tests/lib/ceph_bindings.sh'
             svc_nova:
               - 'images/nova/**'
               - 'patches/nova/**'
@@ -172,6 +177,7 @@ jobs:
               # constraints and rides the nova service name.
               - 'images/nova-compute/**'
               - 'tests/container-images/verify_nova_compute.sh'
+              - 'tests/lib/ceph_bindings.sh'
             # ---------------------------------------------------------------
             # Everything every service image is built from: the two base
             # images, the release pins, the build scripts, the constraint

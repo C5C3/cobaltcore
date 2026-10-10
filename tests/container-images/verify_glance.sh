@@ -18,6 +18,8 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/ceph_bindings.sh
+source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
 
 # --- Test 1: glance-manage --version outputs version and exits 0 ---
 test_glance_manage_version() {
@@ -320,6 +322,39 @@ else:
   assert_eq "the S3 location repair converges under a scheme-prefixed s3_store_host" "0" "$exit_code"
 }
 
+# --- Test 13: the RBD store's bindings resolve, without ceph-common ---
+test_rbd_store_bindings() {
+  echo "Test: the RBD store's bindings resolve, without ceph-common"
+  # glance_store/_drivers/rbd.py imports rados and rbd behind a guard, and
+  # configure_add raises BadStoreConfiguration ("The required libraries(rbd
+  # and rados) are not available") when the guard bound either to None.
+  # tests/lib/ceph_bindings.sh checks how the venv sees the two modules. The
+  # store runs no ceph or rbd binary, so the image carries no ceph-common, and
+  # the last two assertions fail when a manifest edit adds it. Stderr is
+  # echoed on failure so the missing module is named.
+  local output exit_code=0 tool
+
+  assert_ceph_bindings_wired
+
+  # The guard outcome configure_add tests, so a rename upstream fails here
+  # instead of in a glance-api pod.
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import sys
+from glance_store._drivers import rbd as store
+sys.exit(0 if store.rbd is not None and store.rados is not None
+         else "glance_store._drivers.rbd bound rados or rbd to None")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "the RBD store resolved rados and rbd" "0" "$exit_code"
+
+  for tool in ceph rbd; do
+    exit_code=0
+    docker run --rm "$IMAGE" sh -c "command -v $tool" > /dev/null 2>&1 || exit_code=$?
+    assert_nonzero_exit "$tool is absent (no ceph-common)" "$exit_code"
+  done
+}
+
 # --- Run all tests ---
 echo "=== glance container verification tests ==="
 echo "Image: $IMAGE"
@@ -333,6 +368,8 @@ echo ""
 test_wsgi_shim_present
 echo ""
 test_s3_driver_and_boto3
+echo ""
+test_rbd_store_bindings
 echo ""
 test_runs_as_openstack_user
 echo ""

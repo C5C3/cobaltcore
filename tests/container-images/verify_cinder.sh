@@ -18,6 +18,8 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/ceph_bindings.sh
+source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
 
 # --- Test 1: cinder-manage console script runs ---
 test_cinder_manage_version() {
@@ -571,6 +573,76 @@ test_state_directories() {
   assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
 }
 
+# --- Test 16: the Ceph client libraries and tools are wired ---
+test_ceph_client() {
+  echo "Test: the Ceph client libraries and tools are wired"
+  # The RBD volume driver (cinder/volume/drivers/rbd.py) and the Ceph backup
+  # driver (cinder/backup/drivers/ceph.py) import rados and rbd behind a
+  # guard, and check_for_setup_error raises "rados and rbd python libraries
+  # not found" when the guard bound them to None. tests/lib/ceph_bindings.sh
+  # checks how the venv sees the two modules. The volume driver runs
+  # `ceph mon dump` (_get_mon_addrs), `rbd import`, `rbd export` and
+  # `rbd status`; the backup driver pipes `rbd export-diff` into
+  # `rbd import-diff` (_rbd_diff_transfer). The version line is printed for
+  # the cipher revisit of #1338 (D7) and not asserted. Stderr is echoed on
+  # failure so the missing module or binary is named.
+  local output exit_code=0 tool subcommand
+
+  assert_ceph_bindings_wired
+
+  # The attributes check_for_setup_error reads, so a rename upstream fails
+  # here instead of in a cinder-volume pod. register_all() runs first, as in
+  # test 10.
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import sys
+import cinder.objects
+cinder.objects.register_all()
+from cinder.volume.drivers import rbd as driver
+sys.exit(0 if driver.rados is not None and driver.rbd is not None
+         else "cinder.volume.drivers.rbd bound rados or rbd to None")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "the RBD volume driver resolved rados and rbd" "0" "$exit_code"
+
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import sys
+import cinder.objects
+cinder.objects.register_all()
+from cinder.backup.drivers import ceph as driver
+sys.exit(0 if driver.rados is not None and driver.rbd is not None
+         else "cinder.backup.drivers.ceph bound rados or rbd to None")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "the Ceph backup driver resolved rados and rbd" "0" "$exit_code"
+
+  for tool in ceph rbd; do
+    exit_code=0
+    output=$(docker run --rm "$IMAGE" "$tool" --version 2>&1) || exit_code=$?
+    echo "    $tool --version: $output"
+    assert_eq "$tool --version exits 0" "0" "$exit_code"
+    assert_starts_with "$tool --version names the Ceph release" "$output" "ceph version "
+  done
+
+  for subcommand in export-diff import-diff; do
+    exit_code=0
+    output=$(docker run --rm "$IMAGE" rbd help "$subcommand" 2>&1 > /dev/null) || exit_code=$?
+    [ "$exit_code" -eq 0 ] || echo "    $output"
+    assert_eq "rbd help $subcommand exits 0" "0" "$exit_code"
+  done
+
+  # Without a configuration the client fails fast and names the file it
+  # could not read, which is what a cinder-volume pod with a broken ceph.conf
+  # projection shows.
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" \
+    ceph --conf /nonexistent --connect-timeout 1 mon dump 2>&1 > /dev/null) || exit_code=$?
+  assert_nonzero_exit "ceph mon dump without a configuration fails" "$exit_code"
+  assert_contains "ceph mon dump names the unreadable configuration" \
+    "$output" "error calling conf_read_file"
+}
+
 # --- Run all tests ---
 echo "=== cinder container verification tests ==="
 echo "Image: $IMAGE"
@@ -590,6 +662,8 @@ echo ""
 test_companion_scripts_runnable
 echo ""
 test_apt_wiring
+echo ""
+test_ceph_client
 echo ""
 test_amqp_readiness_probe
 echo ""
