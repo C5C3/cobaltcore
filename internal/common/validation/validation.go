@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
@@ -266,6 +267,35 @@ func TargetClusterRefImmutable(fldPath *field.Path, oldRef, newRef *commonv1.Tar
 		fldPath.Child("name"),
 		newRef.Name,
 		"targetClusterRef is immutable (the children already exist on the previously named cluster)",
+	)}
+}
+
+// OpenStackReleaseFloor enforces release.MinimumSupported on a release-bearing
+// field. An empty newValue, or one release.ParseRelease returns an error for,
+// yields neither an error nor a warning: the field's pattern rule owns the
+// format, and a digest-pinned or "latest" image tag names no release. A value
+// below the floor is one field.Invalid error on create (oldValue is "") and
+// whenever oldValue differs from newValue; an unchanged value is admitted with
+// one warning, so an unrelated edit never wedges a resource that predates the
+// floor.
+func OpenStackReleaseFloor(fldPath *field.Path, oldValue, newValue string) (field.ErrorList, []string) {
+	rel, err := release.ParseRelease(newValue)
+	if err != nil || rel.IsSupported() {
+		return nil, nil
+	}
+	floor := release.MinimumSupported.Raw
+	if oldValue != newValue {
+		return field.ErrorList{field.Invalid(
+			fldPath,
+			newValue,
+			fmt.Sprintf("must be %s or later: this operator version no longer supports OpenStack releases below %s", floor, floor),
+		)}, nil
+	}
+	return nil, []string{fmt.Sprintf(
+		"%s %q is below %s, the oldest OpenStack release this operator version supports; "+
+			"the unchanged value is admitted, but the operator renders the %s configuration for it. "+
+			"Set %s to %s or later.",
+		fldPath.String(), newValue, floor, floor, fldPath.String(), floor,
 	)}
 }
 
