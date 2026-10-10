@@ -180,6 +180,33 @@ test_daemon_smoke() {
     "$output" "<path>/usr/bin/qemu-system-x86_64</path>"
 }
 
+# --- Test 10: QEMU loads the rbd block driver and no network one ---
+test_qemu_rbd_driver() {
+  echo "Test: qemu-img loads the rbd block driver from qemu-block-extra, and no network driver is installed"
+  local output exit_code=0
+  # Wrapped in a shell, so the multiarch glob expands in the container and the
+  # check is the same on amd64 and arm64.
+  docker run --rm "$IMAGE" sh -c 'ls /usr/lib/*-linux-gnu/qemu/block-rbd.so' > /dev/null 2>&1 || exit_code=$?
+  assert_eq "block-rbd.so is installed under /usr/lib/<multiarch>/qemu" "0" "$exit_code"
+  # The Dockerfile deletes the package's network modules; ls prints none of
+  # them while all four are gone.
+  output=$(docker run --rm "$IMAGE" sh -c 'ls /usr/lib/*-linux-gnu/qemu/block-curl.so \
+    /usr/lib/*-linux-gnu/qemu/block-iscsi.so /usr/lib/*-linux-gnu/qemu/block-nfs.so \
+    /usr/lib/*-linux-gnu/qemu/block-ssh.so 2>/dev/null') || true
+  assert_eq "the curl, iscsi, nfs and ssh block modules are absent" "" "$output"
+
+  # Probed on 2026-10-10 in ubuntu:noble: without qemu-block-extra qemu-img
+  # prints "Unable to load block driver rbd. Perhaps you want to install
+  # qemu-block-extra package?"; with it, librados runs and fails with "error
+  # connecting: No such file or directory", because no ceph.conf names a
+  # monitor. That is as far as a container without a Ceph gets. qemu-img exits
+  # 1 in both cases, so the exit code is not asserted; a QEMU that rewords
+  # either message fails this test.
+  output=$(docker run --rm "$IMAGE" timeout 60 qemu-img info rbd:volumes/x 2>&1) || true
+  assert_not_contains "qemu-img finds the rbd block driver" "$output" "Unable to load block driver rbd"
+  assert_contains "qemu-img reaches librados, which finds no monitor" "$output" "error connecting"
+}
+
 # --- Run all tests ---
 echo "=== libvirt container verification tests ==="
 echo "Image: $IMAGE"
@@ -201,6 +228,8 @@ echo ""
 test_no_build_tooling
 echo ""
 test_daemon_smoke
+echo ""
+test_qemu_rbd_driver
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -1644,6 +1644,7 @@ node, where QEMU emulates the guest without KVM.
 | `libvirt-clients` | `virsh`, and `virt-admin` for reloading the daemon's TLS certificates |
 | `libvirt-daemon-system` | `libvirtd`, `virtlogd` and the QEMU driver for `qemu:///system`, through its dependency `libvirt-daemon`; the configuration under `/etc/libvirt`, the `libvirt` and `kvm` groups and the `libvirt-qemu` user. It pulls in `systemd`, which brings `systemd-run` |
 | `ovmf` | UEFI firmware for guests: `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` |
+| `qemu-block-extra` | `block-rbd.so` under `/usr/lib/<multiarch>/qemu/`, the block module QEMU loads to attach a Cinder volume on Ceph. It depends on `librbd1` and `librados2` 19.2.3, which decode `aes` keys and not `aes256k` (D7 of #1338). The build deletes the package's `block-curl.so`, `block-iscsi.so`, `block-nfs.so` and `block-ssh.so`: QEMU would load one for a disk or backing file that names such a URL and connect to it from the node's address, and nothing here uses them. QEMU's NBD client is compiled into `qemu-system-x86_64` and `qemu-img`, so a disk or backing file that names an NBD server still makes QEMU connect to it; Nova rejects a downloaded Glance image that has a backing file |
 | `qemu-system-x86` | `qemu-system-x86_64`, the emulator for x86 guests; `libvirt-daemon` only recommends a QEMU |
 | `qemu-utils` | `qemu-img`, for disk images |
 
@@ -1702,9 +1703,15 @@ docker build -t c5c3/libvirt:latest images/libvirt/
 bash tests/container-images/verify_libvirt.sh c5c3/libvirt:latest
 ```
 
-The contract check runs without `--privileged`. Its last test starts `libvirtd`
-in the container, waits at most 30 seconds for `/run/libvirt/libvirt-sock` and
-asks the QEMU driver for its version and its x86_64 domain capabilities.
+The contract check runs without `--privileged`. Its daemon smoke test starts
+`libvirtd` in the container, waits at most 30 seconds for
+`/run/libvirt/libvirt-sock` and asks the QEMU driver for its version and its
+x86_64 domain capabilities. Its rbd test checks that `block-rbd.so` is
+installed and the four network modules are not, and runs
+`qemu-img info rbd:volumes/x`: without the module, qemu-img prints
+`Unable to load block driver rbd`; with it, librados runs and fails with
+`error connecting`, because no `ceph.conf` names a monitor. The test asserts
+the second message and the absence of the first.
 
 Its build, verification and tag scheme are described in
 [build-libvirt / merge-libvirt-image](./build-images-workflow.md#build-libvirt-merge-libvirt-image).
