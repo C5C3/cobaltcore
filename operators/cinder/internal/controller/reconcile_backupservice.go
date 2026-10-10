@@ -60,8 +60,9 @@ func backupDeploymentName(cinder *cinderv1alpha1.Cinder) string {
 // longer credential-ready, and a backup service without a target writes nowhere.
 //
 // backends are the projected volume backends, whose exports the backup service
-// mounts as well: cinder-backup reads the source volume itself through os-brick,
-// at the same path the volume service holds it at.
+// mounts as well and whose keyrings it carries in /etc/ceph: cinder-backup reads
+// the source volume itself through os-brick, at the same path the volume service
+// holds it at or with the same cephx user.
 //
 // It follows the scheduler's result contract: a zero result outside an upgrade
 // whatever the readiness is, and polling during the RollingUpdate phase until
@@ -88,6 +89,7 @@ func (r *CinderReconciler) reconcileBackupService(ctx context.Context, children 
 	}
 
 	r.warnSharedExportConflicts(ctx, cinder, backends)
+	r.warnCephKeyringConflicts(ctx, cinder, backup, backends)
 
 	deploy := buildBackupDeployment(cinder, backup, backends, art, digests, egressPort)
 	ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, cinder, deploy)
@@ -138,8 +140,9 @@ var backupMemory = resource.MustParse("2Gi")
 
 // buildBackupDeployment constructs the desired cinder-backup Deployment: the
 // workload volumes every process shares, the projected driver section, the
-// export the backups are written to, and every NFS volume backend's export
-// beside it.
+// export the backups are written to when the target is NFS, every NFS volume
+// backend's export beside it, and the Ceph files of /etc/ceph when the target
+// or a volume backend is RBD (backupCephProjection).
 //
 // The replica count and the Recreate strategy come from spec.backup.deployment,
 // where the CEL rules pin them for the same reason they pin the volume service:
@@ -150,27 +153,36 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 ) *appsv1.Deployment {
 	volumes, mounts := cinderWorkloadVolumes(cinder, art)
 
-	volumes = append(volumes,
-		corev1.Volume{
-			Name: backupVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: backup.secretName,
-					Items: []corev1.KeyToPath{
-						{Key: backupConfDataKey, Path: backupConfDataKey},
-					},
+	// The backup volume stays a plain Secret volume carrying backup.conf alone,
+	// whatever the type: the CinderBackupBackend controller reads the projection
+	// it observes off this volume's Secret name.
+	volumes = append(volumes, corev1.Volume{
+		Name: backupVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: backup.secretName,
+				Items: []corev1.KeyToPath{
+					{Key: backupConfDataKey, Path: backupConfDataKey},
 				},
 			},
 		},
-		inlineNFSVolume(backupShareVolumeName, backup.server, backup.path, backup.mountOptions),
-	)
+	})
 	mounts = append(mounts,
-		corev1.VolumeMount{Name: backupVolumeName, MountPath: cinderBackupConfigDir, ReadOnly: true},
-		corev1.VolumeMount{
+		corev1.VolumeMount{Name: backupVolumeName, MountPath: cinderBackupConfigDir, ReadOnly: true})
+
+	// The target side: the export an NFS target writes to.
+	switch backup.backupType {
+	case cinderv1alpha1.CinderBackupBackendTypeNFS:
+		volumes = append(volumes,
+			inlineNFSVolume(backupShareVolumeName, backup.server, backup.path, backup.mountOptions))
+		mounts = append(mounts, corev1.VolumeMount{
 			Name:      backupShareVolumeName,
 			MountPath: shareMountPath(backupMountPointBase, backup.server, backup.path),
-		},
-	)
+		})
+	case cinderv1alpha1.CinderBackupBackendTypeRBD:
+		// The Ceph driver reaches its pool through librados with the files
+		// backupCephProjection places in /etc/ceph; there is no export to mount.
+	}
 
 	// The source side. A backup reads the volume itself rather than a copy the
 	// volume service hands over, so every export an NFS volume backend serves is
@@ -185,6 +197,16 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 			Name:      name,
 			MountPath: shareMountPath(nfsMountPointBase, backend.server, backend.path),
 		})
+	}
+
+	if cephSources, _ := backupCephProjection(backup, backends); len(cephSources) > 0 {
+		volumes = append(volumes, corev1.Volume{
+			Name: cephVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: cephSources},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: cephVolumeName, MountPath: cephConfigDir, ReadOnly: true})
 	}
 
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
@@ -268,8 +290,8 @@ type sharedExportConflict struct {
 // pod never leaves ContainerCreating — for every backend, not just this one.
 //
 // Only NFS backends have an export to mount. An RBD backend is skipped: its
-// projection carries no server or path, and the Ceph client configuration the
-// backup pod needs to read its volumes is a separate projection (#1342).
+// projection carries no server or path, and the keyring the backup pod needs to
+// read its volumes is projected by backupCephProjection.
 func backupShareMounts(backends []backendProjection) ([]backendProjection, []sharedExportConflict) {
 	var sources []backendProjection
 	var conflicts []sharedExportConflict
@@ -332,5 +354,118 @@ func (r *CinderReconciler) warnSharedExportConflicts(ctx context.Context,
 			truncateSharedExportValue(conflict.backend.mountOptions))
 		log.FromContext(ctx).Info(msg)
 		r.Recorder.Event(cinder, corev1.EventTypeWarning, "SharedExportMountOptionsIgnored", msg)
+	}
+}
+
+// cephKeyringConflict names a keyring file two sources would project into the
+// backup pod's /etc/ceph with different keys: first is the source whose file the
+// pod carries, second the one whose file is not applied. Both read
+// "backup backend <name>" or "backend <name>".
+type cephKeyringConflict struct {
+	path, first, second string
+}
+
+// cephSourceOwner names one source of the backup pod's /etc/ceph and the digest
+// of the key its keyring carries.
+type cephSourceOwner struct {
+	owner, keyDigest string
+}
+
+// backupCephProjection composes the /etc/ceph directory of the backup pod and
+// returns the keyring conflicts the composition resolved.
+//
+// The directory is filled from several Secrets: the RBD target's own
+// <cluster>.conf and keyring, which the Ceph backup driver connects with, and
+// the keyring of every projected RBD volume backend. A backup of an RBD volume
+// reads the volume through os-brick with the volume backend's own user, and
+// os-brick opens /etc/ceph/<cluster>.client.<user>.keyring of that user and
+// nothing else of it: it builds the configuration it connects with from the
+// monitors the connection names, so a volume backend's ceph.conf is not
+// projected. One directory from several Secrets is a projected volume, which
+// also masks the /etc/ceph/rbdmap file ceph-common ships; nothing in the pod
+// reads it.
+//
+// The sources are walked in order, the target first and the volume backends in
+// projection order, and a path seen before is not added again: the API server
+// refuses a projected volume that maps two items to one path, and that
+// rejection would wedge every later pipeline step. The first writer wins. A
+// later source on the same path with the same key digest (two backends sharing
+// one user and one key) is dropped silently; one with a different digest is
+// dropped and returned as a conflict, because the pod cannot carry its key. A
+// source left without items is not emitted, and nil is returned when neither
+// the target nor any volume backend is RBD.
+func backupCephProjection(backup *backupProjection, backends []backendProjection) (
+	[]corev1.VolumeProjection, []cephKeyringConflict,
+) {
+	var sources []corev1.VolumeProjection
+	var conflicts []cephKeyringConflict
+	seen := map[string]cephSourceOwner{}
+
+	// add appends one Secret source carrying the items of items whose path is
+	// still free. items maps a data key to the file name it is projected under.
+	add := func(secretName, owner, keyDigest string, items []corev1.KeyToPath) {
+		var kept []corev1.KeyToPath
+		for _, item := range items {
+			if first, taken := seen[item.Path]; taken {
+				if first.keyDigest != keyDigest {
+					conflicts = append(conflicts, cephKeyringConflict{
+						path:   cephConfigDir + "/" + item.Path,
+						first:  first.owner,
+						second: owner,
+					})
+				}
+				continue
+			}
+			seen[item.Path] = cephSourceOwner{owner: owner, keyDigest: keyDigest}
+			kept = append(kept, item)
+		}
+		if len(kept) == 0 {
+			return
+		}
+		sources = append(sources, corev1.VolumeProjection{
+			Secret: &corev1.SecretProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Items:                kept,
+			},
+		})
+	}
+
+	if backup != nil && backup.backupType == cinderv1alpha1.CinderBackupBackendTypeRBD {
+		rbd := backup.rbd
+		add(backup.secretName, "backup backend "+backup.name, rbd.keyDigest, []corev1.KeyToPath{
+			{Key: cephConfDataKey, Path: cephConfFile(rbd.clusterName)},
+			{Key: keyringDataKey, Path: cephKeyringFile(rbd.clusterName, rbd.user)},
+		})
+	}
+	for _, backend := range backends {
+		if backend.backendType != cinderv1alpha1.CinderBackendTypeRBD {
+			continue
+		}
+		rbd := backend.rbd
+		add(backend.secretName, "backend "+backend.name, rbd.keyDigest, []corev1.KeyToPath{
+			{Key: keyringDataKey, Path: cephKeyringFile(rbd.clusterName, rbd.user)},
+		})
+	}
+	return sources, conflicts
+}
+
+// warnCephKeyringConflicts reports every keyring the backup pod's /etc/ceph
+// does not carry because another source already projects a different key under
+// the same file name, as a Warning event on the Cinder beside the log line. A
+// backup of a volume whose keyring is missing fails with os-brick's "Keyring
+// path ... is not readable", and this is the place that says why. The names
+// are CR names the API server bounds and the path is built from two
+// pattern-bounded fields, so nothing is clipped.
+func (r *CinderReconciler) warnCephKeyringConflicts(ctx context.Context, cinder *cinderv1alpha1.Cinder,
+	backup *backupProjection, backends []backendProjection,
+) {
+	_, conflicts := backupCephProjection(backup, backends)
+	for _, conflict := range conflicts {
+		msg := fmt.Sprintf(
+			"%s projects the keyring %s that %s already projects into the backup service with a different key, "+
+				"so its keyring is not applied there",
+			conflict.second, conflict.path, conflict.first)
+		log.FromContext(ctx).Info(msg)
+		r.Recorder.Event(cinder, corev1.EventTypeWarning, "CephKeyringConflict", msg)
 	}
 }
