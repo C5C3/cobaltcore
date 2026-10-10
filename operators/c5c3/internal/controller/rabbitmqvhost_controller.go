@@ -145,6 +145,10 @@ const (
 	reasonRabbitMQVhostError = "VhostError"
 )
 
+// rabbitMQVhostNotProvisionedMessage is the WaitingForPassword message of an
+// order without a live user generation.
+const rabbitMQVhostNotProvisionedMessage = "the vhost and its user are not provisioned yet; nothing is delivered"
+
 // RabbitMQVhostReconciler owns the RabbitMQVhost lifecycle and is the single
 // writer of its status. It serves orders on the management cluster and on
 // target clusters the way the KeystoneUser reconciler does: the order, its
@@ -217,7 +221,7 @@ func (r *RabbitMQVhostReconciler) now() time.Time {
 }
 
 // reconcileNormal runs the admission gates, the messaging gate, then the
-// provision.
+// provision and the delivery.
 //
 // The freeze of #1327 D2 is the assignment gate of orderAdmission: without an
 // entry the pass returns before anything is read or written in the
@@ -239,7 +243,7 @@ func (r *RabbitMQVhostReconciler) reconcileNormal(
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
-	_, _, result, ok, err := r.rabbitMQVhostMessagingGate(ctx, cp, failBoth)
+	host, port, result, ok, err := r.rabbitMQVhostMessagingGate(ctx, cp, failBoth)
 	if err != nil || !ok {
 		return rabbitMQVhostPassResult(order, cluster, result), err
 	}
@@ -256,9 +260,18 @@ func (r *RabbitMQVhostReconciler) reconcileNormal(
 	}
 	if !provisioned {
 		rabbitMQVhostFail(order, conditionTypeRabbitMQVhostDeliveryReady)(reasonRabbitMQVhostWaitingForPassword,
-			"the vhost and its user are not provisioned yet; nothing is delivered")
+			rabbitMQVhostNotProvisionedMessage)
+		return rabbitMQVhostPassResult(order, cluster, provisionResult), nil
 	}
-	return rabbitMQVhostPassResult(order, cluster, provisionResult), nil
+
+	deliveryResult, err := instrumenter.Instrument(ctx, "RabbitMQVhostDelivery",
+		func(ctx context.Context) (ctrl.Result, error) {
+			return r.deliverCredentials(ctx, oc, order, cp, cluster, host, port)
+		})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return rabbitMQVhostPassResult(order, cluster, commonreconcile.ShortestRequeue(provisionResult, deliveryResult)), nil
 }
 
 // rabbitMQVhostPassResult decides when the next pass runs once the legs had
