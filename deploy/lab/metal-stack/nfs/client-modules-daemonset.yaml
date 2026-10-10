@@ -64,7 +64,7 @@ spec:
         - operator: Exists
       initContainers:
         - name: load
-          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r2@sha256:7cf3421ddac874081e8ce3e0c80291842d30632ac9fdfa676204dc34545a8808
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c"]
           args:
@@ -92,7 +92,7 @@ spec:
               readOnly: true
       containers:
         - name: hold
-          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r1@sha256:3e45a6a1b091287acb73c982020a177e5c47b9442b263443c249e1525ae9624c
+          image: ghcr.io/c5c3/libvirt:10.0.0-2ubuntu8.19-r2@sha256:7cf3421ddac874081e8ce3e0c80291842d30632ac9fdfa676204dc34545a8808
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-c", "trap 'exit 0' TERM; sleep infinity & wait"]
           securityContext:
