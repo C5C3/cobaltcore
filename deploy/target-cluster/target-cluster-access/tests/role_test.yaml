@@ -70,6 +70,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystoneapplicationcredentials
               - keystonecatalogentries
               - keystoneprojects
               - keystoneroleassignments
@@ -78,6 +79,19 @@ tests:
               - get
               - list
               - watch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneapplicationcredentials
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
       - notContains:
           path: rules
           content:
