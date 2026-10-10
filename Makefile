@@ -264,7 +264,7 @@ manifests:
 # TARGET_CLUSTER_CRDS are the c5c3-operator CRDs of the order kinds. Each gets a
 # third copy in the target-cluster-access chart: an order on a target cluster
 # lives there, so that cluster has to serve the kind.
-TARGET_CLUSTER_CRDS := c5c3.io_keystoneusers.yaml c5c3.io_keystoneprojects.yaml c5c3.io_keystoneroleassignments.yaml c5c3.io_keystonecatalogentries.yaml c5c3.io_keystoneapplicationcredentials.yaml
+TARGET_CLUSTER_CRDS := c5c3.io_keystoneusers.yaml c5c3.io_keystoneprojects.yaml c5c3.io_keystoneroleassignments.yaml c5c3.io_keystonecatalogentries.yaml c5c3.io_keystoneapplicationcredentials.yaml c5c3.io_rabbitmqvhosts.yaml
 
 .PHONY: sync-crds
 # sync-crds copies generated CRD manifests from config/crd/bases/ to the Helm
