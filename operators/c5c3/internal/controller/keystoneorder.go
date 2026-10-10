@@ -12,12 +12,15 @@ import (
 	"fmt"
 	"strings"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -167,6 +170,26 @@ func orderEnsure(c client.Client, scheme *runtime.Scheme, owner client.Object, o
 	}
 }
 
+// ensureOrderSecret create-or-updates a Secret in the ControlPlane's namespace
+// and claims it with the order's labels. It stays read-modify-write because
+// mutate reads the live data: a generated value is preserved across passes.
+func ensureOrderSecret(
+	ctx context.Context, c client.Client, o orderRef, name, namespace string, mutate func(*corev1.Secret) error,
+) error {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, c, secret, func() error {
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		if err := mutate(secret); err != nil {
+			return err
+		}
+		claimOrderChild(secret, o)
+		return nil
+	})
+	return err
+}
+
 // --- gates ---
 
 // The reasons of the admission gates every order kind writes.
@@ -284,6 +307,63 @@ func orderPassResult(cluster string, converged bool, result ctrl.Result) ctrl.Re
 	return ctrl.Result{RequeueAfter: orderRefreshAfter}
 }
 
+// --- backup ---
+
+// orderRemoteKeyFor returns the OpenBao path an order backs its document up to
+// under the leaf name leaf. The PushSecret writing it lives in the
+// ControlPlane's namespace and pushes through that namespace's own store, so the
+// path sits under that namespace, which is what the eso-tenant policy grants
+// the store (openstack/keystone/{store namespace}/+/service-accounts/+). The
+// prefix fills the segment in between, so no two orders share a path.
+func orderRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, prefix, leaf string) string {
+	return "openstack/keystone/" + cp.Namespace + "/" + strings.TrimSuffix(prefix, "-") + "/service-accounts/" + leaf
+}
+
+// stampOrderPush stamps the document hash under hashAnnotation on the order's
+// PushSecret, so ESO pushes a changed document at once rather than at its next
+// refresh, and records under syncedBeforeAnnotation the syncedResourceVersion
+// the stamp was written against. An unchanged hash writes nothing, and a
+// missing PushSecret is a no-op: the read after it reports that. The update
+// retries on conflict, because ESO writes the PushSecret's status on every
+// push; the conflict is also what keeps a cached syncedResourceVersion older
+// than the live one from being recorded.
+func stampOrderPush(
+	ctx context.Context, c client.Client, key types.NamespacedName, hashAnnotation, syncedBeforeAnnotation, hash string,
+) error {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ps := &esov1alpha1.PushSecret{}
+		if err := c.Get(ctx, key, ps); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if ps.Annotations[hashAnnotation] == hash {
+			return nil
+		}
+		if ps.Annotations == nil {
+			ps.Annotations = map[string]string{}
+		}
+		ps.Annotations[hashAnnotation] = hash
+		ps.Annotations[syncedBeforeAnnotation] = ps.Status.SyncedResourceVersion
+		return c.Update(ctx, ps)
+	}); err != nil {
+		return fmt.Errorf("stamping order PushSecret %s: %w", key, err)
+	}
+	return nil
+}
+
+// orderPushFresh reports whether ESO has pushed the document whose hash
+// stampOrderPush stamped under hashAnnotation. ESO sets
+// status.syncedResourceVersion only after a successful push, from the object's
+// labels and annotations, so a value other than the one recorded under
+// syncedBeforeAnnotation proves a push that saw the current hash. Ready alone
+// does not say so: after a rotation it stays True from the previous push until
+// ESO has processed the new stamp, and OpenBao would still hold the superseded
+// credential.
+func orderPushFresh(ps *esov1alpha1.PushSecret, hashAnnotation, syncedBeforeAnnotation, hash string) bool {
+	return pushSecretReady(ps) &&
+		ps.Annotations[hashAnnotation] == hash &&
+		ps.Status.SyncedResourceVersion != ps.Annotations[syncedBeforeAnnotation]
+}
+
 // --- teardown ---
 
 // orderKind names the kind of owner in the teardown's log lines and errors.
@@ -351,10 +431,11 @@ func orderTeardown(
 // item the order owns, the items first selects before the rest, and returns the
 // number of deletes issued. A child is counted on the pass that issued its
 // delete: K-ORC holds its objects behind finalizers while it clears Keystone,
-// and the teardown waits for that. A nil first keeps the listed order.
+// and the teardown waits for that. A nil first keeps the listed order. An item
+// skip selects is neither deleted nor counted; a nil skip selects none.
 func sweepOrderList(
 	ctx context.Context, mgmt client.Client, owner client.Object, o orderRef, childNS string,
-	list client.ObjectList, first func(client.Object) bool,
+	list client.ObjectList, first, skip func(client.Object) bool,
 ) (int, error) {
 	if err := mgmt.List(ctx, list, client.InNamespace(childNS), client.MatchingLabels(o.childLabels())); err != nil {
 		return 0, fmt.Errorf("listing order %T: %w", list, err)
@@ -370,7 +451,8 @@ func sweepOrderList(
 	for _, firstPass := range []bool{true, false} {
 		for _, item := range items {
 			obj, ok := item.(client.Object)
-			if !ok || !ownsOrderChild(obj, owner, o) || (first != nil && first(obj)) != firstPass {
+			if !ok || !ownsOrderChild(obj, owner, o) || (first != nil && first(obj)) != firstPass ||
+				(skip != nil && skip(obj)) {
 				continue
 			}
 			logger.Info("removing a "+kind+" child", "name", obj.GetName(), "namespace", obj.GetNamespace())
@@ -384,10 +466,10 @@ func sweepOrderList(
 }
 
 // orderSweep is one list sweepOrderLists sweeps, with the selector of the items
-// deleted first.
+// deleted first and the selector of the items it leaves alone.
 type orderSweep struct {
-	list  client.ObjectList
-	first func(client.Object) bool
+	list        client.ObjectList
+	first, skip func(client.Object) bool
 }
 
 // sweepOrderLists runs sweepOrderList over each list in turn and returns the
@@ -397,7 +479,7 @@ func sweepOrderLists(
 ) (int, error) {
 	deleted := 0
 	for _, sw := range sweeps {
-		n, err := sweepOrderList(ctx, mgmt, owner, o, childNS, sw.list, sw.first)
+		n, err := sweepOrderList(ctx, mgmt, owner, o, childNS, sw.list, sw.first, sw.skip)
 		if err != nil {
 			return 0, err
 		}

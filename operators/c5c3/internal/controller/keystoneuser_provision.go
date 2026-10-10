@@ -112,7 +112,7 @@ func (r *KeystoneUserReconciler) provisionUser(
 		},
 		ensurePasswordSecret: func(ctx context.Context, gen int64) error {
 			name := keystoneUserPasswordSecretName(order, cluster, gen)
-			if err := r.ensureKeystoneUserSecret(ctx, order, cluster, name, cp.Namespace,
+			if err := ensureOrderSecret(ctx, r.Client, keystoneUserRef(order, cluster), name, cp.Namespace,
 				generatedPasswordMutator); err != nil {
 				return fmt.Errorf("ensuring order password Secret %q: %w", name, err)
 			}

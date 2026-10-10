@@ -16,7 +16,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,7 +35,7 @@ const keystoneUserPushContentHashAnnotation = "c5c3.io/keystoneuser-push-hash" /
 // status.syncedResourceVersion as it was when the content hash was stamped. ESO
 // sets that field only after a successful push, from the object's labels and
 // annotations, so a value other than the recorded one proves a push that saw the
-// current hash (keystoneUserPushFresh).
+// current hash (orderPushFresh).
 const keystoneUserPushSyncedBeforeAnnotation = "c5c3.io/keystoneuser-push-synced-before"
 
 // deliverCredentials backs the password of generation gen up to OpenBao and
@@ -86,7 +85,7 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 	cloudsYAML := []byte(buildUserCloudsYAML(cp, userName, domain, string(password), ref))
 
 	sourceName := keystoneUserSourceSecretName(order, cluster)
-	if err := r.ensureKeystoneUserSecret(ctx, order, cluster, sourceName, cp.Namespace, func(secret *corev1.Secret) error {
+	if err := ensureOrderSecret(ctx, r.Client, keystoneUserRef(order, cluster), sourceName, cp.Namespace, func(secret *corev1.Secret) error {
 		secret.Data[serviceAccountPasswordKey] = password
 		secret.Data["username"] = []byte(userName)
 		secret.Data["user_domain_name"] = []byte(domain)
@@ -109,7 +108,8 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 	sum := sha256.Sum256(cloudsYAML)
 	hash := hex.EncodeToString(sum[:])
 	pushKey := types.NamespacedName{Namespace: cp.Namespace, Name: pushName}
-	if err := stampKeystoneUserPush(ctx, r.Client, pushKey, hash); err != nil {
+	if err := stampOrderPush(ctx, r.Client, pushKey,
+		keystoneUserPushContentHashAnnotation, keystoneUserPushSyncedBeforeAnnotation, hash); err != nil {
 		fail(reasonKeystoneUserDeliveryError, err.Error())
 		return ctrl.Result{}, err
 	}
@@ -118,7 +118,7 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 		fail(reasonKeystoneUserDeliveryError, err.Error())
 		return ctrl.Result{}, fmt.Errorf("reading order PushSecret %s/%s: %w", cp.Namespace, pushName, err)
 	}
-	if !keystoneUserPushFresh(pushed, hash) {
+	if !orderPushFresh(pushed, keystoneUserPushContentHashAnnotation, keystoneUserPushSyncedBeforeAnnotation, hash) {
 		fail(reasonKeystoneUserBackupNotSynced, fmt.Sprintf(
 			"the password is not backed up to OpenBao yet (PushSecret %s/%s)", cp.Namespace, pushName))
 		return requeue, nil
@@ -183,42 +183,4 @@ func (r *KeystoneUserReconciler) deliverCredentials(
 		"credentials are delivered in Secret %q (keys clouds.yaml, password) in namespace %q on %s",
 		secretKey.Name, secretKey.Namespace, location))
 	return ctrl.Result{}, nil
-}
-
-// stampKeystoneUserPush stamps the document hash on the order's PushSecret, so
-// ESO pushes a changed document at once rather than at its next refresh, and
-// records the syncedResourceVersion the stamp was written against. An unchanged
-// hash writes nothing, and a missing PushSecret is a no-op: the read after it
-// reports that. The update retries on conflict, because ESO writes the
-// PushSecret's status on every push; the conflict is also what keeps a cached
-// syncedResourceVersion older than the live one from being recorded.
-func stampKeystoneUserPush(ctx context.Context, c client.Client, key types.NamespacedName, hash string) error {
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		ps := &esov1alpha1.PushSecret{}
-		if err := c.Get(ctx, key, ps); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		if ps.Annotations[keystoneUserPushContentHashAnnotation] == hash {
-			return nil
-		}
-		if ps.Annotations == nil {
-			ps.Annotations = map[string]string{}
-		}
-		ps.Annotations[keystoneUserPushContentHashAnnotation] = hash
-		ps.Annotations[keystoneUserPushSyncedBeforeAnnotation] = ps.Status.SyncedResourceVersion
-		return c.Update(ctx, ps)
-	}); err != nil {
-		return fmt.Errorf("stamping order PushSecret %s: %w", key, err)
-	}
-	return nil
-}
-
-// keystoneUserPushFresh reports whether ESO has pushed the document whose hash
-// is hash. Ready alone does not say so: after a rotation it stays True from the
-// previous push until ESO has processed the new stamp, and OpenBao would still
-// hold a password Keystone no longer accepts.
-func keystoneUserPushFresh(ps *esov1alpha1.PushSecret, hash string) bool {
-	return pushSecretReady(ps) &&
-		ps.Annotations[keystoneUserPushContentHashAnnotation] == hash &&
-		ps.Status.SyncedResourceVersion != ps.Annotations[keystoneUserPushSyncedBeforeAnnotation]
 }

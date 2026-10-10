@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -482,12 +484,26 @@ func TestSweepOrderList(t *testing.T) {
 		labelled("outside-the-prefix"))
 
 	n, err := sweepOrderList(ctx, c, owner, o, "default", &orcv1alpha1.UserList{},
-		func(obj client.Object) bool { return obj.GetName() == o.childPrefix()+"c" })
+		func(obj client.Object) bool { return obj.GetName() == o.childPrefix()+"c" }, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(n).To(Equal(3))
 	g.Expect(deleted).To(Equal([]string{o.childPrefix() + "c", o.childPrefix() + "a", o.childPrefix() + "b"}),
 		"the selected item goes first, the rest in listed order, the foreign object never")
+
+	t.Run("a skipped item is neither deleted nor counted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		kept := labelled(o.childPrefix() + "kept")
+		c := kuFakeClient(t, nil, labelled(o.childPrefix()+"gone"), kept)
+
+		n, err := sweepOrderList(ctx, c, owner, o, "default", &orcv1alpha1.UserList{}, nil,
+			func(obj client.Object) bool { return obj.GetName() == kept.Name })
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(n).To(Equal(1))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(kept), &orcv1alpha1.User{})).To(Succeed())
+		g.Expect(labelledIn(t, c, &orcv1alpha1.UserList{}, keystoneUserNameLabel, kuTestName)).To(Equal(1))
+	})
 
 	t.Run("a list error is wrapped", func(t *testing.T) {
 		g := NewGomegaWithT(t)
@@ -496,14 +512,103 @@ func TestSweepOrderList(t *testing.T) {
 				return errors.New("boom")
 			},
 		})
-		_, err := sweepOrderList(ctx, failing, owner, o, "default", &orcv1alpha1.UserList{}, nil)
+		_, err := sweepOrderList(ctx, failing, owner, o, "default", &orcv1alpha1.UserList{}, nil, nil)
 		g.Expect(err).To(MatchError(ContainSubstring("listing order *v1alpha1.UserList")))
 	})
 
 	t.Run("an empty list issues nothing", func(t *testing.T) {
 		g := NewGomegaWithT(t)
-		n, err := sweepOrderList(ctx, kuFakeClient(t, nil), owner, o, "default", &orcv1alpha1.UserList{}, nil)
+		n, err := sweepOrderList(ctx, kuFakeClient(t, nil), owner, o, "default", &orcv1alpha1.UserList{}, nil, nil)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(n).To(BeZero())
+	})
+}
+
+func TestEnsureOrderSecret_ClaimsAndPreservesTheLiveData(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	o := testOrderRef(kuTestCluster)
+	c := kuFakeClient(t, nil)
+	generate := func(secret *corev1.Secret) error {
+		if len(secret.Data["value"]) == 0 {
+			secret.Data["value"] = []byte(time.Now().String())
+		}
+		return nil
+	}
+
+	g.Expect(ensureOrderSecret(ctx, c, o, o.childPrefix()+"secret", "default", generate)).To(Succeed())
+	first := &corev1.Secret{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Namespace: "default", Name: o.childPrefix() + "secret"}, first)).To(Succeed())
+	g.Expect(first.Labels).To(Equal(o.childLabels()))
+	g.Expect(first.OwnerReferences).To(BeEmpty())
+
+	g.Expect(ensureOrderSecret(ctx, c, o, o.childPrefix()+"secret", "default", generate)).To(Succeed())
+	second := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(first), second)).To(Succeed())
+	g.Expect(second.Data["value"]).To(Equal(first.Data["value"]), "a generated value survives the next pass")
+
+	boom := errors.New("boom")
+	err := ensureOrderSecret(ctx, c, o, o.childPrefix()+"other", "default",
+		func(*corev1.Secret) error { return boom })
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: "default", Name: o.childPrefix() + "other"},
+		&corev1.Secret{}))).To(BeTrue(), "a failed mutate writes nothing")
+}
+
+func TestStampOrderPushAndFresh(t *testing.T) {
+	const hashKey, beforeKey = "example.io/push-hash", "example.io/push-synced-before"
+	key := types.NamespacedName{Namespace: "default", Name: "backup"}
+	ready := []esov1alpha1.PushSecretStatusCondition{{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue}}
+
+	t.Run("a new hash is stamped against the synced version", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		c := kuFakeClient(t, nil, &esov1alpha1.PushSecret{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Status:     esov1alpha1.PushSecretStatus{Conditions: ready, SyncedResourceVersion: "1-old"},
+		})
+
+		g.Expect(stampOrderPush(ctx, c, key, hashKey, beforeKey, "h1")).To(Succeed())
+		ps := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, key, ps)).To(Succeed())
+		g.Expect(ps.Annotations).To(Equal(map[string]string{hashKey: "h1", beforeKey: "1-old"}))
+		g.Expect(orderPushFresh(ps, hashKey, beforeKey, "h1")).To(BeFalse(),
+			"Ready from the previous push does not prove a push of the new hash")
+
+		ps.Status.SyncedResourceVersion = "2-pushed"
+		g.Expect(orderPushFresh(ps, hashKey, beforeKey, "h1")).To(BeTrue())
+		g.Expect(orderPushFresh(ps, hashKey, beforeKey, "h2")).To(BeFalse(), "another document is not pushed")
+
+		version := ps.ResourceVersion
+		g.Expect(stampOrderPush(ctx, c, key, hashKey, beforeKey, "h1")).To(Succeed())
+		g.Expect(c.Get(ctx, key, ps)).To(Succeed())
+		g.Expect(ps.ResourceVersion).To(Equal(version), "an unchanged hash writes nothing")
+	})
+
+	t.Run("a missing PushSecret is a no-op", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(stampOrderPush(context.Background(), kuFakeClient(t, nil), key, hashKey, beforeKey, "h1")).To(Succeed())
+	})
+
+	t.Run("an update error is wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		boom := errors.New("boom")
+		c := kuFakeClient(t, &interceptor.Funcs{
+			Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error { return boom },
+		}, &esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}})
+
+		err := stampOrderPush(context.Background(), c, key, hashKey, beforeKey, "h1")
+		g.Expect(err).To(MatchError(boom))
+		g.Expect(err.Error()).To(ContainSubstring("stamping order PushSecret default/backup"))
+	})
+
+	t.Run("a PushSecret that is not Ready is not fresh", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ps := &esov1alpha1.PushSecret{
+			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{hashKey: "h1", beforeKey: "1-old"}},
+			Status:     esov1alpha1.PushSecretStatus{SyncedResourceVersion: "2-pushed"},
+		}
+		g.Expect(orderPushFresh(ps, hashKey, beforeKey, "h1")).To(BeFalse())
 	})
 }

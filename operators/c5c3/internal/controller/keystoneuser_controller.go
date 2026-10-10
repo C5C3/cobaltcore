@@ -342,13 +342,9 @@ func keystoneUserCredentialsSecretName(order *c5c3v1alpha1.KeystoneUser) string 
 }
 
 // keystoneUserRemoteKeyFor returns the OpenBao path the order's credentials are
-// backed up to. The PushSecret writing it lives in the ControlPlane's namespace
-// and pushes through that namespace's own store, so the path sits under that
-// namespace, which is what the eso-tenant policy grants the store
-// (openstack/keystone/{store namespace}/+/service-accounts/+). The prefix fills
-// the segment in between, so no two orders share a path.
+// backed up to (orderRemoteKeyFor).
 func keystoneUserRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, prefix string) string {
-	return "openstack/keystone/" + cp.Namespace + "/" + strings.TrimSuffix(prefix, "-") + "/service-accounts/credentials"
+	return orderRemoteKeyFor(cp, prefix, "credentials")
 }
 
 // keystoneUserName resolves the Keystone user name, defaulting to the order's
@@ -395,27 +391,6 @@ func (r *KeystoneUserReconciler) ensureKeystoneUserChild(
 // bound to the order (orderEnsure).
 func (r *KeystoneUserReconciler) keystoneUserEnsure(order *c5c3v1alpha1.KeystoneUser, cluster string) registrationEnsure {
 	return orderEnsure(r.Client, r.Scheme, order, keystoneUserRef(order, cluster))
-}
-
-// ensureKeystoneUserSecret create-or-updates a labelled Secret in the
-// ControlPlane's namespace. It stays read-modify-write because mutate reads the
-// live data: a generated password is preserved across passes.
-func (r *KeystoneUserReconciler) ensureKeystoneUserSecret(
-	ctx context.Context, order *c5c3v1alpha1.KeystoneUser, cluster, name, namespace string,
-	mutate func(*corev1.Secret) error,
-) error {
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
-		if err := mutate(secret); err != nil {
-			return err
-		}
-		claimKeystoneUserChild(secret, order, cluster)
-		return nil
-	})
-	return err
 }
 
 // --- teardown ---
