@@ -111,6 +111,16 @@ func integrationBackupBackend(name, namespace, cinderRef string) *CinderBackupBa
 	return b
 }
 
+// integrationRBDBackupBackend returns validRBDCinderBackupBackend() stamped with
+// name/namespace and pointed at cinderRef, for API server submission.
+func integrationRBDBackupBackend(name, namespace, cinderRef string) *CinderBackupBackend {
+	b := validRBDCinderBackupBackend()
+	b.Name = name
+	b.Namespace = namespace
+	b.Spec.CinderRef = CinderRefSpec{Name: cinderRef}
+	return b
+}
+
 // expectRejected asserts that err is an API-server rejection carrying want.
 func expectRejected(t testing.TB, err error, want string) {
 	t.Helper()
@@ -161,11 +171,11 @@ func TestIntegration_CRD_CELOnly_RejectsCinderRefChange(t *testing.T) {
 }
 
 // TestIntegration_CRD_CELOnly_RejectsTypeChange pins the type immutability
-// transition rule on both satellites. A CinderBackend can name two types, so its
-// update moves an NFS backend to a well-formed RBD one and only the transition
-// rule is left to answer. The backup type is a single-value enum (NFS), so any
-// change there is rejected by the immutability rule, the enum constraint, or
-// both.
+// transition rule on both satellites against a type outside the enum, which the
+// immutability rule, the enum constraint, or both reject. A CinderBackend moves
+// to a well-formed RBD one here as well, so only the transition rule is left to
+// answer; TestIntegration_CRD_CELOnly_RejectsBackupTypeChange is the backup
+// target's twin of that case.
 func TestIntegration_CRD_CELOnly_RejectsTypeChange(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -330,6 +340,137 @@ func TestIntegration_CRD_CELOnly_RBDFieldPatterns(t *testing.T) {
 		b := integrationRBDBackend("backend", ns, "cinder-a")
 		b.Spec.RBD.Monitors = []string{"10.96.12.3:6789", "ceph-mon-b.rook-ceph.svc"}
 		b.Spec.RBD.SecretUUID = "457eb676-33da-42ec-9a8c-9293d545c337"
+		g.Expect(c.Create(ctx, b)).To(Succeed())
+	})
+}
+
+// TestIntegration_CRD_CELOnly_RejectsBackupTypeChange moves an NFS backup target
+// to a well-formed RBD one, so the enum and the union rule both pass and only
+// the transition rule is left to answer: a restore reads a backup with the
+// driver that wrote it.
+func TestIntegration_CRD_CELOnly_RejectsBackupTypeChange(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "backup-type-rbd-")
+
+	b := integrationBackupBackend("backup", ns, "cinder-a")
+	g.Expect(c.Create(ctx, b)).To(Succeed(), "valid backup backend should be accepted")
+
+	got := &CinderBackupBackend{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "backup", Namespace: ns}, got)).To(Succeed())
+	got.Spec.Type = CinderBackupBackendTypeRBD
+	got.Spec.NFS = nil
+	got.Spec.RBD = validRBDCinderBackupBackend().Spec.RBD
+
+	err := c.Update(ctx, got)
+	expectRejected(t, err, "type is immutable")
+	g.Expect(err.Error()).NotTo(ContainSubstring("exactly one backup backend block"),
+		"the update carries the block its new type needs")
+}
+
+// TestIntegration_CRD_CELOnly_RejectsBackupRBDUnionMismatch pins the second half
+// of the backup union rule: a type-RBD target without spec.rbd, and a type-NFS
+// target that carries spec.rbd beside spec.nfs, are both rejected by the CEL
+// rule alone.
+func TestIntegration_CRD_CELOnly_RejectsBackupRBDUnionMismatch(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	const want = "exactly one backup backend block matching spec.type must be set " +
+		"(type NFS requires spec.nfs, type RBD requires spec.rbd)"
+
+	t.Run("type RBD without the block", func(t *testing.T) {
+		ns := newNamespace(t, ctx, c, "backup-rbd-union-")
+		b := integrationRBDBackupBackend("backup", ns, "cinder-a")
+		b.Spec.RBD = nil
+		expectRejected(t, c.Create(ctx, b), want)
+	})
+
+	t.Run("type NFS with both blocks", func(t *testing.T) {
+		ns := newNamespace(t, ctx, c, "backup-rbd-union-")
+		b := integrationBackupBackend("backup", ns, "cinder-a")
+		b.Spec.RBD = validRBDCinderBackupBackend().Spec.RBD
+		expectRejected(t, c.Create(ctx, b), want)
+	})
+}
+
+// TestIntegration_CRD_CELOnly_BackupRBDFieldPatterns pins the RBD field rules of
+// the backup target on the CRD alone: every value reaches a file, a command line
+// or an ipBlock verbatim, so the schema must hold them while the webhook is
+// down.
+func TestIntegration_CRD_CELOnly_BackupRBDFieldPatterns(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(rbd *RBDBackupBackendSpec)
+		want   []string
+	}{
+		{
+			name:   "user with the client. prefix",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.User = "client.cinder-backup" },
+			want: []string{
+				"spec.rbd.user",
+				"user is the cephx name without its client. prefix (write cinder-backup, not client.cinder-backup)",
+			},
+		},
+		{
+			name:   "empty monitors",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.Monitors = []string{} },
+			want:   []string{"spec.rbd.monitors", "should have at least 1 items"},
+		},
+		{
+			name:   "network without a prefix length",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.Networks = []string{"10.244.0.0"} },
+			want:   []string{"spec.rbd.networks[0]", "should match"},
+		},
+		{
+			name:   "uppercase key Secret name",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.KeySecretRef.Name = "Ceph_Key" },
+			want:   []string{"spec.rbd.keySecretRef.name", "should match"},
+		},
+		{
+			name:   "pool with a space",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.Pool = "my pool" },
+			want:   []string{"spec.rbd.pool", "should match"},
+		},
+		{
+			name:   "clusterName with a path separator",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.ClusterName = "ceph/../x" },
+			want:   []string{"spec.rbd.clusterName", "should match"},
+		},
+		{
+			name:   "monitor carrying a comma",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.Monitors = []string{"mon-a,mon-b"} },
+			want:   []string{"spec.rbd.monitors[0]", "should match"},
+		},
+		{
+			name:   "IPv6 monitor literal",
+			mutate: func(rbd *RBDBackupBackendSpec) { rbd.Monitors = []string{"[fd00::1]:6789"} },
+			want:   []string{"spec.rbd.monitors[0]", "should match"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "backup-rbd-fields-")
+			b := integrationRBDBackupBackend("backup", ns, "cinder-a")
+			tc.mutate(b.Spec.RBD)
+			err := c.Create(ctx, b)
+			for _, want := range tc.want {
+				expectRejected(t, err, want)
+			}
+		})
+	}
+
+	t.Run("a well-formed block is accepted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "backup-rbd-fields-")
+		b := integrationRBDBackupBackend("backup", ns, "cinder-a")
+		b.Spec.RBD.Monitors = []string{"10.96.12.3:6789", "ceph-mon-b.rook-ceph.svc"}
+		b.Spec.RBD.Networks = []string{"10.244.0.0/16", "10.96.0.0/12"}
 		g.Expect(c.Create(ctx, b)).To(Succeed())
 	})
 }
@@ -564,6 +705,26 @@ func TestIntegration_CRD_RBDClusterNameDefaultMaterialized(t *testing.T) {
 		"CRD default must materialize the cluster name")
 }
 
+// TestIntegration_CRD_BackupRBDClusterNameDefaultMaterialized proves the CRD
+// schema default is materialized on the backup target without the mutating
+// webhook: an rbd block that omits clusterName comes back with ceph.
+func TestIntegration_CRD_BackupRBDClusterNameDefaultMaterialized(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+	ns := newNamespace(t, ctx, c, "backup-clustername-default-")
+
+	b := integrationRBDBackupBackend("backup", ns, "cinder-a")
+	b.Spec.RBD.ClusterName = ""
+	g.Expect(c.Create(ctx, b)).To(Succeed(), "backup target without clusterName should be accepted")
+
+	got := &CinderBackupBackend{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "backup", Namespace: ns}, got)).To(Succeed())
+	g.Expect(got.Spec.RBD.ClusterName).To(Equal(DefaultRBDClusterName),
+		"CRD default must materialize the cluster name")
+}
+
 // --- Live admission round-trip (webhooks running) ---
 
 // TestIntegration_WebhookRejectsRBDNetworkWithHostBits proves the webhook
@@ -577,6 +738,22 @@ func TestIntegration_WebhookRejectsRBDNetworkWithHostBits(t *testing.T) {
 	ns := newNamespace(t, ctx, c, "rbd-host-bits-")
 
 	b := integrationRBDBackend("backend", ns, "cinder-a")
+	b.Spec.RBD.Networks = []string{"10.128.0.1/22"}
+	err := c.Create(ctx, b)
+	expectRejected(t, err, "spec.rbd.networks[0]")
+	expectRejected(t, err, "must be a canonical IPv4 CIDR such as 10.128.0.0/16 (host bits zero)")
+}
+
+// TestIntegration_WebhookRejectsBackupRBDNetworkWithHostBits is the backup
+// target's twin: 10.128.0.1/22 passes the pattern, and the webhook refuses it
+// because it would end up as an ipBlock.cidr of the Ceph egress rule.
+func TestIntegration_WebhookRejectsBackupRBDNetworkWithHostBits(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTest(t)
+	ns := newNamespace(t, ctx, c, "backup-rbd-host-bits-")
+
+	b := integrationRBDBackupBackend("backup", ns, "cinder-a")
 	b.Spec.RBD.Networks = []string{"10.128.0.1/22"}
 	err := c.Create(ctx, b)
 	expectRejected(t, err, "spec.rbd.networks[0]")
