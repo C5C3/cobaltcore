@@ -1,9 +1,10 @@
 {{/*
 One Role per assigned namespace, holding what the c5c3-operator needs to serve
 the order kinds there (KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
-KeystoneCatalogEntry, KeystoneApplicationCredential) and nothing else: it reads
-the orders, writes their status and finalizers, and writes the Secret a
-KeystoneUser or KeystoneApplicationCredential delivers beside it.
+KeystoneCatalogEntry, KeystoneApplicationCredential, RabbitMQVhost) and nothing
+else: it reads the orders, writes their status and finalizers, and writes the
+Secret a KeystoneUser, KeystoneApplicationCredential or RabbitMQVhost delivers
+beside it.
 No workload kind is granted, so whoever holds the registration kubeconfig
 cannot run anything in a namespace that belongs to a service owner.
 
@@ -48,6 +49,7 @@ rules:
       - keystoneprojects
       - keystoneroleassignments
       - keystoneusers
+      - rabbitmqvhosts
     verbs:
       - get
       - list
@@ -63,6 +65,7 @@ rules:
       - keystoneprojects/status
       - keystoneroleassignments/status
       - keystoneusers/status
+      - rabbitmqvhosts/status
     verbs:
       - get
       - update
@@ -76,6 +79,7 @@ rules:
       - keystoneprojects/finalizers
       - keystoneroleassignments/finalizers
       - keystoneusers/finalizers
+      - rabbitmqvhosts/finalizers
     verbs:
       - update
 {{- end }}

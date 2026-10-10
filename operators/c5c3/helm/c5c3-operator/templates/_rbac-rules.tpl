@@ -93,6 +93,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
+  - rabbitmqvhosts/finalizers
   verbs:
   - update
 - apiGroups:
@@ -106,6 +107,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneroleassignments/status
   - keystoneservices/status
   - keystoneusers/status
+  - rabbitmqvhosts/status
   verbs:
   - get
   - patch
@@ -118,6 +120,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneprojects
   - keystoneroleassignments
   - keystoneusers
+  - rabbitmqvhosts
   verbs:
   - get
   - list
@@ -379,7 +382,10 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - rabbitmq.com
   resources:
+  - permissions
   - rabbitmqclusters
+  - users
+  - vhosts
   verbs:
   - create
   - delete

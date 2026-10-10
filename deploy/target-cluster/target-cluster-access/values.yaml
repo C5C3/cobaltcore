@@ -25,8 +25,8 @@ namespaces: []
 #
 # The CRDs of the order kinds ship in this chart's crds/ directory:
 # c5c3.io_keystoneusers.yaml, c5c3.io_keystoneprojects.yaml,
-# c5c3.io_keystoneroleassignments.yaml, c5c3.io_keystonecatalogentries.yaml
-# and c5c3.io_keystoneapplicationcredentials.yaml.
+# c5c3.io_keystoneroleassignments.yaml, c5c3.io_keystonecatalogentries.yaml,
+# c5c3.io_keystoneapplicationcredentials.yaml and c5c3.io_rabbitmqvhosts.yaml.
 # Helm installs them with the first install and never upgrades them, so apply
 # the crds/ files with kubectl on an upgrade that changes one. Install the chart
 # before the cluster is registered: the operator watches a kind only on a
