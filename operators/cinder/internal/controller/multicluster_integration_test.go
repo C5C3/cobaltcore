@@ -343,6 +343,78 @@ func TestIntegration_Multicluster_CinderTargetCluster(t *testing.T) {
 		waitForBackendCondition(t, ctx, mgmtClient, rbdKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
 	})
 
+	t.Run("targeted RBD backup backend gates on the key Secret of the target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		rbdBackupKey := types.NamespacedName{Name: integrationRBDBackupBackendName, Namespace: targetNamespace}
+		backupDeployKey := client.ObjectKey{Namespace: targetNamespace, Name: integrationCinderName + "-" + componentBackup}
+		keySecret := func() *corev1.Secret {
+			return &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: integrationRBDBackupKeySecretName, Namespace: targetNamespace},
+				Data:       map[string][]byte{cinderv1alpha1.RBDKeySecretDataKey: []byte(testRBDKey)},
+			}
+		}
+
+		// A Cinder admits one backup target, so the NFS one goes first, and its
+		// backup Deployment with it.
+		nfsTarget := &cinderv1alpha1.CinderBackupBackend{}
+		g.Expect(mgmtClient.Get(ctx, backupBackendKey, nfsTarget)).To(Succeed())
+		g.Expect(mgmtClient.Delete(ctx, nfsTarget)).To(Succeed(), "detach the NFS backup target")
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(targetClient.Get(ctx, backupDeployKey, &appsv1.Deployment{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the backup Deployment of the detached target should be deleted")
+
+		// The backup pod mounts the keyring where it runs, so the gate reads the
+		// target cluster: a Secret of the right name on the management cluster,
+		// beside the CR, satisfies nothing.
+		g.Expect(mgmtClient.Create(ctx, keySecret())).To(Succeed(), "create the key Secret on the management cluster")
+		g.Expect(mgmtClient.Create(ctx, integrationRBDBackupBackendCR(
+			integrationRBDBackupBackendName, targetNamespace, integrationCinderName))).
+			To(Succeed(), "create the RBD CinderBackupBackend CR")
+		cond := waitForBackupBackendCondition(t, ctx, mgmtClient, rbdBackupKey, conditionTypeCredentialsReady,
+			metav1.ConditionFalse, eventuallyTimeout)
+		g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCredentials))
+		g.Expect(cond.Message).To(ContainSubstring("not found yet"))
+
+		g.Expect(targetClient.Create(ctx, keySecret())).To(Succeed(), "create the key Secret on the target cluster")
+		cond = waitForBackupBackendCondition(t, ctx, mgmtClient, rbdBackupKey, conditionTypeCredentialsReady,
+			metav1.ConditionTrue, eventuallyLongTimeout)
+		g.Expect(cond.Reason).To(Equal(conditionReasonCredentialsAvailable))
+
+		// The projection reads the key on the target too and lands there.
+		backup := &appsv1.Deployment{}
+		eventuallyExists(t, ctx, targetClient, backupDeployKey, backup, "RBD backup Deployment", eventuallyLongTimeout)
+		markDeploymentReady(t, ctx, targetClient, backupDeployKey)
+		multiclusterExpectAbsent(t, ctx, mgmtClient, backupDeployKey, &appsv1.Deployment{}, "RBD backup Deployment")
+
+		secretName := mountedSecretName(&backup.Spec.Template.Spec, backupVolumeName)
+		g.Expect(secretName).To(HavePrefix(integrationCinderName + "-backup-" + integrationRBDBackupBackendName + "-"))
+		secretKey := client.ObjectKey{Namespace: targetNamespace, Name: secretName}
+		projection := &corev1.Secret{}
+		g.Expect(targetClient.Get(ctx, secretKey, projection)).To(Succeed())
+		g.Expect(string(projection.Data[keyringDataKey])).To(ContainSubstring(testRBDKey))
+		multiclusterExpectAbsent(t, ctx, mgmtClient, secretKey, &corev1.Secret{}, "RBD backup projection Secret")
+
+		// /etc/ceph of the backup pod carries the target's files and the RBD
+		// volume backend's keyring, both from Secrets on the target cluster.
+		var cephSources []string
+		for _, volume := range backup.Spec.Template.Spec.Volumes {
+			if volume.Name != cephVolumeName {
+				continue
+			}
+			g.Expect(volume.Projected).NotTo(BeNil(), "the backup pod's /etc/ceph is a projected volume")
+			for _, source := range volume.Projected.Sources {
+				cephSources = append(cephSources, source.Secret.Name)
+			}
+		}
+		g.Expect(cephSources).To(HaveLen(2))
+		g.Expect(cephSources[0]).To(Equal(secretName))
+		g.Expect(cephSources[1]).To(HavePrefix(integrationCinderName + "-backend-" + integrationRBDBackendName + "-"))
+
+		waitForBackupBackendCondition(t, ctx, mgmtClient, rbdBackupKey, "Ready", metav1.ConditionTrue,
+			eventuallyLongTimeout)
+	})
+
 	t.Run("a Cinder naming an unregistered cluster creates nothing and carries no finalizer", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 

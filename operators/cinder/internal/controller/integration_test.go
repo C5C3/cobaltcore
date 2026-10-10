@@ -68,7 +68,10 @@ const (
 	integrationBackendName       = "nfs"
 	integrationBackupBackendName = "backups"
 	integrationRBDBackendName    = "rbd"
-	integrationMariaDBName       = "mariadb"
+	// integrationRBDBackupBackendName names the RBD backup target the
+	// multicluster suite swaps in for the NFS one.
+	integrationRBDBackupBackendName = "rbdbk"
+	integrationMariaDBName          = "mariadb"
 
 	// #nosec G101 -- Secret object names, not credentials.
 	integrationDBSecretName  = "cinder-db"
@@ -77,6 +80,9 @@ const (
 	// integrationRBDKeySecretName names the key Secret of the RBD backend; the
 	// key it carries is testRBDKey.
 	integrationRBDKeySecretName = "rbd-key"
+	// integrationRBDBackupKeySecretName names the key Secret of the RBD backup
+	// target; the key it carries is testRBDKey.
+	integrationRBDBackupKeySecretName = "rbdbk-key"
 
 	// integrationImageRepository is the repository every workload and every Job
 	// of these suites runs; the tag is the release under test.
@@ -400,6 +406,27 @@ func integrationBackupBackendCR(name, ns, cinderName string) *cinderv1alpha1.Cin
 			NFS: &cinderv1alpha1.NFSBackupBackendSpec{
 				Server: integrationNFSServer,
 				Path:   integrationBackupPath,
+			},
+		},
+	}
+}
+
+// integrationRBDBackupBackendCR returns an RBD backup target writing to the
+// pool backups as the cephx user cinder-backup, its key in
+// integrationRBDBackupKeySecretName. The cluster name is left to the webhook
+// default.
+func integrationRBDBackupBackendCR(name, ns, cinderName string) *cinderv1alpha1.CinderBackupBackend {
+	return &cinderv1alpha1.CinderBackupBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: cinderv1alpha1.CinderBackupBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: cinderName},
+			Type:      cinderv1alpha1.CinderBackupBackendTypeRBD,
+			RBD: &cinderv1alpha1.RBDBackupBackendSpec{
+				Pool:         "backups",
+				User:         "cinder-backup",
+				Monitors:     []string{"ceph-mon.openstack.svc.cluster.local"},
+				Networks:     []string{"10.244.0.0/16"},
+				KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: integrationRBDBackupKeySecretName},
 			},
 		},
 	}
