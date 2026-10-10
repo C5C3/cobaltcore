@@ -25,13 +25,14 @@ The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
 this level; the reconciler is deferred). All four are documented here. The
-registration kind `KeystoneService` and the four order kinds, which order
+registration kind `KeystoneService` and the five order kinds, which order
 Keystone pieces from an [assigned namespace](#namespaceassignmentspec), have
 pages of their own: [KeystoneService CRD](./keystoneservice-crd.md),
 [KeystoneUser CRD](./keystoneuser-crd.md),
 [KeystoneProject CRD](./keystoneproject-crd.md),
-[KeystoneRoleAssignment CRD](./keystoneroleassignment-crd.md) and
-[KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md).
+[KeystoneRoleAssignment CRD](./keystoneroleassignment-crd.md),
+[KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md) and
+[KeystoneApplicationCredential CRD](./keystoneapplicationcredential-crd.md).
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -2344,15 +2345,18 @@ namespace, and it lists the Keystone roles such an order may request. The
 c5c3-operator reports every entry in `status.namespaceAssignments` (see
 [NamespaceAssignmentStatus](#namespaceassignmentstatus)).
 
-Four order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
+Five order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
 an unscoped Keystone user and delivers its credentials as a Secret beside the
 order. [`KeystoneProject`](./keystoneproject-crd.md) orders a project in the
 admin domain. [`KeystoneRoleAssignment`](./keystoneroleassignment-crd.md)
 orders a role for an ordered user on an ordered project, and is the one kind
 `allowedRoles` limits. [`KeystoneCatalogEntry`](./keystonecatalogentry-crd.md)
-orders a catalog entry, and needs `allowCatalogEntries` as well. The
+orders a catalog entry, and needs `allowCatalogEntries` as well.
+[`KeystoneApplicationCredential`](./keystoneapplicationcredential-crd.md)
+orders an application credential for an ordered user on an ordered project,
+rotates it on a schedule, and delivers it as a Secret beside the order. The
 [Order a Service User](../../guides/order-a-service-user.md) guide walks all
-four.
+five.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

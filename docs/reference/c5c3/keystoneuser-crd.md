@@ -140,9 +140,11 @@ Withdrawing an entry is therefore not a revocation; deleting the order is. A
 frozen order re-reads the ControlPlane every minute, so restoring the entry
 brings it back without an edit to the order.
 
-A [KeystoneRoleAssignment](./keystoneroleassignment-crd.md) in the order's
-namespace may name the order as its `userRef`. While one does, deleting the
-order holds on `ReferencedByRoleAssignments`; see
+A [KeystoneRoleAssignment](./keystoneroleassignment-crd.md) or a
+[KeystoneApplicationCredential](./keystoneapplicationcredential-crd.md) in the
+order's namespace may name the order as its `userRef`. While one does, deleting
+the order holds on `ReferencedByRoleAssignments` or
+`ReferencedByApplicationCredentials`; see
 [Deletion Semantics](#deletion-semantics).
 
 ### Orders on a target cluster
@@ -236,6 +238,7 @@ namespace, so its protection at rest is the cluster's encryption configuration.
 | `UserReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the User failed. |
 | `UserReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting the user. |
 | `UserReady` | False | `ReferencedByRoleAssignments` | The order is being deleted while KeystoneRoleAssignments in its namespace still name it as `userRef`. The message lists them. |
+| `UserReady` | False | `ReferencedByApplicationCredentials` | The order is being deleted while KeystoneApplicationCredentials in its namespace still name it as `userRef`. The message lists them. |
 | `DeliveryReady` | True | `Delivered` | The Secret beside the order carries the current password. |
 | `DeliveryReady` | False | `WaitingForServiceAccounts` | The user is not provisioned yet, the password of the current generation is not available, or the delivered Secret does not carry it yet. |
 | `DeliveryReady` | False | `KeystoneNotPublished` | The order lives on a cluster that cannot reach the in-cluster Keystone Service and the ControlPlane publishes no public endpoint. |
@@ -334,6 +337,13 @@ While one names the order as its `userRef`, the order reads
 every minute and whenever an assignment changes: K-ORC guards a User with a
 finalizer while a RoleAssignment references it, and deleting the user would
 take the assignment with it. Delete the assignments first.
+
+Past that hold the teardown lists the KeystoneApplicationCredentials the same
+way. While one names the order as its `userRef`, the order reads
+`UserReady=False/ReferencedByApplicationCredentials` and deletes nothing:
+deleting the user deletes its application credentials in Keystone, and K-ORC
+cannot delete a credential whose user is gone. Delete the credential orders
+first.
 
 The assignment is not consulted, so a frozen order tears down the same way.
 While the ControlPlane exists the teardown is patient: the finalizer is held

@@ -154,6 +154,7 @@ long to pick the role up after the older order is deleted.
 | `AssignmentReady` | False | `NamespaceNotAssigned` | No entry assigns the order's namespace on its cluster, or, for an order on a target cluster, `spec.controlPlaneRef` does not resolve. The order is frozen. |
 | `AssignmentReady` | False | `ClusterNameTooLong` | The order lives on a target cluster whose name is longer than 63 characters. |
 | `AssignmentReady` | False | `WaitingForAdminCredential` | The ControlPlane's `AdminCredentialReady` is not True. |
+| `AssignmentReady` | False | `ReferencedByApplicationCredentials` | The order is being deleted while KeystoneApplicationCredentials in its namespace have the same user and project. The message lists them. |
 | `Ready` | True | `AllReady` | `AssignmentReady` is True. |
 | `Ready` | False | `NotAllReady` | `AssignmentReady` is not True. |
 
@@ -214,6 +215,15 @@ it runs the teardown:
 | Keystone role assignment | **Deleted**: K-ORC unassigns the role before it releases the RoleAssignment |
 | Role import | **Deleted**; an unmanaged import, so the role stays in Keystone |
 | Referenced user and project | Unchanged |
+
+The teardown first lists the
+[KeystoneApplicationCredentials](./keystoneapplicationcredential-crd.md) in the
+order's namespace. While one has the same `userRef` and `projectRef`, the order
+reads `AssignmentReady=False/ReferencedByApplicationCredentials`, deletes
+nothing, and checks again every minute and whenever a credential order changes:
+K-ORC creates and deletes the credentials with a token scoped to the project,
+which needs the role. Every assignment of the pair holds, not only the last
+one, so delete the credential orders first.
 
 While the ControlPlane exists the finalizer is held until neither child is
 listed. Once it is gone the teardown fails open. A frozen order tears down the
