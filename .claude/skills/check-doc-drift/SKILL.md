@@ -104,6 +104,10 @@ delegate the areas to parallel sub-agents for a large corpus.
   `mariadbdatabase_provision.go`, `## Credential delivery` with
   `mariadbdatabase_delivery.go`, and `## Deletion and Teardown` with
   `mariadbdatabase_controller.go`; in
+  `rabbitmqvhost-reconciler.md` pair `## Vhost provisioning` with
+  `rabbitmqvhost_provision.go`, `## Credential delivery` with
+  `rabbitmqvhost_delivery.go`, and `## Deletion and Teardown` with
+  `rabbitmqvhost_controller.go`; in
   `controlplane-reconciler.md` pair `### Built-in service
   registrations` with `builtin_registrations.go`.
 - **CRD reference** — for each Spec field listed in

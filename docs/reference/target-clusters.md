@@ -618,19 +618,21 @@ whose credentials Secret the c5c3-operator writes beside it, and a
 whose Secret the c5c3-operator writes beside it as well. A
 [MariaDBDatabase](./c5c3/mariadbdatabase-crd.md) orders a database on the
 ControlPlane's MariaDB and receives its Secret there too, with the address the
-ControlPlane publishes in `spec.infrastructure.publishedDatabaseEndpoint`.
-Every order lives on the target cluster. The chart serves that with three
-things:
+ControlPlane publishes in `spec.infrastructure.publishedDatabaseEndpoint`. The
+owner orders a vhost on the ControlPlane's managed message bus with a
+[RabbitMQVhost](./c5c3/rabbitmqvhost-crd.md), whose Secret carries the address
+`spec.infrastructure.publishedMessagingEndpoint` publishes. Every order lives on
+the target cluster. The chart serves that with three things:
 
 - `values.assignedNamespaces` lists the assigned namespaces. Each gets a Role
   `<release>-target-cluster-access-assigned` that grants Secret writes and the
   order verbs (`get`, `list`, `watch`, `update` and `patch` on
   `keystoneapplicationcredentials`, `keystonecatalogentries`,
-  `keystoneprojects`, `keystoneroleassignments`, `keystoneusers` and
-  `mariadbdatabases`, with their `status` and `finalizers` subresources), and
-  no workload kind. The chart creates none of these namespaces, and an entry
+  `keystoneprojects`, `keystoneroleassignments`, `keystoneusers`,
+  `mariadbdatabases` and `rabbitmqvhosts`, with their `status` and `finalizers`
+  subresources), and no workload kind. The chart creates none of these namespaces, and an entry
   may not also be in `values.namespaces`: a namespace is either placed into or
-  assigned. The Role of every placed namespace grants read on the six order
+  assigned. The Role of every placed namespace grants read on the seven order
   kinds as well, because the operator's order watches list every namespace of
   the registration. For the same reason the Role of an assigned namespace
   grants read (`get`, `list` and `watch`) on the mariadb-operator's
@@ -646,8 +648,9 @@ things:
   `c5c3.io_keystoneusers.yaml`, `c5c3.io_keystoneprojects.yaml`,
   `c5c3.io_keystoneroleassignments.yaml`,
   `c5c3.io_keystonecatalogentries.yaml`,
-  `c5c3.io_keystoneapplicationcredentials.yaml` and
-  `c5c3.io_mariadbdatabases.yaml`. Helm installs a chart's `crds/`
+  `c5c3.io_keystoneapplicationcredentials.yaml`,
+  `c5c3.io_mariadbdatabases.yaml` and
+  `c5c3.io_rabbitmqvhosts.yaml`. Helm installs a chart's `crds/`
   directory on the first install and never upgrades it, so apply the files
   with `kubectl apply -f` on an upgrade that changes one.
 
