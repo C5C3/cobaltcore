@@ -2974,6 +2974,18 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         infrastructure=MANAGED_INFRA,
     ),
+    Fixture(
+        filename="144-published-database-endpoint-port-out-of-range.yaml",
+        comment=(
+            "spec.infrastructure.publishedDatabaseEndpoint with a port above 65535 is\n"
+            "rejected (CRD pattern): a MariaDBDatabase order off Keystone's cluster\n"
+            "receives the address in its credentials Secret, and no client can connect to\n"
+            "a port outside 1-65535. No webhook rule applies."
+        ),
+        name="cp-published-database-endpoint-port",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA + "    publishedDatabaseEndpoint: db.example.com:65536\n",
+    ),
 )
 
 

@@ -223,6 +223,20 @@ type InfrastructureSpec struct {
 	// embedded commonv1.MessagingSpec, as for database and cache.
 	// +optional
 	Messaging *commonv1.MessagingSpec `json:"messaging,omitempty"`
+
+	// PublishedDatabaseEndpoint is the host:port a consumer on another cluster
+	// than the MariaDB's reaches the shared database at. The operator publishes
+	// nothing itself: the platform operator exposes the port by their own means
+	// (a LoadBalancer Service, a TCPRoute) and records the address here. Only
+	// MariaDBDatabase orders read it: an order on a cluster other than
+	// Keystone's receives this address, and without it is refused with
+	// DatabaseNotPublished. Under tls.mode verify-full the MariaDB server
+	// certificate must carry the host as a subject alternative name. A bracketed
+	// IPv6 literal is admitted as the host. The port is a TCP port, 1 to 65535.
+	// +optional
+	// +kubebuilder:validation:MaxLength=262
+	// +kubebuilder:validation:Pattern=`^([a-zA-Z0-9._-]+|\[[0-9a-fA-F:.]+\]):([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$`
+	PublishedDatabaseEndpoint string `json:"publishedDatabaseEndpoint,omitempty"`
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.
