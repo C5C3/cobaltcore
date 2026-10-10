@@ -41,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
@@ -53,6 +54,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
@@ -123,6 +125,12 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		mcOrderControlPlane = "order-cp"
 		mcOrderPublicURL    = "https://keystone.example.test/v3"
 
+		// The managed bus the order plane gains for the RabbitMQVhost order, and
+		// the address it is published at for a consumer on the target cluster.
+		mcOrderBus       = "order-bus"
+		mcOrderBusHost   = "order-bus.mc-order.svc"
+		mcOrderPublished = "broker.example.test:5672"
+
 		// The cleartext admin password reconcileKORC reads across the cluster
 		// boundary, and the decoy of the same shape planted on the management
 		// cluster to prove it is not the one being read.
@@ -159,7 +167,8 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		filepath.Join(orderCRDs, "c5c3.io_keystoneprojects.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystoneroleassignments.yaml"),
 		filepath.Join(orderCRDs, "c5c3.io_keystonecatalogentries.yaml"),
-		filepath.Join(orderCRDs, "c5c3.io_keystoneapplicationcredentials.yaml")))
+		filepath.Join(orderCRDs, "c5c3.io_keystoneapplicationcredentials.yaml"),
+		filepath.Join(orderCRDs, "c5c3.io_rabbitmqvhosts.yaml")))
 
 	// --- Environment A: the management cluster, hosting the manager.
 	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
@@ -271,7 +280,14 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			}).setupWithOptions(mcMgr, opts); err != nil {
 				return err
 			}
-			return (&KeystoneApplicationCredentialReconciler{
+			if err := (&KeystoneApplicationCredentialReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+			return (&RabbitMQVhostReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Resolver: mcMgr,
@@ -1589,6 +1605,176 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 				ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(child.name), child.obj))).To(BeTrue(), child.name)
 			}
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "deleting the project and the entry removes their children")
+	})
+
+	t.Run("a RabbitMQVhost on the target cluster is delivered beside it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The order plane of the KeystoneUser subtest, which assigns
+		// mcAssignedNamespace on the target, gains a managed bus. envtest runs
+		// no RabbitMQ Cluster Operator, so the broker is reported up by hand.
+		orderCPKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: mcOrderControlPlane}
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, orderCPKey, live); err != nil {
+				return err
+			}
+			live.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: mcOrderBus},
+			}
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "declare the managed bus")
+		busKey := client.ObjectKey{Namespace: mcOrderNamespace, Name: mcOrderBus}
+		simulateRabbitmqClusterReadyWhenPresent(t, ctx, mgmtClient, busKey)
+		g.Expect(mgmtClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: mcOrderBus + "-default-user", Namespace: mcOrderNamespace},
+			Data: map[string][]byte{
+				"username": []byte("default_user"), "password": []byte("admin-password"),
+				"host": []byte(mcOrderBusHost), "port": []byte("5672"),
+			},
+		})).To(Succeed(), "create the default-user Secret")
+
+		order := &c5c3v1alpha1.RabbitMQVhost{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow", Namespace: mcAssignedNamespace},
+			Spec: c5c3v1alpha1.RabbitMQVhostSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: mcOrderControlPlane, Namespace: mcOrderNamespace},
+			},
+		}
+		g.Expect(targetClient.Create(ctx, order)).To(Succeed(), "create the order on the target cluster")
+		orderKey := client.ObjectKeyFromObject(order)
+		prefix := rabbitMQVhostChildPrefix(order, mcTargetCluster)
+		vhost := rabbitMQVhostName(order, mcTargetCluster)
+		wantLabels := rabbitMQVhostRef(order, mcTargetCluster).childLabels()
+		childKey := func(name string) client.ObjectKey { return client.ObjectKey{Namespace: mcOrderNamespace, Name: name} }
+
+		// envtest runs no topology operator either: each topology child is
+		// reported Ready by hand once the order has applied it.
+		markReady := func(gvk schema.GroupVersionKind, name string) *unstructured.Unstructured {
+			t.Helper()
+			live := &unstructured.Unstructured{}
+			live.SetGroupVersionKind(gvk)
+			g.Eventually(func() error {
+				if err := mgmtClient.Get(ctx, childKey(name), live); err != nil {
+					return err
+				}
+				live.Object["status"] = map[string]any{
+					"observedGeneration": live.GetGeneration(),
+					"conditions": []any{map[string]any{
+						"type": "Ready", "status": "True", "reason": "SuccessfulCreateOrUpdate",
+						"lastTransitionTime": metav1.Now().Format(time.RFC3339),
+					}},
+				}
+				return mgmtClient.Status().Update(ctx, live)
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "report %s %s Ready", gvk.Kind, name)
+			return live
+		}
+		for _, child := range []struct {
+			gvk  schema.GroupVersionKind
+			name string
+		}{
+			{messaging.VhostGVK, prefix + "vhost"},
+			{messaging.UserGVK, prefix + "user-v1"},
+			{messaging.PermissionGVK, prefix + "permission-v1"},
+		} {
+			live := markReady(child.gvk, child.name)
+			g.Expect(live.GetLabels()).To(Equal(wantLabels), child.name)
+			g.Expect(live.GetOwnerReferences()).To(BeEmpty(), "a child on another cluster than its order carries labels only")
+			targetObjs := &unstructured.UnstructuredList{}
+			targetObjs.SetGroupVersionKind(child.gvk.GroupVersion().WithKind(child.gvk.Kind + "List"))
+			g.Expect(targetClient.List(ctx, targetObjs)).To(Succeed())
+			g.Expect(targetObjs.Items).To(BeEmpty(), "nothing the topology operator reads is written on the target")
+		}
+
+		// The plane publishes no broker yet, and the order is on another cluster
+		// than the broker. The delivery stops before it writes anything.
+		pushKey := childKey(prefix + "backup")
+		secretKey := client.ObjectKey{Namespace: mcAssignedNamespace, Name: "workflow-credentials"}
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.RabbitMQVhost{}
+			ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+			ig.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, conditionTypeRabbitMQVhostVhostReady)).To(BeTrue())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeRabbitMQVhostDeliveryReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Reason).To(Equal(reasonRabbitMQVhostMessagingNotPublished))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "an unpublished bus refuses the delivery")
+		mcExpectAbsent(t, ctx, targetClient, secretKey, &corev1.Secret{}, "delivered Secret")
+		mcExpectAbsent(t, ctx, mgmtClient, pushKey, &esov1alpha1.PushSecret{}, "order PushSecret")
+
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, orderCPKey, live); err != nil {
+				return err
+			}
+			live.Spec.Infrastructure.PublishedMessagingEndpoint = mcOrderPublished
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "publish the broker")
+		// No ControlPlane watch reaches an order on a target cluster; an
+		// annotation edit wakes it, as in the KeystoneUser subtest.
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.RabbitMQVhost{}
+			if err := targetClient.Get(ctx, orderKey, live); err != nil {
+				return err
+			}
+			live.Annotations = map[string]string{"test.c5c3.io/nudge": "published"}
+			return targetClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "nudge the order")
+
+		// envtest runs no ESO: the backup is reported pushed by hand.
+		g.Eventually(func() error {
+			live := &esov1alpha1.PushSecret{}
+			if err := mgmtClient.Get(ctx, pushKey, live); err != nil {
+				return err
+			}
+			hash := live.Annotations[rabbitMQVhostPushContentHashAnnotation]
+			if hash == "" {
+				return errors.New("the PushSecret carries no content hash yet")
+			}
+			live.Status.SyncedResourceVersion = "pushed-" + hash
+			live.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{{
+				Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue, Reason: "PushSecretSynced",
+				LastTransitionTime: metav1.Now(),
+			}}
+			return mgmtClient.Status().Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "report the stamped document pushed")
+		push := &esov1alpha1.PushSecret{}
+		g.Expect(mgmtClient.Get(ctx, pushKey, push)).To(Succeed())
+		g.Expect(push.Labels).To(Equal(wantLabels))
+		g.Expect(push.OwnerReferences).To(BeEmpty())
+		g.Expect(push.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(
+			"openstack/rabbitmq/" + mcOrderNamespace + "/" + vhost + "-vhost/credentials"))
+
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.RabbitMQVhost{}
+			ig.Expect(targetClient.Get(ctx, orderKey, live)).To(Succeed())
+			ig.Expect(meta.IsStatusConditionTrue(live.Status.Conditions, conditionTypeReady)).To(BeTrue())
+			secret := &corev1.Secret{}
+			ig.Expect(targetClient.Get(ctx, secretKey, secret)).To(Succeed())
+			ig.Expect(metav1.IsControlledBy(secret, live)).To(BeTrue(), "the order owns its Secret on the target")
+			ig.Expect(string(secret.Data["host"])).To(Equal("broker.example.test"))
+			ig.Expect(string(secret.Data["port"])).To(Equal("5672"))
+			ig.Expect(string(secret.Data["vhost"])).To(Equal(vhost))
+			ig.Expect(string(secret.Data["username"])).To(Equal(vhost + "-v1"))
+			ig.Expect(string(secret.Data["transport_url"])).To(HavePrefix("rabbit://" + vhost + "-v1:"))
+			ig.Expect(string(secret.Data["transport_url"])).To(HaveSuffix("@" + mcOrderPublished + "/" + vhost))
+			ig.Expect(secret.Data["password"]).NotTo(BeEmpty())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the credentials are delivered beside the order")
+		mcExpectAbsent(t, ctx, mgmtClient, secretKey, &corev1.Secret{}, "delivered Secret on the management cluster")
+
+		g.Expect(targetClient.Delete(ctx, order)).To(Succeed())
+		g.Eventually(func(ig Gomega) {
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, orderKey, &c5c3v1alpha1.RabbitMQVhost{}))).To(BeTrue())
+			for _, gvk := range []schema.GroupVersionKind{messaging.VhostGVK, messaging.UserGVK, messaging.PermissionGVK} {
+				list := &unstructured.UnstructuredList{}
+				list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+				ig.Expect(mgmtClient.List(ctx, list, client.InNamespace(mcOrderNamespace),
+					client.MatchingLabels(wantLabels))).To(Succeed())
+				ig.Expect(list.Items).To(BeEmpty(), gvk.Kind)
+			}
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, pushKey, &esov1alpha1.PushSecret{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(mgmtClient.Get(ctx, childKey(prefix+"password-v1"), &corev1.Secret{}))).To(BeTrue())
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, secretKey, &corev1.Secret{}))).To(BeTrue())
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"deleting the order removes the topology children, the backup and the Secret")
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {
