@@ -37,7 +37,7 @@ The [c5c3-operator](docs/reference/c5c3/controlplane-crd.md) reconciles the `Con
 enabled service block onto a child CR of the matching service operator.
 
 The service images are built for every OpenStack release defined under [`releases/`](releases/), currently
-2025.2, 2026.1 and 2026.2.
+2026.1 and 2026.2.
 
 ## Getting started
 

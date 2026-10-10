@@ -173,7 +173,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   # Single-node backing services for kind, as in the Quick Start. Every
   # namespace that hosts a service materializes its instances from this one
   # shared block.

@@ -85,7 +85,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   region: RegionOne
   regionDescription: CobaltCore region
   infrastructure:
@@ -159,7 +159,7 @@ status:
   services:
     - name: keystone
       ready: true
-      release: "2025.2"
+      release: "2026.1"
   adminApplicationCredential:
     id: 6f3c…
     restricted: true

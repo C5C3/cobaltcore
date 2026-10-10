@@ -177,7 +177,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/horizon
-    tag: "2025.2"
+    tag: "2026.1"
   cache:
     clusterRef:
       name: openstack-memcached

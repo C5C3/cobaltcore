@@ -88,12 +88,12 @@ reversible.
 :::
 
 Before you patch, make the target-release images node-local. The devstack
-preloads only the `2025.2` Keystone image, while all six enabled service children
+preloads only the `2026.1` Keystone image, while all six enabled service children
 follow `spec.openStackRelease`. Pull and load the target release images into kind,
 or their rollouts stall on image pulls:
 
 ```bash
-RELEASE=2026.1
+RELEASE=2026.2
 for operator in barbican glance horizon keystone neutron placement; do
   podman pull "ghcr.io/c5c3/${operator}:${RELEASE}"
   kind load docker-image "ghcr.io/c5c3/${operator}:${RELEASE}" --name cobaltcore
@@ -109,13 +109,13 @@ old and new schemas coexist while data is migrated.
 ```bash
 kubectl patch controlplane controlplane -n openstack \
   --type merge \
-  -p '{"spec":{"openStackRelease":"2026.1"}}'
+  -p '{"spec":{"openStackRelease":"2026.2"}}'
 ```
 
 The child image tag is derived from `spec.openStackRelease` **unless**
 `spec.services.keystone.image` overrides the whole image reference. An image
 override pins the tag, so it must be dropped before a release upgrade takes
-effect; likewise a patch-suffix build such as `2025.2-p1` is not a valid
+effect; likewise a patch-suffix build such as `2026.1-p1` is not a valid
 `openStackRelease` value (the field only accepts the `YYYY.N` cadence) and is
 delivered through the image override instead.
 
@@ -155,13 +155,14 @@ way back on this path.
 ![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../diagrams/service-upgrade-phases.svg)
 
 ::: warning Upgrade constraints
-Only **sequential** upgrades are supported: `2025.1 → 2025.2`, `2025.2 → 2026.1`,
-`2026.1 → 2026.2`. A **downgrade** is rejected at ControlPlane admission with
-`openStackRelease downgrade from "…" to "…" is not permitted; Keystone DB
-migrations are not reversible`. A **skip-level** jump (e.g. `2024.2 → 2026.1`) is
-admitted at the ControlPlane but surfaces as an `UpgradePathInvalid` Warning
-event on the `controlplane-keystone` child, which the keystone-operator refuses
-to run.
+Only **sequential** upgrades are supported. `2026.1 → 2026.2` is the one step
+the release floor leaves today, and a `YYYY.2 → YYYY+1.1` step such as
+`2026.2 → 2027.1` is sequential too. A **downgrade** is rejected at ControlPlane
+admission with `openStackRelease downgrade from "…" to "…" is not permitted;
+Keystone DB migrations are not reversible`. A **skip-level** jump (e.g.
+`2026.1 → 2027.1`) is admitted at the ControlPlane but surfaces as an
+`UpgradePathInvalid` Warning event on the `controlplane-keystone` child, which
+the keystone-operator refuses to run.
 
 Full contract in [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md).
 :::

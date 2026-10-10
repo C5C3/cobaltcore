@@ -70,7 +70,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   # services.keystone and korc as in the Quick Start (ControlPlane)
   infrastructure:
     database:
@@ -141,7 +141,7 @@ metadata:
   name: controlplane
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   # Applied to every declared INI service (for example Keystone, Glance,
   # Placement, Barbican, and Neutron):
   globalExtraConfig:
@@ -314,7 +314,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     # brownfield: explicit host/port, no clusterRef
     host: mariadb.db.example.com

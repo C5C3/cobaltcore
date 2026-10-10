@@ -130,7 +130,7 @@ status:
       message: "Keystone API is responding at http://keystone.openstack.svc.cluster.local:5000/v3"
       lastTransitionTime: "2026-03-09T00:00:00Z"
   endpoint: http://keystone.openstack.svc.cluster.local:5000/v3
-  installedRelease: "2025.2"
+  installedRelease: "2026.1"
 ```
 
 ### Printer Columns

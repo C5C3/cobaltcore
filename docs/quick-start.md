@@ -96,12 +96,12 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 
 > Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split).
 
-> The `2025.2` image tag below matches the OpenStack release pinned in this
-> repository under `releases/2025.2/`; if you are following a different release
+> The `2026.1` image tag below matches the OpenStack release pinned in this
+> repository under `releases/2026.1/`; if you are following a different release
 > branch, substitute the matching tag there.
 
 ```bash
-RELEASE=2025.2
+RELEASE=2026.1
 docker pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
@@ -111,7 +111,7 @@ Prerequisites step, pull the image into Podman's image store, and load it into
 the same kind provider:
 
 ```bash
-RELEASE=2025.2
+RELEASE=2026.1
 podman pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
@@ -130,7 +130,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

@@ -48,7 +48,7 @@ kubectl get keystones -A
 
 ```text
 NAMESPACE   NAME       READY   ENDPOINT                                                 RELEASE   AGE
-openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2025.2    12m
+openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2026.1    12m
 ```
 
 | Column | Source | Meaning |

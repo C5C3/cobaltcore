@@ -178,7 +178,7 @@ against `GET /v2/info/stores`:
 ```bash
 openstack --insecure token issue -f value -c id \
   | kubectl run glance-stores-probe -n openstack --rm -i --restart=Never \
-      --image=ghcr.io/c5c3/glance:2025.2 \
+      --image=ghcr.io/c5c3/glance:2026.1 \
       --command -- python3 -c '
 import json, sys, urllib.request
 req = urllib.request.Request(
@@ -328,10 +328,10 @@ metadata:
   name: glance
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

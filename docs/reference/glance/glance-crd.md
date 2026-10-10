@@ -960,12 +960,12 @@ metadata:
   name: glance
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/glance
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-mariadb
