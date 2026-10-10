@@ -25,14 +25,16 @@ The c5c3 API group also ships three companion kinds: `SizingProfile` (a
 cluster-scoped sizing profile a ControlPlane references), `CredentialRotation`
 (a one-shot credential-rotation request), and `SecretAggregate` (types-only at
 this level; the reconciler is deferred). All four are documented here. The
-registration kind `KeystoneService` and the five order kinds, which order
-Keystone pieces from an [assigned namespace](#namespaceassignmentspec), have
-pages of their own: [KeystoneService CRD](./keystoneservice-crd.md),
+registration kind `KeystoneService` and the six order kinds, which order
+Keystone pieces and a database from an
+[assigned namespace](#namespaceassignmentspec), have pages of their own:
+[KeystoneService CRD](./keystoneservice-crd.md),
 [KeystoneUser CRD](./keystoneuser-crd.md),
 [KeystoneProject CRD](./keystoneproject-crd.md),
 [KeystoneRoleAssignment CRD](./keystoneroleassignment-crd.md),
-[KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md) and
-[KeystoneApplicationCredential CRD](./keystoneapplicationcredential-crd.md).
+[KeystoneCatalogEntry CRD](./keystonecatalogentry-crd.md),
+[KeystoneApplicationCredential CRD](./keystoneapplicationcredential-crd.md) and
+[MariaDBDatabase CRD](./mariadbdatabase-crd.md).
 
 The API surface is intentionally **smaller** than the
 [Keystone CRD](../keystone/keystone-crd.md): the ControlPlane curates a subset
@@ -287,6 +289,7 @@ notes](#infrastructurespec) below.
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. **`database.secretRef` ownership:** in managed mode this reference is **operator-owned** — `reconcileDBCredentials` materialises a per-ControlPlane DB-credential Secret and the reconciler overrides the projected Keystone CR's `spec.database.secretRef` to point at it, so the `keystone-db` default `secretRef.name` is only a managed-mode convenience name (it is **not** what Keystone consumes and no longer resolves to a cluster Secret). A **brownfield** ControlPlane (`database.host` set, no `clusterRef`) **MUST supply** its own `database.secretRef` Secret out-of-band — the operator projects no ExternalSecret in brownfield mode. See [managed-mode provisioning](#infrastructurespec) below. |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
 | `messaging` | [`*commonv1.MessagingSpec`](#messagingspec) | No | `nil` (the defaulting webhook never materializes the block) | The shared RabbitMQ message bus. **Opt-in**: a ControlPlane that omits the block provisions no broker, and the webhook invents nothing for it, unlike `database` and `cache`. In managed mode (`clusterRef`) the reconciler provisions **one** `RabbitmqCluster` in the ControlPlane's own namespace whether or not a service consumes it: a bus is shared across services by nature, so declaring it is what asks for it. Brownfield mode (`secretRef`) attaches to an existing broker and provisions nothing. Adding the block to a live ControlPlane is allowed; removing it is rejected in **both** modes. See [MessagingSpec](#messagingspec). |
+| `publishedDatabaseEndpoint` | `string` | No | `""` | The `host:port` a consumer on another cluster than the MariaDB's reaches the shared database at (`MaxLength=262`, and a pattern that admits a host of `[a-zA-Z0-9._-]` characters or a bracketed IPv6 literal, a colon, and a port from 1 to 65535 without a leading zero). The operator publishes nothing itself: the platform operator exposes the port by their own means, for example a LoadBalancer Service or a TCPRoute. Only [`MariaDBDatabase`](./mariadbdatabase-crd.md#orders-on-a-target-cluster) orders read it: an order on a cluster other than Keystone's receives this address, and without it reports `DatabaseNotPublished`. Under `tls.mode: verify-full` the MariaDB server certificate must carry the host as a subject alternative name. No webhook rule applies. |
 
 <!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
      defaulting webhook now constructs a managed-mode block when the field is omitted.
@@ -2345,7 +2348,7 @@ namespace, and it lists the Keystone roles such an order may request. The
 c5c3-operator reports every entry in `status.namespaceAssignments` (see
 [NamespaceAssignmentStatus](#namespaceassignmentstatus)).
 
-Five order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
+Six order kinds read an entry. [`KeystoneUser`](./keystoneuser-crd.md) orders
 an unscoped Keystone user and delivers its credentials as a Secret beside the
 order. [`KeystoneProject`](./keystoneproject-crd.md) orders a project in the
 admin domain. [`KeystoneRoleAssignment`](./keystoneroleassignment-crd.md)
@@ -2354,9 +2357,12 @@ orders a role for an ordered user on an ordered project, and is the one kind
 orders a catalog entry, and needs `allowCatalogEntries` as well.
 [`KeystoneApplicationCredential`](./keystoneapplicationcredential-crd.md)
 orders an application credential for an ordered user on an ordered project,
-rotates it on a schedule, and delivers it as a Secret beside the order. The
+rotates it on a schedule, and delivers it as a Secret beside the order.
+[`MariaDBDatabase`](./mariadbdatabase-crd.md) orders a schema on the shared
+MariaDB with a user OpenBao issues and replaces every day, and delivers its
+credential as a Secret beside the order. The
 [Order a Service User](../../guides/order-a-service-user.md) guide walks all
-five.
+six.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

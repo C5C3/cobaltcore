@@ -105,6 +105,8 @@ deploy/
 │       ├── cinder-db-dynamic.hcl       Per-tenant dynamic Cinder DB credential read policy
 │       ├── nova-api-db-dynamic.hcl     Per-tenant dynamic Nova API DB credential read policy
 │       ├── nova-cell-db-dynamic.hcl    Per-tenant dynamic Nova cell DB credential read policy
+│       ├── order-db-dynamic.hcl        Per-namespace dynamic credential read policy of the MariaDBDatabase orders
+│       ├── c5c3-operator.hcl           The c5c3-operator's own policy: order roles and their lease revocation
 │       ├── barbican-secretstore.hcl    Barbican secret-store policy on the KV v2 mount barbican/
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
@@ -383,6 +385,19 @@ names stay in sync with `dbDynamicRoleFor` in
 with `<svc>DBDynamicRoleFor` in `reconcile_<svc>_dbcredentials.go` for every
 `SERVICE_TENANTS` row.
 
+The Keystone connection also admits the database-engine roles the
+c5c3-operator writes for the ControlPlane's
+[MariaDBDatabase](../c5c3/mariadbdatabase-crd.md) orders. `provision_service_tenant`
+takes an optional fifth argument whose value is appended to the connection's
+`allowed_roles`; the Keystone call passes `order.{controlplane namespace}.*`, so
+the connection reads `allowed_roles=keystone-{namespace},order.{controlplane namespace}.*`.
+OpenBao matches each entry as a glob, so one entry admits every order of the
+ControlPlane's namespace. The `SERVICE_TENANTS` rows pass nothing and their
+connections admit their own role alone. The script never writes an order role
+itself. A deployment onboarded before the order kind existed re-runs the script
+once before its first database order; until then the operator's role write is
+refused.
+
 `default_ttl` (48h) and `max_ttl` (72h) are tunable via `DB_CREDS_DEFAULT_TTL`
 / `DB_CREDS_MAX_TTL`; `default_ttl` stays a full day above the operator's
 ExternalSecret refresh interval (24h), so the operator has a wide window to roll
@@ -488,6 +503,18 @@ isolation is enforced by each policy, which templates the readable path to the c
 `service_account_namespace` (an exact match — a token minted in one namespace
 cannot read another namespace's path).
 
+Two further roles serve the [MariaDBDatabase](../c5c3/mariadbdatabase-crd.md)
+orders. `order-db` is the generators' role, bound to the `order-db-creds`
+ServiceAccount the c5c3-operator projects into a ControlPlane's namespace, in
+any namespace, and to the `order-db-dynamic` policy, with 72h tokens for the
+reason the table below gives. `c5c3-operator` is the operator's own identity,
+bound to its one ServiceAccount in its one namespace (`c5c3-operator` in
+`c5c3-system`, overridable with `C5C3_OPERATOR_SERVICE_ACCOUNT` and
+`C5C3_OPERATOR_NAMESPACE`) and to the `c5c3-operator` policy. Its token creates
+no lease, so its TTL is 15 minutes, and the operator revokes it after each use.
+A deployment brought up before the order kind existed re-runs `setup-auth.sh`
+and `setup-policies.sh` once before its first database order.
+
 The two Nova roles stay dormant until a ControlPlane projects a Nova: without a
 `nova-api-db-creds` or a `nova-cell-db-creds` ServiceAccount nothing
 authenticates against them. Their `VaultDynamicSecret` generators are built in
@@ -520,6 +547,8 @@ token is bounded by the read-only `keystone-db-dynamic` / `glance-db-dynamic` /
 | `kubernetes/management` | `cinder-db` | `cinder-db-creds` | `*` | `cinder-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `nova-api-db` | `nova-api-db-creds` | `*` | `nova-api-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `nova-cell-db` | `nova-cell-db-creds` | `*` | `nova-cell-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `order-db` | `order-db-creds` | `*` | `order-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `c5c3-operator` | `c5c3-operator` | `c5c3-system` | `c5c3-operator` | 15m | 15m |
 | `kubernetes/management` | `eso-tenant` | `eso-tenant-auth` | `*` | `eso-tenant` | 1h | 4h |
 | `kubernetes/management` | `push-ceph-keys` | `ceph-keys-push` | `rook-ceph` | `push-ceph-keys` | 1h | 4h |
 | `kubernetes/management` | `read-ceph-keys` | `ceph-keys-read` | `openstack` | `read-ceph-keys` | 1h | 4h |
@@ -744,7 +773,7 @@ password versions untouched.
 
 ## HCL Access Control Policies
 
-Eighteen HCL policies enforce least-privilege access for each consumer type. All policy
+Twenty HCL policies enforce least-privilege access for each consumer type. All policy
 paths under the KV v2 engine include the `data/` prefix, which is required by the
 OpenBao/Vault KV v2 API for read and write operations.
 
@@ -783,6 +812,8 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | `cinder-db-dynamic` | <code v-pre>database/mariadb/creds/cinder-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Cinder DB credential reads (bound to the `cinder-db` role), on the same terms as the Neutron policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `cinder-db-creds` SA name is what keeps a Cinder generator off a Keystone or a Neutron creds path when those services share a namespace. Read-only: a dynamic engine has no static password to push. |
 | `nova-api-db-dynamic` | <code v-pre>database/mariadb/creds/nova-api-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Nova API DB credential reads (bound to the `nova-api-db` role), on the same terms as the Cinder policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `nova-api-db-creds` SA name is what keeps the Nova API generator off the cell creds path, and off every other service's path, when those services share a namespace. Read-only: a dynamic engine has no static password to push. |
 | `nova-cell-db-dynamic` | <code v-pre>database/mariadb/creds/nova-cell-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Nova cell DB credential reads (bound to the `nova-cell-db` role), covering the cell database and its `nova_cell0` schema on the same terms as the Nova API policy. The `nova-cell-db-creds` SA name keeps the cell generator off the API creds path, and the role name `nova-cell` is prefix-free against `nova-api`, so the two creds paths never coincide in any namespace. Read-only: a dynamic engine has no static password to push. |
+| `order-db-dynamic` | <code v-pre>database/mariadb/creds/order.{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}.*</code> | `read` | Dynamic credential reads of the [MariaDBDatabase](../c5c3/mariadbdatabase-crd.md) orders (bound to the `order-db` role). The operator names each order role `order.{controlplane namespace}.{order}`, with dots as the separators: a namespace cannot contain a dot, so the templated segment matches the caller's own namespace and no namespace that merely starts with it. Read-only. |
+| `c5c3-operator` | `database/mariadb/roles/order.*`, `sys/leases/revoke-prefix/database/mariadb/creds/order.*` | `create`, `read`, `update`, `delete` on the roles; `update`, `sudo` on the revocation | The c5c3-operator's own identity (bound to the `c5c3-operator` role). It writes and deletes the order roles and revokes their leases on an order's teardown; `revoke-prefix` is root-protected and needs `sudo`. Nothing under `database/mariadb/config` is granted, so the MariaDB root password stays with `setup-database-tenant.sh`. |
 
 **Note:** `ci-cd-provisioner` intentionally lacks `delete` capability. The CI/CD
 pipeline can create, update, and read secrets but cannot delete them, preventing
