@@ -1037,6 +1037,65 @@ func TestTargetClusterRefImmutable(t *testing.T) {
 	}
 }
 
+func TestOpenStackReleaseFloor(t *testing.T) {
+	path := field.NewPath("spec", "openStackRelease")
+	const wantDetail = "must be 2026.1 or later: this operator version no longer supports OpenStack releases below 2026.1"
+	cases := []struct {
+		name     string
+		oldValue string
+		newValue string
+		wantErr  bool
+		wantWarn bool
+	}{
+		{name: "create below floor rejected", newValue: "2025.2", wantErr: true},
+		{name: "create below floor with patch suffix rejected", newValue: "2025.2-p1", wantErr: true},
+		{name: "create at floor accepted", newValue: "2026.1"},
+		{name: "create at floor with patch suffix accepted", newValue: "2026.1-p1"},
+		{name: "create above floor accepted", newValue: "2027.1"},
+		{name: "create empty skipped", newValue: ""},
+		{name: "create latest skipped", newValue: "latest"},
+		{name: "create unparseable base skipped", newValue: "sha256-abc"},
+		{name: "update unchanged at floor accepted", oldValue: "2026.1", newValue: "2026.1"},
+		{name: "update unchanged with patch suffix accepted", oldValue: "2026.1-p1", newValue: "2026.1-p1"},
+		{name: "update unchanged above floor accepted", oldValue: "2027.1", newValue: "2027.1"},
+		{name: "update unchanged below floor warns", oldValue: "2025.2", newValue: "2025.2", wantWarn: true},
+		{name: "update changed to below floor rejected", oldValue: "2026.1", newValue: "2025.2", wantErr: true},
+		{name: "update from empty to below floor rejected", oldValue: "", newValue: "2025.2", wantErr: true},
+		{name: "update from below floor to floor accepted", oldValue: "2025.2", newValue: "2026.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs, warnings := OpenStackReleaseFloor(path, tc.oldValue, tc.newValue)
+			if tc.wantErr {
+				g.Expect(errs).To(gomega.HaveLen(1))
+				g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+				g.Expect(errs[0].Field).To(gomega.Equal("spec.openStackRelease"))
+				g.Expect(errs[0].Detail).To(gomega.Equal(wantDetail))
+			} else {
+				g.Expect(errs).To(gomega.BeEmpty())
+			}
+			if tc.wantWarn {
+				g.Expect(warnings).To(gomega.HaveLen(1))
+				g.Expect(warnings[0]).To(gomega.Equal(`spec.openStackRelease "2025.2" is below 2026.1, ` +
+					"the oldest OpenStack release this operator version supports; the unchanged value is admitted, " +
+					"but the operator renders the 2026.1 configuration for it. Set spec.openStackRelease to 2026.1 or later."))
+			} else {
+				g.Expect(warnings).To(gomega.BeEmpty())
+			}
+		})
+	}
+
+	t.Run("warning names the field path it is given", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs, warnings := OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "2025.2", "2025.2")
+		g.Expect(errs).To(gomega.BeEmpty())
+		g.Expect(warnings).To(gomega.HaveLen(1))
+		g.Expect(warnings[0]).To(gomega.HavePrefix(`spec.image.tag "2025.2" is below 2026.1`))
+		g.Expect(warnings[0]).To(gomega.HaveSuffix("Set spec.image.tag to 2026.1 or later."))
+	})
+}
+
 // The sibling validators are generic over client.Object, so the tests use a
 // ConfigMap as the stand-in CR: annotation "parent" is the parent reference the
 // sameParent predicate compares, and annotation "default" set to "true" is the
