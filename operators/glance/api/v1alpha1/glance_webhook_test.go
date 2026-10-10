@@ -578,6 +578,11 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "spec.deployment.verticalAutoscaling.minReplicas: Invalid value: 0: must be at least 1",
 		},
+		{
+			name:    "openStackRelease below the release floor rejected",
+			mutate:  func(o *Glance) { o.Spec.OpenStackRelease = "2025.2" },
+			wantSub: `spec.openStackRelease: Invalid value: "2025.2": must be 2026.1 or later`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -592,6 +597,53 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
 		})
 	}
+}
+
+// TestGlanceValidate_ReleaseFloor pins the release floor on spec.openStackRelease:
+// a create at 2026.1 is admitted, a change to a release below it is rejected,
+// and an update that keeps a stored release below it is admitted with one
+// warning, so the CR stays editable.
+func TestGlanceValidate_ReleaseFloor(t *testing.T) {
+	w := &GlanceWebhook{}
+
+	t.Run("create at the floor accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		obj := validGlance()
+		obj.Spec.OpenStackRelease = "2026.1"
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	t.Run("update keeping a release below the floor warns", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validGlance()
+		oldObj.Spec.OpenStackRelease = "2025.2"
+		newObj := oldObj.DeepCopy()
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).To(gomega.HaveExactElements(gomega.ContainSubstring("below 2026.1")))
+	})
+
+	t.Run("update to a release below the floor rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validGlance()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.OpenStackRelease = "2025.2"
+		_, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("openStackRelease"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("2026.1 or later"))
+	})
+
+	t.Run("update between supported releases accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		oldObj := validGlance()
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.OpenStackRelease = "2026.2"
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).NotTo(gomega.ContainElement(gomega.ContainSubstring("below 2026.1")))
+	})
 }
 
 // TestGlanceValidate_ImportFilteringValidShapesAccepted pins the shapes the
