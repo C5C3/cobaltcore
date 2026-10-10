@@ -47,11 +47,10 @@ file:
   release pins (`keystone-`, `barbican-`, `neutron-`, and
   `cinder-tempest-plugin`), at versions current at the release date that the
   new `upper-constraints.txt` can install. `renovate.json` holds
-  `neutron-tempest-plugin` for 2025.2 (`<3.1.0`, testtools) and 2026.1
-  (`<3.3.0`, `neutron_lib.services.pvlan`) because those releases'
-  constraints conflict with newer plugins (the two `packageRules` entries
-  whose `matchFileNames` name `releases/2025.2/test-refs.yaml` and
-  `releases/2026.1/test-refs.yaml`); 2026.2 needs no hold. Decide per release,
+  `neutron-tempest-plugin` for 2026.1 (`<3.3.0`: 3.3.0 imports
+  `neutron_lib.services.pvlan`, which the neutron-lib 2026.1 constrains does
+  not ship), in the one `packageRules` entry whose `matchFileNames` names
+  `releases/2026.1/test-refs.yaml`; 2026.2 needs no hold. Decide per release,
   state the reason in a comment above the pin, and add a `packageRules` entry
   only when a hold is needed. Major updates are disabled under
   `releases/**/test-refs.yaml`, so older releases keep their tempest major.
@@ -129,11 +128,9 @@ Three more per-release inputs live elsewhere in the tree:
   every option the operator renders (registered in
   `operators/<op>/api/v1alpha1/config_ownership.go`) that the new release
   dropped: gate the rendering on a release predicate and add a
-  `reconcile_config` test case per release. `glanceReleaseDropsWorkersOption`
-  in `operators/glance/internal/controller/reconcile_deployment.go` and
-  `keystoneReleaseEnforcesScopeAlways` in
-  `operators/keystone/internal/controller/reconcile_config.go` are the 2026.2
-  precedents. An option the catalog dropped that the service still reads
+  `reconcile_config` test case per release. `keystoneReleaseEnforcesScopeAlways`
+  in `operators/keystone/internal/controller/reconcile_config.go` is the 2026.2
+  precedent. An option the catalog dropped that the service still reads
   stays rendered and is pinned by a golden: neutron 29.0.0 still loads
   `[DEFAULT] api_paste_config` through `oslo_service.wsgi.Loader`.
 
@@ -299,7 +296,16 @@ None of these are mechanical; decide and record each in the PR description:
   (`openStackRelease`), the `hack/deploy-infra.sh` image preload, the
   `${VAR:-YYYY.N}` fallbacks in `hack/` (`RELEASE` in
   `ci-build-service-image.sh`, `ci-build-tempest-image.sh`, and
-  `run-tempest.sh`; `IMAGE_TAG` in `perf-reconcile-benchmark.sh`), the image
+  `run-tempest.sh`; `IMAGE_TAG` in `perf-reconcile-benchmark.sh`), the
+  slug fallbacks of `hack/ci-run-tempest.sh` (`CONFIG_DIR` defaults to
+  `tests/tempest/${SERVICE}-<slug>` and `SERVICE_K8S_NAME` to
+  `${SERVICE}-tempest-<slug>`), the two `ghcr.io/c5c3/nova:<default>` refs of
+  `deploy/kind/fake-compute/fake-compute.yaml` and the comment above them, the
+  lab manifests `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
+  and `deploy/lab/metal-stack/hypervisor/compute.yaml`, the `Makefile`
+  comment that names `neutron:<default>` for the multicluster target, the
+  quick-start step `tests/unit/deploy/metal_stack_controlplane_test.sh` ties
+  to the lab ControlPlane (`docs/quick-start-controlplane.md`), the image
   tags hard-coded in `.github/workflows/ci.yaml` (image-upgrade re-tagging and
   kind preloads), the tempest client image `ghcr.io/c5c3/tempest:<default>`
   that e2e fixture Jobs run, and several hundred release pins across the
@@ -315,28 +321,94 @@ None of these are mechanical; decide and record each in the PR description:
 
 ## Removing an old release
 
-Deleting `releases/<old>/` shrinks the matrices automatically, but leaves
-orphans that must go in the same PR:
+Deleting `releases/<old>/` shrinks the matrices automatically, but the order
+of the work is forced: `hack/ci-generate-tempest-matrix.sh` fails on a
+release without its Tempest directories, and the catalog verifier fails on a
+release without its catalogs. Retire a release in four steps, one pull request
+each, and finish each step's gate before the next starts. Meta Issue
+[#1321](https://github.com/C5C3/cobaltcore/issues/1321) and its four sub-issues
+are the record of the last retirement.
 
-- every `tests/tempest/<svc>-<old-slug>/` directory and its row in
-  [Tempest Test Infrastructure](../reference/testing/tempest-test-infrastructure.md);
-- every `tests/e2e/<svc>/basic-deployment-<old-slug>/` variant (when the old
-  release is the default, move the default first and re-pin the plain
-  suites);
-- `operators/<op>/api/v1alpha1/catalogs/<old>.json` in every operator;
-- `overrides/<old>/` and every `patches/<svc>/<old>/`;
-- the `tests/unit/renovate/*_test.sh` probes that pin a concrete
-  `releases/<old>/` file (repoint them at a surviving release, or
-  `make test-shell` breaks) and the per-release `renovate.json` rules whose
-  `matchFileNames` name it;
-- any upgrade-path suite that still starts at the old release,
-  `upgrade-abort` included;
-- the placed-services pins in `tests/e2e-multicluster/placed-services/` and
-  their ci.yaml `e2e-multicluster` preloads, if they name the old release;
-- every default-release reference listed above, if it named the old release;
-- the code import of `tests/tempest/glance-2025-2/02-glance-cr.yaml` in
-  [Filter web-download Image Imports](../guides/glance/filter-web-download-imports.md),
-  when `2025.2` is the release being removed.
+1. **Move the default**, when the retiring release is the default. Change
+   every default-release reference listed under
+   [Decision points](#decision-points); the `ci.yaml` image lists of every e2e
+   job and the image-upgrade retag (`:<default>-upgraded`) with the keystone
+   `image-upgrade` and `rolling-update-zero-downtime` fixtures that patch to
+   it; the tempest client image of every e2e fixture Job; every pin under
+   `tests/e2e*/` (the `invalid-*` corpora through their `_generate.py` and
+   `make verify-invalid-cr-fixtures`); the placed-services pins and their
+   preloads; the `e2e-operator-upgrade` baseline CR; and the metadata-agent
+   memory phases. Re-pin the plain `basic-deployment` suites, and carry the
+   release-specific assertions of the new default's `basic-deployment-<slug>`
+   variants over before deleting those variants (decision D5 of #1321), with
+   nova's `shard_two` entry and the shard list in
+   [CI Workflow](../reference/ci-cd/ci-workflow.md). Update the shell tests
+   that read `ci.yaml` or `deploy/`:
+   `tests/unit/ci/{nova,cinder,neutron}_e2e_matrix_test.sh`,
+   `tests/unit/ci/e2e_multicluster_output_test.sh`,
+   `tests/unit/hack/ci_resolve_changes_nova_libvirt_test.sh`,
+   `tests/unit/deploy/metal_stack_hypervisor_test.sh` and
+   `tests/unit/hack/ci_resolve_e2e_images_test.sh`. Gate: every e2e leg is
+   green, and the inventory reports the new default at every decision point.
+2. **Remove the release** in one pull request. Delete every
+   `tests/tempest/<svc>-<old-slug>/` directory and its row in
+   [Tempest Test Infrastructure](../reference/testing/tempest-test-infrastructure.md);
+   every `tests/e2e/<svc>/basic-deployment-<old-slug>/` variant;
+   `operators/<op>/api/v1alpha1/catalogs/<old>.json` in every operator;
+   `overrides/<old>/` and every `patches/<svc>/<old>/`; the
+   `tests/unit/renovate/*_test.sh` probes that pin a concrete
+   `releases/<old>/` file (repoint them at a surviving release, or
+   `make test-shell` breaks) and the per-release `renovate.json` rules whose
+   `matchFileNames` name it; any upgrade-path suite that still starts at the
+   old release, `upgrade-abort` included; the placed-services pins in
+   `tests/e2e-multicluster/placed-services/` and their ci.yaml
+   `e2e-multicluster` preloads, if they name the old release; and every
+   default-release reference that still names it. Lower the `HaveLen(N)` and
+   drop the `HaveKey("<old>")` of every `option_catalog_test.go`, with the
+   deprecation tests keyed on the old catalog; fix every Go test fixture that
+   pins the old release (the one-line `[]string` lists, `release:` table rows,
+   `rendered["<old>"]` anchors, the nova pin goldens); and fix the shell tests
+   that read the real tree (`tests/unit/hack/gen_option_catalog_*_test.sh`,
+   `tests/unit/hack/ci_build_service_image_test.sh`,
+   `tests/ci/verify_{barbican,placement}_ci_pipeline.sh`). Update the
+   comments in `releases/<other>/` and the surviving patch headers, drop the
+   build pins that existed for the old images only, and move the `IMAGE=`
+   defaults of `tests/container-images/verify_*.sh`. Decide whether the
+   published images stay: `.github/workflows/cleanup-images.yaml` keeps bare
+   release tags (decision D6 of #1321). The code import of
+   `tests/tempest/glance-2026-1/02-glance-cr.yaml` in
+   [Filter web-download Image Imports](../guides/glance/filter-web-download-imports.md)
+   moves when `2026.1` is the release being removed; the surviving twin needs
+   the `# region glance-cr` marker first. Gate:
+   `ALLOW_FLOOR_LAG=1 audit-release-wiring.sh --full` (the floor still names
+   `<old>` until step 3, and the variable turns that one-release lag from an
+   L8 `[FAIL]` into an `[INFO]`), `make test-shell`, and the
+   build, verify, unit-test and Tempest legs.
+3. **Move the floor and remove the code only the old release reached.**
+   `release.MinimumSupported` (`internal/common/release/release.go`) moves one
+   line. The webhook unit tests, the `*-below-floor.yaml` fixtures of every
+   `invalid-*` corpus (through `_generate.py`) and the release-floor
+   paragraphs of the CRD pages and
+   [Day-2 Operations](../guides/day-2-operations.md#minimum-supported-release)
+   move their example value to the newly retired release. Every
+   `AtLeast(<year>, <minor>)` gate or release predicate that every remaining
+   release passes goes, with its arms and tests, and the CRDs are
+   regenerated. Gate: unit, envtest and e2e are green, and `check-crd-drift`
+   is clean.
+4. **Docs, skills and gates.** Every mention of the old release falls into
+   one of five classes: a default or example (moves to the new default), a
+   transition example (moves one release forward), behaviour only the old
+   release had (the prose describes what remains), a count of releases, tags
+   or legs, and a value kept with its label (the release-floor examples,
+   measurements and run records). Find them with
+   `git grep -nE '<year>[._-]<minor>([^0-9]|$)'` (for `2026.1`:
+   `git grep -nE '2026[._-]1([^0-9]|$)'`), the prose grep of
+   [Tests and docs that count releases](#tests-and-docs-that-count-releases),
+   and a `grep -rn -i` over `docs` for each behaviour the removed code
+   implemented, such as a launch mode only the old release ran. Rewrite the upgrade tables and the events
+   pages, the `prepare-new-release`, `check-release-wiring` and
+   `add-image-patch` skills, and this checklist. Gate: the four audits under
+   [Verification](#verification) and `npm run docs:build`.
 
 ## Verification
 
