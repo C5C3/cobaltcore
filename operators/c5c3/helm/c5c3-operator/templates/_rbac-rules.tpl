@@ -93,6 +93,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
+  - mariadbdatabases/finalizers
   verbs:
   - update
 - apiGroups:
@@ -106,6 +107,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneroleassignments/status
   - keystoneservices/status
   - keystoneusers/status
+  - mariadbdatabases/status
   verbs:
   - get
   - patch
@@ -118,6 +120,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - keystoneprojects
   - keystoneroleassignments
   - keystoneusers
+  - mariadbdatabases
   verbs:
   - get
   - list
@@ -228,6 +231,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - k8s.mariadb.com
   resources:
+  - databases
   - mariadbs
   verbs:
   - create

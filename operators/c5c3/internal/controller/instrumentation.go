@@ -70,6 +70,9 @@ var subReconcilerConditionTypes = map[string]string{
 	// way.
 	"KeystoneApplicationCredentialProvision": conditionTypeKeystoneApplicationCredentialCredentialReady,
 	"KeystoneApplicationCredentialDelivery":  conditionTypeKeystoneApplicationCredentialDeliveryReady,
+	// The MariaDBDatabase controller's two legs, prefixed the same way.
+	"MariaDBDatabaseProvision": conditionTypeMariaDBDatabaseDatabaseReady,
+	"MariaDBDatabaseDelivery":  conditionTypeMariaDBDatabaseDeliveryReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
