@@ -20,8 +20,8 @@ stores are **not** part of this spec — they attach out-of-band through
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs the API launch mode (eventlet below `2026.1`, uWSGI from `2026.1`) and install/upgrade schema tracking. Kept separate from the image tag so digest-pinned images still resolve a schema and launch mode |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized at 1Gi per process, 2064Mi as request and limit at the defaults of both launch modes, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
+| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs install/upgrade schema tracking and the option catalog. Kept separate from the image tag so digest-pinned images still resolve a schema. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and memory sized at 1Gi per process, 2064Mi as request and limit at the uWSGI defaults, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | Opts the Glance API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the db-purge CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
@@ -31,7 +31,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `keystonePublicEndpoint` | `string` | no | The browser/client-facing Keystone base URL rendered as `[keystone_authtoken] www_authenticate_uri` (the address a 401 points unauthenticated clients at); must match `^https?://` when set. When empty the operator falls back to `keystoneEndpoint` at render time (see `EffectiveKeystonePublicEndpoint`), correct only when the internal and public Keystone URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | yes | The Keystone service account Glance authenticates as, and the Secret holding its password |
 | `region` | `string` | no | The Keystone region (`[keystone_authtoken] region_name`); when empty the option is omitted and Glance uses the catalog's default region |
-| `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | Release-conditional API-process tuning; when nil the operator uses hardcoded defaults for the active launch mode |
+| `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | uWSGI API-process tuning (`uwsgi`); the deprecated `workers` field has no effect. When nil the operator uses the uWSGI defaults |
 | `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike: HTTPS on port 443, plus a literal host denylist |
 | `importPlugins` | [`*ImportPluginsSpec`](#importpluginsspec) | no | Selects the image-import plugins Glance runs, rendered as `[image_import_opts] image_import_plugins` plus the section each enabled plugin reads. Presence of a sub-block enables that plugin, nil enables none; the rendered order is fixed (`image_decompression`, `image_conversion`, `inject_image_metadata`) and is not an input. Every default resolves at render time, so an unset field keeps tracking the operator default |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
@@ -63,17 +63,16 @@ supply the password Secret reference.
 
 ### APIServerSpec
 
-Tunes the API server process. Which field takes effect depends on
-`spec.openStackRelease`, and the validating webhook emits an admission
-**warning** (not a rejection) on an inert combination — both knobs are legal in
-either mode, the operator simply ignores the inert one.
+Tunes the API server process, which runs under uWSGI on every supported
+release. The validating webhook emits an admission **warning** (not a
+rejection) when the deprecated `workers` field is set.
 
 | Field | Type | Required | Effective when | Description |
 | --- | --- | --- | --- | --- |
-| `uwsgi` | [`*UWSGISpec`](#uwsgispec) | no | release ≥ `2026.1` (uWSGI launch mode) | uWSGI application-server parameters; inert below `2026.1` |
-| `workers` | `*int32` (Minimum=1) | no | release < `2026.1` (eventlet launch mode) | The eventlet API worker count, rendered as `[DEFAULT] workers`; inert from `2026.1`, and not rendered from `2026.2`, whose glance no longer has the option |
+| `uwsgi` | [`*UWSGISpec`](#uwsgispec) | no | always | uWSGI application-server parameters |
+| `workers` | `*int32` (Minimum=1) | no | never | Deprecated, has no effect; the operator renders no `[DEFAULT] workers` and the webhook warns when the field is set. Size the API with `uwsgi` |
 
-The process, thread and worker counts, together with the replica count, size
+The process and thread counts, together with the replica count, size
 the database user's `max_user_connections`; see
 [Connection cap](./glance-reconciler.md#connection-cap).
 
@@ -902,6 +901,18 @@ rather than rejections, because both are legal deployment choices: a deny-list
 that Glance will never evaluate, and an allow-list widened past the operator
 default. Both are also raised on `spec.services.glance.importFiltering` of a
 ControlPlane, which is where most deployments author the filter.
+
+The validating webhook also holds `spec.openStackRelease` to a release floor,
+a rule with no schema counterpart because the floor moves with the operator
+version. A value below `2026.1`, the oldest OpenStack release this operator
+version supports, is rejected on create and whenever an update changes it, with
+`must be 2026.1 or later: this operator version no longer supports OpenStack
+releases below 2026.1`. An update that keeps a stored value below the floor is
+admitted with a warning, so an unrelated edit never blocks the resource:
+`spec.openStackRelease "2025.2" is below 2026.1, the oldest OpenStack release
+this operator version supports; the unchanged value is admitted, but the
+operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
+2026.1 or later.`
 
 ## Status
 

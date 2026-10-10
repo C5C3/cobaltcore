@@ -1787,6 +1787,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Jobs PriorityClass existence | `spec.jobs.priorityClassName` | `field.NotFound` / `field.InternalError` | Same lookup as `spec.deployment.priorityClassName`; `""` is the opt-out and is not looked up. |
 | Jobs node placement | `spec.jobs.nodeSelector`, `spec.jobs.tolerations[i]` | as above | The node selector and toleration rules above, applied to `spec.jobs`. |
 | Federation proxy request exceeds limit | `spec.federation.proxyResources.requests.<resource>` | `field.Invalid` | A request of the `federation-proxy` sidecar exceeds its limit. |
+| Release floor | `spec.image.tag` | `field.Invalid` | The tag parses as an OpenStack release below `2026.1`, the oldest this operator version supports, on create or when an update changes the tag: `must be 2026.1 or later: this operator version no longer supports OpenStack releases below 2026.1`. An update that keeps a below-floor tag is admitted with the warning `spec.image.tag "2025.2" is below 2026.1, the oldest OpenStack release this operator version supports; the unchanged value is admitted, but the operator renders the 2026.1 configuration for it. Set spec.image.tag to 2026.1 or later.` A digest-only image or a tag that names no release (`latest`) is skipped. Webhook-only: the floor moves with the operator version, so no CRD pattern carries it. |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -1956,6 +1957,7 @@ is pinned by a Chainsaw step.
 | `vertical-autoscaling-update-mode-rejected` | `36-vertical-autoscaling-update-mode.yaml` | `updateMode` Enum | Error containing "spec.deployment.verticalAutoscaling.updateMode" and "Unsupported value" |
 | `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
 | `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
+| `image-tag-below-floor-rejected` | `39-image-tag-below-floor.yaml` | Release floor (webhook-only) | Error containing "image.tag" and "2026.1 or later" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the

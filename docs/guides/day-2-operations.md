@@ -166,6 +166,39 @@ to run.
 Full contract in [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md).
 :::
 
+### Minimum supported release
+
+This operator version supports OpenStack `2026.1` and later. Before you install
+it, bring every `ControlPlane`, every service resource with
+`spec.openStackRelease` (`Barbican`, `Cinder`, `Glance`, `Neutron`,
+`NeutronMetadataAgent`, `Nova` and `Placement`), and every `Keystone` or
+`Horizon` whose `spec.image.tag` names a release to `2026.1` or later. Run that
+upgrade with the operator version you already have.
+
+The validating webhooks reject a create, or a change of the release, below the
+floor:
+
+```text
+spec.openStackRelease: Invalid value: "2025.2": must be 2026.1 or later: this operator version no longer supports OpenStack releases below 2026.1
+```
+
+An update that keeps a stored release below the floor is admitted with a
+warning, so the resource stays editable:
+
+```text
+Warning: spec.openStackRelease "2025.2" is below 2026.1, the oldest OpenStack release this operator version supports; the unchanged value is admitted, but the operator renders the 2026.1 configuration for it. Set spec.openStackRelease to 2026.1 or later.
+```
+
+For `Keystone` and `Horizon` the field in both messages is `spec.image.tag`. A
+digest-pinned image, or a tag that names no release, is not checked.
+
+From this operator version on, the controllers render the `2026.1` launch and
+paste layout for any release: Glance runs under uWSGI, and Barbican's paste file
+carries the `request_id` filter. The Glance connection cap no longer accounts
+for a `status.installedRelease` of `2025.2`. A `ControlPlane` left at `2025.2`
+stays editable, but a service child it creates at that release is refused by
+the child's webhook.
+
 ### Recovering from a bad upgrade
 
 The upgrade pipeline is forward-only at both levels: the keystone-operator has no
@@ -320,12 +353,14 @@ scheduled rotation during an incident without deleting the CronJob, and
 
 ## Tested by
 
-Scale, release upgrade, image upgrade, zero-downtime rollout, and manual Fernet
-rotation are each asserted on the CI e2e kind cluster by these chainsaw suites:
+Scale, release upgrade, image upgrade, zero-downtime rollout, manual Fernet
+rotation, and the release floor are each asserted on the CI e2e kind cluster by
+these chainsaw suites:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/release-upgrade
 chainsaw test --test-dir tests/e2e/keystone/image-upgrade
 chainsaw test --test-dir tests/e2e/keystone/rolling-update-zero-downtime
 chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
+chainsaw test --test-dir tests/e2e/c5c3/invalid-cr
 ```
