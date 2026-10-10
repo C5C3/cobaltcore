@@ -138,8 +138,8 @@ var backupMemory = resource.MustParse("2Gi")
 
 // buildBackupDeployment constructs the desired cinder-backup Deployment: the
 // workload volumes every process shares, the projected driver section, the
-// export the backups are written to, and every volume backend's export beside
-// it.
+// export the backups are written to, and every NFS volume backend's export
+// beside it.
 //
 // The replica count and the Recreate strategy come from spec.backup.deployment,
 // where the CEL rules pin them for the same reason they pin the volume service:
@@ -173,10 +173,10 @@ func buildBackupDeployment(cinder *cinderv1alpha1.Cinder, backup *backupProjecti
 	)
 
 	// The source side. A backup reads the volume itself rather than a copy the
-	// volume service hands over, so every export a volume backend serves is
+	// volume service hands over, so every export an NFS volume backend serves is
 	// mounted here too, at the path cinder resolved the volume's provider
-	// location to. Two backends on one export share a single mount; see
-	// backupShareMounts.
+	// location to. Two backends on one export share a single mount, and an RBD
+	// backend has no export; see backupShareMounts.
 	sources, _ := backupShareMounts(backends)
 	for _, backend := range sources {
 		name := shareVolumeName(backend.name)
@@ -266,11 +266,18 @@ type sharedExportConflict struct {
 // are absent from a pod spec that names no backend they belong to, and if they
 // were the ones the export needs, the kubelet's CSI mount fails and the backup
 // pod never leaves ContainerCreating — for every backend, not just this one.
+//
+// Only NFS backends have an export to mount. An RBD backend is skipped: its
+// projection carries no server or path, and the Ceph client configuration the
+// backup pod needs to read its volumes is a separate projection (#1342).
 func backupShareMounts(backends []backendProjection) ([]backendProjection, []sharedExportConflict) {
 	var sources []backendProjection
 	var conflicts []sharedExportConflict
 	mounted := make(map[string]backendProjection, len(backends))
 	for _, backend := range backends {
+		if backend.backendType != cinderv1alpha1.CinderBackendTypeNFS {
+			continue
+		}
 		path := shareMountPath(nfsMountPointBase, backend.server, backend.path)
 		first, seen := mounted[path]
 		if !seen {

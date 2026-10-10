@@ -133,6 +133,46 @@ func TestBuildBackupDeployment_SharedExportMountedOnce(t *testing.T) {
 		"the shared export stays mounted once, under the first backend that names it")
 }
 
+// TestBuildBackupDeployment_SkipsRBDVolumeBackends covers a Cinder serving an
+// NFS and an RBD backend. Only the NFS backend has an export to mount: an RBD
+// projection carries no server or path, and mounting one would derive a mount
+// path from the empty export ":".
+func TestBuildBackupDeployment_SkipsRBDVolumeBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	deploy := buildBackupDeployment(workloadCinder(), testBackupProjection(),
+		[]backendProjection{testBackendProjection("nfs"), testRBDBackendProjection("rbd")},
+		workloadArtifacts(), workloadDigests{}, testEgressPort)
+	pod := deploy.Spec.Template.Spec
+
+	var shareVolumes []string
+	for _, volume := range pod.Volumes {
+		if strings.HasPrefix(volume.Name, shareVolumePrefix) {
+			shareVolumes = append(shareVolumes, volume.Name)
+		}
+	}
+	g.Expect(shareVolumes).To(ConsistOf("share-nfs"))
+	emptyExport := shareMountPath(nfsMountPointBase, "", "")
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		g.Expect(mount.MountPath).NotTo(Equal(emptyExport), "no mount is derived from an empty export")
+	}
+
+	t.Run("two RBD backends are neither mounted nor in conflict", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		rbdBackends := []backendProjection{testRBDBackendProjection("rbd-a"), testRBDBackendProjection("rbd-b")}
+
+		sources, conflicts := backupShareMounts(rbdBackends)
+		g.Expect(sources).To(BeEmpty())
+		g.Expect(conflicts).To(BeEmpty())
+
+		recorder := record.NewFakeRecorder(10)
+		r := &CinderReconciler{Recorder: recorder}
+		r.warnSharedExportConflicts(context.Background(), workloadCinder(), rbdBackends)
+		g.Expect(collectEvents(recorder)).To(BeEmpty(),
+			"two RBD backends share no export, whatever their empty fields compare as")
+	})
+}
+
 // TestReconcileBackupService_SharedExportMountOptions covers the half of that
 // dedup the rendered pod spec cannot show. Two backends on one export are
 // mounted once, so the later one's mountOptions are not applied in the backup
