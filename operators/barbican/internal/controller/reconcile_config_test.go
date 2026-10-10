@@ -479,29 +479,23 @@ func TestReconcileConfig_PrunesToRetainCount(t *testing.T) {
 	g.Expect(names).To(ContainElement(current.Name))
 }
 
-// TestRenderPasteINI_ReleaseVariants grounds both bases in the file the release's
-// image ships: 2025.2 carries the repoze.profile pipeline and filter, 2026.1
-// carries the oslo request_id filter in every pipeline and neither profile
-// section. Both route /healthcheck to the oslo healthcheck app.
-func TestRenderPasteINI_ReleaseVariants(t *testing.T) {
-	tests := []struct {
-		name    string
-		release string
-		profile bool
-	}{
-		{name: "2025.2 ships repoze.profile", release: "2025.2", profile: true},
-		{name: "2026.1 ships request_id", release: "2026.1"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+// TestRenderPasteINI_Layout grounds the rendered file in the one the 2026.1 and
+// 2026.2 images ship: the oslo request_id filter in every pipeline, and neither
+// the repoze.profile pipeline nor its filter section. /healthcheck is routed to
+// the oslo healthcheck app. 2025.2 is below the release floor; a stored CR at it
+// is admitted unchanged and must render the same 2026.1 layout the floor
+// warning promises.
+func TestRenderPasteINI_Layout(t *testing.T) {
+	for _, release := range []string{"2025.2", "2026.1", "2026.2"} {
+		t.Run(release, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			barbican := testBarbican()
-			barbican.Spec.OpenStackRelease = tc.release
+			barbican.Spec.OpenStackRelease = release
 
 			rendered, err := renderPasteINI(barbican)
 			g.Expect(err).NotTo(HaveOccurred())
 
-			// The healthcheck app sits above the pipeline in both, so the probes stay
+			// The healthcheck app sits above the pipeline, so the probes stay
 			// outside authtoken.
 			g.Expect(sectionOf(t, rendered, "composite:main")).To(ContainElement("/healthcheck = healthcheck"))
 			g.Expect(sectionOf(t, rendered, "app:healthcheck")).To(
@@ -509,21 +503,14 @@ func TestRenderPasteINI_ReleaseVariants(t *testing.T) {
 			)
 			g.Expect(sectionOf(t, rendered, "composite:main")).To(ContainElement("/v1 = " + keystonePipelineName))
 
-			pipelines := pipelineDirectives(rendered)
-			g.Expect(pipelines).NotTo(BeEmpty())
-
-			if tc.profile {
-				g.Expect(rendered).To(ContainSubstring("[pipeline:barbican-profile]"))
-				g.Expect(sectionOf(t, rendered, "filter:profile")).To(ContainElement("use = egg:repoze.profile"))
-				g.Expect(rendered).NotTo(ContainSubstring("request_id"))
-				return
-			}
-
 			g.Expect(rendered).NotTo(ContainSubstring("repoze.profile"))
 			g.Expect(rendered).NotTo(ContainSubstring("[pipeline:barbican-profile]"))
+			g.Expect(rendered).NotTo(ContainSubstring("[filter:profile]"))
 			g.Expect(sectionOf(t, rendered, "filter:request_id")).To(
 				ContainElement("paste.filter_factory = oslo_middleware.request_id:RequestId.factory"),
 			)
+			pipelines := pipelineDirectives(rendered)
+			g.Expect(pipelines).To(HaveKey("pipeline:barbican-api-keystone-audit"))
 			for section, directive := range pipelines {
 				g.Expect(directive).To(ContainSubstring("request_id"), "pipeline %s", section)
 			}
