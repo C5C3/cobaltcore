@@ -3098,10 +3098,11 @@ A Ceph deployed by Rook for the metal-stack lab
 manager and three OSDs on raw block volumes, the RBD pools `volumes` and
 `backups`, and the Ceph users `cinder` and `cinder-backup`. The RBD backends of
 [#1341](https://github.com/c5c3/cobaltcore/issues/1341) and
-[#1346](https://github.com/c5c3/cobaltcore/issues/1346) and the libvirt secret
-of [#1345](https://github.com/c5c3/cobaltcore/issues/1345) attach to it. Until
-then the lab's Cinder stays on the [Lab NFS stack](#lab-nfs-stack), and nothing
-of the ControlPlane changes. `hack/deploy-infra.sh` applies both
+[#1346](https://github.com/c5c3/cobaltcore/issues/1346) attach to it, and the
+[Lab hypervisors](#lab-hypervisors) define the libvirt secret QEMU
+authenticates with from the key in `openstack/ceph-client-cinder`. Until #1346
+the lab's Cinder stays on the [Lab NFS stack](#lab-nfs-stack), and nothing of
+the ControlPlane changes. `hack/deploy-infra.sh` applies both
 kustomizations when `WITH_CEPH=true` is set beside `EXTERNAL_CLUSTER=true`.
 The flag has no kind overlay, and the kind mode refuses it; Ceph on kind and
 in CI is [#1339](https://github.com/c5c3/cobaltcore/issues/1339).
@@ -5008,7 +5009,7 @@ on its own before the [node port check](#node-port-check).
 | `migration-ports/reservation-daemonset.yaml` | DaemonSet `migration-port-reservation` in `hypervisor-system`, on every node: it reserves QEMU's migration ports (see [Migration port reservation](#migration-port-reservation)) |
 | `hypervisor/kustomization.yaml` | Takes `../migration-ports` as a resource, so the hypervisor overlay applies the namespace and the reservation too and the teardown removes both with it |
 | `hypervisor/libvirt-ca.yaml` | Certificate `libvirt-migration-ca` (ECDSA 256, three years, bootstrapped from `selfsigned-cluster-issuer`) and Issuer `nova-hypervisor-agents-ca-issuer`, hvo's default issuer name, in `hypervisor-system`. The CA signs nothing else |
-| `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `libvirtd.conf` and `qemu.conf` |
+| `hypervisor/libvirt-configmap.yaml` | ConfigMap `libvirt-lab`: `host-prepare.sh`, `libvirtd.sh`, `ceph-secret.sh`, `libvirtd.conf` and `qemu.conf` |
 | `hypervisor/libvirt-daemonset.yaml` | DaemonSet `libvirt` in `openstack` |
 | `hypervisor/compute.yaml` | `OVNChassis/lab-chassis` on `controlplane-ovn`, `NeutronMetadataAgent/lab-metadata-agent` on the in-cluster Nova metadata API, and `NovaCompute/lab` with `virtType: kvm`, `cpuMode: custom`, `cpuModels: [Skylake-Server-IBRS]` and `imagesType: qcow2`, all in `openstack` |
 | `hypervisor/sources.yaml` | One digest-pinned `OCIRepository` per chart in `flux-system` |
@@ -5022,7 +5023,7 @@ requests and limits from these sources:
 | --- | --- | --- |
 | `lab-nova-compute` | `nova-compute`, `create-instances-dir`, `wait-for-chassis` | the Nova operator's default, `150m` CPU request and `768Mi` memory request and limit ([Resources](../nova/novacompute-crd.md#resources)) |
 | `lab-metadata-agent-metadata-agent` | `metadata-agent`, `wait-for-chassis` | the Neutron operator's default, `230m` CPU request and `2Gi` memory request and limit ([Memory sizing](../neutron/neutron-metadata-agent-crd.md#memory-sizing)) |
-| `libvirt` | `libvirtd`, `host-prepare` | the DaemonSet's own: `100m`/`256Mi` request and `512Mi` limit for `libvirtd`, `10m`/`16Mi` request and `64Mi` limit for `host-prepare` |
+| `libvirt` | `libvirtd`, `host-prepare`, `ceph-secret` | the DaemonSet's own: `100m`/`256Mi` request and `512Mi` limit for `libvirtd`, `10m`/`16Mi` request and `64Mi` limit for `host-prepare` and for `ceph-secret` |
 | `lab-chassis-ovs`, `lab-chassis-ovn-controller` | `ovsdb-server`, `ovs-vswitchd`, `host-prepare`; `ovn-controller`, `apply-node` | none of their own: the tenant LimitRange of `openstack` ([OpenBao Proving Instance](#openbao-proving-instance), Tenant) fills in a `100m` CPU and `128Mi` memory request and a `512Mi` memory limit; the lab read 11 to 23 MiB per container ([Recorded lab run](../testing/sizing-calibration.md#recorded-lab-run)) |
 
 `OVNChassis` renders no resources by design
@@ -5031,14 +5032,15 @@ tenant LimitRange changes the chassis pods with it.
 
 The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` (see
 [libvirt](../ci-cd/container-images.md#libvirt)) on the nodes labelled
-`openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, privileged
-as uid 0 in the host's network, PID and IPC namespaces. `<tag>` is the keeper
+`openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, as uid 0 in
+the host's network, PID and IPC namespaces; `host-prepare` and `libvirtd` run
+privileged, `ceph-secret` does not (below). `<tag>` is the keeper
 tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
 `hack/ci-tag-libvirt-keeper.sh` mints once on `main` and never moves (see
 [Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
 `imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
 proposes each new keeper tag as one pull request, never automerged, that moves
-all seven lines naming the image: the two containers here, the load test of
+all eight lines naming the image: the three containers here, the load test of
 the [Node probe](#node-probe), both containers of `nfs-client-modules` in the
 [Lab NFS stack](#lab-nfs-stack), and both containers of `chaos-mesh-modules`
 in the [Lab Chaos Mesh](#lab-chaos-mesh).
@@ -5058,7 +5060,7 @@ runs `virsh -c qemu:///system version`.
 
 The init container `host-prepare` loads `vhost_net` and fails the pod with
 `host-prepare: cannot load vhost_net from /lib/modules/<kernel>` or
-`host-prepare: /dev/kvm is missing on this node`. The main container's
+`host-prepare: /dev/kvm is missing on this node`. The `libvirtd` container's
 `libvirtd.sh` then:
 
 1. waits, without a timeout, for `/etc/pki/CA/cacert.pem`,
@@ -5104,6 +5106,99 @@ modified, knowingly. `/run` is a tmpfs, so a reboot removes the units, and the
 script removes them whenever it ends. `systemctl` takes a container in the
 host's PID namespace for a chroot and ignores `start` and `daemon-reload`
 there, so the script sets `SYSTEMD_IGNORE_CHROOT=1`.
+
+The third container, `ceph-secret`, defines the libvirt secret QEMU
+authenticates to Ceph with when it attaches a Cinder volume on RBD, and keeps it
+in step with the key in the Secret `openstack/ceph-client-cinder` of the
+[Lab Ceph](#lab-ceph). It runs `ceph-secret.sh` from the same image pin as uid
+0, which reads `userKey`, root-owned with mode `0400`, and reaches the socket
+of the group `+108` (below). It is not privileged, drops every capability and
+sets
+`allowPrivilegeEscalation: false`: `virsh` over the Unix socket needs no
+device, module or host namespace. It mounts the ConfigMap and `/run/libvirt`,
+and the Secret `ceph-client-cinder` read-only at `/etc/ceph-client-cinder` as a
+volume with `optional: true`, mode `0400` and no `subPath`. The pod starts
+without the Secret, and the kubelet writes `userKey` once the Secret appears,
+rewrites it on every change and removes it when the Secret is deleted, each on
+its periodic sync of about a minute. A watch through the API would need a
+ServiceAccount, a Role on Secrets in `openstack` and a token in a pod that
+shares the host's namespaces, so the pod keeps
+`automountServiceAccountToken: false`. The container has no probe, and the
+pod's readiness stays libvirtd's: on a lab without `WITH_CEPH=true` it waits
+and the pod is `Ready`.
+
+The secret's UUID is `090e4a3c-6c20-4e74-82dc-1a70382babe8`, its usage `ceph`
+with the name `client.cinder`. The UUID is a constant on both sides: the lab's
+RBD volume backend of [#1346](https://github.com/c5c3/cobaltcore/issues/1346)
+sets the same value as `spec.rbd.secretUUID`, so the `rbd_secret_uuid` Cinder
+sends names this secret (see
+[CinderBackend CRD](../cinder/cinder-backend-crd.md)). A backend that leaves
+`secretUUID` unset sends the cluster FSID and finds no secret on the lab. Nova
+stores the UUID in the `connection_info` of every volume attachment; a start or
+a reboot of the server reuses it, and a migration or
+`nova-manage volume_attachment refresh` renews it. The UUID therefore stays
+fixed once a volume is attached: a change needs both UUIDs defined on every
+hypervisor until every attachment has been refreshed. The secret is
+`private='yes'`, so libvirt refuses `virsh secret-get-value` on it, and
+`ephemeral='yes'`, so libvirtd keeps the value in memory and writes no
+`/etc/libvirt/secrets/<uuid>.base64`. That file would hold the key in base64,
+readable by QEMU, which runs as root, and kept on the node's disk in the
+container's writable layer.
+
+Once `/run/libvirt/libvirt-sock` exists, the script runs a pass every 10
+seconds. It reads `userKey` with its whitespace removed; a missing or empty
+file counts as absent. With a key, it defines the secret when
+`virsh secret-dumpxml` finds none and sets its value with
+`virsh secret-set-value --file` whenever the key's digest differs from the one
+it set last. `--file` reads the base64 text and stores the decoded key, so the
+key never appears on a command line, which `hostPID: true` would show to every
+process on the node. Without a key, it undefines a secret libvirtd still has:
+the Secret goes when the `WITH_CEPH=true` stack is torn down or its
+ExternalSecret is deleted. The log names the first twelve hex characters of the
+key's SHA-256 and never the key, as the checks of the [Lab Ceph](#lab-ceph) do,
+and each line starts with `ceph-secret:`:
+
+| When | `kubectl logs -n openstack <pod> -c ceph-secret` shows |
+| --- | --- |
+| At start | `ceph-secret: libvirt secret 090e4a3c-6c20-4e74-82dc-1a70382babe8 for client.cinder follows the Secret openstack/ceph-client-cinder` |
+| Before libvirtd opens its socket, once | `ceph-secret: waiting for /run/libvirt/libvirt-sock` |
+| The secret was defined | `ceph-secret: defined libvirt secret 090e4a3c-6c20-4e74-82dc-1a70382babe8 for client.cinder` |
+| Its value was set, first and after each rotation | `ceph-secret: set the value of libvirt secret 090e4a3c-6c20-4e74-82dc-1a70382babe8 from openstack/ceph-client-cinder (sha256 <first 12 hex characters>)` |
+| The Secret went and the secret was undefined | `ceph-secret: undefined libvirt secret 090e4a3c-6c20-4e74-82dc-1a70382babe8 because openstack/ceph-client-cinder is gone` |
+| No key, once per change to that state | `ceph-secret: waiting for the Secret openstack/ceph-client-cinder (deployed by WITH_CEPH=true); no libvirt secret is defined` |
+| A `virsh` call failed (libvirtd restarting, the socket gone), after virsh's error; the next pass tries again | `ceph-secret: virsh <subcommand> failed; retrying in 10s` |
+
+The digest of the `set the value` line equals
+`kubectl get secret -n openstack ceph-client-cinder -o jsonpath='{.data.userKey}' | base64 -d | tr -d '[:space:]' | sha256sum | cut -c1-12`.
+A rotated key reaches libvirtd within the kubelet's sync of about a minute and
+the next 10-second pass, and the log of each node's `ceph-secret` container is
+where it shows: a further `set the value` line with the new digest and no new
+`defined` line. On 2026-10-10 a scratch kind cluster with this container
+beside a libvirtd took 62 seconds from a new Secret to the `set the value` line, and 82 seconds
+each from a changed key to the next one and from a deleted Secret to the
+`undefined` line. A restart of the `libvirtd` container alone starts a
+libvirtd without the secret. The next pass finds none and logs the `defined`
+and `set the value` lines again. On a pod
+deletion `libvirtd.sh` stops libvirtd, `ceph-secret` exits 0 on `TERM` and
+leaves the secret as it is, and the next pod's container defines it again.
+
+A lab deployed before the container existed gets it when its libvirt pods are
+deleted, as with every change to this `OnDelete` DaemonSet. The container
+carries the image pin of the other two. An image built before the Dockerfile
+installed `qemu-block-extra` (see
+[libvirt](../ci-cd/container-images.md#libvirt)) has `bash` and `virsh` for
+the container but no rbd block module, so its QEMU cannot open an RBD volume.
+The pins move to an image with the module by Renovate's group bump once `main`
+has built it, and the bump reaches a node when its libvirt pod is deleted
+again.
+
+A server that holds an attached RBD volume keeps the key its QEMU authenticated
+with until the server is live-migrated or restarted (OSSN-0108), and a rotated
+key stops working for a new connection at once. The DaemonSet does not and
+cannot migrate or restart servers for it: it does not know which servers hold
+an RBD volume. The rotation drill of
+[#1346](https://github.com/c5c3/cobaltcore/issues/1346) migrates the server
+after the rotation.
 
 `libvirtd.conf` listens for TLS on the node's address and port `16514` only
 (`listen_tcp = 0`, `auth_tls = "none"`) and gives the socket the numeric group
