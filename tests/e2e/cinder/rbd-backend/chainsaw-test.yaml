@@ -1,0 +1,445 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the operator mechanics of an RBD backend (2026.1),
+# on a kind cluster that runs no Ceph:
+#   - the credentials gate admits a Secret carrying a cephx key under userKey,
+#     and the backend's projection Secret carries the backend section, the
+#     ceph.conf and the keyring
+#   - the volume Deployment mounts the two Ceph files read-only at /etc/ceph
+#     and no export, and the NetworkPolicy opens the Ceph ports towards the
+#     network the backend names
+#   - the driver reaches librados with the projected configuration: the
+#     monitor does not resolve, so the volume service logs that the driver did
+#     not initialize, and none of the warnings the unwritable log and
+#     admin-socket defaults would print
+#   - a replaced key rolls the volume service onto a projection Secret of a
+#     new name
+#   - a second backend waits on a missing Secret, then on an empty key, and
+#     is projected once the key is usable
+#
+# cinder-volume catches a failed driver setup, logs "Failed to initialize
+# driver." and starts its RPC server anyway, so the pod passes the AMQP
+# readiness probe without a Ceph. That is what lets the suite assert a Ready
+# backend and an available Deployment while the driver itself never connects.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-rbd-backend
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration and the API cold start precede the first assertion,
+    # which does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite; see ../broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-rbd cinder-rbd-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-key-secret.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-rbd || true
+  # ── Step 2: Assert the gate, the projection, the mounts and the policy ──
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: rbdbe-rbd1
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-rbd
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: rbdbe-rbd1
+              host: cinder-rbd@rbdbe-rbd1
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-rbd-volume-rbdbe-rbd1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # The Ceph files come from the projection Secret, read-only, and
+                # an RBD backend mounts no export: no share volume, no CSI
+                # volume source.
+                (containers[0].volumeMounts[?mountPath == '/etc/ceph'] | [0].readOnly): true
+                (length(volumes[?name == 'share-rbdbe-rbd1']) == `0`): true
+                (length(volumes[?csi]) == `0`): true
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: cinder-rbd
+            namespace: openstack
+          spec:
+            # DNS, database, cache, messaging, then the Ceph rule. No backend
+            # mounts an NFS export, so there is no 2049 rule before it. The
+            # Ceph rule is the one auto-derived rule with peers: the networks
+            # the RBD backend names.
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 5672
+            - to:
+              - ipBlock:
+                  cidr: 10.244.0.0/16
+              ports:
+              - protocol: TCP
+                port: 3300
+              - protocol: TCP
+                port: 6789
+              - protocol: TCP
+                port: 6800
+                endPort: 7300
+    catch: &rbd-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-rbd
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: rbdbe-rbd1
+        namespace: openstack
+    - script:
+        content: |
+          kubectl get cinderbackend rbdbe-rbd2 -n $NAMESPACE -o yaml 2>&1 || true
+          for d in cinder-rbd cinder-rbd-scheduler cinder-rbd-volume-rbdbe-rbd1 cinder-rbd-volume-rbdbe-rbd2; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-rbd -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Projection Secrets ==="
+          kubectl get secret -l cobaltcore.c5c3.io/config-base -n $NAMESPACE 2>&1 || true
+          echo "=== Current ceph.conf of rbdbe-rbd1 ==="
+          SECRET="$(kubectl get deploy cinder-rbd-volume-rbdbe-rbd1 -n $NAMESPACE \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="ceph")].secret.secretName}' 2>/dev/null || true)"
+          if [ -n "$SECRET" ]; then
+            kubectl get secret "$SECRET" -n $NAMESPACE -o 'jsonpath={.data.ceph\.conf}' 2>/dev/null | base64 -d 2>&1 || true
+          fi
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy cinder-rbd -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Read the projected files and the driver's attempt ──────────
+  # The Secret the ceph volume names is the one the pod runs on, so the files
+  # are read from it rather than from the newest Secret of the base name.
+  - try:
+    - script:
+        timeout: 5m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          DEPLOY=cinder-rbd-volume-rbdbe-rbd1
+
+          SECRET="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="ceph")].secret.secretName}')"
+          test -n "$SECRET"
+          echo "projection Secret: $SECRET"
+          data() {
+            kubectl get secret "$SECRET" -n "$NAMESPACE" -o "jsonpath={.data.$1}" | base64 -d
+          }
+          expect_line() {
+            if ! printf '%s\n' "$2" | grep -qxF -- "$3"; then
+              echo "FAIL: $1 lacks the line: $3"
+              printf '%s\n' "$2"
+              exit 1
+            fi
+          }
+
+          # Exactly the four data keys of an RBD projection: no shares file.
+          KEYS="$(kubectl get secret "$SECRET" -n "$NAMESPACE" \
+            -o 'go-template={{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' | sort | paste -sd ' ' -)"
+          echo "data keys: $KEYS"
+          [ "$KEYS" = "backend.conf ceph.conf keyring volume.conf" ]
+
+          CONF="$(data 'ceph\.conf')"
+          for line in \
+            '[global]' \
+            'mon_host = ceph-mon.openstack.svc.cluster.local' \
+            'keyring = /etc/ceph/ceph.client.cinder.keyring' \
+            'log_file = /dev/null' \
+            'admin_socket = /tmp/$cluster-$name.$pid.$cctid.asok'; do
+            expect_line ceph.conf "$CONF" "$line"
+          done
+
+          KEYRING="$(data keyring)"
+          expect_line keyring "$KEYRING" '[client.cinder]'
+          expect_line keyring "$KEYRING" "$(printf '\tkey = AQDHlkVoYx3QKRAAk9m6j4QzG8w2yK0hfr9c6g==')"
+
+          SECTION="$(data 'backend\.conf')"
+          for line in \
+            '[rbdbe-rbd1]' \
+            'volume_driver = cinder.volume.drivers.rbd.RBDDriver' \
+            'rbd_pool = volumes' \
+            'rbd_user = cinder' \
+            'rbd_ceph_conf = /etc/ceph/ceph.conf' \
+            'rbd_cluster_name = ceph' \
+            'rados_connect_timeout = 5'; do
+            expect_line backend.conf "$SECTION" "$line"
+          done
+          if printf '%s\n' "$SECTION" | grep -q '^rbd_secret_uuid'; then
+            echo "FAIL: rbd_secret_uuid is rendered although spec.rbd.secretUUID is unset"
+            exit 1
+          fi
+
+          # The files sit where librados and the Ceph tools look for them.
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test -f /etc/ceph/ceph.conf
+          kubectl exec -n "$NAMESPACE" "deploy/$DEPLOY" -- test -f /etc/ceph/ceph.client.cinder.keyring
+
+          # The driver reaches librados with the projected configuration and
+          # fails on the monitor that does not resolve. 36 x 5s = 3m.
+          LOG=""
+          for _ in $(seq 1 36); do
+            LOG="$(kubectl logs -n "$NAMESPACE" "deploy/$DEPLOY" 2>&1 || true)"
+            if printf '%s\n' "$LOG" | grep -q 'Failed to initialize driver'; then
+              break
+            fi
+            sleep 5
+          done
+          printf '%s\n' "$LOG" | grep -q 'Failed to initialize driver' || {
+            echo "FAIL: the volume service never logged the driver's setup failure"
+            printf '%s\n' "$LOG" | tail -60
+            exit 1
+          }
+          printf '%s\n' "$LOG" | grep -q 'Error connecting to ceph cluster' || {
+            echo "FAIL: the driver failed before it tried to connect to the cluster"
+            printf '%s\n' "$LOG" | tail -60
+            exit 1
+          }
+          # Neither the unreadable configuration nor the two defaults the
+          # service user cannot write show up: ceph.conf was read, and its
+          # log_file and admin_socket lines took effect.
+          for warning in conf_read_file AdminSocket 'unable to open log file'; do
+            if printf '%s\n' "$LOG" | grep -qF -- "$warning"; then
+              echo "FAIL: the volume service log carries '$warning'"
+              printf '%s\n' "$LOG" | grep -F -- "$warning" | head -5
+              exit 1
+            fi
+          done
+          echo "OK: the driver read the projected configuration and failed on the unresolvable monitor alone"
+    catch: *rbd-dump
+  # ── Step 4: Replace the key and watch the volume service roll ──────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          DEPLOY=cinder-rbd-volume-rbdbe-rbd1
+          SELECTOR=app.kubernetes.io/instance=cinder-rbd,app.kubernetes.io/component=volume-rbdbe-rbd1
+          NEW_KEY=AQDgmkVoAYKpDxAAoN4Pf8u2v3Yq1Ms7rZ9k2w==
+
+          ceph_secret() {
+            kubectl get deploy "$DEPLOY" -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="ceph")].secret.secretName}'
+          }
+          OLD="$(ceph_secret)"
+          OLD_POD_TS="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" \
+            -o 'jsonpath={.items[0].metadata.creationTimestamp}')"
+          test -n "$OLD"
+          test -n "$OLD_POD_TS"
+          echo "before: Secret $OLD, pod created $OLD_POD_TS"
+
+          kubectl patch secret rbdbe-rbd1-key -n "$NAMESPACE" \
+            -p "{\"stringData\":{\"userKey\":\"$NEW_KEY\"}}"
+
+          # The Secret watch wakes the Cinder, which renders a Secret of a new
+          # name; the Deployment rolls onto it with the Recreate strategy.
+          # 54 x 5s = 4.5m.
+          NEW=""
+          for _ in $(seq 1 54); do
+            NEW="$(ceph_secret || true)"
+            AVAILABLE="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o 'jsonpath={.status.availableReplicas}' || true)"
+            UPDATED="$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o 'jsonpath={.status.updatedReplicas}' || true)"
+            PODS="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o name 2>/dev/null | wc -l | tr -d ' ')"
+            if [ "$NEW" != "$OLD" ] && [ "$AVAILABLE" = "1" ] && [ "$UPDATED" = "1" ] && [ "$PODS" = "1" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "after: Secret $NEW"
+          [ "$NEW" != "$OLD" ]
+          [ "$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o 'jsonpath={.status.availableReplicas}')" = "1" ]
+
+          KEYRING="$(kubectl get secret "$NEW" -n "$NAMESPACE" -o 'jsonpath={.data.keyring}' | base64 -d)"
+          printf '%s\n' "$KEYRING" | grep -qxF "$(printf '\tkey = %s' "$NEW_KEY")"
+
+          # The previous projection is part of the retained history.
+          kubectl get secret "$OLD" -n "$NAMESPACE" >/dev/null
+
+          NEW_POD_TS="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" \
+            -o 'jsonpath={.items[0].metadata.creationTimestamp}')"
+          echo "pod created $NEW_POD_TS"
+          [[ "$NEW_POD_TS" > "$OLD_POD_TS" ]]
+          echo "OK: the replaced key rolled the volume service onto $NEW and kept $OLD"
+    catch: *rbd-dump
+  # ── Step 5: Walk the gate of a second backend ──────────────────────────
+  # The backend controller polls an unready gate every 15 seconds, which is
+  # how it notices a Secret that appears or changes after a False gate.
+  - try:
+    - apply:
+        file: 03-cinderbackend-b-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: rbdbe-rbd2
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForCredentials
+              (contains(message, 'not found yet')): true
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-rbd
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "False"
+              reason: WaitingForBackends
+              message: 'Waiting for backends: rbdbe-rbd2'
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          OUT="$(kubectl get deploy cinder-rbd-volume-rbdbe-rbd2 -n "$NAMESPACE" 2>&1)" && {
+            echo "FAIL: a backend without credentials has a volume Deployment"
+            exit 1
+          }
+          printf '%s\n' "$OUT" | grep -q NotFound
+          echo "OK: no volume Deployment for rbdbe-rbd2"
+    - apply:
+        file: 04-key-secret-b-empty.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: rbdbe-rbd2
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForCredentials
+              (contains(message, 'carries an empty userKey')): true
+    - script:
+        shell: bash
+        content: |
+          kubectl patch secret rbdbe-rbd2-key -n "$NAMESPACE" \
+            -p '{"stringData":{"userKey":"AQDHlkVoYx3QKRAAk9m6j4QzG8w2yK0hfr9c6g=="}}'
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: rbdbe-rbd2
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-rbd
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: rbdbe-rbd1
+              host: cinder-rbd@rbdbe-rbd1
+            - backend: rbdbe-rbd2
+              host: cinder-rbd@rbdbe-rbd2
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-rbd-volume-rbdbe-rbd2
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: *rbd-dump

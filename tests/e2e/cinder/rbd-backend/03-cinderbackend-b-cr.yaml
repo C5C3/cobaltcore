@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A second RBD backend on the same Cinder, applied before its key Secret
+# exists: step 5 walks its credentials gate from a missing Secret through an
+# empty key to a usable one. Everything but the name and the Secret matches
+# rbdbe-rbd1.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: rbdbe-rbd2
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-rbd
+  type: RBD
+  rbd:
+    pool: volumes
+    user: cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: rbdbe-rbd2-key
+  extraOptions:
+    rados_connect_timeout: "5"
+    rados_connection_retries: "1"
+    rados_connection_interval: "1"

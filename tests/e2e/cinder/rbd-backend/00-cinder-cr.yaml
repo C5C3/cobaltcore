@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the rbd-backend E2E test (2026.1 release).
+#
+# Same Keystone-free wiring as the nfs-backend fixture, on the schema
+# cinder_rbd, with one API replica for the same reason.
+#
+# The networkPolicy block is the one of the network-policy suite's Cinder. It
+# is what makes the operator render the Ceph egress rule this suite asserts as
+# an object: the kind cluster enforces no NetworkPolicy, so the rule is checked
+# for its shape, not for the traffic it lets through.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-rbd
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_rbd
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-rbd-messaging
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openstack

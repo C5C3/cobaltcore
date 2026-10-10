@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RBD backend the cinder-rbd CR serves.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable.
+#
+# No Service named ceph-mon exists in the namespace and the kind cluster runs no
+# Ceph, so every connection the driver opens fails on DNS at once. The three
+# rados_* options bound that failure to seconds: one attempt with a 5-second
+# connect timeout instead of librados' default mount timeout and three retries.
+# The volume service then logs that the driver did not initialize and still
+# serves RPC, which is the state the suite reads the projection from.
+#
+# spec.rbd.clusterName is left out, so the schema default ceph applies.
+# region cinder-backend
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: rbdbe-rbd1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-rbd
+  type: RBD
+  rbd:
+    pool: volumes
+    user: cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: rbdbe-rbd1-key
+  extraOptions:
+    rados_connect_timeout: "5"
+    rados_connection_retries: "1"
+    rados_connection_interval: "1"
+# endregion cinder-backend
