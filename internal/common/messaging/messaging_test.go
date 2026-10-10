@@ -184,6 +184,30 @@ func TestBuildTransportURL(t *testing.T) {
 	}
 }
 
+func TestBuildTransportURLForVhost(t *testing.T) {
+	g := NewWithT(t)
+	hexDigest := regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+	got, digest := BuildTransportURLForVhost("u", "p@ss", "cp-rabbitmq.ns.svc", 5672, "app-1a2b3c4d")
+	g.Expect(got).To(Equal("rabbit://u:p%40ss@cp-rabbitmq.ns.svc:5672/app-1a2b3c4d"))
+	g.Expect(digest).To(MatchRegexp(hexDigest.String()))
+
+	// An empty vhost is the root vhost, which is what BuildTransportURL renders.
+	root, rootDigest := BuildTransportURLForVhost("u", "p", "h", 5672, "")
+	base, baseDigest := BuildTransportURL("u", "p", "h", 5672)
+	g.Expect(root).To(Equal("rabbit://u:p@h:5672/"))
+	g.Expect(root).To(Equal(base))
+	g.Expect(rootDigest).To(Equal(baseDigest))
+
+	// A vhost is part of the URL, so a moved vhost moves the digest.
+	_, other := BuildTransportURLForVhost("u", "p", "h", 5672, "other")
+	g.Expect(other).NotTo(Equal(rootDigest))
+
+	// An IPv6 broker is bracketed by the host:port join.
+	ipv6, _ := BuildTransportURLForVhost("u", "p", "::1", 5672, "app")
+	g.Expect(ipv6).To(Equal("rabbit://u:p@[::1]:5672/app"))
+}
+
 func TestRabbitSection(t *testing.T) {
 	g := NewWithT(t)
 
