@@ -52,7 +52,9 @@ const (
 )
 
 // backupConfDataKey is the data key inside the projection Secret that holds the
-// rendered [DEFAULT] backup section the cinder-backup Deployment mounts.
+// rendered [DEFAULT] backup section the cinder-backup Deployment mounts. An RBD
+// target's Secret carries the Ceph client configuration and the keyring beside
+// it, under cephConfDataKey and keyringDataKey.
 const backupConfDataKey = "backup.conf"
 
 // backupMountPointBase is the in-pod directory the cinder-backup process mounts
@@ -63,16 +65,23 @@ const backupMountPointBase = "/var/lib/cinder/backup_mount"
 
 // backupProjection is what the backup sub-reconciler hands downstream (the
 // deployment and networkpolicy steps). A nil projection means no backup service
-// is rendered.
+// is rendered. name, backupType and secretName are set for every type; server,
+// path and mountOptions only for an NFS target, rbd only for an RBD one.
 type backupProjection struct {
 	// name is the CinderBackupBackend's name.
 	name string
+	// backupType is the driver the target was rendered for.
+	backupType cinderv1alpha1.CinderBackupBackendType
 	// server and path are the NFS export the cinder-backup pod mounts.
 	server string
 	path   string
 	// mountOptions is the option string the export is mounted with.
 	mountOptions string
-	// secretName is the content-hashed Secret carrying backup.conf.
+	// rbd carries what the backup Deployment and the NetworkPolicy need of an
+	// RBD target.
+	rbd *rbdProjection
+	// secretName is the content-hashed Secret carrying backup.conf, and for an
+	// RBD target the Ceph client configuration and keyring.
 	secretName string
 }
 
@@ -132,7 +141,8 @@ func (r *CinderReconciler) reconcileBackupBackend(ctx context.Context, children 
 
 	// A backup backend that detached, was replaced or was skipped keeps no
 	// Deployment, so its base name is swept whole: nothing mounts the Secrets
-	// under it anymore, and each of them names the export a restore would read.
+	// under it anymore, and each of them names the target a restore would read
+	// (an NFS export, or an RBD pool together with the cephx key that opens it).
 	projected := map[string]struct{}{}
 	if projection != nil {
 		projected[projection.name] = struct{}{}
@@ -181,26 +191,34 @@ func (r *CinderReconciler) projectBackupBackend(ctx context.Context, children cl
 	}
 
 	backupBackend := c.DefaultCandidates[0]
-	nfs := backupBackend.Spec.NFS
-	if nfs == nil {
-		// The schema union rule guarantees spec.nfs for a type-NFS backup
-		// backend; a bypassed admission leaves nothing to render.
-		r.skipBackupBackend(ctx, cinder, backupBackend.Name,
-			fmt.Sprintf("backup backend %s has type %s but no nfs block", backupBackend.Name, backupBackend.Spec.Type))
-		return nil, nil
+	var (
+		data       map[string][]byte
+		projection *backupProjection
+		skip       string
+	)
+	switch backupBackend.Spec.Type {
+	case cinderv1alpha1.CinderBackupBackendTypeNFS:
+		data, projection, skip = renderNFSBackupBackend(cinder, backupBackend)
+	case cinderv1alpha1.CinderBackupBackendTypeRBD:
+		var err error
+		data, projection, skip, err = renderRBDBackupBackend(ctx, children, cinder, backupBackend)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		// The schema enum admits no other type; a bypassed admission leaves
+		// nothing this operator knows how to render.
+		skip = fmt.Sprintf("backup backend %s has type %s, which this operator does not render",
+			backupBackend.Name, backupBackend.Spec.Type)
 	}
-
-	section := renderBackupSection(cinder, backupBackend)
-	if err := config.CheckNoControlChars("DEFAULT", section); err != nil {
-		r.skipBackupBackend(ctx, cinder, backupBackend.Name, err.Error())
+	if skip != "" {
+		r.skipBackupBackend(ctx, cinder, backupBackend.Name, skip)
 		return nil, nil
 	}
 
 	baseName := backupSecretBaseName(cinder, backupBackend.Name)
 	secretName, err := config.CreateImmutableSecret(ctx, children, r.Scheme, cinder,
-		baseName, cinder.Namespace, map[string][]byte{
-			backupConfDataKey: []byte(config.RenderINI(map[string]map[string]string{"DEFAULT": section})),
-		})
+		baseName, cinder.Namespace, data)
 	if err != nil {
 		return nil, fmt.Errorf("creating backup secret for %q: %w", backupBackend.Name, err)
 	}
@@ -221,13 +239,94 @@ func (r *CinderReconciler) projectBackupBackend(ctx context.Context, children cl
 		Message:            "Backup backend " + backupBackend.Name + " is projected",
 	})
 	logger.V(1).Info("projected CinderBackupBackend", "backupBackend", backupBackend.Name, "secret", secretName)
-	return &backupProjection{
+	projection.secretName = secretName
+	return projection, nil
+}
+
+// renderNFSBackupBackend renders the projection of an NFS backup target: the
+// [DEFAULT] section of the NFS backup driver alone, because the export is
+// mounted with the pod's own identity. A non-empty skip reason leaves the
+// target unprojected.
+func renderNFSBackupBackend(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1alpha1.CinderBackupBackend,
+) (map[string][]byte, *backupProjection, string) {
+	nfs := backupBackend.Spec.NFS
+	if nfs == nil {
+		// The schema union rule guarantees spec.nfs for a type-NFS backup
+		// backend; a bypassed admission leaves nothing to render.
+		return nil, nil, fmt.Sprintf("backup backend %s has type %s but no nfs block",
+			backupBackend.Name, backupBackend.Spec.Type)
+	}
+
+	section := renderNFSBackupSection(cinder, backupBackend)
+	if fault := controlCharFault("DEFAULT", section); fault != "" {
+		return nil, nil, fault
+	}
+	data := map[string][]byte{
+		backupConfDataKey: []byte(config.RenderINI(map[string]map[string]string{"DEFAULT": section})),
+	}
+	return data, &backupProjection{
 		name:         backupBackend.Name,
+		backupType:   cinderv1alpha1.CinderBackupBackendTypeNFS,
 		server:       nfs.Server,
 		path:         nfs.Path,
 		mountOptions: nfs.MountOptions,
-		secretName:   secretName,
-	}, nil
+	}, ""
+}
+
+// renderRBDBackupBackend renders the projection of an RBD backup target: the
+// [DEFAULT] section of the Ceph backup driver, and the Ceph client
+// configuration and keyring the driver connects with. The key is read from the
+// target's key Secret on children, where the backup pod mounts the keyring, so
+// a replaced key changes the content-hashed Secret name and rolls the backup
+// service.
+//
+// It mirrors renderRBDBackend. A non-empty skip reason leaves the target
+// unprojected: a Secret or data key that vanished between the gate and this
+// pass, or a key the gate would refuse (cephxKeyFault), because a rotation
+// reaches this pass through the Secret watch without re-running the gate. The
+// next gate pass reports either on the target. Any other read failure is
+// returned.
+func renderRBDBackupBackend(ctx context.Context, children client.Client, cinder *cinderv1alpha1.Cinder,
+	backupBackend *cinderv1alpha1.CinderBackupBackend,
+) (map[string][]byte, *backupProjection, string, error) {
+	rbd := backupBackend.Spec.RBD
+	if rbd == nil {
+		// The schema union rule guarantees spec.rbd for a type-RBD backup
+		// backend; a bypassed admission leaves nothing to render.
+		return nil, nil, fmt.Sprintf("backup backend %s has type %s but no rbd block",
+			backupBackend.Name, backupBackend.Spec.Type), nil
+	}
+
+	key, skip, err := readRBDKey(ctx, children, cinder.Namespace, rbd.KeySecretRef.Name,
+		fmt.Sprintf("backup backend %q", backupBackend.Name))
+	if err != nil || skip != "" {
+		return nil, nil, skip, err
+	}
+
+	section := renderRBDBackupSection(cinder, backupBackend)
+	if fault := controlCharFault("DEFAULT", section); fault != "" {
+		return nil, nil, fault, nil
+	}
+	if fault := cephFilesFault("DEFAULT/ceph", rbd.Monitors, rbd.ClusterName, rbd.User,
+		rbd.KeySecretRef.Name, key); fault != "" {
+		return nil, nil, fault, nil
+	}
+
+	data := map[string][]byte{
+		backupConfDataKey: []byte(config.RenderINI(map[string]map[string]string{"DEFAULT": section})),
+		cephConfDataKey:   []byte(renderCephConf(rbd.Monitors, rbd.ClusterName, rbd.User)),
+		keyringDataKey:    []byte(renderKeyring(rbd.User, key)),
+	}
+	return data, &backupProjection{
+		name:       backupBackend.Name,
+		backupType: cinderv1alpha1.CinderBackupBackendTypeRBD,
+		rbd: &rbdProjection{
+			clusterName: rbd.ClusterName,
+			user:        rbd.User,
+			networks:    rbd.Networks,
+			keyDigest:   cephxKeyDigest(key),
+		},
+	}, "", nil
 }
 
 // skipBackupBackend warns about a fault that keeps the backup backend
@@ -262,15 +361,13 @@ func backupBackendNames(items []*cinderv1alpha1.CinderBackupBackend) []string {
 	return names
 }
 
-// renderBackupSection renders the backup driver's [DEFAULT] section: the host
-// identity the backup service registers under, the NFS driver wiring, the chunk
-// and compression knobs, and the backend's extraOptions merged WITHOUT
-// overriding an operator key (operator keys win on collision — the webhook
-// denylist normally guarantees disjointness, this is the fail-closed backstop
-// for a bypassed webhook).
+// renderNFSBackupSection renders the NFS backup driver's [DEFAULT] section: the
+// host identity the backup service registers under, the NFS driver wiring, the
+// chunk and compression knobs, and the backend's extraOptions
+// (applyBackupExtraOptions).
 //
 // The caller has checked that spec.nfs is set.
-func renderBackupSection(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1alpha1.CinderBackupBackend) map[string]string {
+func renderNFSBackupSection(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1alpha1.CinderBackupBackend) map[string]string {
 	nfs := backupBackend.Spec.NFS
 	section := map[string]string{
 		// The identity the backups this deployment writes are recorded against.
@@ -287,14 +384,49 @@ func renderBackupSection(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1a
 		// backup is never handed to another host.
 		"backup_use_same_host": "false",
 	}
+	applyBackupExtraOptions(section, backupBackend)
+	return section
+}
 
+// renderRBDBackupSection renders the Ceph backup driver's [DEFAULT] section: the
+// host identity, the Ceph driver wiring with the configuration file the backup
+// pod finds in cephConfigDir, the pool and the user, and the backend's
+// extraOptions (applyBackupExtraOptions). The chunked driver's fileSize and
+// compression are not rendered: the Ceph driver reads neither.
+//
+// The caller has checked that spec.rbd is set.
+func renderRBDBackupSection(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1alpha1.CinderBackupBackend) map[string]string {
+	rbd := backupBackend.Spec.RBD
+	section := map[string]string{
+		// The host identity, as in the NFS section.
+		"host":                 cinder.Name + "-backup",
+		"backup_driver":        "cinder.backup.drivers.ceph.CephBackupDriver",
+		"backup_ceph_conf":     cephConfigDir + "/" + cephConfFile(rbd.ClusterName),
+		"backup_ceph_pool":     rbd.Pool,
+		"backup_ceph_user":     rbd.User,
+		"backup_use_same_host": "false",
+	}
+	applyBackupExtraOptions(section, backupBackend)
+	return section
+}
+
+// applyBackupExtraOptions merges the backup backend's extraOptions into a
+// rendered section WITHOUT overriding an operator key and without any key the
+// webhook denies for the backend's type (cinderv1alpha1.BackupExtraOptionsDenylist).
+// The webhook denylist normally keeps extraOptions disjoint from the rendered
+// keys; this is the fail-closed backstop for a bypassed webhook, and it drops a
+// denied key whether or not the section renders it.
+func applyBackupExtraOptions(section map[string]string, backupBackend *cinderv1alpha1.CinderBackupBackend) {
+	denied := cinderv1alpha1.BackupExtraOptionsDenylist(backupBackend.Spec.Type)
 	for k, v := range backupBackend.Spec.ExtraOptions {
 		if _, exists := section[k]; exists {
 			continue
 		}
+		if _, deny := denied[k]; deny {
+			continue
+		}
 		section[k] = v
 	}
-	return section
 }
 
 // effectiveBackupFileSize returns the backup chunk size in bytes, falling back

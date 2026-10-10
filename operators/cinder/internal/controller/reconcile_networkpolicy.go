@@ -218,11 +218,12 @@ func buildAutoEgressRules(cinder *cinderv1alpha1.Cinder, egressPort int32,
 	}
 
 	// Ceph egress: the monitors (msgr2 on 3300, msgr1 on 6789) and the OSD port
-	// range 6800 to 7300 the volume services of the RBD backends connect to.
-	// Unlike every rule above it is not port-only: its peers are the networks
-	// the RBD backends name in spec.rbd.networks (D8 of #1338), so the OSD range
-	// opens towards the Ceph cluster alone. An empty list emits nothing, because
-	// no RBD backend is projected.
+	// range 6800 to 7300 the volume services of the RBD backends and the backup
+	// service of an RBD target connect to. Unlike every rule above it is not
+	// port-only: its peers are the networks the RBD backends and the RBD backup
+	// target name in spec.rbd.networks (D8 of #1338), so the OSD range opens
+	// towards the Ceph cluster alone. An empty list emits nothing, because
+	// neither is projected.
 	if len(cephNetworks) > 0 {
 		peers := make([]networkingv1.NetworkPolicyPeer, 0, len(cephNetworks))
 		for _, cidr := range cephNetworks {

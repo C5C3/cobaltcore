@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -542,6 +543,25 @@ func TestPipelineState_CephNetworks(t *testing.T) {
 	nfsOnly := &pipelineState{backends: []backendProjection{testBackendProjection("nfs")}}
 	g.Expect(nfsOnly.cephNetworks()).To(BeNil())
 	g.Expect((&pipelineState{}).cephNetworks()).To(BeNil())
+
+	// An RBD backup target adds its networks to the volume backends', once each
+	// and sorted.
+	volume := testRBDBackendProjection("rbd-a")
+	volume.rbd.networks = []string{"10.244.0.0/16"}
+	target := testRBDBackupProjection()
+	target.rbd.networks = []string{"10.128.0.0/22", "10.96.0.0/12"}
+	withTarget := &pipelineState{backends: []backendProjection{volume}, backup: target}
+	g.Expect(withTarget.cephNetworks()).To(Equal([]string{"10.128.0.0/22", "10.244.0.0/16", "10.96.0.0/12"}))
+	g.Expect(target.rbd.networks).To(Equal([]string{"10.128.0.0/22", "10.96.0.0/12"}),
+		"the union is built on a copy, never on the target's own list")
+
+	// A target alone still opens the rule.
+	targetOnly := &pipelineState{backup: testRBDBackupProjection()}
+	g.Expect(targetOnly.cephNetworks()).To(Equal(testRBDBackupProjection().rbd.networks))
+
+	// An NFS target opens no Ceph network.
+	nfsTarget := &pipelineState{backends: []backendProjection{testBackendProjection("nfs")}, backup: testBackupProjection()}
+	g.Expect(nfsTarget.cephNetworks()).To(BeNil())
 }
 
 // TestSubConditionTypes_PinsTheAggregatedVocabulary keeps the Ready contract
@@ -610,7 +630,9 @@ func TestPipelineState_PolicyShareHosts(t *testing.T) {
 
 	// A backup target adds its own export, and the backends' slice is not
 	// rewritten under the step that produced it.
-	state.backup = &backupProjection{name: "vault", server: "backup.nfs.example.com"}
+	state.backup = &backupProjection{
+		name: "vault", backupType: cinderv1alpha1.CinderBackupBackendTypeNFS, server: "backup.nfs.example.com",
+	}
 	g.Expect(state.policyShareHosts()).To(Equal(append(append([]string{}, testShareHosts...),
 		"tcp://backup.nfs.example.com:2049")))
 	g.Expect(state.shareHosts).To(Equal(testShareHosts))
@@ -618,6 +640,20 @@ func TestPipelineState_PolicyShareHosts(t *testing.T) {
 	// A backup-only Cinder still reports one export.
 	backupOnly := &pipelineState{backup: state.backup}
 	g.Expect(backupOnly.policyShareHosts()).To(ConsistOf("tcp://backup.nfs.example.com:2049"))
+}
+
+// An RBD backup target mounts no export, so it adds no 2049 host: its egress is
+// the Ceph rule, which cephNetworks carries.
+func TestPipelineState_PolicyShareHostsSkipsRBDBackup(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rbd := &pipelineState{shareHosts: testShareHosts, backup: testRBDBackupProjection()}
+	g.Expect(rbd.policyShareHosts()).To(Equal(testShareHosts))
+	g.Expect((&pipelineState{backup: testRBDBackupProjection()}).policyShareHosts()).To(BeEmpty())
+
+	nfs := &pipelineState{shareHosts: testShareHosts, backup: testBackupProjection()}
+	g.Expect(nfs.policyShareHosts()).To(ContainElement(
+		fmt.Sprintf("tcp://%s:%d", testBackupProjection().server, nfsEgressPort)))
 }
 
 // TestParallelSteps_NetworkPolicyOpensTheBackupExport is the end of that thread:
@@ -631,7 +667,9 @@ func TestParallelSteps_NetworkPolicyOpensTheBackupExport(t *testing.T) {
 	r := newNetworkPolicyTestReconciler(cinder)
 
 	// No volume backend at all, so 2049 can only come from the backup target.
-	state := &pipelineState{backup: &backupProjection{name: "vault", server: "backup.nfs.example.com"}}
+	state := &pipelineState{backup: &backupProjection{
+		name: "vault", backupType: cinderv1alpha1.CinderBackupBackendTypeNFS, server: "backup.nfs.example.com",
+	}}
 	member := networkPolicyMember(t, r.parallelSteps(r.Client, state))
 
 	res, err := member.Fn(context.Background(), cinder)
