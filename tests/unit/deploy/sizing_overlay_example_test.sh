@@ -24,15 +24,19 @@
 #   - the fields the patches must not touch survive: the keystone-operator
 #     image tag, leader election and digest valuesFrom, cert-manager's CRD
 #     install, both Flux Kustomizations' image digests, the RabbitMQ
-#     cluster operator's upstream resources, the rest of the FluxInstance
-#     spec, and the MariaDB replicas and Galera block.
+#     cluster operator's upstream limits (the entry repeats the base
+#     release's two request operations, because the merge replaces the
+#     base's patch list), the rest of the FluxInstance spec, and the MariaDB
+#     replicas and Galera block.
 #   - the in-repo keystone-operator chart renders the example's
 #     keystone-operator values into its Deployment, so the example cannot go
 #     stale against the chart's values schema. The chart's operator-library
 #     dependency is rebuilt first. Skipped without helm.
 #   - kustomize build deploy/flux-system renders no PriorityClass, no
-#     spec.patches on either Flux Kustomization and no spec.kustomize on the
-#     FluxInstance: the example leaves the production base unchanged.
+#     spec.patches on the k-orc Flux Kustomization, only the base release's
+#     own two request operations on the rabbitmq-cluster-operator one, and
+#     no spec.kustomize on the FluxInstance: the example leaves the
+#     production base unchanged.
 #
 # SIZING_OVERLAY_DIR points the test at another copy of the overlay, for
 # example a deliberately broken one to see the failure path.
@@ -227,12 +231,12 @@ test_flux_kustomization_patches() {
   echo "Test: Flux Kustomizations k-orc and rabbitmq-cluster-operator spec.patches"
 
   if [ "$OVERLAY_OK" != true ]; then
-    echo "  SKIP: the overlay did not build (20 checks skipped)"
-    SKIP=$((SKIP + 20))
+    echo "  SKIP: the overlay did not build (22 checks skipped)"
+    SKIP=$((SKIP + 22))
     return
   fi
 
-  local name ks base_ks patch
+  local name ks base_ks patch base_patch member
   for name in k-orc rabbitmq-cluster-operator; do
     ks="$(obj "$OVERLAY" Kustomization "$name" flux-system)"
     base_ks="$(obj "$BASE" Kustomization "$name" flux-system)"
@@ -258,12 +262,20 @@ test_flux_kustomization_patches() {
           "$(op_value "$patch" /spec/template/spec/containers/0/resources)"
         ;;
       rabbitmq-cluster-operator)
-        # The installer sizes the manager at 200m / 500Mi; an add on
-        # resources would replace that block whole.
-        assert_eq "$name: the JSON6902 patch has three operations" \
-          "3" "$(printf '%s\n' "$patch" | yq '. | length')"
-        assert_eq "$name: the patch keeps the upstream resources" \
+        # The merge replaces the base's spec.patches list, so the entry
+        # repeats the base release's two request operations beside the three
+        # placement ones. The installer's limits stay: an add on resources
+        # would replace that block whole.
+        assert_eq "$name: the JSON6902 patch has five operations" \
+          "5" "$(printf '%s\n' "$patch" | yq '. | length')"
+        assert_eq "$name: the patch keeps the upstream resources block" \
           "" "$(op_value "$patch" /spec/template/spec/containers/0/resources)"
+        base_patch="$(val "$base_ks" '.spec.patches[0].patch')"
+        for member in cpu memory; do
+          assert_eq "$name: requests.$member equals the base release's operation" \
+            "$(op_value "$base_patch" "/spec/template/spec/containers/0/resources/requests/$member")" \
+            "$(op_value "$patch" "/spec/template/spec/containers/0/resources/requests/$member")"
+        done
         ;;
     esac
     assert_starts_with "$name: the base pins the image by digest" \
@@ -340,21 +352,29 @@ test_infrastructure_patches() {
   assert_eq "Memcached gets no nodeSelector (the CRD has none)" "null" "$(val "$mc" '.spec.nodeSelector')"
 }
 
-# --- Test 8: the production base stays unpatched ---
+# --- Test 8: the production base carries none of the example's placement patches ---
 test_production_base_unchanged() {
-  echo "Test: kustomize build deploy/flux-system carries none of the example's patches"
+  echo "Test: kustomize build deploy/flux-system carries none of the example's placement patches"
 
   if [ "$BASE_OK" != true ]; then
-    echo "  SKIP: deploy/flux-system did not build (4 checks skipped)"
-    SKIP=$((SKIP + 4))
+    echo "  SKIP: deploy/flux-system did not build (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
+  local base_rmq
   assert_eq "the base renders no PriorityClass" "0" "$(count "$BASE" 'select(.kind == "PriorityClass")')"
   assert_eq "the base k-orc Kustomization has no spec.patches" \
     "null" "$(val "$(obj "$BASE" Kustomization k-orc flux-system)" '.spec.patches')"
-  assert_eq "the base rabbitmq-cluster-operator Kustomization has no spec.patches" \
-    "null" "$(val "$(obj "$BASE" Kustomization rabbitmq-cluster-operator flux-system)" '.spec.patches')"
+  # The base release sizes the cluster operator's manager itself (100m /
+  # 128Mi requests); the example repeats those two operations and the base
+  # carries nothing else.
+  base_rmq="$(obj "$BASE" Kustomization rabbitmq-cluster-operator flux-system)"
+  assert_eq "the base rabbitmq-cluster-operator Kustomization carries exactly one patch entry" \
+    "1" "$(val "$base_rmq" '.spec.patches | length')"
+  assert_eq "the base entry carries only the two request operations" \
+    '["/spec/template/spec/containers/0/resources/requests/cpu","/spec/template/spec/containers/0/resources/requests/memory"]' \
+    "$(val "$base_rmq" '.spec.patches[0].patch' | yq -o=json -I=0 '[.[] | .path]')"
   assert_eq "the base FluxInstance has no spec.kustomize" \
     "null" "$(val "$(obj "$BASE" FluxInstance flux flux-system)" '.spec.kustomize')"
 }

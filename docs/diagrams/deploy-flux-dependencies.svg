@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1300" viewBox="0 0 1808 1300" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Flux install dependency graph">
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1388" viewBox="0 0 1808 1388" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Flux install dependency graph">
 <title>Flux install dependency graph</title>
-<rect width="1808" height="1300" fill="#F6F5F1"/>
+<rect width="1808" height="1388" fill="#F6F5F1"/>
 <rect x="80" y="40" width="388" height="296" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="99" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Layer 1</text>
 <text x="99" y="113.2" font-size="20" font-weight="400" fill="#55606E">no dependsOn</text>
@@ -51,13 +51,15 @@
 <text x="1565" y="744.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">neutron-operator</text>
 <rect x="1420" y="776" width="290" height="48" rx="20" fill="#1E6B40"/>
 <text x="1565" y="808.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">c5c3-operator</text>
-<rect x="80" y="910" width="388" height="232" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="80" y="910" width="388" height="320" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="99" y="949.36" font-size="26" font-weight="700" fill="#2B3440">Flux Kustomizations</text>
-<text x="99" y="983.2" font-size="20" font-weight="400" fill="#55606E">outside every dependsOn list</text>
+<text x="99" y="983.2" font-size="20" font-weight="400" fill="#55606E">no HelmRelease names them</text>
 <rect x="100" y="1010" width="348" height="48" rx="20" fill="#2B3440"/>
 <text x="274" y="1042.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">rabbitmq-cluster-operator</text>
-<rect x="100" y="1074" width="348" height="48" rx="20" fill="#2B3440"/>
-<text x="274" y="1106.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">k-orc</text>
+<rect x="100" y="1098" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="1130.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">messaging-topology-operator</text>
+<rect x="100" y="1162" width="348" height="48" rx="20" fill="#2B3440"/>
+<text x="274" y="1194.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">k-orc</text>
 <polyline points="448,164 760,164 760,217.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="760,228 752.8,213 767.2,213" fill="#3A4452"/>
 <text x="482" y="145.2" font-size="20" font-weight="400" fill="#2B3440">every release of layer 2</text>
@@ -82,11 +84,13 @@
 <polygon points="410,1010 402.8,995 417.2,995" fill="#3A4452"/>
 <text x="80" y="823.2" font-size="20" font-weight="400" fill="#2B3440">its Issuer and Certificates need cert-manager's CRDs</text>
 <text x="80" y="851.2" font-size="20" font-weight="400" fill="#55606E">retryInterval 2m, until they exist</text>
-<polyline points="448,1098 1480,1098 1480,834.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polyline points="448,1186 1480,1186 1480,834.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
 <polygon points="1480,824 1487.2,839 1472.8,839" fill="#3A4452"/>
-<text x="508" y="1055.2" font-size="20" font-weight="400" fill="#2B3440">the manager starts only with the K-ORC CRDs</text>
-<text x="508" y="1083.2" font-size="20" font-weight="400" fill="#55606E">install retries: 30</text>
-<text x="40" y="1201.2" font-size="20" font-weight="400" fill="#55606E">A pill is a HelmRelease of deploy/flux-system/releases, under its metadata.name. The two in the box Flux Kustomizations are Flux Kustomization resources.</text>
-<text x="40" y="1227.2" font-size="20" font-weight="400" fill="#55606E">A solid arrow is a dependsOn entry. An entry that other arrows imply is left out. The table on the page lists every entry.</text>
-<text x="40" y="1253.2" font-size="20" font-weight="400" fill="#55606E">A dotted arrow holds at run time and is declared nowhere: dependsOn of a HelmRelease names only HelmReleases, dependsOn of a Kustomization only Kustomizations.</text>
+<text x="508" y="1143.2" font-size="20" font-weight="400" fill="#2B3440">the manager starts only with the K-ORC CRDs</text>
+<text x="508" y="1171.2" font-size="20" font-weight="400" fill="#55606E">install retries: 30</text>
+<polyline points="274,1098 274,1068.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,1058 281.2,1073 266.8,1073" fill="#3A4452"/>
+<text x="40" y="1289.2" font-size="20" font-weight="400" fill="#55606E">A pill is a HelmRelease of deploy/flux-system/releases, under its metadata.name. The three in the box Flux Kustomizations are Flux Kustomization resources.</text>
+<text x="40" y="1315.2" font-size="20" font-weight="400" fill="#55606E">A solid arrow is a dependsOn entry. An entry that other arrows imply is left out. The table on the page lists every entry.</text>
+<text x="40" y="1341.2" font-size="20" font-weight="400" fill="#55606E">A dotted arrow holds at run time and is declared nowhere: dependsOn of a HelmRelease names only HelmReleases, dependsOn of a Kustomization only Kustomizations.</text>
 </svg>

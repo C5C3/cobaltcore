@@ -46,6 +46,10 @@ resources:
   # ControlPlane's shared message bus. A GitRepository, not a chart source: see
   # the manifest for why.
   - sources/rabbitmq-cluster-operator.yaml
+  # RabbitMQ Messaging Topology Operator, which serves the Vhost, User and
+  # Permission CRDs behind RabbitMQVhost orders. A GitRepository for the same
+  # reason.
+  - sources/messaging-topology-operator.yaml
 
   # HelmRelease operators (deployed via FluxCD).
   # Chaos Mesh is intentionally absent: opt-in via deploy/kind/chaos-mesh/
@@ -76,3 +80,6 @@ resources:
   # Git-sourced Flux Kustomization over the upstream installer base, not a
   # HelmRelease: see the manifest.
   - releases/rabbitmq-cluster-operator.yaml
+  # RabbitMQ Messaging Topology Operator for RabbitMQVhost orders, a Flux
+  # Kustomization that depends on the Cluster Operator's.
+  - releases/messaging-topology-operator.yaml

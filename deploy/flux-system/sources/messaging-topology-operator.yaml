@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RabbitMQ Messaging Topology Operator serves the rabbitmq.com/v1beta1
+# Vhost, User and Permission CRDs (and the other topology kinds) that the
+# c5c3-operator writes for every RabbitMQVhost order, against the RabbitmqCluster
+# the ControlPlane declares for spec.infrastructure.messaging.
+#
+# DECISION: GitRepository, not HelmRepository or OCIRepository, for the reason
+# sources/rabbitmq-cluster-operator.yaml gives: upstream ships no Helm chart,
+# and the install path it documents is the config/installation kustomize base
+# carried in the repository itself. So we vendor a GitRepository and apply the
+# base through a Flux Kustomization
+# (releases/messaging-topology-operator.yaml).
+#
+# CONTENT PIN, not a version pin. Upstream is maintained (VMware/Broadcom,
+# Mozilla Public License 2.0) but publishes no cosign signature, so spec.verify
+# would have nothing to check. A tag is a mutable Git ref, and re-pushing it
+# would hand different bytes to a controller that runs with cluster-wide RBAC.
+# ref.commit closes that: Flux's gogit client evaluates commit before every other
+# ref field, so the commit below is what gets checked out and the tag alone
+# decides nothing. ref.tag rides alongside as the human-readable version and as
+# Renovate's lookup handle. The image is pinned by digest in
+# releases/messaging-topology-operator.yaml.
+#
+# The clone is scoped to /config via spec.ignore, as sources/k-orc.yaml does, so
+# the source artifact stays small: the installer reads nothing outside config/.
+#
+# A packageRule switches Renovate's native flux manager off for this file,
+# because one customManager rule in renovate.json moves the tag and the commit
+# in one match;
+# tests/unit/renovate/messaging_topology_operator_source_custommanager_test.sh
+# guards that pairing.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: messaging-topology-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/rabbitmq/messaging-topology-operator
+  # The Renovate customManager anchors on this exact shape: the tag line
+  # directly precedes the commit line, and both values are double-quoted. Keep
+  # the order and the quoting when bumping, or the pair stops being tracked.
+  ref:
+    tag: "v1.20.3"
+    commit: "2d780409f494944b3a2786c6687cebddef5bfb33"
+  ignore: |
+    # Vendor only the config/ kustomize base; skip the rest of the repo.
+    /*
+    !/config

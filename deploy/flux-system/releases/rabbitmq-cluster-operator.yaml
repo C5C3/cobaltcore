@@ -32,6 +32,16 @@
 # and publishes no cosign signature, so both halves are pinned by content: the
 # Git commit in the source, the image digest below.
 #
+# Resources: the upstream base requests and limits the manager at 200m CPU and
+# 500Mi memory. spec.patches below lowers the two requests to 100m and 128Mi
+# and leaves the limits in place: the controller reconciles one RabbitmqCluster
+# per ControlPlane, and the upstream requests are what pushed the full stack
+# over the 16Gi node budget that hack/ci-check-node-budget.sh enforces on
+# e2e-controlplane once the Messaging Topology Operator joined the stack
+# (16498Mi against 16384Mi with both operators at their upstream requests).
+# `op: add` on a member of requests sets that one member and leaves the rest
+# of the resources block alone, the rule the sizing overlay example documents.
+#
 # Images: the inner kustomization already rewrites the dev placeholder
 # rabbitmqoperator/cluster-operator-dev to ghcr.io/rabbitmq/cluster-operator with
 # the mutable tag latest, so this outer override keys on that resolved NAME
@@ -73,5 +83,15 @@ spec:
     - name: ghcr.io/rabbitmq/cluster-operator
       newTag: "2.22.5"
       digest: "sha256:2727b84b835ada97247bbb65ebfa6998168b4e8ee11b0e6cece56ac2c9c4f0fb"
+  patches:
+    - target:
+        kind: Deployment
+      patch: |
+        - op: add
+          path: /spec/template/spec/containers/0/resources/requests/cpu
+          value: 100m
+        - op: add
+          path: /spec/template/spec/containers/0/resources/requests/memory
+          value: 128Mi
   prune: true
   wait: true
