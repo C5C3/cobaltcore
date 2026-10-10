@@ -21,6 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR/../.."
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/ceph_bindings.sh
+source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
 
 # --- Test 1: the console scripts ship and nova-compute runs ---
 test_console_scripts() {
@@ -172,6 +174,8 @@ test_host_tools() {
     "mount.nfs -V"
     "cryptsetup --version"
     "genisoimage --version"
+    "ceph --version"
+    "rbd --version"
   )
 
   for tool in "${tools[@]}"; do
@@ -370,6 +374,45 @@ test_state_directories() {
   assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
 }
 
+# --- Test 10: the Ceph client libraries and tools are wired ---
+test_ceph_client() {
+  echo "Test: the Ceph client libraries and tools are wired"
+  # nova/storage/rbd_utils.py imports rados and rbd behind a guard, and
+  # RBDDriver.__init__ raises RuntimeError("rbd python libraries not found")
+  # through _check_for_import_failure when the guard bound either to None.
+  # tests/lib/ceph_bindings.sh checks how the venv sees the two modules.
+  # rbd_utils runs `rbd import` (import_image) and `rbd export`
+  # (export_image); test 4 runs ceph and rbd themselves. The version line is
+  # printed for the cipher revisit of #1338 (D7) and not asserted. Stderr is
+  # echoed on failure so the missing module or binary is named.
+  local output exit_code=0 subcommand
+
+  assert_ceph_bindings_wired
+
+  # The attributes _check_for_import_failure reads, so a rename upstream
+  # fails here instead of in a nova-compute pod.
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import sys
+from nova.storage import rbd_utils
+sys.exit(0 if rbd_utils.rbd is not None and rbd_utils.rados is not None
+         else "nova.storage.rbd_utils bound rados or rbd to None")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "nova.storage.rbd_utils resolved rados and rbd" "0" "$exit_code"
+
+  for subcommand in export import; do
+    exit_code=0
+    output=$(docker run --rm "$IMAGE" rbd help "$subcommand" 2>&1 > /dev/null) || exit_code=$?
+    [ "$exit_code" -eq 0 ] || echo "    $output"
+    assert_eq "rbd help $subcommand exits 0" "0" "$exit_code"
+  done
+
+  output=$(docker run --rm "$IMAGE" ceph --version 2>&1) || true
+  echo "    ceph --version: $output"
+  assert_starts_with "ceph --version names the Ceph release" "$output" "ceph version "
+}
+
 # --- Run all tests ---
 echo "=== nova-compute container verification tests ==="
 echo "Image: $IMAGE"
@@ -381,6 +424,8 @@ echo ""
 test_driver_imports
 echo ""
 test_host_tools
+echo ""
+test_ceph_client
 echo ""
 test_no_baked_node_identity
 echo ""
