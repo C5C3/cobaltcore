@@ -2122,7 +2122,7 @@ spec:
                     type: string
                   tag:
                     description: |-
-                      Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                      Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                       up to 128 characters of word characters, dots, and dashes, and must not
                       begin with a dot or dash. Optional: exactly one of Tag or Digest must be
                       set. The pattern is enforced only when a tag is present.
@@ -3633,7 +3633,7 @@ spec:
                   schema to converge to.
 
                   The pattern matches the OpenStack date-based release scheme (YYYY.N where N
-                  is 1 or 2, the two-releases-per-year cadence, e.g. 2025.2, 2026.1). The
+                  is 1 or 2, the two-releases-per-year cadence, e.g. 2026.1, 2026.2). The
                   [12] minor class keeps this CRD pattern, the validating webhook, and
                   release.ParseRelease in agreement so a non-cadence minor (e.g. 2025.9) is
                   rejected at every layer.

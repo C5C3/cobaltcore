@@ -94,7 +94,7 @@ type NovaSpec struct {
 	// schema to converge to.
 	//
 	// The pattern matches the OpenStack date-based release scheme (YYYY.N where N
-	// is 1 or 2, the two-releases-per-year cadence, e.g. 2025.2, 2026.1). The
+	// is 1 or 2, the two-releases-per-year cadence, e.g. 2026.1, 2026.2). The
 	// [12] minor class keeps this CRD pattern, the validating webhook, and
 	// release.ParseRelease in agreement so a non-cadence minor (e.g. 2025.9) is
 	// rejected at every layer.

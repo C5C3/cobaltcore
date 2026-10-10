@@ -76,7 +76,7 @@ type ImageSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._:/-][a-z0-9]+)*$`
 	Repository string `json:"repository"`
-	// Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+	// Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
 	// up to 128 characters of word characters, dots, and dashes, and must not
 	// begin with a dot or dash. Optional: exactly one of Tag or Digest must be
 	// set. The pattern is enforced only when a tag is present.

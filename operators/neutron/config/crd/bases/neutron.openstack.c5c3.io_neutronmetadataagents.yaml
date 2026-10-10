@@ -135,7 +135,7 @@ spec:
                     type: string
                   tag:
                     description: |-
-                      Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                      Tag is the OCI image tag (e.g. "2026.1"). It follows the OCI tag grammar:
                       up to 128 characters of word characters, dots, and dashes, and must not
                       begin with a dot or dash. Optional: exactly one of Tag or Digest must be
                       set. The pattern is enforced only when a tag is present.
@@ -295,11 +295,11 @@ spec:
               metadataWorkers:
                 description: |-
                   MetadataWorkers is rendered as [DEFAULT] metadata_workers. It defaults to
-                  4, resolved when the config is rendered and never written into the CR. In
-                  2026.1 the value sizes the thread pool the agent serves metadata requests
-                  from, and 0 serves them one at a time in the main process, which is
-                  upstream's ML2/OVN default. 2025.2 ignores the option and starts one thread
-                  per request. The count does not follow the node's CPU count.
+                  4, resolved when the config is rendered and never written into the CR. On
+                  every supported release the value sizes the thread pool the agent serves
+                  metadata requests from, and 0 serves them one at a time in the main
+                  process, which is upstream's ML2/OVN default. The count does not follow
+                  the node's CPU count.
                 format: int32
                 minimum: 0
                 type: integer
@@ -391,7 +391,7 @@ spec:
                   option catalog spec.extraConfig is validated against.
 
                   The pattern matches the OpenStack date-based release scheme (YYYY.N where N
-                  is 1 or 2, the two-releases-per-year cadence, e.g. 2025.2, 2026.1). The
+                  is 1 or 2, the two-releases-per-year cadence, e.g. 2026.1, 2026.2). The
                   [12] minor class keeps this CRD pattern, the validating webhook, and
                   release.ParseRelease in agreement so a non-cadence minor (e.g. 2025.9) is
                   rejected at every layer.
