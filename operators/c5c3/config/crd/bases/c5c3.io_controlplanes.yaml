@@ -478,6 +478,19 @@ spec:
                     x-kubernetes-validations:
                     - message: exactly one of clusterRef or secretRef must be set
                       rule: has(self.clusterRef) != has(self.secretRef)
+                  publishedMessagingEndpoint:
+                    description: |-
+                      PublishedMessagingEndpoint is the AMQP address, host:port, a consumer on
+                      another cluster than the broker's reaches the managed bus at. The
+                      broker's Service resolves only on the management cluster, so a
+                      RabbitMQVhost order on a target cluster is delivered this address
+                      instead; without it such an order reports MessagingNotPublished. The
+                      operator publishes nothing itself: the platform operator exposes the
+                      broker port by their own means and records the address here.
+                      RabbitMQVhost orders alone read it. An IPv6 host is written in brackets.
+                    maxLength: 262
+                    pattern: ^([a-zA-Z0-9._-]+|\[[0-9a-fA-F:.]+\]):[0-9]{1,5}$
+                    type: string
                 required:
                 - cache
                 - database

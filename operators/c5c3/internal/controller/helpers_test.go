@@ -132,6 +132,41 @@ func TestSameTargetCluster(t *testing.T) {
 	}
 }
 
+// TestRabbitMQVhostEndpoint covers the address a RabbitMQVhost order is
+// delivered: the in-cluster one on the management cluster, the published one
+// elsewhere, and nothing when the plane publishes none or declares no
+// infrastructure block.
+func TestRabbitMQVhostEndpoint(t *testing.T) {
+	const inCluster = "cp-rabbitmq.openstack.svc:5672"
+	published := &c5c3v1alpha1.ControlPlane{Spec: c5c3v1alpha1.ControlPlaneSpec{
+		Infrastructure: &c5c3v1alpha1.InfrastructureSpec{PublishedMessagingEndpoint: "broker.example.test:5672"},
+	}}
+	unpublished := &c5c3v1alpha1.ControlPlane{Spec: c5c3v1alpha1.ControlPlaneSpec{
+		Infrastructure: &c5c3v1alpha1.InfrastructureSpec{},
+	}}
+
+	tests := []struct {
+		name    string
+		cp      *c5c3v1alpha1.ControlPlane
+		cluster string
+		want    string
+	}{
+		{name: "the management cluster reaches the Service", cp: published, want: inCluster},
+		{name: "a target cluster gets the published address", cp: published, cluster: "edge-1", want: "broker.example.test:5672"},
+		{name: "a target cluster without a published address", cp: unpublished, cluster: "edge-1"},
+		{name: "a plane without an infrastructure block", cp: &c5c3v1alpha1.ControlPlane{}, cluster: "edge-1"},
+		{name: "the management cluster without an infrastructure block", cp: &c5c3v1alpha1.ControlPlane{}, want: inCluster},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rabbitMQVhostEndpoint(tc.cp, tc.cluster, inCluster); got != tc.want {
+				t.Errorf("rabbitMQVhostEndpoint(%q) = %q, want %q", tc.cluster, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIntervalToCron(t *testing.T) {
 	tests := []struct {
 		name     string

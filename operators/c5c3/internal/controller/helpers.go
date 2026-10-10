@@ -365,6 +365,23 @@ func keystoneEndpointFor(cp *c5c3v1alpha1.ControlPlane, ref *commonv1.TargetClus
 	return keystonePublicEndpoint(cp.Spec.Services.Keystone)
 }
 
+// rabbitMQVhostEndpoint returns the AMQP address, host:port, a RabbitMQVhost
+// order on cluster is delivered. The managed broker always runs on the
+// management cluster, so an order there gets inCluster, the address the
+// broker's default-user Secret names. An order on another cluster cannot
+// resolve that Service and gets the ControlPlane's
+// spec.infrastructure.publishedMessagingEndpoint, which is empty when the
+// platform operator publishes none.
+func rabbitMQVhostEndpoint(cp *c5c3v1alpha1.ControlPlane, cluster, inCluster string) string {
+	if cluster == c5c3v1alpha1.ManagementCluster {
+		return inCluster
+	}
+	if cp.Spec.Infrastructure == nil {
+		return ""
+	}
+	return cp.Spec.Infrastructure.PublishedMessagingEndpoint
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //

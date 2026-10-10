@@ -190,7 +190,7 @@ type ControlPlaneSpec struct {
 }
 
 // InfrastructureSpec declares the shared backing services for the control
-// plane. All three fields reuse the canonical commonv1 shapes so the
+// plane. The three service fields reuse the canonical commonv1 shapes so the
 // ControlPlane and the per-service CRs validate the database, cache, and
 // messaging the same way. Database and cache are always present; messaging is
 // an optional pointer, so a ControlPlane that declares no message bus gets none.
@@ -223,6 +223,19 @@ type InfrastructureSpec struct {
 	// embedded commonv1.MessagingSpec, as for database and cache.
 	// +optional
 	Messaging *commonv1.MessagingSpec `json:"messaging,omitempty"`
+
+	// PublishedMessagingEndpoint is the AMQP address, host:port, a consumer on
+	// another cluster than the broker's reaches the managed bus at. The
+	// broker's Service resolves only on the management cluster, so a
+	// RabbitMQVhost order on a target cluster is delivered this address
+	// instead; without it such an order reports MessagingNotPublished. The
+	// operator publishes nothing itself: the platform operator exposes the
+	// broker port by their own means and records the address here.
+	// RabbitMQVhost orders alone read it. An IPv6 host is written in brackets.
+	// +optional
+	// +kubebuilder:validation:MaxLength=262
+	// +kubebuilder:validation:Pattern=`^([a-zA-Z0-9._-]+|\[[0-9a-fA-F:.]+\]):[0-9]{1,5}$`
+	PublishedMessagingEndpoint string `json:"publishedMessagingEndpoint,omitempty"`
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.

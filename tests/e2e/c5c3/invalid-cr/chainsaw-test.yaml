@@ -1276,6 +1276,16 @@ spec:
             ($error != null): true
             (contains($error, 'spec.services.keystone.image.tag')): true
             (contains($error, 'must be 2026.1 or later')): true
+  # spec.infrastructure.publishedMessagingEndpoint must be a host:port address;
+  # a bare host fails the Pattern marker (schema-only, no webhook twin).
+  - try:
+    - apply:
+        file: 144-published-messaging-endpoint-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'publishedMessagingEndpoint')): true
+            (contains($error, 'should match')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
