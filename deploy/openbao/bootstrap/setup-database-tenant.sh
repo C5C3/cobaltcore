@@ -28,6 +28,14 @@
 #       a role that issues short-lived MySQL users with ALL PRIVILEGES on every
 #       schema of the service's schema list and auto-revokes them at lease end.
 #
+# The Keystone connection also admits the database-engine roles of the
+# ControlPlane's MariaDBDatabase orders: its allowed_roles carries the glob
+# order.<ControlPlane namespace>.*, which OpenBao matches against every role
+# the c5c3-operator writes for an order of that namespace
+# (order.<namespace>.<order>). The operator writes those roles itself; this
+# script never does. An existing deployment re-runs this script once before its
+# first database order, or the operator's role write is refused.
+#
 # It ALWAYS provisions the Keystone pair. It also provisions one pair per
 # SERVICE_TENANTS row whose spec.services.<service> block the ControlPlane
 # declares on the SHARED managed database; a service that declares a dedicated
@@ -120,19 +128,24 @@ get_controlplane_field() {
 
 ###############################################################################
 # provision_service_tenant <service> <svc_ns> <mariadb_name> <database_names>
+#                          [allowed_roles_extra]
 ###############################################################################
 # Write the database-engine connection+role pair for one service tenant:
 #   database/mariadb/config/<service>-<svc_ns>
 #   database/mariadb/roles/<service>-<svc_ns>
 # resolving the MariaDB root credential from the <mariadb_name> CR in <svc_ns>
 # and issuing short-lived users with ALL PRIVILEGES on every schema of
-# <database_names>, a comma-separated schema list. Fails loudly if that
-# namespace's MariaDB root Secret is missing.
+# <database_names>, a comma-separated schema list. A non-empty
+# [allowed_roles_extra] is appended to the connection's allowed_roles, so roles
+# this script does not write may issue against the connection too; OpenBao
+# matches each entry as a glob. Fails loudly if that namespace's MariaDB root
+# Secret is missing.
 provision_service_tenant() {
   local service="$1"
   local svc_ns="$2"
   local mariadb_name="$3"
   local database_names="${4:?database name list required}"
+  local allowed_roles_extra="${5:-}"
 
   # A leading, trailing or doubled comma leaves an unnamed schema in the list.
   if [[ ",${database_names}," == *,,* ]]; then
@@ -153,6 +166,9 @@ provision_service_tenant() {
   log "Service   : ${service}"
   log "Service NS: ${svc_ns}"
   log "Role      : database/mariadb/roles/${role_name}"
+  if [[ -n "${allowed_roles_extra}" ]]; then
+    log "Also admit: ${allowed_roles_extra}"
+  fi
   log "MariaDB   : ${mariadb_name}.${svc_ns}.svc:3306"
   log "Database  : ${database_names}"
 
@@ -192,7 +208,7 @@ provision_service_tenant() {
   printf '%s' "${root_password}" | bao_exec_stdin bao write "database/mariadb/config/${config_name}" \
     plugin_name=mysql-database-plugin \
     connection_url="{{username}}:{{password}}@tcp(${mariadb_name}.${svc_ns}.svc:3306)/" \
-    allowed_roles="${role_name}" \
+    allowed_roles="${role_name}${allowed_roles_extra:+,${allowed_roles_extra}}" \
     username=root \
     password=- \
     verify_connection=false
@@ -324,7 +340,11 @@ main() {
   keystone_ns="$(get_controlplane_field '{.spec.services.keystone.namespace.name}' "${CP_NS}")"
   keystone_mariadb="$(get_controlplane_field '{.spec.infrastructure.database.clusterRef.name}' 'openstack-db')"
   keystone_db="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
-  provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}"
+  # The Keystone connection admits the order roles of this ControlPlane
+  # namespace, which the c5c3-operator writes for its MariaDBDatabase orders.
+  # The glob names the ControlPlane's namespace, not Keystone's: the operator
+  # keys an order role on the namespace its order children live in.
+  provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}" "order.${CP_NS}.*"
 
   # --- SERVICE_TENANTS legs (shared managed DB only) --------------------------
   # Each row's service gets its OWN keystone-independent engine pair when the
