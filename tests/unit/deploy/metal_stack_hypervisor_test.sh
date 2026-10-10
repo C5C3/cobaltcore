@@ -69,11 +69,19 @@
 #      PrometheusRules a version label the API server rejects, and after the
 #      release's post-renderer patches both carry ref.tag and no label value
 #      is rejected (SKIP when ghcr.io cannot be reached).
+#  17. ceph-secret.sh, run against a stub virsh, waits for the socket and the
+#      key, defines the libvirt secret once, a private and ephemeral ceph
+#      secret, and sets its value from the key file, sets it again when the
+#      key changes, defines it again when libvirtd lost it, undefines it when
+#      the key file goes or is empty, retries a failed set, a failed undefine
+#      and a libvirtd that is down, waits 10 seconds between two passes,
+#      exits 0 on TERM, and never puts the key on a command line or in its
+#      log.
 #
-# Checks 2 to 5, 7 to 10, 12, 13, 15 and 16 are counted as SKIP when kustomize
-# or yq is not on PATH, and 16 also without helm. A failing kustomize build
-# counts them as FAIL and prints the build's error. Checks 1, 6 and 11 read the
-# files and need neither tool.
+# Checks 2 to 5, 7 to 10, 12, 13, 15, 16 and 17 are counted as SKIP when
+# kustomize or yq is not on PATH, 16 also without helm and 17 also without
+# python3. A failing kustomize build counts them as FAIL and prints the
+# build's error. Checks 1, 6 and 11 read the files and need neither tool.
 #
 # Usage: bash tests/unit/deploy/metal_stack_hypervisor_test.sh
 
@@ -1348,6 +1356,305 @@ test_hvo_post_render() {
       select(test(\"${LABEL_VALUE_RE}\") | not)" "$tmp/patched.yaml" 2>&1 || echo "yq failed")"
 }
 
+# --- Test 17: ceph-secret.sh follows the key ---
+#
+# ceph-secret.sh runs with stubs of virsh and sleep first on PATH, and with
+# the socket directory, the key directory and /tmp moved under a rig. Both
+# stubs append each call to <rig>/calls.log, and the stub sleep waits 0.01 s
+# whatever it is asked. The stub virsh answers secret-dumpxml with success
+# only while <rig>/defined exists, copies the XML file of secret-define to
+# <rig>/defined and removes that file on secret-undefine. It fails every call
+# with a line on stderr while <rig>/fail-all exists (libvirtd is down), and
+# each call of <subcommand> while <rig>/fail-<subcommand> exists. Every pass
+# of the script asks secret-dumpxml once, so the number of those calls counts
+# the passes.
+
+CEPH_SECRET_UUID=090e4a3c-6c20-4e74-82dc-1a70382babe8
+
+# ceph_secret_rig <rig>
+# Writes the stubs to <rig>/bin and ceph-secret.sh with its paths moved below
+# <rig> to <rig>/ceph-secret.sh. Fails, printing the lines, when a command of
+# the moved script still names a path under /run, /etc or /tmp; comments and
+# echo messages may.
+ceph_secret_rig() {
+  local rig="$1" stub
+  mkdir -p "$rig/bin" "$rig/run/libvirt" "$rig/key" "$rig/tmp"
+  touch "$rig/calls.log" "$rig/out"
+  conf_lines ceph-secret.sh | sed \
+    -e 's#/run/libvirt/#@RIG@/run/libvirt/#g' \
+    -e 's#/etc/ceph-client-cinder/#@RIG@/key/#g' \
+    -e 's#/tmp/#@RIG@/tmp/#g' >"$rig/ceph-secret.sh.in"
+  if grep -nE '(^|[^@])/(run|etc|tmp)/' "$rig/ceph-secret.sh.in" | grep -vE '^[0-9]+:[[:space:]]*(#|echo )'; then
+    return 1
+  fi
+  sed "s#@RIG@#${rig}#g" "$rig/ceph-secret.sh.in" >"$rig/ceph-secret.sh"
+
+  cat >"$rig/bin/virsh" <<'STUB'
+#!/bin/bash
+echo "virsh $*" >>"$RIG/calls.log"
+[[ "$1" != -c ]] || shift 2
+if [[ -f "$RIG/fail-all" ]]; then
+  echo "error: failed to connect to the hypervisor" >&2
+  exit 1
+fi
+if [[ -f "$RIG/fail-$1" ]]; then
+  echo "error: Failed to $1 $2" >&2
+  exit 1
+fi
+case "$1" in
+  secret-dumpxml) [[ -f "$RIG/defined" ]] ;;
+  secret-define) cp "$2" "$RIG/defined" && echo "Secret $2 created" ;;
+  secret-undefine) rm "$RIG/defined" && echo "Secret $2 deleted" ;;
+  secret-set-value) echo "Secret value set" ;;
+  *) exit 2 ;;
+esac
+STUB
+  printf '#!/bin/bash\necho "sleep $*" >>"$RIG/calls.log"\n"$REAL_SLEEP" 0.01\n' >"$rig/bin/sleep"
+  for stub in virsh sleep; do
+    chmod +x "$rig/bin/$stub"
+  done
+}
+
+# put_key <rig> <key>
+# Replaces the key file in one rename, as the kubelet does; an empty <key>
+# leaves a file of zero bytes.
+put_key() {
+  printf '%s' "$2" >"$1/key/userKey.new"
+  [[ -z "$2" ]] || echo >>"$1/key/userKey.new"
+  mv "$1/key/userKey.new" "$1/key/userKey"
+}
+
+# key_digest <key> — what the script logs for <key>.
+key_digest() {
+  printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
+# lines <file> <line> — how many lines of <file> are <line>.
+lines() {
+  grep -cxF -- "$2" "$1"
+}
+
+# has_lines <file> <line> <n> — true once <file> holds <line> <n> times.
+has_lines() {
+  [[ "$(lines "$1" "$2")" -ge "$3" ]]
+}
+
+# virsh_calls <rig>
+# The virsh calls other than secret-dumpxml, without the URI, one per line.
+virsh_calls() {
+  grep '^virsh ' "$1/calls.log" | grep -v ' secret-dumpxml ' | sed 's#^virsh -c qemu:///system ##'
+}
+
+# secret_state <rig> — "defined" while the stub holds the secret, else
+# "undefined".
+secret_state() {
+  if [[ -f "$1/defined" ]]; then echo defined; else echo undefined; fi
+}
+
+# counts <rig> <undefined line> <waiting line>
+# How often the output holds each of the two lines.
+counts() {
+  echo "undefined=$(lines "$1/out" "$2") waiting=$(lines "$1/out" "$3")"
+}
+
+# passes <rig> — the passes the script began so far.
+passes() {
+  grep -c ' secret-dumpxml ' "$1/calls.log"
+}
+
+# passes_reached <rig> <n> — true once the script began <n> passes.
+passes_reached() {
+  [[ "$(passes "$1")" -ge "$2" ]]
+}
+
+# await_passes <rig> <n>
+# Waits until the script began <n> more passes, so that a pass that would
+# call virsh once more has done so.
+await_passes() {
+  await 10 passes_reached "$1" $(($(passes "$1") + $2))
+}
+
+test_ceph_secret_sync() {
+  echo "Test: ceph-secret.sh defines the libvirt secret from the key file and follows it"
+
+  render "$HYPERVISOR_DIR" 39 || return
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  SKIP: python3 not installed, no socket can be bound (39 checks skipped)"
+    SKIP=$((SKIP + 39))
+    return
+  fi
+
+  local tmp rig pid="" rc out key1 key2 define set_value undefine mark
+  local uuid="$CEPH_SECRET_UUID" secret_ref=openstack/ceph-client-cinder
+  local waiting="ceph-secret: waiting for the Secret ${secret_ref} (deployed by WITH_CEPH=true); no libvirt secret is defined"
+  local defined_line="ceph-secret: defined libvirt secret ${uuid} for client.cinder"
+  local undefined_line="ceph-secret: undefined libvirt secret ${uuid} because ${secret_ref} is gone"
+  local set_line="ceph-secret: set the value of libvirt secret ${uuid} from ${secret_ref} (sha256"
+  local retry="ceph-secret: virsh secret-set-value failed; retrying in 10s"
+  local retry_undefine="ceph-secret: virsh secret-undefine failed; retrying in 10s"
+  local retry_define="ceph-secret: virsh secret-define failed; retrying in 10s"
+  tmp="$(mktemp -d)"
+  trap 'kill -KILL "$pid" 2>/dev/null; rm -rf "$tmp"' RETURN
+
+  rig="$tmp/rig"
+  if ! ceph_secret_rig "$rig"; then
+    echo "  FAIL: ceph-secret.sh names a host path the rig does not move (above)"
+    FAIL=$((FAIL + 39))
+    return
+  fi
+  define="secret-define $rig/tmp/ceph-secret.xml"
+  set_value="secret-set-value ${uuid} --file $rig/key/userKey"
+  undefine="secret-undefine ${uuid}"
+  # Two made-up keys of the shape Ceph writes.
+  key1=AQDhK2VnAAAAABAA7q3+8z9Hq1lnO4JmNo2Gkw==
+  key2=AQBzM3VnAAAAABAAp1u7XyQv9mN2c6rTqW8eLg==
+
+  # Before libvirtd opens its socket the script waits, and calls no virsh.
+  rig_start "$rig" bash "$rig/ceph-secret.sh"
+  pid=$RIG_PID
+  await 10 grep -q '^ceph-secret: waiting for .*/run/libvirt/libvirt-sock$' "$rig/out"
+  "$REAL_SLEEP" 0.3
+  assert_eq "without the socket it logs the wait for it once" "1" \
+    "$(grep -c '^ceph-secret: waiting for .*/run/libvirt/libvirt-sock$' "$rig/out")"
+  assert_eq "and calls no virsh" "" "$(grep '^virsh ' "$rig/calls.log")"
+
+  # (a) The socket, no key file: one waiting line, nothing defined.
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+    "$rig/run/libvirt/libvirt-sock"
+  await 10 grep -qxF "$waiting" "$rig/out"
+  await_passes "$rig" 5
+  assert_eq "(a) without a key file it logs the waiting line once over five passes" "1" \
+    "$(lines "$rig/out" "$waiting")"
+  assert_eq "(a) and defines and sets nothing" "" "$(virsh_calls "$rig")"
+
+  # (b) A key: one define, then one set from the file.
+  put_key "$rig" "$key1"
+  await 10 has_lines "$rig/out" "$set_line $(key_digest "$key1"))" 1
+  await_passes "$rig" 3
+  assert_eq "(b) a key file leads to one secret-define, then one secret-set-value --file" \
+    "$(printf '%s\n' "$define" "$set_value")" "$(virsh_calls "$rig")"
+  assert_file_contains_fixed "(b) the secret carries the UUID" "$rig/defined" "<uuid>${uuid}</uuid>"
+  assert_file_contains_fixed "(b) it is private" "$rig/defined" "private='yes'"
+  assert_file_contains_fixed "(b) it is ephemeral, kept in libvirtd's memory alone" "$rig/defined" "ephemeral='yes'"
+  assert_file_contains_fixed "(b) it is a ceph secret" "$rig/defined" "<usage type='ceph'>"
+  assert_file_contains_fixed "(b) of client.cinder" "$rig/defined" "<name>client.cinder</name>"
+  assert_eq "(b) the defined line is logged once" "1" "$(lines "$rig/out" "$defined_line")"
+  assert_eq "(b) the set line carries the key's digest, once" "1" \
+    "$(lines "$rig/out" "$set_line $(key_digest "$key1"))")"
+
+  # (c) Another key: one more set, no define.
+  put_key "$rig" "$key2"
+  await 10 has_lines "$rig/out" "$set_line $(key_digest "$key2"))" 1
+  await_passes "$rig" 3
+  assert_eq "(c) a changed key leads to one more secret-set-value and no secret-define" \
+    "$(printf '%s\n' "$define" "$set_value" "$set_value")" "$(virsh_calls "$rig")"
+  assert_eq "(c) with the new digest, once" "1" "$(lines "$rig/out" "$set_line $(key_digest "$key2"))")"
+
+  # (d) A restarted libvirtd lost the secret: defined and set again within
+  # two passes.
+  rm "$rig/defined"
+  await_passes "$rig" 2
+  assert_eq "(d) a lost secret is defined and set again within two passes" \
+    "$(printf '%s\n' "$define" "$set_value" "$set_value" "$define" "$set_value")" "$(virsh_calls "$rig")"
+  assert_eq "(d) with the unchanged key's digest" "2" "$(lines "$rig/out" "$set_line $(key_digest "$key2"))")"
+
+  # (e) The key file goes, and later one of zero bytes: each time one
+  # undefine and one waiting line.
+  rm "$rig/key/userKey"
+  await 10 has_lines "$rig/out" "$undefined_line" 1
+  await_passes "$rig" 3
+  assert_eq "(e) a removed key file leads to one secret-undefine" \
+    "$(printf '%s\n' "$define" "$set_value" "$set_value" "$define" "$set_value" "$undefine")" \
+    "$(virsh_calls "$rig")"
+  assert_eq "(e) the undefined line is logged once" "1" "$(lines "$rig/out" "$undefined_line")"
+  assert_eq "(e) the removed key file is followed by the waiting line, once" "2" "$(lines "$rig/out" "$waiting")"
+  put_key "$rig" "$key2"
+  await 10 has_lines "$rig/out" "$set_line $(key_digest "$key2"))" 3
+  put_key "$rig" ""
+  await 10 has_lines "$rig/out" "$undefined_line" 2
+  await_passes "$rig" 3
+  assert_eq "(e) an empty key file is undefined as well" \
+    "$(printf '%s\n' "$define" "$set_value" "$undefine")" "$(virsh_calls "$rig" | tail -n 3)"
+  assert_eq "(e) the empty key file is followed by the waiting line, once" "3" "$(lines "$rig/out" "$waiting")"
+
+  # (f) secret-set-value fails until the marker goes: the retry line follows
+  # virsh's error, the script runs on, and then one set succeeds.
+  touch "$rig/fail-secret-set-value"
+  put_key "$rig" "$key1"
+  await 10 grep -qxF "$retry" "$rig/out"
+  await_passes "$rig" 3
+  assert_eq "(f) the retry line follows virsh's error" \
+    "$(printf '%s\n' "error: Failed to secret-set-value ${uuid}" "$retry")" \
+    "$(grep -B 1 -xF "$retry" "$rig/out" | head -n 2)"
+  assert_eq "(f) no set line while the set fails" "1" "$(lines "$rig/out" "$set_line $(key_digest "$key1"))")"
+  assert_eq "(f) and the script keeps running" "running" "$(kill -0 "$pid" 2>/dev/null && echo running)"
+  rm "$rig/fail-secret-set-value"
+  await 10 has_lines "$rig/out" "$set_line $(key_digest "$key1"))" 2
+  await_passes "$rig" 3
+  assert_eq "(f) once it succeeds, the set line follows, once" "2" \
+    "$(lines "$rig/out" "$set_line $(key_digest "$key1"))")"
+
+  # (g) secret-undefine fails until the marker goes: the retry line follows
+  # virsh's error, the secret stays and no waiting line is logged, and then
+  # the undefined line and the waiting line follow.
+  touch "$rig/fail-secret-undefine"
+  rm "$rig/key/userKey"
+  await 10 grep -qxF "$retry_undefine" "$rig/out"
+  await_passes "$rig" 3
+  assert_eq "(g) the retry line follows virsh's error" \
+    "$(printf '%s\n' "error: Failed to secret-undefine ${uuid}" "$retry_undefine")" \
+    "$(grep -B 1 -xF "$retry_undefine" "$rig/out" | head -n 2)"
+  assert_eq "(g) while the undefine fails, the secret stays defined" "defined" "$(secret_state "$rig")"
+  assert_eq "(g) and neither the undefined line nor the waiting line is logged" "undefined=2 waiting=3" \
+    "$(counts "$rig" "$undefined_line" "$waiting")"
+  rm "$rig/fail-secret-undefine"
+  await 10 has_lines "$rig/out" "$undefined_line" 3
+  await_passes "$rig" 3
+  assert_eq "(g) once it succeeds, the undefined line and the waiting line follow, once each" \
+    "undefined=3 waiting=4" "$(counts "$rig" "$undefined_line" "$waiting")"
+
+  # (h) libvirtd is down when the key comes back: every virsh call fails, the
+  # define is retried and nothing is set until libvirtd is back. The script
+  # is between passes without a key here, so mark counts every call before
+  # the outage.
+  touch "$rig/fail-all"
+  mark="$(virsh_calls "$rig" | wc -l)"
+  put_key "$rig" "$key2"
+  await 10 grep -qxF "$retry_define" "$rig/out"
+  await_passes "$rig" 3
+  assert_eq "(h) the retry line follows virsh's error" \
+    "$(printf '%s\n' "error: failed to connect to the hypervisor" "$retry_define")" \
+    "$(grep -B 1 -xF "$retry_define" "$rig/out" | head -n 2)"
+  assert_eq "(h) while libvirtd is down, secret-define is all it tries" "$define" \
+    "$(virsh_calls "$rig" | tail -n "+$((mark + 1))" | sort -u)"
+  rm "$rig/fail-all"
+  await 10 has_lines "$rig/out" "$set_line $(key_digest "$key2"))" 4
+  await_passes "$rig" 3
+  assert_eq "(h) once libvirtd is back, the secret is defined and set, once" \
+    "$(printf '%s\n' "$define" "$set_value")" "$(virsh_calls "$rig" | tail -n 2)"
+
+  # (i) TERM: exit 0, the secret stays.
+  kill -TERM "$pid"
+  rc=0
+  exit_status "$pid" || rc=$?
+  assert_eq "(i) TERM ends the script with status 0" "0" "$rc"
+  assert_eq "(i) without undefining the secret" "defined" "$(secret_state "$rig")"
+
+  # (j) The key reaches neither a command line nor the log.
+  out="$(cat "$rig/calls.log" "$rig/out")"
+  assert_not_contains "(j) the first key occurs in neither calls.log nor the output" "$out" "$key1"
+  assert_not_contains "(j) the second key occurs in neither" "$out" "$key2"
+  assert_eq "every virsh call names qemu:///system" "" \
+    "$(grep '^virsh ' "$rig/calls.log" | grep -v '^virsh -c qemu:///system ')"
+
+  # (k) Pacing: every sleep waits the interval, and exactly one separates two
+  # passes, a pass that ended on a failed call included.
+  assert_eq "(k) every sleep waits 10 seconds" "" "$(grep '^sleep ' "$rig/calls.log" | grep -vx 'sleep 10')"
+  assert_eq "(k) one sleep separates each two passes" "0" \
+    "$(awk '/ secret-dumpxml /{ if (seen && n != 1) bad++; seen = 1; n = 0; next }
+      /^sleep /{ n++ } END { print bad + 0 }' "$rig/calls.log")"
+}
+
 # --- Run ---
 test_files_spdx_and_resources
 test_fixtures_render
@@ -1365,6 +1672,7 @@ test_libvirtd_exits
 test_chart_tag_and_digest_agree_upstream
 test_migration_port_reservation
 test_hvo_post_render
+test_ceph_secret_sync
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
