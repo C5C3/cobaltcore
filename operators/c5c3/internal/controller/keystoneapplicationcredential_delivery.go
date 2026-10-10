@@ -32,7 +32,7 @@ const keystoneApplicationCredentialPushContentHashAnnotation = "c5c3.io/keystone
 // keystoneApplicationCredentialPushSyncedBeforeAnnotation records the
 // PushSecret's status.syncedResourceVersion as it was when the content hash was
 // stamped (orderPushFresh).
-const keystoneApplicationCredentialPushSyncedBeforeAnnotation = "c5c3.io/keystoneapplicationcredential-push-synced-before"
+const keystoneApplicationCredentialPushSyncedBeforeAnnotation = "c5c3.io/keystoneapplicationcredential-push-synced-before" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
 // The keys of the delivered Secret beside the order. clouds.yaml is
 // appCredCloudsYAMLKey.
