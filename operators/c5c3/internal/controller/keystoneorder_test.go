@@ -53,7 +53,7 @@ func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Obje
 		WithStatusSubresource(&c5c3v1alpha1.KeystoneUser{}, &c5c3v1alpha1.KeystoneProject{},
 			&c5c3v1alpha1.KeystoneRoleAssignment{}, &c5c3v1alpha1.KeystoneCatalogEntry{},
 			&c5c3v1alpha1.KeystoneApplicationCredential{}, &c5c3v1alpha1.MariaDBDatabase{},
-			&mariadbv1alpha1.Database{}, &esov1.ExternalSecret{})
+			&c5c3v1alpha1.RabbitMQVhost{}, &mariadbv1alpha1.Database{}, &esov1.ExternalSecret{})
 	if funcs != nil {
 		b = b.WithInterceptorFuncs(*funcs)
 	}
