@@ -488,6 +488,28 @@ func sweepOrderLists(
 	return deleted, nil
 }
 
+// sweepDeliveredSecret deletes the Secret key names beside the order, on the
+// order's cluster, when owner is its controller, and returns the number of
+// deletes issued. The garbage collector would reap it too; deleting it here
+// makes the teardown observable without waiting on it. A Secret of that name
+// the order does not control stays.
+func sweepDeliveredSecret(ctx context.Context, oc client.Client, owner client.Object, key types.NamespacedName) (int, error) {
+	delivered := &corev1.Secret{}
+	switch err := oc.Get(ctx, key, delivered); {
+	case apierrors.IsNotFound(err):
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("reading delivered Secret %s: %w", key, err)
+	case !metav1.IsControlledBy(delivered, owner):
+		return 0, nil
+	}
+	log.FromContext(ctx).Info("removing the delivered "+orderKind(owner)+" Secret", "secret", key)
+	if err := client.IgnoreNotFound(oc.Delete(ctx, delivered)); err != nil {
+		return 0, fmt.Errorf("deleting delivered Secret %s: %w", key, err)
+	}
+	return 1, nil
+}
+
 // orderReferencedMessage is the ReferencedByRoleAssignments message of an order
 // whose deletion holds while the KeystoneRoleAssignments names lists still
 // reference it. noun is "user" or "project".
