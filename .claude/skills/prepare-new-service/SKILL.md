@@ -120,8 +120,9 @@ instead of the Python questions.
   (the option catalog of layer 1)?
 - **Behavior breaks between the supported releases?** Check upstream
   release notes for launch-mode/WSGI/paste divergence between the pinned
-  releases (glance 2025.2 eventlet vs 2026.1 uWSGI forced a
-  release-switched command in the deployment builder). If yes, the
+  releases (glance's eventlet launch below 2026.1 against uWSGI from 2026.1
+  forced a release-switched command in the deployment builder until that
+  release retired). If yes, the
   per-release `basic-deployment-<slug>` e2e variant and the tempest legs
   must genuinely differ, and unit tests must pin the rendered config for
   **both** releases.

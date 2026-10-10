@@ -134,7 +134,7 @@ Interpret:
     (`name must be at most %d characters: …`, `%s is managed via %s and
     must not be set in extraConfig`): the literal parts match verbatim,
     a `%d` value is numeric, a `%s`/`%v`/`%q` value either starts with a
-    digit (a quantity, duration, or release such as `1Mi`, `2025.2`) or
+    digit (a quantity, duration, or release such as `1Mi`, `2026.1`) or
     occurs verbatim in the corpus or a fixture (the key/owner pair of a
     `config_ownership.go` table), and at least 8 literal characters over two
     words take part.

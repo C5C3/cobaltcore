@@ -118,11 +118,14 @@ WORKSPACE_DIR="$ws" SERVICE_NAME=$svc SERVICE_VERSION="$tag" RELEASE=$rel \
   bash hack/ci-run-unit-tests.sh
 ```
 
-The cinder 2025.2 suite ran about 17,900 tests in roughly six minutes on
-four workers. Order-dependent failures need a single worker: the NetApp
-flake behind 64754d84 failed every time under
-`stestr run --concurrency 1 <module>` and only about one run in four in CI,
-because stestr spreads tests over workers in hash order.
+The cinder 2026.1 suite counted 18,076 tests on its first 28.0.0 run
+(`releases/2026.1/test-excludes/cinder.txt:10-11`) and runs in roughly six
+minutes on four workers. Order-dependent failures need a single worker,
+because stestr spreads tests over workers in hash order. Some flakes do not
+reproduce at all on demand: the tpool flake behind
+`patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
+failed one CI run and reproduces only when a garbage collection lands
+between the two assertions.
 
 ## Building the image locally
 
