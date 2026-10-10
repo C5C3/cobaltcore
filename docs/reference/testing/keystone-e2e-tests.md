@@ -354,9 +354,9 @@ container image updates and Ready=True is maintained after the rollout completes
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-upgrade` |
-| 2 | Assert Ready and initial image tag | `assert` + `script` (5m) | Ready=True; script verifies Deployment `keystone-upgrade-api` container image contains `2025.2` |
-| 3 | Patch image tag | `patch` | Applies `01-patch-image.yaml` — patches `spec.image.tag` to `2025.2-upgraded` |
-| 4 | Assert image updated and Ready maintained | `script` (120s) + `assert` (5m) | Script polls up to 120s to verify Deployment image contains `2025.2-upgraded`; assert verifies Ready=True, availableReplicas > 0, and updatedReplicas == replicas (rollout complete) |
+| 2 | Assert Ready and initial image tag | `assert` + `script` (5m) | Ready=True; script verifies Deployment `keystone-upgrade-api` container image contains `2026.1` |
+| 3 | Patch image tag | `patch` | Applies `01-patch-image.yaml` — patches `spec.image.tag` to `2026.1-upgraded` |
+| 4 | Assert image updated and Ready maintained | `script` (120s) + `assert` (5m) | Script polls up to 120s to verify Deployment image contains `2026.1-upgraded`; assert verifies Ready=True, availableReplicas > 0, and updatedReplicas == replicas (rollout complete) |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-image.yaml`
 
@@ -399,7 +399,7 @@ the Deployment image updates to 2026.2, the rollout completes, `installedRelease
 2026.2, and the Keystone API remains accessible post-upgrade.
 
 This differs from `image-upgrade`, which tests same-release tag swaps
-(2025.2→2025.2-upgraded) without database migration, and from `upgrade-flow`,
+(2026.1→2026.1-upgraded) without database migration, and from `upgrade-flow`,
 which focuses on internal state machine mechanics (skip-level rejection).
 
 **Steps:**

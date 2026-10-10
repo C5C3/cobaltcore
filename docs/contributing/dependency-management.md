@@ -308,7 +308,7 @@ git format-patch -4 --no-signature -o /tmp/hvo-patches
 of a mail envelope, and `git am` stops at the missing author. Turn each
 `git format-patch` output back into the house header (the SPDX pair, the bare subject,
 the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
-diffstat; see `patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
+diffstat; see `patches/cinder/2026.1/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
 for the form), commit the files onto the Renovate branch and let `build-hvo` prove
 them.
 

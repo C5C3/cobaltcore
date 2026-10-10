@@ -213,7 +213,7 @@ duplicated (with "MUST stay in sync" comments) between `build-service-images` an
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `service` | yes | — | OpenStack service name (e.g. `keystone`) |
-| `release` | yes | — | Release directory name (e.g. `2025.2`) |
+| `release` | yes | — | Release directory name (e.g. `2026.1`) |
 
 | Output | Description |
 | --- | --- |
@@ -280,7 +280,7 @@ Follows the repo's CI-script conventions.
 | `SERVICE_VERSION` | yes | — | Version string for PBR PKG-INFO |
 | `INSTALL_SPEC` | yes | — | pip install spec (e.g. `.[ldap]` or `.`) |
 | `VENV_BUILDER_IMAGE` | yes | — | Docker image to run tests in |
-| `RELEASE` | yes | — | Release directory name (e.g. `2025.2`) |
+| `RELEASE` | yes | — | Release directory name (e.g. `2026.1`) |
 | `WORKSPACE_DIR` | no | `$GITHUB_WORKSPACE` or `pwd` | Root workspace directory |
 | `OS_TEST_DBAPI_ADMIN_CONNECTION` | no | — | oslo.db admin connection string for opportunistic DB tests |
 
@@ -923,7 +923,7 @@ If `releases/<release>/test-excludes/<service>.txt` exists, stestr uses it as
 `--exclude-list` to skip tests matching the regex patterns in the file. The file follows
 stestr exclude-list format: blank lines are ignored, `#` lines are comments, all other
 lines are regex patterns matching test IDs to skip. See
-`releases/2025.2/test-excludes/keystone.txt` for an example.
+`releases/2026.1/test-excludes/keystone.txt` for an example.
 
 **Test Coverage:**
 
@@ -1058,7 +1058,7 @@ digest and uploaded as `digests-nova-compute-<release>-<platform-pair>`.
 SHA tags from every branch and the version and release tags from `main`, and
 writes `sbom-nova-compute-<release>.cyclonedx.json` with the Grype category
 `grype-nova-compute-<release>`. Like Tempest's, the category carries the
-release: all three releases merge for the same commit, and under one category the
+release: both releases merge for the same commit, and under one category the
 later SARIF upload would replace the earlier one and close its alerts as fixed.
 
 `verify-nova-compute-image` (push only) pulls the composite tag and runs
@@ -1075,9 +1075,9 @@ Each service image build produces two to four tags on push events:
 
 | Tag | Format | Example | Branches |
 | --- | --- | --- | --- |
-| Composite | `<version>-p<N>-<branch>-<sha>` | `keystone:28.0.0-p0-main-a1b2c3d` | all |
-| Version | `<version>` | `keystone:28.0.0` | `main` only |
-| Release | `<release>` | `keystone:2025.2` | `main` only |
+| Composite | `<version>-p<N>-<branch>-<sha>` | `keystone:29.0.0-p0-main-a1b2c3d` | all |
+| Version | `<version>` | `keystone:29.0.0` | `main` only |
+| Release | `<release>` | `keystone:2026.1` | `main` only |
 | SHA | `<sha>` | `keystone:a1b2c3d` | all |
 
 The version-only and release tags are restricted to the `main` branch to prevent silent
@@ -1088,9 +1088,9 @@ already encodes the branch, so `stable/**` builds remain uniquely identifiable.
 
 | Component | Source | Description |
 | --- | --- | --- |
-| `<version>` | `releases/<release>/source-refs.yaml` | Upstream OpenStack version tag (e.g., `28.0.0`) |
+| `<version>` | `releases/<release>/source-refs.yaml` | Upstream OpenStack version tag (e.g., `29.0.0`) |
 | `p<N>` | Count of `.patch` files in `patches/<service>/<release>/` | Patch count; defaults to `p0` when the directory is absent |
-| `<branch>` | `GITHUB_REF_NAME` with `/` replaced by `-` | Branch name, sanitized for Docker tag compatibility (e.g., `stable/2025.2` becomes `stable-2025.2`) |
+| `<branch>` | `GITHUB_REF_NAME` with `/` replaced by `-` | Branch name, sanitized for Docker tag compatibility (e.g., `stable/2026.1` becomes `stable-2026.1`) |
 | `<sha>` | First 7 characters of `GITHUB_SHA` | Short commit SHA |
 
 The composite tag uniquely identifies the exact build: upstream version, patch level,
@@ -1099,8 +1099,8 @@ systems.
 
 `nova-compute` carries nova's `<version>` and patch count under its own name:
 the compute jobs call `derive-service-tags` with `service: nova` and
-`image: nova-compute`, so `nova-compute:2025.2` and `nova:2025.2` are cut from
-the same nova (for example `nova-compute:32.0.0-p0-main-a1b2c3d`).
+`image: nova-compute`, so `nova-compute:2026.1` and `nova:2026.1` are cut from
+the same nova (for example `nova-compute:33.0.0-p0-main-a1b2c3d`).
 
 ### Release-independent images
 
@@ -1157,8 +1157,8 @@ survives while it carries a **keeper** tag:
 | Kept | Example | Why |
 | --- | --- | --- |
 | `latest` | `python-base:latest` | Current base image |
-| Version | `keystone:28.0.0` | Names an upstream release |
-| Release | `keystone:2025.2` | Names an OpenStack release |
+| Version | `keystone:29.0.0` | Names an upstream release |
+| Release | `keystone:2026.1` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
 | Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
 | Libvirt keeper | `libvirt:10.0.0-2ubuntu8.19-r1` | The lab manifests pin that build by digest |
@@ -1169,10 +1169,10 @@ older than 24 hours: composite tags, SHA tags in all four shapes
 `e2e-<run_id>-*` tags, `dev`, and untagged leftovers.
 
 The rule works per manifest, so the *current* main build is untouched: its
-composite and SHA tags sit on the same manifest as `28.0.0` and `2025.2`, and
-that release tag keeps the whole thing. Only once a later build moves `28.0.0`
-and `2025.2` onto a new manifest does the old one — now holding nothing but its
-composite and SHA tags — become deletable.
+composite and SHA tags sit on the same manifest as `29.0.0` and `2026.1`, and
+that release tag keeps the whole thing. Only once a later build moves `29.0.0`
+and `2026.1` onto a new manifest does the old one (now holding nothing but its
+composite and SHA tags) become deletable.
 
 Two things survive without a tag of their own. A multi-arch image is an OCI
 index whose per-platform and buildx attestation manifests are separate untagged
@@ -1240,7 +1240,7 @@ Each image has a unique cache scope per platform to prevent cross-arch cache col
 | --- | --- |
 | `python-base` | `python-base-linux-amd64` / `python-base-linux-arm64` |
 | `venv-builder` | `venv-builder-linux-amd64` / `venv-builder-linux-arm64` |
-| Service images | `<service>-<release>-linux-amd64` / `<service>-<release>-linux-arm64` (e.g., `keystone-2025.2-linux-amd64`) |
+| Service images | `<service>-<release>-linux-amd64` / `<service>-<release>-linux-arm64` (e.g., `keystone-2026.1-linux-amd64`) |
 
 The `mode=max` setting caches all intermediate layers, not just the final image layer.
 
@@ -1868,7 +1868,7 @@ the `build-tempest` job reads it to resolve the `TEMPEST_VERSION`,
 `BARBICAN_TEMPEST_PLUGIN_VERSION`, `KEYSTONE_TEMPEST_PLUGIN_VERSION` and
 `NEUTRON_TEMPEST_PLUGIN_VERSION` build arguments. See
 [Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for
-the YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
+the YAML schema and `releases/2026.1/extra-packages.yaml` for a working example.
 
 ### 2. Verify matrix discovery
 
@@ -2008,8 +2008,8 @@ The build-images workflow depends on the following artifacts:
 | `images/python-base/Dockerfile` | `build-base-images` | Python runtime base image |
 | `images/venv-builder/Dockerfile` | `build-base-images` | Build-stage image with uv and compilers |
 | `images/keystone/Dockerfile` | `build-service-images` | Keystone service image (two-stage build) |
-| `releases/2025.2/source-refs.yaml` | `build-service-images` | Upstream version resolution |
-| `releases/2025.2/upper-constraints.txt` | `build-service-images` | Python dependency pins |
+| `releases/2026.1/source-refs.yaml` | `build-service-images` | Upstream version resolution |
+| `releases/2026.1/upper-constraints.txt` | `build-service-images` | Python dependency pins |
 | `scripts/apply-constraint-overrides.sh` | `build-service-images` | Constraint override application |
 
 :::

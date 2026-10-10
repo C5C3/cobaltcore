@@ -361,7 +361,7 @@ operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 
 `nova.conf` is byte-identical across the supported releases, so a release bump
 never rotates the ConfigMap for a configuration change that is not there. A
-golden test pins the full document of two fixtures at all three releases and
+golden test pins the full document of two fixtures at both releases and
 compares the renders against each other.
 
 Every process reads the same `nova.conf`. These are its sections:
