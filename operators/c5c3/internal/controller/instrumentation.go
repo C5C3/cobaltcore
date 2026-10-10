@@ -66,6 +66,10 @@ var subReconcilerConditionTypes = map[string]string{
 	"KeystoneProjectProvision":        conditionTypeKeystoneProjectProjectReady,
 	"KeystoneRoleAssignmentProvision": conditionTypeKeystoneRoleAssignmentAssignmentReady,
 	"KeystoneCatalogEntryProvision":   conditionTypeKeystoneCatalogEntryCatalogReady,
+	// The KeystoneApplicationCredential controller's two legs, prefixed the same
+	// way.
+	"KeystoneApplicationCredentialProvision": conditionTypeKeystoneApplicationCredentialCredentialReady,
+	"KeystoneApplicationCredentialDelivery":  conditionTypeKeystoneApplicationCredentialDeliveryReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

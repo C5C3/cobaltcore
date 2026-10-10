@@ -155,6 +155,13 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
+			if err := (&KeystoneApplicationCredentialReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Resolver: mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
+				return err
+			}
 			registered = true
 			return nil
 		},

@@ -86,6 +86,7 @@ rules:
   - c5c3.io
   resources:
   - controlplanes/finalizers
+  - keystoneapplicationcredentials/finalizers
   - keystonecatalogentries/finalizers
   - keystoneprojects/finalizers
   - keystoneroleassignments/finalizers
@@ -98,6 +99,7 @@ rules:
   resources:
   - controlplanes/status
   - credentialrotations/status
+  - keystoneapplicationcredentials/status
   - keystonecatalogentries/status
   - keystoneprojects/status
   - keystoneroleassignments/status
@@ -110,6 +112,7 @@ rules:
 - apiGroups:
   - c5c3.io
   resources:
+  - keystoneapplicationcredentials
   - keystonecatalogentries
   - keystoneprojects
   - keystoneroleassignments
