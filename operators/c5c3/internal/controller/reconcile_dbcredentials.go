@@ -224,6 +224,11 @@ type dbCredentialTarget struct {
 	// storeRef is the store the ControlPlane selected, used by the Static
 	// ExternalSecret and to resolve the OpenBao connection config.
 	storeRef commonv1.SecretStoreRefSpec
+	// targetLabels are stamped on the Secret the generator-backed ExternalSecret
+	// materialises, through its target template, so a watch on that Secret can
+	// map it back by its labels. Nil renders no template: the built-in services
+	// leave it unset.
+	targetLabels map[string]string
 }
 
 // prefix returns qualifier as a message prefix: the service name plus the
@@ -331,13 +336,23 @@ func dbCredentialVaultDynamicSecret(t dbCredentialTarget, server, mountPath stri
 // the engine role's default_ttl so ESO renews the lease before it expires. The
 // materialised Secret carries the same username/password keys the static
 // ExternalSecret produces, so the projected DB secretRef is mode-agnostic.
+//
+// A target with targetLabels gets a target template that carries them and
+// nothing else; its Merge policy keeps the generator's keys in the Secret.
 func dbCredentialGeneratorExternalSecret(t dbCredentialTarget) *esov1.ExternalSecret {
 	name := t.secretName
+	target := esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner}
+	if t.targetLabels != nil {
+		target.Template = &esov1.ExternalSecretTemplate{
+			MergePolicy: esov1.MergePolicyMerge,
+			Metadata:    esov1.ExternalSecretTemplateMetadata{Labels: t.targetLabels},
+		}
+	}
 	return &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: t.namespace},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: dbCredentialRefreshInterval},
-			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
+			Target:          target,
 			DataFrom: []esov1.ExternalSecretDataFromRemoteRef{
 				{SourceRef: &esov1.StoreGeneratorSourceRef{
 					GeneratorRef: &esov1.GeneratorRef{
@@ -715,7 +730,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 // still read at home: it describes one OpenBao every tenant store copies, and
 // the shared cluster store that carries it is a management-cluster object.
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) error {
-	server, mountPath := r.openBaoConnection(ctx, cp, t.storeRef)
+	server, mountPath := openBaoConnectionFor(ctx, r.Client, cp.Namespace, t.storeRef)
 
 	if err := r.ensureUnownedOrOwned(ctx, c, cp, dbCredentialServiceAccount(t)); err != nil {
 		return fmt.Errorf("ensuring %sDB credential ServiceAccount: %w", t.prefix(), err)
@@ -839,23 +854,23 @@ func (r *ControlPlaneReconciler) dbCredentialEngineIssuedUsername(ctx context.Co
 	return username, strings.HasPrefix(username, engineIssuedUsernamePrefix), nil
 }
 
-// openBaoConnection returns the OpenBao server URL and Kubernetes-auth mount
+// openBaoConnectionFor returns the OpenBao server URL and Kubernetes-auth mount
 // path, copied from the Vault provider of the given store ref (a cluster-scoped
-// ClusterSecretStore by name, or a namespaced SecretStore in the child
-// namespace) so the caller cannot drift from the store the rest of the stack
-// uses. Callers pass the store to resolve against explicitly: the DB-credential
-// generator resolves against the control plane's effective store, whereas the
-// per-tenant-store sub-reconciler resolves against the SHARED cluster store (the
-// tenant store cannot describe its own bootstrap). Falls back to the documented
-// defaults when the store or the fields are unreadable.
-func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, ref commonv1.SecretStoreRefSpec) (server, mountPath string) {
+// ClusterSecretStore by name, or a namespaced SecretStore in namespace) so the
+// caller cannot drift from the store the rest of the stack uses. Callers pass
+// the store to resolve against explicitly: the DB-credential generator resolves
+// against the control plane's effective store, whereas the per-tenant-store
+// sub-reconciler resolves against the SHARED cluster store (the tenant store
+// cannot describe its own bootstrap). Falls back to the documented defaults
+// when the store or the fields are unreadable.
+func openBaoConnectionFor(ctx context.Context, c client.Client, namespace string, ref commonv1.SecretStoreRefSpec) (server, mountPath string) {
 	server = openBaoDefaultServer
 	mountPath = openBaoDefaultKubernetesMount
 
 	var provider *esov1.SecretStoreProvider
 	if ref.Kind == commonv1.SecretStoreKindNamespaced {
 		store := &esov1.SecretStore{}
-		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: cp.Namespace}, store); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: namespace}, store); err != nil {
 			return server, mountPath
 		}
 		provider = store.Spec.Provider
@@ -864,7 +879,7 @@ func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3
 		// secrets.EffectiveStoreRef(nil)), so a non-namespaced kind resolves
 		// through the cluster-scoped store by name.
 		store := &esov1.ClusterSecretStore{}
-		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name}, store); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: ref.Name}, store); err != nil {
 			return server, mountPath
 		}
 		provider = store.Spec.Provider

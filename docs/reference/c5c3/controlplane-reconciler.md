@@ -1228,7 +1228,7 @@ The database is **managed** when the effective `clusterRef` is set and
   (`RefreshInterval` 24h, `Target.CreationPolicy: Owner`) drawing from that generator via
   `dataFrom.sourceRef.generatorRef` — **no** static `Data` refs and **no**
   `SecretStoreRef`. The generator's OpenBao server URL and Kubernetes-auth mount
-  are copied from the selected store's Vault provider by `openBaoConnection`
+  are copied from the selected store's Vault provider by `openBaoConnectionFor`
   (falling back to the documented defaults when unreadable), so the generator
   cannot drift from the store the rest of the stack uses. All Secret references
   are same-namespace (the generator is Namespaced), satisfying the OpenBao
