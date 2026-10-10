@@ -94,10 +94,13 @@ const serviceRemoveJobBackoffLimit int32 = 4
 // different halves of the configuration.
 const cinderVolumeConfigDir = "/etc/cinder/volume.conf.d"
 
-// Pod volume names of one volume service's two projected files.
+// Pod volume names of one volume service's projected files: the backend
+// section, the [DEFAULT] overlay, and the Ceph client configuration and keyring
+// an RBD backend mounts at /etc/ceph.
 const (
 	backendsVolumeName      = "backend"
 	volumeOverlayVolumeName = "volume-overlay"
+	cephVolumeName          = "ceph"
 )
 
 // The service-remove command, split at the host identity so the script test can
@@ -497,7 +500,14 @@ func (r *CinderReconciler) recordServiceRemoveTerminalState(ctx context.Context,
 
 // buildVolumeDeployment constructs the cinder-volume Deployment of one backend:
 // the workload volumes every process shares, the backend's own projected files,
-// and the export it serves its volumes from.
+// and what its driver reads its volumes through. An NFS backend mounts its
+// shares file beside the section and the export itself; an RBD backend mounts
+// no export, and its Ceph client configuration and keyring come from the same
+// projection Secret at /etc/ceph, under the names librados and the Ceph tools
+// look for. That Secret volume masks the /etc/ceph/rbdmap file ceph-common
+// ships, which nothing in the pod reads, and it keeps the default file mode of
+// the other projected Secrets: the pod runs one process as the service user, so
+// a tighter mode would protect the key from nobody.
 //
 // The replica count and the Recreate strategy come from spec.volume.deployment,
 // where the CEL rules pin them: two cinder-volume processes under one host
@@ -507,22 +517,22 @@ func buildVolumeDeployment(cinder *cinderv1alpha1.Cinder, backend backendProject
 	art configArtifacts, digests workloadDigests, egressPort int32,
 ) *appsv1.Deployment {
 	component := volumeComponent(backend.name)
-	shareVolume := shareVolumeName(backend.name)
 	volumes, mounts := cinderWorkloadVolumes(cinder, art)
 
+	backendItems := []corev1.KeyToPath{{Key: backendConfDataKey, Path: backendConfDataKey}}
+	if backend.backendType == cinderv1alpha1.CinderBackendTypeNFS {
+		// The file name the backend's nfs_shares_config option points at, which
+		// carries the backend name so the mount is readable in a process serving
+		// one backend.
+		backendItems = append(backendItems, corev1.KeyToPath{Key: sharesDataKey, Path: backend.name + ".shares"})
+	}
 	volumes = append(volumes,
 		corev1.Volume{
 			Name: backendsVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: backend.secretName,
-					Items: []corev1.KeyToPath{
-						{Key: backendConfDataKey, Path: backendConfDataKey},
-						// The file name the backend's nfs_shares_config option points at,
-						// which carries the backend name so the mount is readable in a
-						// process serving one backend.
-						{Key: sharesDataKey, Path: backend.name + ".shares"},
-					},
+					Items:      backendItems,
 				},
 			},
 		},
@@ -537,16 +547,35 @@ func buildVolumeDeployment(cinder *cinderv1alpha1.Cinder, backend backendProject
 				},
 			},
 		},
-		inlineNFSVolume(shareVolume, backend.server, backend.path, backend.mountOptions),
 	)
 	mounts = append(mounts,
 		corev1.VolumeMount{Name: backendsVolumeName, MountPath: cinderBackendsConfigDir, ReadOnly: true},
 		corev1.VolumeMount{Name: volumeOverlayVolumeName, MountPath: cinderVolumeConfigDir, ReadOnly: true},
-		corev1.VolumeMount{
+	)
+
+	switch backend.backendType {
+	case cinderv1alpha1.CinderBackendTypeNFS:
+		shareVolume := shareVolumeName(backend.name)
+		volumes = append(volumes, inlineNFSVolume(shareVolume, backend.server, backend.path, backend.mountOptions))
+		mounts = append(mounts, corev1.VolumeMount{
 			Name:      shareVolume,
 			MountPath: shareMountPath(nfsMountPointBase, backend.server, backend.path),
-		},
-	)
+		})
+	case cinderv1alpha1.CinderBackendTypeRBD:
+		volumes = append(volumes, corev1.Volume{
+			Name: cephVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: backend.secretName,
+					Items: []corev1.KeyToPath{
+						{Key: cephConfDataKey, Path: cephConfFile(backend.rbd.clusterName)},
+						{Key: keyringDataKey, Path: cephKeyringFile(backend.rbd.clusterName, backend.rbd.user)},
+					},
+				},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: cephVolumeName, MountPath: cephConfigDir, ReadOnly: true})
+	}
 
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      cinder.Namespace,

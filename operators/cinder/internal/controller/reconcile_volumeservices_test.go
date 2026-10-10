@@ -42,14 +42,30 @@ const (
 )
 
 // testBackendProjection returns what reconcileBackends hands the volume step for
-// one backend, carrying the mount options admission materializes.
+// one NFS backend, carrying the mount options admission materializes.
 func testBackendProjection(name string) backendProjection {
 	return backendProjection{
 		name:         name,
+		backendType:  cinderv1alpha1.CinderBackendTypeNFS,
 		server:       testShareServer,
 		path:         testSharePath,
 		mountOptions: cinderv1alpha1.DefaultNFSMountOptions,
 		secretName:   "cinder-backend-" + name + "-abc123",
+	}
+}
+
+// testRBDBackendProjection returns what reconcileBackends hands the volume step
+// for one RBD backend of the cluster ceph and the user cinder.
+func testRBDBackendProjection(name string) backendProjection {
+	return backendProjection{
+		name:        name,
+		backendType: cinderv1alpha1.CinderBackendTypeRBD,
+		rbd: &rbdProjection{
+			clusterName: "ceph",
+			user:        "cinder",
+			networks:    []string{"10.244.0.0/16"},
+		},
+		secretName: "cinder-backend-" + name + "-abc123",
 	}
 }
 
@@ -187,6 +203,59 @@ func TestBuildVolumeDeployment(t *testing.T) {
 	g.Expect(mounts["share-nfs"].MountPath).To(
 		Equal("/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f"))
 	g.Expect(mounts["share-nfs"].ReadOnly).To(BeFalse(), "the volume service writes the volumes")
+}
+
+// TestBuildVolumeDeployment_RBD covers the pod an RBD backend runs in: the
+// section and the overlay as for NFS, the Ceph client configuration and keyring
+// read-only at /etc/ceph under the names librados looks for, and no export.
+func TestBuildVolumeDeployment_RBD(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := workloadCinder()
+
+	deploy := buildVolumeDeployment(cinder, testRBDBackendProjection("rbd"), workloadArtifacts(),
+		workloadDigests{}, testEgressPort)
+	pod := deploy.Spec.Template.Spec
+	container := pod.Containers[0]
+
+	g.Expect(deploy.Name).To(Equal("cinder-volume-rbd"))
+	nfsDeploy := buildVolumeDeployment(cinder, testBackendProjection("nfs"), workloadArtifacts(),
+		workloadDigests{}, testEgressPort)
+	g.Expect(container.Command).To(Equal(nfsDeploy.Spec.Template.Spec.Containers[0].Command),
+		"both drivers read the same three config directories")
+	g.Expect(*pod.SecurityContext.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
+
+	volumes := map[string]corev1.Volume{}
+	for _, volume := range pod.Volumes {
+		g.Expect(volume.Name).NotTo(HavePrefix(shareVolumePrefix), "an RBD backend mounts no export")
+		g.Expect(volume.CSI).To(BeNil(), "an RBD backend mounts no export")
+		volumes[volume.Name] = volume
+	}
+	g.Expect(volumes[backendsVolumeName].Secret.SecretName).To(Equal("cinder-backend-rbd-abc123"))
+	g.Expect(volumes[backendsVolumeName].Secret.Items).To(Equal([]corev1.KeyToPath{
+		{Key: backendConfDataKey, Path: backendConfDataKey},
+	}), "an RBD backend has no shares file")
+	g.Expect(volumes[volumeOverlayVolumeName].Secret.Items).To(Equal([]corev1.KeyToPath{
+		{Key: volumeOverlayDataKey, Path: volumeOverlayDataKey},
+	}))
+	g.Expect(volumes).To(HaveKey(cephVolumeName))
+	g.Expect(volumes[cephVolumeName].Secret.SecretName).To(Equal("cinder-backend-rbd-abc123"),
+		"the Ceph files come from the same content-hashed Secret, so a new key rolls the pod")
+	g.Expect(volumes[cephVolumeName].Secret.Items).To(Equal([]corev1.KeyToPath{
+		{Key: cephConfDataKey, Path: "ceph.conf"},
+		{Key: keyringDataKey, Path: "ceph.client.cinder.keyring"},
+	}))
+	g.Expect(volumes[cephVolumeName].Secret.DefaultMode).To(BeNil(),
+		"the keyring keeps the default mode of the other projected Secrets")
+
+	mounts := map[string]corev1.VolumeMount{}
+	for _, mount := range container.VolumeMounts {
+		mounts[mount.Name] = mount
+	}
+	g.Expect(mounts[backendsVolumeName].MountPath).To(Equal("/etc/cinder/backends.conf.d"))
+	g.Expect(mounts[volumeOverlayVolumeName].MountPath).To(Equal("/etc/cinder/volume.conf.d"))
+	g.Expect(mounts[cephVolumeName]).To(Equal(corev1.VolumeMount{
+		Name: cephVolumeName, MountPath: "/etc/ceph", ReadOnly: true,
+	}))
 }
 
 // TestReconcileVolumeServices_ProjectsEveryBackend covers the steady state: one
