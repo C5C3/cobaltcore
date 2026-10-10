@@ -21,11 +21,16 @@
 #   L3  every service with a tests/e2e/<svc>/basic-deployment suite covers every
 #       release (the plain suite pins the default release, a
 #       basic-deployment-<slug> variant each other one), variants pin their own
-#       release, every release pin in the tests/e2e*/ fixture trees resolves, and
-#       the placed-services pins match the ci.yaml e2e-multicluster preloads
+#       release, every release pin in the tests/e2e*/ fixture trees resolves
+#       (the below-floor rejection fixtures of the invalid-* corpora, which
+#       must name a release that has no releases/ directory, are exempt; L8
+#       checks them), and the placed-services pins match the ci.yaml
+#       e2e-multicluster preloads
 #   L4  every default-release reference (deploy/kind ControlPlane, deploy-infra
-#       preload, ${VAR:-YYYY.N} fallbacks in hack/, image tags in ci.yaml)
-#       points at an existing releases/<version>/ directory
+#       preload, ${VAR:-YYYY.N} fallbacks and the ci-run-tempest.sh slug
+#       fallbacks in hack/, image tags in ci.yaml, the kind fake compute, the
+#       metal-stack lab manifests) points at an existing releases/<version>/
+#       directory, and the fake compute's nova tags equal the kind default
 #   L5  the Renovate regression tests and the per-release renovate.json
 #       packageRules reference only existing releases/ paths
 #   L6  every release-upgrade / upgrade-flow suite tests the newest sequential
@@ -36,6 +41,12 @@
 #   L7  the release version pattern stays in lockstep across every
 #       OpenStackRelease CRD marker, the ControlPlane webhook regexp,
 #       release.ParseRelease, and the generated CRD YAMLs
+#   L8  the release floor (release.MinimumSupported) is the oldest wired
+#       release (ALLOW_FLOOR_LAG=1 turns a floor one release below it, the
+#       state between steps 2 and 3 of a retirement, into an [INFO]), and
+#       every *-openstackrelease-below-floor.yaml and
+#       *-image-tag-below-floor.yaml rejection fixture pins its own field
+#       below the floor and names only wired releases elsewhere
 #
 # Defers structural validation of the release config files to
 # tests/container-images/verify_release_config.sh and the shell unit tests
@@ -93,7 +104,7 @@ noncomment() { grep -hvE '^[[:space:]]*#' "$@" 2>/dev/null || true; }
 # pins_of — one "<what> <YYYY.N>" line per release pin in the stdin lines.
 # <what> is the field name (tag, openStackRelease, installedRelease) or, for a
 # ghcr.io/c5c3/<image>:<YYYY.N> ref, the image name. A suffixed tag
-# (2025.2-upgraded) reports its release base.
+# (2026.1-upgraded) reports its release base.
 pins_of() {
   grep -oE '(^|[^A-Za-z])(tag|openStackRelease|installedRelease):[[:space:]]*"?[0-9]{4}\.[12]|ghcr\.io/c5c3/[a-z0-9_-]+:[0-9]{4}\.[12]' \
     | sed -E 's/^[^A-Za-z]*//; s|^ghcr\.io/c5c3/||; s/:[[:space:]]*"?/ /' || true
@@ -483,9 +494,17 @@ shopt -u nullglob
 
 # Every release pin in the chainsaw fixture trees resolves. This is the sweep a
 # retired release leaves behind (fixtures, helper CRs, tempest client images).
-# The two fixtures that must name a non-wired release are checked in L6.
-PIN_FILES="$(find tests/e2e*/ -type f -name '*.yaml' \
+# The two upgrade fixtures that must name a non-wired release are checked in
+# L6. A below-floor rejection fixture of an invalid-* corpus must name a release
+# below release.MinimumSupported, which has no directory, so L8 checks those
+# (FLOOR_FIXTURES). They are matched by their two name shapes: glance's
+# 23-imagecache-interval-below-floor.yaml shares the suffix but pins a wired
+# release and stays in this sweep.
+FLOOR_FIXTURE_RE='^tests/e2e/[^/]+/invalid-[^/]+/[^/]+-(openstackrelease|image-tag)-below-floor\.yaml$'
+E2E_FILES="$(find tests/e2e*/ -type f -name '*.yaml' \
   ! -name '*-patch-skip-level.yaml' ! -name '*-patch-stuck-upgrade.yaml' 2>/dev/null | sort)"
+FLOOR_FIXTURES="$(printf '%s\n' "${E2E_FILES}" | grep -E "${FLOOR_FIXTURE_RE}" || true)"
+PIN_FILES="$(printf '%s\n' "${E2E_FILES}" | grep -vE "${FLOOR_FIXTURE_RE}" || true)"
 sweep="$(printf '%s\n' "${PIN_FILES}" | release_pins_list | awk '{print $2}' | sort | uniq -c)"
 while read -r n v; do
   [[ -z "${v}" ]] && continue
@@ -579,6 +598,36 @@ while IFS= read -r line; do
   v="$(echo "${line}" | sed -nE 's/.*:-([0-9]{4}\.[12])\}.*/\1/p')"
   check_ref "${f}" "${v}" "${var} fallback"
 done <<< "${other_fallbacks}"
+
+# hack/ci-run-tempest.sh falls back to the default release's Tempest directory
+# and CR name when the CI matrix passes neither.
+f=hack/ci-run-tempest.sh
+v="$(slug_to_ver "$(noncomment "${f}" | sed -nE 's/.*CONFIG_DIR:-tests\/tempest\/\$\{SERVICE\}-([0-9]{4}-[12]).*/\1/p' | first)")"
+check_ref "${f}" "${v}" "CONFIG_DIR fallback"
+v="$(slug_to_ver "$(noncomment "${f}" | sed -nE 's/.*SERVICE_K8S_NAME:-\$\{SERVICE\}-tempest-([0-9]{4}-[12]).*/\1/p' | first)")"
+check_ref "${f}" "${v}" "SERVICE_K8S_NAME fallback"
+
+# The kind fake compute runs the nova image of the kind ControlPlane's release,
+# so both of its nova refs must name that default.
+f=deploy/kind/fake-compute/fake-compute.yaml
+fc_tags="$(noncomment "${f}" | grep -oE 'ghcr\.io/c5c3/nova:[0-9]{4}\.[12]' | sed 's/.*://' || true)"
+if [[ -z "${fc_tags}" ]]; then
+  fail "${f}: could not extract the nova image tags — the reference shape changed, update this audit"
+else
+  while read -r v; do
+    check_ref "${f}" "${v}" "nova image tag"
+    if [[ -n "${DEFAULT_RELEASE}" && "${v}" != "${DEFAULT_RELEASE}" ]]; then
+      fail "${f}: nova image tag \"${v}\" is not the kind ControlPlane default \"${DEFAULT_RELEASE}\""
+    fi
+  done <<< "${fc_tags}"
+fi
+
+# The metal-stack lab may lag the kind default (decision D4 of #1321), so its
+# manifests only have to name a wired release.
+for f in deploy/lab/metal-stack/controlplane/controlplane-lab.yaml \
+         deploy/lab/metal-stack/hypervisor/compute.yaml; do
+  check_ref "${f}" "$(first_pin openStackRelease "${f}")" "openStackRelease"
+done
 
 # Image tags of the form <name>:<YYYY.N> hard-coded in ci.yaml (upgrade
 # re-tagging, kind image preloads). Colon-anchored so prose dates do not match.
@@ -777,6 +826,66 @@ if grep -q 'minor != 1 && minor != 2' "${RELEASE_GO}"; then
   pass "${RELEASE_GO} enforces the two-releases-per-year minor set {1,2}"
 else
   fail "${RELEASE_GO} minor-version guard changed — verify it still matches the [12] pattern class"
+fi
+
+# ---------------------------------------------------------------------------
+# L8 — the release floor is the oldest wired release
+# ---------------------------------------------------------------------------
+hdr "L8: release floor (internal/common/release MinimumSupported) is the oldest wired release"
+
+floor="$(sed -nE 's/.*MinimumSupported = Release\{Year: ([0-9]{4}), Minor: ([12]).*/\1.\2/p' "${RELEASE_GO}" | first)"
+oldest="$(echo "${RELEASES}" | first)"
+# A retirement removes releases/<old>/ one pull request before it moves the
+# floor (docs/contributing/adding-a-new-release.md). On disk that state looks
+# like a retirement whose floor move was forgotten, so a floor one release
+# below the oldest wired release is an [INFO] only when the step-2 pull request
+# sets ALLOW_FLOOR_LAG=1. A floor further behind is never that state.
+if [[ -z "${floor}" ]]; then
+  fail "${RELEASE_GO}: could not extract MinimumSupported — the reference shape changed, update this audit"
+elif [[ "${floor}" > "${oldest}" ]]; then
+  fail "release floor ${floor} is above the oldest wired release ${oldest} — the webhooks reject a wired release; the floor was moved before the release was removed"
+elif [[ "${floor}" < "${oldest}" ]]; then
+  if [[ "$(next_release "${floor}")" != "${oldest}" ]]; then
+    fail "release floor ${floor} lags the oldest wired release ${oldest} by more than one release — move release.MinimumSupported to ${oldest}; no single retirement leaves this state"
+  elif [[ "${ALLOW_FLOOR_LAG:-0}" == 1 ]]; then
+    info "release floor ${floor} lags the oldest wired release ${oldest} (ALLOW_FLOOR_LAG=1) — it admits a release with no catalogs or images until step 3 of the retirement moves it"
+  else
+    fail "release floor ${floor} lags the oldest wired release ${oldest} — move release.MinimumSupported (step 3 of the retirement); on the step-2 pull request rerun with ALLOW_FLOOR_LAG=1"
+  fi
+else
+  pass "release floor ${floor} (${RELEASE_GO} MinimumSupported) is the oldest wired release"
+fi
+
+# Every release-floor rejection fixture pins the field it is named for below
+# the floor: openStackRelease, or the image tag (the lowest one decides, since
+# a ControlPlane may carry several images). Every other pin names a wired
+# release, so the fixture trips the floor rule and no other.
+if [[ -z "${FLOOR_FIXTURES}" ]]; then
+  info "no *-below-floor.yaml fixtures found"
+elif [[ -n "${floor}" ]]; then
+  while IFS= read -r fx; do
+    case "${fx}" in
+      *-openstackrelease-below-floor.yaml) field=openStackRelease ;;
+      *) field=tag ;;
+    esac
+    pins="$(release_pins "${fx}" | sort -u)"
+    lowest="$(echo "${pins}" | awk -v f="${field}" '$1 == f {print $2}' | first)"
+    if [[ -z "${lowest}" ]]; then
+      fail "${fx}: below-floor fixture carries no ${field} pin"
+    elif [[ "${lowest}" < "${floor}" ]]; then
+      pass "${fx}: ${field} ${lowest} is below the floor ${floor}"
+    else
+      fail "${fx}: ${field} ${lowest} is not below the floor ${floor}"
+    fi
+    while read -r what v; do
+      [[ -z "${v}" ]] && continue
+      if release_exists "${v}"; then
+        pass "${fx}: ${what} ${v} exists under releases/"
+      else
+        fail "${fx}: ${what} ${v} has no releases/${v}/ directory — only the ${field} pin may name an unwired release"
+      fi
+    done <<< "$(echo "${pins}" | awk -v f="${field}" -v l="${lowest}" '!($1 == f && $2 == l)')"
+  done <<< "${FLOOR_FIXTURES}"
 fi
 
 # ---------------------------------------------------------------------------
