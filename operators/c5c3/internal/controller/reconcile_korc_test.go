@@ -22,6 +22,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,7 +50,8 @@ import (
 
 const testAdminPassword = "super-secret-admin-password"
 
-// korcTestScheme registers c5c3, client-go, K-ORC, and ESO types.
+// korcTestScheme registers c5c3, client-go, K-ORC, ESO and mariadb-operator
+// types.
 func korcTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -70,6 +72,9 @@ func korcTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := esgenv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding ESO generators v1alpha1 scheme: %v", err)
+	}
+	if err := mariadbv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding mariadb-operator scheme: %v", err)
 	}
 	return s
 }

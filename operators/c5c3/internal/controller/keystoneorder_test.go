@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,7 +42,9 @@ import (
 )
 
 // orderFakeClient builds a fake client with the status subresources of the
-// order kinds, which the reconcilers write through Status().Update. The K-ORC
+// order kinds, which the reconcilers write through Status().Update, and of the
+// mariadb-operator Database and the ESO ExternalSecret, whose status an apply
+// must leave alone as the API server does. The K-ORC
 // kinds carry no status subresource, so a test seeds and edits their status in
 // place.
 func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Object) client.Client {
@@ -48,7 +52,8 @@ func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Obje
 	b := fake.NewClientBuilder().WithScheme(korcTestScheme(t)).WithObjects(objs...).
 		WithStatusSubresource(&c5c3v1alpha1.KeystoneUser{}, &c5c3v1alpha1.KeystoneProject{},
 			&c5c3v1alpha1.KeystoneRoleAssignment{}, &c5c3v1alpha1.KeystoneCatalogEntry{},
-			&c5c3v1alpha1.KeystoneApplicationCredential{})
+			&c5c3v1alpha1.KeystoneApplicationCredential{}, &c5c3v1alpha1.MariaDBDatabase{},
+			&mariadbv1alpha1.Database{}, &esov1.ExternalSecret{})
 	if funcs != nil {
 		b = b.WithInterceptorFuncs(*funcs)
 	}
