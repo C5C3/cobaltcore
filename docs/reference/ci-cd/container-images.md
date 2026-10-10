@@ -355,7 +355,7 @@ tests in `glance/tests/unit/test_store_image.py` never reach
 `_construct_s3_url`. The patch therefore carries no test hunk. Upstream
 status: not yet proposed.
 
-Glance 33.0.0 (2026.2) carries no patch, because it removed `_construct_s3_url`
+Glance 33.0.0 (2026.2) carries no twin of that patch, because it removed `_construct_s3_url`
 together with the comparison it fed. Its `_update_s3_location_credentials`
 runs on every image read and strips the credentials a legacy location URL
 embeds, rewriting the location to the credential-free form the S3 driver of
@@ -364,6 +364,29 @@ keeps its embedded credentials. During a 2026.1 → 2026.2 rolling update the
 patched 2026.1 pods, whose glance_store 5.4.0 reads the credentials from the
 URL, put them back on each read and log "S3 URL mismatch", so a location can
 flip back and forth until the last 2026.1 pod is gone.
+
+**Source patch:**
+`patches/glance/2026.2/0001-test-new-image-with-location-do-not-rely-on-dns-resolution.patch`
+carries upstream commit `a37c43135e` (master, 2026-09-28), cherry-picked to
+stable/2026.2 as `a3e5f490b7` (2026-09-30), until a glance tag contains it;
+33.0.0 is the newest 33.x tag as of 2026-10-10. The test
+`TestImageFactory.test_new_image_with_location` in
+`glance/tests/unit/test_store_image.py` builds an image whose location is
+`http://storeurl.com/container/<uuid>`. Glance 33.0.0 added an SSRF filter for
+HTTP(S) locations: `_check_location_uri` (`glance/location.py`) calls
+`store_utils.validate_external_location`, which hands `http` and `https`
+locations to `validate_uri` (`glance/common/utils.py`), and
+`get_validated_address` resolves the host with `socket.getaddrinfo`. The
+domain `storeurl.com` answers NXDOMAIN since about 2026-10-09, the lookup
+raises `socket.gaierror`, and the test fails with `BadStoreUri: Invalid
+location` before any store backend runs. A suite that resolves a public host
+cannot pass without DNS either. The patch mocks
+`glance.common.utils.socket.getaddrinfo` for that one test and returns a
+single fake address; the hunk is the upstream one verbatim, so the patch
+reverse-applies on the first tag that contains the commit and is retired on
+that Renovate bump. It changes a test module only, nothing in the built image,
+so `verify_glance.sh` carries no assertion for it. There is no 2026.1 twin:
+glance 32.0.0 has no `validate_uri`, so the test never resolves the host there.
 
 `tests/container-images/verify_glance.sh` Test 12 drives the repair the built
 image carries, under an `http://` and an `https://` host. On 2025.2 and 2026.1
@@ -383,7 +406,12 @@ that carries neither function fails the test.
 - `glance-manage` and `glance-api` CLIs available via `PATH`
 
 **Unit tests:** glance ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
-runs its suite under stestr (the default path, as for keystone).
+runs its suite under stestr (the default path, as for keystone). No release
+carries an exclude file. The first CI run of the 33.0.0 suite counted 2,423
+tests with the one `test_new_image_with_location` failure the source patch
+above removes; a run of the patched tree in the venv-builder container
+(local, arm64, 2026-10-10) counted 2,423 tests and passed with no failure:
+2,422 passed, 1 skipped.
 
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store

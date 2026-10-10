@@ -21,8 +21,9 @@ A downstream patch changes the upstream source **before** it is installed
 into the service image. It is the last resort: a fix in the operator, a
 config option, or a newer upstream tag is always preferable, because every
 patch has to be carried through every Renovate tag bump until upstream ships
-it. The repository carries six today (cinder 0001–0003, glance 0001, per
-release); `check-image-patches.sh` lists them.
+it. The repository carries seven today (cinder 0001–0003 for 2026.1 and
+0001–0002 for 2026.2, glance 0001 per release); `check-image-patches.sh`
+lists them.
 
 ## How a patch reaches an image
 
