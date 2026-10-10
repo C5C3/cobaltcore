@@ -40,6 +40,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystoneapplicationcredentials
               - keystonecatalogentries
               - keystoneprojects
               - keystoneroleassignments
@@ -58,6 +59,7 @@ tests:
             resources:
               - controlplanes/status
               - credentialrotations/status
+              - keystoneapplicationcredentials/status
               - keystonecatalogentries/status
               - keystoneprojects/status
               - keystoneroleassignments/status
@@ -74,6 +76,7 @@ tests:
               - c5c3.io
             resources:
               - controlplanes/finalizers
+              - keystoneapplicationcredentials/finalizers
               - keystonecatalogentries/finalizers
               - keystoneprojects/finalizers
               - keystoneroleassignments/finalizers
@@ -87,6 +90,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - keystoneapplicationcredentials
               - keystonecatalogentries
               - keystoneprojects
               - keystoneroleassignments

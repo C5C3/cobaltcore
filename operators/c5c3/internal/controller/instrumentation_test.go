@@ -141,6 +141,7 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	for _, list := range [][]string{
 		subConditionTypes, keystoneServiceSubConditionTypes, keystoneUserSubConditionTypes,
 		keystoneProjectSubConditionTypes, keystoneRoleAssignmentSubConditionTypes, keystoneCatalogEntrySubConditionTypes,
+		keystoneApplicationCredentialSubConditionTypes,
 	} {
 		for _, ct := range list {
 			known[ct] = struct{}{}
@@ -154,6 +155,15 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 				"keystoneServiceSubConditionTypes and the order kinds' lists — update the lists or "+
 				"fix the mapping", name, condType)
 	}
+}
+
+// TestSubReconcilerConditionTypes_KeystoneApplicationCredentialLegs pins the
+// two legs of the credential order kind to the conditions they drive.
+func TestSubReconcilerConditionTypes_KeystoneApplicationCredentialLegs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("KeystoneApplicationCredentialProvision", "CredentialReady"))
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("KeystoneApplicationCredentialDelivery", "DeliveryReady"))
 }
 
 // TestInstrumenterInstrument_KeystoneServiceLabelPairs proves the two

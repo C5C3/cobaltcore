@@ -87,6 +87,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - c5c3.io
   resources:
   - controlplanes/finalizers
+  - keystoneapplicationcredentials/finalizers
   - keystonecatalogentries/finalizers
   - keystoneprojects/finalizers
   - keystoneroleassignments/finalizers
@@ -99,6 +100,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - controlplanes/status
   - credentialrotations/status
+  - keystoneapplicationcredentials/status
   - keystonecatalogentries/status
   - keystoneprojects/status
   - keystoneroleassignments/status
@@ -111,6 +113,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
 - apiGroups:
   - c5c3.io
   resources:
+  - keystoneapplicationcredentials
   - keystonecatalogentries
   - keystoneprojects
   - keystoneroleassignments
