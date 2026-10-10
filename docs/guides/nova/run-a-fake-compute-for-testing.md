@@ -48,7 +48,7 @@ overlay and the Deployment that mounts it beside the contract Secret:
 
 The names assume the quick start's ControlPlane. For a ControlPlane named `<cp>`,
 replace every `controlplane-` prefix in the file with `<cp>-`, and for a release
-other than `2025.2` set both image tags to that release.
+other than `2026.1` set both image tags to that release.
 
 Three settings in the manifest make a compute run without a hypervisor:
 

@@ -155,12 +155,12 @@ metadata:
   name: placement
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   deployment:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/placement
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
@@ -186,13 +186,13 @@ resolves it from inside the pod, not from your browser. The gateway hostname has
 to be `placement.127-0-0-1.nip.io`: that is the one the devstack's `openstack-gw`
 terminates TLS for, with a cert-manager certificate issued for that name.
 
-The first reconcile pulls `ghcr.io/c5c3/placement:2025.2` onto the kind node. To
+The first reconcile pulls `ghcr.io/c5c3/placement:2026.1` onto the kind node. To
 take that out of the critical path, load the image the way the Quick Start loads
 Keystone's:
 
 ```bash
-docker pull ghcr.io/c5c3/placement:2025.2
-kind load docker-image ghcr.io/c5c3/placement:2025.2 --name cobaltcore
+docker pull ghcr.io/c5c3/placement:2026.1
+kind load docker-image ghcr.io/c5c3/placement:2026.1 --name cobaltcore
 ```
 
 ```bash

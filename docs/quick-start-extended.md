@@ -422,7 +422,7 @@ registry mirror (`/etc/containerd/certs.d/<host>/hosts.toml`). Each registry is
 backed by a persistent Docker volume, so the cache survives `kind delete` and
 recreate cycles. It is fully transparent: no `spec.image` or chart `image:`
 edits, no `localhost:5000/...` rewrites. A
-workload referencing `ghcr.io/c5c3/keystone:2025.2` is served from the local
+workload referencing `ghcr.io/c5c3/keystone:2026.1` is served from the local
 cache on the second pull, and the distribution proxy streams each blob from
 the upstream while caching it inline, so even the first (cold) pull runs at
 roughly origin speed. Mirror entries advertise `pull` + `resolve` capabilities,
@@ -724,7 +724,7 @@ Set the release you want to work with. The default is the most recent release; u
 whenever a new release is available:
 
 ```bash
-RELEASE=2025.2   # update to the target release
+RELEASE=2026.1   # update to the target release
 ```
 
 ### Option A — Pull from GHCR (recommended)
@@ -782,7 +782,7 @@ operator creates and manages the MariaDB database (via `clusterRef`) and configu
 for session caching. The `spec.gateway` block attaches the Keystone API to the
 `openstack-gw` Gateway provisioned in Step 2b, so the service is reachable at
 `https://keystone.127-0-0-1.nip.io/v3` from your workstation with no port-forward.
-Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2025.2`):
+Replace `<RELEASE>` with the same value used in Step 6 (e.g. `2026.1`):
 
 ```yaml
 # keystone.yaml
@@ -796,7 +796,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6
+    tag: "<RELEASE>"   # e.g. 2026.1, must match the image loaded in Step 6
   database:
     clusterRef:
       name: openstack-db
@@ -856,7 +856,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6
+    tag: "<RELEASE>"   # e.g. 2026.1, must match the image loaded in Step 6
   database:
     clusterRef:
       name: openstack-db
@@ -1210,9 +1210,9 @@ SERVICE=keystone hack/run-tempest.sh
 
 The script handles everything automatically:
 
-1. Builds the Tempest container image from the pinned versions in `releases/2025.2/test-refs.yaml`
+1. Builds the Tempest container image from the pinned versions in `releases/2026.1/test-refs.yaml`
 2. Establishes a port-forward to the Keystone API (skipped if one is already running)
-3. Runs the identity tests defined in `tests/tempest/keystone-2025-2/`
+3. Runs the identity tests defined in `tests/tempest/keystone-2026-1/`
 
 Results land in `_output/tempest/`:
 

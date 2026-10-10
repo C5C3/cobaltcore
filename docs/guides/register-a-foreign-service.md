@@ -279,7 +279,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: osc
-          image: ghcr.io/c5c3/tempest:2025.2
+          image: ghcr.io/c5c3/tempest:2026.1
           env:
             - name: OS_CLIENT_CONFIG_FILE
               value: /etc/openstack/clouds.yaml

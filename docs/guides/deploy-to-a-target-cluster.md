@@ -52,7 +52,7 @@ the examples below resolve on the target: `openstack-db`,
    so that is where its image has to be:
 
    ```bash
-   RELEASE=2025.2
+   RELEASE=2026.1
    docker pull ghcr.io/c5c3/keystone:${RELEASE}
    kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore-target
    ```
@@ -229,7 +229,7 @@ spec:
     replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db

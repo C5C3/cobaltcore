@@ -567,10 +567,10 @@ metadata:
   name: neutron-agent
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/neutron
-    tag: "2025.2"
+    tag: "2026.1"
   chassisRef:
     name: neutron-agent-chassis
 ```

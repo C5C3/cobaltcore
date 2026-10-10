@@ -343,10 +343,10 @@ metadata:
   name: cinder
   namespace: openstack
 spec:
-  openStackRelease: "2025.2"
+  openStackRelease: "2026.1"
   image:
     repository: ghcr.io/c5c3/cinder
-    tag: "2025.2"
+    tag: "2026.1"
   database:
     clusterRef:
       name: openstack-db
