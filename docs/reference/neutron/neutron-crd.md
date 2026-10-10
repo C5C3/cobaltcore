@@ -45,7 +45,7 @@ of the fields below the plane fills and which it leaves to this CR.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release the operator deploys and drives. It governs install and upgrade release tracking: `status.installedRelease` is promoted to this value after a successful db-sync. The pattern admits the `YYYY.N` cadence with `N` in {1, 2}, the same class the validating webhook and `release.ParseRelease` accept, so a non-cadence minor is rejected at every layer. Kept separate from the image tag so a digest-pinned image still names a schema |
+| `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release the operator deploys and drives. It governs install and upgrade release tracking: `status.installedRelease` is promoted to this value after a successful db-sync. The pattern admits the `YYYY.N` cadence with `N` in {1, 2}, the same class the validating webhook and `release.ParseRelease` accept, so a non-cadence minor is rejected at every layer. Kept separate from the image tag so a digest-pinned image still names a schema. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
 | `deployment` | [`commonv1.DeploymentSpec`](../keystone/keystone-crd.md#deploymentspec) | no | `{}` | Pod-level knobs of the API Deployment: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)). It is also the fallback of `spec.jobs` |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the Neutron API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*commonv1.JobSpec`](../keystone/keystone-crd.md#jobspec) | no | `nil` | Sizes, prioritizes and places the pods of the db-sync Job, the db-expand, db-migrate and db-contract upgrade phases, and the ovn-db-sync CronJob. A field left unset falls back to `spec.deployment`. Unset resources default to a `70m` CPU request and `368Mi` memory as request and limit; ovn-db-sync gets the request floor instead (see [OVNDBSyncSpec](#ovndbsyncspec)) |
@@ -515,6 +515,20 @@ Secret store, target cluster and logging:
 | --- | --- |
 | `invalid cron expression: %v` | `spec.ovnDBSync.schedule` is non-empty and `cron.ParseStandard` refuses it. The argument is the parser's own error. An empty schedule is not parsed, since it resolves the operator default |
 | `field.NotSupported` on `spec.ovnDBSync.syncMode`, listing `log` and `repair` | A mode outside the enum, re-checked here for an object that bypassed the schema |
+
+The release floor, which has no schema counterpart. The CRD pattern admits any
+release of the `YYYY.N` cadence, and the floor moves with the operator version:
+
+| Message | Trigger |
+| --- | --- |
+| `must be 2026.1 or later: this operator version no longer supports OpenStack releases below 2026.1` | `spec.openStackRelease` names a release below `2026.1`, the oldest this operator version supports, on create or when an update changes it. A change from one release below the floor to another is rejected too |
+
+An update that keeps a stored value below the floor is admitted with a warning,
+so an unrelated edit never blocks the resource:
+
+```text
+spec.openStackRelease %q is below 2026.1, the oldest OpenStack release this operator version supports; the unchanged value is admitted, but the operator renders the 2026.1 configuration for it. Set spec.openStackRelease to 2026.1 or later.
+```
 
 `spec.extraConfig` is a preserve-unknown-fields map CEL cannot constrain, so
 every guard on it is the webhook's alone:

@@ -25,7 +25,7 @@ part of this spec. Volume backends attach through
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` in {1,2}). It governs install and upgrade tracking: `status.installedRelease` is promoted to it after a successful migration. Kept separate from the image tag so a digest-pinned image still resolves a schema |
+| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` in {1,2}). It governs install and upgrade tracking: `status.installedRelease` is promoted to it after a successful migration. Kept separate from the image tag so a digest-pinned image still resolves a schema. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
 | `image` | `ImageSpec` | yes | The container image every process runs: API, scheduler, volume, backup, and the migration, purge and service-remove Jobs. Exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. The rules are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached. Exactly one of `clusterRef` (managed) or `servers` (brownfield). It backs `[keystone_authtoken] memcached_servers`. The `[coordination]` lock backend is the tooz file driver below `/var/lib/cinder`, not Memcached |
@@ -250,6 +250,18 @@ version already admitted, including the finalizer-removal update that completes
 its deletion. Such a grandfathered CR still reconciles: the operator collapses
 the overflowing tail onto a content-stable hash and names the CronJob
 `{truncated}-{hash}-db-purge`.
+
+The validating webhook also holds `spec.openStackRelease` to a release floor,
+a rule with no schema counterpart because the floor moves with the operator
+version. A value below `2026.1`, the oldest OpenStack release this operator
+version supports, is rejected on create and whenever an update changes it, with
+`must be 2026.1 or later: this operator version no longer supports OpenStack
+releases below 2026.1`. An update that keeps a stored value below the floor is
+admitted with a warning, so an unrelated edit never blocks the resource:
+`spec.openStackRelease "2025.2" is below 2026.1, the oldest OpenStack release
+this operator version supports; the unchanged value is admitted, but the
+operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
+2026.1 or later.`
 
 ## Rendered configuration
 

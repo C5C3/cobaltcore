@@ -26,7 +26,7 @@ stays close to the plain API-server shape.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). It governs install and upgrade schema tracking: `status.installedRelease` is promoted to this value after a successful db-sync. Kept separate from the image tag so digest-pinned images still resolve a schema. It also selects the `barbican-api-paste.ini` layout: from `2026.1` the rendered file carries the oslo `request_id` filter in every pipeline and drops the `repoze.profile` pipeline and filter |
+| `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). It governs install and upgrade schema tracking: `status.installedRelease` is promoted to this value after a successful db-sync. Kept separate from the image tag so digest-pinned images still resolve a schema. The rendered `barbican-api-paste.ini` carries the oslo `request_id` filter in every pipeline and no `repoze.profile` pipeline or filter on every supported release. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (resolved per resource when the pod is rendered: 70m CPU request, no CPU limit, and 720Mi memory request and limit at the default `spec.apiServer.uwsgi` counts, see the [resource defaults](../keystone/keystone-crd.md#resource-defaults)), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName`, and the node placement `nodeSelector`, `tolerations` and `affinity` (see [NodePlacementSpec](../keystone/keystone-crd.md#nodeplacementspec)) |
 | `deployment.verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | Opts the Barbican API Deployment into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). Rejected beside `spec.autoscaling`, which scales the same Deployment. On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `jobs` | [`*JobSpec`](../keystone/keystone-crd.md#jobspec) | no | Sizes, prioritizes and places the pods of the db-sync Job and the db-clean CronJob. A field left unset falls back to `spec.deployment`; unset resources default to a `70m` CPU request and `368Mi` memory as request and limit |
@@ -226,6 +226,18 @@ The catalog check re-runs on update only when one of its inputs changed
 (`spec.extraConfig` or `spec.openStackRelease`), so an unrelated edit such as a
 replica change cannot retroactively reject a CR whose `extraConfig` a
 regenerated catalog has since invalidated.
+
+The validating webhook also holds `spec.openStackRelease` to a release floor,
+a rule with no schema counterpart because the floor moves with the operator
+version. A value below `2026.1`, the oldest OpenStack release this operator
+version supports, is rejected on create and whenever an update changes it, with
+`must be 2026.1 or later: this operator version no longer supports OpenStack
+releases below 2026.1`. An update that keeps a stored value below the floor is
+admitted with a warning, so an unrelated edit never blocks the resource:
+`spec.openStackRelease "2025.2" is below 2026.1, the oldest OpenStack release
+this operator version supports; the unchanged value is admitted, but the
+operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
+2026.1 or later.`
 
 ## Status
 

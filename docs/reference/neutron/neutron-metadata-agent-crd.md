@@ -33,7 +33,7 @@ see [Target Clusters](../target-clusters.md).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release this agent runs. It selects the option catalog `spec.extraConfig` is validated against and nothing else: the agent installs no schema and tracks no installed release. The `[12]` minor class keeps the CRD pattern, the webhook and `release.ParseRelease` in agreement, so a non-cadence minor is rejected at every layer |
+| `openStackRelease` | `string` (Pattern `^\d{4}\.[12]$`) | yes | none | The OpenStack release this agent runs. It selects the option catalog `spec.extraConfig` is validated against and nothing else: the agent installs no schema and tracks no installed release. The `[12]` minor class keeps the CRD pattern, the webhook and `release.ParseRelease` in agreement, so a non-cadence minor is rejected at every layer. The validating webhook rejects a value below `2026.1`, the oldest supported release, on create and on change, and warns on an unchanged one. |
 | `image` | [`commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | yes | none | The Neutron container image the agent runs from. Required with no operator-resolved fallback: the agent is deployed next to an `OVNChassis` whose image this operator does not resolve, so there is no tested pairing to fall back on |
 | `chassisRef` | [`OVNChassisRef`](#ovnchassisref) | yes | none | The `OVNChassis` this agent runs alongside. It supplies the node selector, the tolerations, the client Secret its pods mount (`status.clientSecretName`) and, through that chassis's `OVNCentral`, the Southbound address. Immutable, enforced by a CEL transition rule and by the webhook |
 | `messaging` | [`commonv1.MessagingSpec`](../c5c3/controlplane-crd.md#messagingspec) pointer | no | `nil` | The RabbitMQ connection. Optional, because the agent opens no RPC and no notification connection of its own. It exists so a deployment can give the agent the same bus configuration the API pods carry: `config.init` calls `n_rpc.init` unconditionally, which parses oslo.messaging's default `rabbit://` URL without dialing it. When set, the agent gets the same `OS_DEFAULT__TRANSPORT_URL` override the API pods get, and the `[oslo_messaging_rabbit]` section is rendered |
@@ -282,6 +282,20 @@ Logging, through the shared logging validator:
 | `logger name must not be empty` | A `perLoggerLevels` entry keyed on the empty string |
 | `logger name must not contain a newline or carriage return: it is rendered verbatim into neutron_ovn_metadata_agent.ini, so a newline injects arbitrary config lines` | A logger name with a control character. The name renders into the `[DEFAULT] default_log_levels` CSV |
 | `level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL` | A `perLoggerLevels` value outside the set |
+
+The release floor, which has no schema counterpart. The CRD pattern admits any
+release of the `YYYY.N` cadence, and the floor moves with the operator version:
+
+| Message | Trigger |
+| --- | --- |
+| `must be 2026.1 or later: this operator version no longer supports OpenStack releases below 2026.1` | `spec.openStackRelease` names a release below `2026.1`, the oldest this operator version supports, on create or when an update changes it. A change from one release below the floor to another is rejected too |
+
+An update that keeps a stored value below the floor is admitted with a warning,
+so an unrelated edit never blocks the resource:
+
+```text
+spec.openStackRelease %q is below 2026.1, the oldest OpenStack release this operator version supports; the unchanged value is admitted, but the operator renders the 2026.1 configuration for it. Set spec.openStackRelease to 2026.1 or later.
+```
 
 `spec.extraConfig` is a preserve-unknown-fields map CEL cannot constrain, so
 every guard on it is the webhook's alone:

@@ -47,6 +47,18 @@ A CEL rule over `extraConfig` keys is not expressible (the API server cannot
 build CEL type information for preserve-unknown-fields map values), so the
 empty-key and `SECRET_KEY` guards are webhook-only.
 
+The validating webhook also holds `spec.image.tag` to a release floor when
+the tag parses as an OpenStack release; a digest-only image or a tag that names
+no release, such as `latest`, is skipped. A tag below `2026.1`, the oldest
+release this operator version supports, is rejected on create and whenever an
+update changes it, with `must be 2026.1 or later: this operator version no
+longer supports OpenStack releases below 2026.1`. An update that keeps a stored
+tag below the floor is admitted with a warning, so an unrelated edit never
+blocks the resource: `spec.image.tag "2025.2" is below 2026.1, the oldest
+OpenStack release this operator version supports; the unchanged value is
+admitted, but the operator renders the 2026.1 configuration for it. Set
+spec.image.tag to 2026.1 or later.`
+
 ### ExtraConfig ownership guard
 
 Beyond the rejected settings, the operator ships a registry of the
