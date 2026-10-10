@@ -1957,7 +1957,7 @@ is pinned by a Chainsaw step.
 | `vertical-autoscaling-update-mode-rejected` | `36-vertical-autoscaling-update-mode.yaml` | `updateMode` Enum | Error containing "spec.deployment.verticalAutoscaling.updateMode" and "Unsupported value" |
 | `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
 | `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
-| `image-tag-below-floor-rejected` | `39-image-tag-below-floor.yaml` | Release floor (webhook-only) | Error containing "image.tag" and "2026.1 or later" |
+| `image-tag-below-floor-rejected` | `39-image-tag-below-floor.yaml` | Release floor (webhook-only) | Error containing "image.tag" and "must be 2026.1 or later" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the
