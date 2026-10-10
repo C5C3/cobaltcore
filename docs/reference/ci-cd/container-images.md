@@ -765,9 +765,9 @@ and their dependencies, `python3-chardet` among them, into that directory, and
 the virtualenv imports none of them. The postinst of `ceph-common` adds the
 system user `ceph` (UID 64045) and the directories `/var/lib/ceph` (mode 0750)
 and `/var/log/ceph` (mode 3770), both owned by it. The service user 42424 can
-write neither. Where the client logs
-and whether it opens an admin socket is up to the `ceph.conf` the
-cinder-operator renders for an RBD backend (issue #1341). noble serves Ceph
+write neither. The `ceph.conf` the cinder-operator renders for an RBD backend
+sets `log_file = /dev/null` and an admin socket under `/tmp`, so the client
+writes neither to `/var/log/ceph` nor to `/var/run/ceph`. noble serves Ceph
 19.2.3 (Squid). Its `librbd` reads cephx keys of the classic `aes` type and not
 the `aes256k` keys a fresh Ceph Tentacle prefers. The cipher pin therefore
 belongs to the lab's Ceph (decision D7 of issue #1338), and the image does not

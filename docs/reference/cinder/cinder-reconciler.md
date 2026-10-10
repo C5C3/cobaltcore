@@ -61,7 +61,7 @@ draws that pattern with every step of the Keystone operator.
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `CinderAPIReady` |
 | HPA | Creates and deletes the HorizontalPodAutoscaler of the API Deployment | `HPAReady` |
 | VPA | [`reconcileVPA`](../keystone/keystone-reconciler.md#reconcilevpa) applies or removes the VerticalPodAutoscalers of the API, scheduler, volume and backup Deployments through the shared VPA flow; a detached backend or a removed backup target loses its VPA with its Deployment | `VPAReady` |
-| NetworkPolicy | Creates and deletes the NetworkPolicy (auto-derived egress, including the broker port and one rule for the NFS exports); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
+| NetworkPolicy | Creates and deletes the NetworkPolicy (auto-derived egress, including the broker port, one rule for the NFS exports and one rule for the networks the RBD backends name); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
 
 `DBConnectionSecret`, `TransportURLSecret` and `Config` reuse `SecretsReady`
 rather than a dedicated `ConfigReady` condition: all three produce artefacts
@@ -319,9 +319,13 @@ Beyond the owned set it watches:
 - Secrets, mapped to the Cinder CRs that reference them by name through the
   `spec.secretRefs.name` field index (the union of
   `spec.database.secretRef.name`, `spec.serviceUser.secretRef.name` and
-  `spec.messaging.secretRef.name`) or own them through an owner reference. There
-  is no satellite leg: an NFS export references no Secret, so no Secret event
-  can reach a Cinder through one.
+  `spec.messaging.secretRef.name`) or own them through an owner reference, and
+  to the parent Cinder of every `CinderBackend` whose key Secret they are,
+  through the CinderBackend `spec.secretRefs.name` field index
+  (`spec.rbd.keySecretRef.name`). A Secret an RBD backend references therefore
+  enqueues the backend's parent, so a rotated key re-renders the backend's
+  Secret and rolls its volume service. A Secret both legs match yields one
+  request.
 - MariaDB clusters referenced by `spec.database.clusterRef`, so an upstream
   database outage reflects in `DatabaseReady` without waiting for a periodic
   requeue.
@@ -335,7 +339,7 @@ Beyond the owned set it watches:
   signals. Both legs stay local, because a satellite is a management-plane CR
   and lives nowhere else.
 
-The Cinder reconciler registers all three field indexes at setup, so it has to
+The Cinder reconciler registers all four field indexes at setup, so it has to
 be set up before the two satellite controllers. Each satellite controller in
 turn watches its parent Cinder with no generation predicate: the rendered
 section landing in a Deployment is the wake signal its `ConfigProjected` gate
