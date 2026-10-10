@@ -11,13 +11,13 @@
 # message substring.
 #
 # Fixture categories:
-#   - Create-rejection fixtures (00-04, 07) are each applied once and rejected.
-#   - The cinderRef-immutability pair: 05-immutable-cinderref-base is the valid
-#     base CR applied first, and 06-immutable-cinderref is applied as an UPDATE
-#     that the CRD CEL transition rule (self == oldSelf, evaluated only on
-#     UPDATE) rejects. A type-immutability update fixture is deliberately
-#     absent: NFS is the only Phase-1 enum value, so a changed type is already
-#     rejected by the Enum marker.
+#   - Create-rejection fixtures (00-04, 07-16) are each applied once and
+#     rejected.
+#   - The immutability updates: 05-immutable-cinderref-base is the valid base
+#     CR applied first, and 06-immutable-cinderref (cinderRef) and
+#     17-immutable-type (NFS to RBD) are applied as UPDATEs of it that the CRD
+#     CEL transition rules (self == oldSelf, evaluated only on UPDATE) reject.
+#     Each rejection leaves the base in place for the next.
 #
 # To prevent scaffold drift across fixtures they are generated from a single
 # source of truth in `_generate.py`. After editing the canonical scaffold or
@@ -97,6 +97,15 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'cinderRef is immutable')): true
+  # type is immutable (CEL transition rule, UPDATE-only): the base is moved from
+  # NFS to a well-formed RBD backend, so the transition rule is what answers.
+  - try:
+    - apply:
+        file: 17-immutable-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type is immutable')): true
   # metadata.name plus spec.cinderRef.name past the shared 47-character budget
   # must be rejected by the webhook: the service-remove Job's name is copied
   # into a label value Kubernetes caps at 63 characters.
@@ -128,3 +137,66 @@ spec:
             ($error != null): true
             (contains($error, 'nfs.path')): true
             (contains($error, 'should match')): true
+  # ── RBD block ───────────────────────────────────────────────────────────
+  # type RBD without spec.rbd must be rejected (union rule, second half).
+  - try:
+    - apply:
+        file: 10-type-rbd-without-rbd-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backend block matching spec.type')): true
+  # type NFS carrying spec.rbd beside spec.nfs must be rejected (union rule).
+  - try:
+    - apply:
+        file: 11-type-nfs-with-rbd-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backend block matching spec.type')): true
+  # spec.rbd.user with the client. prefix must be rejected by the field-level
+  # CEL rule: the keyring section is client.<user>.
+  - try:
+    - apply:
+        file: 12-rbd-user-client-prefix.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'without its client. prefix')): true
+  # An empty spec.rbd.monitors must be rejected by MinItems.
+  - try:
+    - apply:
+        file: 13-rbd-monitors-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'monitors')): true
+            (contains($error, 'should have at least 1 items')): true
+  # A spec.rbd.networks entry that is no IPv4 CIDR must be rejected by the item
+  # pattern: each entry becomes an ipBlock peer.
+  - try:
+    - apply:
+        file: 14-rbd-network-not-cidr.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'networks')): true
+            (contains($error, 'should match')): true
+  # spec.rbd.keySecretRef.name must be a DNS-1123 subdomain.
+  - try:
+    - apply:
+        file: 15-rbd-key-secret-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keySecretRef.name')): true
+            (contains($error, 'should match')): true
+  # extraOptions on an RBD backend must not carry rbd_keyring_conf: the
+  # webhook's per-type denylist rejects it.
+  - try:
+    - apply:
+        file: 16-extraoptions-rbd-denylist.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "rbd_keyring_conf" is owned by')): true

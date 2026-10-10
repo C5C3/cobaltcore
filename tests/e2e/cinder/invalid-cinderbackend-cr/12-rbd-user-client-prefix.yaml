@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.rbd.user with the client. prefix violates the field-level CEL rule
+# on RBDBackendSpec.User: the value is the cephx name the driver passes as
+# --id and names the keyring section client.<user>, so the prefix would be
+# doubled. The webhook twin carries the same message; the schema answers
+# first.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-rbd-client-prefix
+spec:
+  cinderRef:
+    name: cinder
+  type: RBD
+  rbd:
+    pool: volumes
+    user: client.cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder

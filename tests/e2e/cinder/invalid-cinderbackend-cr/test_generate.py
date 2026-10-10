@@ -38,10 +38,12 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
 # Number of fixtures emitted by _generate.py: five create-rejection fixtures
 # (00-04), the cinderRef-immutability pair (05-base, 06-update), the two
-# name-bound fixtures (07 shared budget, 08 per-name) and the export-injection
-# fixture (09). Bumping this value requires adding the matching Fixture entry
-# AND the matching `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 10
+# name-bound fixtures (07 shared budget, 08 per-name), the export-injection
+# fixture (09), the seven RBD create-rejection fixtures (10-16) and the
+# type-immutability update of the 05 base (17). Bumping this value requires
+# adding the matching Fixture entry AND the matching `file: <name>` line in
+# chainsaw-test.yaml.
+_EXPECTED_FIXTURE_COUNT = 18
 
 # MaxBackendNamePlusCinderRef in
 # operators/cinder/api/v1alpha1/cinderbackend_webhook.go: the 63-character label

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the cinderbackend-immutable base CR (05) that changes spec.type
+# from NFS to RBD with a well-formed spec.rbd block. The spec-level CEL
+# transition rule (self.type == oldSelf.type) rejects the change on UPDATE:
+# the volumes already on the backend were created by the driver that would
+# be replaced. It is applied after 06, whose rejected update leaves the base
+# in place.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: cinderbackend-immutable
+spec:
+  cinderRef:
+    name: cinder-immutable
+  type: RBD
+  rbd:
+    pool: volumes
+    user: cinder
+    monitors:
+    - ceph-mon.openstack.svc.cluster.local
+    networks:
+    - 10.244.0.0/16
+    keySecretRef:
+      name: ceph-client-cinder
