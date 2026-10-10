@@ -57,7 +57,7 @@ compute service is deleted after the pod is gone.
 | `virtType` | `string` (Enum `kvm`, `qemu`) | no | `kvm` | `[libvirt] virt_type`. `qemu` runs guests without hardware acceleration |
 | `cpuMode` | `string` (Enum `host-model`, `host-passthrough`, `custom`, `none`) | no | none | `[libvirt] cpu_mode`. When empty the key is not rendered and Nova's default applies |
 | `cpuModels` | `[]string` (items `^[A-Za-z0-9_.-]+$`) | no | none | `[libvirt] cpu_models`, rendered comma-joined. Required with `cpuMode: custom` and refused otherwise |
-| `imagesType` | `string` (Enum `default`, `qcow2`, `raw`, `flat`) | no | none | `[libvirt] images_type`. When empty the key is not rendered. The `rbd`, `lvm` and `ploop` backends are not offered: the image carries neither a Ceph client nor `lvm2` |
+| `imagesType` | `string` (Enum `default`, `qcow2`, `raw`, `flat`) | no | none | `[libvirt] images_type`. When empty the key is not rendered. The `rbd`, `lvm` and `ploop` backends are not offered: `rbd` needs a Ceph credential contract the NovaCompute does not carry yet, and the image carries no `lvm2` |
 
 ### Changing the libvirt settings of a pool with servers
 

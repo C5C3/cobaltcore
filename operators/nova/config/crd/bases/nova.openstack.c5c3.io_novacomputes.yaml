@@ -156,8 +156,9 @@ spec:
                   imagesType:
                     description: |-
                       ImagesType is [libvirt] images_type. When empty the key is not rendered.
-                      The rbd, lvm and ploop backends are not offered: the compute image
-                      carries neither a Ceph client nor lvm2.
+                      The rbd, lvm and ploop backends are not offered: rbd needs a Ceph
+                      credential contract the NovaCompute does not carry yet, and the image
+                      carries no lvm2.
                     enum:
                     - default
                     - qcow2
