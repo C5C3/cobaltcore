@@ -24,7 +24,7 @@ func TestSchemeBuilderRegistersMariaDBDatabase(t *testing.T) {
 	}
 	// A kind the package does not define must not resolve, so the loop above
 	// cannot pass on a scheme that answers every lookup.
-	missing := schema.GroupVersionKind{Group: "c5c3.io", Version: "v1alpha1", Kind: "RabbitMQVhost"}
+	missing := schema.GroupVersionKind{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneGroup"}
 	if _, err := s.New(missing); err == nil {
 		t.Fatalf("scheme.New(%v) resolved a kind the package does not define", missing)
 	}
