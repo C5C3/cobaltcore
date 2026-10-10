@@ -504,4 +504,4 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'image.tag')): true
-            (contains($error, '2026.1 or later')): true
+            (contains($error, 'must be 2026.1 or later')): true
