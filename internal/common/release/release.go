@@ -25,14 +25,14 @@ type Release struct {
 
 // ParseRelease parses an OpenStack release version string in YYYY.N or YYYY.N-suffix format.
 // Returns an error for unparseable formats.
-// Valid examples: "2025.2", "2026.1", "2025.2-p1"
-// Invalid examples: "latest", "abc", "2025", "2025.2.3"
+// Valid examples: "2026.1", "2026.2", "2026.1-p1"
+// Invalid examples: "latest", "abc", "2025", "2026.1.3"
 func ParseRelease(tag string) (Release, error) {
 	if tag == "" {
 		return Release{}, fmt.Errorf("empty release tag")
 	}
 
-	// Separate optional patch suffix (e.g. "2025.2-p1" -> "2025.2", "p1").
+	// Separate optional patch suffix (e.g. "2026.1-p1" -> "2026.1", "p1").
 	base, patch, _ := strings.Cut(tag, "-")
 
 	// Parse YYYY.N from the base part.
@@ -67,8 +67,8 @@ func ParseRelease(tag string) (Release, error) {
 
 // IsSequentialUpgrade checks if upgrading from `from` to `to` is a valid sequential upgrade.
 // Sequential means exactly one release step forward in the OpenStack release numbering:
-//   - Same year, minor increments by 1: 2025.1 -> 2025.2
-//   - Year increments by 1, from.Minor=2 -> to.Minor=1: 2025.2 -> 2026.1
+//   - Same year, minor increments by 1: 2026.1 -> 2026.2
+//   - Year increments by 1, from.Minor=2 -> to.Minor=1: 2026.2 -> 2027.1
 //
 // OpenStack releases 2 versions per year: YYYY.1 and YYYY.2.
 // Patch suffix is ignored for sequential comparison.
@@ -90,7 +90,7 @@ func IsDowngrade(from, to Release) bool {
 }
 
 // IsPatchOnly checks if two releases differ only in their patch suffix.
-// e.g., 2025.2 -> 2025.2-p1 is patch-only. 2025.2 -> 2026.1 is not.
+// e.g., 2026.1 -> 2026.1-p1 is patch-only. 2026.1 -> 2026.2 is not.
 func IsPatchOnly(from, to Release) bool {
 	return from.Year == to.Year && from.Minor == to.Minor
 }
@@ -100,4 +100,20 @@ func IsPatchOnly(from, to Release) bool {
 // Patch suffix is ignored for comparison.
 func (r Release) AtLeast(year, minor int) bool {
 	return r.Year > year || (r.Year == year && r.Minor >= minor)
+}
+
+// MinimumSupported is the oldest OpenStack release the operators admit. Every
+// validating webhook rejects a lower spec.openStackRelease, or an image tag
+// that parses as a lower release, on create and on change, and warns on an
+// unchanged one. Retiring the next release moves this value together with the
+// floor literals the tests and docs pin: the validation and webhook unit
+// tests, the *-below-floor Chainsaw assertions under tests/e2e/*/invalid-*cr/,
+// and the release-floor paragraphs of the CRD reference pages and
+// docs/guides/day-2-operations.md.
+var MinimumSupported = Release{Year: 2026, Minor: 1, Raw: "2026.1"}
+
+// IsSupported reports whether r is MinimumSupported or later. The patch
+// suffix is ignored, so 2026.1-p1 is supported.
+func (r Release) IsSupported() bool {
+	return r.AtLeast(MinimumSupported.Year, MinimumSupported.Minor)
 }
