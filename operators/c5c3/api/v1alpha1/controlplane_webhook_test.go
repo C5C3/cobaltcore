@@ -6,7 +6,10 @@ package v1alpha1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
@@ -8787,6 +8791,18 @@ func TestDefault_LeavesCinderBackendEntriesUntouched(t *testing.T) {
 	g.Expect(backup.NFS.MountOptions).To(BeEmpty())
 	g.Expect(backup.FileSize).To(BeNil())
 	g.Expect(backup.Compression).To(BeEmpty())
+
+	// clusterName and secretUUID resolve on the satellite (its "ceph" default and
+	// the driver's FSID), so an RBD entry keeps both empty.
+	rbd := cinderControlPlane()
+	rbd.Spec.Services.Cinder.Backends = append(rbd.Spec.Services.Cinder.Backends, cinderRBDEntry())
+	rbd.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+
+	g.Expect(w.Default(context.Background(), rbd)).To(Succeed())
+
+	g.Expect(rbd.Spec.Services.Cinder.Backends[1].RBD.ClusterName).To(BeEmpty())
+	g.Expect(rbd.Spec.Services.Cinder.Backends[1].RBD.SecretUUID).To(BeEmpty())
+	g.Expect(rbd.Spec.Services.Cinder.BackupBackend.RBD.ClusterName).To(BeEmpty())
 }
 
 // TestValidateCreate_AcceptsCinderControlPlane pins the admissible baseline and
@@ -9020,6 +9036,23 @@ func TestValidateUpdate_WarnsOnRemovedCinderBackend(t *testing.T) {
 		g.Expect(warnings).To(HaveLen(1))
 		g.Expect(warnings[0]).To(ContainSubstring(`entry "nfs2" is removed`))
 		g.Expect(warnings[0]).To(ContainSubstring("unmanageable"))
+		g.Expect(warnings[0]).To(ContainSubstring("under the same name with type NFS"))
+	})
+
+	// No admission layer refuses a re-add of the name under the other type once
+	// the entry is gone, so the warning is where the type to restore is named.
+	t.Run("a dropped RBD entry names its type", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		oldCP.Spec.Services.Cinder.Backends = append(oldCP.Spec.Services.Cinder.Backends, cinderRBDEntry())
+		newCP := cinderControlPlane()
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring(`entry "rbd1" is removed`))
+		g.Expect(warnings[0]).To(ContainSubstring("under the same name with type RBD"))
+		g.Expect(warnings[0]).To(ContainSubstring("Re-adding the name with another type hands those volumes"))
 	})
 
 	t.Run("keeping every entry is silent", func(t *testing.T) {
@@ -9042,6 +9075,85 @@ func TestValidateUpdate_WarnsOnRemovedCinderBackend(t *testing.T) {
 		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidateUpdate_WarnsOnCinderBackupDriverSwitch pins the warning on a
+// backup rename that changes the type: both drivers run under one backup host,
+// so every backup the old driver wrote reaches a driver that refuses to restore
+// or delete it. Dropping the entry warns as well, naming its type, because a
+// later update may add an entry of the other type unrefused. A rename that keeps
+// the type, and an update that adds the entry, stay silent.
+func TestValidateUpdate_WarnsOnCinderBackupDriverSwitch(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	nfsBackup := func(name string) *CinderBackupBackendEntry {
+		return &CinderBackupBackendEntry{
+			Name: name,
+			Type: "NFS",
+			NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/backups"},
+		}
+	}
+
+	t.Run("nfsbk renamed to an RBD rbdbk warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		oldCP.Spec.Services.Cinder.BackupBackend = nfsBackup("nfsbk")
+		newCP := cinderControlPlane()
+		newCP.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ConsistOf(
+			`spec.services.cinder.backupBackend switches from "nfsbk" (NFS) to "rbdbk" (RBD): every backup ` +
+				`the NFS driver wrote can be neither restored nor deleted until "nfsbk" is declared again.`))
+	})
+
+	// The type freeze compares one update's two revisions, so an RBD entry added
+	// after the drop is admitted; the removal warning is the one place the type
+	// to restore is named.
+	t.Run("nfsbk dropped warns and names its type", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := cinderControlPlane()
+		oldCP.Spec.Services.Cinder.BackupBackend = nfsBackup("nfsbk")
+		newCP := cinderControlPlane()
+		newCP.Spec.Services.Cinder.BackupBackend = nil
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ConsistOf(
+			`spec.services.cinder.backupBackend "nfsbk" (NFS) is removed: its CinderBackupBackend is pruned ` +
+				`and the backup service dropped, so every backup the NFS driver wrote can be neither restored ` +
+				`nor deleted until an NFS backup target on the same storage is declared again. Declaring one of ` +
+				`another type later hands those backups to a driver that did not write them.`))
+	})
+
+	for name, tc := range map[string]struct {
+		oldBB, newBB *CinderBackupBackendEntry
+	}{
+		"a rename that keeps the type": {oldBB: nfsBackup("nfsbk"), newBB: nfsBackup("nfsbk2")},
+		"the entry added":              {oldBB: nil, newBB: cinderBackupRBDEntry()},
+		"an unchanged entry":           {oldBB: nfsBackup("nfsbk"), newBB: nfsBackup("nfsbk")},
+	} {
+		t.Run(name+" is silent", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			oldCP := cinderControlPlane()
+			oldCP.Spec.Services.Cinder.BackupBackend = tc.oldBB
+			newCP := cinderControlPlane()
+			newCP.Spec.Services.Cinder.BackupBackend = tc.newBB
+
+			g.Expect(warnCinderBackupDriverSwitch(oldCP, newCP)).To(BeEmpty())
+		})
+	}
+
+	t.Run("either side without services.cinder is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		withBackup := cinderControlPlane()
+		withBackup.Spec.Services.Cinder.BackupBackend = nfsBackup("nfsbk")
+		without := cinderControlPlane()
+		without.Spec.Services.Cinder = nil
+
+		g.Expect(warnCinderBackupDriverSwitch(withBackup, without)).To(BeEmpty())
+		g.Expect(warnCinderBackupDriverSwitch(without, withBackup)).To(BeEmpty())
 	})
 }
 
@@ -9666,6 +9778,649 @@ func TestValidateCreate_RejectsCinderBackupBackendUnionAndEnum(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).NotTo(HaveOccurred())
 	})
+}
+
+// cinderRBDEntry returns an admissible RBD volume entry, rbd1, with every
+// required field set and clusterName and secretUUID left unset.
+func cinderRBDEntry() CinderBackendEntry {
+	return CinderBackendEntry{
+		Name: "rbd1",
+		Type: "RBD",
+		RBD: &CinderBackendRBDSpec{
+			Pool:         "volumes",
+			User:         "cinder",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			KeySecretRef: CinderRBDKeySecretRef{Name: "ceph-client-cinder"},
+		},
+	}
+}
+
+// cinderBackupRBDEntry returns an admissible RBD backup entry, rbdbk, with
+// every required field set and clusterName left unset.
+func cinderBackupRBDEntry() *CinderBackupBackendEntry {
+	return &CinderBackupBackendEntry{
+		Name: "rbdbk",
+		Type: "RBD",
+		RBD: &CinderBackupBackendRBDSpec{
+			Pool:         "backups",
+			User:         "cinder-backup",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			KeySecretRef: CinderRBDKeySecretRef{Name: "ceph-client-cinder-backup"},
+		},
+	}
+}
+
+// cinderBackupRBDFrom copies the fields a backup rbd block shares with a
+// volume one, so one table of mutations can run against both entry kinds.
+func cinderBackupRBDFrom(rbd *CinderBackendRBDSpec) *CinderBackupBackendRBDSpec {
+	return &CinderBackupBackendRBDSpec{
+		Pool:         rbd.Pool,
+		User:         rbd.User,
+		Monitors:     rbd.Monitors,
+		Networks:     rbd.Networks,
+		ClusterName:  rbd.ClusterName,
+		KeySecretRef: rbd.KeySecretRef,
+	}
+}
+
+// TestValidateCreate_AcceptsCinderRBDBackends pins the admissible RBD shapes:
+// every field at the bound its marker allows, and the minimal entry that leaves
+// clusterName and secretUUID to the satellite.
+func TestValidateCreate_AcceptsCinderRBDBackends(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("every field at its bound beside nfs1", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		monitors := make([]string, 0, 16)
+		for i := range 15 {
+			monitors = append(monitors, fmt.Sprintf("mon-%d.rook-ceph.svc", i))
+		}
+		monitors = append(monitors, "192.0.2.10:65535")
+		// Four labels, 253 bytes in all: the longest DNS-1123 subdomain.
+		secretName := strings.Join([]string{
+			strings.Repeat("a", 63), strings.Repeat("b", 63), strings.Repeat("c", 63), strings.Repeat("d", 61),
+		}, ".")
+		g.Expect(secretName).To(HaveLen(253))
+
+		entry := cinderRBDEntry()
+		entry.RBD.Pool = "VOLUMES_" + strings.Repeat("x", 56)
+		entry.RBD.Monitors = monitors
+		entry.RBD.Networks = []string{"0.0.0.0/0"}
+		entry.RBD.ClusterName = strings.Repeat("c", 63)
+		entry.RBD.KeySecretRef.Name = secretName
+		entry.RBD.SecretUUID = "0b4f0b6e-6f8e-4d3a-9f6c-2f1d2a3b4c5d"
+		g.Expect(entry.RBD.Pool).To(HaveLen(64))
+
+		backup := cinderBackupRBDEntry()
+		backup.RBD = cinderBackupRBDFrom(entry.RBD)
+		backup.RBD.User = "cinder-backup"
+
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends = append(cp.Spec.Services.Cinder.Backends, entry)
+		cp.Spec.Services.Cinder.BackupBackend = backup
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("the minimal entries without clusterName and secretUUID", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends = append(cp.Spec.Services.Cinder.Backends, cinderRBDEntry())
+		cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsCinderRBDUnionViolations pins the type/rbd union on
+// both entry kinds, mirrored as defense-in-depth for callers that bypass CRD
+// schema admission.
+func TestValidateCreate_RejectsCinderRBDUnionViolations(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	const msg = "the rbd block must be set exactly when type is RBD"
+
+	for name, tc := range map[string]struct {
+		mutate func(*ServiceCinderSpec)
+		field  string
+	}{
+		"a volume entry of type RBD without an rbd block": {
+			mutate: func(cd *ServiceCinderSpec) {
+				entry := cinderRBDEntry()
+				entry.RBD = nil
+				cd.Backends = []CinderBackendEntry{entry}
+			},
+			field: "spec.services.cinder.backends[0]",
+		},
+		"a volume entry of type NFS with an rbd block": {
+			mutate: func(cd *ServiceCinderSpec) { cd.Backends[0].RBD = cinderRBDEntry().RBD },
+			field:  "spec.services.cinder.backends[0]",
+		},
+		"a backup entry of type RBD without an rbd block": {
+			mutate: func(cd *ServiceCinderSpec) {
+				cd.BackupBackend = cinderBackupRBDEntry()
+				cd.BackupBackend.RBD = nil
+			},
+			field: "spec.services.cinder.backupBackend",
+		},
+		"a backup entry of type NFS with an rbd block": {
+			mutate: func(cd *ServiceCinderSpec) {
+				cd.BackupBackend = &CinderBackupBackendEntry{
+					Name: "nfsbk",
+					Type: "NFS",
+					NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/backups"},
+					RBD:  cinderBackupRBDEntry().RBD,
+				}
+			},
+			field: "spec.services.cinder.backupBackend",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			tc.mutate(cp.Spec.Services.Cinder)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.field + ": Invalid value"))
+			g.Expect(err.Error()).To(ContainSubstring(msg))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsCinderRBDViolations walks every rule of the rbd
+// mirror on both entry kinds: the marker half validateCinderRBDFields repeats in
+// Go, and the rules beyond the markers it delegates to
+// cinderv1alpha1.ValidateRBDFields. Each value is one the satellite's own
+// admission refuses, so without the mirror the ControlPlane would be admitted
+// and wedge on CinderBackendProjectionRejected.
+func TestValidateCreate_RejectsCinderRBDViolations(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	seventeen := func(format string) []string {
+		out := make([]string, 17)
+		for i := range out {
+			out[i] = fmt.Sprintf(format, i)
+		}
+		return out
+	}
+
+	for name, tc := range map[string]struct {
+		mutate     func(*CinderBackendRBDSpec)
+		field      string
+		sub        string
+		volumeOnly bool
+	}{
+		"an empty pool": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Pool = "" },
+			field:  "pool", sub: "Required value: must be set",
+		},
+		"an empty user": {
+			mutate: func(r *CinderBackendRBDSpec) { r.User = "" },
+			field:  "user", sub: "Required value: must be set",
+		},
+		"an empty key Secret name": {
+			mutate: func(r *CinderBackendRBDSpec) { r.KeySecretRef.Name = "" },
+			field:  "keySecretRef.name", sub: "Required value: must be set",
+		},
+		"no monitor": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = nil },
+			field:  "monitors", sub: "at least one monitor must be listed",
+		},
+		"no network": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = []string{} },
+			field:  "networks", sub: "at least one network must be listed",
+		},
+		"a 65-byte pool": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Pool = strings.Repeat("p", 65) },
+			field:  "pool", sub: "Too long",
+		},
+		"a 64-byte cluster name": {
+			mutate: func(r *CinderBackendRBDSpec) { r.ClusterName = strings.Repeat("c", 64) },
+			field:  "clusterName", sub: "Too long",
+		},
+		"a 254-byte monitor": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{strings.Repeat("m", 254)} },
+			field:  "monitors[0]", sub: "Too long",
+		},
+		"an empty monitor": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{""} },
+			field:  "monitors[0]", sub: "Required value: must be set",
+		},
+		"17 monitors": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = seventeen("mon-%d.example") },
+			field:  "monitors", sub: "Too many: 17",
+		},
+		"17 networks": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = seventeen("10.%d.0.0/16") },
+			field:  "networks", sub: "Too many: 17",
+		},
+		"a 254-byte key Secret name": {
+			mutate: func(r *CinderBackendRBDSpec) { r.KeySecretRef.Name = strings.Repeat("k", 254) },
+			field:  "keySecretRef.name", sub: "Too long",
+		},
+		"a pool carrying a space": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Pool = "vol umes" },
+			field:  "pool", sub: "must consist of letters, digits, '.', '_' and '-'",
+		},
+		"a user carrying a newline": {
+			mutate: func(r *CinderBackendRBDSpec) { r.User = "cinder\nkey = x" },
+			field:  "user", sub: "must consist of letters, digits, '.', '_' and '-'",
+		},
+		"a cluster name carrying a dot": {
+			mutate: func(r *CinderBackendRBDSpec) { r.ClusterName = "ceph.a" },
+			field:  "clusterName", sub: "must consist of letters, digits, '_' and '-'",
+		},
+		"a monitor carrying a space": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{"mon a"} },
+			field:  "monitors[0]", sub: "must be a hostname or an IPv4 address with an optional :port",
+		},
+		"a network without a prefix length": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = []string{"10.0.0.0"} },
+			field:  "networks[0]", sub: "must be an IPv4 CIDR such as 10.128.0.0/16",
+		},
+		"an uppercase secretUUID": {
+			mutate:     func(r *CinderBackendRBDSpec) { r.SecretUUID = "0B4F0B6E-6F8E-4D3A-9F6C-2F1D2A3B4C5D" },
+			field:      "secretUUID",
+			sub:        "must be a lowercase UUID",
+			volumeOnly: true,
+		},
+		"a monitor port above 65535": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{"mon.example:70000"} },
+			field:  "monitors[0]", sub: "port must be between 1 and 65535",
+		},
+		"a monitor port of 0": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{"mon.example:0"} },
+			field:  "monitors[0]", sub: "port must be between 1 and 65535",
+		},
+		"a network with host bits set": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = []string{"10.244.0.1/16"} },
+			field:  "networks[0]", sub: "must be a canonical IPv4 CIDR",
+		},
+		"a network outside IPv4": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = []string{"999.0.0.0/8"} },
+			field:  "networks[0]", sub: "must be a canonical IPv4 CIDR",
+		},
+		"a key Secret name off DNS-1123": {
+			mutate: func(r *CinderBackendRBDSpec) { r.KeySecretRef.Name = "Ceph_Client" },
+			field:  "keySecretRef.name", sub: "a lowercase RFC 1123 subdomain",
+		},
+	} {
+		t.Run("volume entry: "+name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			entry := cinderRBDEntry()
+			tc.mutate(entry.RBD)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.Backends = []CinderBackendEntry{entry}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].rbd." + tc.field + ":"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.sub))
+		})
+		if tc.volumeOnly {
+			continue
+		}
+		t.Run("backup entry: "+name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			rbd := cinderRBDEntry().RBD
+			tc.mutate(rbd)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+			cp.Spec.Services.Cinder.BackupBackend.RBD = cinderBackupRBDFrom(rbd)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.rbd." + tc.field + ":"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.sub))
+		})
+	}
+
+	// The client. prefix carries each kind's own CEL message.
+	t.Run("volume entry: a user with the client. prefix", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		entry := cinderRBDEntry()
+		entry.RBD.User = "client.cinder"
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.Backends = []CinderBackendEntry{entry}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].rbd.user:"))
+		g.Expect(err.Error()).To(ContainSubstring(cinderv1alpha1.RBDUserClientPrefixMessage))
+	})
+
+	t.Run("backup entry: a user with the client. prefix", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+		cp.Spec.Services.Cinder.BackupBackend.RBD.User = "client.cinder-backup"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.rbd.user:"))
+		g.Expect(err.Error()).To(ContainSubstring(cinderv1alpha1.RBDBackupUserClientPrefixMessage))
+	})
+}
+
+// TestValidateCinderRBDFields_ReportsOneErrorPerValue pins the two-step order of
+// the rbd mirror: a value the marker half refuses is reported once, even where
+// the delegated cinder rules would refuse it a second time (a newline, a
+// network without a prefix length, an empty Secret name). A nil block is the
+// union's business and reports nothing.
+func TestValidateCinderRBDFields_ReportsOneErrorPerValue(t *testing.T) {
+	rbdPath := field.NewPath("spec", "services", "cinder", "backends").Index(0).Child("rbd")
+
+	for name, tc := range map[string]struct {
+		mutate  func(*CinderBackendRBDSpec)
+		field   string
+		errType field.ErrorType
+	}{
+		"a pool carrying a space": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Pool = "vol umes" },
+			field:  "pool", errType: field.ErrorTypeInvalid,
+		},
+		"a pool carrying a newline": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Pool = "volumes\n" },
+			field:  "pool", errType: field.ErrorTypeInvalid,
+		},
+		"a cluster name carrying a dot": {
+			mutate: func(r *CinderBackendRBDSpec) { r.ClusterName = "ceph.a" },
+			field:  "clusterName", errType: field.ErrorTypeInvalid,
+		},
+		"a monitor carrying a space": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Monitors = []string{"mon a"} },
+			field:  "monitors[0]", errType: field.ErrorTypeInvalid,
+		},
+		"a network without a prefix length": {
+			mutate: func(r *CinderBackendRBDSpec) { r.Networks = []string{"10.0.0.0"} },
+			field:  "networks[0]", errType: field.ErrorTypeInvalid,
+		},
+		"an uppercase secretUUID": {
+			mutate: func(r *CinderBackendRBDSpec) { r.SecretUUID = "0B4F0B6E-6F8E-4D3A-9F6C-2F1D2A3B4C5D" },
+			field:  "secretUUID", errType: field.ErrorTypeInvalid,
+		},
+		"a key Secret name off DNS-1123": {
+			mutate: func(r *CinderBackendRBDSpec) { r.KeySecretRef.Name = "Ceph_Client" },
+			field:  "keySecretRef.name", errType: field.ErrorTypeInvalid,
+		},
+		"an empty key Secret name": {
+			mutate: func(r *CinderBackendRBDSpec) { r.KeySecretRef.Name = "" },
+			field:  "keySecretRef.name", errType: field.ErrorTypeRequired,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			rbd := cinderRBDEntry().RBD
+			tc.mutate(rbd)
+
+			errs := validateCinderRBD(rbdPath, rbd)
+			g.Expect(errs).To(HaveLen(1))
+			g.Expect(errs[0].Field).To(Equal(rbdPath.String() + "." + tc.field))
+			g.Expect(errs[0].Type).To(Equal(tc.errType))
+		})
+	}
+
+	t.Run("a nil block", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(validateCinderRBD(rbdPath, nil)).To(BeEmpty())
+		g.Expect(validateCinderBackupRBD(rbdPath, nil)).To(BeEmpty())
+	})
+}
+
+// generatedCRDSpecSchema returns the spec schema of the one served version of
+// the generated CRD at path.
+func generatedCRDSpecSchema(t *testing.T, path string) apiextensionsv1.JSONSchemaProps {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	if len(crd.Spec.Versions) != 1 {
+		t.Fatalf("%s: expected one version, got %d", path, len(crd.Spec.Versions))
+	}
+	return crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+}
+
+// schemaWithoutDescriptions renders a schema as a generic map with every
+// description dropped, the one part a local copy words for its own context.
+func schemaWithoutDescriptions(t *testing.T, schema apiextensionsv1.JSONSchemaProps) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("encoding the schema: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decoding the schema: %v", err)
+	}
+	var strip func(any)
+	strip = func(node any) {
+		switch node := node.(type) {
+		case map[string]any:
+			delete(node, "description")
+			for _, child := range node {
+				strip(child)
+			}
+		case []any:
+			for _, child := range node {
+				strip(child)
+			}
+		}
+	}
+	strip(out)
+	return out
+}
+
+// TestCinderRBDSchemaMatchesSatellites is the drift lock behind "a value
+// admitted here is admitted by the satellite CRD": the rbd schemas the
+// ControlPlane CRD generates from CinderBackendRBDSpec and
+// CinderBackupBackendRBDSpec equal the ones the cinder module generates for the
+// CinderBackend and CinderBackupBackend satellites, markers and CEL rules
+// included. Descriptions differ by design, and so does clusterName's default,
+// which only the satellite carries. The webhook's Go mirrors are pinned to the
+// same schemas, so a marker tightened on the cinder side fails here rather than
+// as CinderBackendProjectionRejected on a live plane.
+func TestCinderRBDSchemaMatchesSatellites(t *testing.T) {
+	cinder := generatedCRDSpecSchema(t, "../../config/crd/bases/c5c3.io_controlplanes.yaml").
+		Properties["services"].Properties["cinder"]
+	for _, tc := range []struct {
+		name         string
+		got          apiextensionsv1.JSONSchemaProps
+		satelliteCRD string
+	}{
+		{
+			name:         "backends[].rbd",
+			got:          cinder.Properties["backends"].Items.Schema.Properties["rbd"],
+			satelliteCRD: "../../../cinder/config/crd/bases/cinder.openstack.c5c3.io_cinderbackends.yaml",
+		},
+		{
+			name:         "backupBackend.rbd",
+			got:          cinder.Properties["backupBackend"].Properties["rbd"],
+			satelliteCRD: "../../../cinder/config/crd/bases/cinder.openstack.c5c3.io_cinderbackupbackends.yaml",
+		},
+	} {
+		t.Run(tc.name+" matches the satellite", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			want := generatedCRDSpecSchema(t, tc.satelliteCRD).Properties["rbd"]
+			clusterName := want.Properties["clusterName"]
+			g.Expect(clusterName.Default).NotTo(BeNil(), "the satellite defaults clusterName")
+			g.Expect(tc.got.Properties["clusterName"].Default).To(BeNil(),
+				"the ControlPlane leaves clusterName to the satellite's default")
+			clusterName.Default = nil
+			want.Properties["clusterName"] = clusterName
+
+			g.Expect(schemaWithoutDescriptions(t, tc.got)).To(Equal(schemaWithoutDescriptions(t, want)))
+		})
+
+		t.Run(tc.name+" carries the webhook's mirrors", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			rbd := tc.got.Properties
+			g.Expect(rbd["pool"].Pattern).To(Equal(cinderRBDNamePattern.String()))
+			g.Expect(rbd["user"].Pattern).To(Equal(cinderRBDNamePattern.String()))
+			g.Expect(rbd["clusterName"].Pattern).To(Equal(cinderRBDClusterNamePattern.String()))
+			g.Expect(rbd["monitors"].Items.Schema.Pattern).To(Equal(cinderRBDMonitorPattern.String()))
+			g.Expect(rbd["networks"].Items.Schema.Pattern).To(Equal(cinderRBDNetworkPattern.String()))
+			g.Expect(*rbd["pool"].MaxLength).To(BeEquivalentTo(maxCinderRBDNameBytes))
+			g.Expect(*rbd["user"].MaxLength).To(BeEquivalentTo(maxCinderRBDNameBytes))
+			g.Expect(*rbd["clusterName"].MaxLength).To(BeEquivalentTo(maxCinderRBDClusterNameBytes))
+			g.Expect(*rbd["monitors"].MaxItems).To(BeEquivalentTo(maxCinderRBDListItems))
+			g.Expect(*rbd["monitors"].Items.Schema.MaxLength).To(BeEquivalentTo(maxCinderRBDMonitorBytes))
+			g.Expect(*rbd["networks"].MaxItems).To(BeEquivalentTo(maxCinderRBDListItems))
+			g.Expect(*rbd["keySecretRef"].Properties["name"].MaxLength).To(BeEquivalentTo(maxCinderRBDKeySecretBytes))
+		})
+	}
+
+	t.Run("backends[].rbd.secretUUID carries the webhook's mirror", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		secretUUID := cinder.Properties["backends"].Items.Schema.Properties["rbd"].Properties["secretUUID"]
+		g.Expect(secretUUID.Pattern).To(Equal(cinderRBDSecretUUIDPattern.String()))
+	})
+}
+
+// TestValidateCreate_RejectsCinderBackendTypeOutsideEnum pins the type enum
+// twin on both entry kinds, the empty string included.
+func TestValidateCreate_RejectsCinderBackendTypeOutsideEnum(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, typ := range []string{"CEPH", ""} {
+		t.Run(fmt.Sprintf("volume entry of type %q", typ), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.Backends[0].Type = typ
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].type: Unsupported value"))
+			g.Expect(err.Error()).To(ContainSubstring(`supported values: "NFS", "RBD"`))
+		})
+
+		t.Run(fmt.Sprintf("backup entry of type %q", typ), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := cinderControlPlane()
+			cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+			cp.Spec.Services.Cinder.BackupBackend.Type = typ
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.type: Unsupported value"))
+			g.Expect(err.Error()).To(ContainSubstring(`supported values: "NFS", "RBD"`))
+		})
+	}
+}
+
+// TestValidateUpdate_RejectsCinderBackendTypeChange pins the webhook twin of the
+// two type transition rules: a volume entry keeps its type under its name, and
+// the backup entry keeps its type while its name is unchanged. Every update that
+// projects a new satellite or prunes an old one instead passes the check.
+func TestValidateUpdate_RejectsCinderBackendTypeChange(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	nfsBackup := func() *CinderBackupBackendEntry {
+		return &CinderBackupBackendEntry{
+			Name: "nfsbk",
+			Type: "NFS",
+			NFS:  &NFSShareSpec{Server: "nfs-server.openstack.svc.cluster.local", Path: "/backups"},
+		}
+	}
+	base := func() *ControlPlane {
+		cp := cinderControlPlane()
+		cp.Spec.Services.Cinder.BackupBackend = nfsBackup()
+		return cp
+	}
+
+	t.Run("nfs1 turns RBD under the same name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := base()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Cinder.Backends[0].Type = "RBD"
+		newCP.Spec.Services.Cinder.Backends[0].NFS = nil
+		newCP.Spec.Services.Cinder.Backends[0].RBD = cinderRBDEntry().RBD
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0].type"))
+		g.Expect(err.Error()).To(ContainSubstring(cinderBackendTypeImmutableMessage))
+	})
+
+	t.Run("nfsbk turns RBD under the same name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := base()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+		newCP.Spec.Services.Cinder.BackupBackend.Name = "nfsbk"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend.type"))
+		g.Expect(err.Error()).To(ContainSubstring(cinderBackupBackendTypeImmutableMessage))
+	})
+
+	t.Run("nfsbk renamed to an RBD rbdbk", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := base()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("an RBD volume entry added", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := base()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Cinder.Backends = append(newCP.Spec.Services.Cinder.Backends, cinderRBDEntry())
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	for name, tc := range map[string]struct {
+		mutateOld func(*ControlPlane)
+		mutateNew func(*ControlPlane)
+	}{
+		"an entry removed": {
+			mutateOld: func(cp *ControlPlane) {
+				cp.Spec.Services.Cinder.Backends = append(cp.Spec.Services.Cinder.Backends, cinderRBDEntry())
+			},
+			mutateNew: func(*ControlPlane) {},
+		},
+		"the old side without services.cinder": {
+			mutateOld: func(cp *ControlPlane) { cp.Spec.Services.Cinder = nil },
+			mutateNew: func(*ControlPlane) {},
+		},
+		"the new side without services.cinder": {
+			mutateOld: func(*ControlPlane) {},
+			mutateNew: func(cp *ControlPlane) { cp.Spec.Services.Cinder = nil },
+		},
+		"the old side without backupBackend": {
+			mutateOld: func(cp *ControlPlane) { cp.Spec.Services.Cinder.BackupBackend = nil },
+			mutateNew: func(cp *ControlPlane) { cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry() },
+		},
+		"the new side without backupBackend": {
+			mutateOld: func(*ControlPlane) {},
+			mutateNew: func(cp *ControlPlane) { cp.Spec.Services.Cinder.BackupBackend = nil },
+		},
+		"an unchanged spec": {
+			mutateOld: func(*ControlPlane) {},
+			mutateNew: func(*ControlPlane) {},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			oldCP, newCP := base(), base()
+			tc.mutateOld(oldCP)
+			tc.mutateNew(newCP)
+
+			g.Expect(validateCinderBackendTypesImmutable(oldCP, newCP)).To(BeEmpty())
+		})
+	}
 }
 
 // --- services.nova ---

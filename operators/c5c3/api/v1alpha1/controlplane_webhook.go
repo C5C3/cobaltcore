@@ -1592,11 +1592,12 @@ func validateCinder(cp *ControlPlane) field.ErrorList {
 
 // validateCinderBackends mirrors the declarative constraints on
 // services.cinder.backends as defense-in-depth for callers that bypass CRD schema
-// admission (at least one entry, the type/nfs union, and the export leaves an NFS
-// entry cannot mount without) and adds the two rules the CRD schema cannot
-// express: the backend name cinder.conf reserves, and the composed CinderBackend
-// child-name bound, which spends a budget the ControlPlane name and the entry
-// name share.
+// admission (at least one entry, the type enum, the type/nfs and type/rbd unions,
+// the export leaves an NFS entry cannot mount without, and the Ceph leaves of an
+// RBD entry) and adds the rules the CRD schema cannot express: the backend name
+// cinder.conf reserves, the composed CinderBackend child-name bound, which spends
+// a budget the ControlPlane name and the entry name share, and the RBD rules
+// validateCinderRBD delegates to the cinder module.
 //
 // A name that collides with a cinder.conf catalog section OTHER than "default" is
 // not mirrored here: that catalog lives in the cinder module, so such an entry is
@@ -1615,12 +1616,21 @@ func validateCinderBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 		entry := backends[i]
 		entryPath := backendsPath.Index(i)
 
-		// The nfs block must be set exactly when type is NFS.
+		// The nfs block must be set exactly when type is NFS, the rbd block
+		// exactly when type is RBD, and the type is one of the two.
 		if (entry.Type == "NFS") != (entry.NFS != nil) {
 			allErrs = append(allErrs, field.Invalid(entryPath, entry.Type,
 				"the nfs block must be set exactly when type is NFS"))
 		}
+		if (entry.Type == "RBD") != (entry.RBD != nil) {
+			allErrs = append(allErrs, field.Invalid(entryPath, entry.Type,
+				"the rbd block must be set exactly when type is RBD"))
+		}
+		if !slices.Contains(cinderBackendTypes, entry.Type) {
+			allErrs = append(allErrs, field.NotSupported(entryPath.Child("type"), entry.Type, cinderBackendTypes))
+		}
 		allErrs = append(allErrs, validateNFSShare(entryPath.Child("nfs"), entry.NFS)...)
+		allErrs = append(allErrs, validateCinderRBD(entryPath.Child("rbd"), entry.RBD)...)
 
 		// "default" names cinder.conf's [DEFAULT] section, which the backend's
 		// options would land in. The comparison is case-insensitive because cinder
@@ -1653,8 +1663,9 @@ func validateCinderBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 
 // validateCinderBackupBackend mirrors the declarative constraints on
 // services.cinder.backupBackend as defense-in-depth for callers that bypass CRD
-// schema admission: the type/nfs union, the export leaves, the chunk-size bounds,
-// and the compression enum.
+// schema admission: the type enum, the type/nfs and type/rbd unions, the export
+// leaves, the Ceph leaves, the chunk-size bounds, and the compression enum. It
+// adds the RBD rules validateCinderBackupRBD delegates to the cinder module.
 //
 // It carries no composed name bound, unlike the volume backends above: detaching
 // a backup backend runs no service-remove Job, so its name enters no Job name.
@@ -1669,7 +1680,15 @@ func validateCinderBackupBackend(cp *ControlPlane, path *field.Path) field.Error
 		allErrs = append(allErrs, field.Invalid(path, bb.Type,
 			"the nfs block must be set exactly when type is NFS"))
 	}
+	if (bb.Type == "RBD") != (bb.RBD != nil) {
+		allErrs = append(allErrs, field.Invalid(path, bb.Type,
+			"the rbd block must be set exactly when type is RBD"))
+	}
+	if !slices.Contains(cinderBackendTypes, bb.Type) {
+		allErrs = append(allErrs, field.NotSupported(path.Child("type"), bb.Type, cinderBackendTypes))
+	}
 	allErrs = append(allErrs, validateNFSShare(path.Child("nfs"), bb.NFS)...)
+	allErrs = append(allErrs, validateCinderBackupRBD(path.Child("rbd"), bb.RBD)...)
 
 	// The chunk size, mirroring the Minimum and MultipleOf markers: cinder splits
 	// the volume into objects of this size and hashes each one in 32768-byte
@@ -1701,6 +1720,40 @@ func validateCinderBackupBackend(cp *ControlPlane, path *field.Path) field.Error
 var (
 	nfsServerPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
 	nfsPathPattern   = regexp.MustCompile(`^/[!-~]*$`)
+)
+
+// cinderBackendTypes mirrors the type enum the volume and the backup entries
+// share.
+var cinderBackendTypes = []string{"NFS", "RBD"}
+
+// The cinderRBD patterns mirror the Pattern markers on CinderBackendRBDSpec and
+// CinderBackupBackendRBDSpec; cinderRBDNamePattern covers both pool and user.
+// Every value is rendered verbatim into cinder.conf, the projected ceph.conf
+// and keyring, the Ceph tools' command line, or a NetworkPolicy.
+var (
+	cinderRBDNamePattern        = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	cinderRBDClusterNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	cinderRBDMonitorPattern     = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
+	cinderRBDNetworkPattern     = regexp.MustCompile(`^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`)
+	cinderRBDSecretUUIDPattern  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
+
+const (
+	// maxCinderRBDNameBytes mirrors the MaxLength markers on the pool and user
+	// fields of CinderBackendRBDSpec and CinderBackupBackendRBDSpec.
+	maxCinderRBDNameBytes = 64
+	// maxCinderRBDClusterNameBytes mirrors the MaxLength marker on their
+	// clusterName fields.
+	maxCinderRBDClusterNameBytes = 63
+	// maxCinderRBDListItems mirrors the MaxItems markers on their monitors and
+	// networks fields.
+	maxCinderRBDListItems = 16
+	// maxCinderRBDMonitorBytes mirrors the items:MaxLength marker on their
+	// monitors fields.
+	maxCinderRBDMonitorBytes = 253
+	// maxCinderRBDKeySecretBytes mirrors the MaxLength marker on
+	// CinderRBDKeySecretRef.Name.
+	maxCinderRBDKeySecretBytes = 253
 )
 
 // validateNFSShare mirrors the MinLength and Pattern markers that make an NFS
@@ -1738,6 +1791,129 @@ func validateNFSShare(nfsPath *field.Path, nfs *NFSShareSpec) field.ErrorList {
 			"must not contain a newline or a carriage return: it would divide the rendered option line"))
 	}
 	return allErrs
+}
+
+// validateCinderRBD checks the rbd block of a volume entry: the shared Ceph
+// fields through validateCinderRBDFields plus the secretUUID pattern. A nil
+// block is the type/rbd union's business, so it reports nothing here.
+//
+// Without it a caller that bypasses CRD schema admission gets a ControlPlane
+// ADMITTED with a value the CinderBackend's own admission refuses, and the
+// plane wedges on CinderReady=False/CinderBackendProjectionRejected, the
+// failure validateNFSShare documents for the nfs block.
+func validateCinderRBD(rbdPath *field.Path, rbd *CinderBackendRBDSpec) field.ErrorList {
+	if rbd == nil {
+		return nil
+	}
+	allErrs := validateCinderRBDFields(rbdPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, cinderv1alpha1.RBDUserClientPrefixMessage)
+	if rbd.SecretUUID != "" && !cinderRBDSecretUUIDPattern.MatchString(rbd.SecretUUID) {
+		allErrs = append(allErrs, field.Invalid(rbdPath.Child("secretUUID"), rbd.SecretUUID,
+			"must be a lowercase UUID such as 0b4f0b6e-6f8e-4d3a-9f6c-2f1d2a3b4c5d: it is rendered verbatim as "+
+				"rbd_secret_uuid and has to equal the libvirt secret's UUID on the hypervisors"))
+	}
+	return allErrs
+}
+
+// validateCinderBackupRBD checks the rbd block of the backup entry, which
+// carries the shared Ceph fields alone. A nil block reports nothing, as in
+// validateCinderRBD.
+func validateCinderBackupRBD(rbdPath *field.Path, rbd *CinderBackupBackendRBDSpec) field.ErrorList {
+	if rbd == nil {
+		return nil
+	}
+	return validateCinderRBDFields(rbdPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, cinderv1alpha1.RBDBackupUserClientPrefixMessage)
+}
+
+// validateCinderRBDFields checks the Ceph fields the two rbd blocks share in two
+// halves. The first mirrors the length, item-count and Pattern markers of pool,
+// user, clusterName, monitors and networks, and the MinLength and MaxLength
+// markers of keySecretRef.name, at most one error per value. Only when it
+// reports nothing does the second run: cinderv1alpha1.ValidateRBDFields, the
+// cinder webhooks' own check. It carries the CEL rule on user (the "client."
+// prefix), the Pattern marker on keySecretRef.name (a DNS-1123 subdomain), and
+// the two rules no marker expresses: the monitor port range and the canonical
+// network. The order keeps one error per offending value, because the delegate
+// re-reports some values the first half already refused, and the delegation
+// keeps those rules single-source. clientPrefixMessage is the message of the
+// entry's CEL rule on user.
+func validateCinderRBDFields(rbdPath *field.Path, pool, user, clusterName string, monitors, networks []string,
+	keySecretName, clientPrefixMessage string,
+) field.ErrorList {
+	var allErrs field.ErrorList
+	for _, f := range []struct{ name, value string }{{"pool", pool}, {"user", user}} {
+		fieldPath := rbdPath.Child(f.name)
+		switch {
+		case f.value == "":
+			allErrs = append(allErrs, field.Required(fieldPath, "must be set"))
+		case len(f.value) > maxCinderRBDNameBytes:
+			allErrs = append(allErrs, field.TooLong(fieldPath, f.value, maxCinderRBDNameBytes))
+		case !cinderRBDNamePattern.MatchString(f.value):
+			allErrs = append(allErrs, field.Invalid(fieldPath, f.value,
+				"must consist of letters, digits, '.', '_' and '-': the value is rendered verbatim into "+
+					"cinder.conf and the Ceph tools' command line"))
+		}
+	}
+
+	if clusterName != "" {
+		clusterPath := rbdPath.Child("clusterName")
+		switch {
+		case len(clusterName) > maxCinderRBDClusterNameBytes:
+			allErrs = append(allErrs, field.TooLong(clusterPath, clusterName, maxCinderRBDClusterNameBytes))
+		case !cinderRBDClusterNamePattern.MatchString(clusterName):
+			allErrs = append(allErrs, field.Invalid(clusterPath, clusterName,
+				"must consist of letters, digits, '_' and '-': it names the projected ceph.conf and keyring files"))
+		}
+	}
+
+	monitorsPath := rbdPath.Child("monitors")
+	switch {
+	case len(monitors) == 0:
+		allErrs = append(allErrs, field.Required(monitorsPath, "at least one monitor must be listed"))
+	case len(monitors) > maxCinderRBDListItems:
+		allErrs = append(allErrs, field.TooMany(monitorsPath, len(monitors), maxCinderRBDListItems))
+	}
+	for i, monitor := range monitors {
+		switch {
+		case monitor == "":
+			allErrs = append(allErrs, field.Required(monitorsPath.Index(i), "must be set"))
+		case len(monitor) > maxCinderRBDMonitorBytes:
+			allErrs = append(allErrs, field.TooLong(monitorsPath.Index(i), monitor, maxCinderRBDMonitorBytes))
+		case !cinderRBDMonitorPattern.MatchString(monitor):
+			allErrs = append(allErrs, field.Invalid(monitorsPath.Index(i), monitor,
+				"must be a hostname or an IPv4 address with an optional :port: the list is rendered verbatim "+
+					"into the projected ceph.conf"))
+		}
+	}
+
+	networksPath := rbdPath.Child("networks")
+	switch {
+	case len(networks) == 0:
+		allErrs = append(allErrs, field.Required(networksPath, "at least one network must be listed"))
+	case len(networks) > maxCinderRBDListItems:
+		allErrs = append(allErrs, field.TooMany(networksPath, len(networks), maxCinderRBDListItems))
+	}
+	for i, network := range networks {
+		if !cinderRBDNetworkPattern.MatchString(network) {
+			allErrs = append(allErrs, field.Invalid(networksPath.Index(i), network,
+				"must be an IPv4 CIDR such as 10.128.0.0/16: it becomes an ipBlock of the Cinder's NetworkPolicy"))
+		}
+	}
+
+	keyPath := rbdPath.Child("keySecretRef", "name")
+	switch {
+	case keySecretName == "":
+		allErrs = append(allErrs, field.Required(keyPath, "must be set"))
+	case len(keySecretName) > maxCinderRBDKeySecretBytes:
+		allErrs = append(allErrs, field.TooLong(keyPath, keySecretName, maxCinderRBDKeySecretBytes))
+	}
+
+	if len(allErrs) > 0 {
+		return allErrs
+	}
+	return cinderv1alpha1.ValidateRBDFields(rbdPath, pool, user, clusterName, monitors, networks,
+		keySecretName, clientPrefixMessage)
 }
 
 // validateNova enforces the rules on the services.nova block. It mirrors the
@@ -2308,8 +2484,13 @@ func warnInsecureCinderPublicEndpoint(cp *ControlPlane) admission.Warnings {
 // off the backends that remain.
 //
 // It is a warning rather than an error because the removal is legitimate once the
-// backend is drained, and because re-adding the entry under the same name restores
-// the host identity the volumes are keyed by.
+// backend is drained, and because re-adding the entry under the same name and
+// type restores the host identity the volumes are keyed by. The warning names the
+// type because nothing refuses a re-add under the other one: the type freeze in
+// validateCinderBackendTypesImmutable compares the old and the new revision only,
+// and once the entry is gone neither carries it. A re-add under the other type
+// hands the host, and with it every volume left on it, to a driver that did not
+// create them.
 func warnRemovedCinderBackends(oldObj, newObj *ControlPlane) admission.Warnings {
 	oldCinder, newCinder := oldObj.Spec.Services.Cinder, newObj.Spec.Services.Cinder
 	if oldCinder == nil || newCinder == nil {
@@ -2321,18 +2502,116 @@ func warnRemovedCinderBackends(oldObj, newObj *ControlPlane) admission.Warnings 
 	}
 	var warnings admission.Warnings
 	for i := range oldCinder.Backends {
-		name := oldCinder.Backends[i].Name
-		if _, ok := kept[name]; ok {
+		removed := oldCinder.Backends[i]
+		if _, ok := kept[removed.Name]; ok {
 			continue
 		}
 		warnings = append(warnings, fmt.Sprintf(
 			"spec.services.cinder.backends entry %q is removed: its CinderBackend is pruned and its "+
 				"cinder-volume service unregistered, leaving every volume on that backend unmanageable "+
-				"until the entry is restored under the same name.",
-			name,
+				"until the entry is restored under the same name with type %s. Re-adding the name with "+
+				"another type hands those volumes to a driver that did not create them.",
+			removed.Name, removed.Type,
 		))
 	}
 	return warnings
+}
+
+// warnCinderBackupDriverSwitch surfaces a services.cinder.backupBackend rename
+// that also changes the type. The rename is admitted, and the next pass prunes
+// the old CinderBackupBackend and projects the new one. Both drivers run under the
+// same backup host, so cinder hands every backup the old driver wrote to the new
+// one, which refuses to restore or delete it ("is not the backup service that was
+// used to create this backup"). Those backups stay unreachable until the old entry
+// is declared again.
+//
+// Dropping the entry reports too, naming its type. The next pass prunes the
+// CinderBackupBackend and the Cinder child drops its backup service, so no backup
+// can be restored or deleted until a target of that type is declared again. The
+// type freeze in validateCinderBackendTypesImmutable compares the two revisions of
+// one update only, so an entry of the other type added in a later update is
+// admitted and reaches the same end state as the one-step switch.
+//
+// A rename that keeps the type reports nothing: the driver that wrote the backups
+// still serves them.
+func warnCinderBackupDriverSwitch(oldObj, newObj *ControlPlane) admission.Warnings {
+	oldCinder, newCinder := oldObj.Spec.Services.Cinder, newObj.Spec.Services.Cinder
+	if oldCinder == nil || newCinder == nil {
+		return nil
+	}
+	oldBB, newBB := oldCinder.BackupBackend, newCinder.BackupBackend
+	switch {
+	case oldBB == nil:
+		return nil
+	case newBB == nil:
+		return admission.Warnings{fmt.Sprintf(
+			"spec.services.cinder.backupBackend %q (%s) is removed: its CinderBackupBackend is pruned and the "+
+				"backup service dropped, so every backup the %s driver wrote can be neither restored nor deleted "+
+				"until an %s backup target on the same storage is declared again. Declaring one of another type "+
+				"later hands those backups to a driver that did not write them.",
+			oldBB.Name, oldBB.Type, oldBB.Type, oldBB.Type,
+		)}
+	case oldBB.Name == newBB.Name || oldBB.Type == newBB.Type:
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.cinder.backupBackend switches from %q (%s) to %q (%s): every backup the %s driver "+
+			"wrote can be neither restored nor deleted until %q is declared again.",
+		oldBB.Name, oldBB.Type, newBB.Name, newBB.Type, oldBB.Type, oldBB.Name,
+	)}
+}
+
+// cinderBackendTypeImmutableMessage and cinderBackupBackendTypeImmutableMessage
+// are the messages of the type transition rules on CinderBackendEntry and
+// CinderBackupBackendEntry, repeated verbatim by their webhook twin
+// validateCinderBackendTypesImmutable.
+const (
+	cinderBackendTypeImmutableMessage = "type is immutable: the volumes on a backend were created by its driver; " +
+		"declare the other driver under a new name"
+	cinderBackupBackendTypeImmutableMessage = "type is immutable while name is unchanged: a restore reads a " +
+		"backup with the driver that wrote it; rename the entry to switch the driver"
+)
+
+// validateCinderBackendTypesImmutable is the webhook twin of the type
+// transition rules on the two Cinder entry kinds. A volume entry keeps its type
+// for as long as an entry of its name exists, and the backup entry keeps its
+// type while its name is unchanged. Both satellites freeze their own type, so
+// without the freeze here the ControlPlane admits the edit and the plane wedges
+// on CinderReady=False/CinderBackendProjectionRejected.
+//
+// An added entry, a removed entry, a renamed backup entry and an update on
+// either side without services.cinder or without backupBackend report nothing:
+// each of them projects a new satellite or prunes an old one rather than
+// changing the driver of a live one. A volume entry removed in one update and
+// re-added under the other type in a later one passes too, because neither
+// revision of the second update carries the old type; warnRemovedCinderBackends
+// names the type to restore.
+func validateCinderBackendTypesImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	oldCinder, newCinder := oldObj.Spec.Services.Cinder, newObj.Spec.Services.Cinder
+	if oldCinder == nil || newCinder == nil {
+		return nil
+	}
+	cinderPath := field.NewPath("spec", "services", "cinder")
+	var allErrs field.ErrorList
+
+	oldTypes := make(map[string]string, len(oldCinder.Backends))
+	for i := range oldCinder.Backends {
+		oldTypes[oldCinder.Backends[i].Name] = oldCinder.Backends[i].Type
+	}
+	for i := range newCinder.Backends {
+		entry := newCinder.Backends[i]
+		if oldType, ok := oldTypes[entry.Name]; ok && oldType != entry.Type {
+			allErrs = append(allErrs, field.Invalid(cinderPath.Child("backends").Index(i).Child("type"),
+				entry.Type, cinderBackendTypeImmutableMessage))
+		}
+	}
+
+	if oldBB, newBB := oldCinder.BackupBackend, newCinder.BackupBackend; oldBB != nil && newBB != nil &&
+		oldBB.Name == newBB.Name && oldBB.Type != newBB.Type {
+		allErrs = append(allErrs, field.Invalid(cinderPath.Child("backupBackend", "type"),
+			newBB.Type, cinderBackupBackendTypeImmutableMessage))
+	}
+	return allErrs
 }
 
 // validateNovaPublicEndpoint enforces the rules on
@@ -2948,6 +3227,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(newObj)...)
 	warnings = append(warnings, warnRemovedCinderBackends(oldObj, newObj)...)
+	warnings = append(warnings, warnCinderBackupDriverSwitch(oldObj, newObj)...)
 	warnings = append(warnings, sizingInertWarnings(newObj)...)
 
 	allErrs := w.validate(newObj)
@@ -4426,6 +4706,7 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateServiceNamespacesImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateServiceTargetClustersImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateBarbicanSecretStoreImmutable(oldObj, newObj)...)
+	allErrs = append(allErrs, validateCinderBackendTypesImmutable(oldObj, newObj)...)
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	newSecretName := newObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
