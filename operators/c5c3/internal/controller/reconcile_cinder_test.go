@@ -1931,6 +1931,203 @@ func TestReconcileCinder_RemovingBackupBackendPrunesIt(t *testing.T) {
 		"the volume backends are a separate kind and stay")
 }
 
+// backupBackendRule counts the writes the swap tests observe, fails the
+// backup-backend Delete while failDelete is set, and refuses the apply of a
+// CinderBackupBackend named in refuse with the error stored there.
+type backupBackendRule struct {
+	deletes    int
+	applies    map[string]int
+	failDelete bool
+	refuse     map[string]error
+}
+
+// newCinderReconcilerWithBackupBackendRule wires a reconciler whose client runs
+// the cinder module's CinderBackupBackendWebhook on every CinderBackupBackend
+// apply, so the single-attachment rule a backup swap has to get past is the
+// production one: a second, non-terminating CinderBackupBackend on the same
+// Cinder is refused with an Invalid error. It also counts the
+// CinderBackupBackend deletes and applies (per name) the pass issues.
+func newCinderReconcilerWithBackupBackendRule(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (*ControlPlaneReconciler, *backupBackendRule) {
+	t.Helper()
+	rule := &backupBackendRule{applies: map[string]int{}}
+	s := cinderTestScheme(t)
+	seeded := withCinderTenantStore(withReadyCinderRegistration(withCinderBusSecret(withReadyCinderDBCred(
+		append([]client.Object{cp}, objs...)))))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &cinderv1alpha1.Cinder{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				u, ok := obj.(runtime.Unstructured)
+				if !ok || u.GetObjectKind().GroupVersionKind().Kind != "CinderBackupBackend" {
+					return cl.Apply(ctx, obj, opts...)
+				}
+				name := obj.(client.Object).GetName()
+				rule.applies[name]++
+				if err := rule.refuse[name]; err != nil {
+					return err
+				}
+				applied := &cinderv1alpha1.CinderBackupBackend{}
+				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.UnstructuredContent(), applied); err != nil {
+					return err
+				}
+				if _, err := (&cinderv1alpha1.CinderBackupBackendWebhook{Client: cl}).ValidateCreate(ctx, applied); err != nil {
+					return err
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*cinderv1alpha1.CinderBackupBackend); ok {
+					rule.deletes++
+					if rule.failDelete {
+						return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+					}
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	return &ControlPlaneReconciler{Client: c, Scheme: s}, rule
+}
+
+// TestReconcileCinder_SwapsTheBackupBackendInOnePass is the regression lock for
+// a backup-target rename: a Cinder takes one backup backend, so the satellite
+// the old entry projected has to be deleted before the cinder webhook admits the
+// new one. One pass after nfsbk (NFS) becomes rbdbk (RBD) leaves rbdbk alone,
+// instead of wedging at CinderBackendProjectionRejected on every pass.
+func TestReconcileCinder_SwapsTheBackupBackendInOnePass(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	r, _ := newCinderReconcilerWithBackupBackendRule(t, cp)
+
+	_, err := r.reconcileCinder(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+	_, err = r.reconcileCinder(ctx, cp)
+
+	g.Expect(err).NotTo(HaveOccurred(), "the rename must converge in the same pass")
+	rbdbk := &cinderv1alpha1.CinderBackupBackend{}
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: "rbdbk", Namespace: cp.CinderNamespace()}, rbdbk)).To(Succeed())
+	g.Expect(rbdbk.Spec.Type).To(Equal(cinderv1alpha1.CinderBackupBackendTypeRBD))
+	err = r.Get(ctx, types.NamespacedName{Name: "nfsbk", Namespace: cp.CinderNamespace()},
+		&cinderv1alpha1.CinderBackupBackend{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the old backup backend must be pruned")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
+	g.Expect(cond.Reason).NotTo(Equal("CinderBackendProjectionRejected"))
+}
+
+// TestReconcileCinder_KeepsAnUnchangedBackupBackend pins the other side of the
+// prune-first order: a backup entry that keeps its name is kept by the prune, so
+// repeated passes delete nothing.
+func TestReconcileCinder_KeepsAnUnchangedBackupBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	r, rule := newCinderReconcilerWithBackupBackendRule(t, cp)
+
+	for range 2 {
+		_, err := r.reconcileCinder(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	}
+
+	g.Expect(rule.deletes).To(BeZero(), "an unchanged backup backend must never be deleted")
+	g.Expect(rule.applies["nfsbk"]).To(Equal(2))
+}
+
+// TestReconcileCinder_BackupPruneErrorHaltsBeforeProjection covers a failed
+// prune: the pass returns the delete error before it projects the new satellite,
+// which the old one, still attached, would have the cinder webhook refuse.
+func TestReconcileCinder_BackupPruneErrorHaltsBeforeProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	r, rule := newCinderReconcilerWithBackupBackendRule(t, cp)
+
+	_, err := r.reconcileCinder(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	rule.failDelete = true
+	cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+	_, err = r.reconcileCinder(ctx, cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("pruning undeclared CinderBackupBackend"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CinderBackendError"))
+	g.Expect(rule.applies["rbdbk"]).To(BeZero(), "no projection may follow a failed prune")
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: "nfsbk", Namespace: cp.CinderNamespace()},
+		&cinderv1alpha1.CinderBackupBackend{})).To(Succeed())
+}
+
+// TestReconcileCinder_ForeignBackupTargetKeepsTheCurrentOne pins the adoption
+// refusal ahead of the prune: a rename onto the name of a CinderBackupBackend
+// this ControlPlane did not create can never converge, so the pass refuses
+// before it deletes anything and nfsbk keeps serving backups.
+func TestReconcileCinder_ForeignBackupTargetKeepsTheCurrentOne(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	foreign := cinderBackupBackendForEntry(cp, *cinderBackupRBDEntry(), cp.CinderNamespace())
+	foreign.Spec.CinderRef.Name = "someone-else"
+	r, rule := newCinderReconcilerWithBackupBackendRule(t, cp, foreign)
+
+	_, err := r.reconcileCinder(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+	_, err = r.reconcileCinder(ctx, cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CinderBackendError"))
+	g.Expect(rule.deletes).To(BeZero(), "the working target must not be pruned for one that cannot be adopted")
+	g.Expect(rule.applies["rbdbk"]).To(BeZero())
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: "nfsbk", Namespace: cp.CinderNamespace()},
+		&cinderv1alpha1.CinderBackupBackend{})).To(Succeed())
+
+	var live cinderv1alpha1.CinderBackupBackend
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: "rbdbk", Namespace: cp.CinderNamespace()}, &live)).To(Succeed())
+	g.Expect(live.Spec).To(Equal(foreign.Spec), "a foreign backup backend must never be overwritten")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel))
+}
+
+// TestReconcileCinder_RefusedBackupSwapLeavesNoBackupTarget pins the documented
+// cost of the prune-first order: when the cinder API server refuses the new
+// satellite, the old one is already gone, so the plane has no backup target and
+// CinderReady names the entry to fix.
+func TestReconcileCinder_RefusedBackupSwapLeavesNoBackupTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	r, rule := newCinderReconcilerWithBackupBackendRule(t, cp)
+
+	_, err := r.reconcileCinder(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	rule.refuse = map[string]error{"rbdbk": apierrors.NewInvalid(
+		schema.GroupKind{Group: "cinder.c5c3.io", Kind: "CinderBackupBackend"}, "rbdbk",
+		field.ErrorList{field.Invalid(field.NewPath("spec", "rbd", "pool"), "backups", "refused")})}
+	cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+	_, err = r.reconcileCinder(ctx, cp)
+
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected the refusal to surface, got: %v", err)
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CinderBackendProjectionRejected"))
+	g.Expect(cond.Message).To(ContainSubstring("services.cinder.backupBackend"))
+	for _, name := range []string{"nfsbk", "rbdbk"} {
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cp.CinderNamespace()},
+			&cinderv1alpha1.CinderBackupBackend{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%s must not exist, got: %v", name, err)
+	}
+}
+
 // TestReconcileCinder_PruneRemovedBackend verifies removing an entry from the spec
 // prunes exactly its projected satellite and leaves the others.
 func TestReconcileCinder_PruneRemovedBackend(t *testing.T) {
