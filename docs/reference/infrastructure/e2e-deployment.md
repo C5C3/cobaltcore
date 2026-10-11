@@ -552,7 +552,7 @@ the production manifests. The figure shows that chain and who applies each
 directory. The table lists every directory under `deploy/` that holds a
 `kustomization.yaml`, with the bases it lists under `resources`.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, controlplane-ceph, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
 
 | Directory | Base | Applied by |
 | --- | --- | --- |
@@ -582,6 +582,7 @@ directory. The table lists every directory under `deploy/` that holds a
 | `deploy/lab/metal-stack/ceph` | none | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` ([Lab Ceph](infrastructure-manifests.md#lab-ceph)) |
 | `deploy/lab/metal-stack/ceph/cluster` | none | Step 5 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` |
 | `deploy/lab/metal-stack/controlplane` | none | a person ([Quick Start (metal-stack)](../../quick-start-metal-stack.md)) |
+| `deploy/lab/metal-stack/controlplane-ceph` | `deploy/lab/metal-stack/controlplane` | a person, over `controlplane/` on a lab deployed with `WITH_CEPH=true` ([Lab ControlPlane](infrastructure-manifests.md#lab-controlplane)) |
 | `deploy/lab/metal-stack/hypervisor-fixtures` | `deploy/kind/hypervisor-operator-fixtures` | a person, after the ControlPlane |
 | `deploy/lab/metal-stack/hypervisor` | `deploy/lab/metal-stack/migration-ports` | a person, after the ControlPlane |
 | `deploy/lab/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
@@ -676,6 +677,8 @@ deploy/lab/metal-stack/
 │   ├── kustomization.yaml          Lists the two manifests below
 │   ├── ovncentral.yaml             OVNCentral controlplane-ovn, as on the quick-start page
 │   └── controlplane-lab.yaml       ControlPlane controlplane with its cinder block, plus global_physnet_mtu and hypervisorOperator
+├── controlplane-ceph/              The Ceph variant of controlplane/ (#1346), applied by hand in Part 3 of the quick start
+│   └── kustomization.yaml          References ../controlplane/; a JSON patch adds ceph1 and replaces nfsbk with cephbk
 ├── dizzy/                          The dizzy metrics stack (#1225), applied under WITH_DIZZY=true
 │   └── kustomization.yaml          References ../../../kind/dizzy/
 │                                    Patches the Namespace → Gardener opt-out label,
@@ -738,8 +741,9 @@ pods, keeps the dizzy metrics on a volume behind a ClusterIP Service, leaves
 the Namespace `monitoring` to the base, keeps the Prometheus metrics on a
 volume, turns off four scrape jobs and adds the hvo dashboard. It changes
 nothing else. The script never applies
-`controlplane/`; the completion hint of
-`WITH_CONTROLPLANE=true` names it. Nor does it apply `hypervisor/` or
+`controlplane/`, which the completion hint of
+`WITH_CONTROLPLANE=true` names, or `controlplane-ceph/`, which Part 3 of the
+quick start applies by hand. Nor does it apply `hypervisor/` or
 `hypervisor-fixtures/`, which follow the ControlPlane by hand, or
 `dizzy-soak/`, which `make dizzy-soak-start` applies. Every volume of
 the lab, the proving `OpenBaoCluster`'s, the NFS export claim, the dizzy
