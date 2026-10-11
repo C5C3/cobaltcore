@@ -318,7 +318,8 @@ the API Deployment's `config` volume and match
 `driver = noop`,
 `local_metadata_per_cell = false`, the suite's one `extraConfig` override
 `allow_resize_to_same_host = true`, the `novncproxy_base_url` pointing at the
-proxy Service and `valid_interfaces = internal` inside `[placement]`, and they
+proxy Service and `valid_interfaces = internal` and `timeout = 60` inside
+`[placement]`, and they
 fail on a `password` line or the metadata shared secret. The second reads
 `nova-compute.conf` out of the compute-config Secret: `[placement]`,
 `[neutron]`, `[glance]`, `[service_user]` and `[vnc]` are present, `[database]`
