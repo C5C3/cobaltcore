@@ -236,13 +236,12 @@ func TestIntegration_Multicluster_CinderTargetCluster(t *testing.T) {
 		}, backup, "backup Deployment", eventuallyLongTimeout)
 
 		// envtest runs no Deployment controller on either cluster, so the four
-		// rollouts are completed here. The API step polls until its Deployment
-		// reports available, and the purge CronJob is projected behind it, so
-		// without this the inventory below would be missing its tail.
-		for _, key := range cinderWorkloadKeys(integrationCinderName, targetNamespace, integrationBackendName) {
-			markDeploymentReady(t, ctx, targetClient, key)
-		}
-		waitForCinderCondition(t, ctx, mgmtClient, cinderKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+		// rollouts are completed here, and kept completed while the aggregate
+		// resolves. The API step polls until its Deployment reports available,
+		// and the purge CronJob is projected behind it, so without this the
+		// inventory below would be missing its tail.
+		waitForCinderReadyWithWorkloads(t, ctx, mgmtClient, targetClient, cinderKey,
+			cinderWorkloadKeys(integrationCinderName, targetNamespace, integrationBackendName), eventuallyLongTimeout)
 
 		g.Expect(targetClient.Get(ctx, apiKey, api)).To(Succeed())
 		configMapName := mountedConfigMapName(&api.Spec.Template.Spec)

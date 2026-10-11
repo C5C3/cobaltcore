@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -43,6 +44,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
@@ -255,19 +257,37 @@ func waitForCinderCondition(t testing.TB, ctx context.Context, c client.Client, 
 	g := NewGomegaWithT(t)
 
 	var cond *metav1.Condition
+	var observed []metav1.Condition
 	g.Eventually(func() metav1.ConditionStatus {
 		var cr cinderv1alpha1.Cinder
 		if err := c.Get(ctx, key, &cr); err != nil {
 			return ""
 		}
+		observed = cr.Status.Conditions
 		cond = meta.FindStatusCondition(cr.Status.Conditions, condType)
 		if cond == nil {
 			return ""
 		}
 		return cond.Status
-	}, timeout, pollInterval).Should(Equal(expected),
-		"Cinder condition %s should reach %s", condType, expected)
+	}, timeout, pollInterval).Should(Equal(expected), func() string {
+		return fmt.Sprintf("Cinder condition %s should reach %s; last observed conditions: %s",
+			condType, expected, conditionsSummary(observed))
+	})
 	return cond
+}
+
+// conditionsSummary renders a condition list for a failure message, one
+// "Type=Status/Reason: Message" entry per condition, so a timed-out wait on an
+// aggregate names the sub-condition that held it rather than only its status.
+func conditionsSummary(conds []metav1.Condition) string {
+	if len(conds) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(conds))
+	for _, c := range conds {
+		parts = append(parts, fmt.Sprintf("%s=%s/%s: %s", c.Type, c.Status, c.Reason, c.Message))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // waitForBackendCondition polls the CinderBackend CR until the named condition
@@ -279,18 +299,22 @@ func waitForBackendCondition(t testing.TB, ctx context.Context, c client.Client,
 	g := NewGomegaWithT(t)
 
 	var cond *metav1.Condition
+	var observed []metav1.Condition
 	g.Eventually(func() metav1.ConditionStatus {
 		var cr cinderv1alpha1.CinderBackend
 		if err := c.Get(ctx, key, &cr); err != nil {
 			return ""
 		}
+		observed = cr.Status.Conditions
 		cond = meta.FindStatusCondition(cr.Status.Conditions, condType)
 		if cond == nil {
 			return ""
 		}
 		return cond.Status
-	}, timeout, pollInterval).Should(Equal(expected),
-		"CinderBackend condition %s should reach %s", condType, expected)
+	}, timeout, pollInterval).Should(Equal(expected), func() string {
+		return fmt.Sprintf("CinderBackend condition %s should reach %s; last observed conditions: %s",
+			condType, expected, conditionsSummary(observed))
+	})
 	return cond
 }
 
@@ -303,18 +327,22 @@ func waitForBackupBackendCondition(t testing.TB, ctx context.Context, c client.C
 	g := NewGomegaWithT(t)
 
 	var cond *metav1.Condition
+	var observed []metav1.Condition
 	g.Eventually(func() metav1.ConditionStatus {
 		var cr cinderv1alpha1.CinderBackupBackend
 		if err := c.Get(ctx, key, &cr); err != nil {
 			return ""
 		}
+		observed = cr.Status.Conditions
 		cond = meta.FindStatusCondition(cr.Status.Conditions, condType)
 		if cond == nil {
 			return ""
 		}
 		return cond.Status
-	}, timeout, pollInterval).Should(Equal(expected),
-		"CinderBackupBackend condition %s should reach %s", condType, expected)
+	}, timeout, pollInterval).Should(Equal(expected), func() string {
+		return fmt.Sprintf("CinderBackupBackend condition %s should reach %s; last observed conditions: %s",
+			condType, expected, conditionsSummary(observed))
+	})
 	return cond
 }
 
@@ -534,6 +562,76 @@ func markDeploymentReady(t testing.TB, ctx context.Context, c client.Client, key
 	eventuallyExists(t, ctx, c, key, deploy, "Deployment", eventuallyLongTimeout)
 	g.Expect(simulators.SimulateDeploymentReady(ctx, c, key, ptr.Deref(deploy.Spec.Replicas, 1))).
 		To(Succeed(), "mark Deployment %s available", key)
+}
+
+// waitForCinderReadyWithWorkloads marks the Deployments at keys ready on
+// children and keeps them marked while it polls the Cinder's Ready condition on
+// mgmt. envtest runs no Deployment controller, and this is the stand-in for one:
+// the operator re-applies a workload whenever its inputs change, and a spec it
+// changes after a one-shot mark carries an observedGeneration behind its
+// generation for good, which both readiness gates read as not available. The
+// backup service is the one that moves: it gains a source-side mount when a
+// volume backend projects after the backup target, and the two satellites a
+// test creates back to back project in whichever order their status writes
+// land. A failed wait names the sub-conditions and the Deployment states.
+func waitForCinderReadyWithWorkloads(t testing.TB, ctx context.Context, mgmt, children client.Client,
+	cinderKey types.NamespacedName, keys []client.ObjectKey, timeout time.Duration,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	var observed []metav1.Condition
+	g.Eventually(func() metav1.ConditionStatus {
+		for _, key := range keys {
+			d := &appsv1.Deployment{}
+			if err := children.Get(ctx, key, d); err != nil {
+				return ""
+			}
+			if deployment.IsDeploymentReady(d) && cinderDeploymentRolledOut(d) {
+				continue
+			}
+			if err := simulators.SimulateDeploymentReady(ctx, children, key, ptr.Deref(d.Spec.Replicas, 1)); err != nil {
+				return ""
+			}
+		}
+		var cr cinderv1alpha1.Cinder
+		if err := mgmt.Get(ctx, cinderKey, &cr); err != nil {
+			return ""
+		}
+		observed = cr.Status.Conditions
+		cond := meta.FindStatusCondition(cr.Status.Conditions, "Ready")
+		if cond == nil {
+			return ""
+		}
+		return cond.Status
+	}, timeout, pollInterval).Should(Equal(metav1.ConditionTrue), func() string {
+		return fmt.Sprintf("Cinder condition Ready should reach True; last observed conditions: %s; workloads: %s",
+			conditionsSummary(observed), deploymentStatesSummary(ctx, children, keys))
+	})
+}
+
+// deploymentStatesSummary renders, for every Deployment at keys, the generation
+// its spec is at against the one its status observed, the replica counts and
+// the volume names, so a failed readiness wait shows which workload the
+// operator still judges unavailable and whether it was re-applied after it was
+// marked.
+func deploymentStatesSummary(ctx context.Context, c client.Client, keys []client.ObjectKey) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		d := &appsv1.Deployment{}
+		if err := c.Get(ctx, key, d); err != nil {
+			parts = append(parts, fmt.Sprintf("%s: %v", key.Name, err))
+			continue
+		}
+		volumes := make([]string, 0, len(d.Spec.Template.Spec.Volumes))
+		for _, v := range d.Spec.Template.Spec.Volumes {
+			volumes = append(volumes, v.Name)
+		}
+		parts = append(parts, fmt.Sprintf("%s: generation %d observed %d replicas %d ready %d updated %d volumes %v",
+			key.Name, d.Generation, d.Status.ObservedGeneration, d.Status.Replicas, d.Status.ReadyReplicas,
+			d.Status.UpdatedReplicas, volumes))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // mountedConfigMapName returns the name of the ConfigMap the workload's config
@@ -763,12 +861,9 @@ func TestIntegrationCinder_BackendLifecycle(t *testing.T) {
 			To(Succeed(), "the rendered config ConfigMap should exist")
 
 		// envtest runs no Deployment controller, so every rollout is completed
-		// here. Only then can the aggregate resolve.
-		for _, key := range cinderWorkloadKeys(integrationCinderName, ns, integrationBackendName) {
-			markDeploymentReady(t, ctx, c, key)
-		}
-
-		waitForCinderCondition(t, ctx, c, cinderKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+		// here, and kept completed while the aggregate resolves.
+		waitForCinderReadyWithWorkloads(t, ctx, c, c, cinderKey,
+			cinderWorkloadKeys(integrationCinderName, ns, integrationBackendName), eventuallyLongTimeout)
 
 		ready := &cinderv1alpha1.Cinder{}
 		g.Expect(c.Get(ctx, cinderKey, ready)).To(Succeed())
@@ -994,10 +1089,8 @@ func TestIntegrationCinder_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	// Drive the 2026.1 install to Ready, which is the state an upgrade starts
 	// from: four workloads on the old image and a schema at the old release.
 	driveDatabase(t, ctx, c, integrationCinderName, ns)
-	for _, key := range cinderWorkloadKeys(integrationCinderName, ns, integrationBackendName) {
-		markDeploymentReady(t, ctx, c, key)
-	}
-	waitForCinderCondition(t, ctx, c, cinderKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+	waitForCinderReadyWithWorkloads(t, ctx, c, c, cinderKey,
+		cinderWorkloadKeys(integrationCinderName, ns, integrationBackendName), eventuallyLongTimeout)
 
 	installed := &cinderv1alpha1.Cinder{}
 	g.Expect(c.Get(ctx, cinderKey, installed)).To(Succeed())
