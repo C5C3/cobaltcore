@@ -264,6 +264,10 @@ func cinderBackupBackendForEntry(
 // A pruned CinderBackend keeps the cinder operator's service-remove finalizer
 // until its detach Job has run, so the object outlives this call while cinder
 // takes the backend out of service.
+//
+// It projects before it prunes, unlike reconcileCinderBackupBackend: a Cinder
+// takes any number of volume backends, and a renamed volume backend is a new
+// host whose predecessor runs its service-remove Job beside it.
 func (r *ControlPlaneReconciler) reconcileCinderBackends(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cinderNS string,
 ) error {
@@ -279,23 +283,54 @@ func (r *ControlPlaneReconciler) reconcileCinderBackends(
 	return r.pruneProjectedChildren(ctx, cp, cinderBackendChildren(cinderNS, declared))
 }
 
-// reconcileCinderBackupBackend projects the CinderBackupBackend satellite
-// services.cinder.backupBackend declares and prunes a previously-projected one
-// once the block is removed, which is what drops the backup service from the
-// plane. It carries the ownership rules reconcileCinderBackends documents.
+// reconcileCinderBackupBackend prunes every previously-projected
+// CinderBackupBackend satellite other than the one services.cinder.backupBackend
+// declares, then projects the declared one. Removing the block prunes the
+// satellite, which is what drops the backup service from the plane. It carries
+// the ownership rules reconcileCinderBackends documents.
+//
+// It prunes first because a Cinder takes one backup backend: the cinder webhook
+// refuses a second CinderBackupBackend on the same Cinder unless the first one is
+// terminating. A backup backend carries no finalizer and the Cinder reconciler
+// drops a deleting satellite at once, so deleting the old satellite first is what
+// lets a renamed or retyped target be admitted in the same pass. Projecting first
+// would have the new satellite refused before the prune ever ran, on every pass.
+// Between the two writes the plane has no backup target for one pass, and if the
+// new satellite is refused the plane stays without one until the entry is fixed.
+//
+// The adoption refusal ensureProjectedSatellite applies is known before the
+// prune, so it is checked first: a same-named CinderBackupBackend this
+// ControlPlane did not create can never be adopted, and the working target is
+// kept rather than pruned for a replacement that cannot follow.
 func (r *ControlPlaneReconciler) reconcileCinderBackupBackend(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cinderNS string,
 ) error {
+	var backupBackend *cinderv1alpha1.CinderBackupBackend
 	var keep map[string]struct{}
 	if entry := cp.Spec.Services.Cinder.BackupBackend; entry != nil {
-		backupBackend := cinderBackupBackendForEntry(cp, *entry, cinderNS)
-		if err := r.ensureProjectedSatellite(ctx, r.Client, cp, backupBackend); err != nil {
-			return fmt.Errorf("projecting CinderBackupBackend %q: %w", backupBackend.Name, err)
-		}
+		backupBackend = cinderBackupBackendForEntry(cp, *entry, cinderNS)
 		keep = map[string]struct{}{backupBackend.Name: {}}
+		foreign, err := r.preexistingForeign(ctx, r.Client, cp, backupBackend)
+		if err != nil {
+			return err
+		}
+		if foreign {
+			return fmt.Errorf("projecting CinderBackupBackend %q: refusing to adopt pre-existing %s: it was not "+
+				"created by this ControlPlane, so the current backup target is kept",
+				backupBackend.Name, client.ObjectKeyFromObject(backupBackend))
+		}
+	}
+	if err := r.pruneProjectedChildren(ctx, cp, cinderBackupBackendChildren(cinderNS, keep)); err != nil {
+		return err
+	}
+	if backupBackend == nil {
+		return nil
 	}
 
-	return r.pruneProjectedChildren(ctx, cp, cinderBackupBackendChildren(cinderNS, keep))
+	if err := r.ensureProjectedSatellite(ctx, r.Client, cp, backupBackend); err != nil {
+		return fmt.Errorf("projecting CinderBackupBackend %q: %w", backupBackend.Name, err)
+	}
+	return nil
 }
 
 // reconcileCinder projects spec.services.cinder into an owned Cinder CR with its
