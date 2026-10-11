@@ -42,10 +42,13 @@ produces.
 The backends of this guide are user-owned `CinderBackend` CRs that you attach to
 the projected `controlplane-cinder` by hand; the projected Cinder child itself
 stays untouched. The c5c3-operator's prune sweep deletes only the backends it
-projected, so it never reverts or deletes these two, and the ControlPlane does
-not declare an RBD backend in `services.cinder.backends` yet. The `openstack`
-commands use the `OS_*` variables and the `OS_CACERT` file of Part 1, Step 7 of
-the tutorial, with the Keystone port-forward of Step 6 running.
+projected, so it never reverts or deletes these two. The guide uses user-owned
+backends so the lab's `ControlPlane` stays untouched; a `ControlPlane` can
+declare the same backend itself, as
+[Declaring the backend on the ControlPlane](#declaring-the-backend-on-the-controlplane)
+shows. The `openstack` commands use the `OS_*` variables and the `OS_CACERT`
+file of Part 1, Step 7 of the tutorial, with the Keystone port-forward of Step 6
+running.
 
 ---
 
@@ -278,6 +281,41 @@ lists nothing. The Secret `ceph-client-cinder` stays: the lab's hand-off owns it
 | `... Secret "<name>" carries a userKey that is not a cephx key (base64 expected)` | The value is not the base64 `ceph auth get-key` prints |
 | The volume pod logs `Error connecting to ceph cluster.` and `Failed to initialize driver.` | The monitors, the networks or the key: the monitor name does not resolve, a network is missing from `spec.rbd.networks`, or Ceph refuses the key. The volume service does not repeat the setup on its own; delete its pod once the cause is fixed |
 | The apply is refused with `user is the cephx name without its client. prefix` | `spec.rbd.user` names `client.cinder`; write `cinder` |
+
+## Declaring the backend on the ControlPlane
+
+A `ControlPlane` declares an RBD backend as one more `services.cinder.backends`
+entry, and the c5c3-operator projects it into a `CinderBackend` of the same name.
+Run this after Step 6: the c5c3-operator refuses to adopt a same-named
+`CinderBackend` it did not create, so the hand-made `rbd1` has to be gone. The
+entry carries the Step 2 values and names the key Secret, nothing else of the key
+(see [The RBD key Secret](../../reference/c5c3/controlplane-crd.md#the-rbd-key-secret)):
+
+```bash
+kubectl -n openstack patch controlplane controlplane --type json -p '[{"op":"add","path":"/spec/services/cinder/backends/-","value":{
+  "name":"rbd1","type":"RBD","rbd":{
+    "pool":"volumes","user":"cinder",
+    "monitors":["rook-ceph-mon-a.rook-ceph.svc.cluster.local"],
+    "networks":["10.244.0.0/16","10.96.0.0/12"],
+    "keySecretRef":{"name":"ceph-client-cinder"}}}}]'
+kubectl -n openstack wait cinderbackend/rbd1 --for=condition=Ready --timeout=300s
+```
+
+The projected `rbd1` is owned by the `ControlPlane`, and its `type` is frozen
+under that name: an edit back to `NFS` is refused with `type is immutable`.
+Removing the entry prunes the satellite, and the cinder operator unregisters the
+`rbd1` volume service; the update warning names the entry and its type, because
+every volume left on `rbd1` loses its manager. Delete those volumes first, then remove the
+entry, which sits behind `nfs1` at index 1:
+
+```bash
+kubectl -n openstack patch controlplane controlplane --type json \
+  -p '[{"op":"test","path":"/spec/services/cinder/backends/1/name","value":"rbd1"},{"op":"remove","path":"/spec/services/cinder/backends/1"}]'
+kubectl -n openstack wait cinderbackend/rbd1 --for=delete --timeout=300s
+```
+
+The `test` operation makes the patch fail without a change when index 1 holds
+another entry.
 
 ## Standalone Cinder, without a ControlPlane
 

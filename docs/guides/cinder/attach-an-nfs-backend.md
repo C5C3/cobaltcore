@@ -260,7 +260,9 @@ The update webhook only warns:
 ```
 Warning: spec.services.cinder.backends entry "nfs2" is removed: its CinderBackend
 is pruned and its cinder-volume service unregistered, leaving every volume on
-that backend unmanageable until the entry is restored under the same name.
+that backend unmanageable until the entry is restored under the same name with
+type NFS. Re-adding the name with another type hands those volumes to a driver
+that did not create them.
 ```
 
 The detach then runs in a fixed order, because a running `cinder-volume` reports
@@ -316,8 +318,8 @@ table until the next db purge sweeps it; a backend attached again registers unde
 a new row id.
 
 The volume files on `/exports/volumes-b` are untouched by any of this, and
-nothing serves them anymore. Re-adding the entry under the same name restores
-the host identity they are keyed by.
+nothing serves them anymore. Re-adding the entry under the same name and type
+restores the host identity they are keyed by.
 
 ## Troubleshooting
 
