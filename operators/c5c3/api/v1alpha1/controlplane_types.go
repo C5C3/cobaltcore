@@ -1943,11 +1943,22 @@ type ServiceCinderSpec struct {
 
 // CinderBackendEntry declares one curated volume backend of the block-storage
 // service. The reconciler (L2) projects each entry one-to-one into a
-// CinderBackend satellite CR; the driver block matching type carries the backend
-// parameters. The type/nfs union rule enforces "the nfs block is set exactly when
-// type is NFS" at the CRD schema layer so it holds even when the validating
-// webhook is bypassed, mirroring the CinderBackend CR's own union rule.
+// CinderBackend satellite CR of the entry's type, NFS or RBD; the driver block
+// matching type carries the backend parameters. The two union rules enforce
+// "the nfs block is set exactly when type is NFS" and "the rbd block is set
+// exactly when type is RBD" at the CRD schema layer so they hold even when the
+// validating webhook is bypassed, mirroring the CinderBackend CR's own union
+// rule.
+//
+// The transition rule freezes the type per entry name, mirroring the
+// CinderBackend CR's own "type is immutable" rule: the volumes on a backend
+// were created by its driver, and without the freeze here the ControlPlane
+// would admit the edit and then wedge on the satellite's rejection. The list is
+// a listType=map keyed by name, so the API server correlates the old and the new
+// entry by name; an entry under a new name may take either type.
 // +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs)",message="the nfs block must be set exactly when type is NFS"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'RBD') == has(self.rbd)",message="the rbd block must be set exactly when type is RBD"
+// +kubebuilder:validation:XValidation:rule="self.type == oldSelf.type",message="type is immutable: the volumes on a backend were created by its driver; declare the other driver under a new name"
 type CinderBackendEntry struct {
 	// Name keys the listType=map Backends list (the apiserver rejects duplicates)
 	// and IS the projected CinderBackend's metadata.name, taken bare rather than
@@ -1968,16 +1979,22 @@ type CinderBackendEntry struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Type selects the volume driver. Phase 1 supports NFS only; the enum mirrors
-	// the CinderBackend CR's own type enum so an entry admitted here can never be
-	// rejected downstream by the CinderBackend CRD.
-	// +kubebuilder:validation:Enum=NFS
+	// Type selects the volume driver, NFS or RBD; both are projected. The enum
+	// mirrors the CinderBackend CR's own type enum so an entry admitted here can
+	// never be rejected downstream by the CinderBackend CRD. The type is frozen
+	// per entry name (transition rule above).
+	// +kubebuilder:validation:Enum=NFS;RBD
 	Type string `json:"type"`
 
 	// NFS configures the NFS volume driver. Required exactly when type is NFS
 	// (union rule above) and forbidden otherwise.
 	// +optional
 	NFS *NFSShareSpec `json:"nfs,omitempty"`
+
+	// RBD configures the Ceph RBD volume driver. Required exactly when type is
+	// RBD (union rule above) and forbidden otherwise.
+	// +optional
+	RBD *CinderBackendRBDSpec `json:"rbd,omitempty"`
 
 	// ImageVolumeCache turns on the per-backend image-volume cache: the first
 	// volume created from a given image is kept and later requests for the same
@@ -2028,6 +2045,150 @@ type NFSShareSpec struct {
 	MountOptions string `json:"mountOptions,omitempty"`
 }
 
+// CinderBackendRBDSpec is the CURATED LOCAL Ceph RBD shape the ControlPlane
+// projects onto a CinderBackend satellite's spec.rbd. It is a LOCAL COPY of the
+// cinder module's RBDBackendSpec, for the reason NFSShareSpec is one: the api
+// package carries the shapes it projects rather than importing them into its
+// types. Importing that type would also copy its clusterName default into the
+// ControlPlane CRD and default the field at two layers. Every marker and CEL
+// message below is copied verbatim from the RBDBackendSpec field of the same
+// name, so a value admitted here is admitted by the satellite CRD; the
+// validating webhook adds the rules no marker expresses.
+//
+// The ControlPlane never reads, copies or creates the cephx key: the entry
+// names the Secret that holds it (keySecretRef), and the cinder operator reads
+// it where the volume pods run.
+type CinderBackendRBDSpec struct {
+	// Pool is the Ceph pool the backend keeps its volumes in, rendered as
+	// rbd_pool.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	Pool string `json:"pool"`
+
+	// User is the cephx user the driver authenticates as, without its "client."
+	// prefix. It is rendered as rbd_user and names the [client.<user>] section of
+	// the projected keyring.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('client.')",message="user is the cephx name without its client. prefix (write cinder, not client.cinder)"
+	User string `json:"user"`
+
+	// Monitors lists the Ceph monitor addresses, each a hostname or an IPv4
+	// address with an optional port, rendered comma-joined as the mon_host line
+	// of the projected ceph.conf. IPv6 literals are not admitted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`
+	Monitors []string `json:"monitors"`
+
+	// Networks lists the IPv4 CIDRs the Ceph cluster answers on, each in
+	// canonical form (host bits zero). They are the Ceph side of the Cinder's
+	// NetworkPolicy: the egress rule to the monitor and OSD ports opens these
+	// networks. For a Rook cluster in the same Kubernetes cluster that is the pod
+	// network and the service network.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Pattern=`^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`
+	Networks []string `json:"networks"`
+
+	// ClusterName is the Ceph cluster name, rendered as rbd_cluster_name and the
+	// stem of the projected /etc/ceph/<cluster>.conf and keyring file names. It
+	// carries NO schema default on purpose: when unset the projection leaves the
+	// satellite's field unset so the CinderBackend CRD's own default ("ceph")
+	// applies at exactly one layer.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// KeySecretRef names the Secret that holds the raw cephx key of the user
+	// under the data key userKey. The Secret lives in the namespace the
+	// block-storage service runs in (cp.CinderNamespace(): services.cinder.namespace,
+	// else the ControlPlane's namespace) on the cluster services.cinder.targetClusterRef
+	// names, or on the management cluster without one, because that is where the
+	// volume pods run. The c5c3-operator never reads it.
+	KeySecretRef CinderRBDKeySecretRef `json:"keySecretRef"`
+
+	// SecretUUID is the UUID of the libvirt secret the hypervisors look the key
+	// up by, rendered as rbd_secret_uuid only when set. Left unset, the driver
+	// uses the cluster FSID; the libvirt secret on the hypervisors has to carry
+	// the same UUID either way.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	SecretUUID string `json:"secretUUID,omitempty"`
+}
+
+// CinderBackupBackendRBDSpec is the CURATED LOCAL Ceph shape the ControlPlane
+// projects onto a CinderBackupBackend satellite's spec.rbd. It is a LOCAL COPY
+// of the cinder module's RBDBackupBackendSpec, for the reasons
+// CinderBackendRBDSpec documents, with the markers and CEL messages of that
+// type's fields copied verbatim. It carries no secretUUID because no
+// hypervisor attaches a backup image.
+type CinderBackupBackendRBDSpec struct {
+	// Pool is the Ceph pool the backups are written to, rendered as
+	// backup_ceph_pool.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	Pool string `json:"pool"`
+
+	// User is the cephx user the backup driver authenticates as, without its
+	// "client." prefix, rendered as backup_ceph_user.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('client.')",message="user is the cephx name without its client. prefix (write cinder-backup, not client.cinder-backup)"
+	User string `json:"user"`
+
+	// Monitors lists the Ceph monitor addresses, as on CinderBackendRBDSpec.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`
+	Monitors []string `json:"monitors"`
+
+	// Networks lists the IPv4 CIDRs the Ceph cluster answers on, as on
+	// CinderBackendRBDSpec. The Cinder's NetworkPolicy unions them with the
+	// networks of its RBD volume backends.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Pattern=`^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`
+	Networks []string `json:"networks"`
+
+	// ClusterName is the Ceph cluster name, the stem of the projected ceph.conf
+	// and keyring file names. It carries NO schema default on purpose, the same
+	// way CinderBackendRBDSpec.ClusterName does: when unset the
+	// CinderBackupBackend CRD's own default ("ceph") applies.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// KeySecretRef names the Secret that holds the raw cephx key of the user
+	// under the data key userKey, in the namespace and on the cluster
+	// CinderBackendRBDSpec.KeySecretRef names, which is where the backup pod
+	// runs. The c5c3-operator never reads it.
+	KeySecretRef CinderRBDKeySecretRef `json:"keySecretRef"`
+}
+
+// CinderRBDKeySecretRef names the Secret that holds an RBD entry's cephx key.
+// It is a LOCAL COPY of the cinder module's SecretNameRefSpec, pattern
+// included. The shared SecretNameRef carries no pattern because the
+// GlanceBackend child admits any non-empty name, so it cannot serve here
+// without loosening this field or tightening Glance's.
+type CinderRBDKeySecretRef struct {
+	// Name is the referenced Secret's name, a DNS-1123 subdomain.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
+}
+
 // CinderImageVolumeCacheSpec bounds the per-backend image-volume cache the
 // ControlPlane projects onto a CinderBackend satellite's spec.imageVolumeCache.
 // The cache trades backend capacity for create-volume-from-image latency: a
@@ -2062,9 +2223,17 @@ type CinderImageVolumeCacheSpec struct {
 // describe different things: a backend is one of several volume stores and gets
 // a cinder-volume Deployment of its own, while the backup driver is a single
 // property of the one cinder-backup Deployment, with chunking and compression
-// knobs no volume backend carries. The type/nfs union rule mirrors the
-// CinderBackupBackend CR's own.
+// knobs no volume backend carries. It is projected for either type, NFS or
+// RBD, and its two union rules mirror the CinderBackupBackend CR's own.
+//
+// The transition rule freezes the type while the name is unchanged, mirroring
+// the CinderBackupBackend CR's own "type is immutable" rule: a restore reads a
+// backup with the driver that wrote it. Renaming the entry may change the type,
+// because a new name projects a new satellite, and the reconciler prunes the
+// old satellite before it projects the new one.
 // +kubebuilder:validation:XValidation:rule="(self.type == 'NFS') == has(self.nfs)",message="the nfs block must be set exactly when type is NFS"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'RBD') == has(self.rbd)",message="the rbd block must be set exactly when type is RBD"
+// +kubebuilder:validation:XValidation:rule="self.name != oldSelf.name || self.type == oldSelf.type",message="type is immutable while name is unchanged: a restore reads a backup with the driver that wrote it; rename the entry to switch the driver"
 type CinderBackupBackendEntry struct {
 	// Name is embedded verbatim in the name of the projected CinderBackupBackend
 	// satellite CR, hence the DNS-1123 label shape. Unlike a volume backend's name
@@ -2074,18 +2243,22 @@ type CinderBackupBackendEntry struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Type selects the backup driver. The ControlPlane projects NFS only; the
-	// enum is a subset of the CinderBackupBackend CR's own (NFS, RBD), so an
-	// entry admitted here can never be rejected downstream by the
-	// CinderBackupBackend CRD. An RBD backup target is applied as a
-	// CinderBackupBackend CR directly.
-	// +kubebuilder:validation:Enum=NFS
+	// Type selects the backup driver, NFS or RBD; both are projected. The enum
+	// mirrors the CinderBackupBackend CR's own, so an entry admitted here can
+	// never be rejected downstream by the CinderBackupBackend CRD. The type is
+	// frozen while the name is unchanged (transition rule above).
+	// +kubebuilder:validation:Enum=NFS;RBD
 	Type string `json:"type"`
 
 	// NFS configures the NFS backup driver. Required exactly when type is NFS
 	// (union rule above) and forbidden otherwise.
 	// +optional
 	NFS *NFSShareSpec `json:"nfs,omitempty"`
+
+	// RBD configures the Ceph backup driver. Required exactly when type is RBD
+	// (union rule above) and forbidden otherwise.
+	// +optional
+	RBD *CinderBackupBackendRBDSpec `json:"rbd,omitempty"`
 
 	// FileSize is the size in bytes of one backup chunk: cinder splits a volume
 	// into objects of this size and writes them one at a time, so it bounds both
@@ -2095,7 +2268,8 @@ type CinderBackupBackendEntry struct {
 	//
 	// It carries NO schema default on purpose: when unset the projection leaves
 	// the satellite's field unset so the CinderBackupBackend CR's own default
-	// (52428800, 50 MiB) applies at exactly one layer.
+	// (52428800, 50 MiB) applies at exactly one layer. An RBD target neither
+	// renders nor reads it, as on the satellite.
 	// +optional
 	// +kubebuilder:validation:Minimum=1048576
 	// +kubebuilder:validation:MultipleOf=32768
@@ -2105,6 +2279,7 @@ type CinderBackupBackendEntry struct {
 	// writes the chunks uncompressed, which trades backup capacity for CPU on the
 	// backup pod. It carries NO schema default on purpose, the same way fileSize
 	// does: when unset the CinderBackupBackend CR's own default ("zlib") applies.
+	// An RBD target neither renders nor reads it, as on the satellite.
 	// +optional
 	// +kubebuilder:validation:Enum=none;zlib;bz2;zstd
 	Compression string `json:"compression,omitempty"`
