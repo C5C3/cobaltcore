@@ -95,41 +95,50 @@ func validateNFSExport(fldPath *field.Path, path, mountOptions string) field.Err
 	return errs
 }
 
-// rbdUserClientPrefixMessage is the message of the CEL rule on
-// RBDBackendSpec.User, repeated verbatim by its webhook twin.
-const rbdUserClientPrefixMessage = "user is the cephx name without its client. prefix (write cinder, not client.cinder)"
+// RBDUserClientPrefixMessage is the message of the CEL rule on
+// RBDBackendSpec.User, repeated verbatim by its webhook twin. It is exported for
+// the ControlPlane, whose RBD volume entry carries the same CEL rule and passes
+// the message to ValidateRBDFields.
+const RBDUserClientPrefixMessage = "user is the cephx name without its client. prefix (write cinder, not client.cinder)"
 
-// rbdBackupUserClientPrefixMessage is the message of the CEL rule on
+// RBDBackupUserClientPrefixMessage is the message of the CEL rule on
 // RBDBackupBackendSpec.User, repeated verbatim by its webhook twin. It differs
-// from rbdUserClientPrefixMessage in its example alone.
-const rbdBackupUserClientPrefixMessage = "user is the cephx name without its client. prefix " +
+// from RBDUserClientPrefixMessage in its example alone, and it is exported for
+// the ControlPlane's RBD backup entry the same way.
+const RBDBackupUserClientPrefixMessage = "user is the cephx name without its client. prefix " +
 	"(write cinder-backup, not client.cinder-backup)"
 
 // validateRBDBackend is the defense-in-depth twin of the markers on
-// RBDBackendSpec; validateRBDFields carries the rules.
+// RBDBackendSpec; ValidateRBDFields carries the rules.
 func validateRBDBackend(fldPath *field.Path, rbd *RBDBackendSpec) field.ErrorList {
-	return validateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
-		rbd.KeySecretRef.Name, rbdUserClientPrefixMessage)
+	return ValidateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, RBDUserClientPrefixMessage)
 }
 
 // validateRBDBackupBackend is the defense-in-depth twin of the markers on
-// RBDBackupBackendSpec; validateRBDFields carries the rules.
+// RBDBackupBackendSpec; ValidateRBDFields carries the rules.
 func validateRBDBackupBackend(fldPath *field.Path, rbd *RBDBackupBackendSpec) field.ErrorList {
-	return validateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
-		rbd.KeySecretRef.Name, rbdBackupUserClientPrefixMessage)
+	return ValidateRBDFields(fldPath, rbd.Pool, rbd.User, rbd.ClusterName, rbd.Monitors, rbd.Networks,
+		rbd.KeySecretRef.Name, RBDBackupUserClientPrefixMessage)
 }
 
-// validateRBDFields checks the Ceph fields an RBD volume backend and an RBD
-// backup target share: the twin of their markers, plus the rules a pattern
-// cannot express: a monitor port inside 1 to 65535 and a network in canonical
-// form. The canonical form matters because the API server rejects an
-// ipBlock.cidr with host bits set, and that rejection would surface as a failing
-// NetworkPolicy step on the Cinder rather than here. Every value reaches the
-// rendered section, the projected ceph.conf or keyring, or a NetworkPolicy
-// verbatim, so a newline or a carriage return is rejected on every field the
-// renderer writes. clientPrefixMessage is the message of the kind's CEL rule on
-// the user field.
-func validateRBDFields(fldPath *field.Path, pool, user, clusterName string, monitors, networks []string,
+// ValidateRBDFields checks the Ceph fields an RBD volume backend and an RBD
+// backup target share. It leaves the length, item-count and character
+// allowlist markers of pool, user, clusterName, monitors and networks to the
+// CRD schema and checks the rest: the "client." prefix of the user (the twin of
+// the CEL rule on the user field, whose message clientPrefixMessage is), the
+// key Secret name as a DNS-1123 subdomain, and the rules a pattern cannot
+// express: a monitor port inside 1 to 65535 and a network in canonical form. The canonical form matters
+// because the API server rejects an ipBlock.cidr with host bits set, and that
+// rejection would surface as a failing NetworkPolicy step on the Cinder rather
+// than here. Every value reaches the rendered section, the projected ceph.conf
+// or keyring, or a NetworkPolicy verbatim, so a newline or a carriage return is
+// rejected on every field the renderer writes.
+//
+// It has two callers: this package's webhooks for the two satellite kinds, and
+// the ControlPlane webhook, which mirrors the markers of its own RBD entries
+// and delegates the rest here so the rules stay single-source.
+func ValidateRBDFields(fldPath *field.Path, pool, user, clusterName string, monitors, networks []string,
 	keySecretName, clientPrefixMessage string,
 ) field.ErrorList {
 	var errs field.ErrorList
