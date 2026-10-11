@@ -114,8 +114,8 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "service_user", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the service-user password is env-injected via OS_SERVICE_USER__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [placement] — the credentials rendered by keystoneauth.ClientSection plus
-	// the two keys that address the service. Nova claims an allocation here
-	// before every instance boots.
+	// the two keys that address the service and the request bound. Nova claims
+	// an allocation here before every instance boots.
 	{Section: "placement", Key: "auth_type", OwnedBy: "operator-computed"},
 	{Section: "placement", Key: "auth_url", OwnedBy: "spec.keystoneEndpoint"},
 	{Section: "placement", Key: "username", OwnedBy: "spec.serviceUser"},
@@ -125,6 +125,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "placement", Key: "region_name", OwnedBy: "spec.region"},
 	{Section: "placement", Key: "valid_interfaces", OwnedBy: "spec.endpoints.placement", Impact: "the interface decides which catalog entry nova resolves; the public one commonly names an address the pods cannot reach"},
 	{Section: "placement", Key: "endpoint_override", OwnedBy: "spec.endpoints.placement.override", Impact: "the address is where the instance allocations are claimed; another one holds none of this deployment's inventories"},
+	// timeout is reported, not Rejected: an override is how a deployment whose
+	// Placement calls legitimately run longer raises the bound.
+	{Section: "placement", Key: "timeout", OwnedBy: "operator-computed", Impact: "the bound is what turns a Placement that drops packets into a build that fails closed; without it a build on an established connection waits out the kernel's retransmission ladder, about 15 minutes"},
 	{Section: "placement", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the client password is env-injected via OS_PLACEMENT__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [neutron] — the client credentials plus the metadata-proxy pair. Nova

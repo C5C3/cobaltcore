@@ -1304,6 +1304,18 @@ func TestNovaValidate_ExtraConfigRejectedOwnedKeys(t *testing.T) {
 	}
 }
 
+// The Placement bound is a reported owned key: raising it through extraConfig
+// is the documented escape hatch, so the webhook admits it.
+func TestNovaValidate_ExtraConfigPlacementTimeoutAdmitted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &NovaWebhook{}
+
+	obj := validNova()
+	obj.Spec.ExtraConfig = map[string]map[string]string{"placement": {"timeout": "120"}}
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
 func TestNovaValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	w := &NovaWebhook{}

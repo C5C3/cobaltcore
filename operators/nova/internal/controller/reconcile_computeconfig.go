@@ -124,6 +124,10 @@ func remoteComputeConfigSecretName(nova *novav1alpha1.Nova) string {
 //   - No metadata keys in [neutron]. service_metadata_proxy and the shared
 //     secret belong to the metadata API that verifies a proxied request, not to
 //     the compute.
+//   - No [placement] timeout. The request bound is for the control plane's
+//     Placement clients (placementSection). A compute's inventory updates are
+//     periodic and retried, and the fragment is loaded by hypervisors in
+//     another trust domain.
 //   - No spec.extraConfig. The overrides configure the control plane the CR
 //     author runs, while this fragment is loaded by hypervisors in another trust
 //     domain, where a section of the author's choosing would reach options no

@@ -85,6 +85,16 @@ const (
 // and is not something to run on every periodic tick.
 const discoverHostsIntervalSeconds = 300
 
+// placementRequestTimeoutSeconds is [placement] timeout. keystoneauth passes it
+// to every Placement request as both the connect and the read timeout, so it
+// bounds a Placement that drops packets: without it the scheduler's call on an
+// established keep-alive connection waits out the kernel's retransmission
+// ladder, about 15 minutes, and the build sits in BUILD with nothing logged.
+// The cost is that a legitimate Placement call longer than 60 seconds fails in
+// whichever control-plane process makes it; a deployment with such calls raises
+// the bound through spec.extraConfig.
+const placementRequestTimeoutSeconds = 60
+
 // buildFailureWeightMultiplier is [filter_scheduler]
 // build_failure_weight_multiplier. Nova normalizes each weigher's raw weights
 // over the candidate hosts to the range 0 to 1 before it multiplies, so Nova's
@@ -311,7 +321,7 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 		// a boot that outlives the user token still reaches Placement, Neutron,
 		// Glance and Cinder.
 		"service_user":          keystoneauth.ServiceUserSection(params),
-		"placement":             catalogClientSection(params, spec.Endpoints.Placement.Override),
+		"placement":             placementSection(params, spec.Endpoints.Placement.Override),
 		"neutron":               catalogClientSection(params, spec.Endpoints.Neutron.Override),
 		"glance":                glanceSection(spec),
 		"oslo_messaging_rabbit": messaging.RabbitSection(spec.Messaging.TLS, rabbitmqCAFilePath),
@@ -405,6 +415,19 @@ func catalogClientSection(params keystoneauth.SectionParams, override string) ma
 	if override != "" {
 		section["endpoint_override"] = override
 	}
+	return section
+}
+
+// placementSection renders the control plane's [placement]: the catalog client
+// section plus the request bound. The bound applies to every control-plane
+// process that calls Placement; the build path, where the scheduler asks
+// Placement for allocation candidates while a user waits, is why it exists.
+// computeFragment keeps catalogClientSection on purpose: a compute's inventory
+// updates are periodic and retried, and the fragment is loaded by hypervisors
+// in another trust domain.
+func placementSection(params keystoneauth.SectionParams, override string) map[string]string {
+	section := catalogClientSection(params, override)
+	section["timeout"] = strconv.Itoa(placementRequestTimeoutSeconds)
 	return section
 }
 
