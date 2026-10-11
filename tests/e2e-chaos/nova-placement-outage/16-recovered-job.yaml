@@ -4,16 +4,18 @@
 
 # What the deployment does once Placement is reachable again: it schedules.
 #
-# s-after is a fresh create. The scheduler's Placement client is an HTTP client
-# with no connection state to rebuild, so the first request after the drop rule
-# goes away reaches the service and the build is placed. That is the whole
-# recovery contract here: no pod restart, no operator action, no re-submission.
+# s-after is a fresh create. The scheduler's urllib3 pool holds no live
+# Placement connection after the two timeouts of 15-failclosed-job.yaml, each
+# of which discarded the connection it timed out on, so the first request after
+# the drop rule goes away opens a new one, reaches the service and the build is
+# placed. That is the whole recovery contract here: no pod restart, no operator
+# action, no re-submission.
 #
-# The ERROR server of 15-failclosed-job.yaml is deleted afterwards rather than
-# left behind. A build that failed cannot be retried, so the only thing left to
-# prove about it is that the deployment takes it off the books, and a suite
-# that ended with an ERROR server in the listing would leave the teardown
-# reading an unclear state.
+# The two ERROR servers of 15-failclosed-job.yaml are deleted afterwards
+# rather than left behind. A build that failed cannot be retried, so the only
+# thing left to prove about it is that the deployment takes it off the books,
+# and a suite that ended with an ERROR server in the listing would leave the
+# teardown reading an unclear state.
 #
 # backoffLimit is 0 because the script is not idempotent: a second attempt
 # would find the server s-after the first one created and fail on the name.
@@ -95,8 +97,10 @@ spec:
               wait_status server s-after ACTIVE 300
               echo "OK: server s-after is ACTIVE"
 
-              openstack server delete s-fail
-              wait_gone server s-fail 120
-              echo "OK: the build that failed under the partition is gone"
+              for name in s-fail-warm s-fail-cold; do
+                openstack server delete "${name}"
+                wait_gone server "${name}" 120
+                echo "OK: the build that failed under the partition is gone: ${name}"
+              done
 
               echo RECOVERED-OK
