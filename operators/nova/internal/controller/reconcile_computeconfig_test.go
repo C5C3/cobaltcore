@@ -332,6 +332,16 @@ func TestComputeConfigDefaults_OmitsDatabaseAndMetadataKeys(t *testing.T) {
 			"%s configures something a compute node does not run or cannot reach", absent)
 	}
 
+	// The Placement request bound belongs to the control plane's build path;
+	// the fragment stays the compute contract, in-cluster and remote alike.
+	for name, fragment := range map[string]string{
+		"in-cluster": rendered,
+		"remote":     config.RenderINI(remoteComputeConfigDefaults(remoteComputeNova())),
+	} {
+		g.Expect(sectionOf(t, fragment, "placement")).NotTo(ContainSubstring("timeout"),
+			"the %s fragment's [placement] carries no request bound", name)
+	}
+
 	g.Expect(config.RenderINI(computeConfigDefaults(novaWithMessagingTLS()))).
 		To(ContainSubstring("ssl_ca_file = /etc/nova/compute-config/ca.crt"),
 			"the bundle is read from the directory the compute mounts this Secret at")

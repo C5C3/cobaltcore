@@ -113,6 +113,16 @@ func TestReconcileConfig_RendersFiveClientSections(t *testing.T) {
 			"[%s] reads its password from the OS_<SECTION>__PASSWORD override", section)
 	}
 
+	// The request bound is a [placement] key alone: every control-plane process
+	// reads it for its Placement client, and the scheduler's build path is why
+	// it exists. A Placement that drops packets fails the build after it
+	// instead of stalling it for the kernel's retransmissions.
+	g.Expect(sectionOf(t, conf, "placement")).To(ContainSubstring("timeout = 60\n"))
+	for _, section := range []string{"neutron", "cinder", "glance", "barbican"} {
+		g.Expect(sectionOf(t, conf, section)).NotTo(ContainSubstring("timeout"),
+			"[%s] is not the Placement client, so it carries no request bound", section)
+	}
+
 	// Glance is reached with the token of the request nova is serving, so the
 	// section addresses the service and carries no identity at all.
 	glance := sectionOf(t, conf, "glance")
@@ -654,6 +664,34 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
 		g.Expect(cond.Message).To(ContainSubstring("[filter_scheduler] build_failure_weight_multiplier"))
+	})
+
+	t.Run("a user value raises the Placement bound", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := validNova()
+		nova.Spec.ExtraConfig = map[string]map[string]string{
+			"placement": {"timeout": "120"},
+		}
+		r, art := renderConfig(t, nova)
+		placement := sectionOf(t, renderedConfigMap(t, r, art.configMapName).Data[novaConfDataKey], "placement")
+
+		g.Expect(placement).To(ContainSubstring("timeout = 120\n"))
+		g.Expect(placement).NotTo(ContainSubstring("timeout = 60\n"))
+		g.Expect(placement).To(ContainSubstring("valid_interfaces = internal\n"),
+			"the user key replaces the bound, not the operator's section")
+
+		// The bound is reported, not rejected: the override is honored and
+		// surfaced through the condition and one Warning event.
+		cond := novaCondition(nova, "ExtraConfigHealthy")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+		g.Expect(cond.Message).To(ContainSubstring("[placement] timeout"))
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+			SatisfyAll(
+				HavePrefix("Warning "+config.EventReasonExtraConfigOwnedKeyOverride+" "),
+				ContainSubstring("[placement] timeout"),
+			)))
 	})
 }
 
