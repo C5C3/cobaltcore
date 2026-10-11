@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -156,14 +157,16 @@ func cinderBackupBackendChildren(namespace string, keep map[string]struct{}) pro
 }
 
 // cinderBackendForEntry builds the CinderBackend satellite projected from one
-// services.cinder.backends entry, named after the entry itself. An unset
-// mountOptions serializes away (omitempty) so the CinderBackend CRD's own default
-// applies at exactly one layer.
+// services.cinder.backends entry, named after the entry itself and of the
+// entry's type. An unset mountOptions, clusterName or secretUUID serializes away
+// (omitempty) so the CinderBackend CRD's own default, or for secretUUID the
+// driver's, applies at exactly one layer.
 //
-// The nfs block is copied only when the entry carries one. The CRD's union rule
-// requires it for type NFS, so a nil block reaches here only on a
-// webhook-and-schema-bypassed CR, where leaving the satellite's field unset has
-// the satellite's own admission reject it rather than this projection panicking.
+// The nfs and rbd blocks are copied only when the entry carries them. The CRD's
+// union rules require the block matching the type, so a missing block reaches
+// here only on a webhook-and-schema-bypassed CR, where leaving the satellite's
+// field unset has the satellite's own admission reject it rather than this
+// projection panicking.
 func cinderBackendForEntry(
 	cp *c5c3v1alpha1.ControlPlane, entry c5c3v1alpha1.CinderBackendEntry, cinderNS string,
 ) *cinderv1alpha1.CinderBackend {
@@ -171,7 +174,7 @@ func cinderBackendForEntry(
 		ObjectMeta: metav1.ObjectMeta{Name: entry.Name, Namespace: cinderNS},
 		Spec: cinderv1alpha1.CinderBackendSpec{
 			CinderRef: cinderv1alpha1.CinderRefSpec{Name: cinderName(cp)},
-			Type:      cinderv1alpha1.CinderBackendTypeNFS,
+			Type:      cinderv1alpha1.CinderBackendType(entry.Type),
 		},
 	}
 	if entry.NFS != nil {
@@ -179,6 +182,18 @@ func cinderBackendForEntry(
 			Server:       entry.NFS.Server,
 			Path:         entry.NFS.Path,
 			MountOptions: entry.NFS.MountOptions,
+		}
+	}
+	// The lists are cloned so the projected satellite never aliases cp.Spec.
+	if rbd := entry.RBD; rbd != nil {
+		backend.Spec.RBD = &cinderv1alpha1.RBDBackendSpec{
+			Pool:         rbd.Pool,
+			User:         rbd.User,
+			Monitors:     slices.Clone(rbd.Monitors),
+			Networks:     slices.Clone(rbd.Networks),
+			ClusterName:  rbd.ClusterName,
+			KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: rbd.KeySecretRef.Name},
+			SecretUUID:   rbd.SecretUUID,
 		}
 	}
 	// DeepCopied for its pointer bounds, so the projected satellite never aliases
@@ -194,10 +209,12 @@ func cinderBackendForEntry(
 }
 
 // cinderBackupBackendForEntry builds the CinderBackupBackend satellite projected
-// from services.cinder.backupBackend, named after the entry itself. An unset
-// fileSize or compression serializes away (omitempty) so the CinderBackupBackend
-// CRD's own defaults apply at exactly one layer; the nfs block follows the rule
-// cinderBackendForEntry documents.
+// from services.cinder.backupBackend, named after the entry itself and of the
+// entry's type. An unset fileSize, compression or clusterName serializes away
+// (omitempty) so the CinderBackupBackend CRD's own defaults apply at exactly one
+// layer; the nfs and rbd blocks follow the rule cinderBackendForEntry documents.
+// fileSize and compression are copied for an RBD target too: the satellite
+// admits them, and the Ceph driver neither renders nor reads them.
 func cinderBackupBackendForEntry(
 	cp *c5c3v1alpha1.ControlPlane, entry c5c3v1alpha1.CinderBackupBackendEntry, cinderNS string,
 ) *cinderv1alpha1.CinderBackupBackend {
@@ -205,7 +222,7 @@ func cinderBackupBackendForEntry(
 		ObjectMeta: metav1.ObjectMeta{Name: entry.Name, Namespace: cinderNS},
 		Spec: cinderv1alpha1.CinderBackupBackendSpec{
 			CinderRef:   cinderv1alpha1.CinderRefSpec{Name: cinderName(cp)},
-			Type:        cinderv1alpha1.CinderBackupBackendTypeNFS,
+			Type:        cinderv1alpha1.CinderBackupBackendType(entry.Type),
 			Compression: entry.Compression,
 		},
 	}
@@ -214,6 +231,16 @@ func cinderBackupBackendForEntry(
 			Server:       entry.NFS.Server,
 			Path:         entry.NFS.Path,
 			MountOptions: entry.NFS.MountOptions,
+		}
+	}
+	if rbd := entry.RBD; rbd != nil {
+		backupBackend.Spec.RBD = &cinderv1alpha1.RBDBackupBackendSpec{
+			Pool:         rbd.Pool,
+			User:         rbd.User,
+			Monitors:     slices.Clone(rbd.Monitors),
+			Networks:     slices.Clone(rbd.Networks),
+			ClusterName:  rbd.ClusterName,
+			KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: rbd.KeySecretRef.Name},
 		}
 	}
 	// The value, not the pointer: the projected satellite must not alias cp.Spec.
