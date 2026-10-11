@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Ceph variant of the lab's ControlPlane: the OVNCentral and the
+# ControlPlane of ../controlplane, with Cinder's RBD volume backend ceph1
+# beside nfs1 and the RBD backup target cephbk in place of nfsbk. Part 3,
+# Step 1 of the quick start applies it over the ControlPlane that Part 1,
+# Step 4 applied with `kubectl apply -k`:
+#
+#   kubectl apply -k deploy/lab/metal-stack/controlplane-ceph
+#
+# Client-side apply sends `nfs: null` for backupBackend, because the first
+# apply recorded nfs in the kubectl.kubernetes.io/last-applied-configuration
+# annotation, so the result holds the rbd block alone. hack/deploy-infra.sh
+# neither applies nor reads this directory.
+#
+# It needs a lab deployed with WITH_CEPH=true. Without the Secrets
+# ceph-client-cinder and ceph-client-cinder-backup in openstack, ceph1 and
+# cephbk stay CredentialsReady=False and the ControlPlane never turns Ready.
+#
+# Where the values come from:
+#   - pool volumes and backups: the CephBlockPools of ../ceph/cluster/pools.yaml
+#   - user cinder and cinder-backup: the CephClients of
+#     ../ceph/cluster/clients.yaml
+#   - keySecretRef ceph-client-cinder and ceph-client-cinder-backup: the
+#     targets of the ExternalSecrets of ../ceph/cluster/keys-pull.yaml, each
+#     with the one key userKey
+#   - monitors: the Service Rook gives the first monitor in the CephCluster's
+#     namespace rook-ceph; ../ceph/cluster/cluster.yaml runs one (mon.count 1),
+#     so it is rook-ceph-mon-a.
+#   - secretUUID: the libvirt secret that ceph-secret.sh of
+#     ../hypervisor/libvirt-configmap.yaml defines on every hypervisor. The
+#     backup entry carries none, because no hypervisor attaches a backup.
+#   - networks: newforge's podNetwork and serviceNetwork, read from the
+#     ConfigMap kube-system/shoot-info on 2026-10-11. Another shoot writes its
+#     own two from there.
+# clusterName stays unset: the satellite CRDs default it to ceph, and the
+# ControlPlane field has no default on purpose.
+#
+# The networks open nothing on the lab: the projected Cinder runs without a
+# NetworkPolicy. With one, they would open the Ceph ports to every pod and
+# Service address of the shoot, which is where Rook's daemons answer.
+#
+# A backup entry changes its type only under a new name, so the RBD target is
+# cephbk. The c5c3-operator prunes nfsbk before it projects cephbk, and the
+# webhook warns on the apply that every backup the NFS driver wrote can be
+# neither restored nor deleted until nfsbk is declared again. Part 3 therefore
+# deletes the backup lab-bk first.
+#
+# The way back is `kubectl apply -k deploy/lab/metal-stack/controlplane`: it
+# replaces the backends list with nfs1 alone and the backup entry with nfsbk.
+# The c5c3-operator then prunes ceph1 and cephbk, and the webhook warns for
+# both. Every volume left on ceph1 loses its cinder-volume, and every backup
+# cephbk wrote becomes unreachable, so delete both first, then the volume type
+# ceph of Part 3, Step 2, whose volume_backend_name names ceph1.
+#
+# The patch is a JSON patch: a strategic-merge patch on a custom resource is a
+# JSON merge patch, which replaces the whole backends list and would have to
+# copy nfs1.
+#
+# Every resource is local to this directory or a base, so the render passes
+# kustomize's default `LoadRestrictionsRootOnly` check, and `kubectl apply -k`
+# works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../controlplane
+
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+    patch: |-
+      - op: add
+        path: /spec/services/cinder/backends/-
+        value:
+          name: ceph1
+          type: RBD
+          rbd:
+            pool: volumes
+            user: cinder
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder
+            secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+      - op: replace
+        path: /spec/services/cinder/backupBackend
+        value:
+          name: cephbk
+          type: RBD
+          rbd:
+            pool: backups
+            user: cinder-backup
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder-backup
