@@ -192,6 +192,71 @@ VALID_CINDER = (
 )
 
 
+# The Ceph monitor and networks every RBD fixture names: the in-cluster Rook
+# monitor Service, the pod network and the service network.
+CEPH_MONITOR = "rook-ceph-mon-a.rook-ceph.svc.cluster.local"
+CEPH_NETWORKS = ("10.244.0.0/16", "10.96.0.0/12")
+
+
+def cinder_rbd_block(
+    *,
+    pool: str = "volumes",
+    user: str = "cinder",
+    monitors: tuple[str, ...] = (CEPH_MONITOR,),
+    networks: tuple[str, ...] = CEPH_NETWORKS,
+    key: str = "ceph-client-cinder",
+) -> str:
+    """Render a Cinder entry's rbd block at indent 8, with a trailing newline.
+
+    The defaults are the valid volume-backend values; the RBD fixtures override
+    exactly one of them. An empty networks tuple renders ``networks: []``.
+    """
+    lines = [
+        "        rbd:\n",
+        f"          pool: {pool}\n",
+        f"          user: {user}\n",
+        "          monitors:\n",
+    ]
+    lines += [f"          - {monitor}\n" for monitor in monitors]
+    if networks:
+        lines.append("          networks:\n")
+        lines += [f"          - {network}\n" for network in networks]
+    else:
+        lines.append("          networks: []\n")
+    lines += ["          keySecretRef:\n", f"            name: {key}\n"]
+    return "".join(lines)
+
+
+# The head of a cinder block whose one volume entry is rbd1 (indent 4); the RBD
+# fixtures append the rbd block they mutate.
+CINDER_RBD1_HEAD = "    cinder:\n      backends:\n      - name: rbd1\n        type: RBD\n"
+
+# The valid RBD volume entry rbd1 (a backends list item at indent 6).
+VALID_CINDER_RBD_ENTRY = "      - name: rbd1\n        type: RBD\n" + cinder_rbd_block()
+
+# The valid rbd block of an RBD backup entry (indent 8).
+VALID_CINDER_BACKUP_RBD_BLOCK = cinder_rbd_block(
+    pool="backups", user="cinder-backup", key="ceph-client-cinder-backup"
+)
+
+
+def cinder_backup_head(name: str, type_: str) -> str:
+    """Render the head of a services.cinder.backupBackend block at indent 6.
+
+    The driver block follows at indent 8, appended by the caller.
+    """
+    return f"      backupBackend:\n        name: {name}\n        type: {type_}\n"
+
+
+# The valid NFS backup entry nfsbk, the backup target the transition wave
+# starts from.
+VALID_CINDER_BACKUP_NFS = cinder_backup_head("nfsbk", "NFS") + (
+    "        nfs:\n"
+    "          server: nfs-server.openstack.svc.cluster.local\n"
+    "          path: /backups\n"
+)
+
+
 # A valid nova service body (indent 4): the empty block. Every ServiceNovaSpec
 # field is optional, because everything the compute child needs (its database,
 # its cache, its bus, its Keystone endpoint) is derived from the ControlPlane,
@@ -2985,6 +3050,205 @@ FIXTURES: tuple[Fixture, ...] = (
         name="cp-published-database-endpoint-port",
         keystone="      mode: Managed\n",
         infrastructure=MANAGED_INFRA + "    publishedDatabaseEndpoint: db.example.com:65536\n",
+    ),
+    # --- Cinder RBD entries (still the create-rejection matrix). Each fixture
+    #     mutates one aspect of the valid RBD entry rbd1 (or the RBD backup entry
+    #     rbdbk); every ControlPlane name stays at or under 36 characters, the
+    #     budget the projected "{cp}-cinder" child leaves. ---
+    Fixture(
+        filename="145-cinder-rbd-backend-without-rbd.yaml",
+        comment=(
+            "A services.cinder.backends entry of type RBD without an rbd block violates the\n"
+            "CEL union rule on CinderBackendEntry: the Ceph driver has no pool, user or\n"
+            "monitor to address. The rule answers at the CRD schema layer, before the\n"
+            "webhook mirror in validateCinderBackends runs, so the step anchors on the\n"
+            "rule's message."
+        ),
+        name="cp-cinder-rbd-without-rbd",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=CINDER_RBD1_HEAD,
+    ),
+    Fixture(
+        filename="146-cinder-rbd-backend-user-client-prefix.yaml",
+        comment=(
+            "rbd.user carries the client. prefix. The driver prepends it itself, so\n"
+            "client.cinder would authenticate as client.client.cinder. The value passes the\n"
+            "Pattern marker, so the CEL rule on the field answers at the CRD schema layer,\n"
+            "and the step anchors on its message."
+        ),
+        name="cp-cinder-rbd-user-client-prefix",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=CINDER_RBD1_HEAD + cinder_rbd_block(user="client.cinder"),
+    ),
+    Fixture(
+        filename="147-cinder-rbd-backend-monitor-port-out-of-range.yaml",
+        comment=(
+            "A monitor port of 70000 passes the Pattern marker, which admits up to five\n"
+            "digits, and is rejected by the validating webhook (webhook-only): the\n"
+            "ControlPlane mirror delegates the port range to\n"
+            "cinderv1alpha1.ValidateRBDFields, the CinderBackend webhook's own rule, so\n"
+            "the plane does not wedge on the satellite's rejection."
+        ),
+        name="cp-cinder-rbd-monitor-port",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            CINDER_RBD1_HEAD
+            + cinder_rbd_block(monitors=(CEPH_MONITOR + ":70000",))
+        ),
+    ),
+    Fixture(
+        filename="148-cinder-rbd-backend-network-host-bits.yaml",
+        comment=(
+            "rbd.networks names 10.244.0.1/16, a CIDR with host bits set. It passes the\n"
+            "Pattern marker and is rejected by the validating webhook (webhook-only)\n"
+            "through the delegated cinder rule: the network becomes an ipBlock of the\n"
+            "Cinder's NetworkPolicy, which the API server refuses in that form."
+        ),
+        name="cp-cinder-rbd-network-host-bits",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            CINDER_RBD1_HEAD
+            + cinder_rbd_block(networks=("10.244.0.1/16", "10.96.0.0/12"))
+        ),
+    ),
+    Fixture(
+        filename="149-cinder-rbd-backend-key-secret-name-invalid.yaml",
+        comment=(
+            "rbd.keySecretRef.name is Ceph_Client, which is no DNS-1123 subdomain and so\n"
+            "names no Secret. The Pattern marker answers at the CRD schema layer, before the\n"
+            "webhook's delegated twin, so the step anchors on `should match`."
+        ),
+        name="cp-cinder-rbd-key-secret-name",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=CINDER_RBD1_HEAD + cinder_rbd_block(key="Ceph_Client"),
+    ),
+    Fixture(
+        filename="150-cinder-rbd-backend-networks-empty.yaml",
+        comment=(
+            "rbd.networks is empty. The networks are the Ceph side of the Cinder's\n"
+            "NetworkPolicy, so the list carries MinItems=1 and the CR is rejected at the CRD\n"
+            "schema layer, before the webhook mirror runs."
+        ),
+        name="cp-cinder-rbd-networks-empty",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=CINDER_RBD1_HEAD + cinder_rbd_block(networks=()),
+    ),
+    Fixture(
+        filename="151-cinder-rbd-backup-without-rbd.yaml",
+        comment=(
+            "A services.cinder.backupBackend of type RBD without an rbd block violates the\n"
+            "CEL union rule on CinderBackupBackendEntry at the CRD schema layer, before the\n"
+            "webhook mirror in validateCinderBackupBackend runs."
+        ),
+        name="cp-cinder-rbd-backup-without-rbd",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=VALID_CINDER + cinder_backup_head("rbdbk", "RBD"),
+    ),
+    Fixture(
+        filename="152-cinder-rbd-backup-network-host-bits.yaml",
+        comment=(
+            "The RBD backup entry's first network, 10.96.0.1/12, has host bits set. It\n"
+            "passes the Pattern marker and is rejected by the validating webhook\n"
+            "(webhook-only) through the delegated cinder rule, as for a volume entry."
+        ),
+        name="cp-cinder-rbd-backup-network",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            VALID_CINDER
+            + cinder_backup_head("rbdbk", "RBD")
+            + cinder_rbd_block(
+                pool="backups",
+                user="cinder-backup",
+                networks=("10.96.0.1/12", "10.244.0.0/16"),
+                key="ceph-client-cinder-backup",
+            )
+        ),
+    ),
+    # --- transition wave H: Cinder entry type freeze
+    #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
+    Fixture(
+        filename="153-transition-base-cinder-rbd.yaml",
+        comment=(
+            "Accepted base for the Cinder type-freeze test: a Managed ControlPlane with the\n"
+            "NFS volume entry nfs1, the RBD volume entry rbd1 and the NFS backup entry\n"
+            "nfsbk. Brownfield throughout, and the plane stays gated on KeystoneReady, so\n"
+            "the base provisions nothing and leaves no side effects for the later steps."
+        ),
+        name="cp-transition-h",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=VALID_CINDER + VALID_CINDER_RBD_ENTRY + VALID_CINDER_BACKUP_NFS,
+    ),
+    Fixture(
+        filename="154-transition-cinder-backend-type-flip.yaml",
+        comment=(
+            "UPDATE turning nfs1 into an RBD backend under the same name is rejected by the\n"
+            "CEL transition rule on CinderBackendEntry: the volumes on a backend were\n"
+            "created by its driver. The entry carries an rbd block and no nfs block, so the\n"
+            "union rules pass and the freeze is the only violation. Chainsaw applies an\n"
+            "UPDATE as an RFC 7386 JSON merge patch, which replaces the backends list whole,\n"
+            "so the omitted nfs block is gone without an explicit null."
+        ),
+        name="cp-transition-h",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            "    cinder:\n"
+            "      backends:\n"
+            "      - name: nfs1\n"
+            "        type: RBD\n"
+            + cinder_rbd_block()
+            + VALID_CINDER_RBD_ENTRY
+            + VALID_CINDER_BACKUP_NFS
+        ),
+    ),
+    Fixture(
+        filename="155-transition-cinder-backup-type-flip.yaml",
+        comment=(
+            "UPDATE turning nfsbk into an RBD backup target under the same name is rejected\n"
+            "by the CEL transition rule on CinderBackupBackendEntry: a restore reads a\n"
+            "backup with the driver that wrote it. nfs is explicitly nulled for the reason\n"
+            "fixture 94 gives: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch,\n"
+            "and backupBackend is an object, so an omitted nfs block would be RETAINED from\n"
+            "the base and trip the NFS union rule beside the freeze."
+        ),
+        name="cp-transition-h",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            VALID_CINDER
+            + VALID_CINDER_RBD_ENTRY
+            + cinder_backup_head("nfsbk", "RBD")
+            + "        nfs: null\n"
+            + VALID_CINDER_BACKUP_RBD_BLOCK
+        ),
+    ),
+    Fixture(
+        filename="156-transition-cinder-backup-rename-to-rbd.yaml",
+        comment=(
+            "UPDATE replacing nfsbk with the RBD backup target rbdbk is admitted: a new name\n"
+            "projects a new satellite, and the reconciler prunes the old one before it\n"
+            "projects the new one. nfs is explicitly nulled, as in the previous step, so the\n"
+            "merge patch does not retain the base's nfs block."
+        ),
+        name="cp-transition-h",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+        cinder=(
+            VALID_CINDER
+            + VALID_CINDER_RBD_ENTRY
+            + cinder_backup_head("rbdbk", "RBD")
+            + "        nfs: null\n"
+            + VALID_CINDER_BACKUP_RBD_BLOCK
+        ),
     ),
 )
 

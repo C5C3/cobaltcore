@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A services.cinder.backupBackend of type RBD without an rbd block violates the
+# CEL union rule on CinderBackupBackendEntry at the CRD schema layer, before the
+# webhook mirror in validateCinderBackupBackend runs.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-rbd-backup-without-rbd
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+      backupBackend:
+        name: rbdbk
+        type: RBD
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

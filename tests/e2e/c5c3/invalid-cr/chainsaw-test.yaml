@@ -1286,6 +1286,97 @@ spec:
             ($error != null): true
             (contains($error, 'spec.infrastructure.publishedDatabaseEndpoint')): true
             (contains($error, 'should match')): true
+  # A services.cinder.backends entry of type RBD without an rbd block must be
+  # rejected by the CEL union rule on the entry (CRD schema). The validating
+  # webhook repeats the union and client-prefix rules with the same text, so
+  # the CEL steps below also assert that no webhook denial answered: a dropped
+  # XValidation marker would otherwise leave them green. The webhook name arm
+  # is the half this repo owns (test_generate.py checks it against the chart).
+  - try:
+    - apply:
+        file: 145-cinder-rbd-backend-without-rbd.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0]')): true
+            (contains($error, 'the rbd block must be set exactly when type is RBD')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+  # rbd.user with the client. prefix must be rejected by the CEL rule on the
+  # field (CRD schema): the driver prepends the prefix itself.
+  - try:
+    - apply:
+        file: 146-cinder-rbd-backend-user-client-prefix.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0].rbd.user')): true
+            (contains($error, 'without its client. prefix')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+  # A monitor port of 70000 passes the Pattern marker and must be rejected by
+  # the validating webhook through the delegated cinder rule (webhook-only).
+  - try:
+    - apply:
+        file: 147-cinder-rbd-backend-monitor-port-out-of-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0].rbd.monitors[0]')): true
+            (contains($error, 'port must be between 1 and 65535')): true
+  # A network with host bits set passes the Pattern marker and must be
+  # rejected by the validating webhook (webhook-only): it would become an
+  # ipBlock the API server refuses on the Cinder's NetworkPolicy.
+  - try:
+    - apply:
+        file: 148-cinder-rbd-backend-network-host-bits.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0].rbd.networks[0]')): true
+            (contains($error, 'must be a canonical IPv4 CIDR')): true
+  # rbd.keySecretRef.name off DNS-1123 must be rejected by the Pattern marker
+  # (CRD schema): it names no Secret.
+  - try:
+    - apply:
+        file: 149-cinder-rbd-backend-key-secret-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0].rbd.keySecretRef.name')): true
+            (contains($error, 'should match')): true
+  # An empty rbd.networks must be rejected by the MinItems marker (CRD
+  # schema): the networks are the Ceph side of the Cinder's NetworkPolicy.
+  - try:
+    - apply:
+        file: 150-cinder-rbd-backend-networks-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0].rbd.networks')): true
+            (contains($error, 'should have at least 1 items')): true
+  # A services.cinder.backupBackend of type RBD without an rbd block must be
+  # rejected by the CEL union rule on the entry (CRD schema).
+  - try:
+    - apply:
+        file: 151-cinder-rbd-backup-without-rbd.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backupBackend')): true
+            (contains($error, 'the rbd block must be set exactly when type is RBD')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+  # The RBD backup entry's network with host bits set must be rejected by the
+  # validating webhook through the delegated cinder rule (webhook-only).
+  - try:
+    - apply:
+        file: 152-cinder-rbd-backup-network-host-bits.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backupBackend.rbd.networks[0]')): true
+            (contains($error, 'must be a canonical IPv4 CIDR')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -1464,3 +1555,46 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'cannot be removed once declared')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-cinder-type-freeze
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, with the NFS volume entry nfs1, the RBD volume entry
+    # rbd1 and the NFS backup entry nfsbk) must be admitted. Brownfield
+    # throughout and gated on KeystoneReady, so it provisions nothing.
+    - apply:
+        file: 153-transition-base-cinder-rbd.yaml
+    # Turning nfs1 into an RBD backend under the same name is rejected by the
+    # CEL transition rule: the volumes on a backend were created by its driver.
+    # The webhook twin repeats the message, so the two negative arms pin the
+    # CEL layer, as on the RBD steps of the create matrix.
+    - apply:
+        file: 154-transition-cinder-backend-type-flip.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backends[0]')): true
+            (contains($error, 'type is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+    # Turning nfsbk into an RBD backup target under the same name is rejected
+    # too: a restore reads a backup with the driver that wrote it.
+    - apply:
+        file: 155-transition-cinder-backup-type-flip.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.cinder.backupBackend')): true
+            (contains($error, 'type is immutable while name is unchanged')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vcontrolplane.kb.io')): false
+    # Replacing nfsbk with the RBD backup target rbdbk is admitted: a new name
+    # projects a new satellite.
+    - apply:
+        file: 156-transition-cinder-backup-rename-to-rbd.yaml

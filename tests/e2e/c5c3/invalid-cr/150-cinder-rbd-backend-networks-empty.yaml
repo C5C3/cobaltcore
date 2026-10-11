@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# rbd.networks is empty. The networks are the Ceph side of the Cinder's
+# NetworkPolicy, so the list carries MinItems=1 and the CR is rejected at the CRD
+# schema layer, before the webhook mirror runs.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-rbd-networks-empty
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks: []
+          keySecretRef:
+            name: ceph-client-cinder
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

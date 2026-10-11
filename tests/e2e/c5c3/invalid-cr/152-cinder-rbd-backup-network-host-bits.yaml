@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RBD backup entry's first network, 10.96.0.1/12, has host bits set. It
+# passes the Pattern marker and is rejected by the validating webhook
+# (webhook-only) through the delegated cinder rule, as for a volume entry.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-rbd-backup-network
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+      backupBackend:
+        name: rbdbk
+        type: RBD
+        rbd:
+          pool: backups
+          user: cinder-backup
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.96.0.1/12
+          - 10.244.0.0/16
+          keySecretRef:
+            name: ceph-client-cinder-backup
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

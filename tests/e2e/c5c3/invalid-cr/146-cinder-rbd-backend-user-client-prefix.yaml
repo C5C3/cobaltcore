@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# rbd.user carries the client. prefix. The driver prepends it itself, so
+# client.cinder would authenticate as client.client.cinder. The value passes the
+# Pattern marker, so the CEL rule on the field answers at the CRD schema layer,
+# and the step anchors on its message.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-rbd-user-client-prefix
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: client.cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

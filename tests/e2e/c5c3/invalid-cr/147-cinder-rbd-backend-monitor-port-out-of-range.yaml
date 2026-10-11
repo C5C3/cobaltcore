@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A monitor port of 70000 passes the Pattern marker, which admits up to five
+# digits, and is rejected by the validating webhook (webhook-only): the
+# ControlPlane mirror delegates the port range to
+# cinderv1alpha1.ValidateRBDFields, the CinderBackend webhook's own rule, so
+# the plane does not wedge on the satellite's rejection.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-cinder-rbd-monitor-port
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local:70000
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
