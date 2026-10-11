@@ -92,6 +92,7 @@ rules:
   - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
+  - rabbitmqvhosts/finalizers
   verbs:
   - update
 - apiGroups:
@@ -105,6 +106,7 @@ rules:
   - keystoneroleassignments/status
   - keystoneservices/status
   - keystoneusers/status
+  - rabbitmqvhosts/status
   verbs:
   - get
   - patch
@@ -117,6 +119,7 @@ rules:
   - keystoneprojects
   - keystoneroleassignments
   - keystoneusers
+  - rabbitmqvhosts
   verbs:
   - get
   - list
@@ -378,7 +381,10 @@ rules:
 - apiGroups:
   - rabbitmq.com
   resources:
+  - permissions
   - rabbitmqclusters
+  - users
+  - vhosts
   verbs:
   - create
   - delete

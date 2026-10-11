@@ -974,8 +974,8 @@ test_repository_counts_match_the_base_kustomization() {
   # page against the real files.
   copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
   cp "$page" "$copy/page.md"
-  rewrite "$copy/page.md" 's/^| \*\*Total\*\* | \*\*53\*\* | |/| **Total** | **52** | |/'
-  assert_eq "a copy with another total" "total differs: manifests 53, table 52" \
+  rewrite "$copy/page.md" 's/^| \*\*Total\*\* | \*\*55\*\* | |/| **Total** | **54** | |/'
+  assert_eq "a copy with another total" "total differs: manifests 55, table 54" \
     "$(check_resource_counts "$flux" "$copy/page.md")"
 }
 

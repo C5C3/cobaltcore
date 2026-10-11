@@ -23,4 +23,9 @@
 // in another namespace than the bus is handed a brownfield secretRef by its
 // projector, reconcileNeutronMessaging in operators/c5c3, which reads the bus
 // through ResolveTransportURL and writes that brownfield Secret itself.
+//
+// The package also builds the Vhost, User and Permission objects of the RabbitMQ
+// Messaging Topology Operator a RabbitMQVhost order is provisioned through, and
+// reads their readiness (TopologyReady, TopologyFailure). It writes none of
+// them; the c5c3 operator applies them.
 package messaging

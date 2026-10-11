@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deploy the RabbitMQ Messaging Topology Operator, the controller behind the
+# rabbitmq.com/v1beta1 Vhost, User and Permission CRDs. The c5c3-operator writes
+# one Vhost and, per credential generation, one User and one Permission for
+# every RabbitMQVhost order, in the namespace of the RabbitmqCluster they name,
+# and this operator creates them on the broker through its management API.
+#
+# DECISION: a Flux Kustomization (kustomize.toolkit.fluxcd.io), not a
+# HelmRelease, for the reason releases/rabbitmq-cluster-operator.yaml gives:
+# upstream ships no chart, so this runs the kustomize build of
+# ./config/installation. That base carries its own kustomization.yaml with
+# namespace: rabbitmq-system and namePrefix: messaging-topology-, so it shares
+# the Namespace with the Cluster Operator and no spec.targetNamespace is set
+# here. rabbitmq-system is co-declared in deploy/flux-system/namespaces.yaml.
+#
+# dependsOn: the controller watches the RabbitmqCluster kind to resolve the
+# broker a topology object names (through the status.binding Secret of the
+# RabbitmqCluster, which carries the admin credential), so the Cluster
+# Operator's Kustomization, which installs that CRD, goes Ready first.
+#
+# cert-manager: the base carries the validating and mutating webhooks plus the
+# self-signed Issuer and the two Certificates behind them, so cert-manager has to
+# be present. A Flux Kustomization cannot depend on a HelmRelease, so the cold
+# start converges over retryInterval as releases/rabbitmq-cluster-operator.yaml
+# describes.
+#
+# Resources: the manager requests 300m CPU and 128Mi memory and is limited to
+# 500m and 512Mi, the figures the upstream base sets; they are not overridden.
+#
+# POSTURE: upstream is maintained (VMware/Broadcom, Mozilla Public License 2.0)
+# and publishes no cosign signature, so both halves are pinned by content: the
+# Git commit in the source, the image digest below.
+#
+# Images: the inner kustomization rewrites the placeholder
+# rabbitmqoperator/messaging-topology-operator to
+# ghcr.io/rabbitmq/messaging-topology-operator with the mutable tag latest, so
+# this outer override keys on that resolved NAME rather than on the placeholder,
+# and it is what keeps latest out of the cluster. The digest resolves the pull;
+# newTag stays as the human-readable record of the tag the digest was resolved
+# from. Resolve a new digest at bump time, e.g.
+#   crane digest ghcr.io/rabbitmq/messaging-topology-operator:<tag>
+# Renovate bumps newTag and digest together in one reviewed PR;
+# tests/unit/renovate/messaging_topology_operator_image_custommanager_test.sh
+# guards that pairing. hack/deploy-infra.sh and hack/deploy-mgmt-cluster.sh
+# assert the digest on every RENDERED Deployment in rabbitmq-system after the
+# Kustomization goes Ready, for the reason releases/rabbitmq-cluster-operator.yaml
+# gives.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: messaging-topology-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: rabbitmq-cluster-operator
+  sourceRef:
+    kind: GitRepository
+    name: messaging-topology-operator
+    namespace: flux-system
+  path: ./config/installation
+  images:
+    # The Renovate customManager anchors on this exact shape: the newTag line
+    # directly precedes the digest line, and both values are double-quoted. Keep
+    # the order and the quoting when bumping, or the pair stops being tracked.
+    - name: ghcr.io/rabbitmq/messaging-topology-operator
+      newTag: "1.20.3"
+      digest: "sha256:f377d3c3e2215a8dfb8a7a5ab953ef7f180f295c401e5d2c2060f3b0748fefd6"
+  prune: true
+  wait: true

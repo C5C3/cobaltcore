@@ -239,15 +239,17 @@ test_script_sanity() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: the rabbitmq-cluster-operator source/Kustomization pair is applied
-# and waited for. It arrives as a Kustomization, so wait_for_helmreleases never
-# reports on it and only an explicit kubectl wait catches a failed reconcile.
+# Test 8: the source/Kustomization pairs of the rabbitmq-cluster-operator and
+# the messaging-topology-operator are applied and waited for. They arrive as
+# Kustomizations, so wait_for_helmreleases never reports on them and only an
+# explicit kubectl wait catches a failed reconcile.
 # ---------------------------------------------------------------------------
 test_rabbitmq_kustomization_applied_and_waited() {
-  echo "Test: the rabbitmq-cluster-operator Kustomization is applied and waited for"
+  echo "Test: the RabbitMQ operator Kustomizations are applied and waited for"
 
   local file
-  for file in sources/rabbitmq-cluster-operator.yaml releases/rabbitmq-cluster-operator.yaml; do
+  for file in sources/rabbitmq-cluster-operator.yaml releases/rabbitmq-cluster-operator.yaml \
+    sources/messaging-topology-operator.yaml releases/messaging-topology-operator.yaml; do
     if [ -f "$PROJECT_ROOT/deploy/flux-system/$file" ]; then
       echo "  PASS: deploy/flux-system/$file exists"
       PASS=$((PASS + 1))
@@ -260,38 +262,44 @@ test_rabbitmq_kustomization_applied_and_waited() {
       "$MGMT_SH" "deploy/flux-system/$file"
   done
 
-  # The object the wait below names has to be the object the release file
-  # declares, or the wait passes on a Kustomization that was never applied.
-  local release_file="$PROJECT_ROOT/deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-  local actual_kind actual_name actual_ns
-  actual_kind="$(awk '/^kind: Kustomization$/ { print $2; exit }' "$release_file")"
-  actual_name="$(awk '/^kind: Kustomization$/ { ks = 1 }
-                      ks && /^  name: / { print $2; exit }' "$release_file")"
-  actual_ns="$(awk '/^kind: Kustomization$/ { ks = 1 }
-                    ks && /^  namespace: / { print $2; exit }' "$release_file")"
-
-  assert_eq "the release file declares a Flux Kustomization" "Kustomization" "$actual_kind"
-  assert_eq "it declares Kustomization rabbitmq-cluster-operator" \
-    "rabbitmq-cluster-operator" "$actual_name"
-  assert_eq "it declares namespace flux-system" "flux-system" "$actual_ns"
-
-  # The rabbitmq-cluster-operator base carries cert-manager Issuer and
-  # Certificate objects, so its wait belongs after the HelmRelease waits.
-  local remaining_wait_line kustomization_wait_line
+  local remaining_wait_line
   remaining_wait_line="$(grep -n 'wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" "${remaining\[@\]}"' \
     "$MGMT_SH" | head -1 | cut -d: -f1)"
-  kustomization_wait_line="$(grep -n 'kubectl wait kustomization/rabbitmq-cluster-operator' \
-    "$MGMT_SH" | head -1 | cut -d: -f1)"
 
-  assert_not_empty "the Kustomization has a wait of its own" "$kustomization_wait_line"
+  local name previous_wait_line="${remaining_wait_line:-0}"
+  for name in rabbitmq-cluster-operator messaging-topology-operator; do
+    # The object each wait names has to be the object the release file
+    # declares, or the wait passes on a Kustomization that was never applied.
+    local release_file="$PROJECT_ROOT/deploy/flux-system/releases/$name.yaml"
+    local actual_kind actual_name actual_ns
+    actual_kind="$(awk '/^kind: Kustomization$/ { print $2; exit }' "$release_file")"
+    actual_name="$(awk '/^kind: Kustomization$/ { ks = 1 }
+                        ks && /^  name: / { print $2; exit }' "$release_file")"
+    actual_ns="$(awk '/^kind: Kustomization$/ { ks = 1 }
+                      ks && /^  namespace: / { print $2; exit }' "$release_file")"
 
-  if [ "${kustomization_wait_line:-0}" -gt "${remaining_wait_line:-0}" ]; then
-    echo "  PASS: the Kustomization wait follows the HelmRelease waits"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: the Kustomization wait does not follow the HelmRelease waits (its cert-manager objects apply only once cert-manager is up)"
-    FAIL=$((FAIL + 1))
-  fi
+    assert_eq "releases/$name.yaml declares a Flux Kustomization" "Kustomization" "$actual_kind"
+    assert_eq "it declares Kustomization $name" "$name" "$actual_name"
+    assert_eq "it declares namespace flux-system" "flux-system" "$actual_ns"
+
+    # Both bases carry cert-manager Issuer and Certificate objects, so their
+    # waits belong after the HelmRelease waits, and the topology operator's
+    # after the Cluster Operator's it depends on.
+    local kustomization_wait_line
+    kustomization_wait_line="$(grep -n "kubectl wait kustomization/$name" \
+      "$MGMT_SH" | head -1 | cut -d: -f1)"
+
+    assert_not_empty "the $name Kustomization has a wait of its own" "$kustomization_wait_line"
+
+    if [ "${kustomization_wait_line:-0}" -gt "$previous_wait_line" ]; then
+      echo "  PASS: the $name wait follows the waits before it"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: the $name wait does not follow the HelmRelease waits and the Kustomization it depends on"
+      FAIL=$((FAIL + 1))
+    fi
+    previous_wait_line="${kustomization_wait_line:-0}"
+  done
 }
 
 # ---------------------------------------------------------------------------

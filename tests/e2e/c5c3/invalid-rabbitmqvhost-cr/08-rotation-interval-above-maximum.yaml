@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A rotation interval of 87601h is rejected by the CEL rule on the field:
+# the next rotation time has to stay inside the range of a Go duration. The
+# grace period keeps its 24h default, so the block rule holds. The error
+# carries 'rotation.interval is at most 87600h'.
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: rmv-invalid-interval-maximum
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  rotation:
+    interval: 87601h

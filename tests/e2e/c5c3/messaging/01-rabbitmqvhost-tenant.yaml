@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The order under test: a vhost on the plane's managed bus, ordered from the
+# assigned namespace.
+#
+# The schedule rotates every three minutes with a one-minute grace period, so
+# the suite sees a scheduled rotation and the end of its grace period inside
+# its budget. passwordGeneration defaults to 1 and deletionPolicy to Retain;
+# the suite raises the generation to rotate by hand and deletes the order to
+# prove the vhost stays. controlPlaneRef names the plane's namespace
+# explicitly, because the order lives in another one.
+#
+# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# region below.
+# region rabbitmqvhost-workflow
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: workflow
+  namespace: "@TENANT_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  rotation:
+    interval: 3m
+    gracePeriod: 1m
+# endregion rabbitmqvhost-workflow

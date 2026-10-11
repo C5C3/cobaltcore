@@ -264,7 +264,7 @@ manifests:
 # TARGET_CLUSTER_CRDS are the c5c3-operator CRDs of the order kinds. Each gets a
 # third copy in the target-cluster-access chart: an order on a target cluster
 # lives there, so that cluster has to serve the kind.
-TARGET_CLUSTER_CRDS := c5c3.io_keystoneusers.yaml c5c3.io_keystoneprojects.yaml c5c3.io_keystoneroleassignments.yaml c5c3.io_keystonecatalogentries.yaml c5c3.io_keystoneapplicationcredentials.yaml
+TARGET_CLUSTER_CRDS := c5c3.io_keystoneusers.yaml c5c3.io_keystoneprojects.yaml c5c3.io_keystoneroleassignments.yaml c5c3.io_keystonecatalogentries.yaml c5c3.io_keystoneapplicationcredentials.yaml c5c3.io_rabbitmqvhosts.yaml
 
 .PHONY: sync-crds
 # sync-crds copies generated CRD manifests from config/crd/bases/ to the Helm
@@ -491,6 +491,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-keystoneroleassignment-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-keystonecatalogentry-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/_generate.py --check
+	@python3 tests/e2e/c5c3/invalid-rabbitmqvhost-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-sizingprofile-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py --check
@@ -517,6 +518,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-keystoneroleassignment-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-keystonecatalogentry-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/test_generate.py
+	@python3 tests/e2e/c5c3/invalid-rabbitmqvhost-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-sizingprofile-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py

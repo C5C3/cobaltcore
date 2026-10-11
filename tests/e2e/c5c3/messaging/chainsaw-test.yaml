@@ -67,11 +67,33 @@
 # RabbitMQError. Probing the CRD turns that into a SKIP instead of a failing wait
 # for a broker the cluster can never create.
 #
+# ── Orders ───────────────────────────────────────────────────────────────────
+# This is the one suite with a live managed bus, so it carries the RabbitMQVhost
+# proof as well. The fixture assigns ${NAMESPACE}-tenant to service owners, and
+# once the bus is ready five order legs run against it, proved with rabbitmqctl
+# in the broker pod:
+#
+#   - ORDER 1: an order reaches Ready with its derived vhost, its first user, the
+#     six-key Secret beside it and its OpenBao backup; the user authenticates and
+#     holds ".*" on the vhost alone;
+#   - ORDER 2: an edited password and a deleted Secret are repaired;
+#   - ORDER 3: the three-minute schedule rotates the user, both users
+#     authenticate during the one-minute grace period, the superseded one is
+#     refused afterwards, and a raised passwordGeneration rotates at once with
+#     the schedule off;
+#   - ORDER 4: deleting an order under Retain keeps its vhost on the broker, and
+#     under Delete removes it, while the user and the backup go either way;
+#   - ORDER 5: withdrawing the namespace assignment freezes an order with its
+#     Secret, and restoring it recovers the order.
+#
+# The guard therefore probes the order kind, the three Messaging Topology
+# Operator kinds and the OpenBao instance the backup is read back from as well.
+#
 # ── Deliberately not asserted: consumer wiring ───────────────────────────────
 # No service reads the bus yet, so this suite stops at the provisioned, owned,
-# sized, ready broker and asserts nothing about who talks to it. The transport
-# URL projection into a service's oslo.messaging config lands with the first
-# consumer.
+# sized, ready broker and the orders on it, and asserts nothing about which
+# service talks to it. The transport URL projection into a service's
+# oslo.messaging config lands with the first consumer.
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -82,18 +104,22 @@ spec:
   # namespace and injects it as $NAMESPACE (see the note above).
   timeouts:
     assert: 5m
-    exec: 15m
+    exec: 35m
   steps:
   - try:
     - script:
         # Budget: the AllReplicasReady poll is bounded at 600s, the
         # InfrastructureReady poll at 180s, the ControlPlane delete at 300s, the
         # RabbitmqCluster and broker-pod teardown waits at 180s each, and every
-        # other probe is a bounded kubectl call. 13m caps the whole step and
-        # leaves headroom on a cold single-node cluster pulling the RabbitMQ
-        # image; the teardown waits complete in seconds on the operator's own
-        # deletion path.
-        timeout: 13m
+        # other probe is a bounded kubectl call. The orders add about 14
+        # minutes: ORDER 3's two rotation waits (the three-minute schedule, then
+        # the one-minute grace period and the user's removal) about 8, and the
+        # second order, the two deletions and the freeze about 6, with ORDER
+        # 1's first Ready on a cold topology operator the one long wait. 33m
+        # caps the whole step and leaves headroom on a cold single-node
+        # cluster pulling the RabbitMQ image; the teardown waits complete in
+        # seconds on the operator's own deletion path.
+        timeout: 33m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every c5c3
         # e2e script pins bash for the same reason.
         shell: bash
@@ -103,6 +129,13 @@ spec:
           CP_NS="${NAMESPACE}"
           CP_NAME=cp
           BUS=cp-rabbitmq
+          # The orders live in a namespace the plane assigns, derived from the
+          # ephemeral one so parallel runs never share it.
+          TENANT_NS="${NAMESPACE}-tenant"
+          ORDER=workflow
+          ORDER_DELETE=workflow-delete
+          CREDS_SECRET="${ORDER}-credentials"
+          ORDER_SELECTOR="c5c3.io/rabbitmqvhost-name=${ORDER},c5c3.io/rabbitmqvhost-namespace=${TENANT_NS}"
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
           skip_or_fail() { # <reason...>
@@ -118,12 +151,18 @@ spec:
 
           # ── Presence guard ────────────────────────────────────────────────
           # The list is the sibling dedicated-backing-services one plus
-          # rabbitmqclusters.rabbitmq.com, for the two reasons the header states.
-          # Keep it in sync with ControlPlaneReconciler.SetupWithManager.
+          # rabbitmqclusters.rabbitmq.com, for the two reasons the header states,
+          # plus the order kind and the three topology kinds the orders are
+          # provisioned through. Keep it in sync with
+          # ControlPlaneReconciler.SetupWithManager.
           missing=""
           for crd in \
             controlplanes.c5c3.io \
+            rabbitmqvhosts.c5c3.io \
             rabbitmqclusters.rabbitmq.com \
+            vhosts.rabbitmq.com \
+            users.rabbitmq.com \
+            permissions.rabbitmq.com \
             mariadbs.k8s.mariadb.com \
             memcacheds.memcached.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
@@ -144,11 +183,40 @@ spec:
             fi
           done
           if [ -n "${missing}" ]; then
-            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached and RabbitMQ Cluster operators) on this cluster."
+            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached and RabbitMQ Cluster operators and the RabbitMQ Messaging Topology Operator) on this cluster."
+          fi
+          # The orders back their credentials up to the shared OpenBao, which the
+          # suite reads back. Every bao call reads the root token from a file
+          # staged in openbao-0, which keeps it out of argv and the API server's
+          # audit log (see the keystone-service suite).
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > /tmp/.bao-token'; then
+            skip_or_fail "could not stage the OpenBao root token in openbao-0."
+          fi
+          unset BAO_TOKEN
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              sh -c 'BAO_TOKEN="$(cat /tmp/.bao-token)"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            skip_or_fail "the eso-tenant OpenBao auth role is not configured."
           fi
           echo "OK: every CRD the ControlPlane controller watches is present, and so"
-          echo "    is rabbitmqclusters.rabbitmq.com. Running the messaging"
-          echo "    assertions in namespace ${CP_NS}."
+          echo "    are rabbitmqclusters.rabbitmq.com, the order kind, the topology"
+          echo "    kinds and OpenBao. Running the messaging assertions in namespace"
+          echo "    ${CP_NS}, the orders in ${TENANT_NS}."
 
           # ── Helpers ───────────────────────────────────────────────────────
           assert_eq() { # <description> <expected> <actual>
@@ -213,22 +281,193 @@ spec:
             done
           }
 
-          # wait_condition is the sibling suite's wait_ready_condition with the
-          # condition type as a parameter: the RabbitMQ Cluster Operator publishes
-          # no Ready condition, so the broker's health is read off
-          # AllReplicasReady, which is the condition the reconciler gates on too.
-          wait_condition() { # <resource> <name> <conditionType> <timeoutSeconds>
-            local res="$1" name="$2" cond="$3" timeout="$4" deadline status
+          # wait_condition is the keystone-user suite's: the namespace, the
+          # condition type and the expected status are parameters. The RabbitMQ
+          # Cluster Operator publishes no Ready condition, so the broker's health
+          # is read off AllReplicasReady, which is the condition the reconciler
+          # gates on too.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
             deadline=$(( $(date +%s) + timeout ))
             while true; do
-              status="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
-                -o "jsonpath={.status.conditions[?(@.type=='${cond}')].status}" 2>/dev/null || true)"
-              if [ "${status}" = "True" ]; then
-                echo "OK: ${res}/${name} ${cond}=True"
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want}"
                 return 0
               fi
               if [ "$(date +%s)" -ge "${deadline}" ]; then
-                echo "ERROR: ${res}/${name} ${cond} not True within ${timeout}s (last: '${status:-<none>}')"
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s (last: '${status:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          condition_reason() { # <resource> <name> <namespace> <conditionType>
+            kubectl get "$1" "$2" -n "$3" \
+              -o "jsonpath={.status.conditions[?(@.type=='$4')].reason}" 2>/dev/null || true
+          }
+          wait_reason() { # <resource> <name> <namespace> <conditionType> <expectedReason> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline reason
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              reason="$(condition_reason "${res}" "${name}" "${ns}" "${ctype}")"
+              if [ "${reason}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype} reports ${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} did not report ${want} within ${timeout}s (last: '${reason:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          # One jsonpath read of an object; an absent field or object reads empty.
+          jsonpath_of() { # <resource> <name> <namespace> <jsonpath>
+            kubectl get "$1" "$2" -n "$3" -o "jsonpath=$4" 2>/dev/null || true
+          }
+          # Waits until a jsonpath of an object reads the expected value, the
+          # empty string included.
+          wait_field() { # <resource> <name> <namespace> <jsonpath> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" path="$4" want="$5" timeout="$6" deadline got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(jsonpath_of "${res}" "${name}" "${ns}" "${path}")"
+              if [ "${got}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${path} reads '${want}'"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${path} did not read '${want}' within ${timeout}s (last: '${got}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          order_status() { # <name> <status field>
+            jsonpath_of rabbitmqvhost "$1" "${TENANT_NS}" "{.status.$2}"
+          }
+          count_of() { # <kinds> <namespace> [selector]
+            local kinds="$1" ns="$2" sel="${3:-}"
+            if [ -n "${sel}" ]; then
+              kubectl get "${kinds}" -n "${ns}" -l "${sel}" --no-headers 2>/dev/null | grep -c . || true
+            else
+              kubectl get "${kinds}" -n "${ns}" --no-headers 2>/dev/null | grep -c . || true
+            fi
+          }
+          # The base64 value of a Secret key, read in one call. Never printed.
+          secret_key() { # <name> <namespace> <key>
+            kubectl get secret "$1" -n "$2" -o "jsonpath={.data.$3}" 2>/dev/null || true
+          }
+          # The decoded value of a Secret key. Never printed either.
+          secret_value() { # <name> <namespace> <key>
+            base64 -d <<<"$(secret_key "$1" "$2" "$3")" 2>/dev/null || true
+          }
+          # Waits until the delivered Secret carries the password the given
+          # generation's Secret in the plane's namespace holds.
+          wait_delivered_password() { # <generation> <timeoutSeconds>
+            local gen="$1" timeout="$2" deadline want got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              want="$(secret_key "${PREFIX}password-v${gen}" "${CP_NS}" password)"
+              got="$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)"
+              if [ -n "${want}" ] && [ "${want}" = "${got}" ]; then
+                echo "OK: ${CREDS_SECRET} carries the password of generation ${gen}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${CREDS_SECRET} does not carry the password of generation ${gen} within ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          # Probe for LIVE data: a kv-v2 soft delete leaves the metadata behind,
+          # so `kv get` keeps exiting 0 with data:null after the value is purged.
+          # Only data:null, or OpenBao saying the path is not there, ends the
+          # loop; kubectl's own transport errors retry (see keystone-service).
+          wait_kv_purged() { # <kv path> <timeoutSeconds> <what the purge follows>
+            local path="$1" timeout="$2" after="$3" deadline err kv_json
+            deadline=$(( $(date +%s) + timeout ))
+            err="$(mktemp)"
+            while true; do
+              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")"; then
+                jq -e '.data.data == null' <<<"${kv_json}" >/dev/null 2>&1 && break
+              elif grep -qiE 'no value found|no secret found' "${err}"; then
+                break
+              else
+                echo "WARN: could not read ${path} ($(cat "${err}")); retrying"
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${path} still holds a live value, or could not be read, ${timeout}s after ${after}"
+                rm -f "${err}"
+                exit 1
+              fi
+              sleep 5
+            done
+            rm -f "${err}"
+            echo "OK: ${path} holds no live value."
+          }
+          # The counterpart, so the purge check later watches a path that was
+          # written. The JSON is key material, so nothing of it is printed.
+          assert_kv_live() { # <kv path> <timeoutSeconds>
+            local path="$1" timeout="$2" deadline err kv_json
+            deadline=$(( $(date +%s) + timeout ))
+            err="$(mktemp)"
+            while true; do
+              if kv_json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${path}" 2>"${err}")" &&
+                jq -e '.data.data != null' <<<"${kv_json}" >/dev/null 2>&1; then
+                rm -f "${err}"
+                echo "OK: ${path} holds a live value."
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${path} held no live value within ${timeout}s ($(cat "${err}"))"
+                rm -f "${err}"
+                exit 1
+              fi
+              sleep 5
+            done
+          }
+          # broker_ctl runs rabbitmqctl in the broker pod, as
+          # tests/e2e/cinder/broker-vhost.sh does.
+          broker_ctl() {
+            kubectl exec -n "${CP_NS}" "${BUS}-server-0" -c rabbitmq -- rabbitmqctl "$@"
+          }
+          # authenticates reports whether the broker accepts the user and
+          # password. Nothing of either is printed.
+          authenticates() { # <username> <password>
+            broker_ctl authenticate_user "$1" "$2" >/dev/null 2>&1
+          }
+          # The vhost names the broker lists, one per line.
+          broker_vhosts() {
+            broker_ctl list_vhosts --quiet --formatter json name 2>/dev/null | jq -r '.[].name' || true
+          }
+          # Waits until the delivered Secret carries the password of the
+          # generation status names, read anew on every poll: a scheduled
+          # rotation may switch it while the wait runs.
+          wait_delivered_current() { # <timeoutSeconds>
+            local timeout="$1" deadline gen want got
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              gen="$(order_status "${ORDER}" passwordGeneration)"
+              want="$(secret_key "${PREFIX}password-v${gen}" "${CP_NS}" password)"
+              got="$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)"
+              if [ -n "${want}" ] && [ "${want}" = "${got}" ]; then
+                echo "OK: ${CREDS_SECRET} carries the password of generation ${gen}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${CREDS_SECRET} does not carry the current password within ${timeout}s"
                 return 1
               fi
               sleep 5
@@ -237,8 +476,10 @@ spec:
 
           # ── Apply the ControlPlane ────────────────────────────────────────
           # Chainsaw runs scripts with the test directory as CWD. The fixture
-          # carries no namespace, so it lands in the ephemeral one.
-          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+          # carries no namespace, so it lands in the ephemeral one; its
+          # namespace assignment names the tenant namespace.
+          kubectl create namespace "${TENANT_NS}"
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" 00-controlplane-cr.yaml | kubectl apply -n "${CP_NS}" -f -
 
           # ── The bus is provisioned, owned, and sized from the profile ──────
           # The fixture declares no service, so a broker appearing here can only
@@ -261,7 +502,7 @@ spec:
           # ── Readiness is gated on the broker ──────────────────────────────
           # Nothing else is provisioned here, so InfrastructureReady=True is
           # exactly the statement "the bus came up".
-          wait_condition rabbitmqcluster "${BUS}" AllReplicasReady 600
+          wait_condition rabbitmqcluster "${BUS}" "${CP_NS}" AllReplicasReady True 600
           READY_DEADLINE=$(( $(date +%s) + 180 ))
           while true; do
             INFRA_READY="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
@@ -277,6 +518,183 @@ spec:
             -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].reason}")"
           assert_eq "InfrastructureReady carries the ready reason, not a wait reason" \
             "InfrastructureReady" "${INFRA_REASON}"
+
+          # ══ ORDER 1 — a vhost is ordered and delivered beside the order ═══
+          # The backup goes through the plane namespace's own store, so the
+          # orders wait for it.
+          wait_condition controlplane "${CP_NAME}" "${CP_NS}" ESOTenantStoreReady True 300
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            01-rabbitmqvhost-tenant.yaml | kubectl apply -f -
+          wait_condition rabbitmqvhost "${ORDER}" "${TENANT_NS}" Ready True 600
+          assert_eq "the vhost is provisioned" "VhostProvisioned" \
+            "$(condition_reason rabbitmqvhost "${ORDER}" "${TENANT_NS}" VhostReady)"
+          assert_eq "the credentials are delivered" "Delivered" \
+            "$(condition_reason rabbitmqvhost "${ORDER}" "${TENANT_NS}" DeliveryReady)"
+          VHOST="$(order_status "${ORDER}" vhost)"
+          if ! grep -qE "^${ORDER}-[0-9a-f]{8}\$" <<<"${VHOST}"; then
+            echo "ERROR: the vhost '${VHOST}' does not have the derived shape <name>-<8 hex>"; exit 1
+          fi
+          echo "OK: the vhost is ${VHOST}."
+          assert_eq "the user is the vhost's first generation" "${VHOST}-v1" "$(order_status "${ORDER}" username)"
+          assert_eq "the order holds generation 1" "1" "$(order_status "${ORDER}" passwordGeneration)"
+          assert_eq "status names the six keys" "transport_url host port username password vhost" \
+            "$(jsonpath_of rabbitmqvhost "${ORDER}" "${TENANT_NS}" '{.status.secretKeys[*]}')"
+          assert_eq "status names the delivered Secret" "${CREDS_SECRET}" "$(order_status "${ORDER}" secretName)"
+          for kind in vhosts.rabbitmq.com users.rabbitmq.com permissions.rabbitmq.com; do
+            assert_eq "one ${kind} in the plane's namespace carries the order's labels" "1" \
+              "$(count_of "${kind}" "${CP_NS}" "${ORDER_SELECTOR}")"
+          done
+
+          # The children's common prefix is the vhost and the segment; the
+          # OpenBao path is read off the PushSecret.
+          PREFIX="${VHOST}-vhost-"
+          KV_PATH="$(jsonpath_of pushsecret "${PREFIX}backup" "${CP_NS}" '{.spec.data[0].match.remoteRef.remoteKey}')"
+          if ! grep -qE "^openstack/rabbitmq/${CP_NS}/${ORDER}-[0-9a-f]{8}-vhost/credentials\$" <<<"${KV_PATH}"; then
+            echo "ERROR: the backup path '${KV_PATH}' does not have the documented shape"; exit 1
+          fi
+          assert_kv_live "${KV_PATH}" 120
+
+          # Nothing that can reach OpenBao is in the owner's namespace: the
+          # Secret is the only thing delivered.
+          assert_eq "no store, certificate or ESO object in the owner's namespace" "0" \
+            "$(count_of secretstores.external-secrets.io,certificates.cert-manager.io,pushsecrets.external-secrets.io,externalsecrets.external-secrets.io "${TENANT_NS}")"
+          assert_eq "no ServiceAccount besides default in the owner's namespace" "default" \
+            "$(kubectl get serviceaccounts -n "${TENANT_NS}" -o jsonpath='{.items[*].metadata.name}')"
+          assert_eq "the order owns its Secret" "RabbitMQVhost/${ORDER}" \
+            "$(jsonpath_of secret "${CREDS_SECRET}" "${TENANT_NS}" \
+              '{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
+
+          # The transport URL is the other five keys assembled; the host and port
+          # are the default-user Secret's own. Compared, never printed.
+          DEFAULT_USER="$(jsonpath_of rabbitmqcluster "${BUS}" "${CP_NS}" '{.status.defaultUser.secretReference.name}')"
+          USERNAME="$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" username)"
+          PASSWORD="$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" password)"
+          HOST="$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" host)"
+          PORT="$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" port)"
+          assert_eq "the Secret names the order's vhost" "${VHOST}" "$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" vhost)"
+          assert_eq "the Secret names the order's user" "${VHOST}-v1" "${USERNAME}"
+          assert_eq "the Secret names the broker host" "$(secret_value "${DEFAULT_USER}" "${CP_NS}" host)" "${HOST}"
+          assert_eq "the Secret names the broker port" "$(secret_value "${DEFAULT_USER}" "${CP_NS}" port)" "${PORT}"
+          if [ "$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" transport_url)" != \
+            "rabbit://${USERNAME}:${PASSWORD}@${HOST}:${PORT}/${VHOST}" ]; then
+            echo "ERROR: transport_url is not assembled from the other five keys"; exit 1
+          fi
+          echo "OK: transport_url is assembled from the other five keys."
+
+          # The broker holds the user, with the password delivered, and the user
+          # reaches the order's vhost alone, with ".*" three times.
+          if ! authenticates "${USERNAME}" "${PASSWORD}"; then
+            echo "ERROR: the broker refuses the delivered credentials"; exit 1
+          fi
+          echo "OK: the broker accepts the delivered credentials."
+          PERMISSIONS="$(broker_ctl list_user_permissions --quiet --formatter json "${USERNAME}" \
+            | jq -c '[.[] | [.vhost, .configure, .write, .read]]')"
+          assert_eq "the user holds configure, write and read .* on its vhost alone" \
+            "[[\"${VHOST}\",\".*\",\".*\",\".*\"]]" "${PERMISSIONS}"
+
+          # ══ ORDER 2 — the Secret is repaired ══════════════════════════════
+          kubectl patch secret "${CREDS_SECRET}" -n "${TENANT_NS}" --type merge -p '{"data":{"password":"Zm9v"}}'
+          wait_delivered_current 120
+          kubectl delete secret "${CREDS_SECRET}" -n "${TENANT_NS}"
+          wait_delivered_current 120
+          assert_eq "the re-created Secret is the order's" "RabbitMQVhost/${ORDER}" \
+            "$(jsonpath_of secret "${CREDS_SECRET}" "${TENANT_NS}" \
+              '{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
+
+          # ══ ORDER 3 — the schedule rotates the user ═══════════════════════
+          # The first rotation is due three minutes after the first user went
+          # live. During the one-minute grace period both users authenticate
+          # and the Secret already carries the successor.
+          wait_field rabbitmqvhost "${ORDER}" "${TENANT_NS}" '{.status.passwordGeneration}' 2 300
+          V1_PASSWORD="$(secret_value "${PREFIX}password-v1" "${CP_NS}" password)"
+          wait_delivered_password 2 50
+          V2_PASSWORD="$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" password)"
+          assert_eq "the Secret names the successor" "${VHOST}-v2" "$(secret_value "${CREDS_SECRET}" "${TENANT_NS}" username)"
+          if ! authenticates "${VHOST}-v1" "${V1_PASSWORD}" || ! authenticates "${VHOST}-v2" "${V2_PASSWORD}"; then
+            echo "ERROR: both users must authenticate during the grace period"; exit 1
+          fi
+          echo "OK: both users authenticate during the grace period."
+          assert_eq "two Users carry the order's labels during the grace period" "2" \
+            "$(count_of users.rabbitmq.com "${CP_NS}" "${ORDER_SELECTOR}")"
+
+          # Once the grace period ends the superseded user goes.
+          DELETE_AT="$(order_status "${ORDER}" previousPasswordDeleteAt)"
+          echo "OK: the superseded user is deleted at ${DELETE_AT}."
+          GRACE_DEADLINE=$(( $(date -d "${DELETE_AT}" +%s) + 180 ))
+          while [ "$(count_of users.rabbitmq.com "${CP_NS}" "${ORDER_SELECTOR}")" != "1" ]; do
+            if [ "$(date +%s)" -ge "${GRACE_DEADLINE}" ]; then
+              echo "ERROR: the superseded User was not removed within 180s of its grace period"; exit 1
+            fi
+            sleep 5
+          done
+          if authenticates "${VHOST}-v1" "${V1_PASSWORD}"; then
+            echo "ERROR: the superseded user still authenticates after the grace period"; exit 1
+          fi
+          echo "OK: the superseded user is refused after the grace period."
+          unset V1_PASSWORD
+          wait_delivered_password 2 30
+
+          # With the schedule off a raise rotates at once and nothing is
+          # scheduled any more.
+          GEN="$(order_status "${ORDER}" passwordGeneration)"
+          kubectl patch rabbitmqvhost "${ORDER}" -n "${TENANT_NS}" --type merge \
+            -p "{\"spec\":{\"rotation\":{\"interval\":\"0s\"},\"passwordGeneration\":$(( GEN + 1 ))}}"
+          wait_field rabbitmqvhost "${ORDER}" "${TENANT_NS}" '{.status.passwordGeneration}' "$(( GEN + 1 ))" 120
+          wait_field rabbitmqvhost "${ORDER}" "${TENANT_NS}" '{.status.nextRotation}' "" 60
+          wait_condition rabbitmqvhost "${ORDER}" "${TENANT_NS}" Ready True 120
+
+          # ══ ORDER 4 — deleting an order keeps or removes its vhost ════════
+          # Under Retain, the default, the vhost stays with its queues while the
+          # user, the permission and the backup go.
+          kubectl delete rabbitmqvhost "${ORDER}" -n "${TENANT_NS}" --wait=true --timeout=120s
+          for kind in vhosts.rabbitmq.com users.rabbitmq.com permissions.rabbitmq.com secrets pushsecrets.external-secrets.io; do
+            assert_eq "no ${kind} carries the deleted order's labels" "0" \
+              "$(count_of "${kind}" "${CP_NS}" "${ORDER_SELECTOR}")"
+          done
+          if kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null 2>&1; then
+            echo "ERROR: the delivered Secret outlived its order"; exit 1
+          fi
+          wait_kv_purged "${KV_PATH}" 120 "the order's deletion"
+          if ! grep -qx "${VHOST}" <<<"$(broker_vhosts)"; then
+            echo "ERROR: the broker no longer lists ${VHOST}; Retain must keep it"; exit 1
+          fi
+          echo "OK: under Retain the vhost ${VHOST} stays on the broker."
+
+          # Under Delete the vhost goes with the order.
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            02-rabbitmqvhost-delete.yaml | kubectl apply -f -
+          wait_condition rabbitmqvhost "${ORDER_DELETE}" "${TENANT_NS}" Ready True 300
+          DELETE_VHOST="$(order_status "${ORDER_DELETE}" vhost)"
+          if ! grep -qx "${DELETE_VHOST}" <<<"$(broker_vhosts)"; then
+            echo "ERROR: the broker does not list ${DELETE_VHOST}"; exit 1
+          fi
+          kubectl delete rabbitmqvhost "${ORDER_DELETE}" -n "${TENANT_NS}" --wait=true --timeout=120s
+          if grep -qx "${DELETE_VHOST}" <<<"$(broker_vhosts)"; then
+            echo "ERROR: the broker still lists ${DELETE_VHOST}; Delete must remove it"; exit 1
+          fi
+          echo "OK: under Delete the vhost ${DELETE_VHOST} went with its order."
+
+          # ══ ORDER 5 — withdrawing the assignment freezes the order ════════
+          # The re-created order reattaches to the vhost Retain kept.
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            01-rabbitmqvhost-tenant.yaml | kubectl apply -f -
+          wait_condition rabbitmqvhost "${ORDER}" "${TENANT_NS}" Ready True 300
+          assert_eq "the re-created order reattaches to the retained vhost" "${VHOST}" "$(order_status "${ORDER}" vhost)"
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p '{"spec":{"namespaceAssignments":null}}'
+          for ctype in VhostReady DeliveryReady; do
+            wait_reason rabbitmqvhost "${ORDER}" "${TENANT_NS}" "${ctype}" NamespaceNotAssigned 120
+          done
+          if ! kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null 2>&1; then
+            echo "ERROR: a frozen order lost its Secret"; exit 1
+          fi
+          echo "OK: withdrawing the assignment froze the order and kept its Secret."
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"namespaceAssignments\":[{\"namespace\":\"${TENANT_NS}\"}]}}"
+          wait_condition rabbitmqvhost "${ORDER}" "${TENANT_NS}" Ready True 300
+          echo "OK: restoring the assignment recovered the order."
+          kubectl delete rabbitmqvhost "${ORDER}" -n "${TENANT_NS}" --wait=true --timeout=120s
+          unset PASSWORD V2_PASSWORD
 
           # ── The block is a one-way add ───────────────────────────────────
           # Dropping it would leave the owned RabbitmqCluster running and
@@ -337,17 +755,28 @@ spec:
           done
           echo "OK: deleting the ControlPlane tore the broker down through the operator's"
           echo "    own path; no RabbitmqCluster and no broker pod remain."
+          kubectl delete namespace "${TENANT_NS}" --ignore-not-found --wait=false || true
 
           # Consumer wiring is not asserted: no service reads the bus yet (see the
           # header note).
           echo "OK: the shared message bus is provisioned, owned, sized, readiness-gated,"
-          echo "    frozen against removal while managed, and torn down with its ControlPlane."
+          echo "    serves vhost orders, is frozen against removal while managed, and is"
+          echo "    torn down with its ControlPlane."
     catch:
     - script:
         shell: bash
         content: |
+          TENANT_NS="${NAMESPACE}-tenant"
           echo "=== ControlPlane spec + status.conditions ==="
           kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== RabbitMQVhost orders ==="
+          kubectl get rabbitmqvhost -n "${TENANT_NS}" -o yaml 2>&1 || true
+          echo "=== Order children in the plane's namespace ==="
+          kubectl get vhosts.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com,pushsecrets.external-secrets.io \
+            -n "${NAMESPACE}" -l c5c3.io/rabbitmqvhost-name \
+            -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}) {end}{"\n"}{end}' 2>&1 || true
+          echo "=== The owner's namespace ==="
+          kubectl get secretstore,serviceaccount,pushsecret,secret -n "${TENANT_NS}" 2>&1 || true
           echo "=== RabbitmqCluster ==="
           kubectl describe rabbitmqcluster cp-rabbitmq -n "${NAMESPACE}" 2>&1 || true
           echo "=== All backing-service CRs in the namespace ==="
@@ -366,6 +795,8 @@ spec:
           kubectl get pods -n rabbitmq-system -o wide 2>&1 || true
           echo "=== rabbitmq-cluster-operator logs (last 100 lines) ==="
           kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== messaging-topology-operator logs (last 100 lines) ==="
+          kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=messaging-topology-operator --tail=100 --all-containers 2>&1 || true
           # The operator's release namespace differs per job (keystone-system is
           # the ci-deploy-operator.sh default, e2e-controlplane uses
           # c5c3-system), so resolve it from the pods instead of hardcoding one —
@@ -382,3 +813,4 @@ spec:
           kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
           echo "=== Events (last 30) ==="
           kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl delete namespace "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true

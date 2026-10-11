@@ -5900,6 +5900,131 @@ func TestIntegration_KeystoneApplicationCredential_SchemaValidation(t *testing.T
 	})
 }
 
+// TestIntegration_RabbitMQVhost_SchemaValidation pins every admission rule of
+// the RabbitMQVhost CRD, and the pattern of the ControlPlane field its orders
+// on a target cluster read, against the real envtest API server. The kind has
+// no webhook, so these rules are all there is; the substrings are the ones the
+// invalid-rabbitmqvhost-cr chainsaw corpus asserts on.
+func TestIntegration_RabbitMQVhost_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	const kind = "RabbitMQVhost"
+	base := map[string]any{
+		"controlPlaneRef":    map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"passwordGeneration": int64(2),
+	}
+	with := func(field string, value any) map[string]any {
+		spec := runtime.DeepCopyJSON(base)
+		spec[field] = value
+		return spec
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{
+			name: "a zero passwordGeneration", spec: with("passwordGeneration", int64(0)),
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		orderSchemaCase{
+			name: "a deletionPolicy outside the enum", spec: with("deletionPolicy", "Drop"),
+			wantErrSub: "Unsupported value",
+		},
+		orderSchemaCase{
+			name: "a 30s rotation.interval", spec: with("rotation", map[string]any{"interval": "30s"}),
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		orderSchemaCase{
+			name: "an 87601h rotation.interval", spec: with("rotation", map[string]any{"interval": "87601h"}),
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
+		orderSchemaCase{
+			name:       "a gracePeriod longer than the interval",
+			spec:       with("rotation", map[string]any{"interval": "24h", "gracePeriod": "48h"}),
+			wantErrSub: "rotation.gracePeriod must be shorter than rotation.interval",
+		},
+		orderSchemaCase{
+			name: "a negative gracePeriod", spec: with("rotation", map[string]any{"gracePeriod": "-1h"}),
+			wantErrSub: "rotation.gracePeriod is not negative",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a lowered passwordGeneration",
+			mutate:     func(spec map[string]any) { spec["passwordGeneration"] = int64(1) },
+			wantErrSub: "passwordGeneration may only increase",
+		},
+		orderSchemaCase{
+			name:   "a raised passwordGeneration",
+			mutate: func(spec map[string]any) { spec["passwordGeneration"] = int64(5) },
+		},
+		orderSchemaCase{
+			name:   "a changed deletionPolicy",
+			mutate: func(spec map[string]any) { spec["deletionPolicy"] = "Delete" },
+		},
+		orderSchemaCase{
+			name:   "a 0s interval with a 0s gracePeriod",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "0s"} },
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}}
+	runOrderSchemaCases(t, c, ctx, kind, create, minimal, base, update)
+
+	newNamespace := func(g *WithT, prefix string) string {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: prefix}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		return ns.Name
+	}
+
+	t.Run("an order without the optional fields stores the default literals", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		u := &unstructured.Unstructured{Object: map[string]any{"spec": runtime.DeepCopyJSON(minimal)}}
+		u.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind(kind))
+		u.SetName("minimal")
+		u.SetNamespace(newNamespace(g, "test-rmv-default-"))
+		g.Expect(c.Create(ctx, u)).To(Succeed())
+
+		stored := &c5c3v1alpha1.RabbitMQVhost{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(u), stored)).To(Succeed())
+		g.Expect(stored.Spec.PasswordGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
+		g.Expect(stored.Spec.Rotation.GracePeriod).To(Equal(&metav1.Duration{Duration: 24 * time.Hour}))
+		g.Expect(stored.Spec.DeletionPolicy).To(Equal(c5c3v1alpha1.RabbitMQVhostDeletionPolicyRetain))
+	})
+
+	endpoints := []struct {
+		endpoint   string
+		wantErrSub string
+	}{
+		{endpoint: "broker.example.com:5672"},
+		{endpoint: "[::1]:5672"},
+		{endpoint: "broker.example.com", wantErrSub: "should match"},
+		{endpoint: "amqp://broker:5672", wantErrSub: "should match"},
+	}
+	for i, tc := range endpoints {
+		verb := "admits"
+		if tc.wantErrSub != "" {
+			verb = "rejects"
+		}
+		t.Run(fmt.Sprintf("the ControlPlane %s publishedMessagingEndpoint %q", verb, tc.endpoint), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			// One namespace per case: a ControlPlane is unique per namespace.
+			cp := integrationMinimalControlPlane(fmt.Sprintf("cp-endpoint-%d", i), newNamespace(g, "test-cp-endpoint-"))
+			cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{PublishedMessagingEndpoint: tc.endpoint}
+
+			err := c.Create(ctx, cp)
+			if tc.wantErrSub == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring("publishedMessagingEndpoint"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+		})
+	}
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on

@@ -30,6 +30,7 @@ resources, and aggregates their readiness.
 | `KeystoneRoleAssignment` | `c5c3.io/v1alpha1` | Orders one role, on the namespace's role allowlist, for an ordered user on an ordered project ([CRD reference](../reference/c5c3/keystoneroleassignment-crd.md)) |
 | `KeystoneCatalogEntry` | `c5c3.io/v1alpha1` | Orders one catalog entry, a service row and its endpoints, from an assigned namespace that admits catalog entries ([CRD reference](../reference/c5c3/keystonecatalogentry-crd.md)) |
 | `KeystoneApplicationCredential` | `c5c3.io/v1alpha1` | Orders one application credential for an ordered user on an ordered project, rotates it on a schedule, and delivers it as a Secret beside the order ([CRD reference](../reference/c5c3/keystoneapplicationcredential-crd.md)) |
+| `RabbitMQVhost` | `c5c3.io/v1alpha1` | Orders one vhost and a user on the ControlPlane's managed message bus from an assigned namespace, rotates the user on a schedule, and delivers the credentials as a Secret beside the order ([CRD reference](../reference/c5c3/rabbitmqvhost-crd.md)) |
 
 ## Service operators
 

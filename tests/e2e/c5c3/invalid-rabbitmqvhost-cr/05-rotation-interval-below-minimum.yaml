@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A rotation interval of 30s is rejected by the CEL rule on the field: the
+# schedule is off (0s) or rotates at most once a minute. The grace period
+# is 0s, so the block rule holds. The error carries 'rotation.interval is
+# 0s or at least 1m'.
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: rmv-invalid-interval
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  rotation:
+    interval: 30s
+    gracePeriod: 0s

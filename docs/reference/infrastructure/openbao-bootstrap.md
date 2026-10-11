@@ -770,7 +770,7 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 
 | Policy | Paths | Capabilities | Purpose |
 | --- | --- | --- | --- |
-| `eso-tenant` | `kv-v2/{data,metadata}/openstack/keystone/{ns}/…` (fernet-keys, credential-keys, admin app-credential, service-accounts) and `kv-v2/{data,metadata}/bootstrap/{ns}/…/admin`, plus `read` on `kv-v2/data/openstack/keystone/{ns}/*` and `kv-v2/data/bootstrap/{ns}/*` | `create`, `update`, `read`, `delete` | Per-tenant **sole write path** for per-ControlPlane Keystone key material (fernet/credential-key backups, admin bootstrap, admin Application Credential, service-account passwords). Every path is namespace-templated to the caller's own `service_account_namespace` (bound to the `eso-tenant` role), so a tenant token cannot reach another tenant's key material. |
+| `eso-tenant` | `kv-v2/{data,metadata}/openstack/keystone/{ns}/…` (fernet-keys, credential-keys, admin app-credential, service-accounts), `kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials` and `kv-v2/{data,metadata}/bootstrap/{ns}/…/admin`, plus `read` on `kv-v2/data/openstack/keystone/{ns}/*` and `kv-v2/data/bootstrap/{ns}/*` | `create`, `update`, `read`, `delete` | Per-tenant **sole write path** for per-ControlPlane Keystone key material (fernet/credential-key backups, admin bootstrap, admin Application Credential, service-account passwords) and the broker credentials of `RabbitMQVhost` orders. Every path is namespace-templated to the caller's own `service_account_namespace` (bound to the `eso-tenant` role), so a tenant token cannot reach another tenant's key material. |
 | `push-ceph-keys` | `kv-v2/data/ceph/*`, `kv-v2/metadata/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys, bound to the `push-ceph-keys` role. ESO writes and reads the custom metadata of every KV v2 secret it pushes, so the push needs the metadata path too. |
 | `read-ceph-keys` | `kv-v2/data/ceph/*` | `read` | ExternalSecret read of the Ceph client keys, bound to the `read-ceph-keys` role (ServiceAccount `ceph-keys-read` in `openstack`) |
 | `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
@@ -798,7 +798,10 @@ operator's admin Application Credential
 declarative service-account passwords
 (`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`), with
 `delete` on the data leaves so the `DeletionPolicy: Delete` PushSecrets can purge
-the KV leaf on teardown. These paths are namespace-templated — `{ns}` resolves to
+the KV leaf on teardown. It carries the backup of every
+[`RabbitMQVhost`](../c5c3/rabbitmqvhost-crd.md) order on the same terms
+(`kv-v2/{data,metadata}/openstack/rabbitmq/{ns}/+/credentials`, no `delete` on the
+metadata leaf). These paths are namespace-templated — `{ns}` resolves to
 the caller's own `service_account_namespace` — so a tenant's PushSecret cannot
 write another tenant's KV leaf. See the
 [infrastructure manifests reference](./infrastructure-manifests.md).
@@ -847,6 +850,7 @@ marker, so a first push to a never-seeded path always succeeds):
 | --- | --- | --- |
 | `openstack/keystone/{ns}/{cp}/admin/app-credential` | c5c3 operator admin-AC backup PushSecret (`adminAppCredentialRemoteKeyFor`, `DeletionPolicy: Delete`) | per-CR `k-orc-clouds-yaml` ExternalSecret (`ensureKORCCloudsYAMLExternalSecret`) |
 | `openstack/keystone/{ns}/{name}/service-accounts/credentials` | c5c3 operator per-registration backup PushSecret (`keystoneServiceRemoteKeyFor`, one per `KeystoneService` CR — `{ns}/{name}` is that CR's) | the matching per-registration ExternalSecret |
+| `openstack/rabbitmq/{ns}/{name}-{hash}-vhost/credentials` | c5c3 operator backup PushSecret of a `RabbitMQVhost` order (`rabbitMQVhostRemoteKeyFor`, `DeletionPolicy: Delete`; `{ns}` is the ControlPlane's namespace, `{name}` the order's) | nothing: OpenBao is the store of record, and the delivered Secret is written from the source Secret |
 
 **Managed mode additionally** — seeded and/or backed up because the operator owns
 the Keystone lifecycle:

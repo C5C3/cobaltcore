@@ -7,8 +7,8 @@
 // OpenStack control plane (Keystone today; more services later) plus the
 // CredentialRotation and SecretAggregate helper CRDs, the KeystoneService
 // registration CRD, and the order CRDs KeystoneUser, KeystoneProject,
-// KeystoneRoleAssignment, KeystoneCatalogEntry and
-// KeystoneApplicationCredential.
+// KeystoneRoleAssignment, KeystoneCatalogEntry, KeystoneApplicationCredential
+// and RabbitMQVhost.
 //
 // DECISION (plan decision #1): the API group is "c5c3.io" (NOT
 // keystone.openstack.c5c3.io). The ControlPlane is a cross-service aggregate,

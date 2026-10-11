@@ -47,7 +47,7 @@ func orderFakeClient(t *testing.T, funcs *interceptor.Funcs, objs ...client.Obje
 	b := fake.NewClientBuilder().WithScheme(korcTestScheme(t)).WithObjects(objs...).
 		WithStatusSubresource(&c5c3v1alpha1.KeystoneUser{}, &c5c3v1alpha1.KeystoneProject{},
 			&c5c3v1alpha1.KeystoneRoleAssignment{}, &c5c3v1alpha1.KeystoneCatalogEntry{},
-			&c5c3v1alpha1.KeystoneApplicationCredential{})
+			&c5c3v1alpha1.KeystoneApplicationCredential{}, &c5c3v1alpha1.RabbitMQVhost{})
 	if funcs != nil {
 		b = b.WithInterceptorFuncs(*funcs)
 	}

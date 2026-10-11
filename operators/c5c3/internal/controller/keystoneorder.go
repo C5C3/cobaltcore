@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -146,9 +147,14 @@ func claimOrderChild(obj client.Object, o orderRef) {
 	obj.SetLabels(labels)
 }
 
+// errOrderChildForeign is the cause ensureOrderChild wraps when it refuses a
+// live object of the child's name that the order did not create.
+var errOrderChildForeign = errors.New("it was not created by this order")
+
 // ensureOrderChild applies a child in the ControlPlane's namespace with
 // Server-Side Apply. A live object of that name the order did not create is
-// refused: the apply would overwrite its spec and the teardown would delete it.
+// refused with errOrderChildForeign: the apply would overwrite its spec and the
+// teardown would delete it.
 func ensureOrderChild(
 	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, o orderRef, obj client.Object,
 ) error {
@@ -160,8 +166,8 @@ func ensureOrderChild(
 			obj, client.ObjectKeyFromObject(obj), err)
 	default:
 		if !isOrderChild(live, owner, o) {
-			return fmt.Errorf("refusing to adopt pre-existing %T %s: it was not created by this order",
-				obj, client.ObjectKeyFromObject(obj))
+			return fmt.Errorf("refusing to adopt pre-existing %T %s: %w",
+				obj, client.ObjectKeyFromObject(obj), errOrderChildForeign)
 		}
 	}
 	claimOrderChild(obj, o)

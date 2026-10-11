@@ -2974,6 +2974,16 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         infrastructure=MANAGED_INFRA,
     ),
+    Fixture(
+        filename="144-published-messaging-endpoint-invalid.yaml",
+        comment=(
+            "spec.infrastructure.publishedMessagingEndpoint without a port violates the\n"
+            "Pattern marker: the field is a host:port address. Schema-only, no webhook twin."
+        ),
+        name="cp-published-messaging-endpoint-invalid",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA + "    publishedMessagingEndpoint: broker.example.com\n",
+    ),
 )
 
 

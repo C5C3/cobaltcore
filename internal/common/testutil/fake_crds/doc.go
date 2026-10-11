@@ -15,6 +15,6 @@
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
 //	openbao-operator/    — openbao.org CRDs (OpenBaoCluster)
-//	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)
+//	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster, Vhost, User, Permission)
 //	vertical-pod-autoscaler/ — autoscaling.k8s.io CRDs (VerticalPodAutoscaler, the upstream VPA 1.8.0 schema)
 package fake_crds

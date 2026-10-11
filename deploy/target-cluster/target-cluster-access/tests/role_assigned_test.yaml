@@ -73,6 +73,7 @@ tests:
                 - keystoneprojects
                 - keystoneroleassignments
                 - keystoneusers
+                - rabbitmqvhosts
               verbs:
                 - get
                 - list
@@ -87,6 +88,7 @@ tests:
                 - keystoneprojects/status
                 - keystoneroleassignments/status
                 - keystoneusers/status
+                - rabbitmqvhosts/status
               verbs:
                 - get
                 - update
@@ -99,6 +101,7 @@ tests:
                 - keystoneprojects/finalizers
                 - keystoneroleassignments/finalizers
                 - keystoneusers/finalizers
+                - rabbitmqvhosts/finalizers
               verbs:
                 - update
         documentIndex: 1

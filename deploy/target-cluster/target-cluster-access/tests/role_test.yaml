@@ -75,6 +75,7 @@ tests:
               - keystoneprojects
               - keystoneroleassignments
               - keystoneusers
+              - rabbitmqvhosts
             verbs:
               - get
               - list
@@ -138,6 +139,19 @@ tests:
               - c5c3.io
             resources:
               - keystoneusers
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - rabbitmqvhosts
             verbs:
               - get
               - list

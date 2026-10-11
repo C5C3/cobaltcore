@@ -378,6 +378,7 @@ rules:
       - keystoneprojects
       - keystoneroleassignments
       - keystoneusers
+      - rabbitmqvhosts
     verbs:
       - get
       - list
