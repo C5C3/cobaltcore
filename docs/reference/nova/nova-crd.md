@@ -373,7 +373,8 @@ Every process reads the same `nova.conf`. These are its sections:
 | `[api_database]`, `[database]` | `connection = mysql+pymysql://placeholder` in both. The real URLs arrive as environment overrides, and the placeholder is there so oslo.config parses the file before they apply |
 | `[keystone_authtoken]` | The token middleware: `auth_type`, `auth_url`, `www_authenticate_uri`, the four identity fields, `memcached_servers`, and `region_name` while `spec.region` is set. No password |
 | `[service_user]` | The same identity plus `send_service_user_token = true`, which is what lets a call outlive the user token that started the request |
-| `[placement]`, `[neutron]` | The client credentials plus `valid_interfaces = internal`, and `endpoint_override` when the block pins one |
+| `[placement]` | The client credentials plus `valid_interfaces = internal`, `endpoint_override` when the block pins one, and `timeout = 60`. keystoneauth applies the timeout to every Placement request as both the connect and the read timeout, and openstacksdk retries a timed-out request once, so a build whose Placement call gets no answer fails with ERROR after about two minutes. Without it the scheduler waits out the kernel's retransmissions, about 15 minutes on an established connection, and logs nothing |
+| `[neutron]` | The client credentials plus `valid_interfaces = internal`, and `endpoint_override` when the block pins one |
 | `[glance]` | `valid_interfaces = internal`, plus `region_name` and `endpoint_override` when set. No credentials: Nova reads an image with the token of the request it is serving |
 | `[cinder]` | Only while `spec.endpoints.cinder.enabled`: the client credentials, `catalog_info = block-storage:cinder:internalURL`, `os_region_name` and `endpoint_template` when set |
 | `[key_manager]`, `[barbican]` | Only while `spec.endpoints.barbican.enabled`: `backend = barbican`, then `auth_endpoint`, `barbican_endpoint_type = internal`, `send_service_user_token = true`, plus `barbican_region_name` and `barbican_endpoint` when set |
@@ -418,6 +419,17 @@ its next run. Nothing has to be set. A value for either key that a deployment
 set through `extraConfig` before the upgrade stays in force, and from then on
 it is reported with `ExtraConfigHealthy=False` and an
 `ExtraConfigOwnedKeyOverride` Warning event.
+
+The operator upgrade that brings `[placement] timeout` renders a new
+`nova.conf` for every Nova whose `extraConfig` does not set the key. The
+content-hashed config ConfigMap rotates once, and the API, the metadata API,
+the scheduler, the conductor and, while it runs, the console proxy roll. The
+db-sync Job runs once more, and the archive CronJob mounts the new ConfigMap on
+its next run. A deployment whose Placement calls take longer than 60 seconds
+sets `timeout: "<seconds>"` under `placement` in `extraConfig`. The value is
+honored and reported with `ExtraConfigHealthy=False` and an
+`ExtraConfigOwnedKeyOverride` Warning event. `nova-compute.conf` does not carry
+the key, so the compute contract is unchanged.
 
 Four overlays ship beside `nova.conf` in the same ConfigMap, one per role that
 owns options the others must not read. They are assembled by string formatting
@@ -635,6 +647,9 @@ What the fragment leaves out is the more interesting half:
 - No `[scheduler]`, `[conductor]` or `[oslo_concurrency]`, which configure
   processes a compute node does not run, and no `state_path` or
   `log_config_append`, which name paths inside a pod this operator builds.
+- No `[placement] timeout`. The 60-second request bound is for the control
+  plane's Placement clients. A compute's inventory updates are periodic and
+  retried, and the fragment is loaded by hypervisors in another trust domain.
 - No `spec.extraConfig`. The overrides configure the control plane the CR
   author runs, while the fragment is loaded by hypervisors in another trust
   domain, where a section of the author's choosing would reach options no typed
