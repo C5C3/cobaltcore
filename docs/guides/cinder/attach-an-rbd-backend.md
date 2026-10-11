@@ -48,7 +48,9 @@ declare the same backend itself, as
 [Declaring the backend on the ControlPlane](#declaring-the-backend-on-the-controlplane)
 shows. The `openstack` commands use the `OS_*` variables and the `OS_CACERT`
 file of Part 1, Step 7 of the tutorial, with the Keystone port-forward of Step 6
-running.
+running. Run this guide before Part 3 of the tutorial
+([Cinder on Ceph](../../quick-start-metal-stack.md#ceph)), because Part 3
+declares `ceph1` and replaces `nfsbk` with `cephbk` on the pool `backups`.
 
 ---
 
