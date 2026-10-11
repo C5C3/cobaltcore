@@ -1731,6 +1731,180 @@ func TestReconcileCinder_ProjectsBackupBackend(t *testing.T) {
 	g.Expect(tunedBackend.Spec.Compression).To(Equal("zstd"))
 }
 
+// cinderRBDEntry returns an RBD volume entry, rbd1, with every field set.
+func cinderRBDEntry() c5c3v1alpha1.CinderBackendEntry {
+	return c5c3v1alpha1.CinderBackendEntry{
+		Name: "rbd1",
+		Type: "RBD",
+		RBD: &c5c3v1alpha1.CinderBackendRBDSpec{
+			Pool:         "volumes",
+			User:         "cinder",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local", "192.0.2.10:6789"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			ClusterName:  "ceph-a",
+			KeySecretRef: c5c3v1alpha1.CinderRBDKeySecretRef{Name: "ceph-client-cinder"},
+			SecretUUID:   "0b4f0b6e-6f8e-4d3a-9f6c-2f1d2a3b4c5d",
+		},
+	}
+}
+
+// cinderBackupRBDEntry returns an RBD backup entry, rbdbk, with every field set.
+func cinderBackupRBDEntry() *c5c3v1alpha1.CinderBackupBackendEntry {
+	return &c5c3v1alpha1.CinderBackupBackendEntry{
+		Name: "rbdbk",
+		Type: "RBD",
+		RBD: &c5c3v1alpha1.CinderBackupBackendRBDSpec{
+			Pool:         "backups",
+			User:         "cinder-backup",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			ClusterName:  "ceph-a",
+			KeySecretRef: c5c3v1alpha1.CinderRBDKeySecretRef{Name: "ceph-client-cinder-backup"},
+		},
+	}
+}
+
+// TestReconcileCinder_ProjectsRBDBackend is the field-mapping lock for an RBD
+// volume entry: the satellite takes the RBD type and all seven Ceph fields, and
+// the two optional ones stay unset when the entry leaves them unset so the
+// CinderBackend CRD's own default and the driver's FSID apply. The NFS entry
+// beside it keeps its type and carries no rbd block.
+func TestReconcileCinder_ProjectsRBDBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+	minimal := cinderRBDEntry()
+	minimal.Name = "rbd2"
+	minimal.RBD.ClusterName = ""
+	minimal.RBD.SecretUUID = ""
+	cp.Spec.Services.Cinder.Backends = append(cp.Spec.Services.Cinder.Backends, cinderRBDEntry(), minimal)
+	r := newCinderTestReconciler(t, cp)
+
+	_, err := r.reconcileCinder(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	full := getProjectedCinderBackend(t, r.Client, cp, "rbd1")
+	g.Expect(full.Spec.CinderRef.Name).To(Equal("cp-cinder"))
+	g.Expect(full.Spec.Type).To(Equal(cinderv1alpha1.CinderBackendTypeRBD))
+	g.Expect(full.Spec.NFS).To(BeNil())
+	g.Expect(full.Spec.RBD).To(Equal(&cinderv1alpha1.RBDBackendSpec{
+		Pool:         "volumes",
+		User:         "cinder",
+		Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local", "192.0.2.10:6789"},
+		Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+		ClusterName:  "ceph-a",
+		KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: "ceph-client-cinder"},
+		SecretUUID:   "0b4f0b6e-6f8e-4d3a-9f6c-2f1d2a3b4c5d",
+	}))
+	g.Expect(metav1.IsControlledBy(full, cp)).To(BeTrue())
+
+	bare := getProjectedCinderBackend(t, r.Client, cp, "rbd2")
+	g.Expect(bare.Spec.RBD.ClusterName).To(BeEmpty(),
+		"an unset clusterName must stay unset so the CinderBackend CRD default applies")
+	g.Expect(bare.Spec.RBD.SecretUUID).To(BeEmpty())
+
+	nfs := getProjectedCinderBackend(t, r.Client, cp, "nfs1")
+	g.Expect(nfs.Spec.Type).To(Equal(cinderv1alpha1.CinderBackendTypeNFS))
+	g.Expect(nfs.Spec.RBD).To(BeNil())
+}
+
+// TestReconcileCinder_ProjectsRBDBackupBackend is the same lock for an RBD backup
+// entry: six Ceph fields and no nfs block. fileSize and compression are carried
+// as for an NFS target, because the satellite admits them as inert.
+func TestReconcileCinder_ProjectsRBDBackupBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.BackupBackend = cinderBackupRBDEntry()
+	cp.Spec.Services.Cinder.BackupBackend.FileSize = ptr.To(int64(104857600))
+	cp.Spec.Services.Cinder.BackupBackend.Compression = "zstd"
+	r := newCinderTestReconciler(t, cp)
+
+	_, err := r.reconcileCinder(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	backupBackend := &cinderv1alpha1.CinderBackupBackend{}
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: "rbdbk", Namespace: cp.CinderNamespace(),
+	}, backupBackend)).To(Succeed())
+	g.Expect(backupBackend.Spec.Type).To(Equal(cinderv1alpha1.CinderBackupBackendTypeRBD))
+	g.Expect(backupBackend.Spec.NFS).To(BeNil())
+	g.Expect(backupBackend.Spec.RBD).To(Equal(&cinderv1alpha1.RBDBackupBackendSpec{
+		Pool:         "backups",
+		User:         "cinder-backup",
+		Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+		Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+		ClusterName:  "ceph-a",
+		KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: "ceph-client-cinder-backup"},
+	}))
+	g.Expect(backupBackend.Spec.FileSize).To(Equal(ptr.To(int64(104857600))))
+	g.Expect(backupBackend.Spec.Compression).To(Equal("zstd"))
+	g.Expect(metav1.IsControlledBy(backupBackend, cp)).To(BeTrue())
+}
+
+// TestReconcileCinder_RBDProjectionDoesNotAliasTheSpec pins the cloned lists: a
+// later change to the entry's monitors or networks must not reach a satellite
+// already built from it.
+func TestReconcileCinder_RBDProjectionDoesNotAliasTheSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+
+	entry := cinderRBDEntry()
+	backend := cinderBackendForEntry(cp, entry, cp.CinderNamespace())
+	entry.RBD.Monitors[0] = "changed.example"
+	entry.RBD.Networks[0] = "192.168.0.0/16"
+	g.Expect(backend.Spec.RBD.Monitors[0]).To(Equal("rook-ceph-mon-a.rook-ceph.svc.cluster.local"))
+	g.Expect(backend.Spec.RBD.Networks[0]).To(Equal("10.244.0.0/16"))
+
+	backup := cinderBackupRBDEntry()
+	backupBackend := cinderBackupBackendForEntry(cp, *backup, cp.CinderNamespace())
+	backup.RBD.Monitors[0] = "changed.example"
+	backup.RBD.Networks[0] = "192.168.0.0/16"
+	g.Expect(backupBackend.Spec.RBD.Monitors[0]).To(Equal("rook-ceph-mon-a.rook-ceph.svc.cluster.local"))
+	g.Expect(backupBackend.Spec.RBD.Networks[0]).To(Equal("10.244.0.0/16"))
+}
+
+// TestCinderBackendForEntry_TypeRBDWithoutBlock covers the bypassed-admission
+// shapes the builder must survive: type RBD with no rbd block leaves the
+// satellite's block unset for the satellite's own admission to reject, and an rbd
+// block without lists projects nil lists.
+func TestCinderBackendForEntry_TypeRBDWithoutBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+
+	backend := cinderBackendForEntry(cp, c5c3v1alpha1.CinderBackendEntry{Name: "rbd1", Type: "RBD"},
+		cp.CinderNamespace())
+	g.Expect(backend.Spec.Type).To(Equal(cinderv1alpha1.CinderBackendTypeRBD))
+	g.Expect(backend.Spec.RBD).To(BeNil())
+	g.Expect(backend.Spec.NFS).To(BeNil())
+
+	entry := cinderRBDEntry()
+	entry.RBD.Monitors = nil
+	entry.RBD.Networks = nil
+	backend = cinderBackendForEntry(cp, entry, cp.CinderNamespace())
+	g.Expect(backend.Spec.RBD.Monitors).To(BeNil())
+	g.Expect(backend.Spec.RBD.Networks).To(BeNil())
+}
+
+// TestCinderBackupBackendForEntry_TypeRBDWithoutBlock is the same for the backup
+// builder.
+func TestCinderBackupBackendForEntry_TypeRBDWithoutBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+
+	backupBackend := cinderBackupBackendForEntry(cp,
+		c5c3v1alpha1.CinderBackupBackendEntry{Name: "rbdbk", Type: "RBD"}, cp.CinderNamespace())
+	g.Expect(backupBackend.Spec.Type).To(Equal(cinderv1alpha1.CinderBackupBackendTypeRBD))
+	g.Expect(backupBackend.Spec.RBD).To(BeNil())
+	g.Expect(backupBackend.Spec.NFS).To(BeNil())
+
+	entry := cinderBackupRBDEntry()
+	entry.RBD.Monitors = nil
+	entry.RBD.Networks = nil
+	backupBackend = cinderBackupBackendForEntry(cp, *entry, cp.CinderNamespace())
+	g.Expect(backupBackend.Spec.RBD.Monitors).To(BeNil())
+	g.Expect(backupBackend.Spec.RBD.Networks).To(BeNil())
+}
+
 // TestReconcileCinder_RemovingBackupBackendPrunesIt covers the declared teardown of
 // the backup service: dropping services.cinder.backupBackend prunes the satellite,
 // and the Cinder child drops its backup Deployment behind it.
@@ -1921,6 +2095,28 @@ func TestReconcileCinder_InvalidSatelliteMapsToProjectionRejected(t *testing.T) 
 	var list cinderv1alpha1.CinderList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
 	g.Expect(list.Items).To(BeEmpty(), "no child may be applied behind a satellite that was rejected")
+}
+
+// TestReconcileCinder_InvalidRBDSatelliteMapsToProjectionRejected is the
+// rejection leg for an RBD satellite, which the satellite's admission refuses
+// for rules of its own (an older cinder CRD without the RBD type, a type change
+// under an unchanged name): the condition names the spec fields to correct.
+func TestReconcileCinder_InvalidRBDSatelliteMapsToProjectionRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cinderControlPlane()
+	cp.Spec.Services.Cinder.Backends = []c5c3v1alpha1.CinderBackendEntry{cinderRBDEntry()}
+	invalid := apierrors.NewInvalid(
+		schema.GroupKind{Group: "cinder.c5c3.io", Kind: "CinderBackend"}, "rbd1",
+		field.ErrorList{field.NotSupported(field.NewPath("spec", "type"), "RBD", []string{"NFS"})})
+	r := newCinderReconcilerWithSatelliteApplyError(t, cp, invalid)
+
+	_, err := r.reconcileCinder(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`projecting CinderBackend "rbd1":`))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCinderReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CinderBackendProjectionRejected"))
 }
 
 // TestReconcileCinder_SatelliteApplyErrorIsWrapped covers the other failure mode: a
