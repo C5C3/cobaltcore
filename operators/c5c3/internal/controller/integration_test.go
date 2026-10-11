@@ -397,6 +397,38 @@ func integrationCinderService() *c5c3v1alpha1.ServiceCinderSpec {
 	}
 }
 
+// integrationCinderRBD returns a valid RBD volume entry, rbd1, with clusterName
+// and secretUUID left unset so the CinderBackend CRD's own default applies on
+// the projected satellite.
+func integrationCinderRBD() c5c3v1alpha1.CinderBackendEntry {
+	return c5c3v1alpha1.CinderBackendEntry{
+		Name: "rbd1",
+		Type: "RBD",
+		RBD: &c5c3v1alpha1.CinderBackendRBDSpec{
+			Pool:         "volumes",
+			User:         "cinder",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			KeySecretRef: c5c3v1alpha1.CinderRBDKeySecretRef{Name: "ceph-client-cinder"},
+		},
+	}
+}
+
+// integrationCinderBackupRBD returns a valid RBD backup entry, rbdbk.
+func integrationCinderBackupRBD() *c5c3v1alpha1.CinderBackupBackendEntry {
+	return &c5c3v1alpha1.CinderBackupBackendEntry{
+		Name: "rbdbk",
+		Type: "RBD",
+		RBD: &c5c3v1alpha1.CinderBackupBackendRBDSpec{
+			Pool:         "backups",
+			User:         "cinder-backup",
+			Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+			Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+			KeySecretRef: c5c3v1alpha1.CinderRBDKeySecretRef{Name: "ceph-client-cinder-backup"},
+		},
+	}
+}
+
 // integrationNovaService returns a valid services.nova block: the empty one.
 // Every ServiceNovaSpec field is optional and the projection derives the whole
 // child from the ControlPlane, so the empty block is the minimal valid one, the
@@ -1535,6 +1567,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cp.Spec.Services.Barbican = integrationBarbicanService()
 	cp.Spec.Services.Neutron = integrationNeutronService()
 	cp.Spec.Services.Cinder = integrationCinderService()
+	// An RBD volume backend beside nfs1, so Phase 10 proves the rbd block reaches
+	// the satellite through the real cinder CRD schema and its clusterName default.
+	cp.Spec.Services.Cinder.Backends = append(cp.Spec.Services.Cinder.Backends, integrationCinderRBD())
 	cp.Spec.Services.Nova = integrationNovaService()
 
 	// One Barbican API replica and a single Neutron RPC worker, so Phases 8 and 9
@@ -2687,6 +2722,28 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(backupOwner).NotTo(BeNil(), "the satellite must be controller-owned by the ControlPlane")
 	g.Expect(backupOwner.Name).To(Equal(cp.Name))
 
+	// The RBD entry projects its rbd block field for field; clusterName is left
+	// unset by the entry and filled in by the CinderBackend CRD's own default, and
+	// secretUUID stays absent.
+	rbdBackend := &cinderv1alpha1.CinderBackend{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "rbd1", Namespace: ns.Name}, rbdBackend)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the declared RBD backend should be projected")
+	g.Expect(rbdBackend.Spec.CinderRef.Name).To(Equal(cinderName(cp)))
+	g.Expect(rbdBackend.Spec.Type).To(Equal(cinderv1alpha1.CinderBackendTypeRBD))
+	g.Expect(rbdBackend.Spec.NFS).To(BeNil())
+	g.Expect(rbdBackend.Spec.RBD).To(Equal(&cinderv1alpha1.RBDBackendSpec{
+		Pool:         "volumes",
+		User:         "cinder",
+		Monitors:     []string{"rook-ceph-mon-a.rook-ceph.svc.cluster.local"},
+		Networks:     []string{"10.244.0.0/16", "10.96.0.0/12"},
+		ClusterName:  "ceph",
+		KeySecretRef: cinderv1alpha1.SecretNameRefSpec{Name: "ceph-client-cinder"},
+	}))
+	rbdOwner := metav1.GetControllerOf(rbdBackend)
+	g.Expect(rbdOwner).NotTo(BeNil(), "the RBD satellite must be controller-owned by the ControlPlane")
+	g.Expect(rbdOwner.Name).To(Equal(cp.Name))
+
 	simulateCinderReadyWhenPresent(t, ctx, c, cinderKey)
 	cinderReady := waitForControlPlaneCondition(t, ctx, c, cpKey,
 		conditionTypeCinderReady, metav1.ConditionTrue, itEventuallyTimeout)
@@ -2736,11 +2793,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(swappedOwner).NotTo(BeNil(), "the replacement satellite must be controller-owned")
 	g.Expect(swappedOwner.Name).To(Equal(cp.Name))
 
-	g.Eventually(func() bool {
-		return apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{Name: "nfs1", Namespace: ns.Name},
-			&cinderv1alpha1.CinderBackend{}))
-	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
-		"the satellite of the removed entry must be pruned")
+	for _, removed := range []string{"nfs1", "rbd1"} {
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{Name: removed, Namespace: ns.Name},
+				&cinderv1alpha1.CinderBackend{}))
+		}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+			"the satellite of the removed entry %q must be pruned", removed)
+	}
 
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foreignBackend), &cinderv1alpha1.CinderBackend{})).
 		To(Succeed(), "the prune selects on ownership, so the hand-made CinderBackend survives it")
@@ -4504,6 +4563,18 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			mutate:  withCinder(integrationCinderService()),
 		},
 		{
+			// An RBD volume entry beside nfs1 and an RBD backup target, each with
+			// clusterName and secretUUID left to the satellite.
+			name:    "cinder RBD volume and backup backends",
+			wantErr: false,
+			mutate: withCinder(&c5c3v1alpha1.ServiceCinderSpec{
+				Backends: []c5c3v1alpha1.CinderBackendEntry{
+					integrationCinderService().Backends[0], integrationCinderRBD(),
+				},
+				BackupBackend: integrationCinderBackupRBD(),
+			}),
+		},
+		{
 			// Minimum=1 on spec.sizing.nova.api.replicas: a compute API scaled to
 			// zero answers nothing, and the field is a pointer, so the zero reaches
 			// the wire rather than being dropped as an empty value.
@@ -4665,6 +4736,94 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			} else {
 				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
 			}
+		})
+	}
+
+	// The RBD entries are answered by the CRD schema and CEL, which run before the
+	// validating webhook: each rejection carries the marker's phrase or the CEL
+	// message, the text the Chainsaw corpus asserts too. The webhook repeats the
+	// union and client-prefix rules with the same text, so every row also asserts
+	// that no webhook denial answered: without the two negative arms a dropped
+	// XValidation marker would leave these rows green.
+	rbdCinder := func(mutate func(*c5c3v1alpha1.CinderBackendRBDSpec)) *c5c3v1alpha1.ServiceCinderSpec {
+		entry := integrationCinderRBD()
+		mutate(entry.RBD)
+		return &c5c3v1alpha1.ServiceCinderSpec{Backends: []c5c3v1alpha1.CinderBackendEntry{entry}}
+	}
+	for i, tc := range []struct {
+		name    string
+		cinder  *c5c3v1alpha1.ServiceCinderSpec
+		wantSub string
+	}{
+		{
+			name: "cinder RBD backend without rbd",
+			cinder: &c5c3v1alpha1.ServiceCinderSpec{
+				Backends: []c5c3v1alpha1.CinderBackendEntry{{Name: "rbd1", Type: "RBD"}},
+			},
+			wantSub: "the rbd block must be set exactly when type is RBD",
+		},
+		{
+			name:    "cinder RBD user with the client. prefix",
+			cinder:  rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) { r.User = "client.cinder" }),
+			wantSub: "user is the cephx name without its client. prefix",
+		},
+		{
+			name:    "cinder RBD monitors empty",
+			cinder:  rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) { r.Monitors = []string{} }),
+			wantSub: "should have at least 1 items",
+		},
+		{
+			name:    "cinder RBD networks empty",
+			cinder:  rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) { r.Networks = []string{} }),
+			wantSub: "should have at least 1 items",
+		},
+		{
+			name:    "cinder RBD network without a prefix length",
+			cinder:  rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) { r.Networks = []string{"10.244.0.0"} }),
+			wantSub: "should match",
+		},
+		{
+			name: "cinder RBD uppercase secretUUID",
+			cinder: rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) {
+				r.SecretUUID = "0B4F0B6E-6F8E-4D3A-9F6C-2F1D2A3B4C5D"
+			}),
+			wantSub: "should match",
+		},
+		{
+			name:    "cinder RBD clusterName with a dot",
+			cinder:  rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) { r.ClusterName = "ceph.a" }),
+			wantSub: "should match",
+		},
+		{
+			name: "cinder RBD key Secret name off DNS-1123",
+			cinder: rbdCinder(func(r *c5c3v1alpha1.CinderBackendRBDSpec) {
+				r.KeySecretRef.Name = "Ceph_Client"
+			}),
+			wantSub: "should match",
+		},
+		{
+			name: "cinder RBD backup backend without rbd",
+			cinder: &c5c3v1alpha1.ServiceCinderSpec{
+				Backends:      integrationCinderService().Backends,
+				BackupBackend: &c5c3v1alpha1.CinderBackupBackendEntry{Name: "rbdbk", Type: "RBD"},
+			},
+			wantSub: "the rbd block must be set exactly when type is RBD",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-marker-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationManagedControlPlane(fmt.Sprintf("cp-marker-rbd-%d", i), ns.Name)
+			withCinder(tc.cinder)(cp)
+
+			err := c.Create(ctx, cp)
+			g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected an Invalid status error, got: %v", err)
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+			g.Expect(err.Error()).NotTo(ContainSubstring("admission webhook"))
+			g.Expect(err.Error()).NotTo(ContainSubstring("vcontrolplane.kb.io"))
 		})
 	}
 
@@ -7386,6 +7545,74 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 	})
 	g.Expect(err).To(HaveOccurred(), "moving a live service back onto the shared instances must be rejected")
 	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+}
+
+// TestIntegration_ControlPlane_CinderBackendTypeTransitionRejected proves the
+// per-name type freeze of the two Cinder entry kinds holds at the real API
+// server, where the CEL transition rules answer before the webhook twin: a
+// volume entry and the backup entry cannot change their type under an
+// unchanged name, and renaming the backup entry to an RBD target is admitted.
+//
+// The twin repeats each message verbatim, so each rejection is pinned to the
+// CEL layer twice over: the error names the entry object, where the twin names
+// its type field, and it carries no webhook denial.
+func TestIntegration_ControlPlane_CinderBackendTypeTransitionRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cinder-type-flip-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// The shared bus is declared beside the block, as in the marker test: the
+	// validating webhook requires it whenever the block-storage service is set.
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "cp-rabbitmq"},
+		Replicas:   1,
+	}
+	cp.Spec.Services.Cinder = integrationCinderService()
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create a ControlPlane with nfs1 and nfsbk")
+
+	// Get-mutate-update under RetryOnConflict, for the reason
+	// TestIntegration_DedicatedBackingServices_TransitionRejected gives: the live
+	// controller writes to the CR concurrently.
+	update := func(mutate func(*c5c3v1alpha1.ServiceCinderSpec)) error {
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns.Name}, live); err != nil {
+				return err
+			}
+			mutate(live.Spec.Services.Cinder)
+			return c.Update(ctx, live)
+		})
+	}
+
+	err := update(func(cd *c5c3v1alpha1.ServiceCinderSpec) {
+		cd.Backends[0].Type = "RBD"
+		cd.Backends[0].NFS = nil
+		cd.Backends[0].RBD = integrationCinderRBD().RBD
+	})
+	g.Expect(err).To(HaveOccurred(), "nfs1 must not turn RBD under its name")
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backends[0]: Invalid value: " +
+		"type is immutable: the volumes on a backend were created by its driver"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("admission webhook"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("vcontrolplane.kb.io"))
+
+	err = update(func(cd *c5c3v1alpha1.ServiceCinderSpec) {
+		cd.BackupBackend = integrationCinderBackupRBD()
+		cd.BackupBackend.Name = "nfsbk"
+	})
+	g.Expect(err).To(HaveOccurred(), "nfsbk must not turn RBD under its name")
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.cinder.backupBackend: Invalid value: " +
+		"type is immutable while name is unchanged"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("admission webhook"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("vcontrolplane.kb.io"))
+
+	g.Expect(update(func(cd *c5c3v1alpha1.ServiceCinderSpec) {
+		cd.BackupBackend = integrationCinderBackupRBD()
+	})).To(Succeed(), "renaming nfsbk to an RBD rbdbk must be admitted")
 }
 
 // --- per-service namespaces (issue #646) ---
