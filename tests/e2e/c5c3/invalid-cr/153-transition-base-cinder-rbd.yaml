@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Accepted base for the Cinder type-freeze test: a Managed ControlPlane with the
+# NFS volume entry nfs1, the RBD volume entry rbd1 and the NFS backup entry
+# nfsbk. Brownfield throughout, and the plane stays gated on KeystoneReady, so
+# the base provisions nothing and leaves no side effects for the later steps.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-h
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

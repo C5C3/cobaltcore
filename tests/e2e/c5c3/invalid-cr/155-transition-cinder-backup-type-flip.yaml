@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE turning nfsbk into an RBD backup target under the same name is rejected
+# by the CEL transition rule on CinderBackupBackendEntry: a restore reads a
+# backup with the driver that wrote it. nfs is explicitly nulled for the reason
+# fixture 94 gives: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch,
+# and backupBackend is an object, so an omitted nfs block would be RETAINED from
+# the base and trip the NFS union rule beside the freeze.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-h
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: nfs1
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /volumes
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+      backupBackend:
+        name: nfsbk
+        type: RBD
+        nfs: null
+        rbd:
+          pool: backups
+          user: cinder-backup
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder-backup
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

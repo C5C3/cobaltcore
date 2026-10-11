@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE turning nfs1 into an RBD backend under the same name is rejected by the
+# CEL transition rule on CinderBackendEntry: the volumes on a backend were
+# created by its driver. The entry carries an rbd block and no nfs block, so the
+# union rules pass and the freeze is the only violation. Chainsaw applies an
+# UPDATE as an RFC 7386 JSON merge patch, which replaces the backends list whole,
+# so the omitted nfs block is gone without an explicit null.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-h
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+    cinder:
+      backends:
+      - name: nfs1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+      - name: rbd1
+        type: RBD
+        rbd:
+          pool: volumes
+          user: cinder
+          monitors:
+          - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+          - 10.244.0.0/16
+          - 10.96.0.0/12
+          keySecretRef:
+            name: ceph-client-cinder
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

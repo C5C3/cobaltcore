@@ -23,6 +23,8 @@ Coverage:
 * No fixture carries a metadata.namespace (Chainsaw injects the ephemeral one).
 * ``_generate.py --check`` passes in-process, so on-disk drift (either
   direction, including orphan files) fails the unit test.
+* The webhook name the negative arms in ``chainsaw-test.yaml`` scan for is the
+  one the Helm chart registers, so those arms cannot go vacuous behind a rename.
 """
 
 from __future__ import annotations
@@ -37,11 +39,18 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _GENERATOR = _HERE / "_generate.py"
 _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
+# The chart the e2e cluster installs, which is what actually registers the
+# validating webhook. It hardcodes the name independently of the
+# +kubebuilder:webhook marker, so the chart is the source of truth here.
+_CHART_WEBHOOK_TEMPLATE = (
+    _HERE.parents[3]
+    / "operators/c5c3/helm/c5c3-operator/templates/webhook-configuration.yaml"
+)
 
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 145
+_EXPECTED_FIXTURE_COUNT = 157
 
 
 def _load_generator() -> types.ModuleType:
@@ -147,6 +156,22 @@ class TestFixtures(unittest.TestCase):
                 rendered.index("\n  korc:\n"),
                 f"{fixture.filename} must render the assignments before korc",
             )
+
+    def test_webhook_name_matches_deployed_chart(self) -> None:
+        # The negative arms on the CEL steps assert the rejection carries NO
+        # ControlPlane webhook denial. Against a renamed webhook every rejection
+        # satisfies them, the webhook denial they exist to exclude included, so
+        # the name they scan for has to be the one the chart registers.
+        chart = _CHART_WEBHOOK_TEMPLATE.read_text(encoding="utf-8")
+        match = re.search(r'"validatingWebhookName"\s+"([^"]*controlplane[^"]*)"', chart)
+        self.assertIsNotNone(match, "chart declares no ControlPlane validating webhook")
+        name = match.group(1)
+        self.assertIn(
+            f"(contains($error, '{name}')): false",
+            self.chainsaw,
+            f"chainsaw-test.yaml pins a webhook name the chart no longer registers "
+            f"(chart declares {name}); the negative arms are vacuous",
+        )
 
     def test_rendered_fixture_carries_spdx_header(self) -> None:
         for fixture in self.generator.FIXTURES:
