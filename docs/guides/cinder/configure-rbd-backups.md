@@ -45,11 +45,14 @@ that devstack produces.
 :::
 
 ::: warning The NFS target is detached for the duration of this guide
-The lab's `ControlPlane` projects the NFS backup target `nfsbk` on `/backups`. A
-Cinder takes one backup target, and the `ControlPlane` cannot declare an RBD one
-yet, so Step 1 removes the `backupBackend` entry from the `ControlPlane` CR and
-Step 6 puts it back. Editing the projected `nfsbk` by hand would be reverted on
-the next reconcile; the entry on the `ControlPlane` is the one to change. While
+The lab's `ControlPlane` projects the NFS backup target `nfsbk` on `/backups`,
+and a Cinder takes one backup target. The guide attaches a user-owned RBD target
+so Step 6 can restore the lab as it was: Step 1 removes the `backupBackend` entry
+from the `ControlPlane` CR and Step 6 puts it back. A `ControlPlane` can declare
+the RBD target itself, as
+[Switching the backup target on the ControlPlane](#switching-the-backup-target-on-the-controlplane)
+shows. Editing the projected `nfsbk` by hand would be reverted on the next
+reconcile; the entry on the `ControlPlane` is the one to change. While
 the entry is gone, no backup can be written to or restored from `/backups`,
 including the quick start's `lab-bk`. The backups written to Ceph in between
 must be deleted before Step 6, because the NFS driver cannot delete them: cinder
@@ -310,6 +313,47 @@ be restored and deleted once more.
 | A backup of an RBD volume fails to authenticate, and the Cinder carries a `CephKeyringConflict` event | Two sources project one keyring file with different keys; the event names which one the backup pod carries |
 | The apply is refused with `already has CinderBackupBackend` | The projected `nfsbk` is still attached: Step 1 was skipped |
 | A restore or delete fails with `is not the backup service that was used to create this backup` | The backup was written by the other driver; it is reachable again once its target is back |
+
+## Switching the backup target on the ControlPlane
+
+A `ControlPlane` swaps its backup target in one edit. Replace the
+`backupBackend` entry, and the c5c3-operator prunes `nfsbk` before it projects
+the new target, because a Cinder takes one. Run this after Step 6, which put
+`nfsbk` back: the c5c3-operator refuses to adopt a `CinderBackupBackend` it did
+not create, so the hand-made `rbdbk` has to be gone. While it is there, the
+patch leaves `nfsbk` in place and the `ControlPlane` reports
+`CinderReady=False/CinderBackendError`. The entry carries the Step 2 values:
+
+```bash
+kubectl -n openstack patch controlplane controlplane --type json -p '[{"op":"replace","path":"/spec/services/cinder/backupBackend","value":{
+  "name":"rbdbk","type":"RBD","rbd":{
+    "pool":"backups","user":"cinder-backup",
+    "monitors":["rook-ceph-mon-a.rook-ceph.svc.cluster.local"],
+    "networks":["10.244.0.0/16","10.96.0.0/12"],
+    "keySecretRef":{"name":"ceph-client-cinder-backup"}}}}]'
+kubectl -n openstack wait cinderbackupbackend/nfsbk --for=delete --timeout=120s
+kubectl -n openstack wait cinderbackupbackend/rbdbk --for=condition=Ready --timeout=300s
+kubectl -n openstack wait deploy/controlplane-cinder-backup --for=condition=Available --timeout=300s
+```
+
+It is a JSON patch on purpose: a merge patch keeps the old `nfs` block beside
+the new `rbd` one, and the union rule refuses the result. Changing the type
+while keeping the name `nfsbk` is refused with `type is immutable while name is
+unchanged`, because a restore reads a backup with the driver that wrote it.
+While `rbdbk` is the target, backups the NFS driver wrote, such as `lab-bk`,
+can be neither restored nor deleted, which the update warning on the patch
+says.
+
+The way back starts with the backups written to Ceph: delete them, newest
+first, as Step 6 does, because the NFS driver cannot. Then the same `replace`
+puts the `nfsbk` entry back:
+
+```bash
+kubectl -n openstack patch controlplane controlplane --type json \
+  -p '[{"op":"replace","path":"/spec/services/cinder/backupBackend","value":{"name":"nfsbk","type":"NFS","nfs":{"server":"nfs-server.openstack.svc.cluster.local","path":"/backups"}}}]'
+kubectl -n openstack wait cinderbackupbackend/rbdbk --for=delete --timeout=120s
+kubectl -n openstack wait cinderbackupbackend/nfsbk --for=condition=Ready --timeout=300s
+```
 
 ## Standalone Cinder, without a ControlPlane
 
