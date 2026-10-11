@@ -2750,7 +2750,9 @@ is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 its `dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
-[Lab hypervisors](#lab-hypervisors)). The ControlPlane's opt-in
+[Lab hypervisors](#lab-hypervisors)); on a lab deployed with `WITH_CEPH=true`,
+Part 3 of the quick start applies `controlplane-ceph/` by hand after those
+(see [Lab ControlPlane](#lab-controlplane)). The ControlPlane's opt-in
 autoscaling blocks use the VPA and the metrics-server of the platform (see
 [Lab autoscaling](#lab-autoscaling)). The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
@@ -3179,9 +3181,12 @@ manager and three OSDs on raw block volumes, the RBD pools `volumes` and
 [#1341](https://github.com/c5c3/cobaltcore/issues/1341) and
 [#1346](https://github.com/c5c3/cobaltcore/issues/1346) attach to it, and the
 [Lab hypervisors](#lab-hypervisors) define the libvirt secret QEMU
-authenticates with from the key in `openstack/ceph-client-cinder`. Until #1346
-the lab's Cinder stays on the [Lab NFS stack](#lab-nfs-stack), and nothing of
-the ControlPlane changes. `hack/deploy-infra.sh` applies both
+authenticates with from the key in `openstack/ceph-client-cinder`.
+[Part 3](../../quick-start-metal-stack.md#ceph) of the quick start puts the
+lab's Cinder on it with the [Ceph variant](#lab-controlplane) of the Lab
+ControlPlane: the RBD volume backend `ceph1` beside `nfs1` on the
+[Lab NFS stack](#lab-nfs-stack), and the RBD backup target `cephbk` in place
+of `nfsbk`. `hack/deploy-infra.sh` applies both
 kustomizations when `WITH_CEPH=true` is set beside `EXTERNAL_CLUSTER=true`.
 The flag has no kind overlay, and the kind mode refuses it; Ceph on kind and
 in CI is [#1339](https://github.com/c5c3/cobaltcore/issues/1339).
@@ -4608,7 +4613,8 @@ No lab run of this stack is recorded yet.
 
 **Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
 `deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
-`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
+`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`,
+`deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml`
 
 The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
 Step 4 of the
@@ -4641,6 +4647,54 @@ Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-de
 applies the directory and checks the ControlPlane, from the deploy in its
 Step 3 to the [checks](../../quick-start-metal-stack.md#cp-verify) of its Step 7.
 
+`controlplane-ceph/` is the Ceph variant of the directory, for a lab deployed
+with `WITH_CEPH=true`. It lists `../controlplane` as its base and adds one JSON
+patch to the ControlPlane: the RBD volume backend `ceph1` at the end of
+`spec.services.cinder.backends`, beside `nfs1`, and the RBD backup target
+`cephbk` in place of `nfsbk`, both on the [Lab Ceph](#lab-ceph). A JSON patch
+keeps `nfs1`, because a strategic-merge patch on a custom resource is a JSON
+merge patch, which replaces the whole list.
+[Part 3, Step 1](../../quick-start-metal-stack.md#ceph-apply) of the quick
+start applies the variant with `kubectl apply -k` over the ControlPlane of
+Part 1, Step 4. Client-side apply then sends `nfs: null` for the backup entry,
+because the first apply recorded its `nfs` block in the annotation
+`kubectl.kubernetes.io/last-applied-configuration`. Neither
+`hack/deploy-infra.sh` nor its preflight reads the variant.
+
+A backup entry changes its type only under a new name (the transition rule of
+`CinderBackupBackendEntry`), so the RBD target is `cephbk`. The c5c3-operator
+prunes `nfsbk` before it projects `cephbk`. The webhook warns on the apply that
+every backup the NFS driver wrote can be neither restored nor deleted until
+`nfsbk` is declared again, so Part 3 deletes the backup `lab-bk` first. The
+apply of `controlplane/` is the way back: the c5c3-operator then prunes `ceph1`
+and `cephbk`, and the webhook warns for both. Every volume left on `ceph1`
+loses its volume service, and every backup `cephbk` wrote becomes
+unreachable, so both are deleted before that apply. The volume type `ceph` of
+[Part 3, Step 2](../../quick-start-metal-stack.md#ceph-volume) goes after them:
+its `volume_backend_name` names `ceph1`, so a volume created with it after the
+apply ends in `error`.
+
+The networks are the pod and service networks of `newforge`, read from the
+ConfigMap `kube-system/shoot-info` on 2026-10-11; another shoot takes its own
+two from there. They open nothing on the lab. The c5c3-operator projects no
+`spec.networkPolicy` onto the Cinder, and the Cinder operator creates no
+NetworkPolicy for a Cinder without one. With one, the networks would open the
+Ceph ports to every pod and Service address of the shoot, which is where
+Rook's daemons answer. `tests/unit/deploy/metal_stack_controlplane_test.sh`
+pins the variant's render and checks the pools, users, key Secrets, monitor
+and libvirt secret UUID of its patch against the lab manifests they come
+from. Nothing checks the table below against the patch.
+
+| Field | `ceph1` | `cephbk` | Source |
+| --- | --- | --- | --- |
+| `rbd.pool` | `volumes` | `backups` | the CephBlockPools of `ceph/cluster/pools.yaml` |
+| `rbd.user` | `cinder` | `cinder-backup` | the CephClients of `ceph/cluster/clients.yaml` |
+| `rbd.keySecretRef.name` | `ceph-client-cinder` | `ceph-client-cinder-backup` | the targets of the ExternalSecrets of `ceph/cluster/keys-pull.yaml`, each with the one key `userKey` |
+| `rbd.monitors` | `rook-ceph-mon-a.rook-ceph.svc.cluster.local` | the same | the Service Rook gives the first monitor in the CephCluster's namespace `rook-ceph`; `ceph/cluster/cluster.yaml` runs one (`mon.count: 1`) |
+| `rbd.networks` | `10.240.0.0/13`, `10.248.0.0/18` | the same | `podNetwork` and `serviceNetwork` of `newforge`'s `kube-system/shoot-info` |
+| `rbd.secretUUID` | `090e4a3c-6c20-4e74-82dc-1a70382babe8` | none: no hypervisor attaches a backup | the libvirt secret `ceph-secret.sh` defines in `hypervisor/libvirt-configmap.yaml` (see [Lab hypervisors](#lab-hypervisors)) |
+| `rbd.clusterName` | unset | unset | the CinderBackend and CinderBackupBackend CRDs default it to `ceph`; the ControlPlane field has no default |
+
 For the hypervisor package
 ([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) the ControlPlane
 publishes the OVN central `controlplane-ovn` and three Secrets in `openstack`:
@@ -4657,10 +4711,10 @@ network endpoints of the catalog, which are the in-cluster Service URLs.
 | Property | Value |
 | --- | --- |
 | Namespace | `openstack` |
-| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra` |
+| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra`; the Ceph variant by hand over it in Part 3 of the quick start, on a lab deployed with `WITH_CEPH=true` as well |
 | Storage | through the cluster's default class; neither CR names a `storageClassName` |
 | Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
-| Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack); `CinderReady` reports `True` with reason `CinderReady` |
+| Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack). The Ceph variant adds the RBD volume backend `ceph1` on the pool `volumes` and replaces `nfsbk` with the RBD backup target `cephbk` on the pool `backups` of the [Lab Ceph](#lab-ceph). `CinderReady` reports `True` with reason `CinderReady` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
 | Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
 
@@ -5207,10 +5261,10 @@ pod's readiness stays libvirtd's: on a lab without `WITH_CEPH=true` it waits
 and the pod is `Ready`.
 
 The secret's UUID is `090e4a3c-6c20-4e74-82dc-1a70382babe8`, its usage `ceph`
-with the name `client.cinder`. The UUID is a constant on both sides: the lab's
-RBD volume backend of [#1346](https://github.com/c5c3/cobaltcore/issues/1346)
-sets the same value as `spec.rbd.secretUUID`, so the `rbd_secret_uuid` Cinder
-sends names this secret (see
+with the name `client.cinder`. The UUID is a constant on both sides: `ceph1`,
+the RBD volume backend of the [Ceph variant](#lab-controlplane) of the Lab
+ControlPlane, sets the same value as `spec.rbd.secretUUID`, so the
+`rbd_secret_uuid` Cinder sends names this secret (see
 [CinderBackend CRD](../cinder/cinder-backend-crd.md)). A backend that leaves
 `secretUUID` unset sends the cluster FSID and finds no secret on the lab. Nova
 stores the UUID in the `connection_info` of every volume attachment; a start or
@@ -5275,9 +5329,9 @@ A server that holds an attached RBD volume keeps the key its QEMU authenticated
 with until the server is live-migrated or restarted (OSSN-0108), and a rotated
 key stops working for a new connection at once. The DaemonSet does not and
 cannot migrate or restart servers for it: it does not know which servers hold
-an RBD volume. The rotation drill of
-[#1346](https://github.com/c5c3/cobaltcore/issues/1346) migrates the server
-after the rotation.
+an RBD volume. The rotation of `ceph1`'s user `cinder` in
+[Part 3, Step 5](../../quick-start-metal-stack.md#ceph-rotate) of the quick
+start migrates the server after the rotation.
 
 `libvirtd.conf` listens for TLS on the node's address and port `16514` only
 (`listen_tcp = 0`, `auth_tls = "none"`) and gives the socket the numeric group
