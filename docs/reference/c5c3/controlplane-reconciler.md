@@ -2495,18 +2495,27 @@ services:
   project, and both domains from the ControlPlane's effective admin domain, with
   the password read from the consumer Secret that registration delivers.
 - **Backends:** each `services.cinder.backends` entry projects one `CinderBackend`
-  satellite carrying the entry's **bare** name, its NFS export, and its
-  image-volume cache bounds; `services.cinder.backupBackend` projects the one
-  `CinderBackupBackend`. Unset `mountOptions`, `fileSize` and `compression`
-  serialize away, so the satellite CRD's own defaults apply at one layer. Both
+  satellite of the entry's type carrying the entry's **bare** name, its `nfs` or
+  `rbd` block, and its image-volume cache bounds; `services.cinder.backupBackend`
+  projects the one `CinderBackupBackend`. Unset `mountOptions`, `clusterName`,
+  `secretUUID`, `fileSize` and `compression` serialize away, so the satellite
+  CRD's own defaults (for `secretUUID`, the driver's) apply at one layer. Both
   passes prune what the spec no longer declares
   (`pruneProjectedChildren` on `cinderBackendChildren` / `cinderBackupBackendChildren`,
-  ownership only, no name prefix). Dropping a `backends[]` entry **detaches a live
-  volume backend**: the pruned `CinderBackend` keeps the cinder operator's
-  `service-remove` finalizer until the backend's volume Deployment is gone and a
-  `<cinder>-<backend>-service-remove` Job has removed the service row, and the
-  volumes on that share stay on the export while nothing serves them any more.
-  Recovery is re-creating the entry under the *identical* name. Unlike unsetting
+  ownership only, no name prefix). The volume pass projects and then prunes. The
+  backup pass prunes first, because a Cinder takes one backup backend and the
+  cinder webhook refuses a second one beside a live one: a renamed or retyped
+  backup target leaves the plane without one for a pass, and until the entry is
+  fixed if the new satellite is refused. A new backup name that a
+  `CinderBackupBackend` this ControlPlane did not create already holds is
+  refused before the prune, so the current target stays. Dropping a `backends[]`
+  entry **detaches a live volume backend**: the pruned `CinderBackend` keeps the
+  cinder operator's `service-remove` finalizer until the backend's volume
+  Deployment is gone and a `<cinder>-<backend>-service-remove` Job has removed
+  the service row, and the volumes stay on the share or in the pool while nothing
+  serves them any more. Recovery is re-creating the entry under the *identical*
+  name and type: no admission layer refuses a re-add under the other type, whose
+  driver would take over the volumes it did not create. Unlike unsetting
   `spec.services.cinder`, which is gated behind `c5c3.io/allow-cinder-deletion`,
   removing one `backends[]` line takes effect immediately and is not gated.
 - **Glance, Barbican and the internal tenant:** `glanceEndpoint` is

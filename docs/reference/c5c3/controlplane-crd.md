@@ -1026,8 +1026,8 @@ per-field External-mode forbid-rules.
 | `publicEndpoint` | `string` | No | `""` | Externally routable Cinder endpoint URL (e.g. `https://cinder.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public block-storage catalog Endpoint, the URL every client resolves to create its volumes, snapshots, and backups; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the ControlPlane appends `/v3` when it registers the row), and be at most 512 characters; a single trailing slash is tolerated and the reconciler trims it before appending `/v3`, so the row never carries `//v3`. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every volume call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Cinder on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Cinder declares a [dedicated](#cinderdedicatedbackingservicesspec) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the block-storage service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Cinder child's `spec.extraConfig`, which carries the `cinder.conf` sections. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
-| `backends` | [`[]CinderBackendEntry`](#cinderbackendentry) | Yes | — | The curated list of volume backends, projected one `CinderBackend` satellite per entry. At least one entry is required: a Cinder with no backend accepts a volume request and leaves it in error, so the `MinItems` floor keeps that shape out of the API. `MaxItems` 32 bounds the child-CR amplification of one admission, since each entry carries a cinder-volume Deployment of its own. A `listType=map` list keyed by `name`, so the API server rejects duplicate names. **Removing an entry is not gated by `c5c3.io/allow-cinder-deletion`** the way removing the whole `cinder` block is: the next pass prunes that entry's `CinderBackend` and the cinder operator unregisters its `cinder-volume` service, leaving every volume keyed to that host unmanageable while the plane still reports `CinderReady=True` off the backends that remain. The update webhook therefore raises an admission warning naming each dropped entry; re-adding it under the same name restores the host identity the volumes are keyed by. |
-| `backupBackend` | [`*CinderBackupBackendEntry`](#cinderbackupbackendentry) | No | `nil` | The driver the backup service writes volume backups through, projected into the one `CinderBackupBackend` satellite. Omitting it leaves the plane without a backup service; removing it from a ControlPlane that had one prunes the satellite, and the Cinder child drops its backup Deployment in turn. |
+| `backends` | [`[]CinderBackendEntry`](#cinderbackendentry) | Yes | — | The curated list of volume backends, projected one `CinderBackend` satellite per entry. At least one entry is required: a Cinder with no backend accepts a volume request and leaves it in error, so the `MinItems` floor keeps that shape out of the API. `MaxItems` 32 bounds the child-CR amplification of one admission, since each entry carries a cinder-volume Deployment of its own. A `listType=map` list keyed by `name`, so the API server rejects duplicate names. **Removing an entry is not gated by `c5c3.io/allow-cinder-deletion`** the way removing the whole `cinder` block is: the next pass prunes that entry's `CinderBackend` and the cinder operator unregisters its `cinder-volume` service, leaving every volume keyed to that host unmanageable while the plane still reports `CinderReady=True` off the backends that remain. The update webhook therefore raises an admission warning naming each dropped entry and its type; re-adding it under the same name and type restores the host identity the volumes are keyed by. Nothing refuses a re-add under the other type, which hands those volumes to a driver that did not create them. |
+| `backupBackend` | [`*CinderBackupBackendEntry`](#cinderbackupbackendentry) | No | `nil` | The driver the backup service writes volume backups through, projected into the one `CinderBackupBackend` satellite. Omitting it leaves the plane without a backup service; removing it from a ControlPlane that had one prunes the satellite, and the Cinder child drops its backup Deployment in turn. Renaming the entry replaces the satellite in one edit, an NFS target with an RBD one included: a Cinder takes one backup backend, so the reconciler prunes the old `CinderBackupBackend` before it projects the new one. For that one pass the plane has no backup target, and if the new satellite is refused it stays without one until the entry is fixed. A new name that a `CinderBackupBackend` this ControlPlane did not create already holds is refused before the prune, so the current target stays (`CinderReady=False/CinderBackendError`). Both drivers run under the same backup host, so after a rename that changes the type the backups the old driver wrote can be neither restored nor deleted until the old entry is declared again; the update webhook raises an admission warning naming both entries. Removing the entry raises an admission warning too, naming its type: the backups stay unreachable until a target of that type on the same storage is declared again, and nothing refuses an entry of the other type added in a later update, which hands them to a driver that did not write them. Changing `type` under an unchanged name is refused (`type is immutable while name is unchanged`). |
 | `dedicatedBackingServices` | [`*CinderDedicatedBackingServicesSpec`](#cinderdedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Cinder **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Cinder consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the block-storage service, and the database, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the local cluster the operator runs on) | Places the block-storage service, its satellites, and the database, cache, secret store, and credential material that follow it, on a registered target cluster. The projected `Cinder` CR stays on the management cluster and carries the ref verbatim. Requires a `namespace` block of its own, plus a `publicEndpoint` or a `gateway` so the block-storage catalog advertises an address other clusters resolve (webhook). Create-only: the validating webhook freezes the ref after creation. See [ControlPlane placement](../target-clusters.md#controlplane-placement). |
@@ -1103,20 +1103,36 @@ no CEL rule, and leaving it alone runs three schedulers silently.
 ### CinderBackendEntry
 
 Declares one curated volume backend, projected one-to-one into a `CinderBackend`
-satellite CR.
+satellite CR of the entry's type.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | `string` | Yes | — | Keys the `listType=map` `backends` list and **is** the projected `CinderBackend`'s `metadata.name`, taken bare rather than prefixed with the ControlPlane's name: cinder keys every volume by the backend it was created on, so a rename would strand the volumes already there. It is also the backend's `[<name>]` section in `cinder.conf` and its `volume_backend_name`. A DNS-1123 label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`), `MinLength` 1, `MaxLength` 35, the bound `cinderv1alpha1.MaxBackendNameLength` applies to the satellite's own name. The validating webhook adds the two rules the markers cannot express: the name `default` is refused because it names `cinder.conf`'s `[DEFAULT]` section, and `len(controlplane.Name) + 7 + len(name)` must stay at or below **47**, the budget the satellite shares with its `cinderRef` in the `<cinder>-<backend>-service-remove` Job name a detach spawns. |
-| `type` | `string` (`NFS`) | Yes | — | Selects the volume driver. Phase 1 supports `NFS` only; the enum mirrors the `CinderBackend` CR's own, so an entry admitted here can never be rejected downstream by the satellite CRD. |
+| `type` | `string` (`NFS` \| `RBD`) | Yes | — | Selects the volume driver; both are projected. The enum mirrors the `CinderBackend` CR's own, so an entry admitted here can never be rejected downstream by the satellite CRD. The type is frozen per entry name: a CEL transition rule (`self.type == oldSelf.type`) on the `listType=map` item, with a webhook twin, refuses a change under an unchanged name with the message `type is immutable: the volumes on a backend were created by its driver; declare the other driver under a new name`. |
 | `nfs` | [`*NFSShareSpec`](#nfssharespec) | Conditional | `nil` | Configures the NFS volume driver. A CEL `XValidation` rule (`(self.type == 'NFS') == has(self.nfs)`) requires the block exactly when `type` is `NFS` and forbids it otherwise, with the message `the nfs block must be set exactly when type is NFS`; the validating webhook mirrors it. |
+| `rbd` | [`*CinderBackendRBDSpec`](#cinderbackendrbdspec) | Conditional | `nil` | Configures the Ceph RBD volume driver. A CEL `XValidation` rule (`(self.type == 'RBD') == has(self.rbd)`) requires the block when `type` is `RBD` and forbids it otherwise, with the message `the rbd block must be set exactly when type is RBD`; the validating webhook mirrors it. |
 | `imageVolumeCache` | [`*CinderImageVolumeCacheSpec`](#cinderimagevolumecachespec) | No | `nil` (cache off) | Turns on the per-backend image-volume cache: the first volume created from a given image is kept, and later requests for the same image clone it on the backend instead of pulling through Glance again. The cached volumes are owned by the deployment rather than by the requesting tenant, so the reconciler gives the Cinder child an `internalTenant` as soon as any entry enables the cache. |
 
 Because the satellite carries the bare entry name, it is also the name a person
 naming a hand-made `CinderBackend` picks. `ensureProjectedSatellite` therefore
 refuses to adopt a same-named object this ControlPlane did not create in **every**
 namespace, the ControlPlane's own included, and the prune that follows each
-projection deletes only c5c3-owned satellites.
+projection deletes only c5c3-owned satellites. The type freeze keys on the same
+name: an entry keeps its driver for as long as an entry of that name exists, so
+switching drivers means declaring the other driver under a new name. The freeze
+compares the two revisions of one update, so it ends with the entry: a name
+removed in one update and re-added under the other type in a later one is
+admitted, and the new driver takes over the host the old driver's volumes are
+keyed by. The removal warning names the type to restore.
+
+The c5c3-operator and cinder-operator charts roll together. A cinder CRD older
+than the RBD satellites (#1341, #1342) rejects a projected `RBD` satellite, which
+shows as `CinderReady=False/CinderBackendProjectionRejected`. Rolling the
+c5c3-operator back below the release that added the RBD entries, with an RBD
+entry stored, leaves the older reconciler projecting every entry as `NFS`. The
+satellite refuses that change with `type is immutable`, so the plane stays at
+`CinderBackendProjectionRejected` while the RBD satellites keep serving, until
+the c5c3-operator is rolled forward again.
 
 ### NFSShareSpec
 
@@ -1130,6 +1146,88 @@ admitted here can never be rejected downstream.
 | `server` | `string` | Yes | — | The NFS server the export lives on, as a hostname or an IP address. `MinLength` 1; Pattern `^[A-Za-z0-9.-]+$`, which is the character set a hostname or an IPv4 address carries, because the value reaches the mount command verbatim. |
 | `path` | `string` | Yes | — | The absolute export path on the server. Pattern `^/[!-~]*$`: printable ASCII only, since the satellite renders `server:path` into a config file the cinder pod reads back a line at a time and cuts at the first space. Whitespace would leave cinder addressing a shorter export than the one validated and mounted, and a newline would add a second export line outright. |
 | `mountOptions` | `string` | No | `""` | The comma-separated option string the export is mounted with. It carries **no** schema default: an unset value serializes away, so the satellite CRD's own default (`nfsvers=4.1,soft,timeo=30,retrans=2`) applies at one layer. Override it only where the server demands different semantics, and keep the mount soft: a hard mount blocks the cinder process on an unreachable server rather than failing the request. Pattern `^[^\n\r]*$`, since either character would divide the rendered option line. |
+
+### CinderBackendRBDSpec
+
+The curated Ceph RBD shape projected onto a `CinderBackend`'s `spec.rbd`. It is a
+local copy of the cinder module's `RBDBackendSpec` with the same markers and CEL
+messages, so a value admitted here is admitted by the satellite CRD; the
+validating webhook adds the rules no marker expresses (see
+[Validation Rules](#validation-rules)). The c5c3-operator creates no pool and no
+cephx user, and it never reads the key (see
+[The RBD key Secret](#the-rbd-key-secret)).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `pool` | `string` | Yes | — | The Ceph pool the backend keeps its volumes in, rendered as `rbd_pool`. `MinLength` 1, `MaxLength` 64, Pattern `^[A-Za-z0-9._-]+$`. |
+| `user` | `string` | Yes | — | The cephx user the driver authenticates as, without its `client.` prefix, rendered as `rbd_user`. `MinLength` 1, `MaxLength` 64, Pattern `^[A-Za-z0-9._-]+$`. A CEL rule (`!self.startsWith('client.')`) refuses the prefix with `user is the cephx name without its client. prefix (write cinder, not client.cinder)`. |
+| `monitors` | `[]string` | Yes | — | The Ceph monitor addresses, each a hostname or an IPv4 address with an optional `:port`, rendered comma-joined as `mon_host` in the projected `ceph.conf`. `MinItems` 1, `MaxItems` 16; item `MinLength` 1, `MaxLength` 253, Pattern `^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`. The webhook also refuses a port outside 1 to 65535. |
+| `networks` | `[]string` | Yes | — | The IPv4 CIDRs the Ceph cluster answers on, the Ceph side of the Cinder's NetworkPolicy egress to the monitor and OSD ports. For a Rook cluster in the same Kubernetes cluster, list the pod network and the service network. `MinItems` 1, `MaxItems` 16; item Pattern `^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`. The webhook also requires the canonical form with the host bits zero, because the API server refuses any other form in an `ipBlock`. |
+| `clusterName` | `string` | No | `""` (the satellite's `ceph`) | The Ceph cluster name, rendered as `rbd_cluster_name` and the stem of the projected `/etc/ceph/<cluster>.conf` and keyring file names. `MaxLength` 63, Pattern `^[A-Za-z0-9_-]+$`. It carries **no** schema default, so an unset value serializes away and the satellite CRD's own default applies at one layer. |
+| `keySecretRef` | [`CinderRBDKeySecretRef`](#cinderrbdkeysecretref) | Yes | — | Names the Secret that holds the cephx key of `user`. See [The RBD key Secret](#the-rbd-key-secret). |
+| `secretUUID` | `string` | No | `""` (the driver uses the cluster FSID; the libvirt secret on the hypervisors has to carry the same UUID) | The UUID of the libvirt secret the hypervisors look the key up by, rendered as `rbd_secret_uuid` only when set. Pattern `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, a lowercase UUID. |
+
+### CinderBackupBackendRBDSpec
+
+The curated Ceph shape projected onto a `CinderBackupBackend`'s `spec.rbd`, a
+local copy of the cinder module's `RBDBackupBackendSpec`. It carries the fields of
+[`CinderBackendRBDSpec`](#cinderbackendrbdspec) with the same markers, minus
+`secretUUID`: no hypervisor attaches a backup image, so no libvirt secret looks
+its key up.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `pool` | `string` | Yes | — | The Ceph pool the backups are written to, rendered as `backup_ceph_pool`. `MinLength` 1, `MaxLength` 64, Pattern `^[A-Za-z0-9._-]+$`. |
+| `user` | `string` | Yes | — | The cephx user the backup driver authenticates as, without its `client.` prefix, rendered as `backup_ceph_user`. `MinLength` 1, `MaxLength` 64, Pattern `^[A-Za-z0-9._-]+$`. A CEL rule refuses the prefix with `user is the cephx name without its client. prefix (write cinder-backup, not client.cinder-backup)`. |
+| `monitors` | `[]string` | Yes | — | The Ceph monitor addresses, with the markers and the port rule of the volume block's `monitors`. |
+| `networks` | `[]string` | Yes | — | The IPv4 CIDRs the Ceph cluster answers on, with the markers and the canonical-form rule of the volume block's `networks`. The Cinder's NetworkPolicy unions them with the networks of its RBD volume backends into one Ceph egress rule. |
+| `clusterName` | `string` | No | `""` (the satellite's `ceph`) | The Ceph cluster name, the stem of the projected `ceph.conf` and keyring file names. `MaxLength` 63, Pattern `^[A-Za-z0-9_-]+$`, no schema default. |
+| `keySecretRef` | [`CinderRBDKeySecretRef`](#cinderrbdkeysecretref) | Yes | — | Names the Secret that holds the cephx key of `user`. See [The RBD key Secret](#the-rbd-key-secret). |
+
+### CinderRBDKeySecretRef
+
+Names the Secret that holds an RBD entry's cephx key. It is a local copy of the
+cinder module's `SecretNameRefSpec`, pattern included; the shared
+[`SecretNameRef`](#secretnameref) carries no pattern because the `GlanceBackend`
+child admits any non-empty name.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | The Secret's name, a DNS-1123 subdomain: `MinLength` 1, `MaxLength` 253, Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`. |
+
+### The RBD key Secret
+
+An RBD entry names the Secret that holds its cephx key and carries nothing else
+of the key. The c5c3-operator never reads, copies or creates that Secret, and it
+holds no permission for it. The cinder operator reads it where the volume and
+backup pods run, so the Secret has to exist there:
+
+- It carries the raw cephx key, as `ceph auth get-key client.<user>` prints it,
+  under the data key `userKey`.
+- It lives in the namespace the block-storage service runs in:
+  `services.cinder.namespace` when set, else the ControlPlane's namespace.
+- It lives on the cluster the volume pods run on: the target cluster
+  `services.cinder.targetClusterRef` names, or the management cluster when the
+  field is unset.
+
+An ExternalSecret through a SecretStore whose role may read the key's OpenBao
+path writes the Secret and keeps it in sync. The lab's
+`deploy/lab/metal-stack/ceph/cluster/keys-pull.yaml` is the worked example: it
+pulls both client keys into `openstack`. Where Rook runs in the same cluster and
+no ExternalSecret owns the name, a copy of Rook's Secret works too:
+
+```bash
+kubectl -n rook-ceph get secret rook-ceph-client-cinder -o jsonpath='{.data.userKey}' |
+  base64 -d |
+  kubectl -n openstack create secret generic ceph-client-cinder --from-file=userKey=/dev/stdin
+```
+
+GitOps ordering may apply the Secret after the ControlPlane. Until it exists,
+the satellite reports `CredentialsReady=False/WaitingForCredentials`, the Cinder
+child reports `BackendsReady=False/WaitingForBackends` (for a backup target,
+`BackupBackendReady=False/WaitingForBackupBackend`), and the ControlPlane reports
+`CinderReady=False/WaitingForCinder`. Rotation follows the satellite's rules:
+see [The key Secret](../cinder/cinder-backend-crd.md#the-key-secret).
 
 ### CinderImageVolumeCacheSpec
 
@@ -1161,10 +1259,11 @@ carries.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | `string` | Yes | — | Embedded verbatim in the projected `CinderBackupBackend`'s name, hence the DNS-1123 label shape (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`), `MinLength` 1, `MaxLength` 63. Unlike a volume backend's name it names no `cinder.conf` section, so it takes the full label bound, and it enters no Job name: detaching a backup backend runs no service-remove Job, so it carries no composed bound either. |
-| `type` | `string` (`NFS`) | Yes | — | Selects the backup driver. The ControlPlane projects `NFS` only, a subset of the `CinderBackupBackend` CR's enum (`NFS`, `RBD`). |
+| `type` | `string` (`NFS` \| `RBD`) | Yes | — | Selects the backup driver; both are projected. The enum mirrors the `CinderBackupBackend` CR's own. The type is frozen while the name is unchanged: a CEL transition rule (`self.name != oldSelf.name \|\| self.type == oldSelf.type`), with a webhook twin, refuses the change with the message `type is immutable while name is unchanged: a restore reads a backup with the driver that wrote it; rename the entry to switch the driver`. A rename may change the type. |
 | `nfs` | [`*NFSShareSpec`](#nfssharespec) | Conditional | `nil` | Configures the NFS backup driver. The same CEL `XValidation` union rule as the volume backend: required exactly when `type` is `NFS`, forbidden otherwise. |
-| `fileSize` | `*int64` | No | `nil` (the satellite CRD's `52428800`, 50 MiB) | The size in bytes of one backup chunk: cinder splits a volume into objects of this size and writes them one at a time, so it bounds both the memory a backup holds and the work a failed chunk costs. Minimum `1048576` (1 MiB) and `MultipleOf` `32768`, the block size cinder hashes chunks in. It carries **no** schema default, so an unset value serializes away and the satellite CRD's own default applies at one layer. |
-| `compression` | `string` (`none` \| `zlib` \| `bz2` \| `zstd`) | No | `""` (the satellite CRD's `zlib`) | The algorithm each chunk is compressed with. `none` writes the chunks uncompressed, trading backup capacity for CPU on the backup pod. Like `fileSize` it carries **no** schema default. |
+| `rbd` | [`*CinderBackupBackendRBDSpec`](#cinderbackupbackendrbdspec) | Conditional | `nil` | Configures the Ceph backup driver. The same CEL `XValidation` union rule as the volume backend's `rbd`: required when `type` is `RBD`, forbidden otherwise, with the message `the rbd block must be set exactly when type is RBD`. |
+| `fileSize` | `*int64` | No | `nil` (the satellite CRD's `52428800`, 50 MiB) | The size in bytes of one backup chunk: cinder splits a volume into objects of this size and writes them one at a time, so it bounds both the memory a backup holds and the work a failed chunk costs. Minimum `1048576` (1 MiB) and `MultipleOf` `32768`, the block size cinder hashes chunks in. It carries **no** schema default, so an unset value serializes away and the satellite CRD's own default applies at one layer. Inert on an RBD target: the satellite admits it, and the Ceph driver neither renders nor reads it. |
+| `compression` | `string` (`none` \| `zlib` \| `bz2` \| `zstd`) | No | `""` (the satellite CRD's `zlib`) | The algorithm each chunk is compressed with. `none` writes the chunks uncompressed, trading backup capacity for CPU on the backup pod. Like `fileSize` it carries **no** schema default, and like `fileSize` it is inert on an RBD target. |
 
 ### CinderDedicatedBackingServicesSpec
 
@@ -2988,8 +3087,14 @@ short-circuit on the first error.
 | Projected Neutron name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-neutron` would exceed the 40-character `metadata.name` cap the Neutron CRD enforces, so a 33-character ControlPlane name is rejected ("would be 41 characters") and a 32-character one is accepted. Runs on create and on the update that newly declares `services.neutron`: the ControlPlane name is immutable, so on a routine update the rule could only fire against a CR a pre-upgrade operator already admitted, including the finalizer-removal update that completes its deletion. **Webhook-only.** |
 | Cinder needs the shared bus | `spec.infrastructure.messaging` | `field.Required` | `services.cinder` is set while `spec.infrastructure` carries no `messaging` block: "is required when services.cinder is set: the Cinder CRD requires spec.messaging, and the ControlPlane derives the child's transport URL from the shared bus". Reported by the same `validateMessagingConsumers` as the Neutron rule above, once per declared consumer. **Cross-field, webhook-only.** |
 | Cinder declares a volume backend | `spec.services.cinder.backends` | `field.Required` | No backend is declared. Mirrors the `MinItems=1` marker: a Cinder with no backend accepts a volume request and leaves it in error. |
-| Cinder backend type/nfs union | `spec.services.cinder.backends[]` | `field.Invalid` | The `nfs` block is not set exactly when `type` is `NFS`. Mirrors the per-entry union CEL rule on `CinderBackendEntry`, with the same message (`the nfs block must be set exactly when type is NFS`). |
-| Cinder backup backend type/nfs union | `spec.services.cinder.backupBackend` | `field.Invalid` | The `nfs` block is not set exactly when `type` is `NFS`. Mirrors the union CEL rule on `CinderBackupBackendEntry`. |
+| Cinder backend type/nfs and type/rbd unions | `spec.services.cinder.backends[]` | `field.Invalid` | The `nfs` block is present without `type: NFS` or absent with it, or the `rbd` block is the same for `type: RBD`. Mirrors the two per-entry union CEL rules on `CinderBackendEntry`, with the same messages (`the nfs block must be set exactly when type is NFS`, `the rbd block must be set exactly when type is RBD`). |
+| Cinder backup backend type/nfs and type/rbd unions | `spec.services.cinder.backupBackend` | `field.Invalid` | The same two unions on the backup entry. Mirrors the union CEL rules on `CinderBackupBackendEntry`. |
+| Cinder backend type enum | `spec.services.cinder.backends[].type`, `spec.services.cinder.backupBackend.type` | `field.NotSupported` | The type is neither `NFS` nor `RBD`, the empty string included. Mirrors the `Enum` markers. |
+| Cinder RBD fields within their markers | `spec.services.cinder.backends[].rbd.{pool,user,clusterName,monitors,networks,keySecretRef.name,secretUUID}`, and the same under `spec.services.cinder.backupBackend.rbd` without `secretUUID` | `field.Required` / `field.TooLong` / `field.TooMany` / `field.Invalid` | `pool`, `user` or `keySecretRef.name` is empty ("must be set"), `monitors` or `networks` is empty ("at least one monitor must be listed", "at least one network must be listed"), a value exceeds its `MaxLength` or `MaxItems`, or a value other than `keySecretRef.name` is off its Pattern (`monitors[i]`, `networks[i]` and a non-empty `secretUUID` included). Mirrors the markers on `CinderBackendRBDSpec` and `CinderBackupBackendRBDSpec`, one error per value. The four rows below run on an `rbd` block only when this row reports nothing for it. |
+| Cinder RBD user without the `client.` prefix | `spec.services.cinder.backends[].rbd.user`, `spec.services.cinder.backupBackend.rbd.user` | `field.Invalid` | The user starts with `client.`. Mirrors the CEL rule on the field with the same message, through `cinderv1alpha1.ValidateRBDFields`. |
+| Cinder RBD monitor port | `spec.services.cinder.backends[].rbd.monitors[i]`, `spec.services.cinder.backupBackend.rbd.monitors[i]` | `field.Invalid` | A monitor's port is outside 1 to 65535: "port must be between 1 and 65535". The Pattern admits up to five digits. Delegated to `cinderv1alpha1.ValidateRBDFields`, the satellite webhooks' own rule. **Webhook-only.** |
+| Cinder RBD network canonical | `spec.services.cinder.backends[].rbd.networks[i]`, `spec.services.cinder.backupBackend.rbd.networks[i]` | `field.Invalid` | A network is not a canonical IPv4 CIDR: "must be a canonical IPv4 CIDR such as 10.128.0.0/16 (host bits zero)". The network becomes an `ipBlock` of the Cinder's NetworkPolicy, which the API server refuses in any other form. Delegated to `cinderv1alpha1.ValidateRBDFields`. **Webhook-only.** |
+| Cinder RBD key Secret name | `spec.services.cinder.backends[].rbd.keySecretRef.name`, `spec.services.cinder.backupBackend.rbd.keySecretRef.name` | `field.Invalid` | The name is no DNS-1123 subdomain. Mirrors the Pattern marker on `CinderRBDKeySecretRef`, through `cinderv1alpha1.ValidateRBDFields`. |
 | Cinder NFS export addressable | `spec.services.cinder.backends[].nfs.server` / `.path`, `spec.services.cinder.backupBackend.nfs.server` / `.path` | `field.Required` | A declared `nfs` block leaves `server` or `path` empty. Mirrors the `MinLength` markers: without both, the satellite renders a `server:path` line the cinder pod cannot mount. |
 | Cinder NFS export renders one line | `spec.services.cinder.backends[].nfs.server` / `.path` / `.mountOptions`, and the same three under `spec.services.cinder.backupBackend.nfs` | `field.Invalid` | The `server` is not `^[A-Za-z0-9.-]+$` (it reaches the mount command verbatim), the `path` is not `^/[!-~]*$` (a space cuts the export short and a newline appends a second one to the rendered shares file cinder reads a line at a time), or `mountOptions` carries a newline or carriage return (it would divide the rendered option line). Mirrors the three `Pattern` markers on `NFSShareSpec`, so a caller reaching a current operator through a stale CRD copy is rejected at admission with the field named rather than admitted and wedged on the satellite webhook's `CinderReady=False` / `CinderBackendProjectionRejected`. |
 | Cinder backend name is not `default` | `spec.services.cinder.backends[].name` | `field.Invalid` | The name is `default`, compared case-insensitively because cinder reads section names that way. It names `cinder.conf`'s `[DEFAULT]` section, so the backend's options would be read as service-wide ones. **Webhook-only.** |
@@ -3292,6 +3397,12 @@ path stays open while an unintended decrement is refused with the broker intact.
 The freeze is webhook-only, with no CEL transition rule, so a later teardown or
 migration feature can relax it.
 
+The **Cinder entry type freezes** are the exception to the webhook-only rule:
+both are CEL transition rules on the entry types, and the webhook repeats them
+as a twin. A volume entry keeps its `type` for as long as an entry of its name
+exists, and the backup entry keeps its `type` while its name is unchanged; an
+added, removed or renamed entry passes.
+
 | Rule | Field Path | Condition |
 | --- | --- | --- |
 | Managed → External rejected | `spec.services.keystone.mode` | Old not External, new External — "cannot be changed to External" |
@@ -3309,6 +3420,8 @@ migration feature can relax it.
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
 | Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican,neutron,cinder,nova}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
+| Cinder backend type immutable | `spec.services.cinder.backends[].type` | An entry whose name the old revision carries changed its `type`: "type is immutable: the volumes on a backend were created by its driver; declare the other driver under a new name". CEL-backed, webhook twin |
+| Cinder backup backend type immutable | `spec.services.cinder.backupBackend.type` | The backup entry kept its name and changed its `type`: "type is immutable while name is unchanged: a restore reads a backup with the driver that wrote it; rename the entry to switch the driver". A rename is admitted. CEL-backed, webhook twin |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---
@@ -3459,9 +3572,10 @@ namespace too, so a CR that bypassed the webhook is reconciled against the same
 `OVNCentral` as one that went through it.
 
 No leaf of `services.cinder.backends` or `services.cinder.backupBackend` is
-defaulted. `mountOptions`, `fileSize`, and `compression` carry no schema default
-on purpose, so an unset value serializes away and the satellite CRD's own default
-applies at one layer.
+defaulted. `mountOptions`, `fileSize`, `compression`, and the RBD blocks'
+`clusterName` and `secretUUID` carry no schema default on purpose, so an unset
+value serializes away and the satellite CRD's own default (for `secretUUID`, the
+driver's cluster FSID) applies at one layer.
 
 <a id="secretref-default-note"></a>
 > **† `database.secretRef.name` default — managed-mode convenience name only.**
@@ -3838,7 +3952,7 @@ Keystone.
 | `False` | `CinderDBCredentialError` | Error ensuring or reading the Cinder DB-credential objects (managed database only). |
 | `False` | `WaitingForCinderDBCredential` | `credentialsMode: Dynamic` is in effect but no engine-issued credential has materialised yet: either the generator-backed DB-credential ExternalSecret has not synced, or (on a Static→Dynamic migration, where the ExternalSecret is updated in place and keeps reporting the previous Static sync's `Ready`) the Secret it targets still carries the retired static username. No Cinder CR is projected, and an existing child keeps its current mode, until one does. The message names the `database/mariadb/creds/cinder-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the stale username it found. Requeue 10s. |
 | `False` | `CinderBackendError` | Error projecting or pruning a `CinderBackend` or the `CinderBackupBackend` satellite. The pass halts here rather than applying the child behind it, which would run with a backend set the ControlPlane never projected. |
-| `False` | `CinderBackendProjectionRejected` | The Cinder API server rejected a projected satellite (HTTP 422). A backend name colliding with a `cinder.conf` catalog section other than `default` is the case the ControlPlane webhook deliberately leaves to the cinder module. Reconcile the `services.cinder.backends` / `services.cinder.backupBackend` entries to a valid projection to recover. |
+| `False` | `CinderBackendProjectionRejected` | The Cinder API server rejected a projected satellite (HTTP 422). A backend name colliding with a `cinder.conf` catalog section other than `default` is the case the ControlPlane webhook deliberately leaves to the cinder module. Chart skew is another: a cinder CRD older than the RBD satellites rejects a projected `RBD` satellite (see the version-skew paragraph under [CinderBackendEntry](#cinderbackendentry)). Reconcile the `services.cinder.backends` / `services.cinder.backupBackend` entries to a valid projection to recover. |
 | `False` | `WaitingForCinder` | The Cinder CR is ensured but not yet Ready. Requeue 15s. |
 | `False` | `CinderProjectionRejected` | The Cinder API server rejected the projected Cinder spec (HTTP 422): the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `CinderError` | Error create-or-updating the Cinder CR. |
