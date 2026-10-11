@@ -262,17 +262,17 @@ spec:
           LOG=""
           for _ in $(seq 1 36); do
             LOG="$(kubectl logs -n "$NAMESPACE" "deploy/$DEPLOY" 2>&1 || true)"
-            if printf '%s\n' "$LOG" | grep -q 'Failed to initialize driver'; then
+            if grep -q 'Failed to initialize driver' <<<"$LOG"; then
               break
             fi
             sleep 5
           done
-          printf '%s\n' "$LOG" | grep -q 'Failed to initialize driver' || {
+          grep -q 'Failed to initialize driver' <<<"$LOG" || {
             echo "FAIL: the volume service never logged the driver's setup failure"
             printf '%s\n' "$LOG" | tail -60
             exit 1
           }
-          printf '%s\n' "$LOG" | grep -q 'Error connecting to ceph cluster' || {
+          grep -q 'Error connecting to ceph cluster' <<<"$LOG" || {
             echo "FAIL: the driver failed before it tried to connect to the cluster"
             printf '%s\n' "$LOG" | tail -60
             exit 1
@@ -281,9 +281,9 @@ spec:
           # service user cannot write show up: ceph.conf was read, and its
           # log_file and admin_socket lines took effect.
           for warning in conf_read_file AdminSocket 'unable to open log file'; do
-            if printf '%s\n' "$LOG" | grep -qF -- "$warning"; then
+            if grep -qF -- "$warning" <<<"$LOG"; then
               echo "FAIL: the volume service log carries '$warning'"
-              printf '%s\n' "$LOG" | grep -F -- "$warning" | head -5
+              grep -F -- "$warning" <<<"$LOG" | head -5
               exit 1
             fi
           done
