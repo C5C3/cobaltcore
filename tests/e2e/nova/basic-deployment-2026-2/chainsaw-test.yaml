@@ -703,6 +703,12 @@ spec:
           grep -Fxq 'valid_interfaces = internal' /tmp/nova-basic-2026-2-placement.conf
           echo "OK: [placement] resolves the internal catalog entry"
 
+          # The operator bounds every Placement request, so a Placement that
+          # drops packets fails a build after about two minutes (two attempts)
+          # instead of stalling it.
+          grep -Fxq 'timeout = 60' /tmp/nova-basic-2026-2-placement.conf
+          echo "OK: [placement] bounds a request at 60 s"
+
           # Every credential travels as an env override sourced from a Secret,
           # so none of them may reach a ConfigMap every pod mounts.
           if grep -q '^password =' /tmp/nova-basic-2026-2.conf; then
