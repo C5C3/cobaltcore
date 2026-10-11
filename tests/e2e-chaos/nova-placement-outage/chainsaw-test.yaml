@@ -13,19 +13,26 @@
 #   - under the partition: GET / answers 200, a server list answers, and a
 #     server create is accepted with the 202 it answers on a healthy cluster.
 #     None of those three paths calls Placement
-#   - under the partition: the accepted build reaches ERROR with a fault that
-#     reports an unplaced build, and the CR stays Ready=True/AllReady. The
-#     scheduler's readiness is the broker socket, not its Placement client, so
-#     the outage is invisible to the conditions while it is plainly visible to
-#     the build
+#   - under the partition: two accepted builds reach ERROR, the first on the
+#     Placement connection the baseline left established and the second on a
+#     fresh one, each with a fault that reports an unplaced build, and the CR
+#     stays Ready=True/AllReady. The scheduler's readiness is the broker
+#     socket, not its Placement client, so the outage is invisible to the
+#     conditions while it is plainly visible to the builds
 #   - after the partition is lifted: a fresh create reaches ACTIVE with no pod
 #     restart and no operator action
 #
-# The ERROR is not immediate and cannot be. The drop rule takes the SYN without
-# an ICMP reject, so the scheduler's connection attempt runs out the kernel's
-# own retry ladder, roughly 130 seconds of exponential backoff, before it sees
-# an error at all. That is why 15-failclosed-job.yaml gives the ERROR 300
-# seconds and why the NetworkChaos runs for 600.
+# The ERROR is not immediate and cannot be. The drop rule takes the request
+# without an ICMP reject, so each attempt of the scheduler's Placement call
+# fails only when the operator's 60-second [placement] timeout runs out: a read
+# timeout on the established connection, a connect timeout on a fresh one.
+# openstacksdk retries a timed-out request once on a fresh connection, so the
+# call gives up after about 121 seconds and the conductor then buries the
+# build. That is why 15-failclosed-job.yaml gives each build 150 seconds and
+# why the NetworkChaos runs for 600. The scheduler runs one worker, so the
+# order warm-then-cold is fixed, and urllib3's connection pool logs at DEBUG,
+# so the scheduler's own log says which connection each build met
+# (11-nova-cr.yaml).
 #
 # The partition is scoped to the scheduler pods on purpose. The API never calls
 # Placement and the conductor only relays to the scheduler over the bus, so
@@ -427,6 +434,18 @@ spec:
           LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-baseline)"
           echo "$LOGS"
           grep -q 'BASELINE-OK' <<<"$LOGS"
+
+          # The warm state step 10 relies on, and the proof that urllib3's
+          # DEBUG records reach the scheduler's log at all: the baseline's
+          # first Placement request opened the connection the warm build
+          # meets. Without this line step 10 would read zero connections as
+          # a build that never reached Placement.
+          SCHED_LOG="$(kubectl logs -n "$NAMESPACE" deploy/nova-placement-chaos-scheduler -c scheduler)"
+          if ! grep -q 'Starting new HTTP connection.*placement-nova-placement-chaos' <<<"${SCHED_LOG}"; then
+            echo "FAIL: no urllib3 connection line for Placement in the scheduler log; perLoggerLevels did not take effect or the baseline never reached Placement"
+            exit 1
+          fi
+          echo "OK: the baseline left a Placement connection in the scheduler's pool"
     catch: *placement-dump
   # ── Step 9: Inject NetworkChaos to partition Placement ──────────────────
   - try:
@@ -456,11 +475,13 @@ spec:
           echo "OK: the Placement partition is lifted"
   # ── Step 10: Under the partition — scheduling fails, nothing else does ──
   # The Job proves the serving half and the failing half in one pod: GET /, a
-  # server list and an accepted create, then a build that ends in ERROR with a
-  # fault reporting an unplaced build. The assert after it reads the conditions:
-  # the scheduler takes its readiness off the broker socket, which the
-  # partition never touches, so the CR stays Ready through an outage its own
-  # build path cannot survive.
+  # server list, then two accepted builds, s-fail-warm and s-fail-cold, that
+  # each end in ERROR within 150 s with a fault reporting an unplaced build.
+  # The scheduler's log since the Job started then proves which connection
+  # each build met. The assert after it reads the conditions: the scheduler
+  # takes its readiness off the broker socket, which the partition never
+  # touches, so the CR stays Ready through an outage its own build path cannot
+  # survive.
   - try:
     - script:
         shell: bash
@@ -478,6 +499,55 @@ spec:
           LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-placement-chaos-failclosed)"
           echo "$LOGS"
           grep -q 'FAILCLOSED-OK' <<<"$LOGS"
+
+          # The scheduler's urllib3 pool, read since the Job pod started. Each
+          # build makes two attempts: openstacksdk's Proxy.request retries a
+          # timed-out request once (connect_retries=1, which [placement]
+          # cannot override). urllib3 discards a connection that timed out and
+          # pools nothing in its place, so every attempt after the first opens
+          # a fresh connection. The warm build's first attempt writes on the
+          # pooled connection and logs no connection line, its retry logs one
+          # "Starting new HTTP connection", and the cold build logs one per
+          # attempt: three, and no reset. A reset means the first build found
+          # the baseline's connection already closed and reconnected on it,
+          # which logs a reset in place of a new connection: the counts are
+          # then 3 and 1. Two timers close it. uWSGI's 60 s idle close reaches
+          # the scheduler only when it fires before the partition lands, and
+          # the scheduler's TCP keepalive aborts the cut-off connection about
+          # 120 s after the baseline's last Placement request. On a reset the
+          # step prints the injection time and every Placement line the
+          # scheduler logged, whose timestamps say which timer fired. The
+          # injection time is the Succeeded Apply event of a Placement-side
+          # record (selectorKey "."): the NetworkChaos conditions carry no
+          # timestamp, a Failed event is a retried attempt that injected
+          # nothing, and the scheduler-side records (selectorKey ".Target")
+          # hold rules that Service-routed traffic never matches
+          # (13-networkchaos.yaml). The dump therefore heads each record's
+          # events with its selectorKey and pod. `|| true` keeps grep -c's exit
+          # 1 on zero matches from ending the script before the count is
+          # judged.
+          SINCE="$(kubectl get pod -n "$NAMESPACE" -l job-name=nova-placement-chaos-failclosed \
+            -o jsonpath='{.items[0].status.startTime}')"
+          SCHED_LOG="$(kubectl logs -n "$NAMESPACE" deploy/nova-placement-chaos-scheduler -c scheduler --since-time="${SINCE}")"
+          NEW_CONNS="$(grep -c 'Starting new HTTP connection.*placement-nova-placement-chaos' <<<"${SCHED_LOG}" || true)"
+          RESETS="$(grep -c 'Resetting dropped connection: placement-nova-placement-chaos' <<<"${SCHED_LOG}" || true)"
+          echo "scheduler opened ${NEW_CONNS} Placement connection(s) under the partition, reset ${RESETS}"
+          if [ "${NEW_CONNS}" != "3" ]; then
+            echo "FAIL: want exactly three new Placement connections (the warm build's retry and both attempts of the cold build); fewer means a build never reached the Placement client or was not retried, 4 means the first build found no pooled connection to reuse"
+            grep 'placement-nova-placement-chaos' <<<"${SCHED_LOG}" || true
+            exit 1
+          fi
+          if [ "${RESETS}" != "0" ]; then
+            echo "FAIL: want no reset Placement connection; a reset means the first build found the baseline's connection closed, by uWSGI's 60 s idle close before the partition landed or by the scheduler's TCP keepalive about 120 s after the baseline's last Placement request, so no build met the warm connection"
+            INJECTED="$(kubectl get networkchaos partition-placement-nova -n "$NAMESPACE" \
+              -o jsonpath='{range .status.experiment.containerRecords[*]}{.selectorKey} {.id}{"\n"}{range .events[?(@.operation=="Apply")]}  {.type} {.timestamp}{"\n"}{end}{end}' 2>&1 || true)"
+            echo "partition Apply events per record (selectorKey \".\" is the Placement side that drops the traffic):"
+            echo "${INJECTED:-<no record>}"
+            FULL_LOG="$(kubectl logs -n "$NAMESPACE" deploy/nova-placement-chaos-scheduler -c scheduler 2>&1 || true)"
+            grep 'placement-nova-placement-chaos' <<<"${FULL_LOG}" || true
+            exit 1
+          fi
+          echo "OK: the first build reused the baseline's connection and every later attempt opened a new one"
     - assert:
         resource:
           apiVersion: nova.openstack.c5c3.io/v1alpha1

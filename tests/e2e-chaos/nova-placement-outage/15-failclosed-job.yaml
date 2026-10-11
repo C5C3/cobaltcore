@@ -15,7 +15,7 @@
 # database and the cell, neither of which the partition touches, so a listing
 # that answers says the fault stayed inside the scheduling path.
 #
-# The create is accepted, and that is not a defect. nova-api writes the build
+# Each create is accepted, and that is not a defect. nova-api writes the build
 # request and casts to the conductor without ever calling Placement, so the
 # 202 it answers with is the correct answer to a request the deployment has
 # taken responsibility for. The failure surfaces where the deployment can
@@ -23,19 +23,46 @@
 # the build in cell0, and the server reaches ERROR with a fault that says why.
 # A server that reached ACTIVE would mean it had been placed without a claim.
 #
-# ERROR gets 300 seconds because the scheduler does not fail fast. A partition
-# drops the SYN without an ICMP reject, so the connection attempt runs out the
-# kernel's own retry ladder, roughly 130 seconds of exponential backoff, before
-# the client sees an error at all.
+# Each build gets 150 seconds to reach ERROR. The operator renders
+# [placement] timeout = 60, which keystoneauth passes to every Placement
+# request as both the connect and the read timeout, so each attempt of the
+# scheduler's GET /allocation_candidates gives up after 60 seconds whatever
+# state its connection is in. openstacksdk's Proxy.request retries a timed-out
+# request once after 0.5 seconds (connect_retries=1, which [placement] cannot
+# override), so the call gives up after about 121 seconds. The conductor buries
+# the build as soon as the scheduler's exception reaches it, and wait_status
+# polls every 5 seconds. Both builds reached ERROR 121 to 122 seconds after
+# their create (CI, 2026-10-11), so 150 leaves more than 20 seconds. Without
+# the bound, a build on an established connection waits out the kernel's
+# retransmission ladder, about 15 minutes.
+#
+# The two builds meet the two connection states a real partition meets, in
+# order. The scheduler runs one worker (11-nova-cr.yaml), whose urllib3 pool
+# still holds the connection the baseline's claim left established:
+# Placement's uWSGI router closes an idle keep-alive connection after 60
+# seconds, and once the partition is in place it drops that close too. The
+# scheduler's own TCP keepalive (keystoneauth sets 60 seconds idle, then four
+# probes 15 seconds apart) aborts the cut-off connection about 120 seconds
+# after the claim. The connection is therefore warm while the partition lands
+# inside 60 seconds of the claim and s-fail-warm reaches the scheduler inside
+# 120. s-fail-warm writes its first attempt on that connection and hits the
+# read timeout while the kernel retransmits. urllib3 discards a connection that
+# timed out, so the retry of s-fail-warm and both attempts of s-fail-cold open
+# fresh connections and hit the connect timeout on the dropped SYN. Step 10 of
+# chainsaw-test.yaml reads the scheduler's log to prove which connection each
+# build met.
 #
 # The fault is matched on either of two texts, and both say the build was not
 # placed, which is the claim. 'No valid host' is what the conductor writes when
 # the scheduler returns no candidate. Under a drop rule the scheduler returns
-# nothing at all: its GET /allocation_candidates ends in a keystoneauth
-# ConnectTimeout, which reaches the conductor as an oslo.messaging RemoteError
-# (CI, 2026-09-19). nova records a non-nova exception under its class name, so
-# the message is the bare word RemoteError and the request that timed out is in
-# the details, which an admin token is shown.
+# nothing at all. keystoneauth maps a connect and a read timeout alike to
+# ConnectTimeout ('Request to <url> timed out'), and nova's safe_connect
+# catches ConnectFailure but not that sibling, so the exception reaches the
+# conductor as an oslo.messaging RemoteError (CI, 2026-09-19). nova records a
+# non-nova exception under its class name, so the message is the bare word
+# RemoteError and the request that timed out is in the details, which an admin
+# token is shown. The kernel's own SYN give-up is a connect timeout as well,
+# so the two texts cover every path.
 #
 # The fault is read by server id. `openstack server show <name>` resolves a name
 # through the server list, and nova's list path reads faults from the database
@@ -44,7 +71,7 @@
 # cell the instance mapping names, so only that answer carries the fault.
 #
 # backoffLimit is 0 because the script is not idempotent: the second attempt
-# would find the server s-fail the first one created and fail on the name.
+# would find the server s-fail-warm the first one created and fail on the name.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -128,27 +155,58 @@ spec:
               openstack server list >/dev/null
               echo "OK: the API listed servers under the partition"
 
-              # The create must be accepted: nova-api never calls Placement.
-              openstack server create --image "${SEED}" --flavor m1.nano --nic none s-fail
-              echo "OK: the API accepted the create under the partition"
-
-              wait_status server s-fail ERROR 300
-              echo "OK: server s-fail reached ERROR"
-
-              # Read by id, for the reason the header gives. The whole answer
-              # is fetched and the fault taken out of it: the client drops a
-              # column it has no value for, so `-c fault` on a server without
-              # one is an error about columns rather than an empty answer.
-              # Captured before it is matched, for the pipefail reason
-              # 14-baseline-job.yaml records.
-              SERVER_ID="$(openstack server show s-fail -f value -c id)"
-              SHOWN="$(openstack server show "${SERVER_ID}" -f json)"
-              FAULT="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("fault")))' <<<"${SHOWN}")"
-              echo "fault of s-fail: ${FAULT}"
-              if ! grep -qE 'No valid host|allocation_candidates' <<<"${FAULT}"; then
-                echo "FAIL: the fault of s-fail does not report an unplaced build"
-                exit 1
+              # The gap since the baseline create is a diagnostic, not an
+              # assertion, because the Job cannot see the scheduler's pool.
+              # uWSGI's idle close reaches the scheduler only before the
+              # partition is in place, the scheduler's TCP keepalive aborts the
+              # cut-off connection about 120 s after the claim, and the create
+              # precedes the claim, so a gap under 60 s says neither has closed
+              # the connection the first build meets. Over 60 s the close may
+              # have fired, depending on when the partition landed, and near
+              # 120 s the abort fires before the first build.
+              # A show or a timestamp that fails degrades to "unknown"
+              # instead of ending the Job before its claim.
+              CREATED="$(openstack server show s-base -f value -c created 2>/dev/null || true)"
+              CREATED_AT=""
+              if [ -n "${CREATED}" ]; then
+                CREATED_AT="$(date -u -d "${CREATED}" +%s 2>/dev/null || true)"
               fi
-              echo "OK: the fault of s-fail reports a build the scheduler could not place"
+              if [ -n "${CREATED_AT}" ]; then
+                echo "gap since the baseline create: $(( $(date -u +%s) - CREATED_AT )) s (under 60 s neither uWSGI's idle close nor the scheduler's 120 s TCP keepalive abort has closed the warm connection)"
+              else
+                echo "gap since the baseline create: unknown"
+              fi
+
+              # fail_closed <name>: create one server under the partition,
+              # which the API must accept because nova-api never calls
+              # Placement, then wait for ERROR and match the fault. The fault
+              # is read by id, for the reason the header gives. The whole
+              # answer is fetched and the fault taken out of it: the client
+              # drops a column it has no value for, so `-c fault` on a server
+              # without one is an error about columns rather than an empty
+              # answer. Captured before it is matched, for the pipefail
+              # reason 14-baseline-job.yaml records.
+              fail_closed() {
+                openstack server create --image "${SEED}" --flavor m1.nano --nic none "$1"
+                echo "OK: the API accepted the create of $1 under the partition"
+
+                wait_status server "$1" ERROR 150
+                echo "OK: server $1 reached ERROR"
+
+                SERVER_ID="$(openstack server show "$1" -f value -c id)"
+                SHOWN="$(openstack server show "${SERVER_ID}" -f json)"
+                FAULT="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("fault")))' <<<"${SHOWN}")"
+                echo "fault of $1: ${FAULT}"
+                if ! grep -qE 'No valid host|allocation_candidates' <<<"${FAULT}"; then
+                  echo "FAIL: the fault of $1 does not report an unplaced build"
+                  exit 1
+                fi
+                echo "OK: the fault of $1 reports a build the scheduler could not place"
+              }
+
+              # The order is the claim: the warm build first, on the
+              # connection the baseline left established, then the cold one.
+              fail_closed s-fail-warm
+              fail_closed s-fail-cold
 
               echo FAILCLOSED-OK

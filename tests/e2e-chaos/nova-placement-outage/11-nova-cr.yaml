@@ -18,9 +18,25 @@
 # service-user password (all from deploy/kind/infrastructure).
 #
 # One API replica: the suite makes a handful of API calls and the node already
-# carries five services. The scheduler, the conductor, the metadata API and the
-# console proxy take the webhook's defaults, which is one replica each, so the
-# partition of 13-networkchaos.yaml reaches the one scheduler pod there is.
+# carries five services. The conductor, the metadata API and the console proxy
+# take the webhook's defaults. The scheduler takes the default of one replica,
+# so the partition of 13-networkchaos.yaml reaches the one scheduler pod there
+# is, and runs one worker instead of the default two. One worker is what makes
+# the order of 15-failclosed-job.yaml hold: the first build under the partition
+# meets the Placement connection the baseline left established in that
+# worker's pool, and the second opens a fresh one. With two workers the RPC
+# server hands a build to whichever worker is free, and the suite could not say
+# which connection a build met.
+#
+# spec.logging.perLoggerLevels sets urllib3.connectionpool to DEBUG, so urllib3
+# writes "Starting new HTTP connection (<n>): <host>:<port>" and "Resetting
+# dropped connection: <host>" on the scheduler's stderr. Step 10 of
+# chainsaw-test.yaml reads those lines as the evidence for the connection each
+# build met. oslo.log sets the level on the named logger and leaves its stderr
+# handler without one, so the root level INFO does not filter the records.
+# perLoggerLevels renders [DEFAULT] default_log_levels, which replaces
+# oslo.log's default list, so amqp, stevedore and the other libraries that
+# list silences fall back to the root level INFO in this suite's Nova.
 #
 # No spec.dbArchive and no spec.extraConfig: the archive is what
 # ../../e2e/nova/db-archive/ pins, and the resize override the full-stack
@@ -38,6 +54,11 @@ spec:
   api:
     deployment:
       replicas: 1
+  scheduler:
+    workers: 1
+  logging:
+    perLoggerLevels:
+      urllib3.connectionpool: DEBUG
   apiDatabase:
     clusterRef:
       name: openstack-db

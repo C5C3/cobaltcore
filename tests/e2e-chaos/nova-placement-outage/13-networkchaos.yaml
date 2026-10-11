@@ -42,10 +42,13 @@
 # delete the CR; the suite lifts the partition explicitly. It must *exceed* the
 # Chainsaw assert window, not equal it: an equal duration self-heals at the
 # exact deadline, restoring the scheduler's Placement client in the same
-# instant an assertion is still reading the state under the fault. 600s sits
-# above the 5m assert window with margin, and above the roughly 130 seconds of
-# kernel SYN retries the scheduler spends before its Placement call gives up
-# (chainsaw-test.yaml step 10 derives its budget).
+# instant an assertion is still reading the state under the fault. The
+# partition phase is the gap after AllInjected, the two serving checks of
+# 15-failclosed-job.yaml (GET / and the server list) and its two builds, each
+# an accepted create followed by at most 150 seconds to ERROR (the Job's header
+# derives the 150 from two attempts at the operator's 60-second [placement]
+# timeout), under 400 seconds in the worst case. 600s sits above that phase and
+# above the 5m assert window with margin.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
