@@ -63,7 +63,9 @@ refuses with `Delete backup aborted, the backup service currently configured
 The RBD target is a user-owned `CinderBackupBackend` that you attach to the
 projected `controlplane-cinder` by hand. The `openstack` commands use the
 `OS_*` variables and the `OS_CACERT` file of Part 1, Step 7 of the tutorial,
-with the Keystone port-forward of Step 6 running.
+with the Keystone port-forward of Step 6 running. Run this guide before Part 3 of the tutorial
+([Cinder on Ceph](../../quick-start-metal-stack.md#ceph)), because Part 3
+declares `ceph1` and replaces `nfsbk` with `cephbk` on the pool `backups`.
 
 ---
 
