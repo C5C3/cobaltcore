@@ -15,8 +15,9 @@ on a Gardener shoot with two or more workers. Part 1 deploys the infrastructure
 stack and the full ControlPlane, reached through a port-forward. Part 2 turns
 every worker into a KVM hypervisor of that ControlPlane and boots a server on
 each. One server gets a Cinder volume and keeps it through a live migration and
-the eviction of its node, and the volume is backed up after the detach. The
-teardown leaves the cluster as bare as it was. The ControlPlane CR is the one
+the eviction of its node, and the volume is backed up after the detach. With
+the optional lab Ceph, Part 3 adds an RBD volume backend and moves the backups
+to Ceph. The teardown leaves the cluster as bare as it was. The ControlPlane CR is the one
 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
 block-storage block and three lab settings; read Steps 3 and 4 there for its
 anatomy.
@@ -159,8 +160,8 @@ and Grafana with
 where it signs in `admin` with the password `prom-operator`; see
 [Lab Prometheus stack](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-stack).
 
-`WITH_CEPH=true` is optional, and this page does not use the Ceph it deploys:
-Cinder stays on the NFS shares. Added to the deploy command, it deploys the
+`WITH_CEPH=true` is optional. Parts 1 and 2 keep Cinder on the NFS shares;
+[Part 3](#ceph) puts Cinder on this Ceph. Added to the deploy command, it deploys the
 Rook operator and a Ceph with one OSD per worker on raw block volumes of the
 default class, the RBD pools `volumes` and `backups`, and the users `cinder`
 and `cinder-backup`, whose keys reach the Secrets `ceph-client-cinder` and
@@ -676,21 +677,354 @@ and runs through a temporary clone and a snapshot that Nova assists, a path
 nothing has run on backends the operator renders with
 `nfs_snapshot_support = false`.
 
-## Teardown
+## Part 3: Cinder on Ceph {#ceph}
 
-Delete the backup, the servers, the volume and the network, then the stack.
-The volume goes after the servers: a run that stopped before
-[Part 2, Step 10](#hv-backup) left it attached to `lab-0`, deleting the server
-detaches it, and Cinder deletes no attached volume:
+Part 3 puts the lab's Cinder on the lab Ceph beside the NFS shares. It adds the
+RBD volume backend `ceph1` beside `nfs1` and replaces the backup target `nfsbk`
+with the RBD target `cephbk`. Then it attaches an RBD volume, live-migrates its
+server, backs up an RBD and an NFS volume to Ceph, restores one, and rotates the
+key of the Ceph user `cinder` under the running servers. Part 3 needs a lab
+deployed with `WITH_CEPH=true` added to the command of Part 1, Step 3,
+`EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra`,
+and Part 2 through Step 10, which leaves `lab-vol` on `nfs1` `available`, its
+backup `lab-bk` on `nfsbk`, and `lab-0` and `lab-1` `ACTIVE`. The port-forward
+of Part 1, Step 6 keeps running, and the `OS_*` variables of Part 1, Step 7 and
+`KUBECONFIG` stay exported. Part 2, Steps 8 and 9 moved `lab-0`, so Part 3 sets
+`host`, `domain` and `libvirt_pod` itself.
+
+### Step 1: Put Cinder on the lab Ceph {#ceph-apply}
+
+Check the key Secrets, the health of Ceph and the shoot's networks:
+
+```bash
+kubectl get secret -n openstack ceph-client-cinder ceph-client-cinder-backup
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph health
+kubectl -n kube-system get configmap shoot-info -o jsonpath='{.data.podNetwork} {.data.serviceNetwork}'; echo
+```
+
+The Secret read lists both Secrets. On a lab deployed without
+`WITH_CEPH=true` it fails with `NotFound`, and Part 3 cannot run there.
+`ceph health` prints `HEALTH_OK`. The `shoot-info` read prints
+`10.240.0.0/13 10.248.0.0/18` on newforge, the two networks the variant names;
+on another shoot, write its own two into the variant first. Go on only when
+all three hold, because the next block replaces the backup target.
+
+Delete the backup `lab-bk`, then apply the variant once Cinder lists no
+backup:
 
 ```bash
 openstack volume backup delete lab-bk
+timeout 300 bash -c 'until out=$(openstack volume backup list --all-projects -f value -c ID) && [ -z "${out}" ]; do sleep 2; done' &&
+  kubectl apply -k deploy/lab/metal-stack/controlplane-ceph
+```
+
+`lab-bk` goes first, because `nfsbk` wrote it, and once `cephbk` replaces
+`nfsbk` Cinder can neither restore nor delete it. The same holds for every
+backup `nfsbk` wrote, so the apply runs only once Cinder lists no backup in
+any project; a list that fails counts as not empty. The apply prints the
+webhook's warning
+`Warning: spec.services.cinder.backupBackend switches from "nfsbk" (NFS) to "cephbk" (RBD): every backup the NFS driver wrote can be neither restored nor deleted until "nfsbk" is declared again.`
+A block that prints no warning ran out of time after five minutes and applied
+nothing. `openstack volume backup list --all-projects` then names the backups
+left: delete them, reset one stuck in `error_deleting` with
+`openstack volume backup set --state error <backup>` before its delete, and
+repeat the block.
+
+Then wait for the RBD entries and the volume service of `ceph1`:
+
+```bash
+kubectl wait --for=create cinderbackend/ceph1 -n openstack --timeout=5m
+kubectl wait --for=create cinderbackupbackend/cephbk -n openstack --timeout=5m
+kubectl wait cinderbackend/ceph1 cinderbackupbackend/cephbk -n openstack --for=condition=Ready --timeout=10m
+kubectl get cinderbackupbackend -n openstack
+kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=15m
+timeout 300 bash -c 'until openstack volume backend pool list -f value | grep -q "@ceph1#"; do sleep 5; done'
+openstack volume service list
+```
+
+The c5c3-operator prunes `nfsbk` before it projects `cephbk`, so the list
+shows `cephbk` alone, and the backup Deployment rolls onto the Ceph driver.
+The pool wait catches a volume service that started but could not reach Ceph:
+its row in the service list reads `up` while its pool never reports. The
+service list shows `cinder-volume` on `controlplane-cinder@nfs1` and on
+`controlplane-cinder@ceph1`, and `cinder-backup`, each `up`.
+
+When a wait runs out, `kubectl describe cinderbackend ceph1 -n openstack` and
+`kubectl describe cinderbackupbackend cephbk -n openstack` name the failing
+condition, and the
+[Troubleshooting](./guides/cinder/attach-an-rbd-backend.md#troubleshooting)
+table of Attach an RBD Backend to Cinder lists the causes.
+[Lab ControlPlane](./reference/infrastructure/infrastructure-manifests.md#lab-controlplane)
+names the source of every value of the variant.
+
+::: details The Ceph variant
+<<< @/../deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml
+:::
+
+### Step 2: Attach an RBD volume {#ceph-volume}
+
+Create the volume type `ceph` for the backend, a 1 GiB volume of that type,
+and attach it to `lab-0`. As in Part 2, a bounded wait for the status the next
+command needs follows each volume command:
+
+```bash
+openstack volume type create --property volume_backend_name=ceph1 ceph
+openstack volume create --type ceph --size 1 lab-rbd
+timeout 120 bash -c 'until [ "$(openstack volume show lab-rbd -c status -f value)" = available ]; do sleep 2; done'
+rbd_volume=$(openstack volume show lab-rbd -c id -f value)
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd info "volumes/volume-${rbd_volume}"
+openstack server add volume lab-0 lab-rbd
+timeout 120 bash -c 'until [ "$(openstack volume show lab-rbd -c status -f value)" = in-use ]; do sleep 2; done'
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${host}" -o name)
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- virsh dumpxml "${domain}" |
+  grep -E "protocol='rbd'|<host name=|secret type='ceph'"
+```
+
+`rbd info` shows the image `volume-<id>` of 1 GiB in the pool `volumes`. The
+dumpxml prints three lines of the volume's disk: the source
+`protocol='rbd' name='volumes/volume-<id>'`, the monitor
+`<host name='<mon address>' port='3300'/>`, and
+`<secret type='ceph' uuid='090e4a3c-6c20-4e74-82dc-1a70382babe8'/>`, the
+libvirt secret of [Part 2, Step 3](#hv-apply). Cinder reads the monitor's
+address from `ceph mon dump`, and the port is the msgr2 port the cluster
+requires. No mount is involved: QEMU on the host opens the image through
+librbd.
+
+Open the console of `lab-0` as in [Part 2, Step 6](#hv-console):
+
+```bash
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+On the console, find the volume, write a marker to it and read the marker
+back:
+
+```sh
+grep vdb /proc/partitions
+echo rbd-volume-marker | sudo dd of=/dev/vdb
+sync
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+sudo head -c 17 /dev/vdb
+```
+
+`/proc/partitions` lists `vdb` with 1048576 blocks: Part 2, Step 10 detached
+`lab-vol`, so the RBD volume is the second virtio disk. The last command
+prints `rbd-volume-marker`, which has the 17 bytes of Part 2's marker. Leave
+the console with `Ctrl+]`.
+
+### Step 3: Live-migrate the server with the RBD volume {#ceph-migrate}
+
+```bash
+openstack server migrate --live-migration --wait lab-0
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${host}" -o name)
+kubectl exec -n openstack "${libvirt_pod}" -c libvirtd -- virsh dumpxml "${domain}" |
+  grep -E "protocol='rbd'|secret type='ceph'"
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+The libvirt pod of the destination node prints the same source and secret:
+QEMU there opened the image with the libvirt secret of its own node. On the
+console:
+
+```sh
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+sudo head -c 17 /dev/vdb
+```
+
+The guest prints `rbd-volume-marker` again, read through the destination's
+connection to Ceph. Leave the console with `Ctrl+]`.
+
+### Step 4: Back up and restore {#ceph-backup}
+
+Detach the RBD volume, back up both volumes to Ceph, and restore the RBD
+backup into a new volume:
+
+```bash
+openstack server remove volume lab-0 lab-rbd
+timeout 120 bash -c 'until [ "$(openstack volume show lab-rbd -c status -f value)" = available ]; do sleep 2; done'
+openstack volume backup create --name lab-ceph-bk lab-rbd
+timeout 600 bash -c 'until [ "$(openstack volume backup show lab-ceph-bk -c status -f value)" = available ]; do sleep 2; done'
+openstack volume backup create --name lab-nfs-bk lab-vol
+timeout 600 bash -c 'until [ "$(openstack volume backup show lab-nfs-bk -c status -f value)" = available ]; do sleep 2; done'
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls backups
+openstack volume create --type ceph --size 1 lab-restored
+timeout 120 bash -c 'until [ "$(openstack volume show lab-restored -c status -f value)" = available ]; do sleep 2; done'
+openstack volume backup restore --force lab-ceph-bk lab-restored
+timeout 600 bash -c 'until [ "$(openstack volume show lab-restored -c status -f value)" = available ]; do sleep 2; done'
+restored=$(openstack volume show lab-restored -c id -f value)
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- sh -c "rbd export volumes/volume-${restored} - 2>/dev/null | head -c 17"; echo
+openstack server add volume lab-0 lab-restored
+timeout 120 bash -c 'until [ "$(openstack volume show lab-restored -c status -f value)" = in-use ]; do sleep 2; done'
+```
+
+Both backups reach `available`. `lab-nfs-bk` is the NFS volume of Part 2,
+which the Ceph driver reads through the share the backup pod mounts and writes
+to the pool `backups` as a full copy. `rbd ls backups` lists two images, each
+named `volume-<volume id>.backup.<backup id>`.
+
+`lab-restored` is a new volume of type `ceph`, so the marker read back from it
+can only come from the backup. The restore needs `--force` because
+`lab-restored` exists, and the OpenStack CLI refuses an existing volume
+without it. The API sets `restoring-backup` before it returns, so the wait for
+`available` sees the restore end. The toolbox prints `rbd-volume-marker` from
+the restored image. The last two commands attach `lab-restored` to `lab-0`,
+whose QEMU opens it with the current key of `cinder`. Step 5 rotates that key
+under the running guest.
+
+### Step 5: Rotate the cinder key {#ceph-rotate}
+
+Raise the `keyGeneration` of the Ceph user `cinder`, then wait until the
+volume and backup Deployments and every node's libvirt secret carry the new
+key:
+
+```bash
+volume_generation=$(kubectl -n openstack get deploy controlplane-cinder-volume-ceph1 -o jsonpath='{.metadata.generation}')
+backup_generation=$(kubectl -n openstack get deploy controlplane-cinder-backup -o jsonpath='{.metadata.generation}')
+export volume_generation backup_generation
+key_generation=$(kubectl -n rook-ceph get cephclient cinder -o jsonpath='{.spec.security.cephx.keyGeneration}')
+old_key=$(kubectl -n openstack get secret ceph-client-cinder -o jsonpath='{.data.userKey}')
+if [ -n "${volume_generation}" ] && [ -n "${backup_generation}" ] && [ -n "${key_generation}" ] && [ -n "${old_key}" ] &&
+  kubectl -n rook-ceph patch cephclient cinder --type merge \
+    -p "{\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":$((key_generation + 1))}}}}" &&
+  timeout 600 bash -c 'until g=$(kubectl -n openstack get deploy controlplane-cinder-volume-ceph1 -o jsonpath="{.metadata.generation}") && [ -n "${g}" ] && [ "${g}" != "${volume_generation}" ]; do sleep 5; done' &&
+  timeout 300 bash -c 'until g=$(kubectl -n openstack get deploy controlplane-cinder-backup -o jsonpath="{.metadata.generation}") && [ -n "${g}" ] && [ "${g}" != "${backup_generation}" ]; do sleep 5; done' &&
+  kubectl -n openstack rollout status deploy/controlplane-cinder-volume-ceph1 --timeout=300s &&
+  kubectl -n openstack rollout status deploy/controlplane-cinder-backup --timeout=300s &&
+  key=$(kubectl -n openstack get secret ceph-client-cinder -o jsonpath='{.data.userKey}') &&
+  [ -n "${key}" ] && [ "${key}" != "${old_key}" ]; then
+  printf '%s' "${key}" | base64 -d | sha256sum
+  kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder | sha256sum
+  digest=$(printf '%s' "${key}" | base64 -d | tr -d '[:space:]' | sha256sum | cut -c1-12)
+  listed=
+  for pod in $(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt -o name); do
+    listed=yes
+    timeout 300 bash -c "until kubectl logs -n openstack ${pod} -c ceph-secret | grep -qF '(sha256 ${digest})'; do sleep 10; done" ||
+      echo "${pod} did not log the new digest within 300 s: repeat the loop before the migration"
+  done
+  [ -n "${listed}" ] || echo 'no libvirt pod was listed: repeat the loop before the migration'
+  kubectl logs -n openstack -l app.kubernetes.io/name=libvirt -c ceph-secret --tail=1
+else
+  echo 'a read, the patch, a wait or the key check failed: repeat the block'
+fi
+```
+
+The patch raises the generation it reads by one, so it rotates the key also
+on a lab where a guide raised it before. Rook writes the new key, and Ceph
+accepts only the new key from then on. The PushSecret and the ExternalSecret
+carry it to `openstack` within their one-minute intervals. The cinder-operator
+renders it into the keyrings of `ceph1` and of the backup pod, which carries
+the keyring of every RBD volume backend, and both Deployments roll. The two
+full digests, of the Secret in `openstack` and of the key Ceph holds, are
+equal.
+
+The loop waits until the `ceph-secret` container of every node has logged
+`set the value … (sha256 <digest>)` with the new digest, which the last
+command prints for each pod. The container's 10-second pass and the kubelet's
+sync of about a minute bound that wait. A pod that has not logged it within
+300 s prints its name and
+`did not log the new digest within 300 s: repeat the loop before the migration`,
+and an empty pod list prints
+`no libvirt pod was listed: repeat the loop before the migration`. The loop is
+the lines from `listed=` to the last command, which reuse `digest` and so
+repeat without a second rotation. The two generations are exported
+because each wait runs in its own `bash -c`, under bash or zsh. A wait ends
+only on a generation it read that differs from the exported one, because an
+empty read differs from every generation.
+
+The digests and the loop run only when the four reads returned a value, the
+patch, both waits and both rollouts passed, and the Secret in `openstack`
+holds a key other than the one read before the patch. Otherwise the block
+prints `a read, the patch, a wait or the key check failed: repeat the block`.
+The loop alone cannot tell a missed rotation from a completed one: every node
+logged the digest of the old key at its start, and the two full digests are
+equal for the old key too.
+
+A guest that holds an RBD volume through a rotation keeps the session its QEMU
+opened with the old key until the server is live-migrated or restarted. Move
+`lab-0` onto the new key with a migration and open its console on the
+destination:
+
+```bash
+openstack server migrate --live-migration --wait lab-0
+host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${host}" -o name)
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+On the console:
+
+```sh
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+sudo head -c 17 /dev/vdb
+```
+
+The guest prints `rbd-volume-marker` from `lab-restored`, read by the
+destination's QEMU with the new key. Leave the console with `Ctrl+]`. Then
+attach the RBD volume and the NFS volume to `lab-1`, which held neither, and
+open its console:
+
+```bash
+openstack server add volume lab-1 lab-rbd
+timeout 120 bash -c 'until [ "$(openstack volume show lab-rbd -c status -f value)" = in-use ]; do sleep 2; done'
+openstack server add volume lab-1 lab-vol
+timeout 120 bash -c 'until [ "$(openstack volume show lab-vol -c status -f value)" = in-use ]; do sleep 2; done'
+openstack volume service list --service cinder-volume
+host=$(openstack server show lab-1 -c OS-EXT-SRV-ATTR:host -f value)
+domain=$(openstack server show lab-1 -c OS-EXT-SRV-ATTR:instance_name -f value)
+libvirt_pod=$(kubectl get pod -n openstack -l app.kubernetes.io/name=libvirt \
+  --field-selector "spec.nodeName=${host}" -o name)
+kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${domain}"
+```
+
+On the console:
+
+```sh
+grep vd /proc/partitions
+for disk in vdb vdc; do sudo head -c 17 /dev/${disk}; echo; done
+```
+
+`/proc/partitions` lists `vdb` and `vdc` with 1048576 blocks each, and the
+loop prints `rbd-volume-marker` and `lab-volume-marker`. The attach of
+`lab-rbd` asked the volume service of `ceph1` for the connection, so that
+service runs on the new key. QEMU on `lab-1`'s node opened a new connection to
+Ceph, so the libvirt secret of that node carries the new key, and `nfs1` still
+attaches beside `ceph1`. The service list shows both `cinder-volume` rows `up`.
+Leave the console with `Ctrl+]`.
+
+## Teardown
+
+Delete the backups, the servers, the volumes and the network, then the stack:
+
+```bash
+for backup in lab-bk lab-ceph-bk lab-nfs-bk; do
+  if openstack volume backup show "${backup}" >/dev/null 2>&1; then openstack volume backup delete "${backup}"; fi
+done
 openstack server delete --wait $(openstack server list --name '^lab-[0-9]+$' -f value -c ID)
-openstack volume delete lab-vol
+for volume in lab-vol lab-rbd lab-restored; do
+  if openstack volume show "${volume}" >/dev/null 2>&1; then
+    timeout 120 bash -c "until [ \"\$(openstack volume show ${volume} -c status -f value)\" = available ]; do sleep 2; done"
+    openstack volume delete "${volume}"
+  fi
+done
 openstack subnet delete lab-subnet
 openstack network delete lab-net
 EXTERNAL_CLUSTER=true make teardown-infra
 ```
+
+The guards skip what the run did not create: a run without
+[Part 3](#ceph) has no Ceph backup or volume, and a run with it has no
+`lab-bk`. The volumes go after the servers. A run that stopped before
+[Part 2, Step 10](#hv-backup) left `lab-vol` attached to `lab-0`, and after
+Part 3 all three volumes are attached when the servers go. Deleting a server
+detaches its volumes, and each volume delete waits for `available` first,
+because Cinder deletes no attached volume. The RBD images go with Cinder's
+deletes, and the pools with the Ceph teardown that follows the NFS stack.
 
 The teardown removes the hypervisors first, node labels included, while the
 ControlPlane and the operators still run, and then the rest of the stack (see
@@ -735,7 +1069,7 @@ Gardener replaces, after a machine update or a failed health check, takes its
 servers with it unless [Part 2, Step 9](#hv-evict) moved them to another
 worker first. With one worker left, no node can receive them.
 
-Every Cinder volume and backup of the lab lives on one NFS server pod with one
+Until Part 3, every Cinder volume and backup of the lab lives on one NFS server pod with one
 `ReadWriteOnce` volume of 100Gi, which bounds all of them together. A backup
 sits on the same volume as its source: it restores a deleted or overwritten
 volume, and the loss of the export takes both. Nova mounts the share `hard`
@@ -759,6 +1093,20 @@ Cinder the volume `in-use` and `cinder-volume` `up`, and every CR stayed
 `Ready`, so only the guest shows the failure.
 [Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack)
 describes the posture of the export.
+
+After [Part 3](#ceph), the volumes of `ceph1` and every backup live on the
+[Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph):
+one monitor, one manager and three OSDs whose disks are Lightbits volumes of the
+default class, reached over NVMe/TCP. A write reaches two OSDs and, below
+them, the replicas the platform keeps of each Lightbits volume; on newforge the
+default class is `premium`, which keeps three, as the survey of
+[#1338](https://github.com/c5c3/cobaltcore/issues/1338) found on 2026-10-09.
+No run has measured the latency of that stack. The one monitor is a single
+point of failure the lab accepts: a Ceph client opens its connection through a
+monitor, so while the monitor's pod is away no volume is created, attached,
+migrated or backed up on Ceph. A guest keeps the key its QEMU started with
+until the server is live-migrated or restarted. Backups that `nfsbk` wrote are
+unreachable once `cephbk` replaces it.
 
 A killed libvirt, `nova-compute` or `ovn-controller` pod leaves the servers on
 its node running. In the same runs each was killed under a running server and
@@ -865,6 +1213,11 @@ Part 2, Steps 1 and 4 changed after the runs above: Step 1 annotates the
 nodes, and Step 4 shows the hosts of the zone's aggregate. The run that proves
 them is recorded on [#1314](https://github.com/c5c3/cobaltcore/issues/1314).
 
+Part 3 has not run on the lab yet. The Teardown changed after the runs above
+as well: it deletes the backups and the volumes behind a guard that each
+exists, and waits for `available` before each volume delete. That block has
+not run on the lab yet.
+
 No lab run has set `WITH_PROMETHEUS=true` yet; the
 [Lab Prometheus run](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-run)
 lists the steps that would prove it.
@@ -875,6 +1228,13 @@ lists the steps that would prove it.
   the lab's manifests and the reason behind each setting, from the
   [node probe](./reference/infrastructure/infrastructure-manifests.md#node-probe)
   to the [node port check](./reference/infrastructure/infrastructure-manifests.md#node-port-check).
+- [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph):
+  the Ceph of `WITH_CEPH=true`, its pools, its users and the hand-off of their
+  keys, on which Part 3 puts Cinder.
+- [Attach an RBD Backend to Cinder](./guides/cinder/attach-an-rbd-backend.md)
+  and [Configure RBD Volume Backups](./guides/cinder/configure-rbd-backups.md):
+  an RBD backend and an RBD backup target as user-owned resources, run before
+  Part 3.
 - [E2E Deployment](./reference/infrastructure/e2e-deployment.md): `make deploy-infra`
   and `make teardown-infra`, with every variable.
 - [NovaCompute CRD](./reference/nova/novacompute-crd.md): the compute pool, its

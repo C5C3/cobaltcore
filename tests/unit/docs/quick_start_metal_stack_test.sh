@@ -8,11 +8,12 @@
 #      key, and the SPDX comment is present
 #   2. docs/.vitepress/config.ts lists the page after the ControlPlane quick
 #      start, in the Getting Started group
-#   3. the six `## ` sections occur once each and in order, and the seventeen
-#      `### Step` headings carry their explicit anchors
+#   3. the seven `## ` sections occur once each and in order, Part 3 between
+#      Part 2 and the Teardown, and the twenty-two `### Step` headings carry
+#      their explicit anchors
 #   4. every directory the page applies holds a kustomization.yaml, every
 #      deploy/, hack/ or tests/ file it names exists and each such script is
-#      executable, both code imports resolve, and every #anchor it links
+#      executable, the three code imports resolve, and every #anchor it links
 #      resolves on the target page
 #   5. the page holds the deploy and teardown commands, the guide
 #      conventions list it as a devstack with the same deploy command, and
@@ -24,9 +25,11 @@
 #      WITH_* flags hack/deploy-infra.sh declares, it refuses exactly those
 #      its preflight_external_cluster refuses
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
-#   7. four commands of the run sequence occur once on the page and not in
+#   7. the run-sequence commands of tests/lib/quick_start_metal_stack.sh occur
+#      once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
-#      the page
+#      the page; a line counts when the command is not followed by "-", so the
+#      apply of controlplane/ leaves out the apply of controlplane-ceph/
 #   8. Proven by names the date of a lab run and no chainsaw suite
 #   9. Part 1, Step 4 holds no instruction to repeat the apply: deploy-infra
 #      returns only once the cluster admits it
@@ -35,18 +38,21 @@
 #      Step 3 follows the waits for the operator's release and its CRD, and
 #      the node port check of Part 2, Step 1 follows the reservation of the
 #      migration ports and its rollout, and the volume create, the attach, the
-#      detach and the backup create of Part 2 occur once each and in this
-#      order, each followed on the next line by a `timeout` wait for the
-#      status it reaches
+#      detach and the backup create of Part 2, and the ten volume, backup and
+#      attach commands of Part 3, occur once each and in this order, each
+#      followed on the next line by a `timeout` wait for the status it reaches
 #  11. no line of the page holds a hand step the operators took over: the
 #      highAvailability patch, the custom trait (its annotation and its
 #      create) and the host discovery, nor any other file under tests/
 #  12. the Prerequisites name no value only one shoot has: no class
 #      `premium`, no address of the 10.248. service network, and no row whose
 #      failure shows only later (`nothing checks it`, `already allocated`)
-#  13. the bash block of the Teardown deletes the backup, the servers and the
-#      volume once each and in this order, and runs `make teardown-infra`
-#      after them
+#  13. the bash block of the Teardown deletes the backups, the servers and the
+#      volumes once each and in this order, each backup and volume behind a
+#      guard that it exists and each volume after a wait for `available`, and
+#      runs `make teardown-infra` after them; its backup and volume loops name
+#      every backup and volume the page's code creates, and the check reads a
+#      name from every such create
 #  14. no line of the page, nor of the "Checks outside the quick start"
 #      section of infrastructure-manifests.md that builds on Part 2, indexes
 #      a shell array by number or names a node as `nodes[<n>]`: bash counts
@@ -66,8 +72,32 @@
 #  19. Part 2, Step 1 annotates the nodes with an empty
 #      nova.openstack.cloud.sap/aggregates after the lifecycle label, and
 #      Step 4 shows the hosts of the zone's aggregate
+#  20. Part 3, Step 1 checks the lab, then, in a bash block of its own, deletes
+#      the NFS backup lab-bk and applies the Ceph variant behind a `&&` on the
+#      wait until Cinder lists no backup in any project, before the waits for
+#      the RBD entries; Step 5 chains with `&&`, in the condition of one `if`,
+#      the checks that the two Deployment generations, the key generation and
+#      the key were read, the patch of the CephClient cinder, the waits for a
+#      new, non-empty generation of both Deployments, their rollouts and the
+#      check that the key changed; its then branch waits for every node's new
+#      digest, echoing a pod whose wait timed out and an empty pod list, and
+#      its else branch echoes the failure; then Step 5 live-migrates lab-0 and
+#      attaches lab-rbd to lab-1, in this order;
+#      Part 3 sets host, domain and libvirt_pod itself and links no #cp-
+#      anchor
+#  21. the Caveats link the Lab Ceph of
+#      docs/reference/infrastructure/infrastructure-manifests.md#lab-ceph
+#  22. Part 3 names the backends of the JSON patch of
+#      deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml: the RBD
+#      volume backend with its volume Deployment, pool, libvirt secret UUID
+#      and key Secret, and the backup target with its pool and key Secret
+#  23. Part 3, Step 1 quotes the warning the format string of
+#      warnCinderBackupDriverSwitch in
+#      operators/c5c3/api/v1alpha1/controlplane_webhook.go prints for the
+#      switch from nfsbk (NFS) to cephbk (RBD)
 #
-# Heading scans skip fenced code. QUICK_START_DOC overrides the page.
+# Heading scans skip fenced code. QUICK_START_DOC overrides the page. Check 22
+# is counted as SKIP when yq is not on PATH.
 #
 # Usage: bash tests/unit/docs/quick_start_metal_stack_test.sh
 
@@ -82,6 +112,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/quick_start_metal_stack.sh
+source "$PROJECT_ROOT/tests/lib/quick_start_metal_stack.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-metal-stack.md}"
 VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
@@ -89,6 +121,8 @@ GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
+CEPH_VARIANT="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml"
+CONTROLPLANE_WEBHOOK="$PROJECT_ROOT/operators/c5c3/api/v1alpha1/controlplane_webhook.go"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -214,10 +248,10 @@ test_sidebar() {
 
 # --- Test 3: sections and step anchors ---
 test_sections() {
-  echo "Test: the six sections occur once each, in order"
+  echo "Test: the seven sections occur once each, in order"
   local sections pattern name count line previous=0 ordered=1
   sections="$(headings '##')"
-  for pattern in '^## Prerequisites$' '^## Part 1: ' '^## Part 2: ' '^## Teardown$' '^## Caveats$' '^## Proven by$'; do
+  for pattern in '^## Prerequisites$' '^## Part 1: ' '^## Part 2: ' '^## Part 3: ' '^## Teardown$' '^## Caveats$' '^## Proven by$'; do
     name="${pattern#^## }"
     name="${name%$}"
     count="$(cut -d: -f2- <<<"$sections" | grep -cE "$pattern" || true)"
@@ -237,9 +271,9 @@ test_sections() {
     FAIL=$((FAIL + 1))
   fi
 
-  echo "Test: the seventeen step headings carry their anchors"
+  echo "Test: the twenty-two step headings carry their anchors"
   local want got
-  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup"
+  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup 1:ceph-apply 2:ceph-volume 3:ceph-migrate 4:ceph-backup 5:ceph-rotate"
   got="$(headings '###' | cut -d: -f2- | grep '^### Step ' |
     sed -E 's/^### Step ([0-9]+):.*\{#([a-z-]+)\}[[:space:]]*$/\1:\2/' | tr '\n' ' ' | sed 's/ $//' || true)"
   assert_eq "step numbers and anchors" "$want" "$got"
@@ -300,7 +334,7 @@ test_references_resolve() {
       FAIL=$((FAIL + 1))
     fi
   done <<<"$imports"
-  assert_eq "the page holds two code imports" "2" "$found"
+  assert_eq "the page holds three code imports" "3" "$found"
 
   links="$(grep -oE '\]\((\./[^)#[:space:]]+\.md)?#[^)[:space:]]+\)' "$QUICK_START_DOC" | sort -u || true)"
   while IFS= read -r link; do
@@ -413,18 +447,21 @@ test_part_2_standalone() {
   assert_not_empty "Part 2 defines zone=" "$(grep -E '^zone=' <<<"$body" || true)"
 }
 
+# count_command <command> <file>
+# The number of lines of <file> that hold <command> not followed by "-", so
+# the apply of controlplane/ leaves out the apply of a controlplane-<variant>.
+count_command() {
+  grep -F -- "$1" "$2" | grep -cvF -- "$1-" || true
+}
+
 # --- Test 7: one runbook ---
 test_one_runbook() {
   echo "Test: the run sequence lives on the page alone"
   local command count
-  for command in \
-    'kubectl apply -k deploy/lab/metal-stack/controlplane' \
-    'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'server create "lab-${i}"' \
-    'server add volume lab-0 lab-vol'; do
-    count="$(grep -cF -- "$command" "$QUICK_START_DOC" || true)"
+  for command in "${METAL_STACK_RUN_SEQUENCE[@]}"; do
+    count="$(count_command "$command" "$QUICK_START_DOC")"
     assert_eq "'$command' occurs on one line of the page" "1" "$count"
-    count="$(grep -cF -- "$command" "$INFRA_MANIFESTS" || true)"
+    count="$(count_command "$command" "$INFRA_MANIFESTS")"
     assert_eq "'$command' does not occur in infrastructure-manifests.md" "0" "$count"
   done
   assert_file_contains_fixed "infrastructure-manifests.md links the page" "$INFRA_MANIFESTS" \
@@ -485,17 +522,31 @@ test_blocks_pass_on_first_run() {
   # the next command needs, so a bounded wait for that status follows it. The
   # backup create comes after the detach, because Cinder backs up an in-use
   # volume only with --force.
+  # Each entry is a command and, after the `|`, the status its wait reaches.
+  local part2=(
+    'openstack volume create --size 1 lab-vol|available'
+    'openstack server add volume lab-0 lab-vol|in-use'
+    'openstack server remove volume lab-0 lab-vol|available'
+    'openstack volume backup create --name lab-bk lab-vol|available'
+  )
+  local part3=(
+    'openstack volume create --type ceph --size 1 lab-rbd|available'
+    'openstack server add volume lab-0 lab-rbd|in-use'
+    'openstack server remove volume lab-0 lab-rbd|available'
+    'openstack volume backup create --name lab-ceph-bk lab-rbd|available'
+    'openstack volume backup create --name lab-nfs-bk lab-vol|available'
+    'openstack volume create --type ceph --size 1 lab-restored|available'
+    'openstack volume backup restore --force lab-ceph-bk lab-restored|available'
+    'openstack server add volume lab-0 lab-restored|in-use'
+    'openstack server add volume lab-1 lab-rbd|in-use'
+    'openstack server add volume lab-1 lab-vol|in-use'
+  )
   assert_once_in_order "the volume create, the attach, the detach and the backup create" "$page" \
-    'openstack volume create --size 1 lab-vol' \
-    'openstack server add volume lab-0 lab-vol' \
-    'openstack server remove volume lab-0 lab-vol' \
-    'openstack volume backup create --name lab-bk lab-vol'
+    "${part2[@]%|*}"
+  assert_once_in_order "the volume, backup and attach commands of Part 3" "$page" \
+    "${part3[@]%|*}"
   local pair command status next
-  for pair in \
-    'openstack volume create --size 1 lab-vol|available' \
-    'openstack server add volume lab-0 lab-vol|in-use' \
-    'openstack server remove volume lab-0 lab-vol|available' \
-    'openstack volume backup create --name lab-bk lab-vol|available'; do
+  for pair in "${part2[@]}" "${part3[@]}"; do
     command="${pair%|*}"
     status="${pair##*|}"
     line="$(grep -nF -- "$command" "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
@@ -534,22 +585,59 @@ test_prerequisites_name_no_pinned_value() {
 }
 
 # --- Test 13: the teardown deletes the OpenStack objects before the stack ---
-# The page deletes what it created while the APIs still answer: the backup
-# first, then the servers before the volume, because deleting a server
-# detaches the volume a run that stopped before Part 2, Step 10 left attached,
-# and Cinder refuses to delete an attached volume. All of them go before the
+# The page deletes what it created while the APIs still answer: the backups
+# first, then the servers before the volumes, because deleting a server
+# detaches the volumes a run left attached, and Cinder refuses to delete an
+# attached volume, so each volume delete waits for `available`. A run without
+# Part 3 has no Ceph backup or volume and a run with it no lab-bk, so each
+# delete sits behind a guard that its object exists. All of them go before the
 # stack, whose NovaCompute pool keeps its finalizer while a server is left.
+# The names the two loops must hold are read from the creates in the page's
+# code, so a backup or volume a Part adds without a Teardown entry fails the
+# check, and so does a create whose name the check cannot read. A create counts
+# with a global option before `volume`, and a name ends at a space or the line
+# end, so a name with another character is not read as its prefix.
+
+# assert_loop_names_creates <object> <loop> <creates> <regex>
+# Asserts that <creates> holds a line, that the extended regular expression
+# <regex> reads a name, its last field, from each line, and that <loop>, the
+# names of the Teardown's <object> loop, holds that name.
+assert_loop_names_creates() {
+  local object="$1" loop="$2" creates="$3" regex="$4" create name
+  assert_not_empty "the page creates a $object" "$creates"
+  while IFS= read -r create; do
+    [[ -n "$create" ]] || continue
+    name="$(grep -oE -- "$regex" <<<"$create" | awk '{ print $NF }' || true)"
+    assert_not_empty "the check reads the $object name of '$create'" "$name"
+    [[ -z "$name" ]] || assert_contains "the Teardown's $object loop names $name" " $loop " " $name "
+  done <<<"$creates"
+}
+
+# shellcheck disable=SC2016 # the page's literal text, not expanded here
 test_teardown_order() {
-  echo "Test: the Teardown block deletes the backup, the servers and the volume before the stack"
+  echo "Test: the Teardown block deletes the backups, the servers and the volumes before the stack"
   local block
   block="$(section '^## Teardown$' |
     awk '/^```bash[[:space:]]*$/ { inside = 1; next } inside && /^```/ { exit } inside { print }')"
   assert_not_empty "the Teardown section holds a bash block" "$block"
-  assert_once_in_order "the backup, server and volume deletes and the stack teardown" "$block" \
-    'volume backup delete lab-bk' \
+  assert_once_in_order "the guarded backup, server and volume deletes and the stack teardown" "$block" \
+    'for backup in ' \
+    'if openstack volume backup show "${backup}" >/dev/null 2>&1; then openstack volume backup delete "${backup}"; fi' \
     "server delete --wait \$(openstack server list --name '^lab-[0-9]+\$'" \
-    'volume delete lab-vol' \
+    'for volume in ' \
+    'if openstack volume show "${volume}" >/dev/null 2>&1; then' \
+    'openstack volume show ${volume} -c status -f value)\" = available ]' \
+    'openstack volume delete "${volume}"' \
     'make teardown-infra'
+
+  local backups volumes code
+  backups="$(sed -n 's/^for backup in \(.*\); do$/\1/p' <<<"$block")"
+  volumes="$(sed -n 's/^for volume in \(.*\); do$/\1/p' <<<"$block")"
+  code="$(awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } fenced { print }' "$QUICK_START_DOC")"
+  assert_loop_names_creates backup "$backups" "$(grep -E 'volume backup create( |$)' <<<"$code" || true)" \
+    'volume backup create( --[a-z-]+)* --name [a-z0-9][a-z0-9-]*( |$)'
+  assert_loop_names_creates volume "$volumes" "$(grep -E 'volume create( |$)' <<<"$code" || true)" \
+    'volume create( --(size|type|image|snapshot|source|description|availability-zone) [^ ]+| --(bootable|non-bootable|read-only|read-write))* [a-z0-9][a-z0-9-]*( |$)'
 }
 
 # --- Test 14: no shell array indexed by number ---
@@ -668,6 +756,169 @@ test_part_2_keeps_the_zone_aggregate() {
     'openstack aggregate show "${zone}" -c hosts -f value'
 }
 
+# --- Test 20: the order of Part 3 ---
+# The Ceph variant replaces nfsbk, after which Cinder can neither restore nor
+# delete a backup nfsbk wrote. A pasted block runs every line, so Step 1
+# checks the lab in a block of its own, and the next block chains the apply
+# to a wait that ends once Cinder lists no backup in any project: a failing
+# list keeps it waiting, and a timeout skips the apply. The rotation of Step 5
+# chains its reads, the patch, the waits, the rollouts and a check that the
+# key changed in the condition of one `if`, because a skipped patch or a
+# failed wait leaves the old key, whose digest every node logged at its start
+# and the digest loop would match. Its waits end only on a new generation they
+# read, because an empty read differs from every generation. It waits for both
+# Deployments and every node's libvirt secret before the migration and the
+# attach that prove the new key. The digest loop echoes a pod whose wait timed
+# out and an empty pod list, because the migration fails on a node whose
+# libvirt secret still holds the old key. Part 2 moved lab-0, so Part 3 reads
+# host, domain and libvirt_pod itself.
+# shellcheck disable=SC2016 # the page's literal text, not expanded here
+test_part_3_order() {
+  echo "Test: Part 3 deletes lab-bk before the apply and rotates before the migration"
+  local body step block
+  body="$(section '^## Part 3: ')"
+  assert_not_empty "the page holds Part 3" "$body"
+  step="$(step_section '^## Part 3: ' 1)"
+  assert_not_empty "Part 3 holds Step 1" "$step"
+  assert_once_in_order "the checks, the backup delete, the apply and the create waits" "$step" \
+    'kubectl get secret -n openstack ceph-client-cinder ceph-client-cinder-backup' \
+    'openstack volume backup delete lab-bk' \
+    'kubectl apply -k deploy/lab/metal-stack/controlplane-ceph' \
+    'kubectl wait --for=create cinderbackend/ceph1'
+  block="$(awk '
+    /^```bash[[:space:]]*$/ { inside = 1; text = ""; next }
+    inside && /^```/ { if (text ~ /backup delete lab-bk/) { printf "%s", text; exit } inside = 0; next }
+    inside { text = text $0 "\n" }
+  ' <<<"$step")"
+  assert_eq "the backup delete, the wait for no backup and the apply chained to it form one block" \
+    "$(printf '%s\n' \
+      'openstack volume backup delete lab-bk' \
+      "timeout 300 bash -c 'until out=\$(openstack volume backup list --all-projects -f value -c ID) && [ -z \"\${out}\" ]; do sleep 2; done' &&" \
+      '  kubectl apply -k deploy/lab/metal-stack/controlplane-ceph')" \
+    "$block"
+  step="$(step_section '^## Part 3: ' 5)"
+  assert_not_empty "Part 3 holds Step 5" "$step"
+  assert_once_in_order "the guarded patch, the generation waits, the rollout, the key check, the digest wait, the failure, the migration and the attach" "$step" \
+    'old_key=$(kubectl -n openstack get secret ceph-client-cinder' \
+    'if [ -n "${volume_generation}" ] && [ -n "${backup_generation}" ] && [ -n "${key_generation}" ] && [ -n "${old_key}" ] &&' \
+    'kubectl -n rook-ceph patch cephclient cinder --type merge' \
+    'controlplane-cinder-volume-ceph1 -o jsonpath="{.metadata.generation}") && [ -n "${g}" ] && [ "${g}" != "${volume_generation}" ]' \
+    'controlplane-cinder-backup -o jsonpath="{.metadata.generation}") && [ -n "${g}" ] && [ "${g}" != "${backup_generation}" ]' \
+    'kubectl -n openstack rollout status deploy/controlplane-cinder-volume-ceph1' \
+    '[ -n "${key}" ] && [ "${key}" != "${old_key}" ]; then' \
+    "grep -qF '(sha256 \${digest})'" \
+    "echo 'a read, the patch, a wait or the key check failed: repeat the block'" \
+    'openstack server migrate --live-migration --wait lab-0' \
+    'openstack server add volume lab-1 lab-rbd'
+  # Each line of the rotation's if statement, prefixed with its part: c for
+  # the condition up to "; then", t for the then branch, e for the else branch.
+  local parts condition then_branch
+  parts="$(awk '
+    /^if / { part = "c" }
+    part == "t" && /^else$/ { part = "e"; next }
+    part != "" && /^fi$/ { exit }
+    part != "" { print part ":" $0 }
+    part == "c" && /; then$/ { part = "t" }
+  ' <<<"$step")"
+  condition="$(sed -n 's/^c://p' <<<"$parts")"
+  assert_not_empty "Step 5 holds the rotation's if statement" "$condition"
+  assert_eq "every line of the rotation's condition ends in '&&', a line continuation or '; then'" "" \
+    "$(grep -vE '(&&|\\|; then)$' <<<"$condition" || true)"
+  then_branch="$(sed -n 's/^t://p' <<<"$parts")"
+  assert_contains "the then branch waits for every node's new digest" "$then_branch" \
+    "grep -qF '(sha256 \${digest})'"
+  assert_eq "the digest wait ends in '||'" "||" \
+    "$(grep -F "grep -qF '(sha256 \${digest})'" <<<"$then_branch" | awk '{ print $NF }')"
+  assert_contains "the then branch names a pod whose digest wait timed out" "$then_branch" \
+    'echo "${pod} did not log the new digest within 300 s: repeat the loop before the migration"'
+  assert_contains "the then branch names an empty pod list" "$then_branch" \
+    "[ -n \"\${listed}\" ] || echo 'no libvirt pod was listed: repeat the loop before the migration'"
+  assert_contains "the else branch names the failure" "$(sed -n 's/^e://p' <<<"$parts")" \
+    "echo 'a read, the patch, a wait or the key check failed: repeat the block'"
+  assert_not_empty "Part 3 defines host=" "$(grep -E '^host=' <<<"$body" || true)"
+  assert_not_empty "Part 3 defines domain=" "$(grep -E '^domain=' <<<"$body" || true)"
+  assert_not_empty "Part 3 defines libvirt_pod=" "$(grep -E '^libvirt_pod=' <<<"$body" || true)"
+  assert_not_contains "Part 3 holds no link to a #cp- anchor" "$body" "](#cp-"
+}
+
+# --- Test 21: the caveats name the lab Ceph ---
+test_caveats_name_the_lab_ceph() {
+  echo "Test: the Caveats link the Lab Ceph"
+  local body
+  body="$(section '^## Caveats$')"
+  assert_not_empty "the page holds the Caveats" "$body"
+  assert_contains "the Caveats link infrastructure-manifests.md#lab-ceph" "$body" \
+    'infrastructure-manifests.md#lab-ceph'
+}
+
+# --- Test 22: Part 3 names the variant's backends ---
+# Part 3 repeats the names and values of the Ceph variant's JSON patch, so a
+# rename in the variant fails here instead of leaving the page on a backend
+# that no longer exists.
+
+# variant_field <patch> <path> <expression>
+# <expression> on the value of the RBD operation of the JSON patch <patch>
+# whose path is <path>, empty when there is none.
+variant_field() {
+  yq -r ".[] | select(.path == \"$2\" and .value.type == \"RBD\") | .value.$3 // \"\"" - <<<"$1" 2>/dev/null
+}
+
+test_part_3_names_the_variant() {
+  echo "Test: Part 3 names the backends of the Ceph variant"
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (9 checks skipped)"
+    SKIP=$((SKIP + 9))
+    return
+  fi
+  local patch name pool uuid secret backup backup_pool backup_secret value body
+  patch="$(yq -r '.patches[] | select(.target.kind == "ControlPlane") | .patch // ""' "$CEPH_VARIANT" 2>/dev/null)"
+  name="$(variant_field "$patch" /spec/services/cinder/backends/- name)"
+  pool="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.pool)"
+  uuid="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.secretUUID)"
+  secret="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.keySecretRef.name)"
+  backup="$(variant_field "$patch" /spec/services/cinder/backupBackend name)"
+  backup_pool="$(variant_field "$patch" /spec/services/cinder/backupBackend rbd.pool)"
+  backup_secret="$(variant_field "$patch" /spec/services/cinder/backupBackend rbd.keySecretRef.name)"
+  for value in "$name" "$pool" "$uuid" "$secret" "$backup" "$backup_pool" "$backup_secret"; do
+    if [[ -z "$value" ]]; then
+      echo "  FAIL: could not read the RBD backends from ${CEPH_VARIANT#"$PROJECT_ROOT"/}"
+      FAIL=$((FAIL + 9))
+      return
+    fi
+  done
+  body="$(section '^## Part 3: ')"
+  assert_contains "Part 3 creates the volume type on $name" "$body" "volume_backend_name=$name"
+  assert_contains "Part 3 waits for the CinderBackend $name" "$body" "cinderbackend/$name"
+  assert_contains "Part 3 waits for the CinderBackupBackend $backup" "$body" "cinderbackupbackend/$backup"
+  assert_contains "Part 3 waits for a pool of $name" "$body" "@$name#"
+  assert_contains "Part 3 rolls the volume Deployment of $name" "$body" "controlplane-cinder-volume-$name"
+  assert_contains "Part 3 reads the image in the pool $pool" "$body" "\"$pool/volume-"
+  assert_contains "Part 3 lists the pool $backup_pool" "$body" "rbd ls $backup_pool"
+  assert_contains "Part 3 names the libvirt secret $uuid" "$body" "uuid='$uuid'"
+  assert_contains "Part 3 reads the Secrets $secret and $backup_secret" "$body" \
+    "get secret -n openstack $secret $backup_secret"
+}
+
+# --- Test 23: Part 3 quotes the webhook's warning ---
+# The warning comes from a format string the webhook joins from several
+# literals; %q quotes a name, which printf writes as "%s".
+test_part_3_quotes_the_webhook_warning() {
+  echo "Test: Part 3, Step 1 quotes the warning of the backup target switch"
+  local format warning
+  format="$(awk '
+    index($0, "\"spec.services.cinder.backupBackend switches from") { on = 1 }
+    on { print; if ($0 !~ /\+[[:space:]]*$/) exit }
+  ' "$CONTROLPLANE_WEBHOOK" | grep -oE '"([^"\\]|\\.)*"' | sed 's/^"//; s/"$//' | tr -d '\n' | sed 's/%q/"%s"/g')"
+  if [[ -z "$format" ]]; then
+    echo "  FAIL: could not read the warning's format string from ${CONTROLPLANE_WEBHOOK#"$PROJECT_ROOT"/}"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  # shellcheck disable=SC2059 # the format is the webhook's
+  warning="$(printf "$format" nfsbk NFS cephbk RBD NFS nfsbk)"
+  assert_contains "Step 1 quotes the webhook's warning" "$(step_section '^## Part 3: ' 1)" "Warning: $warning"
+}
+
 test_frontmatter
 test_sidebar
 test_sections
@@ -687,6 +938,10 @@ test_caveats_name_the_fault_runs
 test_step_3_names_the_platform_autoscalers
 test_step_3_names_the_lab_prometheus
 test_part_2_keeps_the_zone_aggregate
+test_part_3_order
+test_caveats_name_the_lab_ceph
+test_part_3_names_the_variant
+test_part_3_quotes_the_webhook_warning
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

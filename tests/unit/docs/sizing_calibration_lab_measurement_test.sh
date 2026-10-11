@@ -21,9 +21,10 @@
 #      append to them, and the libvirt DaemonSet's name; the fixture header is
 #      the report header of the script, whose columns 3, 9, 12, 13, 16 and 17
 #      are the ones the helpers read
-#   4. the page holds none of the four run-sequence commands that
-#      test_one_runbook of tests/unit/docs/quick_start_metal_stack_test.sh
-#      keeps on the quick start alone
+#   4. the page holds none of the run-sequence commands of
+#      tests/lib/quick_start_metal_stack.sh, which
+#      tests/unit/docs/quick_start_metal_stack_test.sh keeps on the quick start
+#      alone
 #   5. the helpers run from the page on a fixture of five rows: `floors`,
 #      `floor_bounds`, `verdicts` and `over_request` print their lines, and
 #      `libvirtd_scope` prints a node and its scope's readings per pod;
@@ -68,6 +69,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/quick_start_metal_stack.sh
+source "$PROJECT_ROOT/tests/lib/quick_start_metal_stack.sh"
 
 DOC="${SIZING_CALIBRATION_DOC:-$PROJECT_ROOT/docs/reference/testing/sizing-calibration.md}"
 
@@ -300,16 +303,10 @@ test_name_sources() {
 }
 
 # --- Test 4: the run sequence stays on the quick start ---
-# The four commands are the ones test_one_runbook in
-# tests/unit/docs/quick_start_metal_stack_test.sh keeps on the quick start.
 test_no_run_sequence() {
   echo "Test: the page repeats none of the quick start's run-sequence commands"
   local command
-  for command in \
-    'kubectl apply -k deploy/lab/metal-stack/controlplane' \
-    'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'server create "lab-${i}"' \
-    'server add volume lab-0 lab-vol'; do
+  for command in "${METAL_STACK_RUN_SEQUENCE[@]}"; do
     assert_eq "'$command' does not occur on the page" "0" "$(grep -cF -- "$command" "$DOC" || true)"
   done
 }
