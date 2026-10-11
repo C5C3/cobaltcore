@@ -228,7 +228,7 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder-nfs-chaos` | Storage outage (fail-closed create) | `Ready=True/AllReady` maintained, a create ending in `error` within 240 s (`FAILCLOSED-OK`), a lock held through the outage writing again within 180 s of the server's return (`LOCK-KEPT-OK`), a post-recovery create reaching `available` within 240 s (`RECOVERED-OK`) |
 | [nova-broker-outage](#nova-broker-outage) | — | `nova-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor` and `Ready=False/NotAllReady` within 180 s, the API container ready at `restartCount` 0 throughout, a server create unanswered within 45 s while `GET /` answers 200 (`BLOCKED-OK`), the two conditions True again within 120 s of the lift and the stalled create reaching ACTIVE (`RECOVERED-OK`) |
 | [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova-db-chaos` | Database partition (fail-closed read) | `DeploymentReady`, `NovaAPIReady`, `SchedulerReady` and `ConductorReady` all `True` maintained, a Keystone token still obtainable, `GET /v2.1/servers` answering 5xx or timing out and never 4xx (`FAILCLOSED-OK`), the same list answering an empty array before and after (`LIST-OK`) |
-| [nova-placement-outage](#nova-placement-outage) | — | `nova-placement-chaos` | Scheduling outage (fail-closed build) | `SchedulerReady=True/SchedulerReady`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` maintained, `GET /`, a server list and a 202 on create all answered under the fault, the build reaching ERROR within 300 s with a fault that reports an unplaced build (`FAILCLOSED-OK`), a fresh create reaching ACTIVE after the lift (`RECOVERED-OK`) |
+| [nova-placement-outage](#nova-placement-outage) | — | `nova-placement-chaos` | Scheduling outage (fail-closed build) | `SchedulerReady=True/SchedulerReady`, `NovaAPIReady=True/APIHealthy` and `Ready=True/AllReady` maintained, `GET /`, a server list and a 202 on create all answered under the fault, two builds reaching ERROR within 150 s each, the first on the baseline's connection and the second on a fresh one, with faults that report an unplaced build and the scheduler log showing three new Placement connections and no reset one (`FAILCLOSED-OK`), a fresh create reaching ACTIVE after the lift (`RECOVERED-OK`) |
 | [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon-chaos-mc` | No-regression | `Ready=True/AllReady` at baseline, after Memcached has recovered and after the PodChaos is deleted, every dashboard container at `restartCount` 0 |
 | [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon-chaos-op` | Operator self-recovery | Every pre-chaos operator pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, operator `readyReplicas` back at `spec.replicas`, a replica patch afterwards reaches Deployment `horizon-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
 | [glance-operator-pod-kill](#glance-operator-pod-kill) | — | `glance-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `glance-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
@@ -1280,10 +1280,14 @@ namespace.
 **Purpose:** Placement disappears under the scheduler. The claim has two halves:
 a Placement outage fails scheduling, and it fails nothing else. `GET /` answers,
 a server list answers, and a create is accepted with the 202 it answers on a
-healthy cluster, because none of those paths calls Placement. The accepted build
-then reaches ERROR with a fault reporting an unplaced build, while the CR stays
-`Ready=True/AllReady`: the scheduler's readiness is the broker socket, not its
-Placement client.
+healthy cluster, because none of those paths calls Placement. Two accepted
+builds then reach ERROR with a fault reporting an unplaced build, while the CR
+stays `Ready=True/AllReady`: the scheduler's readiness is the broker socket, not
+its Placement client. `s-fail-warm` meets the Placement connection the baseline
+left established and `s-fail-cold` a fresh one, the two states a real partition
+meets. The operator's 60-second `[placement] timeout` bounds each attempt in
+both states, and the scheduler's own log proves which connection each build
+met.
 
 **Steps:**
 
@@ -1294,12 +1298,12 @@ Placement client.
 | 3 | Register the four services in the catalog | `script` (6m) + `assert` | `02-catalog-setup-job.yaml`, `succeeded: 1` |
 | 4 | Bring up the four services the boot path depends on | `apply` + `assert` (8m) | The Neutron transport-URL Secret, `nova-placement-chaos-ovn`, `neutron-nova-placement-chaos`, `placement-nova-placement-chaos`, `glance-nova-placement-chaos` and `glance-nova-placement-chaos-s3` |
 | 5 | Seed the image the servers boot from | `script` (6m) + `assert` | `09-image-seed-job.yaml`, `succeeded: 1` |
-| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with the sixteen conditions the suite asserts True beside `Ready` (fifteen `*Ready` sub-conditions and `ExtraConfigHealthy`; `VPAReady` is not among them) and `Ready=True/AllReady` |
+| 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-placement-chaos` with the sixteen conditions the suite asserts True beside `Ready` (fifteen `*Ready` sub-conditions and `ExtraConfigHealthy`; `VPAReady` is not among them) and `Ready=True/AllReady`. The CR runs one scheduler worker and logs urllib3's connection pool at DEBUG |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-placement-chaos` |
-| 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`) |
+| 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`). The scheduler log then holds a `Starting new HTTP connection` for the Placement host: the connection the warm build meets, and the proof that urllib3's DEBUG records reach the log |
 | 9 | Inject NetworkChaos to partition Placement | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-placement-nova`), waited for `AllInjected`. The step cleanup deletes it |
-| 10 | Under the partition | `script` (8m) + `assert` | `15-failclosed-job.yaml` proves the serving half and the failing half in one pod: `GET /`, a server list, a create accepted with 202, then a build ending in ERROR inside 300 s with a fault that reports an unplaced build, read by server id (`FAILCLOSED-OK`). The CR still reads `SchedulerReady`, `NovaAPIReady` and `Ready` True |
-| 11 | Lift the partition and schedule again | `delete` + `script` (13m) | `16-recovered-job.yaml` creates a fresh server that reaches ACTIVE with no pod restart and no operator action (`RECOVERED-OK`) |
+| 10 | Under the partition | `script` (8m) + `assert` | `15-failclosed-job.yaml` proves the serving half and the failing half in one pod: `GET /`, a server list, then two builds, `s-fail-warm` and `s-fail-cold`, each accepted with 202 and ending in ERROR inside 150 s with a fault that reports an unplaced build, read by server id (`FAILCLOSED-OK`). The scheduler log since the Job started then holds three `Starting new HTTP connection` lines for the Placement host (the warm build's retry and both attempts of the cold build) and no `Resetting dropped connection`. The CR still reads `SchedulerReady`, `NovaAPIReady` and `Ready` True |
+| 11 | Lift the partition and schedule again | `delete` + `script` (13m) | `16-recovered-job.yaml` creates a fresh server that reaches ACTIVE with no pod restart and no operator action, then deletes the two ERROR servers (`RECOVERED-OK`) |
 | 12 | Tear the deployment down | `script` (10m) | Deletes the compute and the three Jobs best-effort, then the Nova CR, and waits its pods out |
 
 **Fixtures:** `01-keystone-cr.yaml`, `02-catalog-setup-job.yaml`,
@@ -1321,11 +1325,37 @@ from `nova-system`, `keystone-system`, `ovn-system`, `neutron-system`,
 
 **Design notes:**
 
-- The ERROR takes its time and cannot do otherwise. The drop rule takes the SYN
-  without an ICMP reject, so the scheduler's connection attempt runs out the
-  kernel's own retry ladder, roughly 130 seconds of exponential backoff, before
-  it sees an error at all. That is why the fail-closed Job gives the ERROR 300
-  seconds and why the NetworkChaos runs for 600.
+- A partition meets the scheduler in one of two connection states. Its urllib3
+  pool may hold an established keep-alive connection to Placement: a request
+  written on it waits for an answer while the kernel retransmits, about 15
+  minutes on Linux defaults. A fresh connection sends a SYN the partition drops.
+  The operator renders `[placement] timeout = 60`, which keystoneauth applies as
+  both the connect and the read timeout, so each attempt fails after 60 seconds
+  in both states. openstacksdk retries a timed-out request once after 0.5
+  seconds (`connect_retries=1` in `Proxy.request`, which `[placement]` cannot
+  override), so a build fails after about 121 seconds. That is why the
+  fail-closed Job gives each build 150 seconds and why the NetworkChaos runs
+  for 600.
+- The first build meets the warm connection because Placement's uWSGI router
+  closes an idle keep-alive connection only after 60 seconds (`--http-timeout`),
+  and the partition drops that close once it is in place. The scheduler's own
+  TCP keepalive (keystoneauth sets 60 seconds idle, then four probes 15 seconds
+  apart) aborts the cut-off connection about 120 seconds after the baseline's
+  last Placement request. The connection is therefore warm while the partition
+  lands inside 60 seconds of that request and the first build reaches the
+  scheduler inside 120. urllib3 discards a connection that timed out, so the
+  first build's retry and both attempts of the second build open fresh ones.
+  The scheduler runs one worker: with two, the RPC server hands a build to
+  whichever worker is free, and the suite could not say which state a build
+  met.
+- The scheduler log is the evidence. The warm build's first attempt logs no
+  connection line, and every later attempt logs one `Starting new HTTP
+  connection`: three in all. When either timer closed the connection first, the
+  first build logs `Resetting dropped connection` and reconnects on the old
+  connection object, so the count stays three and the check fails on the
+  reset. The step then prints the injection time and every Placement line the
+  scheduler logged, whose timestamps say which timer fired. A gap under 60
+  seconds in the fail-closed Job's log rules both out.
 - The partition is scoped to the scheduler pods. The API never calls Placement
   and the conductor only relays to the scheduler over the bus, so cutting all
   five workloads off would leave nothing serving to read the second half of the
@@ -1339,7 +1369,8 @@ from `nova-system`, `keystone-system`, `ovn-system`, `neutron-system`,
   what the conductor writes when the scheduler returns no candidate. Under a drop
   rule the scheduler's Placement request ends in a `ConnectTimeout` instead, which
   reaches the conductor as a `RemoteError`; nova records that under its class name
-  and keeps the request that timed out in the fault details.
+  and keeps the request that timed out in the fault details. Connect and read
+  timeouts both become `ConnectTimeout`, so the two builds fail the same way.
 - The fault is read by server id. `openstack server show <name>` resolves a name
   through the server list, and nova's list path reads faults from the schema the
   API's `[database]` connection names (the cell), while a buried build and its
