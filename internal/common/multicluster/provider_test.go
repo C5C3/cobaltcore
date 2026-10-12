@@ -7,14 +7,20 @@ package multicluster
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 )
 
 // A kubeconfig is opaque to everything under test here, so the fixtures are two
@@ -29,7 +35,7 @@ func TestParseNamespacesTrimsEveryEntry(t *testing.T) {
 
 	// The value is typed into a Secret by hand or templated by a chart, so the
 	// spaces around the separators are the normal case and not the exception.
-	namespaces, err := parseNamespaces([]byte(" openstack , tenant-a,tenant-b "))
+	namespaces, err := parseNamespaces(NamespacesDataKey, []byte(" openstack , tenant-a,tenant-b "))
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(namespaces).To(gomega.Equal([]string{"openstack", "tenant-a", "tenant-b"}))
@@ -38,7 +44,7 @@ func TestParseNamespacesTrimsEveryEntry(t *testing.T) {
 func TestParseNamespacesAcceptsASingleEntry(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	namespaces, err := parseNamespaces([]byte("openstack"))
+	namespaces, err := parseNamespaces(NamespacesDataKey, []byte("openstack"))
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(namespaces).To(gomega.Equal([]string{"openstack"}))
@@ -53,7 +59,7 @@ func TestParseNamespacesRefusesAnEmptyValue(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 
-			namespaces, err := parseNamespaces([]byte(raw))
+			namespaces, err := parseNamespaces(NamespacesDataKey, []byte(raw))
 
 			g.Expect(namespaces).To(gomega.BeNil())
 			g.Expect(err).To(gomega.MatchError("namespaces key present but empty"))
@@ -66,7 +72,7 @@ func TestParseNamespacesRefusesAnEmptyValue(t *testing.T) {
 func TestParseNamespacesRefusesAnEntryThatIsNoDNS1123Label(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	namespaces, err := parseNamespaces([]byte("tenant-a,Not_Valid,tenant-b"))
+	namespaces, err := parseNamespaces(NamespacesDataKey, []byte("tenant-a,Not_Valid,tenant-b"))
 
 	g.Expect(namespaces).To(gomega.BeNil())
 	g.Expect(err).To(gomega.HaveOccurred())
@@ -81,12 +87,43 @@ func TestParseNamespacesRefusesAnEmptyEntry(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 
-			namespaces, err := parseNamespaces([]byte(raw))
+			namespaces, err := parseNamespaces(NamespacesDataKey, []byte(raw))
 
 			g.Expect(namespaces).To(gomega.BeNil())
 			g.Expect(err).To(gomega.HaveOccurred())
 		})
 	}
+}
+
+// The assigned scope is checked like the placed one, and the message names the
+// key it refuses, because the two keys sit side by side in one Secret and the
+// operator has to know which one to fix.
+func TestParseNamespacesNamesTheKeyItRefuses(t *testing.T) {
+	for _, key := range []string{NamespacesDataKey, AssignedNamespacesDataKey} {
+		t.Run(key, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			namespaces, err := parseNamespaces(key, []byte(" "))
+			g.Expect(namespaces).To(gomega.BeNil())
+			g.Expect(err).To(gomega.MatchError(key + " key present but empty"))
+
+			namespaces, err = parseNamespaces(key, []byte("tenant-a,Tenant_B"))
+			g.Expect(namespaces).To(gomega.BeNil())
+			g.Expect(err).To(gomega.MatchError(gomega.HavePrefix(key + ` entry "Tenant_B" `)))
+		})
+	}
+}
+
+func TestParseNamespacesAssignedKeyTrimsEveryEntryAndAcceptsOne(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	namespaces, err := parseNamespaces(AssignedNamespacesDataKey, []byte(" tenant-b , tenant-c "))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(namespaces).To(gomega.Equal([]string{"tenant-b", "tenant-c"}))
+
+	namespaces, err = parseNamespaces(AssignedNamespacesDataKey, []byte("tenant-b"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(namespaces).To(gomega.Equal([]string{"tenant-b"}))
 }
 
 func TestIsUnknownNamespaceForCacheMatchesTheCacheError(t *testing.T) {
@@ -129,10 +166,12 @@ func TestIsUnknownNamespaceForCacheRejectsOtherErrors(t *testing.T) {
 func TestRegistrationHashIsStableForTheSameRegistration(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(registrationHash(testKubeconfig, []byte("tenant-a"), true)).
-		To(gomega.Equal(registrationHash(testKubeconfig, []byte("tenant-a"), true)))
-	g.Expect(registrationHash(testKubeconfig, nil, false)).
-		To(gomega.Equal(registrationHash(testKubeconfig, nil, false)))
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("tenant-a"))).
+		To(gomega.Equal(registrationHash(testKubeconfig, namespacesKey("tenant-a"))))
+	g.Expect(registrationHash(testKubeconfig)).
+		To(gomega.Equal(registrationHash(testKubeconfig)))
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("tenant-a"), assignedKey("tenant-b"))).
+		To(gomega.Equal(registrationHash(testKubeconfig, namespacesKey("tenant-a"), assignedKey("tenant-b"))))
 }
 
 // The upstream rotation semantic: a new kubeconfig under the same cluster name
@@ -140,8 +179,8 @@ func TestRegistrationHashIsStableForTheSameRegistration(t *testing.T) {
 func TestRegistrationHashCoversTheKubeconfig(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(registrationHash(testKubeconfig, []byte("tenant-a"), true)).
-		NotTo(gomega.Equal(registrationHash(testRotatedKubeconfig, []byte("tenant-a"), true)))
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("tenant-a"))).
+		NotTo(gomega.Equal(registrationHash(testRotatedKubeconfig, namespacesKey("tenant-a"))))
 }
 
 // The same semantic extended to the scope: a cache's namespaces are fixed when
@@ -150,8 +189,8 @@ func TestRegistrationHashCoversTheKubeconfig(t *testing.T) {
 func TestRegistrationHashCoversTheNamespacesValue(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(registrationHash(testKubeconfig, []byte("tenant-a"), true)).
-		NotTo(gomega.Equal(registrationHash(testKubeconfig, []byte("tenant-a,tenant-b"), true)))
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("tenant-a"))).
+		NotTo(gomega.Equal(registrationHash(testKubeconfig, namespacesKey("tenant-a,tenant-b"))))
 }
 
 // Adding the key to a registration that had none is the migration from a
@@ -161,10 +200,156 @@ func TestRegistrationHashCoversTheNamespacesValue(t *testing.T) {
 func TestRegistrationHashSeparatesAnAbsentKeyFromAPresentOne(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	absent := registrationHash(testKubeconfig, nil, false)
+	absent := registrationHash(testKubeconfig)
 
-	g.Expect(absent).NotTo(gomega.Equal(registrationHash(testKubeconfig, nil, true)))
-	g.Expect(absent).NotTo(gomega.Equal(registrationHash(testKubeconfig, []byte("tenant-a"), true)))
+	g.Expect(absent).NotTo(gomega.Equal(registrationHash(testKubeconfig, namespacesKey(""))))
+	g.Expect(absent).NotTo(gomega.Equal(registrationHash(testKubeconfig, namespacesKey("tenant-a"))))
+}
+
+// Moving an owner's namespace into or within the assigned scope widens or
+// narrows the kinds' informers, so a changed assignedNamespaces value has to
+// rebuild the cluster even when namespaces and the kubeconfig stay the same.
+func TestRegistrationHashCoversTheAssignedNamespacesValue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("openstack"), assignedKey("tenant-b"))).
+		NotTo(gomega.Equal(registrationHash(testKubeconfig, namespacesKey("openstack"), assignedKey("tenant-c"))))
+}
+
+// Adding the second key to a placed-only registration is the migration of an
+// owner's namespace out of the namespaces key, and the present-but-empty value
+// hashes apart from the absent key here too. A value moved from one key to the
+// other hashes apart as well, because each key is hashed under its name.
+func TestRegistrationHashSeparatesAnAbsentAssignedKeyFromAPresentOne(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	placedOnly := registrationHash(testKubeconfig, namespacesKey("openstack"))
+
+	g.Expect(placedOnly).NotTo(gomega.Equal(
+		registrationHash(testKubeconfig, namespacesKey("openstack"), assignedKey(""))))
+	g.Expect(placedOnly).NotTo(gomega.Equal(
+		registrationHash(testKubeconfig, namespacesKey("openstack"), assignedKey("tenant-b"))))
+	g.Expect(registrationHash(testKubeconfig, namespacesKey("openstack,tenant-b"))).NotTo(gomega.Equal(
+		registrationHash(testKubeconfig, namespacesKey("openstack"), assignedKey("tenant-b"))))
+}
+
+// namespacesKey and assignedKey are the two scope keys of a registration that
+// carries them.
+func namespacesKey(raw string) scopeKey {
+	return scopeKey{name: NamespacesDataKey, raw: []byte(raw), present: true}
+}
+
+func assignedKey(raw string) scopeKey {
+	return scopeKey{name: AssignedNamespacesDataKey, raw: []byte(raw), present: true}
+}
+
+// byObjectNamespaces returns, per kind type name, the namespaces a cache's
+// ByObject entry covers.
+func byObjectNamespaces(o cluster.Options) map[string][]string {
+	byKind := map[string][]string{}
+	for obj, entry := range o.Cache.ByObject {
+		byKind[fmt.Sprintf("%T", obj)] = slices.Sorted(maps.Keys(entry.Namespaces))
+	}
+	return byKind
+}
+
+// The c5c3-operator's case: the order kinds and Secrets read the owner's
+// namespace, and every other kind stays on the placed ones, so a Deployment
+// informer never LISTs where the assigned Role grants nothing.
+func TestScopedCacheOptionCoversAssignedNamespacesForTheListedKindsOnly(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	o := cluster.Options{}
+	scopedCacheOption([]string{"openstack"}, []string{"tenant-b", "tenant-c"},
+		[]client.Object{&corev1.Secret{}})(&o)
+
+	g.Expect(slices.Sorted(maps.Keys(o.Cache.DefaultNamespaces))).To(gomega.Equal([]string{"openstack"}))
+	g.Expect(byObjectNamespaces(o)).To(gomega.Equal(map[string][]string{
+		"*v1.Secret": {"openstack", "tenant-b", "tenant-c"},
+	}))
+}
+
+// Every service operator's case: it lists no kind, so its cache on the target
+// is the placed one alone, whatever the registration assigns.
+func TestScopedCacheOptionWithoutKindsLeavesByObjectEmpty(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	o := cluster.Options{}
+	scopedCacheOption([]string{"openstack"}, []string{"tenant-b"}, nil)(&o)
+
+	g.Expect(slices.Sorted(maps.Keys(o.Cache.DefaultNamespaces))).To(gomega.Equal([]string{"openstack"}))
+	g.Expect(o.Cache.ByObject).To(gomega.BeNil())
+}
+
+// A placed-only registration on the c5c3-operator builds the cache it built
+// before the second key existed.
+func TestScopedCacheOptionWithoutAssignedNamespacesLeavesByObjectEmpty(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	o := cluster.Options{}
+	scopedCacheOption([]string{"openstack", "tenant-a"}, nil, []client.Object{&corev1.Secret{}})(&o)
+
+	g.Expect(slices.Sorted(maps.Keys(o.Cache.DefaultNamespaces))).To(gomega.Equal([]string{"openstack", "tenant-a"}))
+	g.Expect(o.Cache.ByObject).To(gomega.BeNil())
+}
+
+// A ByObject map one of the static cluster options set is shared by every
+// cluster the provider builds, so the option extends a copy of it.
+func TestScopedCacheOptionLeavesAStaticByObjectMapUntouched(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	static := map[client.Object]cache.ByObject{&corev1.ConfigMap{}: {}}
+	o := cluster.Options{}
+	o.Cache.ByObject = static
+	scopedCacheOption([]string{"openstack"}, []string{"tenant-b"}, []client.Object{&corev1.Secret{}})(&o)
+
+	g.Expect(static).To(gomega.HaveLen(1))
+	g.Expect(byObjectNamespaces(o)).To(gomega.HaveKeyWithValue("*v1.Secret", []string{"openstack", "tenant-b"}))
+	g.Expect(byObjectNamespaces(o)).To(gomega.HaveKey("*v1.ConfigMap"))
+}
+
+// An absent scope key lists no namespace and is no error: the cluster-wide and
+// the placed-only registration are both valid.
+func TestScopeKeyParseOfAnAbsentKeyListsNothing(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	namespaces, err := readScopeKey(&corev1.Secret{}, AssignedNamespacesDataKey).parse()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(namespaces).To(gomega.BeNil())
+
+	namespaces, err = readScopeKey(&corev1.Secret{Data: map[string][]byte{
+		AssignedNamespacesDataKey: []byte("tenant-b"),
+	}}, AssignedNamespacesDataKey).parse()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(namespaces).To(gomega.Equal([]string{"tenant-b"}))
+}
+
+// A namespace under both keys is what a migration that only added the second
+// key leaves behind, and the refusal names every such namespace.
+func TestInBothNamesTheNamespacesBothKeysList(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	g.Expect(inBoth([]string{"openstack", "tenant-a", "tenant-b"}, []string{"tenant-b", "tenant-c", "tenant-a"})).
+		To(gomega.Equal([]string{"tenant-b", "tenant-a"}))
+	g.Expect(inBoth([]string{"openstack"}, []string{"tenant-b"})).To(gomega.BeEmpty())
+	g.Expect(inBoth([]string{"openstack"}, nil)).To(gomega.BeEmpty())
+	g.Expect(inBoth([]string{"tenant-a", "tenant-a"}, []string{"tenant-a", "tenant-a"})).
+		To(gomega.Equal([]string{"tenant-a"}))
+}
+
+// Whoever may write a registration Secret chooses how long both lists are, and
+// the overlap check runs on every reconcile of it. Near the 1 MiB Secret limit
+// each key holds 2^18 one-letter entries; a check that compared every pair
+// would keep the registration controller's single worker busy for minutes.
+func TestInBothStaysFastOnARegistrationAtTheSecretSizeLimit(t *testing.T) {
+	g := gomega.NewWithT(t)
+	const entries = 1 << 18 // "a," is two bytes, so two keys of them fill 1 MiB
+	placed := slices.Repeat([]string{"a"}, entries)
+	assigned := slices.Repeat([]string{"b"}, entries)
+
+	start := time.Now()
+	g.Expect(inBoth(placed, assigned)).To(gomega.BeEmpty())
+	g.Expect(time.Since(start)).To(gomega.BeNumerically("<", 10*time.Second))
 }
 
 // registrationKubeconfig is a registration kubeconfig whose only variables are
@@ -230,7 +415,7 @@ func TestCreateAndEngageClusterRefusesAnExecCredential(t *testing.T) {
 			p := NewKubeconfigProvider(KubeconfigProviderOptions{Namespace: "c5c3-clusters"})
 
 			err := p.createAndEngageCluster(t.Context(), "hostile-target",
-				credentialKubeconfig(tc.credential), nil, "hash", logr.Discard())
+				credentialKubeconfig(tc.credential), nil, nil, "hash", logr.Discard())
 
 			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
 				`refusing the kubeconfig of cluster "hostile-target"`)))
@@ -295,7 +480,7 @@ func TestCreateAndEngageClusterRefusesAFileBackedCredential(t *testing.T) {
 			p := NewKubeconfigProvider(KubeconfigProviderOptions{Namespace: "c5c3-clusters"})
 
 			err := p.createAndEngageCluster(t.Context(), "hostile-target",
-				tc.kubeconfig(dir), nil, "hash", logr.Discard())
+				tc.kubeconfig(dir), nil, nil, "hash", logr.Discard())
 
 			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
 				`refusing the kubeconfig of cluster "hostile-target"`)))
@@ -353,7 +538,7 @@ func TestCreateAndEngageClusterRefusesAFileBackedCredentialWithoutReadingIt(t *t
 			p := NewKubeconfigProvider(KubeconfigProviderOptions{Namespace: "c5c3-clusters"})
 
 			err := p.createAndEngageCluster(t.Context(), "hostile-target",
-				tc.kubeconfig, nil, "hash", logr.Discard())
+				tc.kubeconfig, nil, nil, "hash", logr.Discard())
 
 			g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
 				`refusing the kubeconfig of cluster "hostile-target"`)))
@@ -384,7 +569,7 @@ func TestCreateAndEngageClusterRefusesAnExecCredentialOutsideTheCurrentContext(t
 	p := NewKubeconfigProvider(KubeconfigProviderOptions{Namespace: "c5c3-clusters"})
 
 	err := p.createAndEngageCluster(t.Context(), "hostile-target",
-		kubeconfig, nil, "hash", logr.Discard())
+		kubeconfig, nil, nil, "hash", logr.Discard())
 
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
 		"exec and auth-provider credentials are not supported")))
