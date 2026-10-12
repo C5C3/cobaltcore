@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the two-cluster orders suite.
+#
+# The keystone-user plane with a managed message bus and the three addresses an
+# order on a target cluster is delivered: Keystone's public endpoint, the
+# database and the bus. The test substitutes the three tokens before it applies
+# the CR, each with a NodePort on the management node:
+#   @PUBLIC_ENDPOINT@  http://<node InternalIP>:30050/v3
+#   @DB_ENDPOINT@      <node InternalIP>:30051
+#   @BUS_ENDPOINT@     <node InternalIP>:30052
+# The ports are pinned because the NodePort Services behind them copy Services
+# only this plane creates, so they come up after the CR is applied, while the
+# addresses have to be in it from the start.
+#
+# Keystone is published over plain http. The plane carries no gateway, so the
+# DNS and TLS steps of the Quick Start (Orders) have no counterpart here, and
+# the K-ORC identity catalog row and Keystone's bootstrap public URL carry the
+# node address for the suite's lifetime.
+#
+# The one entry assigns orders-tenant on the registered target
+# cobaltcore-target, with the member role and catalog entries admitted from the
+# start: keystone-user proves the refusals and the freeze on the management
+# cluster, and this suite proves the delivery across the cluster boundary.
+# orders-outsider is assigned by the access chart and the registration Secret
+# and by no entry, so an order there is refused.
+#
+# The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
+# ephemeral namespace and the test applies this CR into it.
+#
+# The Quick Start (Orders) (docs/quick-start-orders.md) imports the region
+# below.
+# region controlplane
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+    messaging:
+      clusterRef:
+        name: cp-rabbitmq
+    publishedDatabaseEndpoint: "@DB_ENDPOINT@"
+    publishedMessagingEndpoint: "@BUS_ENDPOINT@"
+  services:
+    keystone:
+      publicEndpoint: "@PUBLIC_ENDPOINT@"
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
+  namespaceAssignments:
+  - namespace: orders-tenant
+    targetClusterRef:
+      name: cobaltcore-target
+    allowedRoles: [member]
+    allowCatalogEntries: true
+# endregion controlplane

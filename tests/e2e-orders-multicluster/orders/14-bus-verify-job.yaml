@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the delivered vhost credentials work from the target cluster: the Job
+# reads transport_url from workflow-bus-credentials, whose host and port are the
+# plane's published messaging endpoint, and opens an AMQP connection with
+# kombu. The connection fails unless the broker accepts the user and its
+# password on the vhost. Nothing of the URL is printed: it carries the
+# password.
+#
+# oslo.messaging writes AMQP 0-9-1 as rabbit://, and kombu names the same
+# protocol amqp://, so the Job swaps the scheme before it connects. The image is
+# the Keystone image, which ships kombu. It is pinned to the tag the
+# e2e-orders-multicluster job loads into the target cluster, with IfNotPresent
+# so it uses that copy rather than pulling from GHCR.
+# region bus-verify-job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workflow-bus-verify
+  namespace: orders-tenant
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: amqp
+        image: ghcr.io/c5c3/keystone:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TRANSPORT_URL
+          valueFrom: {secretKeyRef: {name: workflow-bus-credentials, key: transport_url}}
+        command: ["python3", "-c"]
+        args:
+        - |
+          import os
+          import kombu
+
+          url = os.environ["TRANSPORT_URL"].replace("rabbit://", "amqp://", 1)
+          conn = kombu.Connection(url, connect_timeout=10)
+          conn.connect()
+          print("connected:", conn.connected)
+          conn.release()
+          print("OK: the delivered bus credentials connect")
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+# endregion bus-verify-job

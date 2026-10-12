@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A vhost on the plane's managed bus, with the default rotation. On the target
+# the delivered host, port and transport_url carry the plane's
+# spec.infrastructure.publishedMessagingEndpoint.
+# region rabbitmqvhost-workflow-bus
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: workflow-bus
+  namespace: orders-tenant
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion rabbitmqvhost-workflow-bus

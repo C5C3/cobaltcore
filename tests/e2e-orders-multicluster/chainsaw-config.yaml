@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the two-cluster orders suite.
+#
+# The suite lives outside tests/e2e/ for the reason tests/e2e-multicluster/
+# does: it needs a management cluster and a target cluster registered on it,
+# and `make e2e` sweeps tests/e2e/ against one cluster. It lives outside
+# tests/e2e-multicluster/ as well, because it runs in a job of its own with a
+# different stack: the keystone-operator, the c5c3-operator, K-ORC and the
+# infrastructure on the management cluster, and a bare target that carries the
+# access chart and nothing else. Its tenant namespaces orders-tenant and
+# orders-outsider are fixed, because the chart and the registration Secret name
+# them when the job brings the clusters up.
+#
+# The timeouts are tests/e2e-multicluster/chainsaw-config.yaml's; the suite
+# pins its own exec and cleanup budgets in its spec.timeouts. apiVersion
+# v1alpha2 Configuration is the correct pairing with v1alpha1 Test manifests,
+# matching the sibling configs.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-orders-multicluster
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-orders-multicluster-report
+    path: _output/reports

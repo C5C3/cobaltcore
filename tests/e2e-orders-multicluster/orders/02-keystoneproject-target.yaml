@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A project ordered from orders-tenant on the target cluster.
+# region keystoneproject-workflow-project
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: workflow-project
+  namespace: orders-tenant
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion keystoneproject-workflow-project

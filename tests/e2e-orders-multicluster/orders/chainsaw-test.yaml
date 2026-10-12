@@ -1,0 +1,867 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the orders of a service owner whose namespace lives on a
+# registered target cluster. The seven order kinds are applied on the target,
+# in orders-tenant, and the c5c3-operator on the management cluster creates each
+# piece against the plane's Keystone, MariaDB and message bus and writes the
+# credentials as a Secret beside the order on the target, with the addresses the
+# plane publishes for other clusters. Jobs on the target then use each Secret.
+#
+# keystone-user and messaging prove the orders on the management cluster:
+# consent, refusal, freeze, rotation and repair. The delivery code on a target
+# is the same path with a different address, so this suite proves what only a
+# second cluster shows: the addresses, the reach across the cluster boundary,
+# and the registration whose assignedNamespaces key gives the c5c3-operator the
+# owner's namespaces.
+#
+# ── Legs ─────────────────────────────────────────────────────────────────────
+#   PUBLISH      the plane comes up with its published Keystone endpoint,
+#                database and bus addresses, and the three NodePort Services
+#                behind them are created on the pinned ports.
+#   DELIVERY     the user order on the target reaches Ready, its Secret sits
+#                beside it on the target with the published auth_url and nowhere
+#                on the management cluster, and a Job on the target issues a
+#                token.
+#   PIECES       the project, the role assignment and the catalog entry reach
+#                Ready, and a Job scopes a token to the project and reads the
+#                entry out of the catalog.
+#   APPCRED      the application credential is delivered and a Job
+#                authenticates with it.
+#   DATABASE     the database Secret carries the published host and port, and a
+#                Job writes and reads a row.
+#   VHOST        the vhost Secret carries the published host and port, a Job
+#                connects with kombu, and the broker authenticates the user.
+#   UNASSIGNED   an order in orders-outsider, assigned on the target and named
+#                by no entry, reads NamespaceNotAssigned and creates nothing.
+#   UNPUBLISHED  with publishedDatabaseEndpoint cleared, a second database order
+#                reads DatabaseNotPublished and receives no Secret; restoring the
+#                field delivers it.
+#   TEARDOWN     the orders are deleted in the order their holds allow, leave no
+#                Secret on the target and nothing in the plane's namespace, and
+#                the plane goes down through its own finalizer.
+#
+# ── Two clusters, fixed tenant namespaces ────────────────────────────────────
+# The plane lives in chainsaw's ephemeral namespace on the management cluster.
+# The orders live in orders-tenant and orders-outsider on the target. Those two
+# are fixed rather than derived from the ephemeral namespace, because the access
+# chart's assignedNamespaces and the registration Secret name them when the job
+# brings the clusters up, and the suite runs alone in its job. The script
+# reaches the target with `kubectl --kubeconfig`, through chainsaw's own admin
+# kubeconfig for it: the operators never see that file, they read the
+# registration Secret in c5c3-clusters. No step names the target cluster, so
+# chainsaw never opens the file the clusters block names, and a missing one
+# reaches the presence guard instead of failing the test before it starts.
+#
+# ── Published addresses ──────────────────────────────────────────────────────
+# The plane publishes Keystone, the database and the bus on the management
+# node's InternalIP, which a pod on the target reaches over the docker network
+# both kind clusters share, at NodePorts 30050, 30051 and 30052. The ports are
+# pinned, because `kubectl expose service` copies a Service only the plane
+# creates, while the addresses have to be in the plane from the start. They lie
+# in the static band of the NodePort range, which dynamic allocation leaves
+# alone. Keystone is published over plain http: the plane carries no gateway.
+#
+# ── Presence guard ───────────────────────────────────────────────────────────
+# Mirrors keystone-user, plus the target kubeconfig, the registration Secret
+# with both assigned namespaces in its assignedNamespaces key, and the seven
+# order CRDs on the target. E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard
+# from SKIP to a hard failure on the job that is meant to carry the stack.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: orders-target-cluster
+spec:
+  # Chainsaw joins the path onto the test's directory, hence the three levels
+  # up. The CI job (and `make e2e-orders-multicluster`) writes the file.
+  clusters:
+    target:
+      kubeconfig: ../../../_output/cobaltcore-target.kubeconfig
+  # The bring-up of an identity plane with a bus, nine legs and a bounded
+  # teardown. exec + catch + finally + cleanup = 45m + 5m + 15m + 10m = 75m,
+  # the ceiling the e2e-orders-multicluster job's timeout-minutes accounts for.
+  timeouts:
+    assert: 5m
+    exec: 45m
+    cleanup: 10m
+  steps:
+  - try:
+    - script:
+        timeout: 45m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME="cp"
+          TARGET=cobaltcore-target
+          TARGET_KUBECONFIG=../../../_output/cobaltcore-target.kubeconfig
+          TENANT_NS=orders-tenant
+          OUTSIDER_NS=orders-outsider
+          ORDER=workflow
+          OUTSIDER=unassigned
+          PROJECT=workflow-project
+          MEMBER=workflow-member
+          DNS=workflow-dns
+          APPCRED=workflow-appcred
+          DB_ORDER=workflow-db
+          DB2_ORDER=workflow-db2
+          BUS_ORDER=workflow-bus
+          CREDS_SECRET=workflow-credentials
+          APPCRED_SECRET=workflow-appcred-credentials
+          DB_SECRET=workflow-db-credentials
+          DB2_SECRET=workflow-db2-credentials
+          BUS_SECRET=workflow-bus-credentials
+          BUS=cp-rabbitmq
+          KEYSTONE_NODEPORT=30050
+          DB_NODEPORT=30051
+          BUS_NODEPORT=30052
+          ORDER_SELECTOR="c5c3.io/keystoneuser-name=${ORDER},c5c3.io/keystoneuser-namespace=${TENANT_NS}"
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+          target() { kubectl --kubeconfig "${TARGET_KUBECONFIG}" "$@"; }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          if [ ! -f "${TARGET_KUBECONFIG}" ]; then
+            skip_or_fail "chainsaw has no kubeconfig for the target cluster: ${TARGET_KUBECONFIG} is missing (make e2e-orders-multicluster names how the job writes it)."
+          fi
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystoneusers.c5c3.io \
+            keystoneprojects.c5c3.io \
+            keystoneroleassignments.c5c3.io \
+            keystonecatalogentries.c5c3.io \
+            keystoneapplicationcredentials.c5c3.io \
+            mariadbdatabases.c5c3.io \
+            rabbitmqvhosts.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            databases.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            rabbitmqclusters.rabbitmq.com \
+            vhosts.rabbitmq.com \
+            users.rabbitmq.com \
+            permissions.rabbitmq.com \
+            applicationcredentials.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io \
+            pushsecrets.external-secrets.io \
+            secretstores.external-secrets.io \
+            vaultdynamicsecrets.generators.external-secrets.io \
+            certificates.cert-manager.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}"
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present."
+          fi
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The CRDs alone do not prove the stack. Probe for running pods; the
+          # probe captures via command substitution and retries, so a transient
+          # apiserver error does not read as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
+          # The registration has to give the c5c3-operator both tenant
+          # namespaces through the assignedNamespaces key: under the namespaces
+          # key the keystone-operator would never engage the target.
+          if ! kubectl get secret "${TARGET}" -n c5c3-clusters >/dev/null 2>&1; then
+            skip_or_fail "the target cluster is not registered: no Secret ${TARGET} in c5c3-clusters."
+          fi
+          ASSIGNED_ENTRIES="$(kubectl get secret "${TARGET}" -n c5c3-clusters \
+            -o jsonpath='{.data.assignedNamespaces}' | base64 -d | tr ',' '\n' | tr -d ' ')"
+          for ns in "${TENANT_NS}" "${OUTSIDER_NS}"; do
+            if ! grep -qx "${ns}" <<<"${ASSIGNED_ENTRIES}"; then
+              skip_or_fail "the registration Secret ${TARGET} in c5c3-clusters lists no ${ns} in its assignedNamespaces key."
+            fi
+          done
+          missing=""
+          for crd in \
+            keystoneusers.c5c3.io \
+            keystoneprojects.c5c3.io \
+            keystoneroleassignments.c5c3.io \
+            keystonecatalogentries.c5c3.io \
+            keystoneapplicationcredentials.c5c3.io \
+            mariadbdatabases.c5c3.io \
+            rabbitmqvhosts.c5c3.io; do
+            if ! target get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present on the target cluster ${TARGET}:${missing}"
+          fi
+          for ns in "${TENANT_NS}" "${OUTSIDER_NS}"; do
+            if ! target get namespace "${ns}" >/dev/null 2>&1; then
+              skip_or_fail "namespace ${ns} not present on the target cluster ${TARGET}."
+            fi
+          done
+
+          # The two deploy/openbao/bootstrap scripts below read the token from
+          # their environment, so the export stays. The one bao call of this
+          # script reads it from a file staged in openbao-0 instead, which keeps
+          # the root token out of argv and the API server's audit log.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > /tmp/.bao-token'; then
+            skip_or_fail "could not stage the OpenBao root token in openbao-0."
+          fi
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              sh -c 'BAO_TOKEN="$(cat /tmp/.bao-token)"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            skip_or_fail "the eso-tenant OpenBao auth role is not configured."
+          fi
+          echo "OK: prerequisites present — running the orders across two clusters."
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          # Every helper reads through kc, which runs kubectl on the management
+          # cluster, or on the target with ON=target in front of the call:
+          # `ON=target wait_condition keystoneuser ...`. Bash sets ON for the
+          # function call alone.
+          kc() {
+            if [ "${ON:-}" = target ]; then
+              target "$@"
+            else
+              kubectl "$@"
+            fi
+          }
+          where() { if [ "${ON:-}" = target ]; then echo "on the target"; else echo "on the management cluster"; fi; }
+          # Explicit polls rather than `kubectl wait`, so a condition that is
+          # briefly absent retries and the failure names the last status seen.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kc get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want} $(where)"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s $(where) (last: '${status:-<none>}')"
+                kc get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            wait_condition controlplane "${CP_NAME}" "${CP_NS}" "$1" True "$2"
+          }
+          condition_reason() { # <resource> <name> <namespace> <conditionType>
+            kc get "$1" "$2" -n "$3" \
+              -o "jsonpath={.status.conditions[?(@.type=='$4')].reason}" 2>/dev/null || true
+          }
+          condition_message() { # <resource> <name> <namespace> <conditionType>
+            kc get "$1" "$2" -n "$3" \
+              -o "jsonpath={.status.conditions[?(@.type=='$4')].message}" 2>/dev/null || true
+          }
+          wait_reason() { # <resource> <name> <namespace> <conditionType> <expectedReason> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline reason
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              reason="$(condition_reason "${res}" "${name}" "${ns}" "${ctype}")"
+              if [ "${reason}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype} reports ${want} $(where)"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} did not report ${want} within ${timeout}s $(where) (last: '${reason:-<none>}')"
+                kc get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+          assert_nonempty() { # <description> <value>
+            if [ -z "$2" ]; then
+              echo "ERROR: $1 — value is empty"
+              exit 1
+            fi
+            echo "OK: $1 ('$2')"
+          }
+          assert_contains() { # <description> <needle> <haystack>
+            if ! grep -qF -- "$2" <<<"$3"; then
+              echo "ERROR: $1 — '$2' not found in: $3"
+              exit 1
+            fi
+            echo "OK: $1"
+          }
+          count_of() { # <kinds> <namespace> [selector]
+            local kinds="$1" ns="$2" sel="${3:-}"
+            if [ -n "${sel}" ]; then
+              kc get "${kinds}" -n "${ns}" -l "${sel}" --no-headers 2>/dev/null | grep -c . || true
+            else
+              kc get "${kinds}" -n "${ns}" --no-headers 2>/dev/null | grep -c . || true
+            fi
+          }
+          wait_gone() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while kc get "${res}" "${name}" -n "${ns}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} in ${ns} still present after ${timeout}s $(where)"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} in ${ns} is gone $(where)"
+          }
+          assert_no_event() { # <reason> <namespace>
+            local reason="$1" ns="$2" out
+            if ! out="$(kubectl get events -n "${ns}" --field-selector "reason=${reason}" --no-headers 2>/dev/null)"; then
+              echo "ERROR: kubectl get events in ${ns} failed; refusing to report no ${reason} event"
+              exit 1
+            fi
+            if [ -n "${out}" ]; then
+              echo "ERROR: ${ns} holds ${reason} event(s):"
+              echo "${out}"
+              exit 1
+            fi
+            echo "OK: no ${reason} event in ${ns}"
+          }
+          # One read rather than a wait. Only a NotFound counts as absent; any
+          # other read error is retried twice, then fails the check.
+          assert_absent() { # <resource> <name> <namespace>
+            local res="$1" name="$2" ns="$3" err
+            for _ in 1 2 3; do
+              if err="$(kc get "${res}" "${name}" -n "${ns}" 2>&1 >/dev/null)"; then
+                echo "ERROR: ${res}/${name} in ${ns} is present $(where)"
+                exit 1
+              elif grep -qi 'not found' <<<"${err}"; then
+                echo "OK: ${res}/${name} in ${ns} is absent $(where)"
+                return 0
+              fi
+              echo "WARN: kubectl get ${res}/${name} failed (${err}); retrying"
+              sleep 5
+            done
+            echo "ERROR: ${res}/${name} in ${ns} could not be read $(where)"
+            exit 1
+          }
+          # The base64 value of a Secret key, read in one call. Never printed.
+          secret_key() { # <name> <namespace> <key>
+            kc get secret "$1" -n "$2" -o "jsonpath={.data.$3}" 2>/dev/null || true
+          }
+          # The decoded value of a Secret key that is no credential: a host or
+          # a port.
+          secret_value() { # <name> <namespace> <key>
+            base64 -d <<<"$(secret_key "$1" "$2" "$3")"
+          }
+          jsonpath_of() { # <resource> <name> <namespace> <jsonpath>
+            kc get "$1" "$2" -n "$3" -o "jsonpath=$4" 2>/dev/null || true
+          }
+          # Applies an order fixture on the target with the plane's namespace.
+          apply_on_target() { # <fixture>
+            sed -e "s|@CP_NS@|${CP_NS}|g" "$1" | target apply -f -
+          }
+          # Runs a verify Job on the target from scratch and fails unless it
+          # completes and its log carries every needle. One capture, then
+          # here-strings: `kubectl logs | grep -q` exits on the first match and
+          # kills kubectl with EPIPE under pipefail.
+          run_target_job() { # <fixture> <job> <when> <needle>...
+            local file="$1" job="$2" when="$3" logs needle
+            shift 3
+            target delete job "${job}" -n "${TENANT_NS}" --ignore-not-found --wait=true
+            sed -e "s|@DOMAIN@|${DOMAIN:-}|g" "${file}" | target apply -f -
+            if ! target wait --for=condition=complete "job/${job}" -n "${TENANT_NS}" --timeout=5m; then
+              echo "ERROR: the Job ${job} did not complete on the target (${when})"
+              target logs -n "${TENANT_NS}" "job/${job}" 2>&1 || true
+              exit 1
+            fi
+            logs="$(target logs -n "${TENANT_NS}" "job/${job}")"
+            for needle in "$@"; do
+              if ! grep -qF -- "${needle}" <<<"${logs}"; then
+                echo "ERROR: the Job ${job} on the target printed no '${needle}' (${when})"
+                echo "${logs}"
+                exit 1
+              fi
+            done
+            echo "OK: the Job ${job} on the target used its delivered Secret (${when})."
+          }
+          # Creates a NodePort twin of a Service of the plane once the plane has
+          # created the source, and moves its port to the pinned one.
+          # `kubectl expose service` copies the source's selector, so no pod
+          # label is guessed.
+          expose_pinned() { # <service> <port> <nodePort>
+            local svc="$1" port="$2" node_port="$3" deadline
+            deadline=$(( $(date +%s) + 300 ))
+            until kubectl get service "${svc}" -n "${CP_NS}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: the plane created no Service ${svc} within 300s"
+                exit 1
+              fi
+              sleep 5
+            done
+            kubectl expose service "${svc}" --type=NodePort --name="${svc}-public" --port="${port}" -n "${CP_NS}"
+            kubectl patch service "${svc}-public" -n "${CP_NS}" --type json \
+              -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":${node_port}}]"
+            assert_eq "${svc}-public serves port ${port} on node port ${node_port}" "${node_port}" \
+              "$(kubectl get service "${svc}-public" -n "${CP_NS}" -o jsonpath='{.spec.ports[0].nodePort}')"
+          }
+
+          # ══ PUBLISH — the plane with three addresses a target reaches ═════
+          NODE_IP="$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+          assert_nonempty "the management node's InternalIP" "${NODE_IP}"
+          PUBLIC_ENDPOINT="http://${NODE_IP}:${KEYSTONE_NODEPORT}/v3"
+          DB_ENDPOINT="${NODE_IP}:${DB_NODEPORT}"
+          BUS_ENDPOINT="${NODE_IP}:${BUS_NODEPORT}"
+
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
+          sed -e "s|@PUBLIC_ENDPOINT@|${PUBLIC_ENDPOINT}|g" -e "s|@DB_ENDPOINT@|${DB_ENDPOINT}|g" \
+            -e "s|@BUS_ENDPOINT@|${BUS_ENDPOINT}|g" 00-controlplane-cr.yaml \
+            | kubectl apply -n "${CP_NS}" -f -
+
+          # The bus is part of the infrastructure gate, and a broker's first
+          # start is the slow part of it.
+          wait_cp_condition InfrastructureReady 900
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
+          ../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+          wait_cp_condition DBCredentialsReady 300
+          wait_cp_condition KeystoneReady 900
+          wait_cp_condition KORCReady 600
+          wait_cp_condition AdminCredentialReady 600
+          wait_cp_condition ESOTenantStoreReady 300
+          wait_cp_condition NamespaceAssignmentsReady 300
+          assert_eq "the plane's entry on the target is assigned" "Assigned" \
+            "$(jsonpath_of controlplane "${CP_NAME}" "${CP_NS}" '{.status.namespaceAssignments[0].reason}')"
+
+          expose_pinned "${CP_NAME}-keystone" 5000 "${KEYSTONE_NODEPORT}"
+          expose_pinned openstack-db 3306 "${DB_NODEPORT}"
+          expose_pinned "${BUS}" 5672 "${BUS_NODEPORT}"
+          echo "OK: Keystone, the database and the bus are published on ${NODE_IP}."
+
+          # ══ DELIVERY — the user order on the target ═══════════════════════
+          apply_on_target 01-keystoneuser-target.yaml
+          # K-ORC creates the user in Keystone and ESO pushes the password to
+          # OpenBao before anything is delivered, so this is the longest wait.
+          ON=target wait_condition keystoneuser "${ORDER}" "${TENANT_NS}" Ready True 900
+          assert_eq "the user is provisioned" "UserProvisioned" \
+            "$(ON=target condition_reason keystoneuser "${ORDER}" "${TENANT_NS}" UserReady)"
+          assert_eq "the credentials are delivered" "Delivered" \
+            "$(ON=target condition_reason keystoneuser "${ORDER}" "${TENANT_NS}" DeliveryReady)"
+          # The document is a credential, so it is searched and never printed.
+          CLOUDS_YAML="$(base64 -d <<<"$(ON=target secret_key "${CREDS_SECRET}" "${TENANT_NS}" 'clouds\.yaml')")"
+          if ! grep -qF "auth_url: \"${PUBLIC_ENDPOINT}\"" <<<"${CLOUDS_YAML}"; then
+            echo "ERROR: the delivered clouds.yaml does not carry auth_url \"${PUBLIC_ENDPOINT}\""; exit 1
+          fi
+          unset CLOUDS_YAML
+          echo "OK: ${CREDS_SECRET} on the target carries the published auth_url ${PUBLIC_ENDPOINT}."
+          # The namespace does not exist on the management cluster, so a read
+          # there answers NotFound.
+          assert_absent secret "${CREDS_SECRET}" "${TENANT_NS}"
+          assert_eq "one K-ORC User sits in the plane's namespace" "1" \
+            "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
+          assert_eq "one PushSecret backs the password up from the plane's namespace" "1" \
+            "$(count_of pushsecrets.external-secrets.io "${CP_NS}" "${ORDER_SELECTOR}")"
+          run_target_job 10-token-verify-job.yaml workflow-verify "after delivery" \
+            expires "the delivered credentials authenticate"
+
+          # ══ PIECES — project, role and catalog entry ══════════════════════
+          for fixture in 02-keystoneproject-target.yaml 03-keystoneroleassignment-target.yaml \
+            04-keystonecatalogentry-target.yaml; do
+            apply_on_target "${fixture}"
+          done
+          ON=target wait_condition keystoneproject "${PROJECT}" "${TENANT_NS}" Ready True 600
+          ON=target wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 600
+          ON=target wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 600
+          DOMAIN="$(ON=target jsonpath_of keystoneproject "${PROJECT}" "${TENANT_NS}" '{.status.domainName}')"
+          assert_nonempty "the project reports its domain" "${DOMAIN}"
+          run_target_job 11-scoped-token-verify-job.yaml workflow-scoped-verify "after the role is assigned" \
+            expires https://dns.example.test/v2
+
+          # ══ APPCRED — the application credential ═════════════════════════
+          apply_on_target 05-keystoneapplicationcredential-target.yaml
+          # K-ORC mints the credential authenticated as the user, and ESO pushes
+          # it to OpenBao before anything is delivered.
+          ON=target wait_condition keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" Ready True 900
+          # Tested, never printed: the secret and the document are credentials.
+          for k in 'clouds\.yaml' application_credential_id application_credential_secret; do
+            if [ -z "$(ON=target secret_key "${APPCRED_SECRET}" "${TENANT_NS}" "${k}")" ]; then
+              echo "ERROR: ${APPCRED_SECRET} on the target is missing key ${k}"; exit 1
+            fi
+          done
+          if ! grep -qF "auth_url: \"${PUBLIC_ENDPOINT}\"" \
+               <<<"$(base64 -d <<<"$(ON=target secret_key "${APPCRED_SECRET}" "${TENANT_NS}" 'clouds\.yaml')")"; then
+            echo "ERROR: the delivered application-credential document does not carry the published auth_url"; exit 1
+          fi
+          run_target_job 12-appcred-verify-job.yaml workflow-appcred-verify "after the mint" \
+            expires "the delivered application credential authenticates"
+
+          # ══ DATABASE — the published database address ════════════════════
+          apply_on_target 06-mariadbdatabase-target.yaml
+          ON=target wait_condition mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" Ready True 600
+          assert_eq "${DB_SECRET} carries the node address as host" "${NODE_IP}" \
+            "$(ON=target secret_value "${DB_SECRET}" "${TENANT_NS}" host)"
+          assert_eq "${DB_SECRET} carries the pinned node port as port" "${DB_NODEPORT}" \
+            "$(ON=target secret_value "${DB_SECRET}" "${TENANT_NS}" port)"
+          run_target_job 13-mariadb-verify-job.yaml workflow-db-verify "after delivery" \
+            "rows: " "the delivered database credential reaches its schema and no other"
+
+          # ══ VHOST — the published bus address ═════════════════════════════
+          apply_on_target 07-rabbitmqvhost-target.yaml
+          ON=target wait_condition rabbitmqvhost "${BUS_ORDER}" "${TENANT_NS}" Ready True 600
+          assert_eq "${BUS_SECRET} carries the node address as host" "${NODE_IP}" \
+            "$(ON=target secret_value "${BUS_SECRET}" "${TENANT_NS}" host)"
+          assert_eq "${BUS_SECRET} carries the pinned node port as port" "${BUS_NODEPORT}" \
+            "$(ON=target secret_value "${BUS_SECRET}" "${TENANT_NS}" port)"
+          # transport_url carries the password, so it is matched and never
+          # printed.
+          if ! grep -qE "^rabbit://[^@]+@${NODE_IP//./\\.}:${BUS_NODEPORT}/" \
+               <<<"$(base64 -d <<<"$(ON=target secret_key "${BUS_SECRET}" "${TENANT_NS}" transport_url)")"; then
+            echo "ERROR: the delivered transport_url does not name ${NODE_IP}:${BUS_NODEPORT}"; exit 1
+          fi
+          echo "OK: the delivered transport_url names ${NODE_IP}:${BUS_NODEPORT}."
+          run_target_job 14-bus-verify-job.yaml workflow-bus-verify "after delivery" \
+            "connected: True" "the delivered bus credentials connect"
+          # The broker's own answer for the delivered user. Neither value is
+          # printed, and the password goes in on stdin, which keeps it out of
+          # argv and the API server's audit log.
+          BUS_USER="$(base64 -d <<<"$(ON=target secret_key "${BUS_SECRET}" "${TENANT_NS}" username)")"
+          BUS_PASSWORD="$(base64 -d <<<"$(ON=target secret_key "${BUS_SECRET}" "${TENANT_NS}" password)")"
+          if ! printf '%s\n' "${BUS_PASSWORD}" | kubectl exec -i -n "${CP_NS}" "${BUS}-server-0" -c rabbitmq -- \
+            sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "${BUS_USER}" >/dev/null 2>&1; then
+            echo "ERROR: the broker does not authenticate the delivered user"; exit 1
+          fi
+          unset BUS_USER BUS_PASSWORD
+          echo "OK: rabbitmqctl authenticate_user accepts the delivered user."
+
+          # ══ UNASSIGNED — an order no entry admits ═════════════════════════
+          apply_on_target 08-keystoneuser-unassigned.yaml
+          for ctype in UserReady DeliveryReady; do
+            ON=target wait_condition keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" "${ctype}" False 120
+            ON=target wait_reason keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" "${ctype}" NamespaceNotAssigned 120
+          done
+          # The condition has to say what to edit and where the namespace is.
+          OUTSIDER_MESSAGE="$(ON=target condition_message keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" UserReady)"
+          assert_contains "the refusal names the field that assigns a namespace" \
+            spec.namespaceAssignments "${OUTSIDER_MESSAGE}"
+          assert_contains "the refusal names the target cluster" "${TARGET}" "${OUTSIDER_MESSAGE}"
+          assert_nothing_created() { # <when>
+            assert_eq "no K-ORC User for the refused order ($1)" "0" \
+              "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "c5c3.io/keystoneuser-name=${OUTSIDER}")"
+            assert_eq "no Secret delivered for the refused order ($1)" "0" \
+              "$(ON=target count_of secrets "${OUTSIDER_NS}" c5c3.io/keystoneuser-name)"
+          }
+          assert_nothing_created "immediately"
+          # The settle separates "refused" from "slow".
+          sleep 30
+          assert_nothing_created "after a settle"
+          target delete keystoneuser "${OUTSIDER}" -n "${OUTSIDER_NS}" --wait=false
+          ON=target wait_gone keystoneuser "${OUTSIDER}" "${OUTSIDER_NS}" 300
+
+          # ══ UNPUBLISHED — a database order without a published address ════
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p '{"spec":{"infrastructure":{"publishedDatabaseEndpoint":null}}}'
+          target apply -f - <<EOF
+          apiVersion: c5c3.io/v1alpha1
+          kind: MariaDBDatabase
+          metadata:
+            name: ${DB2_ORDER}
+            namespace: ${TENANT_NS}
+          spec:
+            controlPlaneRef:
+              name: ${CP_NAME}
+              namespace: ${CP_NS}
+          EOF
+          ON=target wait_reason mariadbdatabase "${DB2_ORDER}" "${TENANT_NS}" DeliveryReady DatabaseNotPublished 120
+          assert_contains "the refusal names the field to set" spec.infrastructure.publishedDatabaseEndpoint \
+            "$(ON=target condition_message mariadbdatabase "${DB2_ORDER}" "${TENANT_NS}" DeliveryReady)"
+          ON=target assert_absent secret "${DB2_SECRET}" "${TENANT_NS}"
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"infrastructure\":{\"publishedDatabaseEndpoint\":\"${DB_ENDPOINT}\"}}}"
+          # An order on a target cluster has no ControlPlane watch: the edit
+          # reaches it on the ten-minute orderRefreshAfter of the c5c3-operator
+          # (requeue_intervals.go), so the wait outlasts one refresh.
+          ON=target wait_condition mariadbdatabase "${DB2_ORDER}" "${TENANT_NS}" Ready True 720
+          target get secret "${DB2_SECRET}" -n "${TENANT_NS}" >/dev/null
+          echo "OK: restoring the published address delivered ${DB2_SECRET}."
+          # A refresh of the first database order inside the window without the
+          # field refuses it as well, until its next refresh; the teardown below
+          # expects it Ready.
+          ON=target wait_condition mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" Ready True 720
+
+          # ══ TEARDOWN — the orders in the order their holds allow ══════════
+          target delete job workflow-verify workflow-scoped-verify workflow-appcred-verify \
+            workflow-db-verify workflow-bus-verify -n "${TENANT_NS}" --ignore-not-found
+
+          # The credential order goes first; it holds the assignment it uses.
+          target delete keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" 600
+
+          # The user holds while the assignment references it.
+          target delete keystoneuser "${ORDER}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_reason keystoneuser "${ORDER}" "${TENANT_NS}" UserReady ReferencedByRoleAssignments 120
+          assert_contains "the hold names the assignment" "\"${MEMBER}\"" \
+            "$(ON=target condition_message keystoneuser "${ORDER}" "${TENANT_NS}" UserReady)"
+
+          target delete keystoneroleassignment "${MEMBER}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone keystoneroleassignment "${MEMBER}" "${TENANT_NS}" 300
+          target delete keystonecatalogentry "${DNS}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone keystonecatalogentry "${DNS}" "${TENANT_NS}" 300
+          target delete keystoneproject "${PROJECT}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone keystoneproject "${PROJECT}" "${TENANT_NS}" 300
+          # K-ORC deletes the Keystone user and ESO the OpenBao path before the
+          # finalizer is released, so this is the slow delete.
+          ON=target wait_gone keystoneuser "${ORDER}" "${TENANT_NS}" 600
+          target delete mariadbdatabase "${DB_ORDER}" "${DB2_ORDER}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone mariadbdatabase "${DB_ORDER}" "${TENANT_NS}" 300
+          ON=target wait_gone mariadbdatabase "${DB2_ORDER}" "${TENANT_NS}" 300
+          target delete rabbitmqvhost "${BUS_ORDER}" -n "${TENANT_NS}" --wait=false
+          ON=target wait_gone rabbitmqvhost "${BUS_ORDER}" "${TENANT_NS}" 300
+
+          LEFT="$(target get secret -n "${TENANT_NS}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+          for secret in "${CREDS_SECRET}" "${APPCRED_SECRET}" "${DB_SECRET}" "${DB2_SECRET}" "${BUS_SECRET}"; do
+            if grep -qx "${secret}" <<<"${LEFT}"; then
+              echo "ERROR: ${secret} outlived its order on the target"; exit 1
+            fi
+          done
+          echo "OK: no delivered Secret is left in ${TENANT_NS} on the target."
+          for family in \
+            "users.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io,applicationcredentials.openstack.k-orc.cloud,databases.k8s.mariadb.com keystoneuser" \
+            "applicationcredentials.openstack.k-orc.cloud,secrets,pushsecrets.external-secrets.io keystoneapplicationcredential" \
+            "projects.openstack.k-orc.cloud keystoneproject" \
+            "roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud keystoneroleassignment" \
+            "services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud keystonecatalogentry" \
+            "databases.k8s.mariadb.com,externalsecrets.external-secrets.io,vaultdynamicsecrets.generators.external-secrets.io mariadbdatabase" \
+            "vhosts.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com,secrets,pushsecrets.external-secrets.io rabbitmqvhost"; do
+            kinds="${family% *}"
+            label="c5c3.io/${family##* }-namespace=${TENANT_NS}"
+            assert_eq "nothing labelled ${label} is left in the plane's namespace" "0" \
+              "$(count_of "${kinds}" "${CP_NS}" "${label}")"
+          done
+
+          kubectl delete service "${CP_NAME}-keystone-public" openstack-db-public "${BUS}-public" -n "${CP_NS}"
+
+          # The plane goes down through its own finalizer, as keystone-user's
+          # does: K-ORC drains the plane's own children against a live Keystone,
+          # and the finalizer deletes the broker in the foreground.
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
+          DRAIN_DEADLINE=$(( $(date +%s) + 300 ))
+          while [ "$(count_of "${CP_KORC_RESIDUE}" "${CP_NS}")" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "ERROR: the plane's K-ORC children did not drain within 300s of its deletion"
+              kubectl get "${CP_KORC_RESIDUE}" -n "${CP_NS}" 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the plane's own K-ORC children drained against a live Keystone."
+          kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
+          assert_absent keystone "${CP_NAME}-keystone" "${CP_NS}"
+          # A broker pod carries a seven-day grace period, and the namespace
+          # controller holds the namespace around a live one (see the messaging
+          # suite), so chainsaw's cleanup gets a namespace without one.
+          wait_gone rabbitmqcluster "${BUS}" "${CP_NS}" 180
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "${CP_NS}" -l "app.kubernetes.io/name=${BUS}" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "ERROR: a broker pod outlived its RabbitmqCluster by 180s"
+              kubectl get pods -n "${CP_NS}" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          assert_no_event OpenBaoCleanupStalled "${CP_NS}"
+          assert_no_event KeystoneTeardownStalled "${CP_NS}"
+          echo "OK: the orders of a target-cluster namespace proven end to end."
+    catch:
+    - script:
+        # Pinned, because chainsaw applies the test's exec budget to every
+        # script operation; a dump against a wedged apiserver must not inherit
+        # 45m.
+        timeout: 5m
+        shell: bash
+        content: |
+          # A separate shell from the try script, so everything is re-derived.
+          TARGET_KUBECONFIG=../../../_output/cobaltcore-target.kubeconfig
+          target() { kubectl --kubeconfig "${TARGET_KUBECONFIG}" "$@"; }
+          echo "=== ControlPlane conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          kubectl get controlplane cp -n "${NAMESPACE}" -o jsonpath='{.status.namespaceAssignments}' 2>&1 || true
+          echo
+          echo "=== Registration ==="
+          kubectl get secret cobaltcore-target -n c5c3-clusters -o jsonpath='{.metadata.labels}' 2>&1 || true
+          echo
+          for ns in orders-tenant orders-outsider; do
+            echo "=== Orders and Secrets in ${ns} (target cluster) ==="
+            target get keystoneuser,keystoneproject,keystoneroleassignment,keystonecatalogentry,keystoneapplicationcredential,mariadbdatabase,rabbitmqvhost \
+              -n "${ns}" -o yaml 2>&1 || true
+            target get secret,job,pod -n "${ns}" 2>&1 || true
+          done
+          echo "=== Order Secrets in orders-tenant (management cluster, expected none) ==="
+          kubectl get secret -n orders-tenant 2>&1 || true
+          echo "=== Order children in the plane's namespace ==="
+          for kind in keystoneuser keystoneproject keystoneroleassignment keystonecatalogentry keystoneapplicationcredential mariadbdatabase rabbitmqvhost; do
+            kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud,databases.k8s.mariadb.com,externalsecrets.external-secrets.io,pushsecrets.external-secrets.io,vhosts.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com \
+              -n "${NAMESPACE}" -l "c5c3.io/${kind}-namespace" \
+              -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
+          done
+          echo "=== Published Services ==="
+          kubectl get service cp-keystone-public openstack-db-public cp-rabbitmq-public -n "${NAMESPACE}" -o wide 2>&1 || true
+          echo "=== Verify Jobs (target cluster) ==="
+          for job in workflow-verify workflow-scoped-verify workflow-appcred-verify workflow-db-verify workflow-bus-verify; do
+            echo "--- ${job} ---"
+            target logs -n orders-tenant "job/${job}" --tail=100 2>&1 || true
+          done
+          echo "=== c5c3-operator ==="
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=150 --all-containers 2>&1 || true
+          echo "=== keystone-operator engagement ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=-1 --all-containers 2>&1 \
+            | grep -E 'kubeconfig-provider|cluster engaged|registration' | tail -20 || true
+          echo "=== K-ORC controller ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
+          echo "=== external-secrets ==="
+          kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          for ns in orders-tenant orders-outsider; do
+            echo "--- ${ns} (target cluster) ---"
+            target get events -n "${ns}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          done
+    finally:
+    - script:
+        # Pinned for the same reason as catch above. The waits below are bounded
+        # and add up to 840s; 15m covers them plus the deletes that drive them.
+        timeout: 15m
+        shell: bash
+        content: |
+          # When the try block reached its own teardown every delete below is a
+          # no-op. When it died early this is the only teardown there is: the
+          # orders first, while Keystone, OpenBao and the plane's store still
+          # serve the calls their finalizers make, in the order their holds
+          # allow, then the published Services and the plane. The two tenant
+          # namespaces belong to the job, which created them on the target.
+          # Every wait is bounded and best-effort.
+          TARGET_KUBECONFIG=../../../_output/cobaltcore-target.kubeconfig
+          target() { kubectl --kubeconfig "${TARGET_KUBECONFIG}" "$@"; }
+          gone_within() { # <kubectl function> <resource> <name> <namespace> <timeoutSeconds>
+            local deadline
+            deadline=$(( $(date +%s) + $5 ))
+            while "$1" get "$2" "$3" -n "$4" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "WARN: $2/$3 in $4 still present after $5s; leaving it to chainsaw cleanup"
+                return 1
+              fi
+              sleep 5
+            done
+            return 0
+          }
+          # The root token the try block staged in openbao-0 goes with the
+          # suite.
+          kubectl exec -n shared-services openbao-0 -- rm -f /tmp/.bao-token 2>&1 || true
+
+          if [ -f "${TARGET_KUBECONFIG}" ]; then
+            target delete job workflow-verify workflow-scoped-verify workflow-appcred-verify \
+              workflow-db-verify workflow-bus-verify -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            target delete keystoneapplicationcredential workflow-appcred -n orders-tenant \
+              --ignore-not-found --wait=false 2>&1 || true
+            gone_within target keystoneapplicationcredential workflow-appcred orders-tenant 60 || true
+            target delete keystoneroleassignment workflow-member -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            gone_within target keystoneroleassignment workflow-member orders-tenant 60 || true
+            target delete keystonecatalogentry workflow-dns -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            gone_within target keystonecatalogentry workflow-dns orders-tenant 45 || true
+            target delete keystoneproject workflow-project -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            gone_within target keystoneproject workflow-project orders-tenant 45 || true
+            target delete keystoneuser workflow -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            target delete keystoneuser unassigned -n orders-outsider --ignore-not-found --wait=false 2>&1 || true
+            gone_within target keystoneuser workflow orders-tenant 90 || true
+            # The refused one created nothing, so it has nothing to hand back.
+            gone_within target keystoneuser unassigned orders-outsider 15 || true
+            target delete mariadbdatabase workflow-db workflow-db2 -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            gone_within target mariadbdatabase workflow-db orders-tenant 30 || true
+            gone_within target mariadbdatabase workflow-db2 orders-tenant 30 || true
+            target delete rabbitmqvhost workflow-bus -n orders-tenant --ignore-not-found --wait=false 2>&1 || true
+            gone_within target rabbitmqvhost workflow-bus orders-tenant 45 || true
+          fi
+
+          kubectl delete service cp-keystone-public openstack-db-public cp-rabbitmq-public -n "${NAMESPACE}" \
+            --ignore-not-found 2>&1 || true
+          kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          DRAIN_DEADLINE=$(( $(date +%s) + 150 ))
+          while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "WARN: K-ORC residue still present after 150s; leaving it to the stall breakers"
+              break
+            fi
+            sleep 5
+          done
+          kubectl delete keystone cp-keystone -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within kubectl keystone cp-keystone "${NAMESPACE}" 60 || true
+          gone_within kubectl controlplane cp "${NAMESPACE}" 150 || true
+          # A namespace deleted around a live broker pod is revisited days
+          # later (see the messaging suite), so the broker goes first.
+          kubectl delete rabbitmqcluster cp-rabbitmq -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within kubectl rabbitmqcluster cp-rabbitmq "${NAMESPACE}" 60 || true
