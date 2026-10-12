@@ -1103,7 +1103,7 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-infra-junit-report
           path: _output/reports/
@@ -1735,7 +1735,7 @@ jobs:
       # its number: e2e-nova-1-junit-report and e2e-nova-2-junit-report.
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
           path: _output/reports/
@@ -1833,7 +1833,7 @@ jobs:
           OPERATOR: keystone
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-operator-upgrade-junit-report
           path: _output/reports/
@@ -2312,7 +2312,7 @@ jobs:
           done
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
           path: _output/reports/
@@ -2408,7 +2408,7 @@ jobs:
           OPERATOR: keystone
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-prometheus-junit-report
           path: _output/reports/
@@ -2770,7 +2770,7 @@ jobs:
           hack/ci-vpa-recommendations.sh report _output/sizing
       - name: Upload the sizing measurement
         if: always() && needs.changes.outputs.measure-sizing == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sizing-e2e-controlplane
           path: _output/sizing/
@@ -2798,7 +2798,7 @@ jobs:
           OPERATOR: nova
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-controlplane-junit-report
           path: _output/reports/
@@ -2952,7 +2952,7 @@ jobs:
           hack/ci-vpa-recommendations.sh report _output/sizing
       - name: Upload the sizing measurement
         if: always() && needs.changes.outputs.measure-sizing == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sizing-e2e-controlplane-sso
           path: _output/sizing/
@@ -2964,7 +2964,7 @@ jobs:
           OPERATOR: c5c3
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-controlplane-sso-junit-report
           path: _output/reports/
@@ -3183,7 +3183,7 @@ jobs:
           done
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-autoscaling-junit-report
           path: _output/reports/
@@ -3317,7 +3317,7 @@ jobs:
           OPERATOR: c5c3
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-external-keystone-junit-report
           path: _output/reports/
@@ -3551,7 +3551,7 @@ jobs:
           hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-multicluster-junit-report
           path: _output/reports/
@@ -3651,7 +3651,7 @@ jobs:
           OPERATOR: ovn
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-ovn-overlay-junit-report
           path: _output/reports/
@@ -3823,7 +3823,7 @@ jobs:
           done
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-nova-libvirt-junit-report
           path: _output/reports/
@@ -4465,7 +4465,7 @@ jobs:
           TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
       - name: Upload Tempest results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tempest-${{ matrix.service }}-${{ matrix.release }}-results
           # The rendered tempest.conf carries the cleartext Keystone admin
@@ -4490,7 +4490,7 @@ jobs:
           hack/ci-vpa-recommendations.sh report _output/sizing
       - name: Upload the sizing measurement
         if: always() && needs.changes.outputs.measure-sizing == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sizing-tempest-${{ matrix.service }}-${{ matrix.release }}
           path: _output/sizing/
@@ -4643,7 +4643,7 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
           path: /tmp/digests/*
