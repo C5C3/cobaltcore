@@ -130,8 +130,8 @@ describes every step and variable.
 
 `WITH_CEPH=true` deploys the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph)
-that holds Cinder's volumes and backups: the Rook operator and a Ceph with one
-OSD per worker on raw block volumes of the default class, the RBD pools
+that holds Cinder's volumes and backups: the Rook operator and a Ceph with
+three OSDs per worker on raw block volumes of the default class, the RBD pools
 `volumes` and `backups`, and the users `cinder` and `cinder-backup`, whose keys
 reach the Secrets `ceph-client-cinder` and `ceph-client-cinder-backup` in
 `openstack` through OpenBao. The deploy waits until the Ceph reports
@@ -1071,8 +1071,8 @@ worker first. With one worker left, no node can receive them.
 
 Every Cinder volume and backup of the lab lives on the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph):
-one monitor, one manager and three OSDs whose disks are Lightbits volumes of the
-default class, reached over NVMe/TCP. A write reaches two OSDs and, below
+one monitor, one manager and nine OSDs, three per worker, whose disks are
+Lightbits volumes of the default class, reached over NVMe/TCP. A write reaches two OSDs and, below
 them, the replicas the platform keeps of each Lightbits volume; on newforge the
 default class is `premium`, which keeps three, as the survey of
 [#1338](https://github.com/c5c3/cobaltcore/issues/1338) found on 2026-10-09.

@@ -167,7 +167,7 @@ test_names_from_sources() {
 
   assert_file_contains_fixed "the health wait logs its success line" "$DEPLOY_INFRA_SH" \
     'log "Ceph: phase Ready, HEALTH_OK, ${ready} of ${count} OSDs ready, fsid ${fsid:-unknown}"'
-  assert_contains "the section quotes it" "$SECTION" '`Ceph: phase Ready, HEALTH_OK, 3 of 3 OSDs ready, fsid <fsid>`'
+  assert_contains "the section quotes it" "$SECTION" '`Ceph: phase Ready, HEALTH_OK, 9 of 9 OSDs ready, fsid <fsid>`'
   assert_file_contains_fixed "and its timeout line" "$DEPLOY_INFRA_SH" \
     'log "ERROR: Ceph did not reach HEALTH_OK with ${count:-unknown} OSDs within ${CEPH_TIMEOUT}s (phase '"'"'${phase}'"'"', health '"'"'${health}'"'"', ${ready} OSDs ready)."'
   assert_contains "the section quotes it" "$SECTION" \
