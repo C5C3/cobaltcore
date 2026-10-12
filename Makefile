@@ -786,6 +786,35 @@ e2e-multicluster:
 	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
 
+.PHONY: e2e-orders-multicluster
+# e2e-orders-multicluster runs the two-cluster orders suite: a service owner's
+# seven orders applied on a registered target cluster and delivered there by the
+# c5c3-operator on the management cluster this target's kubectl context points
+# at. The management cluster carries the lean stack the e2e-orders-multicluster
+# job deploys: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external make
+# deploy-infra`, the keystone, horizon, glance and placement CRDs, K-ORC
+# (hack/ci-deploy-korc.sh), and the keystone- and c5c3-operator. The target is a
+# bare kind cluster with deploy/target-cluster/target-cluster-access installed
+# (namespaces={openstack}, assignedNamespaces={orders-tenant,orders-outsider})
+# and the two tenant namespaces created; its registration Secret carries
+# namespaces=openstack and assignedNamespaces=orders-tenant,orders-outsider. The
+# suite lives OUTSIDE tests/e2e/ for the reason e2e-multicluster's does.
+#
+# The four preflights are kept separate so each missing piece is named on its
+# own — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-orders-multicluster CI job locally. Set
+# E2E_REQUIRE_CONTROLPLANE_STACK=true to make the suite's presence guard fail
+# loudly (as the CI job does) rather than SKIP.
+e2e-orders-multicluster:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster' >&2; exit 1; }
+	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external make deploy-infra` (and deploy K-ORC + the keystone- and c5c3-operator) first' >&2; exit 1; }
+	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target with assignedNamespaces={orders-tenant,orders-outsider} and create the registration Secret `cobaltcore-target` in c5c3-clusters with the namespaces and assignedNamespaces keys (see docs/quick-start-orders.md)' >&2; exit 1; }
+	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
+	chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/
+
 .PHONY: e2e-ovn-overlay
 # e2e-ovn-overlay runs the Geneve datapath suite across the two workers of a
 # multi-node kind cluster (hack/kind-config-multinode.yaml): it programs one
