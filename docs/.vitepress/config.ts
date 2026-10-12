@@ -29,6 +29,7 @@ export default defineConfig({
           { text: 'Quick Start (Extended)', link: '/quick-start-extended' },
           { text: 'Quick Start (ControlPlane)', link: '/quick-start-controlplane' },
           { text: 'Quick Start (metal-stack)', link: '/quick-start-metal-stack' },
+          { text: 'Quick Start (Orders)', link: '/quick-start-orders' },
         ],
       },
       {

@@ -46,6 +46,9 @@ separate compute cluster is the follow-on
 - **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
   ControlPlane on a metal-stack cluster, where every worker is a KVM hypervisor
   and runs a server.
+- **[Quick Start (Orders)](./quick-start-orders.md)** — the Keystone, MariaDB
+  and RabbitMQ pieces of a foreign service, ordered from an assigned namespace
+  on the management cluster and on a target cluster.
 
 The map shows what each quick start deploys, what it ends with, and how the
 five relate. Four of them begin at `git clone`; the Quick Start (Orders) begins
