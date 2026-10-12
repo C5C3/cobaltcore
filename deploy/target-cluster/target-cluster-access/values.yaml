@@ -4,11 +4,11 @@
 # without it fails at render time rather than granting an account that reaches
 # nothing.
 #
-# The list, together with assignedNamespaces below, must equal the namespaces
-# key of the registration Secret the management cluster holds for this cluster.
-# The operators scope their caches to that key, so a namespace granted here but
-# missing there is never watched, and one listed there but missing here answers
-# every read with forbidden.
+# The list must equal the namespaces key of the registration Secret the
+# management cluster holds for this cluster; the assignedNamespaces below go
+# into its assignedNamespaces key. The operators scope their caches to those
+# keys, so a namespace granted here but missing there is never watched, and one
+# listed there but missing here answers every read with forbidden.
 namespaces: []
 
 # The namespaces assigned to service owners on this cluster: the entries of a
@@ -18,8 +18,8 @@ namespaces: []
 # the order. Each entry gets one Role that reads and updates the orders and
 # writes Secrets, and nothing else: no workload kind.
 #
-# Each entry must also be in the registration Secret's namespaces key; the
-# chart cannot check that. The chart creates none of them. An empty entry, and
+# Each entry must also be in the registration Secret's assignedNamespaces key;
+# the chart cannot check that. The chart creates none of them. An empty entry, and
 # an entry also in namespaces (a namespace is either placed into or assigned),
 # fail the render.
 #
