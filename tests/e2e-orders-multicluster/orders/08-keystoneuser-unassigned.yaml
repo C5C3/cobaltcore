@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A user order from orders-outsider, a namespace on the target that the access
+# chart's assignedNamespaces and the registration Secret's assignedNamespaces
+# key list and that no entry of the plane names. The c5c3-operator reads the
+# order and writes its refusal, NamespaceNotAssigned, through the chart's
+# assigned Role. A placed namespace such as openstack could not carry this
+# order: the placed Role grants no status write on the order kinds, so a
+# refusal there could never be written.
+# region keystoneuser-unassigned
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: unassigned
+  namespace: orders-outsider
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion keystoneuser-unassigned

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The member role for the ordered user on the ordered project. The entry of the
+# plane admits member, so the assignment is made at once.
+# region keystoneroleassignment-workflow-member
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: workflow-member
+  namespace: orders-tenant
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  role: member
+# endregion keystoneroleassignment-workflow-member

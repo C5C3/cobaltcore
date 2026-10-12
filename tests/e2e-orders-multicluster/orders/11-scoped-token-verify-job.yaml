@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the role assignment and the catalog entry from the target cluster: the
+# delivered clouds.yaml is unscoped, and OS_PROJECT_NAME with
+# OS_PROJECT_DOMAIN_NAME scope the token to the ordered project. `token issue`
+# fails unless the user holds a role there, and `catalog show dns` reads the
+# entry the order registered out of the scoped token's catalog.
+#
+# keystone-user's 07-openstack-scoped-verify-job.yaml, run on the target. The
+# test substitutes @DOMAIN@ with the project's status.domainName. The image and
+# pull policy are the 10- Job's, for the reason it gives.
+# region scoped-token-verify-job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workflow-scoped-verify
+  namespace: orders-tenant
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        - name: OS_PROJECT_NAME
+          value: workflow-project
+        - name: OS_PROJECT_DOMAIN_NAME
+          value: "@DOMAIN@"
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "== openstack --os-cloud admin token issue =="
+          openstack --os-cloud admin token issue -c expires -c project_id
+          echo "== openstack --os-cloud admin catalog show dns =="
+          openstack --os-cloud admin catalog show dns -f value -c endpoints
+          echo "OK: the delivered credentials scope to the ordered project"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: workflow-credentials
+# endregion scoped-token-verify-job

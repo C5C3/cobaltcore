@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The user order, applied on the target cluster in the assigned namespace
+# orders-tenant. controlPlaneRef names the plane on the management cluster: the
+# test substitutes @CP_NS@ with chainsaw's ephemeral namespace there. The
+# delivered Secret workflow-credentials lands beside the order on the target.
+#
+# The Quick Start (Orders) (docs/quick-start-orders.md) imports the region
+# below.
+# region keystoneuser-workflow
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: workflow
+  namespace: orders-tenant
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+# endregion keystoneuser-workflow

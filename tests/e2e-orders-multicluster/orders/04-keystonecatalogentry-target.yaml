@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A catalog row for a dns service. The entry of the plane sets
+# allowCatalogEntries, so the row is registered at once; the scoped verify Job
+# reads it back out of a token's catalog.
+# region keystonecatalogentry-workflow-dns
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: workflow-dns
+  namespace: orders-tenant
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  serviceType: dns
+  serviceName: designate
+  endpoints:
+  - interface: public
+    url: https://dns.example.test/v2
+  - interface: internal
+    url: http://designate-api.orders-tenant.svc:9001/v2
+# endregion keystonecatalogentry-workflow-dns
