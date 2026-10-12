@@ -29,7 +29,7 @@
 #      /var/lib/rook, one mon and one mgr, no dashboard, crash collector or
 #      metrics, msgr2 required, a default pool size of "2", the
 #      AUTH_INSECURE_CLIENT_KEY_TYPE warning muted and an empty cleanup
-#      confirmation, and one device set of nine portable OSDs (three per
+#      confirmation, and one device set of nine non-portable OSDs (three per
 #      worker) on 100Gi Block claims with 2Gi of memory requested and as the
 #      limit. No line of either
 #      render names a storage class.
@@ -241,7 +241,7 @@ test_cluster_render_holds_sixteen_objects() {
 
 # --- Test 7: the CephCluster ---
 test_cephcluster() {
-  echo "Test: the CephCluster is one mon, one mgr and nine portable OSDs on raw block volumes of the default class"
+  echo "Test: the CephCluster is one mon, one mgr and nine node-pinned OSDs on raw block volumes of the default class"
 
   render "$CLUSTER_DIR" 24 || return
 
@@ -280,7 +280,9 @@ test_cephcluster() {
     "$(val CephCluster rook-ceph '.spec.storage.storageClassDeviceSets | length')"
   local set='.spec.storage.storageClassDeviceSets[0]'
   assert_eq "the device set runs nine OSDs, three per worker" "9" "$(val CephCluster rook-ceph "$set.count")"
-  assert_eq "an OSD's volume follows it to another node" "true" "$(val CephCluster rook-ceph "$set.portable")"
+  # A portable OSD's CRUSH host is its claim's name, which voids the pools'
+  # host failure domain; a pinned OSD carries its node's name.
+  assert_eq "an OSD is pinned to its node, which names its CRUSH host" "false" "$(val CephCluster rook-ceph "$set.portable")"
   assert_eq "the device set has one claim template" "1" "$(val CephCluster rook-ceph "$set.volumeClaimTemplates | length")"
   assert_eq "the OSD claim is a raw block volume" "Block" \
     "$(val CephCluster rook-ceph "$set.volumeClaimTemplates[0].spec.volumeMode")"
