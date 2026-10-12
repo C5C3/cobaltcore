@@ -8,9 +8,11 @@
 #
 #   EXTERNAL_CLUSTER=true WITH_CEPH=true make deploy-infra
 #
-# It renders three objects: the Namespace rook-ceph, the HelmRepository
-# rook-release in flux-system and the HelmRelease rook-ceph in rook-ceph,
-# which Phase 3 waits for. The chart installs the ceph.rook.io CRDs, so the
+# It renders four objects: the Namespace rook-ceph, the HelmRepository
+# rook-release in flux-system, the HelmRelease rook-ceph in rook-ceph, which
+# Phase 3 waits for, and the CRD clientprofiles.csi.ceph.io, which the Rook
+# operator watches although the lab installs no CSI operator (see
+# csi-clientprofile-crd.yaml). The chart installs the ceph.rook.io CRDs, so the
 # Ceph itself is the second kustomization, cluster/, which Step 5 applies once
 # the deploy has waited for the CRDs cephclusters, cephblockpools and
 # cephclients. After Step 8 the deploy waits for the CephCluster rook-ceph to
@@ -51,3 +53,4 @@ resources:
   - namespace.yaml
   - source.yaml
   - release.yaml
+  - csi-clientprofile-crd.yaml
