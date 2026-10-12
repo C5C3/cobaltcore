@@ -22,6 +22,18 @@
 # Three OSDs per host spread a pool's placement groups over more daemons than
 # one, so a single slow OSD stalls a smaller share of the lab's writes.
 #
+# The OSDs are not portable. Rook names a portable OSD's CRUSH host after its
+# claim, not after its node (crushHostname in pkg/operator/ceph/cluster/osd/
+# osd.go of rook v1.21.0), so nine portable OSDs were nine CRUSH hosts and
+# the pools' failure domain `host` placed 17 of 64 placement groups with both
+# replicas on one worker (newforge, 2026-10-12). A non-portable OSD is pinned
+# to the node its prepare Job ran on, which the topology spread chose, and
+# carries that node's name as its CRUSH host, so two replicas never share a
+# worker (D2). The price is that a worker Gardener replaces leaves its three
+# OSDs down until they are purged and their claims deleted, whereupon Rook
+# prepares three new ones on the node the spread picks; the volumes do not
+# follow by themselves.
+#
 # One monitor is a single point of failure the lab accepts, as it accepts the
 # single NFS server (D2). The claims name no storage class, so they bind to the
 # cluster's default class like every other volume of the lab;
@@ -118,8 +130,9 @@ spec:
       - name: lightbits
         # Three OSDs per worker of newforge's three; see the header.
         count: 9
-        # The volume follows its OSD to another node.
-        portable: true
+        # Pinned to the node of the prepare Job, named as the CRUSH host; see
+        # the header.
+        portable: false
         placement:
           topologySpreadConstraints:
             - maxSkew: 1
