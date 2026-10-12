@@ -29,7 +29,7 @@ and [The key Secret](../../reference/cinder/cinder-backend-crd.md#the-key-secret
 This guide is written against the **[Quick Start (metal-stack)](../../quick-start-metal-stack.md)** devstack. Stand it up first:
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
 ```
 
 Follow that tutorial through Part 1, so a `ControlPlane` CR named
@@ -48,9 +48,9 @@ declare the same backend itself, as
 [Declaring the backend on the ControlPlane](#declaring-the-backend-on-the-controlplane)
 shows. The `openstack` commands use the `OS_*` variables and the `OS_CACERT`
 file of Part 1, Step 7 of the tutorial, with the Keystone port-forward of Step 6
-running. Run this guide before Part 3 of the tutorial
-([Cinder on Ceph](../../quick-start-metal-stack.md#ceph)), because Part 3
-declares `ceph1` and replaces `nfsbk` with `cephbk` on the pool `backups`.
+running. The lab's `ControlPlane` already projects the RBD backend `ceph1` on
+the pool `volumes` as the user `cinder`; the guide's `rbd1` and `rbd2` sit
+beside it on the same pool, and `rbd1` as the same user.
 
 ---
 
@@ -139,8 +139,9 @@ kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls volumes
 ```
 
 The service list shows `cinder-volume` on `controlplane-cinder@rbd1` `up`
-beside `controlplane-cinder@nfs1`, and the pool `volumes` holds
-`volume-<id>`, the id of `rbd-vol-1`.
+beside `controlplane-cinder@ceph1`, and the pool `volumes` holds
+`volume-<id>` with the id of `rbd-vol-1`, beside the images of any volume on
+`ceph1`.
 
 ## Step 3 — Rotate the Rook key
 
@@ -148,7 +149,9 @@ A raised `keyGeneration` has Rook rotate the user's key. Ceph accepts only the
 new key from then on, and the PushSecret and the ExternalSecret of the hand-off
 carry it to `openstack/ceph-client-cinder` within their one-minute refresh
 intervals. The changed Secret re-renders the backend's projection under a new
-name, and the volume service rolls onto it:
+name, and the volume service rolls onto it. The patch raises the generation it
+reads by one, so it rotates the key also where the quick start or an earlier
+run raised it before:
 
 ```bash
 ceph_secret() {
@@ -156,8 +159,9 @@ ceph_secret() {
     -o jsonpath='{.spec.template.spec.volumes[?(@.name=="ceph")].secret.secretName}'
 }
 before=$(ceph_secret)
-kubectl -n rook-ceph patch cephclient cinder --type merge \
-  -p '{"spec":{"security":{"cephx":{"keyGeneration":2}}}}'
+generation=$(kubectl -n rook-ceph get cephclient cinder -o jsonpath='{.spec.security.cephx.keyGeneration}')
+[ -n "${generation}" ] && kubectl -n rook-ceph patch cephclient cinder --type merge \
+  -p "{\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":$((generation + 1))}}}}"
 for _ in $(seq 60); do [ "$(ceph_secret)" != "$before" ] && break; sleep 5; done
 echo "$before -> $(ceph_secret)"
 kubectl -n openstack rollout status deploy/controlplane-cinder-volume-rbd1 --timeout=300s
@@ -167,8 +171,18 @@ kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cin
 
 The `echo` prints two different projection Secret names, the rollout finishes,
 and the two digests are equal: the Secret carries the key Ceph accepts. They
-hash the key, so the output can be shared without publishing a credential.
-A volume created now reaches `available`:
+hash the key, so the output can be shared without publishing a credential. An
+empty read of the generation patches nothing, and the `echo` then prints the
+same name twice.
+
+The user `cinder` is the lab's own as well, so the rotation also rolls the
+volume service of `ceph1` and the backup pod, which carries the keyring of
+every RBD volume backend, and the `ceph-secret` container of each libvirt pod
+sets the new key into its node's libvirt secret. A server with an attached RBD
+volume keeps the old key until it is live-migrated or restarted; the
+[rotation of the quick start](../../quick-start-metal-stack.md#hv-rotate)
+shows the migration that moves it onto the new key. A volume created now
+reaches `available`:
 
 ```bash
 openstack volume create --type rbd --size 1 rbd-vol-2
@@ -269,8 +283,9 @@ kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth del client.cinder-
 openstack volume service list --service cinder-volume
 ```
 
-The service list shows `controlplane-cinder@nfs1` alone, and `rbd ls volumes`
-lists nothing. The Secret `ceph-client-cinder` stays: the lab's hand-off owns it.
+The service list shows `controlplane-cinder@ceph1` alone, and `rbd ls volumes`
+lists none of the four volumes' images. The Secret `ceph-client-cinder` stays:
+the lab's hand-off owns it, and `ceph1` reads it.
 
 ## Troubleshooting
 
@@ -308,7 +323,7 @@ under that name: an edit back to `NFS` is refused with `type is immutable`.
 Removing the entry prunes the satellite, and the cinder operator unregisters the
 `rbd1` volume service; the update warning names the entry and its type, because
 every volume left on `rbd1` loses its manager. Delete those volumes first, then remove the
-entry, which sits behind `nfs1` at index 1:
+entry, which sits behind `ceph1` at index 1:
 
 ```bash
 kubectl -n openstack patch controlplane controlplane --type json \
@@ -332,7 +347,8 @@ the key Secret lives in that Cinder's namespace on the cluster its
   the RBD fields, the key Secret contract, the rendered section, `ceph.conf` and
   keyring, and the caveats of the RBD driver.
 - [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md): the NFS
-  backend the devstack projects, and the detach sequence.
+  backend of the ControlPlane devstack on kind, which Part 3 of the metal-stack
+  quick start adds on the lab beside `ceph1`, and the detach sequence.
 - [Lab Ceph](../../reference/infrastructure/infrastructure-manifests.md#lab-ceph):
   the Rook cluster, the pools, the users and the key hand-off through OpenBao.
 
