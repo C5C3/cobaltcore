@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1166" viewBox="0 0 1808 1166" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The four quick starts">
-<title>The four quick starts</title>
-<rect width="1808" height="1166" fill="#F6F5F1"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1534" viewBox="0 0 1808 1534" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The five quick starts">
+<title>The five quick starts</title>
+<rect width="1808" height="1534" fill="#F6F5F1"/>
 <rect x="40" y="40" width="1728" height="412" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Standalone: one Keystone resource</text>
 <text x="59" y="115.2" font-size="20" font-weight="400" fill="#55606E">the keystone-operator runs the Keystone you apply</text>
@@ -28,7 +28,7 @@
 <polygon points="440,552 432.8,537 447.2,537" fill="#3A4452"/>
 <text x="460" y="498.64" font-size="24" font-weight="400" fill="#2B3440">a mode change</text>
 <text x="460" y="523.2" font-size="20" font-weight="400" fill="#55606E">make teardown-infra, then a fresh cluster</text>
-<rect x="40" y="552" width="1728" height="490" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="40" y="552" width="1728" height="858" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="59" y="591.36" font-size="26" font-weight="700" fill="#2B3440">ControlPlane: a whole control plane from one resource</text>
 <text x="59" y="627.2" font-size="20" font-weight="400" fill="#55606E">the c5c3-operator creates the backing services and the service resources</text>
 <rect x="60" y="712" width="812" height="310" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -58,6 +58,19 @@
 <text x="904" y="694.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">on a real cluster, with real servers</text>
 <polyline points="872,742 925.5,742" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="936,742 921,749.2 921,734.8" fill="#3A4452"/>
-<text x="40" y="1093.2" font-size="20" font-weight="400" fill="#55606E">Each quick start begins at git clone and is complete in itself. An arrow tells how two of them relate.</text>
-<text x="40" y="1119.2" font-size="20" font-weight="400" fill="#55606E">KIND_HOST_PORT=8443 keeps kind off the privileged port 443, the default of the Quick Start (Extended).</text>
+<rect x="60" y="1132" width="812" height="258" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="76" y="1170.64" font-size="24" font-weight="700" fill="#2B3440">Quick Start (Orders)</text>
+<rect x="76" y="1190" width="314" height="40" rx="20" fill="#1E6B40"/>
+<text x="233" y="1218.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">KeystoneUser workflow</text>
+<text x="76" y="1263.2" font-size="20" font-weight="400" fill="#55606E">Runs on: the ControlPlane devstack, plus a second kind cluster</text>
+<text x="76" y="1289.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: the ControlPlane quick start, then</text>
+<text x="76" y="1315.2" font-size="20" font-weight="400" fill="#55606E">kind create cluster --name cobaltcore-target</text>
+<text x="76" y="1341.2" font-size="20" font-weight="400" fill="#55606E">Adds: seven orders from an assigned namespace, the access chart, a registered target</text>
+<text x="76" y="1367.2" font-size="20" font-weight="400" fill="#55606E">Ends with: four Secrets on the target and four Jobs that use them</text>
+<polyline points="440,1022 440,1121.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="440,1132 432.8,1117 447.2,1117" fill="#3A4452"/>
+<text x="460" y="1068.64" font-size="24" font-weight="400" fill="#2B3440">the same devstack, extended</text>
+<text x="460" y="1093.2" font-size="20" font-weight="400" fill="#55606E">no teardown: a second kind cluster joins it</text>
+<text x="40" y="1461.2" font-size="20" font-weight="400" fill="#55606E">Four quick starts begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack. An arrow tells how two of them relate.</text>
+<text x="40" y="1487.2" font-size="20" font-weight="400" fill="#55606E">KIND_HOST_PORT=8443 keeps kind off the privileged port 443, the default of the Quick Start (Extended).</text>
 </svg>
