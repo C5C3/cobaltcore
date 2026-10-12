@@ -33,9 +33,15 @@
 # the mgr.
 #
 # The daemons keep Rook's cephx defaults, which give them aes256k keys on
-# 20.2.4. The two clients of clients.yaml carry `keyType: aes` (D7 of #1338),
-# which raises AUTH_INSECURE_CLIENT_KEY_TYPE; healthCheck mutes it so the
-# deploy can wait for HEALTH_OK. When D7 is revisited the mute is lifted with
+# 20.2.4. The two clients of clients.yaml carry `keyType: aes` (D7 of #1338).
+# To create such keys Rook runs `mon set auth_allowed_ciphers aes,aes256k` on
+# every reconcile, and 20.2.4 answers with three warnings: the keys raise
+# AUTH_INSECURE_CLIENT_KEY_TYPE, the allowed cipher raises
+# AUTH_INSECURE_KEYS_ALLOWED, and the creation it permits raises
+# AUTH_INSECURE_KEYS_CREATABLE (seen on newforge on 2026-10-12, where the
+# deploy's health wait never saw HEALTH_OK with the first mute alone).
+# healthCheck mutes all three so the deploy can wait for HEALTH_OK. When D7 is
+# revisited the mutes are lifted with
 # `policy: unmute`, not by deleting the entry, so Rook sends the unmute to Ceph.
 # No allowedCiphers: an empty list is Ceph's default, aes and aes256k.
 #
@@ -87,6 +93,10 @@ spec:
     muteHealthWarning:
       # D7 of #1338: the clients' keys stay aes. See the header.
       AUTH_INSECURE_CLIENT_KEY_TYPE:
+        policy: mute
+      AUTH_INSECURE_KEYS_ALLOWED:
+        policy: mute
+      AUTH_INSECURE_KEYS_CREATABLE:
         policy: mute
   resources:
     mon:
