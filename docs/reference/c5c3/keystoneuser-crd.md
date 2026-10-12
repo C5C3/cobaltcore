@@ -368,7 +368,10 @@ Job in that namespace, repairs an edited and a deleted Secret, rotates the
 password, refuses an order from an unassigned namespace, freezes the order by
 withdrawing the assignment, and deletes it down to the OpenBao path.
 `tests/e2e/c5c3/invalid-keystoneuser-cr/` is the admission rejection corpus,
-run on the `e2e-operator (c5c3)` job. The target-cluster path is proven in the
+run on the `e2e-operator (c5c3)` job. The target-cluster path is proven by
+`tests/e2e-orders-multicluster/orders/` on the `e2e-orders-multicluster` job,
+which orders all seven kinds from an assigned namespace on a registered kind
+target and uses the delivered Secrets from Jobs there, and by the
 two-API-server envtest `TestIntegration_Multicluster_ControlPlanePlacement`.
 
 See [ControlPlane E2E Test Suites](../testing/controlplane-e2e-tests.md).

@@ -752,41 +752,16 @@ The first command reports `NotFound` and the second reports no resources. See
 
 ## On a target cluster
 
-The devstack runs one cluster, so this part cannot be followed on it. An owner
-whose namespace lives on a registered target cluster orders the same way, on
-that cluster:
-
-1. The ControlPlane's entry names the cluster:
-   `{"namespace":"workflow","targetClusterRef":{"name":"<cluster>"}}`.
-2. The target cluster runs the `target-cluster-access` chart, which ships the
-   KeystoneUser CRD, with `workflow` in `assignedNamespaces`, and the
-   registration Secret's `namespaces` key lists it.
-3. The ControlPlane publishes Keystone with
-   `spec.services.keystone.publicEndpoint` or `spec.services.keystone.gateway`;
-   without one the order reports `KeystoneNotPublished`.
-4. The order is applied on the target cluster, with `controlPlaneRef.namespace:
-   openstack`, and the Secret appears beside it there with the public URL.
-5. For a `RabbitMQVhost` the ControlPlane records the address it publishes the
-   broker at by its own means in
-   `spec.infrastructure.publishedMessagingEndpoint`, as `host:port`. Without one
-   the vhost and its user are provisioned and the order reports
-   `MessagingNotPublished`; with one the Secret carries that host and port. The
-   `target-cluster-access` chart ships the RabbitMQVhost CRD as well.
-
-A `MariaDBDatabase` on the target cluster needs the database's address instead
-of Keystone's. The operator publishes nothing itself: expose the MariaDB port
-by your own means, such as a LoadBalancer Service, and record the address in
-the ControlPlane:
-
-```bash
-kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"infrastructure":{"publishedDatabaseEndpoint":"db.example.com:3306"}}}'
-```
-
-The Secret beside the order then carries that host and port. Without the field
-the order reports `DeliveryReady=False/DatabaseNotPublished` naming it.
-
-See [Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
+An owner whose namespace lives on a registered target cluster orders the same
+way, on that cluster. The ControlPlane's entry names the cluster in
+`targetClusterRef`, the `target-cluster-access` chart's `assignedNamespaces`
+and the registration Secret's `assignedNamespaces` key name the namespace, and
+the ControlPlane publishes the addresses of Keystone, the database and the bus
+that a pod on that cluster can reach; without them the orders report
+`KeystoneNotPublished`, `DatabaseNotPublished` or `MessagingNotPublished`.
+[Part 2 of the Quick Start (Orders)](../quick-start-orders.md#target-cluster)
+runs all of it on two kind clusters. See
+[Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
 
 ## Standalone Keystone, without a ControlPlane
 
@@ -811,6 +786,7 @@ through the identity API directly.
 - [Register a Service the ControlPlane Does Not Manage](./register-a-foreign-service.md): a KeystoneService with a catalog entry and roles.
 - [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suites behind this guide.
 - [Quick Start (ControlPlane)](../quick-start-controlplane.md): the devstack this guide builds on.
+- [Quick Start (Orders)](../quick-start-orders.md): the seven order kinds, one step each, on the devstack and on a target cluster.
 
 ## Tested by
 

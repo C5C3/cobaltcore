@@ -674,6 +674,9 @@ the target cluster. The chart serves that with three things:
   ignores it without a log line, its cache then leaves every assigned
   namespace, and no order there is reconciled. A rollback of the c5c3-operator
   past the key needs the namespaces moved back under `namespaces`.
+  [Part 2 of the Quick Start (Orders)](../quick-start-orders.md#target-cluster)
+  registers a target this way, and `tests/e2e-orders-multicluster/orders/`
+  proves it on the `e2e-orders-multicluster` job.
 - The chart ships the CRDs of the order kinds in `crds/`:
   `c5c3.io_keystoneusers.yaml`, `c5c3.io_keystoneprojects.yaml`,
   `c5c3.io_keystoneroleassignments.yaml`,

@@ -41,8 +41,8 @@ The service images are built for every OpenStack release defined under [`release
 
 ## Getting started
 
-The first three quick starts run on a local kind cluster and need Docker Desktop or Podman; the fourth
-needs a metal-stack cluster:
+The first three quick starts and the fifth run on local kind clusters and need Docker Desktop or Podman;
+the fourth needs a metal-stack cluster:
 
 - [Quick Start](docs/quick-start.md): from `git clone` to an authenticated Keystone API call.
 - [Quick Start (Extended)](docs/quick-start-extended.md): UI tours, the local-build path, the production
@@ -51,6 +51,9 @@ needs a metal-stack cluster:
   c5c3-operator.
 - [Quick Start (metal-stack)](docs/quick-start-metal-stack.md): the ControlPlane on a metal-stack
   cluster, with servers on two KVM hypervisors.
+- [Quick Start (Orders)](docs/quick-start-orders.md): the Keystone, MariaDB and RabbitMQ pieces of a
+  foreign service, ordered from an assigned namespace on the ControlPlane devstack and on a second
+  kind cluster.
 
 The short path to the infrastructure stack:
 
