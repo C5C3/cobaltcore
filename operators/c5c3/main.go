@@ -35,7 +35,9 @@ import (
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
@@ -107,6 +109,23 @@ var scheme = bootstrap.NewScheme(
 	// +kubebuilder:scaffold:scheme
 )
 
+// assignedNamespaceKinds are the kinds the operator reads and writes in a
+// namespace a ControlPlane assigns to a service owner on a target cluster: the
+// seven order kinds and the Secret each delivers. The access chart's assigned
+// Role grants read on each of them, so the cache reaches an assigned namespace
+// for these kinds alone, and every other informer stays on the placed
+// namespaces.
+var assignedNamespaceKinds = []client.Object{
+	&c5c3v1alpha1.KeystoneUser{},
+	&c5c3v1alpha1.KeystoneProject{},
+	&c5c3v1alpha1.KeystoneRoleAssignment{},
+	&c5c3v1alpha1.KeystoneCatalogEntry{},
+	&c5c3v1alpha1.KeystoneApplicationCredential{},
+	&c5c3v1alpha1.MariaDBDatabase{},
+	&c5c3v1alpha1.RabbitMQVhost{},
+	&corev1.Secret{},
+}
+
 func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
@@ -117,6 +136,10 @@ func main() {
 		// engages nothing while it holds none, which is the single-cluster
 		// default every existing install keeps.
 		TargetClusters: true,
+		// An order in an assigned namespace on a target is read there and its
+		// Secret written beside it; nothing else of the operator's reaches
+		// that namespace.
+		AssignedNamespaceKinds: assignedNamespaceKinds,
 		SetupFunc: func(mcMgr mcmanager.Manager, opts bootstrap.SetupOptions) error {
 			// The ControlPlane reconciler completes through the multicluster
 			// builder, so it takes mcMgr. The local manager is what the

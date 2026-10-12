@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -367,6 +368,31 @@ func TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache(t *tes
 	}
 	if applied.Cache.SyncPeriod == nil || *applied.Cache.SyncPeriod != 10*time.Minute {
 		t.Fatalf("expected the operator's sync period on the target cache, got: %v", applied.Cache.SyncPeriod)
+	}
+}
+
+// TestProviderOptions_carriesTheAssignedNamespaceKinds verifies that the kinds
+// an operator names reach the kubeconfig provider unchanged, and that an
+// operator naming none hands it none: that empty list is what keeps every
+// service operator's cache off an owner's namespace on a target.
+func TestProviderOptions_carriesTheAssignedNamespaceKinds(t *testing.T) {
+	kinds := []client.Object{&corev1.Secret{}, &corev1.ConfigMap{}}
+
+	opts := providerOptions(ManagerConfig{Scheme: runtime.NewScheme(), AssignedNamespaceKinds: kinds},
+		"c5c3-clusters", 10*time.Minute)
+	if !reflect.DeepEqual(opts.AssignedNamespaceKinds, kinds) {
+		t.Fatalf("AssignedNamespaceKinds = %v, want %v", opts.AssignedNamespaceKinds, kinds)
+	}
+	if opts.Namespace != "c5c3-clusters" {
+		t.Fatalf("Namespace = %q, want c5c3-clusters", opts.Namespace)
+	}
+	if len(opts.ClusterOptions) == 0 {
+		t.Fatal("expected the cluster options every target cluster is built with")
+	}
+
+	opts = providerOptions(ManagerConfig{Scheme: runtime.NewScheme()}, "c5c3-clusters", 10*time.Minute)
+	if opts.AssignedNamespaceKinds != nil {
+		t.Fatalf("expected no assigned-namespace kinds without the field, got: %v", opts.AssignedNamespaceKinds)
 	}
 }
 

@@ -10,10 +10,17 @@
 package main
 
 import (
+	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/yaml"
 )
 
 // TestSchemeRegistersAllExpectedGVKs asserts the package-level scheme — built by
@@ -97,4 +104,88 @@ func TestLeaderElectionIDPinned(t *testing.T) {
 
 	g.Expect(leaderElectionID).To(Equal("c5c3.openstack.c5c3.io"),
 		"LeaderElectionID must stay pinned to the deploy-stack value")
+}
+
+// TestAssignedNamespaceKindsAreTheOrderKindsAndTheSecret pins the kinds whose
+// target-cluster informers reach an owner's namespace: the seven order kinds and
+// Secret. A kind missing here leaves its orders unread on a target.
+func TestAssignedNamespaceKindsAreTheOrderKindsAndTheSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	gvks := make([]schema.GroupVersionKind, 0, len(assignedNamespaceKinds))
+	for _, obj := range assignedNamespaceKinds {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		g.Expect(err).NotTo(HaveOccurred(), "the scheme must resolve %T", obj)
+		gvks = append(gvks, gvk)
+	}
+
+	order := func(kind string) schema.GroupVersionKind {
+		return schema.GroupVersionKind{Group: "c5c3.io", Version: "v1alpha1", Kind: kind}
+	}
+	g.Expect(gvks).To(ConsistOf(
+		order("KeystoneUser"),
+		order("KeystoneProject"),
+		order("KeystoneRoleAssignment"),
+		order("KeystoneCatalogEntry"),
+		order("KeystoneApplicationCredential"),
+		order("MariaDBDatabase"),
+		order("RabbitMQVhost"),
+		schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
+	))
+}
+
+// assignedRolePath is the access chart's template of the Role every assigned
+// namespace on a target gets.
+const assignedRolePath = "../../deploy/target-cluster/target-cluster-access/templates/role-assigned.yaml"
+
+// TestAssignedNamespaceKindsAreReadableUnderTheAssignedRole checks every kind in
+// assignedNamespaceKinds against the rules of the access chart's assigned Role.
+// A kind the Role does not let the operator get, list and watch has an informer
+// that is forbidden in every assigned namespace and never syncs. The engagement
+// does not wait for that informer, so the operator engages the target and only
+// the reads and watches of that kind fail there. The Role grants read on the
+// mariadb-operator's databases as well, which the list leaves out on purpose.
+func TestAssignedNamespaceKindsAreReadableUnderTheAssignedRole(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	raw, err := os.ReadFile(assignedRolePath)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// What is left without the template's doc comment and every line carrying
+	// an action is the Role the range renders per namespace, minus its name,
+	// namespace and labels.
+	text := string(raw)
+	if end := strings.Index(text, "*/}}"); end >= 0 {
+		text = text[end+len("*/}}"):]
+	}
+	var kept []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.Contains(line, "{{") || strings.TrimSpace(line) == "---" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	role := &rbacv1.Role{}
+	g.Expect(yaml.Unmarshal([]byte(strings.Join(kept, "\n")), role)).To(Succeed())
+	g.Expect(role.Kind).To(Equal("Role"), "the template should still render a Role")
+
+	grants := func(group, resource string) bool {
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.APIGroups, group) && slices.Contains(rule.Resources, resource) &&
+				slices.Contains(rule.Verbs, "get") && slices.Contains(rule.Verbs, "list") &&
+				slices.Contains(rule.Verbs, "watch") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, obj := range assignedNamespaceKinds {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		g.Expect(err).NotTo(HaveOccurred(), "the scheme must resolve %T", obj)
+		plural, _ := meta.UnsafeGuessKindToResource(gvk)
+		resource := plural.Resource
+		g.Expect(grants(gvk.Group, resource)).To(BeTrue(),
+			"the assigned Role in %s should grant get, list and watch on %q in group %q",
+			assignedRolePath, resource, gvk.Group)
+	}
 }
