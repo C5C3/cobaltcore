@@ -2739,10 +2739,10 @@ metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
-`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `nfs/` as
-well when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
-`ceph/` and `ceph/cluster/` when `WITH_CEPH=true` is set (see
-[Lab Ceph](#lab-ceph)), its `chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
+`EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `ceph/` and
+`ceph/cluster/` when `WITH_CEPH=true` is set (see [Lab Ceph](#lab-ceph)), its
+`nfs/` when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
+`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
 [Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
 is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 `WITH_PROMETHEUS=true` is set (see
@@ -2750,9 +2750,9 @@ is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
 its `dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
 finished (see [Lab ControlPlane](#lab-controlplane)), and after it
 `hypervisor-fixtures/` and `hypervisor/` (see
-[Lab hypervisors](#lab-hypervisors)); on a lab deployed with `WITH_CEPH=true`,
-Part 3 of the quick start applies `controlplane-ceph/` by hand after those
-(see [Lab ControlPlane](#lab-controlplane)). The ControlPlane's opt-in
+[Lab hypervisors](#lab-hypervisors)); on a lab deployed with `WITH_NFS=true`
+as well, Part 3 of the quick start applies `controlplane-nfs/` by hand after
+those (see [Lab ControlPlane](#lab-controlplane)). The ControlPlane's opt-in
 autoscaling blocks use the VPA and the metrics-server of the platform (see
 [Lab autoscaling](#lab-autoscaling)). The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
@@ -2760,7 +2760,7 @@ walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
 
 The figure shows what those manifests add up to: the cluster-wide parts of
-`base/`, `infrastructure/`, `nfs/` and `controlplane/`, and the parts
+`base/`, `infrastructure/`, `ceph/` and `controlplane/`, and the parts
 `hypervisor/` and `migration-ports/` put on every worker.
 
 ![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../../diagrams/compute-metal-stack-lab.svg)
@@ -3006,14 +3006,16 @@ platform's namespaces and CRDs alone. Both are described in
 
 The NFS server and the `csi-driver-nfs` mounter of
 [NFS storage stack](#nfs-storage-stack-opt-in), for the metal-stack
-lab ([#1196](https://github.com/c5c3/cobaltcore/issues/1196)). Cinder's volume
-and backup backends are NFS shares, so the lab runs Cinder only with this
-stack. `hack/deploy-infra.sh` applies the directory in Step 3 when
-`WITH_NFS=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
-`deploy/kind/nfs`:
+lab ([#1196](https://github.com/c5c3/cobaltcore/issues/1196)). The lab's
+Cinder runs on the [Lab Ceph](#lab-ceph) without it. The
+[NFS variant](#lab-controlplane) of the Lab ControlPlane, which Part 3 of the
+quick start applies, adds the NFS volume backend `nfs1` on the share
+`/volumes`; the share `/backups` stays unused, because the backups go to Ceph.
+`hack/deploy-infra.sh` applies the directory in Step 3 when `WITH_NFS=true` is
+set beside `EXTERNAL_CLUSTER=true`, in place of `deploy/kind/nfs`:
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_NFS=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_NFS=true make deploy-infra
 ```
 
 The kustomization takes `deploy/kind/nfs` as its base, the way the
@@ -3029,7 +3031,7 @@ outside the kustomization: the deploy script applies the NetworkPolicy of
 
 | Property | Value |
 | --- | --- |
-| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every Cinder volume and backup of the lab together. The kind claim asks for 5Gi on `standard` |
+| Export claim | `nfs-server-exports`, 100Gi, `ReadWriteOnce` (D3), with no storage class. The patch removes the kind pin `standard`, so the claim binds to the cluster's default class like the volumes of the [Lab overlay](#lab-overlay). D3 named `premium`, which is the default class of `forge`. One volume holds both exports, so 100Gi bounds every volume of `nfs1` together. The kind claim asks for 5Gi on `standard` |
 | Server and shares | as on kind: the server pod with `prepare-exports` and NFS-Ganesha on `ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5` by digest, its client records on the export claim, the Service on 2049, and the shares `nfs-server.openstack.svc.cluster.local:/volumes` and `:/backups`. The server loads no module |
 | Mounter | as on kind: the `csi-driver-nfs` HelmRelease in `kube-system`, chart `4.13.4` with its three values. The chart's `kubeletDir`, `/var/lib/kubelet`, is the lab's kubelet root |
 | `nfs` and `nfsv4` | the DaemonSet `nfs-client-modules` in `openstack`, on every node, tolerating every taint as `csi-nfs-node` does (D2). A privileged init container `load` loads both, as root, with a read-only root filesystem and the node's `/lib/modules` mounted read-only, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. Both run `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`, the pinned image of `host-prepare` in [Lab hypervisors](#lab-hypervisors), pulled `IfNotPresent`; Renovate moves the reference in the pull request that moves the DaemonSet's. `csi-nfs-node` and `nova-compute` mount the shares through the node's kernel, and the chart and the nova-operator render them, so neither can carry an init container from this repository |
@@ -3109,8 +3111,8 @@ uninstall the chart, and the `CSIDriver` the release created, selected by the
 two labels the helm-controller sets on every object of a release. The client
 policy is deleted after the overlay, once the server it guarded is gone. The
 claim goes with the overlay. Where the default class has the reclaim policy
-`Delete`, as `premium` on `forge` has, its volume and every Cinder volume and
-backup on it go too.
+`Delete`, as `premium` on `forge` has, its volume and every Cinder volume on
+it go too.
 
 **What the pods change on a node.**
 
@@ -3129,8 +3131,9 @@ backup on it go too.
   namespace, and unmounts it with the node's last detach.
 - The deploy script itself runs no `modprobe` and writes no file on a node.
 
-The stack ran on the lab on 2026-10-04 with the quick start's volume steps in
-Part 1, Step 7 and Part 2, Steps 7 and 10; its two outages under
+The stack ran on the lab on 2026-10-04 with the quick start's volume steps of
+that time, Part 1, Step 7 and Part 2, Steps 7 and 10, which then put Cinder's
+volumes and backups on its two shares; its two outages under
 [Lab fault runs](#lab-fault-runs) left an attached volume failing until the
 Nova server it was attached to was hard-rebooted
 ([#1245](https://github.com/c5c3/cobaltcore/issues/1245)).
@@ -3181,18 +3184,18 @@ manager and three OSDs on raw block volumes, the RBD pools `volumes` and
 [#1341](https://github.com/c5c3/cobaltcore/issues/1341) and
 [#1346](https://github.com/c5c3/cobaltcore/issues/1346) attach to it, and the
 [Lab hypervisors](#lab-hypervisors) define the libvirt secret QEMU
-authenticates with from the key in `openstack/ceph-client-cinder`.
-[Part 3](../../quick-start-metal-stack.md#ceph) of the quick start puts the
-lab's Cinder on it with the [Ceph variant](#lab-controlplane) of the Lab
-ControlPlane: the RBD volume backend `ceph1` beside `nfs1` on the
-[Lab NFS stack](#lab-nfs-stack), and the RBD backup target `cephbk` in place
-of `nfsbk`. `hack/deploy-infra.sh` applies both
-kustomizations when `WITH_CEPH=true` is set beside `EXTERNAL_CLUSTER=true`.
-The flag has no kind overlay, and the kind mode refuses it; Ceph on kind and
-in CI is [#1339](https://github.com/c5c3/cobaltcore/issues/1339).
+authenticates with from the key in `openstack/ceph-client-cinder`. The
+[Lab ControlPlane](#lab-controlplane) puts the lab's Cinder on it: the RBD
+volume backend `ceph1` and the RBD backup target `cephbk`, which the
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) uses from Part 1
+on. `hack/deploy-infra.sh` applies both kustomizations when `WITH_CEPH=true`
+is set beside `EXTERNAL_CLUSTER=true`, and its preflight refuses the Lab
+ControlPlane without the flag. The flag has no kind overlay, and the kind mode
+refuses it; Ceph on kind and in CI is
+[#1339](https://github.com/c5c3/cobaltcore/issues/1339).
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
 ```
 
 The Rook chart installs the `ceph.rook.io` CRDs, so the Ceph comes in two
@@ -3218,7 +3221,7 @@ kustomization is local, so `kubectl apply -k` needs no `--load-restrictor`.
 | Ceph image | `quay.io/ceph/ceph:v20.2.4` (Tentacle) by tag and digest, for the CephCluster and the toolbox. Renovate moves both lines in one PR (`ceph image`), majors disabled, nothing automerged |
 | Cluster | the CephCluster `rook-ceph`: one mon on a 10Gi claim, one mgr without modules, no dashboard, crash collector, log collector or metrics, msgr2 required, the daemons' state under `/var/lib/rook`. `cephConfig.global.osd_pool_default_size: "2"` gives the `.mgr` pool two replicas, so it fits two hosts. One mon is a single point of failure the lab accepts (D2 of #1338) |
 | OSDs | one device set `lightbits` with `count: 3`, one OSD per worker of `newforge`, each on a 100Gi `volumeMode: Block` claim of the default class (D1). `portable: true`, so a volume follows its OSD to another node; a topology spread on the hostname puts one OSD on each node. 500m CPU and 2Gi requested, 2Gi limit; with the limit equal to the request Rook derives `osd_memory_target` from it. A shoot of another size changes `count` |
-| Pools | the CephBlockPools `volumes` and `backups`, each with two replicas on two hosts and `requireSafeReplicaSize: true`. Three OSDs of 100Gi give about 150 GiB, the bound the NFS export claim puts on the lab's volumes and backups |
+| Pools | the CephBlockPools `volumes` and `backups`, each with two replicas on two hosts and `requireSafeReplicaSize: true`. Three OSDs of 100Gi give about 150 GiB at two replicas, which bounds the lab's volumes and backups together |
 | Clients | the CephClients `cinder` (`mon: profile rbd`, `osd: profile rbd pool=volumes`, `mgr: profile rbd pool=volumes`) and `cinder-backup` (the same on `backups`), each with `keyType: aes`, `keyRotationPolicy: KeyGeneration` and `keyGeneration: 1` (D5, D7). Rook writes the Secrets `rook-ceph-client-cinder` and `rook-ceph-client-cinder-backup`, with the raw key under `userKey` |
 | Key hand-off | in `rook-ceph`, the PushSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` write `userKey` to the OpenBao paths `ceph/client-cinder` and `ceph/client-cinder-backup` (`kv-v2/data/ceph/client-*`) as the role `push-ceph-keys`; in `openstack`, the ExternalSecrets of the same names read them as the role `read-ceph-keys` into the Secrets `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup`, with the one key `userKey` (D4). Each side has its own SecretStore `openbao-ceph-store`, client Certificate of `openbao-ca-issuer` and ServiceAccount, and both refresh every minute. [OpenBao Bootstrap](openbao-bootstrap.md) lists the two roles and policies |
 | Toolbox | the Deployment `rook-ceph-tools`, Rook's `deploy/examples/toolbox.yaml` of `v1.21.0` with the cluster's image and 10m CPU and 64Mi requested, 256Mi limit. It runs as UID 2016 with every capability dropped, no privilege escalation and the `RuntimeDefault` seccomp profile, and mounts no ServiceAccount token |
@@ -3353,7 +3356,7 @@ of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which
 does not need it:
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_CHAOS_MESH=true make deploy-infra
 ```
 
 The kustomization takes `deploy/kind/chaos-mesh` as its base and adds the
@@ -3659,8 +3662,8 @@ server `lab-0` of the [Quick Start (metal-stack)](../../quick-start-metal-stack.
 ([#1222](https://github.com/c5c3/cobaltcore/issues/1222)). F1 to F3 are a
 PodChaos `pod-kill` of the libvirt pod, of the `nova-compute` pod and of the
 `ovn-controller` pod on `lab-0`'s node. F4 is a `pod-kill` of the NFS server
-pod while `lab-0` has a Cinder volume attached, and stands for a reschedule of
-that pod. F5 scales the NFS server to 0 for 300 seconds and back, and stands
+pod while `lab-0` has a Cinder volume on NFS attached, and stands for a
+reschedule of that pod. F5 scales the NFS server to 0 for 300 seconds and back, and stands
 for a node replacement. Every fault is a pod fault: the three hypervisor pods
 run in the host's network namespace (see NetworkChaos and `hostNetwork`
 above), and D2 of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)
@@ -3673,29 +3676,30 @@ libvirt's start script its `TERM` handler and `ovn-controller` its preStop
 
 The block starts on a lab where
 [Part 1](../../quick-start-metal-stack.md#cp-deploy) ran with
-`WITH_CHAOS_MESH=true` added to the deploy command of its Step 3, as above,
-and Part 2 ran through
-[Step 7](../../quick-start-metal-stack.md#hv-volume), so `lab-vol` is attached
-to `lab-0`. It runs in bash, in the shell of Part 2, Step 7, which holds
-`volume` and the `OS_*` variables, with the port-forward of Part 1, Step 6
-open in a second terminal.
+`WITH_CHAOS_MESH=true` and `WITH_NFS=true` added to the deploy command of its
+Step 3, Part 2 ran through [Step 11](../../quick-start-metal-stack.md#hv-rotate)
+and Part 3 through [Step 2](../../quick-start-metal-stack.md#nfs-volume), so
+`lab-nfs` on the NFS backend `nfs1` is attached to `lab-0` as its disk `vdc`.
+It runs in bash, in the shell of Part 3, Step 2, which holds `nfs_volume`,
+`libvirt_pod`, `domain` and the `OS_*` variables, with the port-forward of
+Part 1, Step 6 open in a second terminal.
 
 Two probes in `lab-0` show what the guest sees. Open `lab-0`'s console as in
-[Part 2, Step 6](../../quick-start-metal-stack.md#hv-console), log in, and type
-these two lines, with `<lab-1>` replaced by the address Step 6 printed for
-`lab-1`:
+[Part 3, Step 2](../../quick-start-metal-stack.md#nfs-volume), log in, and type
+these two lines, with `<lab-1>` replaced by the address Part 2, Step 6 printed
+for `lab-1`:
 
 ```sh
 sudo sh -c 'while :; do if ping -c 1 -W 1 <lab-1> >/dev/null 2>&1; then r=ok; else r=lost; fi; echo "lab-probe net $(date -u +%T) $r"; sleep 2; done >/dev/ttyS0 2>&1 &'
-sudo sh -c 'i=0; while :; do i=$((i+1)); if echo "probe-$i" | dd of=/dev/vdb bs=512 seek=8 2>/dev/null && sync; then r=ok; else r=error; fi; echo "lab-probe disk $(date -u +%T) $r $i"; sleep 2; done >/dev/ttyS0 2>&1 &'
+sudo sh -c 'i=0; while :; do i=$((i+1)); if echo "probe-$i" | dd of=/dev/vdc bs=512 seek=8 2>/dev/null && sync; then r=ok; else r=error; fi; echo "lab-probe disk $(date -u +%T) $r $i"; sleep 2; done >/dev/ttyS0 2>&1 &'
 ```
 
 Each loop writes one line to the serial console about every two seconds, and
 Nova keeps that console as the server's console log, so
 `openstack console log show` reads the lines from outside. The network loop
 pings `lab-1` through the Geneve tunnel to the other node. The disk loop
-writes its counter at byte 4096 of the volume, so the marker of Step 7 at
-byte 0 stays, and syncs it. A loop that blocks in `sync` writes no line, and
+writes its counter at byte 4096 of the NFS volume, so the marker of Part 3,
+Step 2 at byte 0 stays, and syncs it. A loop that blocks in `sync` writes no line, and
 the gap in the log is the stall the guest saw. Leave the console with
 `Ctrl+]`. Before F1, `openstack console log show --lines 20 lab-0` shows both
 kinds of line with `ok`.
@@ -3715,7 +3719,7 @@ within 60 seconds; `kubectl describe` then prints the experiment's state.
 
 ```bash
 # bash; KUBECONFIG and the OS_* variables of Part 1, Step 7 set, the port-forward
-# of Part 1, Step 6 running, lab-vol attached to lab-0, both guest probes running
+# of Part 1, Step 6 running, lab-nfs attached to lab-0, both guest probes running
 faults="$(mktemp -d)"
 host=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value)
 domain=$(openstack server show lab-0 -c OS-EXT-SRV-ATTR:instance_name -f value)
@@ -3744,8 +3748,8 @@ state() {
     "domain=$(field timeout 10 kubectl exec -n openstack "$(node_libvirt_pod)" -c libvirtd -- virsh domstate --reason "${domain}")" \
     "compute=$(field openstack compute service list --service nova-compute --host "${host}" -c State -f value)" \
     "agents=$(field openstack network agent list --host "${host}" -c Alive -f value)" \
-    "volume=$(field openstack volume show lab-vol -c status -f value)" \
-    "cinder-volume=$(field openstack volume service list --service cinder-volume -c State -f value)" \
+    "volume=$(field openstack volume show lab-nfs -c status -f value)" \
+    "cinder-volume=$(field openstack volume service list --service cinder-volume --host controlplane-cinder@nfs1 -c State -f value)" \
     "ready=$(field kubectl get novacompute,ovnchassis,neutronmetadataagent,cinder,cinderbackend -n openstack -o jsonpath='{range .items[*]}{.kind}:{.status.conditions[?(@.type=="Ready")].status},{end}')" \
     "hypervisor=$(field kubectl get hypervisor "${host}" -o jsonpath='{.status.conditions[?(@.type=="LibVirtConnection")].status}')" \
     "nfs-server=$(field kubectl get pod -n openstack -l app.kubernetes.io/name=nfs-server -o jsonpath='{range .items[*]}{.spec.nodeName}/{.status.phase}/{.status.containerStatuses[0].ready},{end}')"
@@ -3994,7 +3998,7 @@ openstack console log show lab-0 | tr -d '\r' | grep 'lab-probe ' >"$faults/nfs-
 kubectl get events -n openstack --sort-by=.lastTimestamp | grep -E 'nfs-server|AttachVolume|Multi-Attach' >"$faults/nfs-server-scale.events"
 
 # After F5: a new volume on the backend whose server came back, deleted whatever its status
-openstack volume create --size 1 lab-vol-after
+openstack volume create --type nfs --size 1 lab-vol-after
 timeout 300 bash -c 'until [ "$(openstack volume show lab-vol-after -c status -f value)" = available ]; do sleep 5; done'
 openstack volume show lab-vol-after -c status -f value
 openstack volume delete lab-vol-after
@@ -4018,7 +4022,7 @@ to roll out, and the new volume gets 300. When a helper prints
 2. Otherwise repeat the wait once, with the same bound.
 3. When it fails again, run `openstack server reboot --hard --wait lab-0`,
    open `lab-0`'s console with the `virsh console` line of F1, because the
-   `libvirt_pod` of Part 2, Step 6 names the pod F1 killed, start both guest
+   `libvirt_pod` of Part 3, Step 2 names the pod F1 killed, start both guest
    probes again and run `recovered 600`.
 4. When that holds, go on with the next fault. Otherwise the remaining faults
    do not run, and the session goes to its end.
@@ -4044,19 +4048,19 @@ sudo kill $(ps | awk '/[l]ab-probe disk/ {print $1}')
 
 Read its last line at once, because the network probe pushes it out of the
 120 lines `console_log` reads within minutes. Then run
-[Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup) and read the
+[Part 3, Step 4](../../quick-start-metal-stack.md#nfs-backup) and read the
 counter the disk probe wrote last from the volume file:
 
 ```bash
 # after the disk probe stopped on lab-0's console
 console_log | last_probe disk
-# after Part 2, Step 10
-kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-${volume}); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16; echo"
+# after Part 3, Step 4
+kubectl exec -n openstack deployment/controlplane-cinder-volume-nfs1 -- sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-${nfs_volume}); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16; echo"
 ```
 
 It prints `probe-<n>`. `<n>` is the counter of the last `ok` disk line or the
 one after it, because the kill can stop a write whose `sync` had not returned.
-Step 10's `head -c 17` still prints `lab-volume-marker`. Then run the
+The `head -c 17` of Part 3, Step 4 still prints `nfs-volume-marker`. Then run the
 [Teardown](../../quick-start-metal-stack.md#teardown) block without its last
 line, and step 6 of the [Proving run](#proving-run) in its place, which runs
 `EXTERNAL_CLUSTER=true make teardown-infra` with a fault active. Stop the
@@ -4070,7 +4074,12 @@ The run of 2026-10-04 ran the block from commit `647736c1` on shoot
 chart 2.8.4, in one session with the [Proving run](#proving-run). `lab-0` ran
 on `shoot--df33f0b4c1--newforge-group-0-85bcf-7znw9` and `lab-1` on
 `shoot--df33f0b4c1--newforge-group-0-85bcf-hmw67`, and the NFS server started
-on the third worker, `shoot--df33f0b4c1--newforge-group-0-85bcf-rt6kn`. Nova
+on the third worker, `shoot--df33f0b4c1--newforge-group-0-85bcf-rt6kn`. The
+quick start then ran Cinder on the NFS stack alone, so the block started from
+Part 2, Step 7, which had attached `lab-vol` on `nfs1` as the disk `vdb`, read
+the state of `lab-vol` and of the one `cinder-volume`, created
+`lab-vol-after` without a type and ended with Part 2, Step 10. The block has
+not run from Part 3 since Cinder moved to the lab Ceph. Nova
 mounted the share as `nfs4` with `vers=4.2`, `hard`, `proto=tcp`,
 `timeo=600` and `retrans=2`. The guest's clock was within 2 seconds of the
 workstation's. A script typed the console input and fed the page's blocks to
@@ -4126,7 +4135,7 @@ with NFS-Ganesha, which keeps its client records on the export claim (see
 yet. After F5, `lab-vol-after`
 was `available` within seconds and was deleted, so the backend served new
 volumes while the attached one failed. At the session's end `last_probe disk`
-printed `ok 82`, the volume file held `probe-82`, Step 10 read
+printed `ok 82`, the volume file held `probe-82`, Part 2, Step 10 read
 `lab-volume-marker` and backed the volume up, and the deletes, proving step 6
 and the namespace check left only the six platform namespaces.
 
@@ -4146,7 +4155,7 @@ when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
 need it:
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra
 ```
 
 The kustomization takes `deploy/kind/dizzy` as its one resource, so its render
@@ -4302,7 +4311,7 @@ root of the clone:
 ```bash
 # 1. A bare lab, then the deploy (then Part 1, Steps 4 to 6 of the quick start)
 kubectl get namespace openstack dizzy flux-system
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra
 
 # 2. State: both releases with their chart versions, the label, the Service,
 #    the claim and the default class
@@ -4388,7 +4397,7 @@ composes onto the deploy command of the
 need it:
 
 ```bash
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra
 ```
 
 The kustomization takes `deploy/kind/prometheus` as its one resource, deletes
@@ -4519,7 +4528,7 @@ kube_system_objects() {
 }
 mkdir -p _output
 kube_system_objects >_output/kube-system-before.txt
-EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra
+EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra
 
 # 2. State: the release with its chart version, the label and the annotation,
 #    the claim and the default class, the chart's Services in kube-system, and
@@ -4614,28 +4623,31 @@ No lab run of this stack is recorded yet.
 **Files:** `deploy/lab/metal-stack/controlplane/kustomization.yaml`,
 `deploy/lab/metal-stack/controlplane/ovncentral.yaml`,
 `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`,
-`deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml`
+`deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml`
 
 The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
 Step 4 of the
 [Quick Start (ControlPlane)](../../quick-start-controlplane.md), and the CR
 carries the `cinder` block of that page's optional `# block-storage.yaml`
-fragment. The data is unchanged except for two keys the lab adds to the
+fragment with the [Lab Ceph](#lab-ceph) in place of its NFS shares: the RBD
+volume backend `ceph1` and the RBD backup target `cephbk`. Apart from those
+two entries the data is unchanged except for two keys the lab adds to the
 ControlPlane.
 `hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
 completion hint and never applies it. Its preflight renders the directory and
 refuses it unless it holds exactly one ControlPlane,
 `openstack/<CONTROLPLANE_NAME>`, because Step 7 seeds the admin-password paths
 of that namespace and name only. The lab CR is `openstack/controlplane`, which
-the default name matches. Without `WITH_NFS=true` the preflight refuses the
-directory as well, because the CR's Cinder backends `nfs1` and `nfsbk` sit on
-the [Lab NFS stack](#lab-nfs-stack), which only `WITH_NFS=true` deploys.
+the default name matches. Without `WITH_CEPH=true` the preflight refuses the
+directory as well, because the CR's `ceph1` and `cephbk` name the monitor of
+the Lab Ceph, which only `WITH_CEPH=true` deploys; without the flag both would
+wait for their key Secrets, and the ControlPlane would never become `Ready`.
 `tests/unit/deploy/metal_stack_controlplane_test.sh` compares both files with
 three blocks of the page, the first `# controlplane.yaml` block, the
-`# block-storage.yaml` fragment and the `# controlplane-ovn.yaml` block, and
-fails when they drift apart. The CR file is not named
-`controlplane.yaml`, because `.gitignore` ignores that basename in every
-directory.
+`# block-storage.yaml` fragment without its backends and the
+`# controlplane-ovn.yaml` block, and fails when they drift apart. The CR file
+is not named `controlplane.yaml`, because `.gitignore` ignores that basename
+in every directory.
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -4647,43 +4659,20 @@ Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-de
 applies the directory and checks the ControlPlane, from the deploy in its
 Step 3 to the [checks](../../quick-start-metal-stack.md#cp-verify) of its Step 7.
 
-`controlplane-ceph/` is the Ceph variant of the directory, for a lab deployed
-with `WITH_CEPH=true`. It lists `../controlplane` as its base and adds one JSON
-patch to the ControlPlane: the RBD volume backend `ceph1` at the end of
-`spec.services.cinder.backends`, beside `nfs1`, and the RBD backup target
-`cephbk` in place of `nfsbk`, both on the [Lab Ceph](#lab-ceph). A JSON patch
-keeps `nfs1`, because a strategic-merge patch on a custom resource is a JSON
-merge patch, which replaces the whole list.
-[Part 3, Step 1](../../quick-start-metal-stack.md#ceph-apply) of the quick
-start applies the variant with `kubectl apply -k` over the ControlPlane of
-Part 1, Step 4. Client-side apply then sends `nfs: null` for the backup entry,
-because the first apply recorded its `nfs` block in the annotation
-`kubectl.kubernetes.io/last-applied-configuration`. Neither
-`hack/deploy-infra.sh` nor its preflight reads the variant.
-
-A backup entry changes its type only under a new name (the transition rule of
-`CinderBackupBackendEntry`), so the RBD target is `cephbk`. The c5c3-operator
-prunes `nfsbk` before it projects `cephbk`. The webhook warns on the apply that
-every backup the NFS driver wrote can be neither restored nor deleted until
-`nfsbk` is declared again, so Part 3 deletes the backup `lab-bk` first. The
-apply of `controlplane/` is the way back: the c5c3-operator then prunes `ceph1`
-and `cephbk`, and the webhook warns for both. Every volume left on `ceph1`
-loses its volume service, and every backup `cephbk` wrote becomes
-unreachable, so both are deleted before that apply. The volume type `ceph` of
-[Part 3, Step 2](../../quick-start-metal-stack.md#ceph-volume) goes after them:
-its `volume_backend_name` names `ceph1`, so a volume created with it after the
-apply ends in `error`.
-
-The networks are the pod and service networks of `newforge`, read from the
-ConfigMap `kube-system/shoot-info` on 2026-10-11; another shoot takes its own
-two from there. They open nothing on the lab. The c5c3-operator projects no
-`spec.networkPolicy` onto the Cinder, and the Cinder operator creates no
-NetworkPolicy for a Cinder without one. With one, the networks would open the
-Ceph ports to every pod and Service address of the shoot, which is where
-Rook's daemons answer. `tests/unit/deploy/metal_stack_controlplane_test.sh`
-pins the variant's render and checks the pools, users, key Secrets, monitor
-and libvirt secret UUID of its patch against the lab manifests they come
-from. Nothing checks the table below against the patch.
+The Ceph entries name the pools, users and key Secrets of the
+[Lab Ceph](#lab-ceph). A backup entry carries no `secretUUID`, because no
+hypervisor attaches a backup. The networks are the pod and service networks of
+`forge` and `newforge`, read from the ConfigMap `kube-system/shoot-info` on
+2026-10-04 and 2026-10-11; another shoot takes its own two from there, which
+Part 1, Step 4 of the quick start reads before the apply. They open nothing on
+the lab. The c5c3-operator projects no `spec.networkPolicy` onto the Cinder,
+and the Cinder operator creates no NetworkPolicy for a Cinder without one.
+With one, the networks would open the Ceph ports to every pod and Service
+address of the shoot, which is where Rook's daemons answer.
+`tests/unit/deploy/metal_stack_controlplane_test.sh` pins both entries and
+checks their pools, users, key Secrets, monitor and libvirt secret UUID
+against the lab manifests they come from. Nothing checks the table below
+against the CR.
 
 | Field | `ceph1` | `cephbk` | Source |
 | --- | --- | --- | --- |
@@ -4691,9 +4680,34 @@ from. Nothing checks the table below against the patch.
 | `rbd.user` | `cinder` | `cinder-backup` | the CephClients of `ceph/cluster/clients.yaml` |
 | `rbd.keySecretRef.name` | `ceph-client-cinder` | `ceph-client-cinder-backup` | the targets of the ExternalSecrets of `ceph/cluster/keys-pull.yaml`, each with the one key `userKey` |
 | `rbd.monitors` | `rook-ceph-mon-a.rook-ceph.svc.cluster.local` | the same | the Service Rook gives the first monitor in the CephCluster's namespace `rook-ceph`; `ceph/cluster/cluster.yaml` runs one (`mon.count: 1`) |
-| `rbd.networks` | `10.240.0.0/13`, `10.248.0.0/18` | the same | `podNetwork` and `serviceNetwork` of `newforge`'s `kube-system/shoot-info` |
+| `rbd.networks` | `10.240.0.0/13`, `10.248.0.0/18` | the same | `podNetwork` and `serviceNetwork` of the `kube-system/shoot-info` of `forge` and `newforge` |
 | `rbd.secretUUID` | `090e4a3c-6c20-4e74-82dc-1a70382babe8` | none: no hypervisor attaches a backup | the libvirt secret `ceph-secret.sh` defines in `hypervisor/libvirt-configmap.yaml` (see [Lab hypervisors](#lab-hypervisors)) |
 | `rbd.clusterName` | unset | unset | the CinderBackend and CinderBackupBackend CRDs default it to `ceph`; the ControlPlane field has no default |
+
+`controlplane-nfs/` is the NFS variant of the directory, for a lab deployed
+with `WITH_NFS=true` as well. It lists `../controlplane` as its base and adds
+one JSON patch to the ControlPlane: the NFS volume backend `nfs1` at the end of
+`spec.services.cinder.backends`, beside `ceph1`, on the share `/volumes` of the
+[Lab NFS stack](#lab-nfs-stack). `nfs1` is the volume backend of the
+`# block-storage.yaml` fragment, which the test compares. A JSON patch keeps
+`ceph1`, because a strategic-merge patch on a custom resource is a JSON merge
+patch, which replaces the whole list. The backup target stays `cephbk`: the
+Ceph backup driver reads an NFS volume through the export the backup pod
+mounts, and the cinder-operator mounts the export of every NFS volume backend
+in that pod. [Part 3, Step 1](../../quick-start-metal-stack.md#nfs-apply) of
+the quick start applies the variant with `kubectl apply -k` over the
+ControlPlane of Part 1, Step 4, behind a check that the NFS server and the
+CSIDriver `nfs.csi.k8s.io` exist. Without them the volume service of `nfs1`
+and the backup pod wait for a mount nothing serves. Neither
+`hack/deploy-infra.sh` nor its preflight reads the variant.
+
+The apply of `controlplane/` is the way back: it replaces the backends list
+with `ceph1` alone, the c5c3-operator prunes `nfs1`, and the webhook warns
+that every volume left on it can no longer be managed. Those volumes are
+deleted before that apply, and the volume type `nfs` of
+[Part 3, Step 2](../../quick-start-metal-stack.md#nfs-volume) after them: its
+`volume_backend_name` names `nfs1`, so a volume created with it after the
+apply ends in `error`. The backups `cephbk` wrote of them stay in Ceph.
 
 For the hypervisor package
 ([#1142](https://github.com/c5c3/cobaltcore/issues/1142)) the ControlPlane
@@ -4711,10 +4725,10 @@ network endpoints of the catalog, which are the in-cluster Service URLs.
 | Property | Value |
 | --- | --- |
 | Namespace | `openstack` |
-| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra`; the Ceph variant by hand over it in Part 3 of the quick start, on a lab deployed with `WITH_CEPH=true` as well |
+| Applied | by hand, after `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra`; the NFS variant by hand over it in Part 3 of the quick start, on a lab deployed with `WITH_NFS=true` as well |
 | Storage | through the cluster's default class; neither CR names a `storageClassName` |
 | Metadata gateway | none; the metadata API stays in-cluster at `controlplane-nova-metadata.openstack.svc:8775` |
-| Block storage | Cinder with the volume backend `nfs1` and the backup backend `nfsbk` on the shares `/volumes` and `/backups` of the [Lab NFS stack](#lab-nfs-stack). The Ceph variant adds the RBD volume backend `ceph1` on the pool `volumes` and replaces `nfsbk` with the RBD backup target `cephbk` on the pool `backups` of the [Lab Ceph](#lab-ceph). `CinderReady` reports `True` with reason `CinderReady` |
+| Block storage | Cinder with the RBD volume backend `ceph1` on the pool `volumes` and the RBD backup target `cephbk` on the pool `backups` of the [Lab Ceph](#lab-ceph). The NFS variant adds the NFS volume backend `nfs1` on the share `/volumes` of the [Lab NFS stack](#lab-nfs-stack). `CinderReady` reports `True` with reason `CinderReady` |
 | Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, which deletes the ControlPlane and then the `OVNCentral` in its first step |
 | Pinned by | `tests/unit/deploy/metal_stack_controlplane_test.sh` |
 
@@ -5262,8 +5276,8 @@ and the pod is `Ready`.
 
 The secret's UUID is `090e4a3c-6c20-4e74-82dc-1a70382babe8`, its usage `ceph`
 with the name `client.cinder`. The UUID is a constant on both sides: `ceph1`,
-the RBD volume backend of the [Ceph variant](#lab-controlplane) of the Lab
-ControlPlane, sets the same value as `spec.rbd.secretUUID`, so the
+the RBD volume backend of the [Lab ControlPlane](#lab-controlplane), sets the
+same value as `spec.rbd.secretUUID`, so the
 `rbd_secret_uuid` Cinder sends names this secret (see
 [CinderBackend CRD](../cinder/cinder-backend-crd.md)). A backend that leaves
 `secretUUID` unset sends the cluster FSID and finds no secret on the lab. Nova
@@ -5330,7 +5344,7 @@ with until the server is live-migrated or restarted (OSSN-0108), and a rotated
 key stops working for a new connection at once. The DaemonSet does not and
 cannot migrate or restart servers for it: it does not know which servers hold
 an RBD volume. The rotation of `ceph1`'s user `cinder` in
-[Part 3, Step 5](../../quick-start-metal-stack.md#ceph-rotate) of the quick
+[Part 2, Step 11](../../quick-start-metal-stack.md#hv-rotate) of the quick
 start migrates the server after the rotation.
 
 `libvirtd.conf` listens for TLS on the node's address and port `16514` only

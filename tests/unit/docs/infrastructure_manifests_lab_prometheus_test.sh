@@ -143,7 +143,7 @@ test_section_content() {
   for text in \
     '**Files:** `deploy/lab/metal-stack/prometheus/kustomization.yaml`,' \
     '`deploy/lab/metal-stack/prometheus/hypervisor-operator.json`' \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra' \
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra' \
     '| Namespace `monitoring` |' \
     '| Scrape jobs |' \
     '| Retention | `6h` | `7d`, bounded by `retentionSize: 8GB` |' \
@@ -179,7 +179,7 @@ test_run_commands() {
   for line in \
     'kubectl get namespace openstack monitoring flux-system' \
     'kube_system_objects >_output/kube-system-before.txt' \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra' \
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra' \
     'kubectl get helmrelease kube-prometheus-stack -n monitoring' \
     "kubectl get namespace monitoring -o jsonpath='{.metadata.labels}{\"\\n\"}{.metadata.annotations}{\"\\n\"}'" \
     'kubectl get pvc -n monitoring' \

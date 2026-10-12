@@ -438,9 +438,10 @@ alone (`dynamic_ownership = 0` in `qemu.conf`): Cinder's NFS backends keep
 their files `42424:42424` with mode `660` (see
 [Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
 and a file handed to QEMU's user shuts Cinder out of the volume. On the
-metal-stack lab the
+metal-stack lab, whose Cinder runs on Ceph and takes an NFS backend only in
+Part 3 of its quick start, the
 [Lab NFS stack](../infrastructure/infrastructure-manifests.md#lab-nfs-stack)
-loads the modules, and the
+of `WITH_NFS=true` loads the modules, and the
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)
 carry the propagation and the setting.
 
