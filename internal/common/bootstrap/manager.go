@@ -93,6 +93,14 @@ type ManagerConfig struct {
 	// target-cluster credentials, and needs no Secret read outside its own
 	// namespace.
 	TargetClusters bool
+
+	// AssignedNamespaceKinds are the kinds whose informers on a target
+	// cluster also cover the namespaces its registration lists under the
+	// assignedNamespaces key. The c5c3-operator sets the seven order kinds and
+	// Secret; every other operator leaves it empty, so its cache on a target
+	// never covers an assigned namespace and the placed Roles are enough for
+	// it.
+	AssignedNamespaceKinds []client.Object
 }
 
 // validate returns an error if required fields are missing.
@@ -147,8 +155,8 @@ func cacheOptions(syncPeriod time.Duration, namespace, clustersNamespace string)
 //
 // The cache is unrestricted here, and the operator's own --namespace does not
 // reach it. What a target cluster's cache covers is decided per cluster by the
-// namespaces key of that cluster's registration Secret, which the provider
-// reads: the scope belongs to the credential the Secret carries, and two
+// namespaces and assignedNamespaces keys of that cluster's registration Secret,
+// which the provider reads: the scope belongs to the credential the Secret carries, and two
 // clusters registered with the same operator may well grant it in different
 // namespaces. A registration that names none keeps the all-namespaces cache
 // cluster.New builds. The clusters namespace is deliberately not passed on
@@ -159,6 +167,17 @@ func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration) []cluster.
 		o.Scheme = scheme
 		o.Cache = cacheOptions(syncPeriod, "", "")
 	}}
+}
+
+// providerOptions builds the kubeconfig provider's options: the clusters
+// namespace it reads registrations from, the options every target cluster is
+// built with, and the kinds that reach a registration's assigned namespaces.
+func providerOptions(cfg ManagerConfig, clustersNamespace string, syncPeriod time.Duration) multicluster.KubeconfigProviderOptions {
+	return multicluster.KubeconfigProviderOptions{
+		Namespace:              clustersNamespace,
+		ClusterOptions:         clusterOptions(cfg.Scheme, syncPeriod),
+		AssignedNamespaceKinds: cfg.AssignedNamespaceKinds,
+	}
 }
 
 // targetClustersNamespace returns the namespace registration Secrets are read
@@ -338,10 +357,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	var provider mcruntime.Provider
 	var clusters *multicluster.KubeconfigProvider
 	if clustersNamespace != "" {
-		clusters = multicluster.NewKubeconfigProvider(multicluster.KubeconfigProviderOptions{
-			Namespace:      clustersNamespace,
-			ClusterOptions: clusterOptions(cfg.Scheme, opts.syncPeriod),
-		})
+		clusters = multicluster.NewKubeconfigProvider(providerOptions(cfg, clustersNamespace, opts.syncPeriod))
 		provider = clusters
 	}
 
