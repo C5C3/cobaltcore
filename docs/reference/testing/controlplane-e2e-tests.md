@@ -87,6 +87,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
+| [orders-target-cluster](#orders-target-cluster) | `cp` (ephemeral namespace) + the seven orders `workflow`, `workflow-project`, `workflow-member`, `workflow-dns`, `workflow-appcred`, `workflow-db`, `workflow-bus` in `orders-tenant` and `unassigned` in `orders-outsider` on the registered target `cobaltcore-target` | Orders from a namespace on a target cluster: the plane publishes Keystone, the database and the bus on NodePorts of the management node, each order on the target is delivered beside it with those addresses and nothing on the management cluster, and Jobs on the target issue a token, scope one to the project and read the catalog entry, authenticate with the application credential, write a row and open an AMQP connection; an order no entry assigns holds at `NamespaceNotAssigned`, a database order without a published address at `DatabaseNotPublished`, and the teardown follows the holds |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [e2e-autoscaling](#e2e-autoscaling) | `cp-autoscaling` | The API autoscaler with metrics-server and the VPA: token load scales Keystone from one pod to its HPA maximum and back within 240 s, the budget admits an eviction at the minimum, every database-backed API fits its SQL connection cap at its maximum, and the opted-in workloads get their VerticalPodAutoscalers |
@@ -1144,14 +1145,99 @@ itself, as the foreign-namespace suite does, and runs eleven steps:
     Project. The plane is then deleted in the order the foreign-namespace suite
     checks.
 
-The target-cluster path is not driven here: no e2e job registers a second
-cluster with the c5c3-operator, so the two-API-server envtest
-`TestIntegration_Multicluster_ControlPlanePlacement` proves it.
+The target-cluster path is driven by
+[orders-target-cluster](#orders-target-cluster), in a job of its own, and the
+two-API-server envtest `TestIntegration_Multicluster_ControlPlanePlacement`
+proves its placement rules without a Keystone.
 
 Run it locally against a full ControlPlane stack with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it third.
 It is the third chainsaw step of the `e2e-controlplane` CI job, reporting as
 `chainsaw-report-keystone-user`.
+
+### orders-target-cluster
+
+Covers the orders of a service owner whose namespace lives on a registered
+target cluster. The seven order kinds are applied on the target, the
+c5c3-operator on the management cluster creates each piece against the plane's
+Keystone, MariaDB and message bus, and it writes each Secret beside its order on
+the target with the addresses the plane publishes for other clusters. Jobs on
+the target use every Secret. The suite lives in
+`tests/e2e-orders-multicluster/orders/`, outside `tests/e2e/`, because it needs
+a second cluster.
+
+The plane `cp` sits in the ephemeral namespace on the management cluster: the
+keystone-user plane with a managed bus `cp-rabbitmq`,
+`services.keystone.publicEndpoint`, `publishedDatabaseEndpoint` and
+`publishedMessagingEndpoint` set to the management node's `InternalIP` on the
+pinned NodePorts 30050, 30051 and 30052, and one entry that assigns
+`orders-tenant` on `cobaltcore-target` with `allowedRoles: [member]` and
+`allowCatalogEntries: true`. The ports are pinned because the NodePort Services
+copy Services only the plane creates, while the addresses have to be in the
+plane from the start. Keystone is published over plain http, because the plane
+carries no gateway. The target carries the access chart with
+`assignedNamespaces={orders-tenant,orders-outsider}`, and its registration
+Secret lists both under the `assignedNamespaces` key. The script reaches the
+target through `kubectl --kubeconfig ../../../_output/cobaltcore-target.kubeconfig`.
+
+The presence guard checks, in order: the target kubeconfig exists, the stack's
+CRDs and pods are present as for keystone-user plus the RabbitMQ kinds, the
+registration Secret lists both tenant namespaces under `assignedNamespaces`, and
+the target serves the seven order CRDs and holds both namespaces. Each failure
+names what is missing and SKIPs, or fails under
+`E2E_REQUIRE_CONTROLPLANE_STACK=true`. The suite runs nine steps:
+
+1. **Publish**: the plane reaches `InfrastructureReady`, `DBCredentialsReady`,
+   `KeystoneReady`, `KORCReady`, `AdminCredentialReady`, `ESOTenantStoreReady`
+   and `NamespaceAssignmentsReady`, its entry reads `Assigned`, and
+   `kubectl expose service` creates `cp-keystone-public`,
+   `openstack-db-public` and `cp-rabbitmq-public`, each patched to its pinned
+   node port.
+2. **Delivery**: `workflow` on the target reaches `Ready=True` with
+   `UserProvisioned` and `Delivered`, its `workflow-credentials` beside it
+   carries `auth_url: "http://<node InternalIP>:30050/v3"`, a read of that
+   Secret on the management cluster answers `NotFound`, one K-ORC User and one
+   PushSecret carry the order's labels in the plane's namespace, and a Job on
+   the target issues a token.
+3. **Pieces**: `workflow-project`, `workflow-member` and `workflow-dns` reach
+   `Ready=True`, and a Job on the target scopes a token to the project and
+   prints the entry's public URL.
+4. **Application credential**: `workflow-appcred` reaches `Ready=True`, its
+   Secret carries the three keys and the published `auth_url`, and a Job on the
+   target authenticates with it.
+5. **Database**: `workflow-db` reaches `Ready=True`, its Secret carries the node
+   address as `host` and 30051 as `port`, and a Job on the target writes and
+   reads a row and cannot reach the `keystone` schema. The Job connects with
+   `check_hostname` off, because the server certificate does not carry the
+   node's IP.
+6. **Vhost**: `workflow-bus` reaches `Ready=True`, its Secret carries the node
+   address and 30052, its `transport_url` names both, a Job on the target
+   opens a kombu connection with it, and `rabbitmqctl authenticate_user` in
+   `cp-rabbitmq-server-0` accepts the delivered user.
+7. **Unassigned**: `unassigned` in `orders-outsider` holds at
+   `NamespaceNotAssigned` on `UserReady` and `DeliveryReady` within 2 min, with a
+   message naming `spec.namespaceAssignments` and `cobaltcore-target`; no K-ORC
+   User and no Secret appear, re-checked after a settle.
+8. **Unpublished**: with `publishedDatabaseEndpoint` cleared by a merge patch,
+   `workflow-db2` reads `DeliveryReady=False/DatabaseNotPublished` within 2 min
+   with a message naming the field, and no `workflow-db2-credentials` appears.
+   Restoring the field takes it to `Ready=True` within 12 min: no ControlPlane
+   watch reaches an order on a target cluster, so the edit arrives with the
+   order's ten-minute refresh.
+9. **Teardown**: `workflow-appcred` goes first. Deleting `workflow` then holds
+   it at `ReferencedByRoleAssignments` naming `workflow-member`; the
+   assignment, the catalog entry, the project, the user, both database orders
+   and the vhost go after it. None of the five Secrets is left in
+   `orders-tenant`, nothing labelled for an order of that namespace is left in
+   the plane's namespace, and the plane goes down through its finalizer with
+   K-ORC drained and the broker gone.
+
+The script's budget is `exec: 45m`, with `catch` 5m, `finally` 15m and
+`cleanup: 10m`, a ceiling of 75 minutes. Run it locally with
+`make e2e-orders-multicluster` against the lean stack of the
+`e2e-orders-multicluster` CI job, which reports it as
+`chainsaw-orders-multicluster-report`.
+
 
 ## File Layout
 
@@ -1292,11 +1378,34 @@ tests/e2e/c5c3/
     └── 00-controlplane-cr.yaml         ControlPlane CR (cp; __PROFILE__ token)
 ```
 
+The two-cluster orders suite lives outside `tests/e2e/`:
+
+```text
+tests/e2e-orders-multicluster/
+├── chainsaw-config.yaml                parallel 1, failFast, report chainsaw-orders-multicluster-report
+└── orders/
+    ├── chainsaw-test.yaml              Orders from a target-cluster namespace, nine steps
+    ├── 00-controlplane-cr.yaml         ControlPlane with a bus and three published addresses (@PUBLIC_ENDPOINT@/@DB_ENDPOINT@/@BUS_ENDPOINT@)
+    ├── 01-keystoneuser-target.yaml     The user order (workflow; @CP_NS@ token, as in every order)
+    ├── 02-keystoneproject-target.yaml  The project order (workflow-project)
+    ├── 03-keystoneroleassignment-target.yaml  The role order (workflow-member)
+    ├── 04-keystonecatalogentry-target.yaml  The catalog order (workflow-dns)
+    ├── 05-keystoneapplicationcredential-target.yaml  The credential order (workflow-appcred)
+    ├── 06-mariadbdatabase-target.yaml  The database order (workflow-db)
+    ├── 07-rabbitmqvhost-target.yaml    The vhost order (workflow-bus)
+    ├── 08-keystoneuser-unassigned.yaml The refused order (unassigned, in orders-outsider)
+    ├── 10-token-verify-job.yaml        openstack CLI token issue on the target
+    ├── 11-scoped-token-verify-job.yaml Project-scoped token issue and catalog show on the target (@DOMAIN@ token)
+    ├── 12-appcred-verify-job.yaml      Token issue with the application credential on the target
+    ├── 13-mariadb-verify-job.yaml      pymysql row write and read at the published address, check_hostname off
+    └── 14-bus-verify-job.yaml          kombu AMQP connection at the published address
+```
+
 ## Related Resources
 
 - [ControlPlane CRD API Reference](../c5c3/controlplane-crd.md) — CRD types, webhooks, validation rules
 - [ControlPlane Reconciler](../c5c3/controlplane-reconciler.md) — Sub-reconciler contracts, finalizer, credential re-push
-- [CI Workflow](../ci-cd/ci-workflow.md) — The dedicated `e2e-controlplane` job
+- [CI Workflow](../ci-cd/ci-workflow.md) — The dedicated `e2e-controlplane` and `e2e-orders-multicluster` jobs
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md) — `WITH_CONTROLPLANE` deployment wiring
 - `tests/e2e/chainsaw-config.yaml` — Shared Chainsaw configuration
 - `hack/ci-check-node-budget.sh` — The node budget gate of Link 6z

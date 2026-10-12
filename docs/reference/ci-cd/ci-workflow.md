@@ -63,7 +63,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 
 | Change class | Paths | What it schedules |
 | --- | --- | --- |
-| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs |
+| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
 | `image_<svc>` | `images/<svc>/**`, `patches/<svc>/**` | that service's `e2e-operator` leg |
 | `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
 | `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
@@ -71,7 +71,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**`, and `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova) | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
-| `tests_chaos`, `tests_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree | the job that runs it |
+| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -92,8 +92,8 @@ Six labels add jobs. None of them ever removes one.
 | `ci:full` | everything, and builds every image |
 | `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
 | `ci:chaos` | all four `e2e-chaos` legs. `run-chaos` is an alias |
-| `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling` |
-| `ci:multicluster` | `e2e-multicluster` |
+| `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
+| `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
@@ -178,7 +178,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
 | `build-e2e-images` | `packages: write` | Push the E2E images to GHCR under run-scoped tags |
-| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
 | `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
@@ -188,7 +188,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 37 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 38 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard, and
 `cleanup-e2e-tags` follows `build-e2e-images`, which runs on a pull request
 only. The publish and release jobs run on push events only.
@@ -197,7 +197,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay and e2e-nova-libvirt. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay and e2e-nova-libvirt. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -229,10 +229,11 @@ section that describes the job.
 | [`e2e-autoscaling`](#e2e-autoscaling) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-external-keystone`](#e2e-external-keystone) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-multicluster`](#e2e-multicluster) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`e2e-orders-multicluster`](#e2e-orders-multicluster) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-ovn-overlay`](#e2e-ovn-overlay) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
-| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` |
+| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` |
 | [`build-and-push`](#build-and-push) | Publish images | `changes` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes` |
@@ -306,6 +307,7 @@ The flags come first. Each one is `true` or `false`:
 | `e2e-external-keystone` | Gates `e2e-external-keystone` |
 | `e2e-autoscaling` | Gates `e2e-autoscaling` |
 | `e2e-multicluster` | Gates `e2e-multicluster` |
+| `e2e-orders-multicluster` | Gates `e2e-orders-multicluster` |
 | `e2e-ovn-overlay` | Gates `e2e-ovn-overlay` |
 | `e2e-nova-libvirt` | Gates `e2e-nova-libvirt` |
 | `e2e-operator-upgrade` | Gates `e2e-operator-upgrade` |
@@ -1730,6 +1732,75 @@ timeout of `300s`, and writes the JUnit report to `_output/reports`.
 `hack/ci-resolve-changes.sh` reads no operator class and no image class for this
 flag, so a change to one of the four operators alone does not schedule the job.
 `ci:full` forces the flag on, and a labeled no-op resolves it to `false`.
+
+### e2e-orders-multicluster
+
+Runs the `tests/e2e-orders-multicluster/orders/` Chainsaw suite across two kind
+clusters. The target cluster `cobaltcore-target` is bare: it carries the
+`target-cluster-access` chart and the two tenant namespaces `orders-tenant` and
+`orders-outsider`, and runs no infrastructure. The management cluster carries
+the infrastructure, K-ORC, the keystone-operator and the c5c3-operator. The
+suite applies the seven order kinds on the target, and Jobs there use every
+Secret the c5c3-operator delivers beside the orders, with the addresses the
+suite's plane publishes on NodePorts of the management node. The registration
+Secret lists the tenant namespaces under its `assignedNamespaces` key, so the
+keystone-operator engages the same target with a cache on `openstack` alone
+(see [Registering a target cluster](../target-clusters.md#registering-a-target-cluster)),
+and a step after the suite fails the job on a forbidden LIST of the
+keystone-operator in a tenant namespace.
+The suite's plane publishes Keystone over plain http and carries no gateway.
+The job deploys two operators where `e2e-controlplane` deploys ten, which is
+why the suite runs in a job of its own.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs on `pull_request` events when the `e2e-orders-multicluster`
+output of `changes` is `true`, the pull request does not come from a fork
+(`github.event.pull_request.head.repo.fork != true`), `build-e2e-images` ended
+with `success`, and no job in `needs` ended with `failure` or `cancelled`.
+`always()` lets the job start when the Go jobs in `needs` were skipped.
+**Permissions:** `contents: read`, `packages: read`
+
+The job runs on `self-hosted` with `timeout-minutes: 110` and
+`continue-on-error: false`. The wall is about 25 minutes of bring-up plus the
+suite's ceiling of 75 minutes (exec 45m, catch 5m, finally 15m, cleanup 10m),
+rounded up, and is to be confirmed against the first green run. Its `env` sets
+`OPERATOR_REPLICAS: "1"`, as `e2e-controlplane` does, and
+`TARGET_CLUSTER: cobaltcore-target`, the registration name the suite's plane
+references. `cleanup-e2e-tags` lists the job in its `needs`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}` and `cluster-name: ${{ env.TARGET_CLUSTER }}` and no `config`, so the bare target takes no host port |
+| 3 | `Create kind cluster` | The same action with `config: hack/kind-config.yaml` and `cluster-name: ${{ env.KIND_CLUSTER }}`. Created second, so the `kubectl` context ends on the management cluster |
+| 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls four images: `keystone-operator` and `c5c3-operator` at `:dev`, `keystone` and `tempest` at `2026.1` |
+| 5 | `Load images into kind` | `kind load docker-image` for `keystone-operator:dev`, `c5c3-operator:dev` and `keystone:2026.1` into the management cluster, and for `keystone:2026.1` and `tempest:2026.1` into `cobaltcore-target`, where the suite's verify Jobs run |
+| 6 | `Setup E2E infrastructure` | `setup-e2e-infra` composite action with `WITH_CONTROLPLANE: "true"`, `CONTROLPLANE_OPERATORS: external`, `CONTROLPLANE_NAME: controlplane-keystone` and `WITH_CONTROLPLANE_CR: "false"`. The suite's plane brings its own bus, and the RabbitMQ operators are part of the base stack, so the job sets no `WITH_MESSAGING` |
+| 7 | `Install CRDs watched by the c5c3-operator` | `kubectl apply -f` of the keystone, horizon, glance and placement chart CRDs, and `hack/ci-deploy-korc.sh` with `GITHUB_TOKEN`, as the c5c3 entry of `e2e-operator` does |
+| 8 | `Deploy keystone-operator` | `hack/ci-deploy-operator.sh` with `OPERATOR: keystone`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator` and `NAMESPACE: keystone-system` |
+| 9 | `Deploy c5c3-operator` | The same script with `OPERATOR: c5c3`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator` and `NAMESPACE: c5c3-system` |
+| 10 | `Create the assigned namespaces on the target` | `kubectl --context "kind-$TARGET_CLUSTER" create namespace` for `orders-tenant` and `orders-outsider`. The chart creates no assigned namespace |
+| 11 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/target-cluster/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set 'assignedNamespaces={orders-tenant,orders-outsider}'`. The default `createNamespaces=true` creates `openstack`, which the bare target lacks |
+| 12 | `Register the target cluster` | The registration of `e2e-multicluster`: the token and `ca.crt` of the Secret `target-cluster-access-token`, the server URL of `kind get kubeconfig --internal`, and on the management cluster the namespace `c5c3-clusters` and the Secret `cobaltcore-target` with the keys `kubeconfig`, `namespaces=openstack` and `assignedNamespaces=orders-tenant,orders-outsider`, labelled `sigs.k8s.io/multicluster-runtime-kubeconfig=true` |
+| 13 | `Wait for both operators to engage the target` | Reads the logs of the keystone-operator in `keystone-system` and of the c5c3-operator in `c5c3-system` every 5 seconds, for up to 180 seconds, until each holds a `cluster engaged` line for `cobaltcore-target`, and fails with an `::error::` otherwise. Engagement waits for no informer the controllers start on the target, so the step proves the engagement alone; step 16 checks the keystone-operator's scope |
+| 14 | `Write the chainsaw kubeconfig for the target cluster` | Writes the admin kubeconfig of the target to `_output/cobaltcore-target.kubeconfig`. Chainsaw reaches the target with it. The operators read the registration Secret of step 12 |
+| 15 | `Run the orders two-cluster E2E suite` | Creates `_output/reports`, switches the `kubectl` context to `kind-${{ env.KIND_CLUSTER }}` and runs `make e2e-orders-multicluster` with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`. The target checks that a cluster answers, that the ControlPlane stack is installed, that the Secret `cobaltcore-target` exists in `c5c3-clusters` and that the chainsaw kubeconfig exists. Then it runs `chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/` |
+| 16 | `Check the keystone-operator never lists an assigned namespace` | Reads the keystone-operator's logs in `keystone-system` after the suite, when its informers on the target have long run their first LIST, and fails with an `::error::` on a `forbidden` line that names `orders-tenant` or `orders-outsider`. A service operator whose cache spanned an assigned namespace would LIST there, where the chart grants it nothing |
+| 17 | `Dump diagnostic info (management cluster)` | `always()`: switches to `kind-${{ env.KIND_CLUSTER }}` and runs `hack/ci-dump-diagnostics.sh` with `OPERATOR: c5c3` |
+| 18 | `Dump diagnostic info (target cluster)` | `always()`: switches to `kind-$TARGET_CLUSTER` and runs the script without `OPERATOR` |
+| 19 | `Upload JUnit report` | `always()`: `actions/upload-artifact@v7` uploads `_output/reports/` as `e2e-orders-multicluster-junit-report` (`retention-days: 14`) |
+| 20 | `Delete kind cluster` | `always()`: runs `hack/ci-delete-kind-cluster.sh`, which covers both clusters. It never fails the job |
+
+`tests/e2e-orders-multicluster/chainsaw-config.yaml` sets `parallel: 1` and an
+`assert` timeout of `300s`, and writes the JUnit report
+`chainsaw-orders-multicluster-report` to `_output/reports`.
+
+**Path filter:** `tests/e2e-orders-multicluster/**` and `deploy/target-cluster/**`
+(the `tests_orders_multicluster` class), `operators/c5c3/**` (the `c5c3` class,
+which schedules the ControlPlane jobs too), or the `ci:controlplane` or
+`ci:multicluster` label. A change to the keystone-operator or a shared Go change
+alone does not schedule the job. `ci:full` forces the flag on, and a labeled
+no-op resolves it to `false`.
 
 ### tempest
 

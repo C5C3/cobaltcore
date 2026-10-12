@@ -41,7 +41,7 @@
 <text x="393" y="618.2" font-size="20" font-weight="400" fill="#2B3440">build-e2e-images</text>
 <text x="393" y="646.2" font-size="20" font-weight="400" fill="#55606E">builds what changed</text>
 <text x="393" y="674.2" font-size="20" font-weight="400" fill="#55606E">and reuses the images of main</text>
-<rect x="724" y="544" width="246" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<rect x="724" y="544" width="246" height="405" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="743" y="583.36" font-size="26" font-weight="700" fill="#2B3440">E2E fan-out</text>
 <text x="743" y="618.2" font-size="20" font-weight="400" fill="#2B3440">e2e-operator</text>
 <text x="743" y="646.2" font-size="20" font-weight="400" fill="#2B3440">e2e-operator-upgrade</text>
@@ -51,9 +51,10 @@
 <text x="743" y="758.2" font-size="20" font-weight="400" fill="#2B3440">e2e-autoscaling</text>
 <text x="743" y="786.2" font-size="20" font-weight="400" fill="#2B3440">e2e-external-keystone</text>
 <text x="743" y="814.2" font-size="20" font-weight="400" fill="#2B3440">e2e-multicluster</text>
-<text x="743" y="842.2" font-size="20" font-weight="400" fill="#2B3440">e2e-ovn-overlay</text>
-<text x="743" y="870.2" font-size="20" font-weight="400" fill="#2B3440">e2e-nova-libvirt</text>
-<text x="743" y="898.2" font-size="20" font-weight="400" fill="#55606E">one kind cluster per job</text>
+<text x="743" y="842.2" font-size="20" font-weight="400" fill="#2B3440">e2e-orders-multicluster</text>
+<text x="743" y="870.2" font-size="20" font-weight="400" fill="#2B3440">e2e-ovn-overlay</text>
+<text x="743" y="898.2" font-size="20" font-weight="400" fill="#2B3440">e2e-nova-libvirt</text>
+<text x="743" y="926.2" font-size="20" font-weight="400" fill="#55606E">one kind cluster per job</text>
 <rect x="1012" y="544" width="202" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="1031" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Chaos</text>
 <text x="1031" y="618.2" font-size="20" font-weight="400" fill="#2B3440">e2e-chaos</text>
