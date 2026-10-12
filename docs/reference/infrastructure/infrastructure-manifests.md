@@ -3272,10 +3272,14 @@ operator runs with the chart's ClusterRoles, the mon and OSD pods mount
 raw block devices. The client keys leave `rook-ceph` only through OpenBao:
 the push role writes `ceph/*` from `rook-ceph`, and the one read role is bound
 to `openstack`, because the Ceph paths are not namespace-templated. The two
-clients' `aes` keys raise the Ceph warning `AUTH_INSECURE_CLIENT_KEY_TYPE`;
-the CephCluster mutes it (`healthCheck.muteHealthWarning`), so the deploy can
-wait for `HEALTH_OK`. D7 of #1338 keeps `aes` until every client's `librbd`
-reads `aes256k`. When it is revisited, the mute is lifted by setting
+clients' `aes` keys raise three Ceph warnings: `AUTH_INSECURE_CLIENT_KEY_TYPE`
+for the keys, and, because Rook allows the `aes` cipher on the monitors to
+create them (`mon set auth_allowed_ciphers aes,aes256k` on every reconcile),
+`AUTH_INSECURE_KEYS_ALLOWED` and `AUTH_INSECURE_KEYS_CREATABLE`. The
+CephCluster mutes all three (`healthCheck.muteHealthWarning`), so the deploy
+can wait for `HEALTH_OK`; with the first mute alone the wait ran out on
+2026-10-12. D7 of #1338 keeps `aes` until every client's `librbd` reads
+`aes256k`. When it is revisited, each mute is lifted by setting
 `policy: unmute`: an entry that is deleted sends Ceph no unmute, and the
 warning stays muted. Rook gives its own daemons `aes256k` keys.
 

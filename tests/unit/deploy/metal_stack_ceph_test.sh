@@ -256,8 +256,15 @@ test_cephcluster() {
   # A bare 2 would be an integer, which the CRD's string map refuses.
   assert_eq "the default pool size is the string \"2\"" '!!str 2' \
     "$(val CephCluster rook-ceph '.spec.cephConfig.global.osd_pool_default_size | tag + " " + .')"
-  assert_eq "AUTH_INSECURE_CLIENT_KEY_TYPE is muted" "mute" \
-    "$(val CephCluster rook-ceph '.spec.healthCheck.muteHealthWarning.AUTH_INSECURE_CLIENT_KEY_TYPE.policy')"
+  # The aes clients make Rook allow the aes cipher on the mons, which 20.2.4
+  # reports as two more warnings; the health wait needs all three muted.
+  local code
+  for code in AUTH_INSECURE_CLIENT_KEY_TYPE AUTH_INSECURE_KEYS_ALLOWED AUTH_INSECURE_KEYS_CREATABLE; do
+    assert_eq "$code is muted" "mute" \
+      "$(val CephCluster rook-ceph ".spec.healthCheck.muteHealthWarning.$code.policy")"
+  done
+  assert_eq "no other warning is muted" "3" \
+    "$(val CephCluster rook-ceph '.spec.healthCheck.muteHealthWarning | length')"
   # Rook refuses spec changes once the confirmation is set; only the teardown
   # sets it.
   assert_eq "the cleanup confirmation is the empty string" '!!str ' \
