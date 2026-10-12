@@ -35,9 +35,10 @@ import (
 // Apache-2.0 like this repository. The engagement machinery is kept close to
 // that original — same Secret label, same data key, same controller name, same
 // hash-based re-engagement — so an upstream change stays easy to follow here.
-// The namespaces data key is the one thing this copy adds, and it is the reason
-// the copy exists: the upstream provider builds every cluster with a
-// cluster-wide cache, which requires cluster-wide read on every target.
+// The namespaces and assignedNamespaces data keys are the two things this copy
+// adds, and they are the reason the copy exists: the upstream provider builds
+// every cluster with a cluster-wide cache, which requires cluster-wide read on
+// every target.
 
 const (
 	// KubeconfigSecretLabel marks a Secret in the watched namespace as a
@@ -66,6 +67,22 @@ const (
 	// names namespaces still needs cluster-scoped read for whatever the operator
 	// reads outside a namespace.
 	NamespacesDataKey = "namespaces"
+
+	// AssignedNamespacesDataKey is the registration Secret's optional data key
+	// holding the comma-separated namespaces on the target that a ControlPlane
+	// assigns to service owners. The value takes the syntax and the checks of
+	// NamespacesDataKey, and the key is only valid beside it: it extends a
+	// scoped cache and has nothing to extend on a cluster-wide one. A namespace
+	// is listed under one of the two keys, never both.
+	//
+	// It is a key of its own because the target grants an operator far less in
+	// an owner's namespace than in a placed one: the access chart's assigned
+	// Role covers the order kinds and Secrets only. A cache that spanned those
+	// namespaces for every kind would never sync on a service operator's
+	// Deployment or ConfigMap informer. So only the kinds a provider lists in
+	// KubeconfigProviderOptions.AssignedNamespaceKinds reach these namespaces,
+	// and a provider that lists none keeps its whole cache off them.
+	AssignedNamespacesDataKey = "assignedNamespaces"
 )
 
 // unknownNamespaceForCache is the fragment controller-runtime's
@@ -103,11 +120,11 @@ func IsUnknownNamespaceForCache(err error) bool {
 	return err != nil && strings.Contains(err.Error(), unknownNamespaceForCache)
 }
 
-// namespacesHashSeparator separates the kubeconfig from the raw namespaces
-// value in the engagement hash. Without it a kubeconfig ending in the bytes
-// another registration's namespaces value starts with would hash the same, and
-// a NUL byte is one no kubeconfig and no namespace name contains.
-var namespacesHashSeparator = []byte{0}
+// hashFieldSeparator separates the kubeconfig, each scope key's name and its
+// raw value in the engagement hash. Without it a kubeconfig ending in the bytes
+// another registration's scope value starts with would hash the same, and a NUL
+// byte is one no kubeconfig and no namespace name contains.
+var hashFieldSeparator = []byte{0}
 
 var _ mcruntime.Provider = &KubeconfigProvider{}
 
@@ -121,6 +138,17 @@ type KubeconfigProviderOptions struct {
 	// registration that names namespaces gets one more option appended, which
 	// restricts that cluster's cache to them.
 	ClusterOptions []cluster.Option
+
+	// AssignedNamespaceKinds are the kinds whose informers on an engaged
+	// cluster also cover the namespaces its registration lists under
+	// AssignedNamespacesDataKey. Empty leaves every cache off them.
+	//
+	// controller-runtime resolves each listed kind through the target's REST
+	// mapper when the cache is built, so a registration that names assigned
+	// namespaces only engages a target that serves every listed kind. A target
+	// without one fails the engagement with "failed to determine if ... is
+	// namespaced", which is logged and retried with backoff.
+	AssignedNamespaceKinds []client.Object
 }
 
 // KubeconfigProvider engages one target cluster per registration Secret in the
@@ -249,22 +277,50 @@ func (p *KubeconfigProvider) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	rawNamespaces, scoped := secret.Data[NamespacesDataKey]
-	var namespaces []string
-	if scoped {
-		if namespaces, err = parseNamespaces(rawNamespaces); err != nil {
-			logger.Error(err, "registration Secret carries an unusable namespaces key, not engaging",
-				"key", NamespacesDataKey)
-			p.removeCluster(clusterName)
-			return ctrl.Result{}, nil
-		}
+	// A refused scope disengages the cluster like a lost kubeconfig does.
+	refuse := func(err error, msg string, keysAndValues ...any) (ctrl.Result, error) {
+		logger.Error(err, msg, keysAndValues...)
+		p.removeCluster(clusterName)
+		return ctrl.Result{}, nil
 	}
 
-	// The namespaces value is part of the hash, so narrowing or widening the
-	// scope re-engages the cluster the same way rotating the kubeconfig does. A
+	placedKey := readScopeKey(secret, NamespacesDataKey)
+	assignedKey := readScopeKey(secret, AssignedNamespacesDataKey)
+	if assignedKey.present && !placedKey.present {
+		return refuse(nil, "registration Secret carries assignedNamespaces without namespaces, not engaging",
+			"key", AssignedNamespacesDataKey, "requires", NamespacesDataKey)
+	}
+
+	namespaces, err := placedKey.parse()
+	if err != nil {
+		return refuse(err, "registration Secret carries an unusable scope key, not engaging", "key", placedKey.name)
+	}
+	assigned, err := assignedKey.parse()
+	if err != nil {
+		return refuse(err, "registration Secret carries an unusable scope key, not engaging", "key", assignedKey.name)
+	}
+	// The access chart refuses the same overlap when it renders. On a
+	// registration it is a migration left half done: under namespaces, the
+	// namespace stays in every operator's cache for every kind, which is the
+	// failure the assignedNamespaces key exists to remove.
+	if both := inBoth(namespaces, assigned); len(both) > 0 {
+		return refuse(nil, "registration Secret lists a namespace under both namespaces and assignedNamespaces, "+
+			"not engaging", "namespaces", both)
+	}
+
+	// The scope values are part of the hash, so narrowing or widening a scope
+	// re-engages the cluster the same way rotating the kubeconfig does: a
 	// cache's namespaces are fixed when it is built, so there is no other way to
-	// apply the new scope than to build the cluster again.
-	hash := registrationHash(kubeconfigData, rawNamespaces, scoped)
+	// apply the new scope than to build the cluster again. The assignedNamespaces
+	// value only counts on a provider that lists kinds for it. Every other
+	// provider builds the same cache whatever the value says, and rebuilding it
+	// for an owner's namespace assigned or withdrawn would only leave the cluster
+	// unavailable until the new cache syncs.
+	hashed := []scopeKey{placedKey}
+	if len(p.opts.AssignedNamespaceKinds) > 0 {
+		hashed = append(hashed, assignedKey)
+	}
+	hash := registrationHash(kubeconfigData, hashed...)
 
 	if existing, engaged := p.getCluster(clusterName); engaged {
 		if existing.Hash == hash {
@@ -275,7 +331,7 @@ func (p *KubeconfigProvider) Reconcile(ctx context.Context, req ctrl.Request) (c
 		p.removeCluster(clusterName)
 	}
 
-	if err := p.createAndEngageCluster(ctx, clusterName, kubeconfigData, namespaces, hash, logger); err != nil {
+	if err := p.createAndEngageCluster(ctx, clusterName, kubeconfigData, namespaces, assigned, hash, logger); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -308,15 +364,15 @@ func (p *KubeconfigProvider) IndexField(ctx context.Context, obj client.Object, 
 	return nil
 }
 
-// parseNamespaces turns the raw namespaces value into the namespaces the
-// cluster's cache is restricted to. Every entry is trimmed, and an entry that
-// is not a DNS-1123 label cannot name a namespace, so the whole value is
-// refused rather than silently dropping the entry: dropping one would engage
-// the cluster with a scope narrower than the operator asked for, and the
-// missing namespace would surface much later as an unrelated cache error.
-func parseNamespaces(raw []byte) ([]string, error) {
+// parseNamespaces turns the raw value of the scope key named key into the
+// namespaces it lists. Every entry is trimmed, and an entry that is not a
+// DNS-1123 label cannot name a namespace, so the whole value is refused rather
+// than silently dropping the entry: dropping one would engage the cluster with
+// a scope narrower than the operator asked for, and the missing namespace would
+// surface much later as an unrelated cache error.
+func parseNamespaces(key string, raw []byte) ([]string, error) {
 	if strings.TrimSpace(string(raw)) == "" {
-		return nil, errors.New("namespaces key present but empty")
+		return nil, fmt.Errorf("%s key present but empty", key)
 	}
 
 	entries := strings.Split(string(raw), ",")
@@ -324,38 +380,108 @@ func parseNamespaces(raw []byte) ([]string, error) {
 	for _, entry := range entries {
 		namespace := strings.TrimSpace(entry)
 		if msgs := validation.IsDNS1123Label(namespace); len(msgs) > 0 {
-			return nil, fmt.Errorf("namespaces entry %q is not a valid namespace name: %s",
-				namespace, strings.Join(msgs, "; "))
+			return nil, fmt.Errorf("%s entry %q is not a valid namespace name: %s",
+				key, namespace, strings.Join(msgs, "; "))
 		}
 		namespaces = append(namespaces, namespace)
 	}
 	return namespaces, nil
 }
 
+// scopeKey is one optional scope key of a registration Secret. present tells a
+// Secret without the key from one whose value happens to be empty.
+type scopeKey struct {
+	name    string
+	raw     []byte
+	present bool
+}
+
+// readScopeKey reads the scope key named name off a registration Secret.
+func readScopeKey(secret *corev1.Secret, name string) scopeKey {
+	raw, present := secret.Data[name]
+	return scopeKey{name: name, raw: raw, present: present}
+}
+
+// parse returns the namespaces the key lists, and none for an absent key.
+func (k scopeKey) parse() ([]string, error) {
+	if !k.present {
+		return nil, nil
+	}
+	return parseNamespaces(k.name, k.raw)
+}
+
+// inBoth returns the namespaces of assigned that placed lists as well, each
+// once, in the order assigned lists them. It runs on every reconcile of a
+// registration, before the hash comparison, and neither list is capped or
+// deduplicated, so it has to stay linear in their length.
+func inBoth(placed, assigned []string) []string {
+	inPlaced := make(map[string]bool, len(placed))
+	for _, namespace := range placed {
+		inPlaced[namespace] = true
+	}
+	var both []string
+	for _, namespace := range assigned {
+		if inPlaced[namespace] {
+			both = append(both, namespace)
+			delete(inPlaced, namespace)
+		}
+	}
+	return both
+}
+
 // registrationHash fingerprints everything about a registration Secret that a
-// cluster has to be rebuilt for. scoped tells a registration without the
-// namespaces key from one whose value happens to be empty, so adding the key to
-// a cluster-wide registration re-engages it too.
-func registrationHash(kubeconfig, namespaces []byte, scoped bool) string {
+// cluster has to be rebuilt for. Each present key is hashed under its name, so
+// adding a key to a registration that had none re-engages it, and the same
+// value under the other key hashes apart.
+func registrationHash(kubeconfig []byte, keys ...scopeKey) string {
 	h := sha256.New()
 	_, _ = h.Write(kubeconfig)
-	if scoped {
-		_, _ = h.Write(namespacesHashSeparator)
-		_, _ = h.Write(namespaces)
+	for _, key := range keys {
+		if !key.present {
+			continue
+		}
+		_, _ = h.Write(hashFieldSeparator)
+		_, _ = h.Write([]byte(key.name))
+		_, _ = h.Write(hashFieldSeparator)
+		_, _ = h.Write(key.raw)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// namespaceScopedOption restricts a cluster's cache to namespaces, so its
-// informers issue namespaced LIST/WATCH calls.
-func namespaceScopedOption(namespaces []string) cluster.Option {
+// scopedCacheOption restricts a cluster's cache to the placed namespaces, so
+// its informers issue namespaced LIST/WATCH calls, and widens it for kinds alone
+// to the assigned namespaces as well. Every other kind stays off the assigned
+// namespaces, and a read there fails with "unknown namespace for the cache".
+func scopedCacheOption(placed, assigned []string, kinds []client.Object) cluster.Option {
 	return func(o *cluster.Options) {
-		scoped := make(map[string]cache.Config, len(namespaces))
-		for _, namespace := range namespaces {
-			scoped[namespace] = cache.Config{}
+		o.Cache.DefaultNamespaces = namespaceConfigs(placed)
+		if len(assigned) == 0 || len(kinds) == 0 {
+			return
 		}
-		o.Cache.DefaultNamespaces = scoped
+
+		// Cloned, so a map one of the static options set is never written to:
+		// it may be shared by every cluster the provider builds.
+		byObject := maps.Clone(o.Cache.ByObject)
+		if byObject == nil {
+			byObject = make(map[client.Object]cache.ByObject, len(kinds))
+		}
+		for _, kind := range kinds {
+			byObject[kind] = cache.ByObject{Namespaces: namespaceConfigs(placed, assigned)}
+		}
+		o.Cache.ByObject = byObject
 	}
+}
+
+// namespaceConfigs returns the cache's per-namespace map for every namespace in
+// lists.
+func namespaceConfigs(lists ...[]string) map[string]cache.Config {
+	configs := map[string]cache.Config{}
+	for _, namespaces := range lists {
+		for _, namespace := range namespaces {
+			configs[namespace] = cache.Config{}
+		}
+	}
+	return configs
 }
 
 // refuseUnsupportedCredentials rejects a registration kubeconfig that has this
@@ -428,11 +554,12 @@ func refuseUnsupportedCredentials(clusterName mcruntime.ClusterName, kubeconfig 
 // createAndEngageCluster builds the cluster from the kubeconfig, starts it,
 // waits for its cache, and hands it to the manager. namespaces is empty for a
 // registration without the namespaces key, and the cache stays cluster-wide.
+// assigned is empty for a registration without the assignedNamespaces key.
 func (p *KubeconfigProvider) createAndEngageCluster(
 	ctx context.Context,
 	clusterName mcruntime.ClusterName,
 	kubeconfig []byte,
-	namespaces []string,
+	namespaces, assigned []string,
 	hash string,
 	logger logr.Logger,
 ) error {
@@ -449,10 +576,12 @@ func (p *KubeconfigProvider) createAndEngageCluster(
 	// DefaultNamespaces one of the static options happened to set.
 	opts := p.opts.ClusterOptions
 	if len(namespaces) > 0 {
-		opts = append(append([]cluster.Option{}, opts...), namespaceScopedOption(namespaces))
+		opts = append(append([]cluster.Option{}, opts...),
+			scopedCacheOption(namespaces, assigned, p.opts.AssignedNamespaceKinds))
 	}
 
-	logger.Info("building the cluster from its registration Secret", "namespaces", namespaces)
+	logger.Info("building the cluster from its registration Secret",
+		"namespaces", namespaces, "assignedNamespaces", assigned)
 	cl, err := cluster.New(restConfig, opts...)
 	if err != nil {
 		return fmt.Errorf("building cluster %q: %w", clusterName, err)
