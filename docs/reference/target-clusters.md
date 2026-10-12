@@ -80,9 +80,10 @@ type: Opaque
 data:
   kubeconfig: <base64-encoded kubeconfig>
   namespaces: <base64-encoded comma-separated namespace list>
+  assignedNamespaces: <base64-encoded comma-separated namespace list>
 ```
 
-Three parts of that Secret are contractual, and a fourth is optional:
+Three parts of that Secret are contractual, and two more are optional:
 
 | Part | Value |
 | --- | --- |
@@ -90,14 +91,18 @@ Three parts of that Secret are contractual, and a fourth is optional:
 | Label | `sigs.k8s.io/multicluster-runtime-kubeconfig`, with the string value `"true"`. The label being present is not enough; any other value leaves the Secret unregistered |
 | Data key | `kubeconfig` |
 | Data key `namespaces` | Optional. A comma-separated list of DNS-1123 namespace names. Present, it restricts the engaged cluster's cache to exactly those namespaces: every LIST and WATCH the operator issues there is namespaced, so namespace-scoped RBAC on the target is enough for every namespaced kind. Absent, the cluster is cached cluster-wide |
+| Data key `assignedNamespaces` | Optional, and only beside `namespaces`. A comma-separated list of DNS-1123 names of the namespaces a ControlPlane assigns to service owners on this cluster. The c5c3-operator's cache covers them for the seven order kinds and Secrets; every other operator's cache stays off them, so the access chart's assigned Roles are all those namespaces need. An empty value, an entry that is no label, a namespace also under `namespaces`, or the key without `namespaces` refuses the engagement |
 
 Any number of clusters may be registered at the same time, and each CR resolves
 its own by name. Writing a new kubeconfig into the Secret reconnects: the
-provider hashes the kubeconfig together with the `namespaces` value, sees the
-hash change, drops the existing connection, and engages a fresh one. Editing
-either one re-engages the cluster, which is also the only way its cache's
-namespaces change, since they are fixed when the cache is built. Deleting the
-Secret deregisters the cluster.
+provider hashes the kubeconfig together with the `namespaces` and
+`assignedNamespaces` values, sees the hash change, drops the existing
+connection, and engages a fresh one. Editing any of the three re-engages the
+cluster, which is also the only way its cache's namespaces change, since they
+are fixed when the cache is built. Only the c5c3-operator hashes the
+`assignedNamespaces` value: every other operator builds the same cache whatever
+it says, so an edit of that key alone leaves their engaged cluster as it is.
+Deleting the Secret deregisters the cluster.
 
 Engagement is asynchronous. A CR created moments before its cluster engages
 reports `TargetClusterUnavailable` briefly and heals on the next requeue.
@@ -593,6 +598,22 @@ that carries an entry which is not a DNS-1123 label, refuses the engagement: the
 provider logs the reason and builds no cluster, so every CR naming it reports
 `TargetClusterUnavailable` the way an unregistered name does.
 
+The `assignedNamespaces` key names the namespaces a ControlPlane assigns to
+service owners on the cluster (see [Assigned namespaces](#assigned-namespaces)).
+It extends the scoped cache of the c5c3-operator alone, and only for the kinds
+that operator reads in an owner's namespace: the seven order kinds and Secrets.
+Every other informer of the c5c3-operator, and every informer of every other
+operator, stays on the `namespaces` set, so a service operator's Deployment or
+ConfigMap informer never lists a namespace where the access chart's assigned
+Role grants nothing. The key is checked like `namespaces`, and two more cases
+refuse the engagement: the key without `namespaces` beside it, because the
+assigned scope extends a placed one, and a namespace listed under both keys,
+because under `namespaces` it stays in every operator's cache for every kind.
+controller-runtime resolves each of those eight kinds on the target when it
+builds the cache, so with the key present the c5c3-operator engages only a
+target that serves the seven order CRDs. On any other target it logs
+`failed to determine if ... is namespaced` and retries with backoff.
+
 A CR whose namespace is outside a declared set fails differently, on a cluster
 that engaged perfectly well. Its first cached read on the target returns
 controller-runtime's `unknown namespace for the cache`, which the credential
@@ -634,16 +655,25 @@ the target cluster. The chart serves that with three things:
   may not also be in `values.namespaces`: a namespace is either placed into or
   assigned. The Role of every placed namespace grants read on the seven order
   kinds as well, because the operator's order watches list every namespace of
-  the registration. For the same reason the Role of an assigned namespace
-  grants read (`get`, `list` and `watch`) on the mariadb-operator's
-  `databases`: the operator watches the Database CRs of its MariaDBDatabase
-  orders there too. A MariaDBDatabase's Database CR lives beside the MariaDB,
-  in a placed namespace whose Role already grants the writes on `databases`.
+  the registration. The Role of an assigned namespace grants read (`get`,
+  `list` and `watch`) on the mariadb-operator's `databases` for a registration
+  that still lists the assigned namespaces under `namespaces`: the operator
+  then watches the Database CRs of its MariaDBDatabase orders there too. A
+  MariaDBDatabase's Database CR lives beside the MariaDB, in a placed
+  namespace whose Role already grants the writes on `databases`.
   A Database CR in an assigned namespace wakes no order, whatever its labels:
   the operator maps one back to its order only from the namespace a
   ControlPlane places Keystone in, on the cluster it places it on.
-- The registration Secret's `namespaces` key lists every assigned namespace
-  beside the placed ones.
+- The registration Secret's `assignedNamespaces` key lists every assigned
+  namespace, and its `namespaces` key the placed ones. A registration written
+  before the second key existed, with the assigned namespaces under
+  `namespaces`, keeps working for the c5c3-operator and keeps failing the
+  engagement of every service operator, so move those namespaces to the second
+  key on such a cluster, in one edit that also removes them from `namespaces`.
+  Upgrade the c5c3-operator before the move: a c5c3-operator without the key
+  ignores it without a log line, its cache then leaves every assigned
+  namespace, and no order there is reconciled. A rollback of the c5c3-operator
+  past the key needs the namespaces moved back under `namespaces`.
 - The chart ships the CRDs of the order kinds in `crds/`:
   `c5c3.io_keystoneusers.yaml`, `c5c3.io_keystoneprojects.yaml`,
   `c5c3.io_keystoneroleassignments.yaml`,

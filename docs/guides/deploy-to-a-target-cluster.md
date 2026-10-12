@@ -127,7 +127,10 @@ Whatever you pass here has to equal the `namespaces` key of the registration
 Secret in [step 3](#_3-register-the-target-on-the-management-cluster). The
 operators scope their caches on this cluster to that key, so a namespace granted
 here but missing there is never watched, and one listed there but missing here
-answers every read with forbidden.
+answers every read with forbidden. A namespace assigned to a service owner, the
+chart's `assignedNamespaces`, goes into the Secret's `assignedNamespaces` key
+instead, which this guide does not use; see
+[Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
 
 ### 2. Assemble the registration kubeconfig
 
@@ -196,7 +199,10 @@ cache on this cluster to that one namespace, which is what makes the chart's
 namespaced Roles enough: a cluster-wide LIST would be refused, and an informer
 whose LIST is refused never syncs. Leaving the key out engages the cluster with
 a cluster-wide cache, which then needs cluster-wide read on every watched kind,
-`secrets` included.
+`secrets` included. A namespace assigned to a service owner goes into a second
+key, `assignedNamespaces`, never into this one: a service operator's informers
+span every namespace of the `namespaces` key, and the assigned Role grants them
+nothing there.
 
 Engagement is asynchronous, and the operator logs the cluster it built:
 
