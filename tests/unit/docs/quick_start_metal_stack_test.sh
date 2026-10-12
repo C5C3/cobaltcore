@@ -18,10 +18,10 @@
 #   5. the page holds the deploy and teardown commands, the guide
 #      conventions list it as a devstack with the same deploy command, and
 #      the guide scaffold prints that command as the bring-up, refuses a
-#      second `--opt-in WITH_NFS=true` and a kind-only `--opt-in
+#      second `--opt-in WITH_CEPH=true` and a kind-only `--opt-in
 #      WITH_REGISTRY_CACHE=true`, and accepts `--opt-in WITH_CHAOS_MESH=true`,
 #      `--opt-in WITH_DIZZY=true`, `--opt-in WITH_PROMETHEUS=true` and
-#      `--opt-in WITH_CEPH=true`, which the lab overlay carries; of the
+#      `--opt-in WITH_NFS=true`, which the lab overlay carries; of the
 #      WITH_* flags hack/deploy-infra.sh declares, it refuses exactly those
 #      its preflight_external_cluster refuses
 #   6. Part 2 links no anchor of Part 1 and defines `nodes` and `zone` itself
@@ -29,7 +29,7 @@
 #      once on the page and not in
 #      docs/reference/infrastructure/infrastructure-manifests.md, which links
 #      the page; a line counts when the command is not followed by "-", so the
-#      apply of controlplane/ leaves out the apply of controlplane-ceph/
+#      apply of controlplane/ leaves out the apply of controlplane-nfs/
 #   8. Proven by names the date of a lab run and no chainsaw suite
 #   9. Part 1, Step 4 holds no instruction to repeat the apply: deploy-infra
 #      returns only once the cluster admits it
@@ -37,10 +37,10 @@
 #      Part 1, Step 5 follows a create wait, the Hypervisor loop of Part 2,
 #      Step 3 follows the waits for the operator's release and its CRD, and
 #      the node port check of Part 2, Step 1 follows the reservation of the
-#      migration ports and its rollout, and the volume create, the attach, the
-#      detach and the backup create of Part 2, and the ten volume, backup and
-#      attach commands of Part 3, occur once each and in this order, each
-#      followed on the next line by a `timeout` wait for the status it reaches
+#      migration ports and its rollout, and the eight volume, backup and
+#      attach commands of Part 2 and the four of Part 3 occur once each and in
+#      this order, each followed on the next line by a `timeout` wait for the
+#      status it reaches
 #  11. no line of the page holds a hand step the operators took over: the
 #      highAvailability patch, the custom trait (its annotation and its
 #      create) and the host discovery, nor any other file under tests/
@@ -72,29 +72,28 @@
 #  19. Part 2, Step 1 annotates the nodes with an empty
 #      nova.openstack.cloud.sap/aggregates after the lifecycle label, and
 #      Step 4 shows the hosts of the zone's aggregate
-#  20. Part 3, Step 1 checks the lab, then, in a bash block of its own, deletes
-#      the NFS backup lab-bk and applies the Ceph variant behind a `&&` on the
-#      wait until Cinder lists no backup in any project, before the waits for
-#      the RBD entries; Step 5 chains with `&&`, in the condition of one `if`,
-#      the checks that the two Deployment generations, the key generation and
+#  20. Part 2, Step 11 chains with `&&`, in the condition of one `if`, the
+#      checks that the two Deployment generations, the key generation and
 #      the key were read, the patch of the CephClient cinder, the waits for a
 #      new, non-empty generation of both Deployments, their rollouts and the
 #      check that the key changed; its then branch waits for every node's new
 #      digest, echoing a pod whose wait timed out and an empty pod list, and
-#      its else branch echoes the failure; then Step 5 live-migrates lab-0 and
-#      attaches lab-rbd to lab-1, in this order;
-#      Part 3 sets host, domain and libvirt_pod itself and links no #cp-
-#      anchor
+#      its else branch echoes the failure; then Step 11 live-migrates lab-0
+#      and attaches lab-vol to lab-1, in this order. Part 3, Step 1 applies
+#      the NFS variant behind a `&&` on the checks of the NFS server and the
+#      CSIDriver, in one bash block, before the waits for the NFS entry and
+#      the backup Deployment's share; Part 3 sets host, domain and
+#      libvirt_pod itself and links no #cp- anchor
 #  21. the Caveats link the Lab Ceph of
 #      docs/reference/infrastructure/infrastructure-manifests.md#lab-ceph
-#  22. Part 3 names the backends of the JSON patch of
-#      deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml: the RBD
-#      volume backend with its volume Deployment, pool, libvirt secret UUID
-#      and key Secret, and the backup target with its pool and key Secret
-#  23. Part 3, Step 1 quotes the warning the format string of
-#      warnCinderBackupDriverSwitch in
-#      operators/c5c3/api/v1alpha1/controlplane_webhook.go prints for the
-#      switch from nfsbk (NFS) to cephbk (RBD)
+#  22. Parts 1 and 2 name the Ceph entries of
+#      deploy/lab/metal-stack/controlplane/controlplane-lab.yaml: the RBD
+#      volume backend with its volume Deployment, pool and libvirt secret UUID,
+#      and the backup target with its pool; Part 3 names the NFS volume
+#      backend of the JSON patch of
+#      deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml with its
+#      volume Deployment and its share, and the page names no backend that
+#      neither file declares
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page. Check 22
 # is counted as SKIP when yq is not on PATH.
@@ -121,8 +120,8 @@ GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
-CEPH_VARIANT="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane-ceph/kustomization.yaml"
-CONTROLPLANE_WEBHOOK="$PROJECT_ROOT/operators/c5c3/api/v1alpha1/controlplane_webhook.go"
+LAB_CONTROLPLANE="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+NFS_VARIANT="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -273,7 +272,7 @@ test_sections() {
 
   echo "Test: the twenty-two step headings carry their anchors"
   local want got
-  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup 1:ceph-apply 2:ceph-volume 3:ceph-migrate 4:ceph-backup 5:ceph-rotate"
+  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup 11:hv-rotate 1:nfs-apply 2:nfs-volume 3:nfs-migrate 4:nfs-backup"
   got="$(headings '###' | cut -d: -f2- | grep '^### Step ' |
     sed -E 's/^### Step ([0-9]+):.*\{#([a-z-]+)\}[[:space:]]*$/\1:\2/' | tr '\n' ' ' | sed 's/ $//' || true)"
   assert_eq "step numbers and anchors" "$want" "$got"
@@ -357,7 +356,7 @@ test_references_resolve() {
 # --- Test 5: bring-up, teardown and the devstack row ---
 test_devstack() {
   echo "Test: the page names its bring-up and teardown, and the conventions list it"
-  local deploy='EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra'
+  local deploy='EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra'
   assert_file_contains_fixed "the page holds the deploy command" "$QUICK_START_DOC" "$deploy"
   assert_file_contains_fixed "the page holds the teardown command" "$QUICK_START_DOC" \
     'EXTERNAL_CLUSTER=true make teardown-infra'
@@ -366,36 +365,23 @@ test_devstack() {
   assert_not_empty "guide-conventions.md has a devstack row with the page and its deploy command" "$row"
 
   # The scaffold prints the skeleton to stdout and writes no file.
-  local out rc
+  local out rc opt_in
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack 2>&1)"
   assert_not_empty "the guide scaffold prints the deploy command as the bring-up" \
     "$(grep -xF -- "$deploy" <<<"$out" || true)"
-  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_NFS=true 2>&1)"
-  rc=$?
-  assert_eq "the guide scaffold refuses a second WITH_NFS=true" "2" "$rc"
-  assert_contains "the refusal says the bring-up sets it" "$out" \
-    "WITH_NFS=true is already part of the metal-stack bring-up"
-  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_CHAOS_MESH=true 2>&1)"
-  rc=$?
-  assert_eq "the guide scaffold accepts WITH_CHAOS_MESH=true, which the lab overlay carries" "0" "$rc"
-  assert_not_empty "and adds it to the bring-up" \
-    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra' <<<"$out" || true)"
-  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_DIZZY=true 2>&1)"
-  rc=$?
-  assert_eq "the guide scaffold accepts WITH_DIZZY=true, which the lab overlay carries" "0" "$rc"
-  assert_not_empty "and adds it to the bring-up" \
-    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra' <<<"$out" || true)"
-  out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_PROMETHEUS=true 2>&1)"
-  rc=$?
-  assert_eq "the guide scaffold accepts WITH_PROMETHEUS=true, which the lab overlay carries" "0" "$rc"
-  assert_not_empty "and adds it to the bring-up" \
-    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_PROMETHEUS=true make deploy-infra' <<<"$out" || true)"
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_CEPH=true 2>&1)"
   rc=$?
-  assert_eq "the guide scaffold accepts WITH_CEPH=true, which the lab overlay carries" "0" "$rc"
-  assert_eq "and adds it to the metal-stack bring-up" \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra' \
-    "$(grep -xF -- 'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra' <<<"$out" || true)"
+  assert_eq "the guide scaffold refuses a second WITH_CEPH=true" "2" "$rc"
+  assert_contains "the refusal says the bring-up sets it" "$out" \
+    "WITH_CEPH=true is already part of the metal-stack bring-up"
+  for opt_in in WITH_NFS WITH_CHAOS_MESH WITH_DIZZY WITH_PROMETHEUS; do
+    out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in "${opt_in}=true" 2>&1)"
+    rc=$?
+    assert_eq "the guide scaffold accepts ${opt_in}=true, which the lab overlay carries" "0" "$rc"
+    assert_eq "and adds it to the metal-stack bring-up" \
+      "EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true ${opt_in}=true make deploy-infra" \
+      "$(grep -xF -- "EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true ${opt_in}=true make deploy-infra" <<<"$out" || true)"
+  done
   out="$(bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in WITH_REGISTRY_CACHE=true 2>&1)"
   rc=$?
   assert_eq "the guide scaffold still refuses the kind-only WITH_REGISTRY_CACHE=true" "2" "$rc"
@@ -403,14 +389,14 @@ test_devstack() {
 
   # The scaffold keeps its own copy of the refused opt-ins. Every WITH_* flag
   # hack/deploy-infra.sh declares goes through it: refused if and only if
-  # preflight_external_cluster refuses it. WITH_NFS is part of the bring-up and
+  # preflight_external_cluster refuses it. WITH_CEPH is part of the bring-up and
   # WITH_CONTROLPLANE the devstack, so neither is an opt-in of the page.
   local refused flag expected
   refused="$(awk '/^preflight_external_cluster\(\)/,/; do$/' "$DEPLOY_INFRA_SH" |
     grep -oE '"WITH_[A-Z0-9_]+\|' | tr -d '"|' | paste -sd' ' -)"
   assert_not_empty "preflight_external_cluster refuses kind-only opt-ins" "$refused"
   for flag in $(grep -oE '^WITH_[A-Z0-9_]+=' "$DEPLOY_INFRA_SH" | tr -d = | LC_ALL=C sort -u); do
-    case "$flag" in WITH_NFS | WITH_CONTROLPLANE) continue ;; esac
+    case "$flag" in WITH_CEPH | WITH_CONTROLPLANE) continue ;; esac
     expected=0
     if [[ " $refused " == *" $flag "* ]]; then expected=2; fi
     bash "$GUIDE_SCAFFOLD" probe --devstack quick-start-metal-stack --opt-in "${flag}=true" >/dev/null 2>&1
@@ -528,20 +514,18 @@ test_blocks_pass_on_first_run() {
     'openstack server add volume lab-0 lab-vol|in-use'
     'openstack server remove volume lab-0 lab-vol|available'
     'openstack volume backup create --name lab-bk lab-vol|available'
-  )
-  local part3=(
-    'openstack volume create --type ceph --size 1 lab-rbd|available'
-    'openstack server add volume lab-0 lab-rbd|in-use'
-    'openstack server remove volume lab-0 lab-rbd|available'
-    'openstack volume backup create --name lab-ceph-bk lab-rbd|available'
-    'openstack volume backup create --name lab-nfs-bk lab-vol|available'
-    'openstack volume create --type ceph --size 1 lab-restored|available'
-    'openstack volume backup restore --force lab-ceph-bk lab-restored|available'
+    'openstack volume create --size 1 lab-restored|available'
+    'openstack volume backup restore --force lab-bk lab-restored|available'
     'openstack server add volume lab-0 lab-restored|in-use'
-    'openstack server add volume lab-1 lab-rbd|in-use'
     'openstack server add volume lab-1 lab-vol|in-use'
   )
-  assert_once_in_order "the volume create, the attach, the detach and the backup create" "$page" \
+  local part3=(
+    'openstack volume create --type nfs --size 1 lab-nfs|available'
+    'openstack server add volume lab-0 lab-nfs|in-use'
+    'openstack server remove volume lab-0 lab-nfs|available'
+    'openstack volume backup create --name lab-nfs-bk lab-nfs|available'
+  )
+  assert_once_in_order "the volume, backup and attach commands of Part 2" "$page" \
     "${part2[@]%|*}"
   assert_once_in_order "the volume, backup and attach commands of Part 3" "$page" \
     "${part3[@]%|*}"
@@ -756,48 +740,27 @@ test_part_2_keeps_the_zone_aggregate() {
     'openstack aggregate show "${zone}" -c hosts -f value'
 }
 
-# --- Test 20: the order of Part 3 ---
-# The Ceph variant replaces nfsbk, after which Cinder can neither restore nor
-# delete a backup nfsbk wrote. A pasted block runs every line, so Step 1
-# checks the lab in a block of its own, and the next block chains the apply
-# to a wait that ends once Cinder lists no backup in any project: a failing
-# list keeps it waiting, and a timeout skips the apply. The rotation of Step 5
-# chains its reads, the patch, the waits, the rollouts and a check that the
-# key changed in the condition of one `if`, because a skipped patch or a
-# failed wait leaves the old key, whose digest every node logged at its start
-# and the digest loop would match. Its waits end only on a new generation they
-# read, because an empty read differs from every generation. It waits for both
-# Deployments and every node's libvirt secret before the migration and the
-# attach that prove the new key. The digest loop echoes a pod whose wait timed
-# out and an empty pod list, because the migration fails on a node whose
-# libvirt secret still holds the old key. Part 2 moved lab-0, so Part 3 reads
-# host, domain and libvirt_pod itself.
+# --- Test 20: the rotation of Part 2 and the order of Part 3 ---
+# The rotation of Part 2, Step 11 chains its reads, the patch, the waits, the
+# rollouts and a check that the key changed in the condition of one `if`,
+# because a skipped patch or a failed wait leaves the old key, whose digest
+# every node logged at its start and the digest loop would match. Its waits
+# end only on a new generation they read, because an empty read differs from
+# every generation. It waits for both Deployments and every node's libvirt
+# secret before the migration and the attach that prove the new key. The
+# digest loop echoes a pod whose wait timed out and an empty pod list,
+# because the migration fails on a node whose libvirt secret still holds the
+# old key. The NFS variant of Part 3 puts nfs1 into the backup pod as well,
+# whose inline volume waits for a share nothing serves on a lab without the
+# NFS stack, so a pasted block applies it only behind the checks of the NFS
+# server and the CSIDriver. Part 2 moved lab-0 and left domain on lab-1, so
+# Part 3 reads host, domain and libvirt_pod itself.
 # shellcheck disable=SC2016 # the page's literal text, not expanded here
-test_part_3_order() {
-  echo "Test: Part 3 deletes lab-bk before the apply and rotates before the migration"
+test_rotation_and_part_3_order() {
+  echo "Test: Part 2 rotates before the migration, and Part 3 checks the NFS stack before the apply"
   local body step block
-  body="$(section '^## Part 3: ')"
-  assert_not_empty "the page holds Part 3" "$body"
-  step="$(step_section '^## Part 3: ' 1)"
-  assert_not_empty "Part 3 holds Step 1" "$step"
-  assert_once_in_order "the checks, the backup delete, the apply and the create waits" "$step" \
-    'kubectl get secret -n openstack ceph-client-cinder ceph-client-cinder-backup' \
-    'openstack volume backup delete lab-bk' \
-    'kubectl apply -k deploy/lab/metal-stack/controlplane-ceph' \
-    'kubectl wait --for=create cinderbackend/ceph1'
-  block="$(awk '
-    /^```bash[[:space:]]*$/ { inside = 1; text = ""; next }
-    inside && /^```/ { if (text ~ /backup delete lab-bk/) { printf "%s", text; exit } inside = 0; next }
-    inside { text = text $0 "\n" }
-  ' <<<"$step")"
-  assert_eq "the backup delete, the wait for no backup and the apply chained to it form one block" \
-    "$(printf '%s\n' \
-      'openstack volume backup delete lab-bk' \
-      "timeout 300 bash -c 'until out=\$(openstack volume backup list --all-projects -f value -c ID) && [ -z \"\${out}\" ]; do sleep 2; done' &&" \
-      '  kubectl apply -k deploy/lab/metal-stack/controlplane-ceph')" \
-    "$block"
-  step="$(step_section '^## Part 3: ' 5)"
-  assert_not_empty "Part 3 holds Step 5" "$step"
+  step="$(step_section '^## Part 2: ' 11)"
+  assert_not_empty "Part 2 holds Step 11" "$step"
   assert_once_in_order "the guarded patch, the generation waits, the rollout, the key check, the digest wait, the failure, the migration and the attach" "$step" \
     'old_key=$(kubectl -n openstack get secret ceph-client-cinder' \
     'if [ -n "${volume_generation}" ] && [ -n "${backup_generation}" ] && [ -n "${key_generation}" ] && [ -n "${old_key}" ] &&' \
@@ -809,7 +772,7 @@ test_part_3_order() {
     "grep -qF '(sha256 \${digest})'" \
     "echo 'a read, the patch, a wait or the key check failed: repeat the block'" \
     'openstack server migrate --live-migration --wait lab-0' \
-    'openstack server add volume lab-1 lab-rbd'
+    'openstack server add volume lab-1 lab-vol'
   # Each line of the rotation's if statement, prefixed with its part: c for
   # the condition up to "; then", t for the then branch, e for the else branch.
   local parts condition then_branch
@@ -821,7 +784,7 @@ test_part_3_order() {
     part == "c" && /; then$/ { part = "t" }
   ' <<<"$step")"
   condition="$(sed -n 's/^c://p' <<<"$parts")"
-  assert_not_empty "Step 5 holds the rotation's if statement" "$condition"
+  assert_not_empty "Step 11 holds the rotation's if statement" "$condition"
   assert_eq "every line of the rotation's condition ends in '&&', a line continuation or '; then'" "" \
     "$(grep -vE '(&&|\\|; then)$' <<<"$condition" || true)"
   then_branch="$(sed -n 's/^t://p' <<<"$parts")"
@@ -835,6 +798,28 @@ test_part_3_order() {
     "[ -n \"\${listed}\" ] || echo 'no libvirt pod was listed: repeat the loop before the migration'"
   assert_contains "the else branch names the failure" "$(sed -n 's/^e://p' <<<"$parts")" \
     "echo 'a read, the patch, a wait or the key check failed: repeat the block'"
+
+  body="$(section '^## Part 3: ')"
+  assert_not_empty "the page holds Part 3" "$body"
+  step="$(step_section '^## Part 3: ' 1)"
+  assert_not_empty "Part 3 holds Step 1" "$step"
+  assert_once_in_order "the checks, the apply and the waits" "$step" \
+    'kubectl -n openstack rollout status deployment/nfs-server' \
+    'kubectl apply -k deploy/lab/metal-stack/controlplane-nfs' \
+    'kubectl wait --for=create cinderbackend/nfs1' \
+    '--for=jsonpath='"'"'{.spec.template.spec.volumes[?(@.name=="share-nfs1")].csi.driver}'"'"'=nfs.csi.k8s.io' \
+    'kubectl -n openstack rollout status deploy/controlplane-cinder-backup'
+  block="$(awk '
+    /^```bash[[:space:]]*$/ { inside = 1; text = ""; next }
+    inside && /^```/ { if (text ~ /controlplane-nfs/) { printf "%s", text; exit } inside = 0; next }
+    inside { text = text $0 "\n" }
+  ' <<<"$step")"
+  assert_eq "the checks of the NFS stack and the apply chained to them form one block" \
+    "$(printf '%s\n' \
+      'kubectl -n openstack rollout status deployment/nfs-server --timeout=60s &&' \
+      '  kubectl get csidriver nfs.csi.k8s.io &&' \
+      '  kubectl apply -k deploy/lab/metal-stack/controlplane-nfs')" \
+    "$block"
   assert_not_empty "Part 3 defines host=" "$(grep -E '^host=' <<<"$body" || true)"
   assert_not_empty "Part 3 defines domain=" "$(grep -E '^domain=' <<<"$body" || true)"
   assert_not_empty "Part 3 defines libvirt_pod=" "$(grep -E '^libvirt_pod=' <<<"$body" || true)"
@@ -851,72 +836,67 @@ test_caveats_name_the_lab_ceph() {
     'infrastructure-manifests.md#lab-ceph'
 }
 
-# --- Test 22: Part 3 names the variant's backends ---
-# Part 3 repeats the names and values of the Ceph variant's JSON patch, so a
-# rename in the variant fails here instead of leaving the page on a backend
-# that no longer exists.
+# --- Test 22: the page names the lab's backends ---
+# Parts 1 and 2 repeat the names and values of the Ceph entries of the lab
+# ControlPlane, and Part 3 those of the NFS variant's JSON patch, so a rename
+# there fails here instead of leaving the page on a backend that no longer
+# exists. A name the page uses for a backend that neither file declares
+# fails too.
 
-# variant_field <patch> <path> <expression>
-# <expression> on the value of the RBD operation of the JSON patch <patch>
-# whose path is <path>, empty when there is none.
-variant_field() {
-  yq -r ".[] | select(.path == \"$2\" and .value.type == \"RBD\") | .value.$3 // \"\"" - <<<"$1" 2>/dev/null
+# lab_field <entry> <expression>
+# <expression> on the Cinder volume backend or backup target named <entry> of
+# the lab ControlPlane, empty when there is none.
+lab_field() {
+  yq -r "select(.kind == \"ControlPlane\") | .spec.services.cinder | (.backends // []) + [.backupBackend] | .[] | select(.name == \"$1\") | .$2 // \"\"" \
+    "$LAB_CONTROLPLANE" 2>/dev/null
 }
 
-test_part_3_names_the_variant() {
-  echo "Test: Part 3 names the backends of the Ceph variant"
+test_page_names_the_backends() {
+  echo "Test: the page names the backends of the lab ControlPlane and its NFS variant"
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (9 checks skipped)"
-    SKIP=$((SKIP + 9))
+    echo "  SKIP: yq not installed (13 checks skipped)"
+    SKIP=$((SKIP + 13))
     return
   fi
-  local patch name pool uuid secret backup backup_pool backup_secret value body
-  patch="$(yq -r '.patches[] | select(.target.kind == "ControlPlane") | .patch // ""' "$CEPH_VARIANT" 2>/dev/null)"
-  name="$(variant_field "$patch" /spec/services/cinder/backends/- name)"
-  pool="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.pool)"
-  uuid="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.secretUUID)"
-  secret="$(variant_field "$patch" /spec/services/cinder/backends/- rbd.keySecretRef.name)"
-  backup="$(variant_field "$patch" /spec/services/cinder/backupBackend name)"
-  backup_pool="$(variant_field "$patch" /spec/services/cinder/backupBackend rbd.pool)"
-  backup_secret="$(variant_field "$patch" /spec/services/cinder/backupBackend rbd.keySecretRef.name)"
-  for value in "$name" "$pool" "$uuid" "$secret" "$backup" "$backup_pool" "$backup_secret"; do
-    if [[ -z "$value" ]]; then
-      echo "  FAIL: could not read the RBD backends from ${CEPH_VARIANT#"$PROJECT_ROOT"/}"
-      FAIL=$((FAIL + 9))
+  local name pool uuid secret backup backup_pool backup_secret value body patch nfs nfs_share
+  name="$(yq -r 'select(.kind == "ControlPlane") | .spec.services.cinder.backends[0].name // ""' "$LAB_CONTROLPLANE" 2>/dev/null)"
+  pool="$(lab_field "$name" rbd.pool)"
+  uuid="$(lab_field "$name" rbd.secretUUID)"
+  secret="$(lab_field "$name" rbd.keySecretRef.name)"
+  backup="$(yq -r 'select(.kind == "ControlPlane") | .spec.services.cinder.backupBackend.name // ""' "$LAB_CONTROLPLANE" 2>/dev/null)"
+  backup_pool="$(lab_field "$backup" rbd.pool)"
+  backup_secret="$(lab_field "$backup" rbd.keySecretRef.name)"
+  patch="$(yq -r '.patches[] | select(.target.kind == "ControlPlane") | .patch // ""' "$NFS_VARIANT" 2>/dev/null)"
+  nfs="$(yq -r '.[] | select(.path == "/spec/services/cinder/backends/-" and .value.type == "NFS") | .value.name // ""' - <<<"$patch" 2>/dev/null)"
+  nfs_share="$(yq -r '.[] | select(.path == "/spec/services/cinder/backends/-" and .value.type == "NFS") | .value.nfs.server + ":" + .value.nfs.path' - <<<"$patch" 2>/dev/null)"
+  for value in "$name" "$pool" "$uuid" "$secret" "$backup" "$backup_pool" "$backup_secret" "$nfs" "$nfs_share"; do
+    if [[ -z "$value" || "$value" == ":" ]]; then
+      echo "  FAIL: could not read the backends from ${LAB_CONTROLPLANE#"$PROJECT_ROOT"/} and ${NFS_VARIANT#"$PROJECT_ROOT"/}"
+      FAIL=$((FAIL + 13))
       return
     fi
   done
+  body="$(section '^## Part 1: '; section '^## Part 2: ')"
+  assert_contains "Parts 1 and 2 wait for a pool of $name" "$body" "@$name#"
+  assert_contains "Parts 1 and 2 name the volume service host of $name" "$body" "controlplane-cinder@$name"
+  assert_contains "Parts 1 and 2 roll the volume Deployment of $name" "$body" "controlplane-cinder-volume-$name"
+  assert_contains "Parts 1 and 2 read the image in the pool $pool" "$body" "\"$pool/volume-"
+  assert_contains "Parts 1 and 2 list the pool $backup_pool" "$body" "rbd ls $backup_pool"
+  assert_contains "Parts 1 and 2 name the libvirt secret $uuid" "$body" "uuid='$uuid'"
+  assert_contains "Parts 1 and 2 name the backup target $backup" "$body" "\`$backup\`"
+  assert_contains "Parts 1 and 2 read the Secret $secret" "$body" "get secret ceph-client-cinder"
   body="$(section '^## Part 3: ')"
-  assert_contains "Part 3 creates the volume type on $name" "$body" "volume_backend_name=$name"
-  assert_contains "Part 3 waits for the CinderBackend $name" "$body" "cinderbackend/$name"
-  assert_contains "Part 3 waits for the CinderBackupBackend $backup" "$body" "cinderbackupbackend/$backup"
-  assert_contains "Part 3 waits for a pool of $name" "$body" "@$name#"
-  assert_contains "Part 3 rolls the volume Deployment of $name" "$body" "controlplane-cinder-volume-$name"
-  assert_contains "Part 3 reads the image in the pool $pool" "$body" "\"$pool/volume-"
-  assert_contains "Part 3 lists the pool $backup_pool" "$body" "rbd ls $backup_pool"
-  assert_contains "Part 3 names the libvirt secret $uuid" "$body" "uuid='$uuid'"
-  assert_contains "Part 3 reads the Secrets $secret and $backup_secret" "$body" \
-    "get secret -n openstack $secret $backup_secret"
-}
-
-# --- Test 23: Part 3 quotes the webhook's warning ---
-# The warning comes from a format string the webhook joins from several
-# literals; %q quotes a name, which printf writes as "%s".
-test_part_3_quotes_the_webhook_warning() {
-  echo "Test: Part 3, Step 1 quotes the warning of the backup target switch"
-  local format warning
-  format="$(awk '
-    index($0, "\"spec.services.cinder.backupBackend switches from") { on = 1 }
-    on { print; if ($0 !~ /\+[[:space:]]*$/) exit }
-  ' "$CONTROLPLANE_WEBHOOK" | grep -oE '"([^"\\]|\\.)*"' | sed 's/^"//; s/"$//' | tr -d '\n' | sed 's/%q/"%s"/g')"
-  if [[ -z "$format" ]]; then
-    echo "  FAIL: could not read the warning's format string from ${CONTROLPLANE_WEBHOOK#"$PROJECT_ROOT"/}"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-  # shellcheck disable=SC2059 # the format is the webhook's
-  warning="$(printf "$format" nfsbk NFS cephbk RBD NFS nfsbk)"
-  assert_contains "Step 1 quotes the webhook's warning" "$(step_section '^## Part 3: ' 1)" "Warning: $warning"
+  assert_contains "Part 3 creates the volume type on $nfs" "$body" "volume_backend_name=$nfs"
+  assert_contains "Part 3 waits for the CinderBackend $nfs" "$body" "cinderbackend/$nfs"
+  assert_contains "Part 3 reads the volume Deployment of $nfs" "$body" "controlplane-cinder-volume-$nfs"
+  assert_contains "Part 3 names the share $nfs_share" "$body" "\`${nfs_share}\`"
+  # Backends the page names by their volume Deployment, their CinderBackend or
+  # a host of the volume service; each must be one of the two files'.
+  local named
+  named="$(grep -oE 'controlplane-cinder-volume-[a-z0-9-]+|cinderbackend/[a-z0-9-]+|controlplane-cinder@[a-z0-9-]+' "$QUICK_START_DOC" |
+    sed -E 's/^(controlplane-cinder-volume-|cinderbackend\/|controlplane-cinder@)//' | sort -u | paste -sd' ' -)"
+  assert_eq "the page names the volume backends $name and $nfs alone" \
+    "$(printf '%s\n' "$name" "$nfs" | sort -u | paste -sd' ' -)" "$named"
 }
 
 test_frontmatter
@@ -938,10 +918,9 @@ test_caveats_name_the_fault_runs
 test_step_3_names_the_platform_autoscalers
 test_step_3_names_the_lab_prometheus
 test_part_2_keeps_the_zone_aggregate
-test_part_3_order
+test_rotation_and_part_3_order
 test_caveats_name_the_lab_ceph
-test_part_3_names_the_variant
-test_part_3_quotes_the_webhook_warning
+test_page_names_the_backends
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -48,8 +48,8 @@
 <rect x="1308" y="770" width="244" height="40" rx="20" fill="#A3262E"/>
 <text x="1430" y="798.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NovaCompute lab</text>
 <text x="952" y="843.2" font-size="20" font-weight="400" fill="#55606E">Runs on: a Gardener shoot on metal-stack, two or more workers</text>
-<text x="952" y="869.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true</text>
-<text x="952" y="895.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra</text>
+<text x="952" y="869.2" font-size="20" font-weight="400" fill="#55606E">Bring-up: EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true</text>
+<text x="952" y="895.2" font-size="20" font-weight="400" fill="#55606E">WITH_CEPH=true make deploy-infra</text>
 <text x="952" y="921.2" font-size="20" font-weight="400" fill="#55606E">Deploys: Part 1, the control plane with Cinder, behind a port-forward</text>
 <text x="952" y="947.2" font-size="20" font-weight="400" fill="#55606E">Part 2, every worker as a KVM hypervisor and OVN chassis</text>
 <text x="952" y="973.2" font-size="20" font-weight="400" fill="#55606E">Ends with: a server on every worker, a volume, a live migration,</text>

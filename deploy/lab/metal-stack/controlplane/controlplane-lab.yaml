@@ -4,13 +4,14 @@
 
 # The ControlPlane of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
 # Step 4): the data of the first `# controlplane.yaml` block, plus the
-# spec.services.cinder of the page's optional `# block-storage.yaml` fragment,
-# plus two keys the lab adds: spec.services.neutron.extraConfig and
-# spec.services.nova.hypervisorOperator. The comments above those two keys and
-# above spec.sizing give the reasons.
+# spec.services.cinder of the page's optional `# block-storage.yaml` fragment
+# with the lab's Ceph backends in place of its NFS ones, plus two keys the lab
+# adds: spec.services.neutron.extraConfig and
+# spec.services.nova.hypervisorOperator. The comments above those two keys,
+# above the Cinder backends and above spec.sizing give the reasons.
 # tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file,
 # minus cinder and the two keys, and the first block drift apart, and when
-# cinder and the fragment do.
+# cinder without its backends and the fragment without its own do.
 #
 # The file is not named controlplane.yaml: .gitignore ignores that basename in
 # every directory.
@@ -117,22 +118,63 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: cinder.127-0-0-1.nip.io
-      # The two shares of the NFS server in deploy/lab/metal-stack/nfs/, which
-      # WITH_NFS=true deploys: /volumes holds the volumes, /backups the
-      # backups. The paths are NFSv4 share strings below the server's /exports
-      # pseudo-root, so /volumes, never /exports/volumes.
+      # The lab Ceph of deploy/lab/metal-stack/ceph/, which WITH_CEPH=true
+      # deploys: the RBD volume backend ceph1 on the pool volumes and the RBD
+      # backup target cephbk on the pool backups. Where the values come from:
+      #   - pool volumes and backups: the CephBlockPools of
+      #     ../ceph/cluster/pools.yaml
+      #   - user cinder and cinder-backup: the CephClients of
+      #     ../ceph/cluster/clients.yaml
+      #   - keySecretRef ceph-client-cinder and ceph-client-cinder-backup: the
+      #     targets of the ExternalSecrets of ../ceph/cluster/keys-pull.yaml,
+      #     each with the one key userKey
+      #   - monitors: the Service Rook gives the first monitor in the
+      #     CephCluster's namespace rook-ceph; ../ceph/cluster/cluster.yaml runs
+      #     one (mon.count 1), so it is rook-ceph-mon-a.
+      #   - secretUUID: the libvirt secret that ceph-secret.sh of
+      #     ../hypervisor/libvirt-configmap.yaml defines on every hypervisor.
+      #     The backup entry carries none, because no hypervisor attaches a
+      #     backup.
+      #   - networks: the podNetwork and serviceNetwork of forge and newforge,
+      #     read from the ConfigMap kube-system/shoot-info on 2026-10-04 and
+      #     2026-10-11. Another shoot writes its own two from there.
+      # clusterName stays unset: the satellite CRDs default it to ceph, and
+      # the ControlPlane field has no default on purpose.
+      #
+      # The networks open nothing on the lab: the projected Cinder runs
+      # without a NetworkPolicy. With one, they would open the Ceph ports to
+      # every pod and Service address of the shoot, which is where Rook's
+      # daemons answer.
+      #
+      # ../controlplane-nfs adds the NFS volume backend nfs1 beside ceph1, for
+      # a lab deployed with WITH_NFS=true as well.
       backends:
-        - name: nfs1
-          type: NFS
-          nfs:
-            server: nfs-server.openstack.svc.cluster.local
-            path: /volumes
+        - name: ceph1
+          type: RBD
+          rbd:
+            pool: volumes
+            user: cinder
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder
+            secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
       backupBackend:
-        name: nfsbk
-        type: NFS
-        nfs:
-          server: nfs-server.openstack.svc.cluster.local
-          path: /backups
+        name: cephbk
+        type: RBD
+        rbd:
+          pool: backups
+          user: cinder-backup
+          monitors:
+            - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+          networks:
+            - 10.240.0.0/13
+            - 10.248.0.0/18
+          keySecretRef:
+            name: ceph-client-cinder-backup
     nova:
       # Both compute catalog rows append /v2.1 to this endpoint.
       publicEndpoint: https://nova.127-0-0-1.nip.io:8443

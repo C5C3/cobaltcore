@@ -387,10 +387,11 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # and sets this. An overlay may also carry a controlplane/ kustomization, which
 # this script never applies and the WITH_CONTROLPLANE=true completion hint
 # names. Preflight renders it to check that its one ControlPlane is
-# openstack/CONTROLPLANE_NAME and, unless WITH_NFS=true, puts no Cinder backend
-# on the in-cluster NFS server nfs-server.openstack; without WITH_NFS=true
-# Step 1 also checks the cluster for the NFS CSI driver the other NFS backends
-# mount. An overlay may carry an nfs/ kustomization too, which Step 3 applies
+# openstack/CONTROLPLANE_NAME, unless WITH_NFS=true puts no Cinder backend on
+# the in-cluster NFS server nfs-server.openstack, and unless WITH_CEPH=true
+# puts no Cinder backend or backup target on a monitor of the lab Ceph in
+# rook-ceph; without WITH_NFS=true Step 1 also checks the cluster for the NFS
+# CSI driver the other NFS backends mount. An overlay may carry an nfs/ kustomization too, which Step 3 applies
 # under WITH_NFS=true in place of deploy/kind/nfs. It has to render the
 # Deployment nfs-server and the DaemonSet nfs-client-modules in openstack and
 # the HelmRelease csi-driver-nfs in kube-system, the three names this script
@@ -1636,8 +1637,10 @@ preflight_checks() {
 # an overlay whose by-hand
 # controlplane/ does not render exactly one ControlPlane,
 # openstack/CONTROLPLANE_NAME, or, without WITH_NFS=true, one with a Cinder
-# backend on the in-cluster NFS server, then a kubeconfig context whose API
-# server does not answer, cheapest first and each before anything is applied.
+# backend on the in-cluster NFS server, or, without WITH_CEPH=true, one with a
+# Cinder RBD entry on a monitor of the lab Ceph, then a kubeconfig context
+# whose API server does not answer, cheapest first and each before anything
+# is applied.
 # The refusals are checked in the order below so the message names the flag the
 # caller set: WITH_VPA=true has already folded into WITH_METRICS_SERVER=true at
 # the top of the script. The flags are read by indirect expansion (${!flag})
@@ -1751,6 +1754,27 @@ preflight_external_cluster() {
       fi
       if [[ -n "${nfs_backends}" ]]; then
         log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${nfs_backends} on the in-cluster NFS server nfs-server.openstack, which only WITH_NFS=true deploys; rerun with WITH_NFS=true."
+        exit 1
+      fi
+    fi
+    # The same holds for an RBD entry, volume backend or backup target, on a
+    # monitor of the lab Ceph: Rook names each monitor's Service
+    # rook-ceph-mon-<letter> in the CephCluster's namespace, rook-ceph, and
+    # only WITH_CEPH=true deploys that Ceph and hands the users' keys to
+    # openstack. Without it the entry waits for its key Secret and the
+    # ControlPlane never becomes Ready. The names are the monitor's in every
+    # form that resolves, in any case and with the root's trailing dot; an
+    # entry on another Ceph, reached by another name or by address, needs no
+    # WITH_CEPH=true.
+    if [[ "${WITH_CEPH}" != "true" ]]; then
+      local ceph_backends
+      if ! ceph_backends="$(kubectl kustomize "${OVERLAY_ROOT}/controlplane" |
+        yq -N -r 'select(.kind == "ControlPlane") | .spec.services.cinder | (.backends // []) + [.backupBackend] | map(select((.rbd.monitors // []) | any_c(test("(?i)^rook-ceph-mon-[a-z]+[.]rook-ceph([.]svc([.]cluster[.]local[.]?)?)?$"))) | .name) | join(" ")')"; then
+        log "ERROR: cannot render ${OVERLAY_ROOT}/controlplane (the error is above)."
+        exit 1
+      fi
+      if [[ -n "${ceph_backends}" ]]; then
+        log "ERROR: ${OVERLAY_ROOT}/controlplane puts the Cinder backends ${ceph_backends} on the lab Ceph in rook-ceph, which only WITH_CEPH=true deploys; rerun with WITH_CEPH=true."
         exit 1
       fi
     fi
