@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The NFS variant of the lab's ControlPlane: the OVNCentral and the
+# ControlPlane of ../controlplane, with Cinder's NFS volume backend nfs1 on the
+# share /volumes of the lab NFS server beside ceph1. Part 3, Step 1 of the
+# quick start applies it over the ControlPlane that Part 1, Step 4 applied with
+# `kubectl apply -k`:
+#
+#   kubectl apply -k deploy/lab/metal-stack/controlplane-nfs
+#
+# hack/deploy-infra.sh neither applies nor reads this directory.
+#
+# It needs a lab deployed with WITH_NFS=true as well. Without the Deployment
+# nfs-server in openstack and the CSIDriver nfs.csi.k8s.io, the volume service
+# of nfs1 never starts, and neither does the backup pod, which mounts the
+# export of every NFS volume backend to read the volumes it backs up. The
+# ControlPlane then does not turn Ready again.
+#
+# The backups stay on cephbk: the Ceph backup driver reads an NFS volume
+# through the export the backup pod mounts and writes it to the pool backups
+# as a full copy.
+#
+# The share path is an NFSv4 share string below the server's /exports
+# pseudo-root, so /volumes, never /exports/volumes. nfs1 is the volume backend
+# of the `# block-storage.yaml` fragment of docs/quick-start-controlplane.md,
+# which runs the same NFS server on kind.
+#
+# The way back is `kubectl apply -k deploy/lab/metal-stack/controlplane`: it
+# replaces the backends list with ceph1 alone. The c5c3-operator then prunes
+# nfs1, and the webhook warns that every volume left on it can no longer be
+# managed, so delete those volumes first, then the volume type nfs of Part 3,
+# Step 2, whose volume_backend_name names nfs1. The backups cephbk wrote of
+# them stay in Ceph.
+#
+# The patch is a JSON patch: a strategic-merge patch on a custom resource is a
+# JSON merge patch, which replaces the whole backends list and would have to
+# copy ceph1.
+#
+# Every resource is local to this directory or a base, so the render passes
+# kustomize's default `LoadRestrictionsRootOnly` check, and `kubectl apply -k`
+# works without `--load-restrictor`.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../controlplane
+
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+    patch: |-
+      - op: add
+        path: /spec/services/cinder/backends/-
+        value:
+          name: nfs1
+          type: NFS
+          nfs:
+            server: nfs-server.openstack.svc.cluster.local
+            path: /volumes

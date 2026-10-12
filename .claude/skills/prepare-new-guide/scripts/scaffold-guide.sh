@@ -112,13 +112,14 @@ case "${DEVSTACK}" in
   *) usage ;;
 esac
 
-# The metal-stack bring-up sets WITH_NFS=true itself, and
+# The metal-stack bring-up sets WITH_CEPH=true itself, and
 # preflight_external_cluster in hack/deploy-infra.sh refuses the kind-only
-# opt-ins under EXTERNAL_CLUSTER=true. WITH_CHAOS_MESH=true and WITH_DIZZY=true
-# are accepted: the lab overlay carries chaos-mesh/ and dizzy/.
+# opt-ins under EXTERNAL_CLUSTER=true. WITH_NFS=true, WITH_CHAOS_MESH=true and
+# WITH_DIZZY=true are accepted: the lab overlay carries nfs/, chaos-mesh/ and
+# dizzy/.
 if [[ "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
-  if [[ " ${OPT_INS} " == *" WITH_NFS=true "* ]]; then
-    echo "error: WITH_NFS=true is already part of the metal-stack bring-up" >&2
+  if [[ " ${OPT_INS} " == *" WITH_CEPH=true "* ]]; then
+    echo "error: WITH_CEPH=true is already part of the metal-stack bring-up" >&2
     exit 2
   fi
   for flag in WITH_VPA WITH_METRICS_SERVER WITH_REGISTRY_CACHE \
@@ -178,7 +179,7 @@ ${OPT_SUFFIX}make deploy-infra"
     ;;
   quick-start-metal-stack)
     DEVSTACK_LABEL="Quick Start (metal-stack)"
-    BRING_UP="EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true ${OPT_SUFFIX}make deploy-infra"
+    BRING_UP="EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true ${OPT_SUFFIX}make deploy-infra"
     ;;
 esac
 

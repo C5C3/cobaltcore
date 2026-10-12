@@ -17,8 +17,8 @@
 # three. It is the one field a shoot of another size changes; the topology
 # spread puts one OSD on each host while there are enough, and the deploy's
 # health wait reads it from the live CR. Three OSDs of 100Gi at two replicas
-# give about 150 GiB of pool capacity, the bound the 100Gi NFS claim of ../../nfs
-# puts on the lab's volumes and backups.
+# give about 150 GiB of pool capacity, which bounds the lab's Cinder volumes
+# and backups together.
 #
 # One monitor is a single point of failure the lab accepts, as it accepts the
 # single NFS server (D2). The claims name no storage class, so they bind to the

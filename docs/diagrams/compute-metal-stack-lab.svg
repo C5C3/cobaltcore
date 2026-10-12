@@ -32,7 +32,7 @@
 <text x="630" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">backing services</text>
 <text x="520" y="551.2" font-size="20" font-weight="400" fill="#55606E">MariaDB, Memcached, RabbitMQ, OpenBao, Garage</text>
 <rect x="1040" y="490" width="150" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1115" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">nfs-server</text>
+<text x="1115" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">lab Ceph</text>
 <text x="1040" y="551.2" font-size="20" font-weight="400" fill="#55606E">Cinder volumes and backups</text>
 <rect x="1320" y="490" width="250" height="34" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="1445" y="515.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">hypervisor operator</text>
@@ -105,7 +105,7 @@
 <polygon points="1120,994 1112.8,979 1127.2,979" fill="#2F8A57"/>
 <polyline points="80,994 80,604.5" fill="none" stroke="#2457C5" stroke-width="3"/>
 <polygon points="80,594 87.2,609 72.8,609" fill="#2457C5"/>
-<text x="96" y="631.2" font-size="20" font-weight="400" fill="#2B3440">bus, Southbound database, metadata API, NFS</text>
+<text x="96" y="631.2" font-size="20" font-weight="400" fill="#2B3440">bus, Southbound database, metadata API, Ceph</text>
 <polyline points="1500,994 1500,604.5" fill="none" stroke="#2457C5" stroke-width="3"/>
 <polygon points="1500,594 1507.2,609 1492.8,609" fill="#2457C5"/>
 <polyline points="594.5,1134 1049.5,1134" fill="none" stroke="#B38A00" stroke-width="3"/>

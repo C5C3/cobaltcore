@@ -5,7 +5,7 @@
 
 # Verify the lab ControlPlane under deploy/lab/metal-stack/controlplane, the
 # quick start's OVNCentral and ControlPlane applied by hand on the lab, and its
-# Ceph variant under deploy/lab/metal-stack/controlplane-ceph, which Part 3 of
+# NFS variant under deploy/lab/metal-stack/controlplane-nfs, which Part 3 of
 # the quick start applies:
 #   1. kustomization.yaml, ovncentral.yaml and controlplane-lab.yaml exist with
 #      SPDX headers, the kustomization lists exactly the two manifests, the
@@ -16,44 +16,48 @@
 #      controlplane, both in openstack.
 #   3. The rendered ControlPlane carries the lab settings: global_physnet_mtu
 #      as the string "1460", an empty hypervisorOperator map, the Minimal
-#      profile, the Cinder volume backend nfs1 on the share /volumes and the
-#      backup backend nfsbk on /backups of the lab NFS server, and no
-#      profileRef, metadataGateway or storageClassName.
+#      profile, and no profileRef, metadataGateway or storageClassName.
 #   4. The two files do not drift from docs/quick-start-controlplane.md:
 #      controlplane-lab.yaml without the cinder block and the two lab keys
-#      equals the first `# controlplane.yaml` block, its cinder block equals
-#      the `# block-storage.yaml` fragment, and ovncentral.yaml equals the
+#      equals the first `# controlplane.yaml` block, its cinder block without
+#      the backends and the backup target equals the `# block-storage.yaml`
+#      fragment without its own, and ovncentral.yaml equals the
 #      `# controlplane-ovn.yaml` block, compared without comments and with
 #      sorted keys.
 #   5. controlplane-lab.yaml states the tenant MTU 1402 the setting yields.
-#   6. The variant renders the same two objects in openstack, with the volume
-#      backends nfs1 and ceph1 in this order, nfs1 equal to the base's, and
-#      the RBD backup target cephbk: ceph1 on the pool volumes as the user
-#      cinder, cephbk on backups as cinder-backup, both with the monitor
-#      rook-ceph-mon-a.rook-ceph.svc.cluster.local alone, the networks
-#      10.240.0.0/13 and 10.248.0.0/18 and their key Secret, ceph1 with the
-#      libvirt secret UUID, and neither with an nfs block, a clusterName on
-#      ceph1 or a secretUUID on cephbk. Without the backends and the backup
-#      target the variant's render equals the base's.
-#   7. The variant's names come from the lab manifests it relies on: the
+#   6. The rendered ControlPlane puts Cinder on the lab Ceph: the volume
+#      backend ceph1 alone and the backup target cephbk, ceph1 on the pool
+#      volumes as the user cinder, cephbk on backups as cinder-backup, both
+#      with the monitor rook-ceph-mon-a.rook-ceph.svc.cluster.local alone, the
+#      networks 10.240.0.0/13 and 10.248.0.0/18 and their key Secret, ceph1
+#      with the libvirt secret UUID, and neither with an nfs block, a
+#      clusterName on ceph1 or a secretUUID on cephbk.
+#   7. The Ceph entries' names come from the lab manifests they rely on: the
 #      secretUUID is the uuid= of ceph-secret.sh in
 #      hypervisor/libvirt-configmap.yaml, each key Secret is the target of an
 #      ExternalSecret of ceph/cluster/keys-pull.yaml in the namespace of the
-#      ControlPlane of controlplane/controlplane-lab.yaml with the one key
-#      userKey, each pool a CephBlockPool of ceph/cluster/pools.yaml, each
-#      user a CephClient of ceph/cluster/clients.yaml, and each monitor
-#      rook-ceph-mon-a in the namespace of the CephCluster of
-#      ceph/cluster/cluster.yaml, which runs one mon.
+#      ControlPlane with the one key userKey, each pool a CephBlockPool of
+#      ceph/cluster/pools.yaml, each user a CephClient of
+#      ceph/cluster/clients.yaml, and each monitor rook-ceph-mon-a in the
+#      namespace of the CephCluster of ceph/cluster/cluster.yaml, which runs
+#      one mon.
+#   8. The variant renders the same two objects in openstack, with the volume
+#      backends ceph1 and nfs1 in this order, ceph1 equal to the base's, nfs1
+#      the volume backend of the `# block-storage.yaml` fragment, the share
+#      /volumes of nfs-server.openstack.svc.cluster.local, and the backup
+#      target equal to the base's. Without the backends the variant's render
+#      equals the base's.
 #
 # LAB_ROOT overrides the deploy/lab/metal-stack tree every check reads; the
 # .gitignore part of check 1 keeps its repository-relative paths.
-# QUICK_START_DOC overrides the page check 4 reads. Checks 2, 3 and 6 are
-# counted as SKIP when kustomize or yq is not on PATH, checks 4 and 7 when yq
-# is not, and the .gitignore part of check 1 outside a git work tree. A failing
-# kustomize build counts checks 2, 3 or 6 as FAIL and prints the build's error;
-# a page without a marker block fails check 4 instead of comparing against
-# empty input, and a lab file check 7 reads no value from fails that check
-# with the file's name instead of comparing two empty strings.
+# QUICK_START_DOC overrides the page checks 4 and 8 read. Checks 2, 3, 6 and
+# 8 are counted as SKIP when kustomize or yq is not on PATH, checks 4 and 7
+# when yq is not, and the .gitignore part of check 1 outside a git work tree.
+# A failing kustomize build counts checks 2, 3, 6 or 8 as FAIL and prints the
+# build's error; a page without a marker block fails check 4 or 8 instead of
+# comparing against empty input, and a lab file check 7 reads no value from
+# fails that check with the file's name instead of comparing two empty
+# strings.
 #
 # Usage: bash tests/unit/deploy/metal_stack_controlplane_test.sh
 
@@ -73,7 +77,7 @@ source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
 LAB_ROOT="${LAB_ROOT:-$PROJECT_ROOT/deploy/lab/metal-stack}"
 CONTROLPLANE_DIR="$LAB_ROOT/controlplane"
-CEPH_VARIANT_DIR="$LAB_ROOT/controlplane-ceph"
+NFS_VARIANT_DIR="$LAB_ROOT/controlplane-nfs"
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-controlplane.md}"
 
 RENDERED=""
@@ -108,11 +112,12 @@ normalize() {
   yq -N -P "${2:-.} | ... comments=\"\" | sort_keys(..)" "$1"
 }
 
-# compare_block <tmpdir> <marker> <lab file> [expression]
+# compare_block <tmpdir> <marker> <lab file> [expression] [block expression]
 # One check: <lab file> after <expression> equals the page block that starts
-# with <marker>, both normalized. A page without that block is a FAIL.
+# with <marker> after <block expression>, both normalized. A page without that
+# block is a FAIL.
 compare_block() {
-  local tmp="$1" marker="$2" file="$3" expression="${4:-.}" block
+  local tmp="$1" marker="$2" file="$3" expression="${4:-.}" block_expression="${5:-.}" block
   block="$tmp/$(basename "$file")"
   if ! extract_block "$marker" "$QUICK_START_DOC" >"$block" || [[ ! -s "$block" ]]; then
     echo "  FAIL: could not locate the '$marker' block in $QUICK_START_DOC"
@@ -120,7 +125,7 @@ compare_block() {
     return
   fi
   assert_eq "$(basename "$file") matches the '$marker' block" \
-    "$(normalize "$block")" "$(normalize "$file" "$expression")"
+    "$(normalize "$block" "$block_expression")" "$(normalize "$file" "$expression")"
 }
 
 # --- Test 1: the four files, their SPDX headers and the resources lists ---
@@ -128,7 +133,7 @@ test_files_spdx_resources_and_not_ignored() {
   echo "Test: the lab ControlPlane files carry SPDX headers, are listed and are not ignored"
 
   local files='controlplane/kustomization.yaml controlplane/ovncentral.yaml
-controlplane/controlplane-lab.yaml controlplane-ceph/kustomization.yaml'
+controlplane/controlplane-lab.yaml controlplane-nfs/kustomization.yaml'
   local name f
   for name in $files; do
     f="$LAB_ROOT/$name"
@@ -151,11 +156,11 @@ controlplane/controlplane-lab.yaml controlplane-ceph/kustomization.yaml'
     echo "  FAIL: no kustomization.yaml whose resources could be read"
     FAIL=$((FAIL + 1))
   fi
-  if [[ -f "$CEPH_VARIANT_DIR/kustomization.yaml" ]]; then
-    assert_eq "controlplane-ceph/kustomization.yaml lists ../controlplane alone" \
-      "../controlplane" "$(resource_entries "$CEPH_VARIANT_DIR/kustomization.yaml")"
+  if [[ -f "$NFS_VARIANT_DIR/kustomization.yaml" ]]; then
+    assert_eq "controlplane-nfs/kustomization.yaml lists ../controlplane alone" \
+      "../controlplane" "$(resource_entries "$NFS_VARIANT_DIR/kustomization.yaml")"
   else
-    echo "  FAIL: no controlplane-ceph/kustomization.yaml whose resources could be read"
+    echo "  FAIL: no controlplane-nfs/kustomization.yaml whose resources could be read"
     FAIL=$((FAIL + 1))
   fi
 
@@ -199,7 +204,7 @@ test_render_two_objects() {
 test_lab_settings() {
   echo "Test: the rendered ControlPlane carries the lab settings"
 
-  render "$CONTROLPLANE_DIR" 11 || return
+  render "$CONTROLPLANE_DIR" 8 || return
 
   local mtu='.spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu'
   assert_eq "neutron global_physnet_mtu is 1460" "1460" \
@@ -218,15 +223,6 @@ test_lab_settings() {
     "$(val ControlPlane controlplane '.spec.sizing | has("profileRef")')"
   assert_eq "no metadata gateway is published" "false" \
     "$(val ControlPlane controlplane '.spec.services.nova | has("metadataGateway")')"
-  local cinder='.spec.services.cinder' share='.nfs.server + ":" + .nfs.path'
-  assert_eq "cinder declares the volume backend nfs1 alone" "nfs1" \
-    "$(val ControlPlane controlplane "$cinder.backends | map(.name) | join(\" \")")"
-  assert_eq "nfs1 is the share /volumes of the lab NFS server" \
-    "nfs-server.openstack.svc.cluster.local:/volumes" \
-    "$(val ControlPlane controlplane "$cinder.backends[] | select(.name == \"nfs1\") | $share")"
-  assert_eq "the backup backend nfsbk is the share /backups of the lab NFS server" \
-    "nfs-server.openstack.svc.cluster.local:/backups" \
-    "$(val ControlPlane controlplane "$cinder.backupBackend | select(.name == \"nfsbk\") | $share")"
   assert_not_contains "no storage class is named, so the default class applies" \
     "$RENDERED" "storageClassName"
 }
@@ -253,7 +249,8 @@ test_no_drift_from_the_quick_start() {
   compare_block "$tmp" '# controlplane.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
     'del(.spec.services.neutron.extraConfig) | del(.spec.services.nova.hypervisorOperator) | del(.spec.services.cinder)'
   compare_block "$tmp" '# block-storage.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
-    '{"cinder": .spec.services.cinder}'
+    '{"cinder": .spec.services.cinder} | del(.cinder.backends) | del(.cinder.backupBackend)' \
+    'del(.cinder.backends) | del(.cinder.backupBackend)'
   compare_block "$tmp" '# controlplane-ovn.yaml' "$CONTROLPLANE_DIR/ovncentral.yaml"
 }
 
@@ -265,37 +262,17 @@ test_comment_states_the_tenant_mtu() {
     "$CONTROLPLANE_DIR/controlplane-lab.yaml" "1402"
 }
 
-# --- Test 6: the Ceph variant renders the base plus the RBD entries ---
-test_ceph_variant_renders_the_ceph_backends() {
-  echo "Test: kustomize build deploy/lab/metal-stack/controlplane-ceph"
+# --- Test 6: Cinder sits on the lab Ceph ---
+test_cinder_on_the_lab_ceph() {
+  echo "Test: the rendered ControlPlane puts Cinder on the lab Ceph"
 
-  local checks=24 base tmp
-  render "$CONTROLPLANE_DIR" "$checks" || return
-  base="$RENDERED"
-  render "$CEPH_VARIANT_DIR" "$checks" || return
-
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  printf '%s\n' "$base" >"$tmp/base.yaml"
-  printf '%s\n' "$RENDERED" >"$tmp/variant.yaml"
-
-  assert_eq "the render is ControlPlane/controlplane and OVNCentral/controlplane-ovn alone" \
-    "$(printf '%s\n' ControlPlane/controlplane OVNCentral/controlplane-ovn)" \
-    "$(printf '%s\n' "$RENDERED" |
-      yq -N -r 'select(. != null) | .kind + "/" + .metadata.name' - | sort)"
-  assert_eq "OVNCentral controlplane-ovn lives in openstack" "openstack" \
-    "$(val OVNCentral controlplane-ovn '.metadata.namespace')"
-  assert_eq "ControlPlane controlplane lives in openstack" "openstack" \
-    "$(val ControlPlane controlplane '.metadata.namespace')"
+  render "$CONTROLPLANE_DIR" 20 || return
 
   local cinder='.spec.services.cinder'
   local ceph1="$cinder.backends[] | select(.name == \"ceph1\")"
   local backup="$cinder.backupBackend"
-  assert_eq "cinder declares the volume backends nfs1 and ceph1, in this order" "nfs1 ceph1" \
+  assert_eq "cinder declares the volume backend ceph1 alone" "ceph1" \
     "$(val ControlPlane controlplane "$cinder.backends | map(.name) | join(\" \")")"
-  local nfs1="select(.kind == \"ControlPlane\") | $cinder.backends[] | select(.name == \"nfs1\")"
-  assert_eq "the variant's nfs1 equals the base's" \
-    "$(normalize "$tmp/base.yaml" "$nfs1")" "$(normalize "$tmp/variant.yaml" "$nfs1")"
 
   local monitor='rook-ceph-mon-a.rook-ceph.svc.cluster.local' networks='10.240.0.0/13 10.248.0.0/18'
   assert_eq "ceph1 is of type RBD" "RBD" "$(val ControlPlane controlplane "$ceph1 | .type")"
@@ -335,10 +312,7 @@ test_ceph_variant_renders_the_ceph_backends() {
     "$(val ControlPlane controlplane "$backup | has(\"nfs\")")"
   assert_eq "cephbk carries no secretUUID" "false" \
     "$(val ControlPlane controlplane "$backup.rbd | has(\"secretUUID\")")"
-
-  local rest="del($cinder.backends) | del($cinder.backupBackend)"
-  assert_eq "without the backends and the backup target the variant equals the base" \
-    "$(normalize "$tmp/base.yaml" "$rest")" "$(normalize "$tmp/variant.yaml" "$rest")"
+  assert_not_contains "no entry names the in-cluster NFS server" "$RENDERED" "nfs-server"
 }
 
 # readable <value> <what> <file>
@@ -352,16 +326,17 @@ readable() {
   return 1
 }
 
-# patch_field <patch> <entry> <expression>
-# <expression> on the value of the operation of the JSON patch <patch> whose
-# value is the entry named <entry>, empty when there is none.
-patch_field() {
-  yq -r ".[] | select(.value.name == \"$2\") | .value.$3 // \"\"" - <<<"$1" 2>/dev/null
+# entry_field <entry> <expression>
+# <expression> on the Cinder volume backend or backup target named <entry> of
+# controlplane-lab.yaml, empty when there is none.
+entry_field() {
+  yq -r "select(.kind == \"ControlPlane\") | .spec.services.cinder | (.backends // []) + [.backupBackend] | .[] | select(.name == \"$1\") | .$2 // \"\"" \
+    "$CONTROLPLANE_DIR/controlplane-lab.yaml" 2>/dev/null
 }
 
-# --- Test 7: the variant's names come from the lab manifests ---
-test_ceph_variant_names_match_the_lab() {
-  echo "Test: the Ceph variant names the lab's Ceph objects and libvirt secret"
+# --- Test 7: the Ceph entries' names come from the lab manifests ---
+test_ceph_entries_name_the_lab() {
+  echo "Test: the Ceph entries name the lab's Ceph objects and libvirt secret"
 
   if ! have yq; then
     echo "  SKIP: yq not installed (10 checks skipped)"
@@ -369,20 +344,18 @@ test_ceph_variant_names_match_the_lab() {
     return
   fi
 
-  local variant="$CEPH_VARIANT_DIR/kustomization.yaml"
+  local cp="$CONTROLPLANE_DIR/controlplane-lab.yaml"
   local configmap="$LAB_ROOT/hypervisor/libvirt-configmap.yaml"
   local keys="$LAB_ROOT/ceph/cluster/keys-pull.yaml"
   local pools="$LAB_ROOT/ceph/cluster/pools.yaml"
   local clients="$LAB_ROOT/ceph/cluster/clients.yaml"
   local cluster="$LAB_ROOT/ceph/cluster/cluster.yaml"
-  local patch
-  patch="$(yq -r '.patches[] | select(.target.kind == "ControlPlane") | .patch // ""' "$variant" 2>/dev/null)"
 
   local uuid lab_uuid
-  uuid="$(patch_field "$patch" ceph1 rbd.secretUUID)"
+  uuid="$(entry_field ceph1 rbd.secretUUID)"
   lab_uuid="$(yq -r 'select(.kind == "ConfigMap") | .data["ceph-secret.sh"] // ""' "$configmap" 2>/dev/null |
     sed -n 's/^[[:space:]]*uuid=//p' | head -n 1)"
-  if readable "$uuid" "ceph1's secretUUID" "$variant" &&
+  if readable "$uuid" "ceph1's secretUUID" "$cp" &&
     readable "$lab_uuid" "the uuid= line of ceph-secret.sh" "$configmap"; then
     assert_eq "ceph1's secretUUID is the uuid= of ceph-secret.sh in hypervisor/libvirt-configmap.yaml" \
       "$lab_uuid" "$uuid"
@@ -391,12 +364,11 @@ test_ceph_variant_names_match_the_lab() {
   # Cinder reads keySecretRef in the ControlPlane's namespace, and an
   # ExternalSecret writes its target into its own.
   local entry secret key_names pool pool_names user client_names controlplane_namespace
-  controlplane_namespace="$(yq -r 'select(.kind == "ControlPlane") | .metadata.namespace // ""' \
-    "$CONTROLPLANE_DIR/controlplane-lab.yaml" 2>/dev/null)"
+  controlplane_namespace="$(yq -r 'select(.kind == "ControlPlane") | .metadata.namespace // ""' "$cp" 2>/dev/null)"
   for entry in ceph1 cephbk; do
-    secret="$(patch_field "$patch" "$entry" rbd.keySecretRef.name)"
-    if readable "$secret" "${entry}'s keySecretRef" "$variant" &&
-      readable "$controlplane_namespace" "the ControlPlane's namespace" "$CONTROLPLANE_DIR/controlplane-lab.yaml"; then
+    secret="$(entry_field "$entry" rbd.keySecretRef.name)"
+    if readable "$secret" "${entry}'s keySecretRef" "$cp" &&
+      readable "$controlplane_namespace" "the ControlPlane's namespace" "$cp"; then
       key_names="$(yq -r "select(.kind == \"ExternalSecret\" and .metadata.namespace == \"$controlplane_namespace\" and .spec.target.name == \"$secret\") | .spec.data[].secretKey" \
         "$keys" 2>/dev/null)"
       if readable "$key_names" "the data keys of an ExternalSecret in $controlplane_namespace that writes $secret" "$keys"; then
@@ -409,8 +381,8 @@ test_ceph_variant_names_match_the_lab() {
   pool_names="$(yq -r 'select(.kind == "CephBlockPool") | .metadata.name // ""' "$pools" 2>/dev/null)"
   client_names="$(yq -r 'select(.kind == "CephClient") | .metadata.name // ""' "$clients" 2>/dev/null)"
   for entry in ceph1 cephbk; do
-    pool="$(patch_field "$patch" "$entry" rbd.pool)"
-    if readable "$pool" "${entry}'s pool" "$variant" &&
+    pool="$(entry_field "$entry" rbd.pool)"
+    if readable "$pool" "${entry}'s pool" "$cp" &&
       readable "$pool_names" "the CephBlockPool names" "$pools"; then
       if grep -qxF -- "$pool" <<<"$pool_names"; then
         echo "  PASS: ${entry}'s pool $pool is a CephBlockPool of ceph/cluster/pools.yaml"
@@ -420,8 +392,8 @@ test_ceph_variant_names_match_the_lab() {
         FAIL=$((FAIL + 1))
       fi
     fi
-    user="$(patch_field "$patch" "$entry" rbd.user)"
-    if readable "$user" "${entry}'s user" "$variant" &&
+    user="$(entry_field "$entry" rbd.user)"
+    if readable "$user" "${entry}'s user" "$cp" &&
       readable "$client_names" "the CephClient names" "$clients"; then
       if grep -qxF -- "$user" <<<"$client_names"; then
         echo "  PASS: ${entry}'s user $user is a CephClient of ceph/cluster/clients.yaml"
@@ -440,8 +412,8 @@ test_ceph_variant_names_match_the_lab() {
   namespace="$(yq -r 'select(.kind == "CephCluster") | .metadata.namespace // ""' "$cluster" 2>/dev/null)"
   mon_count="$(yq -r 'select(.kind == "CephCluster") | .spec.mon.count // ""' "$cluster" 2>/dev/null)"
   for entry in ceph1 cephbk; do
-    monitors="$(patch_field "$patch" "$entry" 'rbd.monitors | join(" ")')"
-    if readable "$monitors" "${entry}'s monitors" "$variant" &&
+    monitors="$(entry_field "$entry" 'rbd.monitors | join(" ")')"
+    if readable "$monitors" "${entry}'s monitors" "$cp" &&
       readable "$namespace" "the CephCluster's namespace" "$cluster"; then
       assert_eq "${entry}'s monitor is rook-ceph-mon-a in the CephCluster's namespace" \
         "rook-ceph-mon-a.${namespace}.svc.cluster.local" "$monitors"
@@ -452,14 +424,72 @@ test_ceph_variant_names_match_the_lab() {
   fi
 }
 
+# --- Test 8: the NFS variant renders the base plus nfs1 ---
+test_nfs_variant_renders_nfs1() {
+  echo "Test: kustomize build deploy/lab/metal-stack/controlplane-nfs"
+
+  local checks=10 base tmp
+  render "$CONTROLPLANE_DIR" "$checks" || return
+  base="$RENDERED"
+  render "$NFS_VARIANT_DIR" "$checks" || return
+
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  printf '%s\n' "$base" >"$tmp/base.yaml"
+  printf '%s\n' "$RENDERED" >"$tmp/variant.yaml"
+
+  assert_eq "the render is ControlPlane/controlplane and OVNCentral/controlplane-ovn alone" \
+    "$(printf '%s\n' ControlPlane/controlplane OVNCentral/controlplane-ovn)" \
+    "$(printf '%s\n' "$RENDERED" |
+      yq -N -r 'select(. != null) | .kind + "/" + .metadata.name' - | sort)"
+  assert_eq "OVNCentral controlplane-ovn lives in openstack" "openstack" \
+    "$(val OVNCentral controlplane-ovn '.metadata.namespace')"
+  assert_eq "ControlPlane controlplane lives in openstack" "openstack" \
+    "$(val ControlPlane controlplane '.metadata.namespace')"
+
+  local cinder='.spec.services.cinder'
+  local nfs1="$cinder.backends[] | select(.name == \"nfs1\")"
+  assert_eq "cinder declares the volume backends ceph1 and nfs1, in this order" "ceph1 nfs1" \
+    "$(val ControlPlane controlplane "$cinder.backends | map(.name) | join(\" \")")"
+  local ceph1="select(.kind == \"ControlPlane\") | $cinder.backends[] | select(.name == \"ceph1\")"
+  assert_eq "the variant's ceph1 equals the base's" \
+    "$(normalize "$tmp/base.yaml" "$ceph1")" "$(normalize "$tmp/variant.yaml" "$ceph1")"
+  local backup="select(.kind == \"ControlPlane\") | $cinder.backupBackend"
+  assert_eq "the variant's backup target equals the base's" \
+    "$(normalize "$tmp/base.yaml" "$backup")" "$(normalize "$tmp/variant.yaml" "$backup")"
+  assert_eq "nfs1 is the share /volumes of the lab NFS server" \
+    "NFS nfs-server.openstack.svc.cluster.local:/volumes" \
+    "$(val ControlPlane controlplane "$nfs1 | .type + \" \" + .nfs.server + \":\" + .nfs.path")"
+  assert_eq "nfs1 carries no rbd block" "false" \
+    "$(val ControlPlane controlplane "$nfs1 | has(\"rbd\")")"
+
+  # nfs1 is the volume backend of the ControlPlane quick start's fragment,
+  # which runs the same NFS server on kind.
+  if [[ ! -f "$QUICK_START_DOC" ]] ||
+    ! extract_block '# block-storage.yaml' "$QUICK_START_DOC" >"$tmp/block-storage.yaml" ||
+    [[ ! -s "$tmp/block-storage.yaml" ]]; then
+    echo "  FAIL: could not locate the '# block-storage.yaml' block in $QUICK_START_DOC"
+    FAIL=$((FAIL + 1))
+  else
+    assert_eq "nfs1 equals the volume backend nfs1 of the '# block-storage.yaml' block" \
+      "$(normalize "$tmp/block-storage.yaml" '.cinder.backends[] | select(.name == "nfs1")')" \
+      "$(normalize "$tmp/variant.yaml" "select(.kind == \"ControlPlane\") | $nfs1")"
+  fi
+
+  local rest="del($cinder.backends)"
+  assert_eq "without the backends the variant equals the base" \
+    "$(normalize "$tmp/base.yaml" "$rest")" "$(normalize "$tmp/variant.yaml" "$rest")"
+}
+
 # --- Run ---
 test_files_spdx_resources_and_not_ignored
 test_render_two_objects
 test_lab_settings
 test_no_drift_from_the_quick_start
 test_comment_states_the_tenant_mtu
-test_ceph_variant_renders_the_ceph_backends
-test_ceph_variant_names_match_the_lab
+test_cinder_on_the_lab_ceph
+test_ceph_entries_name_the_lab
+test_nfs_variant_renders_nfs1
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -4,14 +4,15 @@
 
 # The quick start's OVNCentral and ControlPlane for the metal-stack lab, applied
 # by hand once
-# `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra`
+# `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra`
 # has finished:
 #
 #   kubectl apply -k deploy/lab/metal-stack/controlplane
 #
 # hack/deploy-infra.sh names this directory in its completion hint and never
-# applies it. The base overlay creates the openstack namespace, so this one
-# declares none.
+# applies it; its preflight refuses the directory without WITH_CEPH=true,
+# because the ControlPlane's Cinder backends sit on the lab Ceph. The base
+# overlay creates the openstack namespace, so this one declares none.
 #
 # All resource references are local to this directory (no parent-directory
 # paths). It therefore renders under kustomize's default

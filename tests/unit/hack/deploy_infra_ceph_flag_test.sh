@@ -8,7 +8,9 @@
 #   1. WITH_CEPH defaults to false, true, false and yes pass through verbatim,
 #      and CEPH_TIMEOUT defaults to 900.
 #   2. The script carries seven literal "${WITH_CEPH}" == "true" gates (listed
-#      in test_gate_count), the banner names the flag, and the composite action
+#      in test_gate_count) and one "${WITH_CEPH}" != "true", the preflight
+#      refusal of an overlay ControlPlane on the lab Ceph, and compares the
+#      flag no other way; the banner names the flag, and the composite action
 #      setup-e2e-infra does not thread it (#1339 owns kind and CI).
 #   3. The apply of the overlay root's ceph/ follows the base apply and sits
 #      directly under a gate; rook-ceph is appended to the Phase 3 wait list
@@ -55,8 +57,9 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-# The literal gate the tests count and locate.
+# The literal gate the tests count and locate, and its one negation.
 GATE='"${WITH_CEPH}" == "true"'
+NEGATED_GATE='"${WITH_CEPH}" != "true"'
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -285,8 +288,17 @@ test_gate_count() {
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_CEPH\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
   assert_eq "deploy-infra.sh has exactly 7 strict WITH_CEPH==true gates" "7" "$gate_count"
+  # The preflight refuses an overlay ControlPlane on the lab Ceph unless the
+  # flag is exactly true, so WITH_CEPH=yes is refused there as it is ignored
+  # everywhere else.
+  local negated
+  negated="$(grep -nF -- "$NEGATED_GATE" "$DEPLOY_INFRA_SH" | cut -d: -f1 || true)"
+  assert_eq "deploy-infra.sh has one WITH_CEPH!=true gate" "1" "$(grep -c . <<<"$negated")"
+  assert_contains "it is the preflight refusal of a ControlPlane on the lab Ceph" \
+    "$(if [[ -n "$negated" ]]; then sed -n "${negated},\$p" "$DEPLOY_INFRA_SH" | head -n 12; fi)" \
+    'which only WITH_CEPH=true deploys; rerun with WITH_CEPH=true.'
   assert_eq "no gate compares WITH_CEPH any other way" "" \
-    "$(grep -E 'WITH_CEPH\}?"? *(!=|==|=~)' "$DEPLOY_INFRA_SH" | grep -vF -- "$GATE" || true)"
+    "$(grep -E 'WITH_CEPH\}?"? *(!=|==|=~)' "$DEPLOY_INFRA_SH" | grep -vF -- "$GATE" | grep -vF -- "$NEGATED_GATE" || true)"
 
   assert_file_contains "the banner has a Ceph storage stack line" "$DEPLOY_INFRA_SH" 'Ceph storage stack'
   assert_file_contains "the banner names the variable that turns it on" "$DEPLOY_INFRA_SH" 'set WITH_CEPH=true'
