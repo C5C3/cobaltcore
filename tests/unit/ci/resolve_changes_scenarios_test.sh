@@ -69,7 +69,7 @@ expect_all() {
 }
 
 # The jobs a cheap change must never schedule.
-EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster tempest"
+EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster tempest"
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
@@ -91,12 +91,14 @@ test_operator_change() {
   expect_all false $EXPENSIVE e2e-infra e2e-operator-upgrade actionlint noop
 }
 
-test_c5c3_change_runs_the_controlplane_trio() {
+test_c5c3_change_runs_the_controlplane_jobs() {
   # The c5c3 e2e leg installs only the sibling CRDs, so the ControlPlane jobs
-  # are where that operator is actually exercised.
+  # and the two-cluster orders job are where that operator is actually
+  # exercised.
   scenario "a c5c3 operator change" refs/heads/main FILTER_c5c3=true
   expect e2e-operators '{"operator":["c5c3"]}'
-  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling
+  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling \
+    e2e-orders-multicluster
   expect_all false e2e-chaos tempest e2e-multicluster e2e-prometheus
 }
 
@@ -164,7 +166,11 @@ test_special_suites_run_only_their_own_job() {
 
   scenario "a multicluster suite edit" refs/heads/main FILTER_tests_multicluster=true
   expect e2e-multicluster true
-  expect_all false e2e-chaos e2e-controlplane tempest
+  expect_all false e2e-chaos e2e-controlplane tempest e2e-orders-multicluster
+
+  scenario "an orders multicluster suite edit" refs/heads/main FILTER_tests_orders_multicluster=true
+  expect e2e-orders-multicluster true
+  expect_all false e2e-multicluster e2e-controlplane e2e-chaos tempest
 
   scenario "a prometheus suite edit" refs/heads/main FILTER_tests_prometheus=true
   expect e2e-prometheus true
@@ -345,10 +351,11 @@ test_ci_chaos_and_its_alias() {
 test_ci_controlplane_and_multicluster() {
   scenario "ci:controlplane on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:controlplane"]'
-  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling
+  expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling \
+    e2e-orders-multicluster
 
   scenario "ci:multicluster on its own" refs/heads/main PR_LABELS='["ci:multicluster"]'
-  expect e2e-multicluster true
+  expect_all true e2e-multicluster e2e-orders-multicluster
   expect has-e2e-operators false
 }
 
@@ -361,7 +368,7 @@ test_ci_measure_sizing_runs_the_measurement_jobs() {
     build-e2e-images
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
   expect_all false e2e-external-keystone e2e-autoscaling e2e-multicluster \
-    e2e-chaos e2e-prometheus has-e2e-operators noop
+    e2e-orders-multicluster e2e-chaos e2e-prometheus has-e2e-operators noop
 
   scenario "a ci:measure-sizing label event" refs/heads/main \
     FILTER_docs=true EVENT_ACTION=labeled EVENT_LABEL=ci:measure-sizing \
@@ -532,7 +539,8 @@ test_outputs_are_complete() {
   local expected key
   expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-    e2e-autoscaling e2e-multicluster e2e-operator-upgrade tempest measure-sizing actionlint changed-tempest
+    e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
+    actionlint changed-tempest
     changed-proxy build-e2e-images has-e2e-operators changed-operators
     changed-services tempest-services test-targets e2e-operators"
   for key in $expected; do
@@ -554,7 +562,7 @@ test_outputs_are_complete() {
 # Run
 # ---------------------------------------------------------------------------
 test_operator_change
-test_c5c3_change_runs_the_controlplane_trio
+test_c5c3_change_runs_the_controlplane_jobs
 test_keystone_change_runs_the_upgrade_suite
 test_shared_go_change
 test_suite_edit_runs_one_leg

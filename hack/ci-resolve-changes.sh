@@ -12,8 +12,9 @@
 # images it loads, the suite it runs, and the scripts it calls.
 #
 # Labels only ever ADD jobs. ci:full runs everything, ci:tempest / ci:chaos /
-# ci:controlplane / ci:multicluster switch on one area each. run-chaos is kept
-# as an alias of ci:chaos. ci:measure-sizing, the sixth label, adds the VPA
+# ci:controlplane / ci:multicluster switch on one area each; ci:multicluster
+# runs e2e-multicluster and e2e-orders-multicluster. run-chaos is kept as an
+# alias of ci:chaos. ci:measure-sizing, the sixth label, adds the VPA
 # sizing measurement to e2e-controlplane, e2e-controlplane-sso and every
 # Tempest leg.
 #
@@ -169,8 +170,8 @@ if [[ "${noop}" == "true" ]]; then
   emit noop true
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
-    e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-ovn-overlay \
-    e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
+    e2e-external-keystone e2e-autoscaling e2e-multicluster \
+    e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
     changed-proxy build-e2e-images actionlint; do
     emit "$out" false
   done
@@ -321,6 +322,14 @@ cond=false
 if filter_on tests_multicluster || has_label "ci:multicluster"; then cond=true; fi
 e2e_multicluster=$(or_force "$cond")
 
+# The two-cluster orders job. A c5c3 change schedules it with the ControlPlane
+# jobs, because its suite is where the delivery of an order to a target
+# cluster is exercised; its own suite, the access chart and ci:multicluster
+# schedule it too.
+cond="$cp_common"
+if filter_on tests_orders_multicluster || has_label "ci:multicluster"; then cond=true; fi
+e2e_orders_multicluster=$(or_force "$cond")
+
 # The multi-node OVN overlay job. Its inputs are the suite, the ovn-operator
 # and the OVN daemon image: the datapath it proves is built by the chassis
 # DaemonSets those two ship, and nothing else reaches it.
@@ -468,7 +477,8 @@ if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
   "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
   "$e2e_autoscaling" == "true" ||
-  "$e2e_multicluster" == "true" || "$e2e_ovn_overlay" == "true" ||
+  "$e2e_multicluster" == "true" || "$e2e_orders_multicluster" == "true" ||
+  "$e2e_ovn_overlay" == "true" ||
   "$e2e_nova_libvirt" == "true" ||
   "$e2e_operator_upgrade" == "true" || "$tempest" == "true" ]]; then
   build_e2e_images=true
@@ -493,6 +503,7 @@ emit e2e-controlplane-sso "$e2e_controlplane_sso"
 emit e2e-external-keystone "$e2e_external_keystone"
 emit e2e-autoscaling "$e2e_autoscaling"
 emit e2e-multicluster "$e2e_multicluster"
+emit e2e-orders-multicluster "$e2e_orders_multicluster"
 emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-nova-libvirt "$e2e_nova_libvirt"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"

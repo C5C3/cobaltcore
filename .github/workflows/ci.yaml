@@ -53,9 +53,10 @@ jobs:
   #
   # Six labels add to that, and never subtract: ci:full runs everything,
   # ci:tempest / ci:chaos / ci:controlplane / ci:multicluster switch on one area
-  # each, and ci:measure-sizing runs the VPA sizing measurement in
-  # e2e-controlplane, e2e-controlplane-sso and every Tempest leg. run-chaos is
-  # kept as an alias of ci:chaos.
+  # each (ci:multicluster runs e2e-multicluster and e2e-orders-multicluster),
+  # and ci:measure-sizing runs the VPA sizing measurement in e2e-controlplane,
+  # e2e-controlplane-sso and every Tempest leg. run-chaos is kept as an alias of
+  # ci:chaos.
   #
   # A change to the substrate every e2e job stands on (deploy/**, the infra
   # scripts, the shared composite actions) or to the workflow plumbing runs a
@@ -87,6 +88,7 @@ jobs:
       e2e-external-keystone: ${{ steps.result.outputs.e2e-external-keystone }}
       e2e-autoscaling: ${{ steps.result.outputs.e2e-autoscaling }}
       e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
+      e2e-orders-multicluster: ${{ steps.result.outputs.e2e-orders-multicluster }}
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-nova-libvirt: ${{ steps.result.outputs.e2e-nova-libvirt }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
@@ -294,6 +296,9 @@ jobs:
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
               - 'deploy/target-cluster/**'
+            tests_orders_multicluster:
+              - 'tests/e2e-orders-multicluster/**'
+              - 'deploy/target-cluster/**'
             tests_ovn_overlay:
               - 'tests/e2e-ovn-overlay/**'
             # The libvirt suite and the compute-node-pool fixtures it applies by
@@ -461,6 +466,7 @@ jobs:
           FILTER_tests_autoscaling: ${{ steps.filter.outputs.tests_autoscaling }}
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
+          FILTER_tests_orders_multicluster: ${{ steps.filter.outputs.tests_orders_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
           FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
@@ -3563,6 +3569,248 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
+  # The orders of a service owner whose namespace lives on a registered target
+  # cluster. A bare kind target carries the target-cluster-access chart and
+  # nothing else; the management cluster carries the lean stack the order path
+  # needs: the infrastructure, K-ORC, the keystone-operator and the
+  # c5c3-operator. tests/e2e-orders-multicluster/orders/ applies the seven
+  # order kinds on the target and uses every delivered Secret from a Job there.
+  # The registration carries the target's tenant namespaces under its
+  # assignedNamespaces key, so the keystone-operator engages the same target.
+  e2e-orders-multicluster:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-orders-multicluster == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    # About 25 minutes of bring-up (two kind clusters, the infrastructure,
+    # K-ORC and two operators) plus the suite's ceiling of 75 minutes (exec 45m
+    # + catch 5m + finally 15m + cleanup 10m), rounded up. To be confirmed
+    # against the first green run.
+    timeout-minutes: 110
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # One replica per operator, as e2e-controlplane runs them.
+      OPERATOR_REPLICAS: "1"
+      # The registration name the suite's plane references, and the kind
+      # cluster it belongs to.
+      TARGET_CLUSTER: cobaltcore-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The bare target takes no config and so no host port; the management
+      # cluster below takes hack/kind-config.yaml.
+      - name: Create target kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          cluster-name: ${{ env.TARGET_CLUSTER }}
+      # Created second, so the kubectl context lands on the management cluster.
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+      # The verify Jobs run on the target: keystone goes to both clusters,
+      # tempest to the target alone.
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name "$TARGET_CLUSTER"
+      # The ControlPlane switches of e2e-controlplane. The suite's plane brings
+      # its own bus, and the RabbitMQ operators are part of the base stack, so
+      # no WITH_MESSAGING.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          CONTROLPLANE_NAME: controlplane-keystone
+          WITH_CONTROLPLANE_CR: "false"
+      # The c5c3-operator watches the Keystone, Horizon, Glance and Placement
+      # kinds; without their CRDs its informers never sync. The e2e-operator
+      # (c5c3) leg installs the same set.
+      - name: Install CRDs watched by the c5c3-operator
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          kubectl apply -f operators/keystone/helm/keystone-operator/crds/
+          kubectl apply -f operators/horizon/helm/horizon-operator/crds/
+          kubectl apply -f operators/glance/helm/glance-operator/crds/
+          kubectl apply -f operators/placement/helm/placement-operator/crds/
+          hack/ci-deploy-korc.sh
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      # The chart creates no assigned namespace.
+      - name: Create the assigned namespaces on the target
+        run: |
+          kubectl --context "kind-$TARGET_CLUSTER" create namespace orders-tenant
+          kubectl --context "kind-$TARGET_CLUSTER" create namespace orders-outsider
+      # The default createNamespaces=true: the bare target has no openstack
+      # namespace.
+      - name: Install the target-cluster-access chart on the target
+        run: |
+          helm install --kube-context "kind-$TARGET_CLUSTER" \
+            target-cluster-access deploy/target-cluster/target-cluster-access \
+            -n c5c3-access --create-namespace \
+            --set 'namespaces={openstack}' \
+            --set 'assignedNamespaces={orders-tenant,orders-outsider}'
+      # As e2e-multicluster registers its target: the kubeconfig carries the
+      # chart's ServiceAccount token and the --internal server URL, never the
+      # admin kubeconfig kind holds.
+      - name: Register the target cluster
+        run: |
+          set -euo pipefail
+          secret=target-cluster-access-token
+          token=""
+          for _ in $(seq 1 30); do
+            token=$(kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+              -o jsonpath='{.data.token}' 2>/dev/null || true)
+            [ -n "$token" ] && break
+            sleep 2
+          done
+          if [ -z "$token" ]; then
+            echo "::error::the token controller did not populate $secret on $TARGET_CLUSTER"
+            exit 1
+          fi
+          workdir=$(mktemp -d)
+          kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d > "$workdir/ca.crt"
+          kind get kubeconfig --internal --name "$TARGET_CLUSTER" > "$workdir/internal.kubeconfig"
+          server=$(kubectl --kubeconfig "$workdir/internal.kubeconfig" config view \
+            -o jsonpath='{.clusters[0].cluster.server}')
+          export KUBECONFIG="$workdir/registration.kubeconfig"
+          kubectl config set-cluster "$TARGET_CLUSTER" \
+            --server="$server" --certificate-authority="$workdir/ca.crt" --embed-certs=true
+          kubectl config set-credentials target-cluster-access --token="$(echo "$token" | base64 -d)"
+          kubectl config set-context "$TARGET_CLUSTER" \
+            --cluster="$TARGET_CLUSTER" --user=target-cluster-access
+          kubectl config use-context "$TARGET_CLUSTER"
+          unset KUBECONFIG
+          kubectl --context "kind-${{ env.KIND_CLUSTER }}" create namespace c5c3-clusters
+          # The namespaces key scopes every operator's cache on the target to
+          # the placed namespace. The assigned ones go into their own key,
+          # which the c5c3-operator alone reads them through, for the order
+          # kinds and Secrets.
+          kubectl --context "kind-${{ env.KIND_CLUSTER }}" -n c5c3-clusters create secret generic "$TARGET_CLUSTER" \
+            --from-file=kubeconfig="$workdir/registration.kubeconfig" \
+            --from-literal=namespaces=openstack \
+            --from-literal=assignedNamespaces=orders-tenant,orders-outsider
+          kubectl --context "kind-${{ env.KIND_CLUSTER }}" -n c5c3-clusters label secret "$TARGET_CLUSTER" \
+            sigs.k8s.io/multicluster-runtime-kubeconfig=true
+      # Engagement waits for no informer the controllers start on the target,
+      # so this proves the engagement and nothing about the informers' scope.
+      # The check after the suite covers that.
+      - name: Wait for both operators to engage the target
+        run: |
+          set -euo pipefail
+          engaged() { # <namespace> <app.kubernetes.io/name>
+            local logs lines
+            logs="$(kubectl logs -n "$1" -l "app.kubernetes.io/name=$2" --tail=-1 2>/dev/null || true)"
+            lines="$(grep 'cluster engaged' <<<"$logs" || true)"
+            grep -q "$TARGET_CLUSTER" <<<"$lines"
+          }
+          for _ in $(seq 1 36); do
+            if engaged keystone-system keystone-operator && engaged c5c3-system c5c3-operator; then
+              echo "both operators engaged $TARGET_CLUSTER"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the keystone-operator and the c5c3-operator did not both engage $TARGET_CLUSTER within 180s"
+          exit 1
+      # Chainsaw's own credentials for asserting on the target. This is the
+      # admin kubeconfig, and it reaches nothing the operators use.
+      - name: Write the chainsaw kubeconfig for the target cluster
+        run: |
+          mkdir -p _output
+          kind get kubeconfig --name "$TARGET_CLUSTER" > _output/cobaltcore-target.kubeconfig
+      # E2E_REQUIRE_CONTROLPLANE_STACK=true flips the suite's presence guard from
+      # SKIP to a hard failure, so missing wiring cannot go green.
+      - name: Run the orders two-cluster E2E suite
+        run: |
+          mkdir -p _output/reports
+          kubectl config use-context "kind-${{ env.KIND_CLUSTER }}"
+          make e2e-orders-multicluster
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # By now the keystone-operator's informers on the target have run their
+      # first LIST. One that spans an assigned namespace, where the chart grants
+      # the operator nothing, is refused there and logged as forbidden: the
+      # assigned namespaces have to stay out of a service operator's cache.
+      - name: Check the keystone-operator never lists an assigned namespace
+        run: |
+          set -euo pipefail
+          logs="$(kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=-1)"
+          refused="$(grep 'forbidden' <<<"$logs" | grep -E 'orders-(tenant|outsider)' || true)"
+          if [ -n "$refused" ]; then
+            echo "::error::the keystone-operator lists an assigned namespace of $TARGET_CLUSTER"
+            tail -5 <<<"$refused"
+            exit 1
+          fi
+          echo "no forbidden LIST of the keystone-operator in an assigned namespace"
+      - name: Dump diagnostic info (management cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-${{ env.KIND_CLUSTER }}"
+          hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      # No OPERATOR on the target: it runs the access chart and the suite's
+      # Jobs, so the script's infrastructure section is the whole dump.
+      - name: Dump diagnostic info (target cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-$TARGET_CLUSTER"
+          hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-orders-multicluster-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dumps above still had clusters to read;
+      # `always()` covers the failed and timed-out runs. Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
   # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
   # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
   # ovn-operator, and runs tests/e2e-ovn-overlay/ across both workers: one
@@ -4531,7 +4779,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'
