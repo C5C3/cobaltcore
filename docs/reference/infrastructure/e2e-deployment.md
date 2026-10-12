@@ -297,8 +297,8 @@ before its delete. Then:
    leaves behind, `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
    installs from its `crds/` and Helm never deletes, and `ceph.rook.io`,
    `objectbucket.io` and `csi.ceph.io`: the `rook-ceph` chart marks its CRDs
-   `helm.sh/resource-policy: keep`, and `csi.ceph.io` exists only on a
-   cluster deployed with the CSI operator on).
+   `helm.sh/resource-policy: keep`, and `csi.ceph.io` holds the one CRD
+   `ceph/` applies for the operator's watch, which its uninstall leaves).
 
 In `kube-system` it deletes only the `maint-<node>` objects of step 0, the
 `csi-driver-nfs` HelmRelease of step 2 with its chart, the Service and the
@@ -656,10 +656,11 @@ deploy/lab/metal-stack/
 │                                    every Namespace → Gardener apiserver-proxy opt-out label
 │                                    and chaos-mesh.org/inject annotation
 ├── ceph/                           The Rook operator (#1344), applied in Step 3 under WITH_CEPH=true
-│   ├── kustomization.yaml          Lists the three manifests below; no kind base
+│   ├── kustomization.yaml          Lists the four manifests below; no kind base
 │   ├── namespace.yaml              Namespace rook-ceph, privileged, Gardener opt-out label
 │   ├── source.yaml                 HelmRepository rook-release in flux-system
 │   ├── release.yaml                HelmRelease rook-ceph, chart pinned, CSI off
+│   ├── csi-clientprofile-crd.yaml  CRD clientprofiles.csi.ceph.io, which the operator watches without a CSI operator
 │   └── cluster/                    The Ceph, applied in Step 5 under WITH_CEPH=true
 │       ├── kustomization.yaml      Lists the six manifests below
 │       ├── cluster.yaml            CephCluster rook-ceph: one mon, one mgr, nine OSDs on Block claims

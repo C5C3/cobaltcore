@@ -9,7 +9,7 @@
 #   1. Every file of ceph/ carries the SPDX header, and its kustomization lists
 #      namespace.yaml, source.yaml and release.yaml, no entry naming a parent
 #      directory.
-#   2. The render of ceph/ holds three objects: the Namespace rook-ceph, the
+#   2. The render of ceph/ holds four objects: the Namespace rook-ceph, the
 #      HelmRepository flux-system/rook-release and the HelmRelease
 #      rook-ceph/rook-ceph.
 #   3. The Namespace enforces the privileged PodSecurity level, opts out of
@@ -108,28 +108,35 @@ objects() {
 
 # --- Test 1: the files of ceph/ ---
 test_operator_files() {
-  echo "Test: the files of deploy/lab/metal-stack/ceph carry SPDX headers and the kustomization lists the three local files"
+  echo "Test: the files of deploy/lab/metal-stack/ceph carry SPDX headers and the kustomization lists the four local files"
 
   local f
-  for f in kustomization.yaml namespace.yaml source.yaml release.yaml; do
+  for f in kustomization.yaml namespace.yaml source.yaml release.yaml csi-clientprofile-crd.yaml; do
     assert_spdx "$CEPH_DIR/$f"
   done
+  assert_file_contains "csi-clientprofile-crd.yaml names its upstream copyright" \
+    "$CEPH_DIR/csi-clientprofile-crd.yaml" "SPDX-FileCopyrightText: Copyright The Ceph-CSI Authors"
   assert_local_entries "$CEPH_DIR/kustomization.yaml" \
-    "$(printf '%s\n' namespace.yaml source.yaml release.yaml)"
+    "$(printf '%s\n' namespace.yaml source.yaml release.yaml csi-clientprofile-crd.yaml)"
 }
 
-# --- Test 2: the three objects of ceph/ ---
-test_operator_render_holds_three_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/ceph renders the Namespace, the HelmRepository and the HelmRelease"
+# --- Test 2: the four objects of ceph/ ---
+test_operator_render_holds_four_objects() {
+  echo "Test: kustomize build deploy/lab/metal-stack/ceph renders the Namespace, the HelmRepository, the HelmRelease and the ClientProfile CRD"
 
   render "$CEPH_DIR" 1 || return
 
-  assert_eq "the render holds exactly the three objects" \
+  assert_eq "the render holds exactly the four objects" \
     "$(printf '%s\n' \
+      'CustomResourceDefinition /clientprofiles.csi.ceph.io' \
       'HelmRelease rook-ceph/rook-ceph' \
       'HelmRepository flux-system/rook-release' \
       'Namespace /rook-ceph' | LC_ALL=C sort)" \
     "$(objects)"
+  # Rook v1.21.0 watches ClientProfile without a condition; the CRD alone
+  # keeps the operator from exiting on a cache that never syncs.
+  assert_eq "the CRD serves csi.ceph.io/v1 ClientProfile" "csi.ceph.io v1 ClientProfile" \
+    "$(val CustomResourceDefinition clientprofiles.csi.ceph.io '.spec.group + " " + .spec.versions[0].name + " " + .spec.names.kind')"
 }
 
 # --- Test 3: the Namespace and the HelmRepository ---
@@ -429,7 +436,7 @@ test_pull_side() {
 }
 
 test_operator_files
-test_operator_render_holds_three_objects
+test_operator_render_holds_four_objects
 test_operator_namespace_and_source
 test_operator_release
 test_cluster_files

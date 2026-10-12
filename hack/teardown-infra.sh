@@ -52,9 +52,10 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 # crds/, which Helm never deletes either. The rook-ceph chart of the lab Ceph
 # (deploy/lab/metal-stack/ceph) installs the ceph.rook.io and objectbucket.io
 # CRDs as templates marked helm.sh/resource-policy: keep, so its uninstall
-# leaves them too; csi.ceph.io is the group of the ceph-csi-operator, which a
-# cluster deployed before csi.installCsiOperator was turned off carries, and
-# finds nothing otherwise. The groups
+# leaves them too; csi.ceph.io is the group of the ceph-csi-operator, of
+# which the lab applies the one CRD clientprofiles.csi.ceph.io beside the
+# HelmRelease (csi-clientprofile-crd.yaml), because the Rook operator watches
+# that kind without a CSI operator. The groups
 # of the platform (autoscaling.k8s.io, cert.gardener.cloud, dns.gardener.cloud,
 # crd.projectcalico.org, metallb.io, snapshot.storage.k8s.io) are absent on
 # purpose and must stay absent.

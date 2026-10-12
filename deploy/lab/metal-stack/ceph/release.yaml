@@ -31,7 +31,8 @@
 # use no CSI driver). Nothing in the lab mounts Ceph through CSI: Cinder's RBD
 # backend of #1341 talks librados, and the hypervisors of #1345 attach through
 # QEMU. Without the subchart the CRDs of those two kinds do not exist, so both
-# values go together.
+# values go together. The operator still watches ClientProfile and exits when
+# the CRD is absent, so csi-clientprofile-crd.yaml carries that one CRD.
 #
 # What stays at chart default, and is relied on:
 #   - the operator image docker.io/rook/ceph at the chart's appVersion;

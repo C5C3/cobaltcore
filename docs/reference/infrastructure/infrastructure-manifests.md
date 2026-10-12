@@ -3168,6 +3168,7 @@ in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issueco
 `deploy/lab/metal-stack/ceph/namespace.yaml`,
 `deploy/lab/metal-stack/ceph/source.yaml`,
 `deploy/lab/metal-stack/ceph/release.yaml`,
+`deploy/lab/metal-stack/ceph/csi-clientprofile-crd.yaml`,
 `deploy/lab/metal-stack/ceph/cluster/kustomization.yaml`,
 `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`,
 `deploy/lab/metal-stack/ceph/cluster/pools.yaml`,
@@ -3201,8 +3202,8 @@ EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
 
 The Rook chart installs the `ceph.rook.io` CRDs, so the Ceph comes in two
 kustomizations. Step 3 applies `ceph/`: the Namespace `rook-ceph`, the
-HelmRepository `rook-release` and the HelmRelease `rook-ceph`. Phase 3 waits
-for that release. Step 5 waits for the CRDs `cephclusters`, `cephblockpools`
+HelmRepository `rook-release`, the HelmRelease `rook-ceph` and the CRD
+`clientprofiles.csi.ceph.io`. Phase 3 waits for that release. Step 5 waits for the CRDs `cephclusters`, `cephblockpools`
 and `cephclients` (`POD_TIMEOUT`) and applies `ceph/cluster/`. After Step 8
 `wait_for_ceph_cluster` polls the CephCluster every 10 seconds, bounded by
 `CEPH_TIMEOUT` (900), until its phase is `Ready`, its health `HEALTH_OK` and
@@ -3218,7 +3219,7 @@ kustomization is local, so `kubectl apply -k` needs no `--load-restrictor`.
 
 | Property | Value |
 | --- | --- |
-| Operator chart | `rook-ceph` `v1.21.0` from `https://charts.rook.io/release`, pinned to one version: the chart installs a privileged operator and the `ceph.rook.io` CRDs. `csi.installCsiOperator: false` and `csi.createCsiOperatorResources: false`, because nothing in the lab mounts Ceph through CSI: Cinder's RBD backend talks librados, and the hypervisors attach through QEMU. The discovery daemon and the operator's monitoring are off. The operator keeps the chart's resources, 200m CPU and 128Mi requested, 512Mi limit |
+| Operator chart | `rook-ceph` `v1.21.0` from `https://charts.rook.io/release`, pinned to one version: the chart installs a privileged operator and the `ceph.rook.io` CRDs. `csi.installCsiOperator: false` and `csi.createCsiOperatorResources: false`, because nothing in the lab mounts Ceph through CSI: Cinder's RBD backend talks librados, and the hypervisors attach through QEMU. The discovery daemon and the operator's monitoring are off. The operator keeps the chart's resources, 200m CPU and 128Mi requested, 512Mi limit. The operator of v1.21.0 still watches the CSI operator's `ClientProfile` kind without a condition and exits after about two minutes when its CRD is absent (`timed out waiting for cache to be synced for kind source: *v1.ClientProfile`), so `csi-clientprofile-crd.yaml` carries that one CRD, copied from ceph-csi-operator v1.1.0, the subchart version the chart depends on; no ClientProfile is ever created |
 | Ceph image | `quay.io/ceph/ceph:v20.2.4` (Tentacle) by tag and digest, for the CephCluster and the toolbox. Renovate moves both lines in one PR (`ceph image`), majors disabled, nothing automerged |
 | Cluster | the CephCluster `rook-ceph`: one mon on a 10Gi claim, one mgr without modules, no dashboard, crash collector, log collector or metrics, msgr2 required, the daemons' state under `/var/lib/rook`. `cephConfig.global.osd_pool_default_size: "2"` gives the `.mgr` pool two replicas, so it fits two hosts. One mon is a single point of failure the lab accepts (D2 of #1338) |
 | OSDs | one device set `lightbits` with `count: 9`, three OSDs per worker of `newforge`, each on a 100Gi `volumeMode: Block` claim of the default class (D1). `portable: true`, so a volume follows its OSD to another node; a topology spread on the hostname keeps the OSDs level across the nodes, three on each. 500m CPU and 2Gi requested, 2Gi limit per OSD, 6Gi per worker; with the limit equal to the request Rook derives `osd_memory_target` from it. A shoot of another size changes `count` to three times its worker count |
