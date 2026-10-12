@@ -122,7 +122,7 @@ test_section_content() {
   local text
   for text in \
     '**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`' \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra' \
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra' \
     'kubectl -n envoy-gateway-system port-forward \' \
     'kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428' \
     'EXTERNAL_CLUSTER=true make dizzy-keystone' \
@@ -143,7 +143,7 @@ test_run_commands() {
   local line
   for line in \
     'kubectl get namespace openstack dizzy flux-system' \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_DIZZY=true make deploy-infra' \
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra' \
     'kubectl get helmrelease -n dizzy' \
     "kubectl get svc dizzy-victoria-metrics-server -n dizzy -o jsonpath='{.spec.type} {.spec.ports[0].nodePort}{\"\\n\"}'" \
     'kubectl get pvc -n dizzy' \

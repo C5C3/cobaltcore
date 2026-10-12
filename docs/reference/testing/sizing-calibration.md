@@ -904,8 +904,8 @@ record every pod:
 pod_state openstack hypervisor-system >"$out/pods.before"
 ```
 
-Then run Part 2. After
-[Part 2, Step 10](../../quick-start-metal-stack.md#hv-backup), while the
+Then run Part 2. After its last step,
+[Part 2, Step 11](../../quick-start-metal-stack.md#hv-rotate), while the
 servers still run, end the measurement:
 
 ```bash

@@ -114,7 +114,7 @@ test_commands() {
   echo "Test: the section holds the deploy, toolbox, rotation and teardown commands, and never prints a key"
   local line
   assert_contains "the deploy command" "$SECTION" \
-    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_NFS=true WITH_CEPH=true make deploy-infra'
+    'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra'
   for line in \
     'kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status' \
     'kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd pool ls' \
