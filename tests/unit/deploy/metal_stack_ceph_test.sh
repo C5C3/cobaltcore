@@ -29,8 +29,9 @@
 #      /var/lib/rook, one mon and one mgr, no dashboard, crash collector or
 #      metrics, msgr2 required, a default pool size of "2", the
 #      AUTH_INSECURE_CLIENT_KEY_TYPE warning muted and an empty cleanup
-#      confirmation, and one device set of three portable OSDs on 100Gi Block
-#      claims with 2Gi of memory requested and as the limit. No line of either
+#      confirmation, and one device set of nine portable OSDs (three per
+#      worker) on 100Gi Block claims with 2Gi of memory requested and as the
+#      limit. No line of either
 #      render names a storage class.
 #   8. The pools volumes and backups keep two replicas across hosts; the
 #      clients cinder and cinder-backup carry the rbd caps on their pool and
@@ -233,7 +234,7 @@ test_cluster_render_holds_sixteen_objects() {
 
 # --- Test 7: the CephCluster ---
 test_cephcluster() {
-  echo "Test: the CephCluster is one mon, one mgr and three portable OSDs on raw block volumes of the default class"
+  echo "Test: the CephCluster is one mon, one mgr and nine portable OSDs on raw block volumes of the default class"
 
   render "$CLUSTER_DIR" 24 || return
 
@@ -264,7 +265,7 @@ test_cephcluster() {
   assert_eq "the CephCluster has one device set" "1" \
     "$(val CephCluster rook-ceph '.spec.storage.storageClassDeviceSets | length')"
   local set='.spec.storage.storageClassDeviceSets[0]'
-  assert_eq "the device set runs three OSDs" "3" "$(val CephCluster rook-ceph "$set.count")"
+  assert_eq "the device set runs nine OSDs, three per worker" "9" "$(val CephCluster rook-ceph "$set.count")"
   assert_eq "an OSD's volume follows it to another node" "true" "$(val CephCluster rook-ceph "$set.portable")"
   assert_eq "the device set has one claim template" "1" "$(val CephCluster rook-ceph "$set.volumeClaimTemplates | length")"
   assert_eq "the OSD claim is a raw block volume" "Block" \

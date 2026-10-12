@@ -1606,7 +1606,7 @@ preflight_checks() {
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
     preflight_external_cluster
   else
-    # The lab Ceph needs raw block volumes and a node per OSD; neither kind nor
+    # The lab Ceph needs raw block volumes and three OSDs per node; neither kind nor
     # CI runs it yet.
     if [[ "${WITH_CEPH}" == "true" ]]; then
       log "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/lab/metal-stack, and Ceph on kind and in CI is tracked by #1339."

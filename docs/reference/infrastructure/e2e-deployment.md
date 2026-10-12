@@ -662,7 +662,7 @@ deploy/lab/metal-stack/
 │   ├── release.yaml                HelmRelease rook-ceph, chart pinned, CSI off
 │   └── cluster/                    The Ceph, applied in Step 5 under WITH_CEPH=true
 │       ├── kustomization.yaml      Lists the six manifests below
-│       ├── cluster.yaml            CephCluster rook-ceph: one mon, one mgr, three OSDs on Block claims
+│       ├── cluster.yaml            CephCluster rook-ceph: one mon, one mgr, nine OSDs on Block claims
 │       ├── pools.yaml              CephBlockPools volumes and backups, two replicas
 │       ├── clients.yaml            CephClients cinder and cinder-backup, aes keys
 │       ├── toolbox.yaml            Deployment rook-ceph-tools, Rook's toolbox
@@ -774,7 +774,7 @@ which Step 1 checks exists.
 | Prometheus memory request and limit | `256Mi`, `512Mi` | `1Gi`, `2Gi` |
 | Grafana dashboards | Keystone Operator | Keystone Operator and Hypervisor Operator |
 | Rook operator (`rook-ceph` chart) | none | `v1.21.0`, pinned, CSI operator off, in the privileged Namespace `rook-ceph` |
-| Ceph image and cluster shape | none | `quay.io/ceph/ceph:v20.2.4` by digest; one mon on 10Gi, one mgr, three OSDs on 100Gi `volumeMode: Block` claims of the default class |
+| Ceph image and cluster shape | none | `quay.io/ceph/ceph:v20.2.4` by digest; one mon on 10Gi, one mgr, nine OSDs (three per worker) on 100Gi `volumeMode: Block` claims of the default class |
 | Ceph pools and clients | none | `volumes` and `backups` at two replicas; `client.cinder` and `client.cinder-backup` with rbd caps on their pool and `aes` keys |
 | Ceph key hand-off | none | PushSecrets in `rook-ceph` to `ceph/client-cinder` and `ceph/client-cinder-backup` in OpenBao, ExternalSecrets into `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup` |
 | Ceph toolbox | none | the Deployment `rook-ceph-tools` on the cluster's image |

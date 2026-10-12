@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# The lab Ceph: one monitor, one manager and one OSD per worker, each OSD on a
-# raw block volume of the cluster's default class (D1 and D2 of #1338). On
+# The lab Ceph: one monitor, one manager and three OSDs per worker, each OSD
+# on a raw block volume of the cluster's default class (D1 and D2 of #1338). On
 # newforge that class is `premium`, whose Lightbits volumes reach the workers
 # as NVMe/TCP devices.
 #
@@ -13,12 +13,14 @@
 # (packageRules "ceph image", no automerge: a Ceph minor is a question of the
 # versions the pinned Rook supports).
 #
-# The device set's `count` is the number of OSDs, one per worker of newforge's
-# three. It is the one field a shoot of another size changes; the topology
-# spread puts one OSD on each host while there are enough, and the deploy's
-# health wait reads it from the live CR. Three OSDs of 100Gi at two replicas
-# give about 150 GiB of pool capacity, which bounds the lab's Cinder volumes
-# and backups together.
+# The device set's `count` is the number of OSDs, three per worker of
+# newforge's three. It is the one field a shoot of another size changes, as
+# three times its worker count; the topology spread on the hostname keeps the
+# OSDs level across the hosts, and the deploy's health wait reads the count
+# from the live CR. Nine OSDs of 100Gi at two replicas give about 450 GiB of
+# pool capacity, which bounds the lab's Cinder volumes and backups together.
+# Three OSDs per host spread a pool's placement groups over more daemons than
+# one, so a single slow OSD stalls a smaller share of the lab's writes.
 #
 # One monitor is a single point of failure the lab accepts, as it accepts the
 # single NFS server (D2). The claims name no storage class, so they bind to the
@@ -27,7 +29,8 @@
 #
 # The memory values are Rook's documented minimums. With the limits equal to
 # the requests Rook derives osd_memory_target from them. Per worker that is
-# 2 GiB for its OSD, plus 1.5 GiB on the worker that runs the mon and the mgr.
+# 6 GiB for its three OSDs, plus 1.5 GiB on the worker that runs the mon and
+# the mgr.
 #
 # The daemons keep Rook's cephx defaults, which give them aes256k keys on
 # 20.2.4. The two clients of clients.yaml carry `keyType: aes` (D7 of #1338),
@@ -103,8 +106,8 @@ spec:
     useAllDevices: false
     storageClassDeviceSets:
       - name: lightbits
-        # One OSD per worker of newforge; see the header.
-        count: 3
+        # Three OSDs per worker of newforge's three; see the header.
+        count: 9
         # The volume follows its OSD to another node.
         portable: true
         placement:

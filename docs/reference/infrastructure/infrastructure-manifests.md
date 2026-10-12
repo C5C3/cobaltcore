@@ -3179,8 +3179,9 @@ in the [comment on #1260](https://github.com/C5C3/cobaltcore/issues/1260#issueco
 A Ceph deployed by Rook for the metal-stack lab
 ([#1344](https://github.com/c5c3/cobaltcore/issues/1344), a package of
 [#1338](https://github.com/c5c3/cobaltcore/issues/1338)): one monitor, one
-manager and three OSDs on raw block volumes, the RBD pools `volumes` and
-`backups`, and the Ceph users `cinder` and `cinder-backup`. The RBD backends of
+manager and nine OSDs, three per worker, on raw block volumes, the RBD pools
+`volumes` and `backups`, and the Ceph users `cinder` and `cinder-backup`. The
+RBD backends of
 [#1341](https://github.com/c5c3/cobaltcore/issues/1341) and
 [#1346](https://github.com/c5c3/cobaltcore/issues/1346) attach to it, and the
 [Lab hypervisors](#lab-hypervisors) define the libvirt secret QEMU
@@ -3220,8 +3221,8 @@ kustomization is local, so `kubectl apply -k` needs no `--load-restrictor`.
 | Operator chart | `rook-ceph` `v1.21.0` from `https://charts.rook.io/release`, pinned to one version: the chart installs a privileged operator and the `ceph.rook.io` CRDs. `csi.installCsiOperator: false` and `csi.createCsiOperatorResources: false`, because nothing in the lab mounts Ceph through CSI: Cinder's RBD backend talks librados, and the hypervisors attach through QEMU. The discovery daemon and the operator's monitoring are off. The operator keeps the chart's resources, 200m CPU and 128Mi requested, 512Mi limit |
 | Ceph image | `quay.io/ceph/ceph:v20.2.4` (Tentacle) by tag and digest, for the CephCluster and the toolbox. Renovate moves both lines in one PR (`ceph image`), majors disabled, nothing automerged |
 | Cluster | the CephCluster `rook-ceph`: one mon on a 10Gi claim, one mgr without modules, no dashboard, crash collector, log collector or metrics, msgr2 required, the daemons' state under `/var/lib/rook`. `cephConfig.global.osd_pool_default_size: "2"` gives the `.mgr` pool two replicas, so it fits two hosts. One mon is a single point of failure the lab accepts (D2 of #1338) |
-| OSDs | one device set `lightbits` with `count: 3`, one OSD per worker of `newforge`, each on a 100Gi `volumeMode: Block` claim of the default class (D1). `portable: true`, so a volume follows its OSD to another node; a topology spread on the hostname puts one OSD on each node. 500m CPU and 2Gi requested, 2Gi limit; with the limit equal to the request Rook derives `osd_memory_target` from it. A shoot of another size changes `count` |
-| Pools | the CephBlockPools `volumes` and `backups`, each with two replicas on two hosts and `requireSafeReplicaSize: true`. Three OSDs of 100Gi give about 150 GiB at two replicas, which bounds the lab's volumes and backups together |
+| OSDs | one device set `lightbits` with `count: 9`, three OSDs per worker of `newforge`, each on a 100Gi `volumeMode: Block` claim of the default class (D1). `portable: true`, so a volume follows its OSD to another node; a topology spread on the hostname keeps the OSDs level across the nodes, three on each. 500m CPU and 2Gi requested, 2Gi limit per OSD, 6Gi per worker; with the limit equal to the request Rook derives `osd_memory_target` from it. A shoot of another size changes `count` to three times its worker count |
+| Pools | the CephBlockPools `volumes` and `backups`, each with two replicas on two hosts and `requireSafeReplicaSize: true`. Nine OSDs of 100Gi give about 450 GiB at two replicas, which bounds the lab's volumes and backups together |
 | Clients | the CephClients `cinder` (`mon: profile rbd`, `osd: profile rbd pool=volumes`, `mgr: profile rbd pool=volumes`) and `cinder-backup` (the same on `backups`), each with `keyType: aes`, `keyRotationPolicy: KeyGeneration` and `keyGeneration: 1` (D5, D7). Rook writes the Secrets `rook-ceph-client-cinder` and `rook-ceph-client-cinder-backup`, with the raw key under `userKey` |
 | Key hand-off | in `rook-ceph`, the PushSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` write `userKey` to the OpenBao paths `ceph/client-cinder` and `ceph/client-cinder-backup` (`kv-v2/data/ceph/client-*`) as the role `push-ceph-keys`; in `openstack`, the ExternalSecrets of the same names read them as the role `read-ceph-keys` into the Secrets `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup`, with the one key `userKey` (D4). Each side has its own SecretStore `openbao-ceph-store`, client Certificate of `openbao-ca-issuer` and ServiceAccount, and both refresh every minute. [OpenBao Bootstrap](openbao-bootstrap.md) lists the two roles and policies |
 | Toolbox | the Deployment `rook-ceph-tools`, Rook's `deploy/examples/toolbox.yaml` of `v1.21.0` with the cluster's image and 10m CPU and 64Mi requested, 256Mi limit. It runs as UID 2016 with every capability dropped, no privilege escalation and the `RuntimeDefault` seccomp profile, and mounts no ServiceAccount token |
@@ -3229,7 +3230,7 @@ kustomization is local, so `kubectl apply -k` needs no `--load-restrictor`.
 | The deploy waits for | the HelmRelease `rook-ceph` (Phase 3), the three CRDs (Step 5), the CephCluster `Ready` with `HEALTH_OK` and at least one ready OSD per device, then the stores, the PushSecrets and the ExternalSecrets of the hand-off (after Step 8) |
 | Pinned by | `tests/unit/deploy/metal_stack_ceph_test.sh`, `tests/unit/hack/deploy_infra_ceph_flag_test.sh` |
 
-The health wait logs `Ceph: phase Ready, HEALTH_OK, 3 of 3 OSDs ready, fsid <fsid>`;
+The health wait logs `Ceph: phase Ready, HEALTH_OK, 9 of 9 OSDs ready, fsid <fsid>`;
 the fsid is the default `rbd_secret_uuid` of #1341. On a timeout it exits 1
 with `ERROR: Ceph did not reach HEALTH_OK with <count> OSDs within <n>s (phase '<phase>', health '<health>', <ready> OSDs ready).`
 and prints the CephCluster's health details and conditions, the pods of
@@ -3253,7 +3254,7 @@ kubectl -n openstack get secret ceph-client-cinder -o jsonpath='{.data.userKey}'
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder | sha256sum
 ```
 
-`ceph status` shows `HEALTH_OK`, one mon and three OSDs up, and the pool list
+`ceph status` shows `HEALTH_OK`, one mon and nine OSDs up, and the pool list
 names `volumes`, `backups` and `.mgr`. The last two commands print the same
 digest. They hash the key rather than print it, so a transcript of the run
 can be pasted into an issue without publishing a live Ceph credential. A raised `keyGeneration` on a client has Rook rotate its key; the

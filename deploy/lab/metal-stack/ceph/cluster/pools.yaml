@@ -6,8 +6,8 @@
 # backups for its backup backend (#1346 attaches both). The overlay creates
 # them and CobaltCore never does (rule 1 of #1338).
 #
-# Two replicas on two different hosts (D2 of #1338): with three OSDs on three
-# workers a host can fail without data loss. requireSafeReplicaSize keeps a
+# Two replicas on two different hosts (D2 of #1338): with three OSDs on each
+# of three workers a host can fail without data loss. requireSafeReplicaSize keeps a
 # later edit from dropping a pool to a single replica.
 ---
 apiVersion: ceph.rook.io/v1

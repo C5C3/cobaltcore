@@ -11,7 +11,7 @@
 #   EXTERNAL_CLUSTER=true WITH_CEPH=true make deploy-infra
 #
 # It renders:
-#   - cluster.yaml: the CephCluster rook-ceph, one mon, one mgr and three OSDs
+#   - cluster.yaml: the CephCluster rook-ceph, one mon, one mgr and nine OSDs
 #     on raw block volumes of the default class;
 #   - pools.yaml: the CephBlockPools volumes and backups, two replicas each;
 #   - clients.yaml: the CephClients cinder and cinder-backup with aes keys;
