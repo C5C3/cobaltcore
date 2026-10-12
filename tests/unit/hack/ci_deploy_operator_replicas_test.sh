@@ -10,8 +10,9 @@
 #   - an unset knob adds no replicas flag, so the chart default of 2 applies;
 #   - OPERATOR_REPLICAS=0 and OPERATOR_REPLICAS=two exit 1 with an ::error::
 #     line before anything is applied;
-#   - the e2e-controlplane job sets OPERATOR_REPLICAS=1 for its operator
-#     deploy steps.
+#   - the e2e-controlplane and e2e-orders-multicluster jobs set
+#     OPERATOR_REPLICAS=1 for their operator deploy steps, and no other job
+#     sets it.
 #
 # Follows tests/unit/hack/ci_deploy_operator_federation_cidrs_test.sh.
 #
@@ -157,18 +158,22 @@ test_replicas_invalid() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: the e2e-controlplane job runs one replica per operator
+# Test 4: the e2e-controlplane and e2e-orders-multicluster jobs run one replica
+# per operator
 # ---------------------------------------------------------------------------
 test_ci_wiring() {
-  echo "Test: e2e-controlplane sets OPERATOR_REPLICAS=1"
+  echo "Test: e2e-controlplane and e2e-orders-multicluster set OPERATOR_REPLICAS=1"
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
+    echo "  SKIP: yq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
-  assert_eq "the job-level env sets OPERATOR_REPLICAS to 1" "1" \
-    "$(yq '.jobs["e2e-controlplane"].env.OPERATOR_REPLICAS' "$CI_YAML")"
-  assert_eq "no other job sets OPERATOR_REPLICAS" "e2e-controlplane" \
+  local job
+  for job in e2e-controlplane e2e-orders-multicluster; do
+    assert_eq "the job-level env of ${job} sets OPERATOR_REPLICAS to 1" "1" \
+      "$(yq ".jobs[\"${job}\"].env.OPERATOR_REPLICAS" "$CI_YAML")"
+  done
+  assert_eq "no other job sets OPERATOR_REPLICAS" "e2e-controlplane,e2e-orders-multicluster" \
     "$(yq '[.jobs | to_entries[] | select(.value.env.OPERATOR_REPLICAS != null) | .key] | join(",")' "$CI_YAML")"
 }
 
