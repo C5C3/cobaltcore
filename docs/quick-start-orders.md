@@ -115,7 +115,10 @@ kubectl get secret workflow-credentials -n workflow -o jsonpath='{.data.clouds\.
 ```
 
 K-ORC creates the user in Keystone, and ESO backs the password up to OpenBao
-before the Secret is written. The document's `auth_url` is the Keystone Service
+before the Secret is written. The password rotates only when
+`spec.passwordGeneration` is raised, and the old one stops the moment Keystone
+holds the new one; [Rotate the password](./guides/order-a-service-user.md#rotate-the-password)
+shows it. The document's `auth_url` is the Keystone Service
 inside the cluster, `http://controlplane-keystone.openstack.svc:5000/v3`, and
 it carries no project, so a token issued with it is unscoped. Issue one from a
 Job in `workflow`:
@@ -205,7 +208,10 @@ The token table names the project, and the Job prints the entry's public URL.
 ### Step 6: Order an application credential {#cp-appcred}
 
 The operator creates the credential as the user, with a token scoped to the
-project, which needs the role of Step 5:
+project, which needs the role of Step 5. The schedule's defaults are an
+interval of 720 hours and a grace period of 24 hours. This order shortens them
+to three and two minutes so that Step 7 can watch a rotation; Part 2 orders the
+credential with the defaults:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -222,8 +228,18 @@ spec:
     name: workflow
   projectRef:
     name: workflow-project
+  rotation:
+    interval: 3m
+    gracePeriod: 2m
 EOF
 kubectl wait --for=condition=Ready keystoneapplicationcredential/workflow-appcred -n workflow --timeout=15m
+kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}{" "}{.status.credentialID}{" "}{.status.nextRotation}{" "}{.status.credentialExpiresAt}{"\n"}'
+kubectl get secret workflow-appcred-credentials -n workflow -o json \
+  | jq '{apiVersion: "v1", kind: "Secret", type: "Opaque",
+         metadata: {name: "workflow-appcred-gen1", namespace: .metadata.namespace},
+         data: {"clouds.yaml": .data["clouds.yaml"]}}' \
+  | kubectl apply -f -
 sed -e 's|@TENANT_NS@|workflow|g' tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml \
   | kubectl apply -f -
 kubectl wait --for=condition=complete job/workflow-appcred-verify -n workflow --timeout=5m
@@ -232,9 +248,173 @@ kubectl logs -n workflow job/workflow-appcred-verify
 
 The Secret `workflow-appcred-credentials` carries `clouds.yaml`,
 `application_credential_id` and `application_credential_secret`, and the Job's
-token is scoped to `workflow-project`.
+token is scoped to `workflow-project`. The status reads generation 1, the next
+rotation three minutes after the credential was created, and an expiry five
+minutes after it: the interval plus the grace period. The copy
+`workflow-appcred-gen1` is the generation-1 document; Step 7 uses it to show
+the grace period. Go on to Step 7 at once: the first rotation is due three
+minutes after the credential was created.
 
-### Step 7: Order a database {#cp-database}
+### Step 7: Watch the credential rotate {#cp-rotation}
+
+The operator creates generation 2 three minutes after generation 1 was created
+and switches the Secret once Keystone holds it. Generation 1 stays valid for
+two minutes more, the grace period, and is then deleted. A consumer that reads
+the Secret again within those two minutes never holds an invalid credential.
+
+Turn the schedule off as soon as generation 2 is there, so that no third
+rotation races the rest of this step. The grace period of generation 1 runs on
+regardless. The loop, bounded at five minutes, also takes a later generation,
+since the schedule rotates every three minutes until the patch turns it off:
+
+```bash
+for _ in $(seq 1 60); do
+  gen=$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+    -o jsonpath='{.status.credentialGeneration}')
+  [ "${gen:-0}" -ge 2 ] && break
+  sleep 5
+done
+[ "${gen:-0}" -ge 2 ] || echo "generation 2 did not appear within five minutes"
+kubectl patch keystoneapplicationcredential workflow-appcred -n workflow --type merge \
+  -p '{"spec":{"rotation":{"interval":"0s"}}}'
+kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}{" "}{.status.credentialID}{" "}{.status.previousCredentialID}{" "}{.status.previousCredentialDeleteAt}{"\n"}'
+kubectl get applicationcredentials.openstack.k-orc.cloud -n openstack \
+  -l c5c3.io/keystoneapplicationcredential-name=workflow-appcred,c5c3.io/keystoneapplicationcredential-namespace=workflow
+```
+
+The status names generation 2, the new id, the superseded id and the time the
+superseded one is deleted, two minutes after the switch, and the list shows two
+K-ORC credentials in `openstack`.
+
+If the status reads a generation above 2, or generation 2 with an empty
+`previousCredentialID`, the grace period of generation 1 has passed. If it
+still reads generation 1, the schedule did not rotate within five minutes, and
+generation 1 has passed its Keystone expiry, five minutes after it was created.
+The operator rotates on that expiry by itself, so something keeps it from
+creating generation 2; `kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`
+shows why. Fix that and run the commands above again. In each of these cases
+the copy `workflow-appcred-gen1` no longer authenticates: copy the current
+document and rotate by hand, then go on below. The new copy holds the
+credential this rotation supersedes, with a fresh grace period. The operator
+switches the status before it rewrites the Secret, so a loop bounded at three
+minutes first waits for the Secret to hold the credential the status names. A
+loop that runs out says so, and the copy then holds the superseded credential.
+The same `kubectl describe` shows why; fix that and run the commands again. A
+grace period that still runs delays the rotation until it ends, which the
+five-minute wait covers:
+
+```bash
+read -r gen id <<<"$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}{" "}{.status.credentialID}')"
+for _ in $(seq 1 36); do
+  got=$(kubectl get secret workflow-appcred-credentials -n workflow \
+    -o jsonpath='{.data.application_credential_id}' | base64 -d)
+  [ "$got" = "$id" ] && break
+  sleep 5
+done
+[ "$got" = "$id" ] || echo "the Secret did not take credential $id within three minutes"
+kubectl get secret workflow-appcred-credentials -n workflow -o json \
+  | jq '{apiVersion: "v1", kind: "Secret", type: "Opaque",
+         metadata: {name: "workflow-appcred-gen1", namespace: .metadata.namespace},
+         data: {"clouds.yaml": .data["clouds.yaml"]}}' \
+  | kubectl apply -f -
+kubectl patch keystoneapplicationcredential workflow-appcred -n workflow --type merge \
+  -p "{\"spec\":{\"credentialGeneration\":$((gen + 1))}}"
+kubectl wait --for=jsonpath="{.status.credentialGeneration}"=$((gen + 1)) \
+  keystoneapplicationcredential/workflow-appcred -n workflow --timeout=5m
+```
+
+Inside the grace period the generation-1 copy still authenticates. Run the
+verify Job with it:
+
+```bash
+sed -e 's|@TENANT_NS@|workflow|g' \
+  -e 's|name: workflow-appcred-verify|name: workflow-appcred-gen1-verify|' \
+  -e 's|secretName: workflow-appcred-credentials|secretName: workflow-appcred-gen1|' \
+  tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/workflow-appcred-gen1-verify -n workflow --timeout=2m
+kubectl logs -n workflow job/workflow-appcred-gen1-verify
+```
+
+The log ends with `OK: the delivered application credential authenticates`,
+from the superseded credential. If the Job fails instead, the grace period
+ended before it ran, which is the refusal the next commands show; go on with
+them.
+
+`kubectl wait` cannot wait for a field to disappear, so a loop bounded at five
+minutes waits for `previousCredentialID` to clear. The same Job then runs again
+with the copy:
+
+```bash
+for _ in $(seq 1 30); do
+  [ -z "$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+    -o jsonpath='{.status.previousCredentialID}')" ] && break
+  sleep 10
+done
+kubectl get applicationcredentials.openstack.k-orc.cloud -n openstack \
+  -l c5c3.io/keystoneapplicationcredential-name=workflow-appcred,c5c3.io/keystoneapplicationcredential-namespace=workflow
+kubectl delete job workflow-appcred-gen1-verify -n workflow
+sed -e 's|@TENANT_NS@|workflow|g' \
+  -e 's|name: workflow-appcred-verify|name: workflow-appcred-gen1-verify|' \
+  -e 's|secretName: workflow-appcred-credentials|secretName: workflow-appcred-gen1|' \
+  tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml | kubectl apply -f -
+kubectl wait --for=condition=failed job/workflow-appcred-gen1-verify -n workflow --timeout=3m
+kubectl logs -n workflow job/workflow-appcred-gen1-verify
+```
+
+One K-ORC credential is left, and the Job fails: Keystone refuses a credential
+it no longer holds. A loop that runs out means the operator did not delete
+generation 1; `kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`
+shows the order's conditions and events.
+
+A rotation by hand raises `spec.credentialGeneration` above the generation the
+status reports. Read the generation from the status and add one: generation 2
+keeps the expiry it was created with, and a credential that rotated on that
+expiry while you waited reads one higher. With the schedule off, the new
+credential carries no expiry:
+
+```bash
+gen=$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}')
+kubectl patch keystoneapplicationcredential workflow-appcred -n workflow --type merge \
+  -p "{\"spec\":{\"credentialGeneration\":$((gen + 1))}}"
+kubectl wait --for=jsonpath="{.status.credentialGeneration}"=$((gen + 1)) \
+  keystoneapplicationcredential/workflow-appcred -n workflow --timeout=5m
+id=$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow -o jsonpath='{.status.credentialID}')
+for _ in $(seq 1 36); do
+  [ "$(kubectl get secret workflow-appcred-credentials -n workflow \
+    -o jsonpath='{.data.application_credential_id}' | base64 -d)" = "$id" ] && break
+  sleep 5
+done
+kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
+  -o jsonpath='{.status.credentialGeneration}{" "}{.status.nextRotation}{" "}{.status.credentialExpiresAt}{"\n"}'
+```
+
+The generation reads one above the one you read, 3 on the straight path, and
+both `nextRotation` and `credentialExpiresAt` are empty. The loop, bounded at
+three minutes, waits for the delivered Secret, which the operator rewrites once
+the backup holds the new document.
+
+The live credential authenticates, and the copy goes:
+
+```bash
+kubectl delete job workflow-appcred-verify workflow-appcred-gen1-verify -n workflow
+kubectl delete secret workflow-appcred-gen1 -n workflow
+sed -e 's|@TENANT_NS@|workflow|g' tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml \
+  | kubectl apply -f -
+kubectl wait --for=condition=complete job/workflow-appcred-verify -n workflow --timeout=5m
+kubectl logs -n workflow job/workflow-appcred-verify
+```
+
+A consumer reads the Secret again within the grace period, or mounts it as a
+volume and reconnects when it changes. A consumer that read the keys into
+environment variables at start must be restarted within the grace period.
+`spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule;
+[Order an application credential](./guides/order-a-service-user.md#order-an-application-credential)
+covers the rest.
+
+### Step 8: Order a database {#cp-database}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -260,7 +440,7 @@ The schema is `workflow_db`, and the Secret `workflow-db-credentials` carries
 The Job writes a row into the schema, reads it back, and fails if the login
 reaches the ControlPlane's `keystone` schema.
 
-### Step 8: Order a vhost {#cp-vhost}
+### Step 9: Order a vhost {#cp-vhost}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -282,11 +462,14 @@ printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-serv
 ```
 
 The broker reports `Success`. The password goes in on standard input, because
-the arguments of `kubectl exec` land in the API server's audit log. The Secret
-`workflow-bus-credentials` carries `transport_url`, `host`, `port`, `username`,
-`password` and `vhost`; a service points oslo.messaging at `transport_url`.
+the arguments of `kubectl exec` are written to the API server's audit log. The
+Secret `workflow-bus-credentials` carries `transport_url`, `host`, `port`,
+`username`, `password` and `vhost`; a service points oslo.messaging at
+`transport_url`. The user rotates on the same schedule as the application
+credential, every 720 hours with a 24-hour grace period, as a new broker user
+`<vhost>-v2` beside the old one; Step 7 shows the mechanism.
 
-### Step 9: Tear the orders down {#cp-teardown}
+### Step 10: Tear the orders down {#cp-teardown}
 
 Deleting an order is what revokes it. Delete them in the order their holds
 allow: a user, a project or an assignment that a credential order uses holds
@@ -767,7 +950,7 @@ printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-serv
 
 ### Step 10: Tear Part 2 down {#tc-teardown}
 
-Delete the Jobs and the orders on the target, in the order of Part 1 Step 9:
+Delete the Jobs and the orders on the target, in the order of Part 1 Step 10:
 
 ```bash
 kubectl --context kind-cobaltcore-target delete job -n workflow \
