@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.passwordGeneration
       name: Generation
       type: integer
+    - jsonPath: .status.nextPasswordRotation
+      name: NextRotation
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -59,9 +62,15 @@ spec:
           same name that the order did not create is refused with
           ServiceAccountCollision and never taken over.
 
-          Raising spec.passwordGeneration rotates the password. The delivered Secret
-          is rewritten with the new one, and status.passwordGeneration reports the
-          generation Keystone holds.
+          spec.rotation schedules the rotation. Every spec.rotation.interval (default
+          720h) the operator generates a new password and K-ORC applies it. The old
+          password stops authenticating at that moment: a Keystone user holds one
+          password, so there is no grace period. An interval of 0s turns the schedule
+          off. Raising spec.passwordGeneration above status.passwordGeneration rotates
+          at once. The delivered Secret is rewritten with the new password, and
+          status.passwordGeneration reports the generation Keystone holds. A
+          scheduled rotation that falls due while a KeystoneApplicationCredential in
+          the same namespace that names the user is being deleted waits for it.
 
           Deleting the order holds while a KeystoneRoleAssignment in the same namespace
           names it as userRef, reporting ReferencedByRoleAssignments, and while a
@@ -71,8 +80,9 @@ spec:
 
           The kind has no webhook, because a target cluster runs none: every
           admission rule is a schema rule. An empty spec.userName means metadata.name,
-          and an empty spec.controlPlaneRef.namespace means the order's own namespace;
-          the reconciler resolves both defaults.
+          an empty spec.controlPlaneRef.namespace means the order's own namespace, and
+          an absent spec.rotation.interval means its default; the reconciler resolves
+          all of them.
         properties:
           apiVersion:
             description: |-
@@ -136,15 +146,38 @@ spec:
               passwordGeneration:
                 default: 1
                 description: |-
-                  PasswordGeneration is the generation of the user's password. Raising it
-                  rotates the password: the operator generates a new one, Keystone applies
-                  it, and the delivered Secret is rewritten. It may only increase.
+                  PasswordGeneration is the lowest password generation the order must hold.
+                  The schedule raises the live generation on its own, so raising this above
+                  status.passwordGeneration rotates the password at once: the operator
+                  generates a new one, Keystone applies it, and the delivered Secret is
+                  rewritten. It may only increase.
                 format: int64
                 minimum: 1
                 type: integer
                 x-kubernetes-validations:
                 - message: passwordGeneration may only increase
                   rule: self >= oldSelf
+              rotation:
+                default: {}
+                description: |-
+                  Rotation schedules the rotation of the password. An order that omits the
+                  block gets the default of its interval. The block carries no rule of its
+                  own: there is no grace period to compare the interval with.
+                properties:
+                  interval:
+                    default: 720h
+                    description: |-
+                      Interval is the time between two password rotations. 0s turns the
+                      schedule off. The interval is at most 87600h, so lastPasswordRotation plus
+                      the interval stays inside the range of a Go duration.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: rotation.interval is 0s or at least 1m
+                      rule: duration(self) == duration('0s') || duration(self) >=
+                        duration('1m')
+                    - message: rotation.interval is at most 87600h
+                      rule: duration(self) <= duration('87600h')
+                type: object
               userName:
                 description: |-
                   UserName is the Keystone user name. Empty (the default) means the order's
@@ -226,7 +259,17 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               lastPasswordRotation:
-                description: LastPasswordRotation is when the password was last rotated.
+                description: |-
+                  LastPasswordRotation is when the current password became the live one:
+                  set when the operator re-points the password and again when K-ORC reports
+                  it applied, and on the first provision.
+                format: date-time
+                type: string
+              nextPasswordRotation:
+                description: |-
+                  NextPasswordRotation is when the schedule rotates next,
+                  lastPasswordRotation plus the interval. Absent with the schedule off and
+                  before the first password is applied.
                 format: date-time
                 type: string
               observedGeneration:
