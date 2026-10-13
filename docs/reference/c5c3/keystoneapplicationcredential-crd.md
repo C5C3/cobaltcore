@@ -357,9 +357,14 @@ The order holds three other orders in its namespace while it exists:
 | every KeystoneRoleAssignment of that user and project | `AssignmentReady=False/ReferencedByApplicationCredentials` | the credentials are created and deleted with a token scoped to the project, which needs the role |
 
 Delete the credential order first. The teardown does not rewrite the
-document: if the user's `spec.passwordGeneration` is raised while the credential
-order is being deleted, K-ORC cannot authenticate the deletes, and the finalizer
-holds until the order's K-ORC ApplicationCredentials are removed by hand.
+document: if the user's password rotates while the credential order is being
+deleted, K-ORC cannot authenticate the deletes, and the finalizer holds until
+the order's K-ORC ApplicationCredentials are removed by hand. A scheduled
+rotation of the user order that falls due while the credential order is being
+deleted waits for it. A rotation already under way does not: a deletion that
+starts after the rotation fell due, before K-ORC has applied the new password
+and this order has rebuilt the document with it, strands the finalizer as
+well. A raised `spec.passwordGeneration` is never held.
 
 An order whose target cluster was deregistered cannot be read any more, so its
 children in the ControlPlane's namespace stay. Remove them by hand:

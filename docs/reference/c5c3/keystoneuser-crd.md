@@ -36,20 +36,21 @@ flow on the ControlPlane devstack.
 **Scheme registration:** the `init()` function in `keystoneuser_types.go`
 registers both Kinds with the shared `SchemeBuilder`.
 
-`kubectl get keystoneuser` prints four columns:
+`kubectl get keystoneuser` prints five columns:
 
 | Column | Source |
 | --- | --- |
 | `Ready` | `.status.conditions[?(@.type=='Ready')].status` |
 | `ControlPlane` | `.spec.controlPlaneRef.name` |
 | `Generation` | `.status.passwordGeneration` |
+| `NextRotation` | `.status.nextPasswordRotation` |
 | `Age` | `.metadata.creationTimestamp` |
 
 ## Example
 
 An order in the assigned namespace `tenant-a` against the ControlPlane `cp` in
-`openstack`. The user name defaults to `metadata.name` and the password
-generation to 1.
+`openstack`. The user name defaults to `metadata.name`, the password
+generation to 1, and the rotation interval to 720 hours.
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -79,10 +80,16 @@ spec:
 | --- | --- | --- | --- | --- |
 | `controlPlaneRef` | [`ControlPlaneRefSpec`](#controlplanerefspec) | Yes | — | The ControlPlane whose identity plane the user is created in. |
 | `userName` | `string` | No | `metadata.name` | The Keystone user name (`MinLength=1`, `MaxLength=255`, no comma, mirroring K-ORC's `OpenStackName`). **Immutable**: a rule on the whole object compares the effective name, so spelling out the `metadata.name` default is admitted and any other value is rejected. The names the ControlPlane creates in its admin domain itself are [reserved](#conditions). |
-| `passwordGeneration` | `int64` | No | `1` | The generation of the user's password (`Minimum=1`). Raising it rotates the password. It may only increase. |
+| `passwordGeneration` | `int64` | No | `1` | The lowest password generation the order must hold (`Minimum=1`). Raising it above `status.passwordGeneration` rotates the password at once. It may only increase. |
+| `rotation.interval` | `Duration` | No | `720h` | The time between two scheduled password rotations. `0s` turns the schedule off; any other value is at least `1m`. At most `87600h`. |
 
 The reconciler resolves the `userName` default itself. The kind has no
-defaulting webhook, so the stored object keeps the field empty.
+defaulting webhook, so the stored object keeps the field empty. The API server
+applies the `rotation` default (`720h`) whenever it writes or reads an order,
+so an order stored before the field existed reads with it as well. Only a
+cluster whose CRD predates the field returns an order without an interval, and
+the reconciler reads that as `720h` too (see the upgrade notes under
+[Password rotation](#password-rotation)).
 
 ### ControlPlaneRefSpec
 
@@ -106,15 +113,64 @@ ControlPlanes exist on the management cluster.
 
 ### Password rotation
 
-Raising `spec.passwordGeneration` from N to N+1 rotates the password. The
-operator generates a new password in a Secret of its own, points the K-ORC User
-at it, and K-ORC applies it in Keystone. Until K-ORC reports the new generation
-applied, `status.passwordGeneration` stays at N and the delivered Secret keeps
-the old password, which still authenticates. Once it is applied,
-`status.passwordGeneration` reads N+1, `status.lastPasswordRotation` is set, and
-the Secret holding generation N is deleted. The delivered Secret is rewritten
-once ESO has pushed the new password to OpenBao. A consumer reads the Secret
-again to pick the new password up.
+Every `spec.rotation.interval`, 720 hours by default, the operator rotates the
+password from generation N to N+1. It generates a new password in a Secret of
+its own, points the K-ORC User at it, and K-ORC applies it in Keystone. Until
+K-ORC reports the new generation applied, `status.passwordGeneration` stays at
+N and the delivered Secret keeps the old password, which still authenticates.
+Once it is applied, `status.passwordGeneration` reads N+1,
+`status.lastPasswordRotation` is set to that moment, and the Secret holding
+generation N is deleted. The delivered Secret is rewritten once ESO has pushed
+the new password to OpenBao.
+
+A Keystone user holds one password, so there is no grace period: the old
+password stops authenticating the moment Keystone applies the new one. A
+consumer reads the Secret again, or reconnects when it changes. Anything that
+runs unattended orders a
+[KeystoneApplicationCredential](./keystoneapplicationcredential-crd.md)
+instead, which rotates with an overlap. The password carries no Keystone
+expiry, so a rotation the operator fails to make leaves the old password
+working.
+
+`status.nextPasswordRotation` is `status.lastPasswordRotation` plus the
+interval, the time the schedule rotates next. `interval: 0s` turns the schedule
+off and clears the field. Raising `spec.passwordGeneration` above
+`status.passwordGeneration` rotates at once, with the schedule on or off.
+
+A scheduled rotation that falls due while a KeystoneApplicationCredential in
+the order's namespace that names the order as its `userRef` is being deleted
+waits for it. That order's teardown does not rewrite its document, so K-ORC
+authenticates the deletes with the old password (see its
+[Deletion Semantics](./keystoneapplicationcredential-crd.md#deletion-semantics)).
+While it waits, `UserReady` stays `True/UserProvisioned`, the message names the
+credential orders, and the rotation starts once they are gone. The check runs
+only when the rotation falls due: a credential order whose deletion starts
+after that, before K-ORC has applied the new password and the credential order
+has rebuilt its document with it, still strands its teardown. A raised
+`spec.passwordGeneration` does not wait. On a cluster that does not serve the
+KeystoneApplicationCredential kind nothing can hold the schedule.
+
+An order created before the schedule existed carries no
+`status.lastPasswordRotation`. The upgraded operator sets it on its first pass,
+so the order rotates 720 hours later. An order whose password was rotated by
+hand keeps the time of that rotation: one rotated more than 720 hours before
+the upgrade rotates on the upgraded operator's first pass.
+
+Two fields read differently once the schedule runs. `spec.passwordGeneration`
+no longer follows `status.passwordGeneration` after a scheduled rotation, so
+automation that rotates by raising the spec by one sets it to
+`status.passwordGeneration` plus one instead. `status.lastPasswordRotation` is
+set at the first provision as well, so its presence no longer means that the
+password has rotated.
+
+On a target cluster the CRD comes from the `target-cluster-access` chart, whose
+`crds/` Helm never upgrades. Apply
+`deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml`
+with `kubectl apply -f` on every registered target cluster before the operator
+upgrade (see [Assigned namespaces](../target-clusters.md#assigned-namespaces)).
+Until then that cluster's schema drops `spec.rotation` and
+`status.nextPasswordRotation`: the schedule runs at 720 hours there, an owner
+cannot turn it off, and the `NextRotation` column stays empty.
 
 ## Consent
 
@@ -138,7 +194,9 @@ nothing is provisioned, delivered, repaired or swept, and the Keystone user,
 the password Secrets, the backup and the delivered Secret it already has stay.
 Withdrawing an entry is therefore not a revocation; deleting the order is. A
 frozen order re-reads the ControlPlane every minute, so restoring the entry
-brings it back without an edit to the order.
+brings it back without an edit to the order. The password schedule pauses while
+the order is frozen and `status.nextPasswordRotation` keeps its value. When the
+entry returns, the next pass rotates at once if that time has passed.
 
 A [KeystoneRoleAssignment](./keystoneroleassignment-crd.md) or a
 [KeystoneApplicationCredential](./keystoneapplicationcredential-crd.md) in the
@@ -221,7 +279,8 @@ namespace, so its protection at rest is the cluster's encryption configuration.
 | `observedGeneration` | `int64` | The `metadata.generation` the controller last reconciled. |
 | `userID` | `string` | The Keystone user id. Empty until the User exists in Keystone. |
 | `passwordGeneration` | `int64` | The password generation Keystone holds. |
-| `lastPasswordRotation` | `*metav1.Time` | When the password was last rotated. |
+| `lastPasswordRotation` | `*metav1.Time` | When the current password became the live one: set when the operator points the User at a new password, again when K-ORC reports it applied, and on the first provision. |
+| `nextPasswordRotation` | `*metav1.Time` | When the schedule rotates next, `lastPasswordRotation` plus the interval. Absent with the schedule off and before the first password is applied. |
 | `secretName` | `string` | The [delivered Secret](#delivered-secret-contract), once it carries the current password. |
 | `secretKeys` | `[]string` | `clouds.yaml` and `password`, once the Secret carries the current password. |
 
@@ -229,7 +288,7 @@ namespace, so its protection at rest is the cluster's encryption configuration.
 
 | Type | Status | Reason | Meaning |
 | --- | --- | --- | --- |
-| `UserReady` | True | `UserProvisioned` | The Keystone user exists and K-ORC applied the current password generation. |
+| `UserReady` | True | `UserProvisioned` | The Keystone user exists and K-ORC applied the current password generation. While a due scheduled rotation waits for a KeystoneApplicationCredential naming the user to be deleted, the message says so. |
 | `UserReady` | False | `ServiceAccountCollision` | A Keystone user of this name exists that the order did not create, or the name is one the ControlPlane creates in its admin domain itself: its admin user, or a built-in service account (`glance`, `placement`, `barbican`, `neutron`, `cinder`, `nova`, `neutron-nova`, `hypervisor-operator`), whether or not that service is enabled. Names are compared as Keystone compares them, ignoring case and accents. The order never takes a user over. |
 | `UserReady` | False | `ProbingForCollision` | The probe that decides whether the user already exists has not resolved yet. |
 | `UserReady` | False | `SecretStoreNotReady` | The secret store in the ControlPlane's namespace is not ready, so the password cannot be backed up. |
@@ -257,10 +316,13 @@ classified cause when K-ORC's failure can be classified:
 `AuthenticationFailed`, `CredentialDrift`, `EndpointUnreachable`,
 `TLSVerificationFailed` or `CatalogEndpointMismatch`.
 
-An order on the management cluster is reconciled again when its ControlPlane
-changes. An order on a target cluster, and a refusal that only an edit
-elsewhere lifts (`KeystoneNotPublished`, `DeliveryRefused`, the admin
-identity), is reconciled again every 10 minutes.
+A converged order on the management cluster is reconciled again at
+`status.nextPasswordRotation`, when its ControlPlane changes, and when a
+KeystoneApplicationCredential naming it changes. A scheduled rotation that
+waits for a credential order's deletion checks again every minute. An order on
+a target cluster, and a refusal that only an edit elsewhere lifts
+(`KeystoneNotPublished`, `DeliveryRefused`, the admin identity), is reconciled
+again every 10 minutes at the latest.
 
 ## Defaulting and Validation Summary
 
@@ -271,6 +333,15 @@ cluster that serves the kind:
 - `userName`: `MinLength=1`, `MaxLength=255`, pattern `^[^,]+$`.
 - `passwordGeneration`: schema default `1`, `Minimum=1`, and the transition
   rule `self >= oldSelf` ("passwordGeneration may only increase").
+- `rotation`: schema default `{}`, so the interval default applies to an order
+  that omits the block. There is no rule on the block, because there is no
+  grace period to compare the interval with.
+- `rotation.interval`: schema default `720h`, the rule
+  `duration(self) == duration('0s') || duration(self) >= duration('1m')`
+  ("rotation.interval is 0s or at least 1m"), and the rule
+  `duration(self) <= duration('87600h')` ("rotation.interval is at most
+  87600h"), which keeps `status.lastPasswordRotation` plus the interval inside
+  the range of a Go duration.
 - `controlPlaneRef.name`: required, `MinLength=1`, and a transition rule
   ("controlPlaneRef.name is immutable").
 - `controlPlaneRef.namespace`: RFC-1123 label, ≤ 63, and a transition rule
@@ -365,7 +436,8 @@ kubectl delete users.openstack.k-orc.cloud,pushsecrets.external-secrets.io,secre
 `tests/e2e/c5c3/keystone-user/` runs on the `e2e-controlplane` job. It orders a
 user from an assigned namespace, reads the Secret, authenticates with it from a
 Job in that namespace, repairs an edited and a deleted Secret, rotates the
-password, refuses an order from an unassigned namespace, freezes the order by
+password through `spec.passwordGeneration` and then on a one-minute schedule,
+refuses an order from an unassigned namespace, freezes the order by
 withdrawing the assignment, and deletes it down to the OpenBao path.
 `tests/e2e/c5c3/invalid-keystoneuser-cr/` is the admission rejection corpus,
 run on the `e2e-operator (c5c3)` job. The target-cluster path is proven by
