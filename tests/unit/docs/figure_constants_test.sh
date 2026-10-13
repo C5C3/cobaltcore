@@ -6,14 +6,16 @@
 # Verify the figures name the operator constants they restate.
 #
 # Some pairs under docs/diagrams/ print a value an operator defines as a Go
-# constant, `<constant> = "<value>"`, at the top level or in a const block.
-# FIGURE_CONSTANTS lists one such value per row. check_figure_constants reads
-# each constant's value, puts it into the row's label and looks for that label
-# in both files of the pair: in the .drawio and in the .svg. It prints one
-# problem per line and nothing when every figure names every value. The check
-# runs one way: a value the figure prints and no row lists is not reported.
-# The fixture tests prove each check on a scratch tree before the last test
-# runs it on the repository.
+# constant, `<constant> = "<value>"`, at the top level or in a const block, or
+# as the default of a CRD field, a `+kubebuilder:default="<value>"` marker in
+# the comment block directly above the struct field. FIGURE_CONSTANTS lists one
+# such value per row; a row names a field default as `default:<FieldName>`.
+# check_figure_constants reads each value, puts it into the row's label and
+# looks for that label in both files of the pair: in the .drawio and in the
+# .svg. It prints one problem per line and nothing when every figure names
+# every value. The check runs one way: a value the figure prints and no row
+# lists is not reported. The fixture tests prove each check on a scratch tree
+# before the last test runs it on the repository.
 #
 # Usage: bash tests/unit/docs/figure_constants_test.sh
 
@@ -30,9 +32,10 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # One row per restated constant: <figure>|<Go file>|<constant>|<label>. The Go
-# file is relative to the repository root. The label is the text the figure
-# prints, with %s where the value stands, so that a value that only appears
-# elsewhere in the figure does not count.
+# file is relative to the repository root. The constant is a Go constant's
+# name, or default:<FieldName> for the kubebuilder default of a struct field.
+# The label is the text the figure prints, with %s where the value stands, so
+# that a value that only appears elsewhere in the figure does not count.
 FIGURE_CONSTANTS="\
 service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_backends.go|nfsMountPointBase|%s/{md5}
 service-cinder-nfs-mounts|operators/cinder/internal/controller/reconcile_backup_backend.go|backupMountPointBase|%s/{md5}
@@ -44,12 +47,31 @@ service-glance-image-paths|operators/glance/internal/controller/reconcile_config
 service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceTasksStorePath|%s,
 service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceImageCachePath|%s,"
 
+# read_default_marker <Go file> <FieldName>: print the value of the
+# `+kubebuilder:default="<value>"` marker in the comment block directly above
+# the first struct field named <FieldName>, and nothing when that block has no
+# such marker. A line that is neither a comment nor blank ends a block, so the
+# marker of the field above is never taken.
+read_default_marker() {
+  awk -v field="$2" '
+    /^[[:space:]]*\/\/[[:space:]]*\+kubebuilder:default="/ {
+      marker = $0
+      sub(/.*\+kubebuilder:default="/, "", marker)
+      sub(/".*/, "", marker)
+      next
+    }
+    /^[[:space:]]*\/\// || /^[[:space:]]*$/ { next }
+    $1 == field { if (marker != "") print marker; exit }
+    { marker = "" }
+  ' "$1"
+}
+
 # check_figure_constants <root> <diagrams-dir> <rows>: print one problem per
 # line, sorted and without repeats, and nothing when both files of every
 # figure carry the label of every row, once for each row of the figure that
-# comes out with the same label. A missing Go file or constant is the only
-# line of its row. A label a file does not print is "not in" it; one it prints
-# fewer times than rows come out with it is "too few in" it.
+# comes out with the same label. A missing Go file, constant or default marker
+# is the only line of its row. A label a file does not print is "not in" it;
+# one it prints fewer times than rows come out with it is "too few in" it.
 check_figure_constants() {
   local root="$1" dir="$2" rows="$3"
   local figure file constant label value needle pattern seen="" line sharers wanted count ext
@@ -59,10 +81,18 @@ check_figure_constants() {
       echo "no Go file: $file"
       continue
     fi
-    value="$(sed -n "s/^[[:space:]]*\(const[[:space:]]*\)*${constant}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\2/p" "$root/$file")"
-    if [[ -z "$value" ]]; then
-      echo "no constant $constant in $file"
-      continue
+    if [[ "$constant" == default:* ]]; then
+      value="$(read_default_marker "$root/$file" "${constant#default:}")"
+      if [[ -z "$value" ]]; then
+        echo "no default marker for ${constant#default:} in $file"
+        continue
+      fi
+    else
+      value="$(sed -n "s/^[[:space:]]*\(const[[:space:]]*\)*${constant}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\2/p" "$root/$file")"
+      if [[ -z "$value" ]]; then
+        echo "no constant $constant in $file"
+        continue
+      fi
     fi
     needle="${label%%\%s*}$value${label#*\%s}"
     # Bound the label on both sides, so a value that is only a prefix or a
@@ -104,12 +134,15 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 FIXTURE_ROWS="\
 fig|op/a.go|mountBase|%s/{md5}
 fig|op/a.go|volumeName|emptyDir %s
-fig|op/b.go|driverName|driver %s:"
+fig|op/b.go|driverName|driver %s:
+fig|op/types.go|default:Interval|every %s"
 
 # build_fixture: write a consistent tree and print its root. op/a.go defines
 # one constant at the top level and one in a const block, padded the way gofmt
-# aligns a shorter name and with a trailing comment. The figure prints the
-# volume name a second time inside a path, outside its label.
+# aligns a shorter name and with a trailing comment. op/types.go defines two
+# struct fields under default markers, the second with a validation marker
+# between its default and the field. The figure prints the volume name a
+# second time inside a path, outside its label.
 build_fixture() {
   local root label
   root="$(mktemp -d "$TMP_ROOT/fixture.XXXXXX")"
@@ -126,12 +159,30 @@ const (
 )
 EOF
   printf 'package controller\n\nconst driverName = "csi.example.io"\n' >"$root/op/b.go"
+  cat >"$root/op/types.go" <<'EOF'
+package v1alpha1
+
+// RotationSpec schedules a rotation.
+type RotationSpec struct {
+	// GracePeriod is how long the superseded credential stays.
+	// +optional
+	// +kubebuilder:default="24h"
+	GracePeriod *metav1.Duration `json:"gracePeriod,omitempty"`
+
+	// Interval is the time between two rotations.
+	// +optional
+	// +kubebuilder:default="720h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m')",message="at least 1m"
+	Interval *metav1.Duration `json:"interval,omitempty"`
+}
+EOF
 
   local labels=(
     "/var/lib/svc/mnt/{md5}"
     "emptyDir staging"
     "/var/lib/svc/staging"
     "an inline volume of the driver csi.example.io: the kubelet mounts it"
+    "rotates every 720h"
   )
   {
     echo '<mxfile host="drawio" type="device"><diagram id="f" name="F"><mxGraphModel><root>'
@@ -272,6 +323,34 @@ test_label_two_rows_share_is_needed_once_per_row() {
     "$(check_figure_constants "$root" "$root/diagrams" "$rows")"
 }
 
+# Interval's marker sits above a validation marker, so this also proves the
+# value is read across the rest of the field's comment block.
+test_default_marker_row_reads_the_marker() {
+  echo "Test: a default: row reads the kubebuilder default above the field"
+
+  local root
+  root="$(build_fixture)"
+  assert_eq "the marker's value in its label" "" \
+    "$(check_figure_constants "$root" "$root/diagrams" "$FIXTURE_ROWS")"
+
+  rewrite "$root/op/types.go" 's/"720h"/"721h"/'
+  assert_eq "a changed default" \
+    "not in drawio: fig: every 721h"$'\n'"not in svg: fig: every 721h" \
+    "$(check_figure_constants "$root" "$root/diagrams" "$FIXTURE_ROWS")"
+}
+
+# GracePeriod's marker sits in the block above Interval's, so the field line
+# between them has to clear it.
+test_missing_default_marker_is_the_only_report_of_its_row() {
+  echo "Test: a field without a default marker is the only report of its row"
+
+  local root
+  root="$(build_fixture)"
+  rewrite "$root/op/types.go" '/+kubebuilder:default="720h"/d'
+  assert_eq "no marker above Interval" "no default marker for Interval in op/types.go" \
+    "$(check_figure_constants "$root" "$root/diagrams" "$FIXTURE_ROWS")"
+}
+
 test_repository_figures_name_every_constant() {
   echo "Test: the repository's figures name every constant FIGURE_CONSTANTS lists"
 
@@ -303,6 +382,8 @@ test_value_outside_its_label_is_reported
 test_value_renamed_to_a_prefix_is_reported
 test_value_renamed_to_a_suffix_is_reported
 test_label_two_rows_share_is_needed_once_per_row
+test_default_marker_row_reads_the_marker
+test_missing_default_marker_is_the_only_report_of_its_row
 test_repository_figures_name_every_constant
 
 echo ""
