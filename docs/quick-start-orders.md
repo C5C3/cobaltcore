@@ -446,6 +446,13 @@ The schema is `workflow_db`, and the Secret `workflow-db-credentials` carries
 The Job writes a row into the schema, reads it back, and fails if the login
 reaches the ControlPlane's `keystone` schema.
 
+The user OpenBao issues is a lease. The right half of the figure is the chain
+behind the Secret: ESO draws a new user every 24 hours, OpenBao drops each one
+48 hours after it issued it, and the operator rewrites the Secret on every
+refresh, so a consumer reads it at least once a day.
+
+![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](./diagrams/secrets-db-credentials.svg)
+
 ### Step 9: Order a vhost {#cp-vhost}
 
 ```bash
