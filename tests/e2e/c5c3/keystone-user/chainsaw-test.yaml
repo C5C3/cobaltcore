@@ -25,8 +25,11 @@
 #             in the owner's namespace, the password is backed up, and a Job
 #             there issues a token.
 #   REPAIR    an overwritten password and a deleted Secret come back.
-#   ROTATION  raising spec.passwordGeneration delivers a new password, backs
-#             it up to OpenBao, and drops the old generation's Secret.
+#   ROTATION  the default schedule is on. Raising spec.passwordGeneration to 2
+#             delivers a new password, backs it up to OpenBao, and drops the
+#             old generation's Secret; a one-minute interval then rotates it
+#             on the schedule to generation 3 the same way, and the schedule
+#             is turned off.
 #   PIECES-REFUSED  a project, a role assignment, a catalog entry and an
 #             application credential are ordered; the project is provisioned,
 #             the role is off the empty allowedRoles and the entry has no
@@ -717,6 +720,11 @@ spec:
             "$(kubectl get keystoneuser "${ORDER}" -n "${TENANT_NS}" -o jsonpath='{.status.userID}')"
           assert_eq "the order holds generation 1" "1" \
             "$(kubectl get keystoneuser "${ORDER}" -n "${TENANT_NS}" -o jsonpath='{.status.passwordGeneration}')"
+          # The fixture leaves spec.rotation out, so the default schedule is on.
+          assert_nonempty "the first password is anchored" \
+            "$(jsonpath_of keystoneuser "${ORDER}" "${TENANT_NS}" '{.status.lastPasswordRotation}')"
+          assert_nonempty "the default schedule names the next rotation" \
+            "$(jsonpath_of keystoneuser "${ORDER}" "${TENANT_NS}" '{.status.nextPasswordRotation}')"
           assert_eq "one K-ORC User sits in the plane's namespace" "1" \
             "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${ORDER_SELECTOR}")"
 
@@ -772,7 +780,7 @@ spec:
               -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}')"
           run_verify_job "after the repair"
 
-          # ══ LEG 3 — raising passwordGeneration rotates ════════════════════
+          # ══ LEG 3 — a raised generation and the schedule rotate ═══════════
           V1_PASSWORD="$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)"
           kubectl patch keystoneuser "${ORDER}" -n "${TENANT_NS}" --type merge -p '{"spec":{"passwordGeneration":2}}'
           GEN_DEADLINE=$(( $(date +%s) + 600 ))
@@ -796,6 +804,26 @@ spec:
           wait_kv_password "${KV_PATH}" 120
           wait_gone secret "${PREFIX}password-v1" "${CP_NS}" 300
           run_verify_job "after the rotation"
+
+          # The schedule rotates on its own. Its anchor is the stamp of the
+          # pass that saw generation 2 applied, so a one-minute interval is due
+          # within the minute. The schedule goes off as soon as generation 3 is
+          # live, so no fourth rotation races the rest of the suite.
+          V2_PASSWORD="$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)"
+          kubectl patch keystoneuser "${ORDER}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"rotation":{"interval":"1m"}}}'
+          wait_field keystoneuser "${ORDER}" "${TENANT_NS}" '{.status.passwordGeneration}' 3 300
+          kubectl patch keystoneuser "${ORDER}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"rotation":{"interval":"0s"}}}'
+          wait_field keystoneuser "${ORDER}" "${TENANT_NS}" '{.status.nextPasswordRotation}' "" 120
+          wait_condition keystoneuser "${ORDER}" "${TENANT_NS}" Ready True 300
+          wait_delivered_password 3 300
+          if [ "$(secret_key "${CREDS_SECRET}" "${TENANT_NS}" password)" = "${V2_PASSWORD}" ]; then
+            echo "ERROR: the scheduled rotation delivered the generation-2 password again"; exit 1
+          fi
+          wait_kv_password "${KV_PATH}" 120
+          wait_gone secret "${PREFIX}password-v2" "${CP_NS}" 300
+          run_verify_job "after the scheduled rotation"
 
           # ══ LEG 4 — the pieces are refused without roles or consent ═══════
           for fixture in 04-keystoneproject-tenant.yaml 05-keystoneroleassignment-tenant.yaml \
@@ -1212,7 +1240,7 @@ spec:
           kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
             -p "{\"spec\":{\"namespaceAssignments\":[${FULL_ENTRY}]}}"
           wait_condition keystoneuser "${ORDER}" "${TENANT_NS}" Ready True 300
-          wait_delivered_password 2 120
+          wait_delivered_password 3 120
           wait_condition keystoneproject "${PROJECT}" "${TENANT_NS}" Ready True 300
           wait_condition keystoneroleassignment "${MEMBER}" "${TENANT_NS}" Ready True 300
           wait_condition keystonecatalogentry "${DNS}" "${TENANT_NS}" Ready True 300
