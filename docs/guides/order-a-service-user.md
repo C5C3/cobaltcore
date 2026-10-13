@@ -80,6 +80,11 @@ The objects in `openstack` cannot carry an owner reference to an order in
 another namespace, so they carry the labels `c5c3.io/keystoneuser-name`,
 `c5c3.io/keystoneuser-namespace` and `c5c3.io/keystoneuser-cluster` instead.
 
+The figure draws the table: the children in `openstack`, the order and its
+Secret in `workflow`, and the same order on a target cluster.
+
+![An order and its Secret on two clusters. On the management cluster the ControlPlane in the namespace openstack assigns the owner's namespace, and the c5c3-operator writes the order's children into openstack: the K-ORC User, Project, RoleAssignment, Endpoints and ApplicationCredential, the Database, the Vhost, User and Permission, the password and source Secrets, the PushSecret and the ExternalSecret with its generator, all owned by label because no owner reference crosses a namespace. K-ORC creates the pieces in Keystone, the mariadb-operator creates the schema in MariaDB, the topology operator creates the user on RabbitMQ, and OpenBao holds the backup every credential goes to before it is delivered. The delivered Secret sits beside the order in the owner's namespace with a controller owner reference and carries the in-cluster addresses. On a target cluster the access chart's ServiceAccount and Role let the c5c3-operator reach the owner's namespace over the registration Secret's kubeconfig; the children stay on the management cluster, and the Secret beside the order carries the published addresses instead.](../diagrams/controlplane-order-flow.svg)
+
 ## Steps
 
 ### 1. Create the service's namespace

@@ -31,6 +31,16 @@ the ControlPlane devstack, extended by a second kind cluster.
 
 ![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
 
+Every step of both parts follows the same path: the ControlPlane's entry admits
+the order, the c5c3-operator writes the order's children beside the
+ControlPlane and provisions against Keystone, MariaDB or the bus, and the
+credentials Secret lands beside the order.
+[What lands where](./guides/order-a-service-user.md#background-what-lands-where)
+lists the children. On the target cluster only the addresses in that Secret
+change.
+
+![An order and its Secret on two clusters. On the management cluster the ControlPlane in the namespace openstack assigns the owner's namespace, and the c5c3-operator writes the order's children into openstack: the K-ORC User, Project, RoleAssignment, Endpoints and ApplicationCredential, the Database, the Vhost, User and Permission, the password and source Secrets, the PushSecret and the ExternalSecret with its generator, all owned by label because no owner reference crosses a namespace. K-ORC creates the pieces in Keystone, the mariadb-operator creates the schema in MariaDB, the topology operator creates the user on RabbitMQ, and OpenBao holds the backup every credential goes to before it is delivered. The delivered Secret sits beside the order in the owner's namespace with a controller owner reference and carries the in-cluster addresses. On a target cluster the access chart's ServiceAccount and Role let the c5c3-operator reach the owner's namespace over the registration Secret's kubeconfig; the children stay on the management cluster, and the Secret beside the order carries the published addresses instead.](./diagrams/controlplane-order-flow.svg)
+
 ## Prerequisites
 
 ::: info Devstack
