@@ -49,7 +49,8 @@ service-glance-image-paths|operators/glance/internal/controller/reconcile_config
 secrets-rotation-orders|operators/c5c3/api/v1alpha1/keystoneapplicationcredential_types.go|default:Interval|interval %s,
 secrets-rotation-orders|operators/c5c3/api/v1alpha1/keystoneapplicationcredential_types.go|default:GracePeriod|grace period %s
 secrets-rotation-orders|operators/c5c3/api/v1alpha1/rabbitmqvhost_types.go|default:Interval|interval %s,
-secrets-rotation-orders|operators/c5c3/api/v1alpha1/rabbitmqvhost_types.go|default:GracePeriod|grace period %s"
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/rabbitmqvhost_types.go|default:GracePeriod|grace period %s
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/keystoneuser_types.go|default:Interval|interval %s, no grace period"
 
 # read_default_marker <Go file> <FieldName>: print the value of the
 # `+kubebuilder:default="<value>"` marker in the comment block directly above
