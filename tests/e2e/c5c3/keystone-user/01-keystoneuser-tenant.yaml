@@ -4,8 +4,9 @@
 
 # The order under test: a Keystone user ordered from the assigned namespace.
 #
-# userName is left to default to metadata.name ("workflow"), and
-# passwordGeneration to 1; the suite raises it to 2 to rotate the password.
+# userName is left to default to metadata.name ("workflow"), passwordGeneration
+# to 1 and spec.rotation to the 720h schedule; the suite raises the generation
+# to 2 and lets the schedule rotate it to 3.
 # controlPlaneRef names the plane's namespace explicitly, because the order
 # lives in another one.
 #
