@@ -115,9 +115,10 @@ kubectl get secret workflow-credentials -n workflow -o jsonpath='{.data.clouds\.
 ```
 
 K-ORC creates the user in Keystone, and ESO backs the password up to OpenBao
-before the Secret is written. The password rotates only when
-`spec.passwordGeneration` is raised, and the old one stops the moment Keystone
-holds the new one; [Rotate the password](./guides/order-a-service-user.md#rotate-the-password)
+before the Secret is written. The password rotates every 720 hours by default
+and when `spec.passwordGeneration` is raised. There is no grace period: the old
+one stops the moment Keystone holds the new one;
+[Rotate the password](./guides/order-a-service-user.md#rotate-the-password)
 shows it. The document's `auth_url` is the Keystone Service
 inside the cluster, `http://controlplane-keystone.openstack.svc:5000/v3`, and
 it carries no project, so a token issued with it is unscoped. Issue one from a
@@ -1022,9 +1023,9 @@ chainsaw test --test-dir tests/e2e-orders-multicluster/orders
 
 `keystone-user` runs the Keystone and database orders of Part 1 on the
 management cluster, with the rotation, repair, freeze and teardown walks of the
-how-to guide, including the login with the superseded credential inside its
-grace period that Step 7 shows, and `messaging` does the same for the vhost
-order. Both need the ControlPlane stack, which
+how-to guide. It rotates the user's password by hand and on the schedule, and
+logs in with the superseded credential inside its grace period, as Step 7
+shows. `messaging` does the same for the vhost order. Both need the ControlPlane stack, which
 [ControlPlane E2E Test Suites](./reference/testing/controlplane-e2e-tests.md)
 describes. `tests/e2e-orders-multicluster/orders` runs Part 2 on two kind
 clusters; `make e2e-orders-multicluster` names the stack and the registration
