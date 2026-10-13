@@ -1083,8 +1083,10 @@ itself, as the foreign-namespace suite does, and runs eleven steps:
    credential inside the grace period, the Secret names the new id,
    `status.nextRotation` is absent, and within 5 min the old credential is
    gone. A Job authenticates with the new credential, and a Job on a copy of
-   the generation-1 document fails. Raising `credentialGeneration` to 3 creates
-   a credential with a new id and no expiry, and a Job authenticates with it.
+   the generation-1 document fails with Keystone's
+   `Could not find Application Credential`. Raising `credentialGeneration` to 3
+   creates a credential with a new id and no expiry, and a Job authenticates
+   with it.
 7. **Database**: `workflow-db` with `deletionPolicy: Retain` reads
    `Ready=True` within 10 min with `DatabaseReady=True/DatabaseProvisioned` and
    `DeliveryReady=True/Delivered`, `status.databaseName` `workflow_db`, the five

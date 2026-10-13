@@ -370,8 +370,11 @@ kubectl logs -n workflow job/workflow-appcred-gen1-verify
 ```
 
 One K-ORC credential is left, and the Job fails: Keystone refuses a credential
-it no longer holds. A loop that runs out means the operator did not delete
-generation 1; `kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`
+it no longer holds. The log ends with
+`Could not find Application Credential: <id>. (HTTP 404) (Request-ID: req-<uuid>)`,
+where `<id>` is the id of the credential in the copy. A loop that runs out
+means the operator did not delete generation 1;
+`kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`
 shows the order's conditions and events.
 
 A rotation by hand raises `spec.credentialGeneration` above the generation the
