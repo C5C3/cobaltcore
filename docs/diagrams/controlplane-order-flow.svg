@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1648" viewBox="0 0 1808 1648" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="An order, its children and its Secret, on two clusters">
+<title>An order, its children and its Secret, on two clusters</title>
+<rect width="1808" height="1648" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="852" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<text x="463.5" y="85.7" font-size="20" font-weight="400" fill="#55606E">kind-cobaltcore on the devstack</text>
+<rect x="560" y="120" width="680" height="166" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="578" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="604" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="644" y="160.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="600" y="214" width="184" height="48" rx="20" fill="#1E6B40"/>
+<text x="692" y="246.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">{kind} {name}</text>
+<text x="600" y="199.2" font-size="20" font-weight="400" fill="#55606E">one of the seven order kinds</text>
+<path d="M920 214 H1164 L1180 230 V262 H920 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1164,214 1164,230 1180,230" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1050" y="246.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-credentials</text>
+<text x="920" y="199.2" font-size="20" font-weight="400" fill="#55606E">addresses: the in-cluster Services</text>
+<rect x="1264" y="120" width="480" height="166" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="1282" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1308" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1348" y="160.64" font-size="24" font-weight="700" fill="#2B3440">c5c3-system</text>
+<rect x="1540" y="214" width="187" height="48" rx="17" fill="#FDFCF9" stroke="#2F8A57" stroke-width="2"/>
+<text x="1633.5" y="246.64" font-size="24" font-weight="600" fill="#1E6B40" text-anchor="middle">c5c3-operator</text>
+<rect x="64" y="316" width="1680" height="552" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="333" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="355.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="356.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<rect x="88" y="380" width="231" height="48" rx="20" fill="#1E6B40"/>
+<text x="203.5" y="412.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane {cp}</text>
+<text x="335" y="398.2" font-size="20" font-weight="400" fill="#55606E">spec.namespaceAssignments: {ns},</text>
+<text x="335" y="424.2" font-size="20" font-weight="400" fill="#55606E">and {ns} on {target}</text>
+<rect x="160" y="490" width="1520" height="198" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="179" y="529.36" font-size="26" font-weight="700" fill="#2B3440">Children of the order, owned by label</text>
+<rect x="180" y="552" width="856" height="48" rx="20" fill="#2B3440"/>
+<text x="608" y="584.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K-ORC User, Project, RoleAssignment, Endpoints, ApplicationCredential</text>
+<path d="M1052 552 H1328 L1344 568 V600 H1052 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1328,552 1328,568 1344,568" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1198" y="584.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">password Secret v{N}</text>
+<path d="M1360 552 H1548 L1564 568 V600 H1360 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1548,552 1548,568 1564,568" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1462" y="584.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">source Secret</text>
+<rect x="180" y="616" width="355" height="48" rx="20" fill="#2B3440"/>
+<text x="357.5" y="648.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Database (mariadb-operator)</text>
+<rect x="551" y="616" width="529" height="48" rx="20" fill="#2B3440"/>
+<text x="815.5" y="648.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Vhost, User, Permission (topology operator)</text>
+<rect x="1096" y="616" width="368" height="48" rx="20" fill="#8A2B63"/>
+<text x="1280" y="648.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ExternalSecret with generator</text>
+<rect x="1480" y="616" width="157" height="48" rx="20" fill="#8A2B63"/>
+<text x="1558.5" y="648.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PushSecret</text>
+<rect x="300" y="760" width="125" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="362.5" y="792.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">MariaDB</text>
+<rect x="600" y="760" width="141" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="670.5" y="792.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">RabbitMQ</text>
+<rect x="800" y="760" width="136" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="868" y="792.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Keystone</text>
+<rect x="986" y="760" width="107" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1039.5" y="792.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">K-ORC</text>
+<rect x="1400" y="760" width="135" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1467.5" y="792.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">OpenBao</text>
+<rect x="200" y="932" width="1568" height="592" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="226.5" y="952.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="264.5" y="979.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="316.5" y="981.3" font-size="30" font-weight="700" fill="#17202B">Target cluster</text>
+<text x="531.5" y="977.7" font-size="20" font-weight="400" fill="#55606E">kind-cobaltcore-target, registered in c5c3-clusters</text>
+<rect x="640" y="1020" width="1104" height="296" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="658" y="1037" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="684" y="1059.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="724" y="1060.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="880" y="1160" width="184" height="48" rx="20" fill="#1E6B40"/>
+<text x="972" y="1192.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">{kind} {name}</text>
+<text x="880" y="1235.2" font-size="20" font-weight="400" fill="#55606E">one of the seven order kinds</text>
+<path d="M1180 1160 H1424 L1440 1176 V1208 H1180 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1424,1160 1424,1176 1440,1176" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1310" y="1192.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">{name}-credentials</text>
+<text x="1180" y="1235.2" font-size="20" font-weight="400" fill="#55606E">addresses: publicEndpoint,</text>
+<text x="1180" y="1261.2" font-size="20" font-weight="400" fill="#55606E">publishedDatabaseEndpoint, publishedMessagingEndpoint</text>
+<rect x="640" y="1340" width="704" height="160" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="658" y="1357" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="684" y="1379.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="724" y="1380.64" font-size="24" font-weight="700" fill="#2B3440">c5c3-access</text>
+<rect x="660" y="1404" width="648" height="48" rx="20" fill="#2B3440"/>
+<text x="984" y="1436.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ServiceAccount and Role (target-cluster-access chart)</text>
+<text x="660" y="1479.2" font-size="20" font-weight="400" fill="#55606E">the Role grants the seven order kinds and Secrets in {ns}</text>
+<polyline points="290,380 290,238 589.5,238" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="600,238 585,245.2 585,230.8" fill="#3A4452"/>
+<text x="300" y="225.2" font-size="20" font-weight="400" fill="#2B3440">consent</text>
+<polyline points="110,428 110,1184 869.5,1184" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="880,1184 865,1191.2 865,1176.8" fill="#3A4452"/>
+<text x="300" y="1171.2" font-size="20" font-weight="400" fill="#2B3440">consent</text>
+<polyline points="1580,262 1580,479.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1580,490 1572.8,475 1587.2,475" fill="#2F8A57"/>
+<text x="1282" y="413.2" font-size="20" font-weight="400" fill="#1E6B40">writes the children in openstack</text>
+<polyline points="1540,238 1190.5,238" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1180,238 1195,230.8 1195,245.2" fill="#2F8A57"/>
+<text x="1274" y="201.2" font-size="20" font-weight="400" fill="#1E6B40">applies the Secret beside the order</text>
+<polyline points="1704,262 1704,1130 1308,1130 1308,1149.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="1308,1160 1300.8,1145 1315.2,1145" fill="#2F8A57"/>
+<text x="1320" y="1067.2" font-size="20" font-weight="400" fill="#1E6B40">applies the Secret beside the order</text>
+<text x="1320" y="1091.2" font-size="20" font-weight="400" fill="#55606E">over the registration Secret's kubeconfig,</text>
+<text x="1320" y="1117.2" font-size="20" font-weight="400" fill="#55606E">as the chart's ServiceAccount</text>
+<polyline points="700,280 700,490" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="700,264 695.3,272 700,280 704.7,272" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1040,1142 1040,912 135,912 135,650 160,650" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="2 6"/>
+<polygon points="1040,1158 1035.3,1150 1040,1142 1044.7,1150" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="802,238 920,238" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="786,238 794,233.3 802,238 794,242.7" fill="#7D8794"/>
+<polyline points="1082,1184 1180,1184" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polygon points="1066,1184 1074,1179.3 1082,1184 1074,1188.7" fill="#7D8794"/>
+<polyline points="1050,490 1050,272.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1050,262 1057.2,277 1042.8,277" fill="#B0387F"/>
+<text x="1062" y="467.2" font-size="20" font-weight="400" fill="#8A2B63">the credential, once the backup holds it</text>
+<polyline points="986,784 946.5,784" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="936,784 951,776.8 951,791.2" fill="#2457C5"/>
+<text x="800" y="837.2" font-size="20" font-weight="400" fill="#1D47A6">creates the user, the project, the credential</text>
+<polyline points="360,664 360,749.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="360,760 352.8,745 367.2,745" fill="#2F8A57"/>
+<text x="372" y="715.2" font-size="20" font-weight="400" fill="#1E6B40">mariadb-operator</text>
+<text x="372" y="741.2" font-size="20" font-weight="400" fill="#1E6B40">creates the schema</text>
+<polyline points="670,664 670,749.5" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="670,760 662.8,745 677.2,745" fill="#2F8A57"/>
+<text x="682" y="728.2" font-size="20" font-weight="400" fill="#1E6B40">topology operator creates the user</text>
+<polyline points="1505,664 1505,749.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1505,760 1497.8,745 1512.2,745" fill="#B0387F"/>
+<text x="1400" y="837.2" font-size="20" font-weight="400" fill="#8A2B63">PushSecret: backup first</text>
+<polyline points="1430,760 1430,674.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1430,664 1437.2,679 1422.8,679" fill="#B0387F"/>
+<text x="1044" y="728.2" font-size="20" font-weight="400" fill="#8A2B63">ExternalSecret: a database user per lease</text>
+<text x="40" y="1575.2" font-size="20" font-weight="400" fill="#55606E">An order is a KeystoneUser, KeystoneProject, KeystoneRoleAssignment, KeystoneCatalogEntry, KeystoneApplicationCredential, MariaDBDatabase or RabbitMQVhost.</text>
+<text x="40" y="1601.2" font-size="20" font-weight="400" fill="#55606E">The same path ends in a Secret on the cluster the order lives on. Only the addresses in it differ.</text>
+</svg>
