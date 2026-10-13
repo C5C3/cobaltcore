@@ -9,15 +9,17 @@
 #      the SPDX comment is present, and the H1 follows it
 #   2. docs/.vitepress/config.ts lists the page after the metal-stack quick
 #      start and before the Architecture group
-#   3. the six `## ` sections occur once each and in order, and every
+#   3. the six `## ` sections occur once each and in order, every
 #      `### Step` heading carries an explicit anchor, `cp-` in Part 1 and `tc-`
-#      in Part 2
+#      in Part 2, and Part 2 keeps `### The path from the target {#tc-path}`,
+#      which the guide and the diagram catalogue link
 #   4. every `chainsaw test --test-dir` path resolves to a chainsaw-test.yaml
 #   5. every `<<< @/../` import names a file that holds its region once, as a
 #      column-0 `# region <name>` before a column-0 `# endregion <name>`
-#   6. the page names `targetPort: 31443` once, and hack/kind-config.yaml maps
+#   6. the page names `targetPort: 31443` once, hack/kind-config.yaml maps
 #      `containerPort: 31443`, the Envoy Gateway's NodePort the Service of Part
-#      2 forwards to
+#      2 forwards to, and both forms of the target-path figure name
+#      `NodePort 31443`
 #   7. the page names publishedDatabaseEndpoint and publishedMessagingEndpoint,
 #      and both are fields of the ControlPlane API
 #   8. the Devstack box names ./quick-start-controlplane.md once and holds the
@@ -156,6 +158,8 @@ test_sections() {
       record "$anchored" "'${step}' carries a {#${part#*:}-...} anchor"
     done <<<"$steps"
   done
+  assert_contains "Part 2 keeps the path anchor other pages link" "$(section '^## Part 2: ')" \
+    "### The path from the target {#tc-path}"
 }
 
 # --- Test 4: the suites Tested by names ---
@@ -216,6 +220,11 @@ test_target_port_is_the_envoy_node_port() {
     "$(grep -cF 'targetPort: 31443' "$QUICK_START_DOC" || true)"
   assert_file_contains_fixed "hack/kind-config.yaml maps containerPort 31443" "$KIND_CONFIG" \
     "containerPort: 31443"
+  local ext
+  for ext in drawio svg; do
+    assert_file_contains_fixed "the target-path figure (.$ext) names NodePort 31443" \
+      "$PROJECT_ROOT/docs/diagrams/controlplane-orders-target-path.$ext" "NodePort 31443"
+  done
 }
 
 # --- Test 7: the published fields exist ---

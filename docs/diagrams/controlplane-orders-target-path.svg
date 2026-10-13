@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1584" viewBox="0 0 1808 1584" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="From a pod on the target to the devstack's Keystone, database and bus">
+<title>From a pod on the target to the devstack's Keystone, database and bus</title>
+<rect width="1808" height="1584" fill="#F6F5F1"/>
+<rect x="40" y="40" width="1728" height="600" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="60.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="87.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="89.3" font-size="30" font-weight="700" fill="#17202B">Target cluster</text>
+<text x="371.5" y="85.7" font-size="20" font-weight="400" fill="#55606E">kind-cobaltcore-target</text>
+<rect x="64" y="120" width="576" height="496" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="160.64" font-size="24" font-weight="700" fill="#2B3440">kube-system</text>
+<rect x="88" y="336" width="133" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="154.5" y="368.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">CoreDNS</text>
+<rect x="103" y="300" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="162" y="321.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<text x="130" y="411.2" font-size="20" font-weight="400" fill="#55606E">rewrite name keystone.127-0-0-1.nip.io</text>
+<text x="130" y="437.2" font-size="20" font-weight="400" fill="#55606E">keystone-public.{ns}.svc.cluster.local</text>
+<rect x="664" y="120" width="1080" height="496" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="682" y="137" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="708" y="159.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="748" y="160.64" font-size="24" font-weight="700" fill="#2B3440">{ns}</text>
+<rect x="718" y="176" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="770" y="197.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
+<rect x="830" y="176" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="889" y="197.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<path d="M688 212 H932 L948 228 V260 H688 Z" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<polyline points="932,212 932,228 948,228" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="818" y="244.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">keystone-public-ca</text>
+<text x="740" y="287.2" font-size="20" font-weight="400" fill="#55606E">tls.crt of keystone-nip-io-tls, copied by hand</text>
+<path d="M1180 212 H1448 L1464 228 V260 H1180 Z" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<polyline points="1448,212 1448,228 1464,228" fill="none" stroke="#B0387F" stroke-width="2"/>
+<text x="1322" y="244.64" font-size="24" font-weight="600" fill="#8A2B63" text-anchor="middle">workflow-credentials</text>
+<text x="1220" y="287.2" font-size="20" font-weight="400" fill="#55606E">auth_url: https://keystone.127-0-0-1.nip.io:8443/v3</text>
+<rect x="700" y="336" width="520" height="48" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<path d="M741.6 336 V384 M1178.4 336 V384" fill="none" stroke="#2457C5" stroke-width="2"/>
+<text x="960" y="368.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Job workflow-verify</text>
+<text x="836" y="411.2" font-size="20" font-weight="400" fill="#55606E">OS_CACERT=/etc/openstack-ca/tls.crt</text>
+<polyline points="720,260 720,336" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1200,260 1200,336" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="780" y="500" width="303" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="931.5" y="532.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service keystone-public</text>
+<rect x="965" y="464" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1024" y="485.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<text x="780" y="575.2" font-size="20" font-weight="400" fill="#55606E">port 8443, targetPort 31443, no selector</text>
+<rect x="1160" y="500" width="399" height="48" rx="20" fill="#2B3440"/>
+<text x="1359.5" y="532.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">EndpointSlice keystone-public-1</text>
+<rect x="1441" y="464" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1500" y="485.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<text x="1200" y="575.2" font-size="20" font-weight="400" fill="#55606E">endpoint {node}: the devstack node's InternalIP</text>
+<text x="40" y="677.2" font-size="20" font-weight="400" fill="#55606E">docker network kind</text>
+<rect x="40" y="700" width="1728" height="760" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="66.5" y="720.5" width="76" height="36" rx="18" fill="#3A4452"/>
+<text x="104.5" y="747.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="156.5" y="749.3" font-size="30" font-weight="700" fill="#17202B">Management cluster</text>
+<text x="463.5" y="745.7" font-size="20" font-weight="400" fill="#55606E">kind-cobaltcore, the devstack</text>
+<rect x="1196" y="780" width="494" height="136" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="1214" y="797" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="1240" y="819.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="1280" y="820.64" font-size="24" font-weight="700" fill="#2B3440">envoy-gateway-system</text>
+<rect x="1214" y="844" width="459" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1443.5" y="876.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Envoy proxy Service, NodePort 31443</text>
+<rect x="64" y="946" width="1680" height="490" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<rect x="82" y="963" width="52" height="30" rx="15" fill="#7D8794"/>
+<text x="108" y="985.2" font-size="20" font-weight="700" fill="#FBFAF7" text-anchor="middle">ns</text>
+<text x="148" y="986.64" font-size="24" font-weight="700" fill="#2B3440">openstack</text>
+<rect x="960" y="1010" width="696" height="48" rx="20" fill="#1D47A6"/>
+<text x="1308" y="1042.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Gateway openstack-gw, listener keystone.127-0-0-1.nip.io</text>
+<rect x="680" y="1010" width="159" height="48" rx="20" fill="#1D47A6"/>
+<text x="759.5" y="1042.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">HTTPRoute</text>
+<rect x="88" y="1010" width="438" height="48" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="307" y="1042.64" font-size="24" font-weight="600" fill="#1D47A6" text-anchor="middle">Service controlplane-keystone:5000</text>
+<rect x="1100" y="1130" width="548" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1374" y="1162.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service openstack-db-public, NodePort {port}</text>
+<rect x="1530" y="1094" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1589" y="1115.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<rect x="500" y="1130" width="338" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="669" y="1162.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service openstack-db:3306</text>
+<rect x="1027" y="1230" width="621" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1337.5" y="1262.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service openstack-rabbitmq-public, NodePort {port}</text>
+<rect x="1530" y="1194" width="118" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1589" y="1215.48" font-size="18" font-weight="700" fill="#55606E" text-anchor="middle">kind only</text>
+<rect x="300" y="1230" width="411" height="48" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="505.5" y="1262.64" font-size="24" font-weight="600" fill="#2B3440" text-anchor="middle">Service openstack-rabbitmq:5672</text>
+<rect x="88" y="1330" width="328" height="48" rx="20" fill="#1E6B40"/>
+<text x="252" y="1362.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane controlplane</text>
+<text x="432" y="1347.2" font-size="20" font-weight="400" fill="#55606E">publishedDatabaseEndpoint and publishedMessagingEndpoint:</text>
+<text x="432" y="1373.2" font-size="20" font-weight="400" fill="#55606E">{node}:{port}</text>
+<text x="88" y="1407.2" font-size="20" font-weight="400" fill="#55606E">set by hand in Step 5; the operator publishes nothing</text>
+<polyline points="700,360 231.5,360" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="221,360 236,352.8 236,367.2" fill="#2457C5"/>
+<circle cx="682" cy="360" r="18" fill="#17202B"/>
+<text x="682" y="367.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="300" y="325.2" font-size="20" font-weight="400" fill="#1D47A6">resolves keystone.127-0-0-1.nip.io</text>
+<polyline points="110,384 110,524 769.5,524" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="780,524 765,531.2 765,516.8" fill="#3A4452"/>
+<text x="140" y="511.2" font-size="20" font-weight="400" fill="#2B3440">the rewrite answers the Service's ClusterIP</text>
+<polyline points="800,384 800,489.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="800,500 792.8,485 807.2,485" fill="#2457C5"/>
+<circle cx="800" cy="406" r="18" fill="#17202B"/>
+<text x="800" y="413.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="836" y="441.2" font-size="20" font-weight="400" fill="#1D47A6">HTTPS, SNI and Host keystone.127-0-0-1.nip.io</text>
+<polyline points="1083,524 1149.5,524" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1160,524 1145,531.2 1145,516.8" fill="#2457C5"/>
+<circle cx="1101" cy="524" r="18" fill="#17202B"/>
+<text x="1101" y="531.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<polyline points="1180,548 1180,868 1203.5,868" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1214,868 1199,875.2 1199,860.8" fill="#2457C5"/>
+<text x="1192" y="677.2" font-size="20" font-weight="400" fill="#1D47A6">{node}:31443 over the docker network</text>
+<polyline points="1400,892 1400,999.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1400,1010 1392.8,995 1407.2,995" fill="#2457C5"/>
+<circle cx="1400" cy="910" r="18" fill="#17202B"/>
+<text x="1400" y="917.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<text x="976" y="979.2" font-size="20" font-weight="400" fill="#1D47A6">TLS terminates with the self-signed certificate</text>
+<polyline points="960,1034 849.5,1034" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="839,1034 854,1026.8 854,1041.2" fill="#2457C5"/>
+<circle cx="942" cy="1034" r="18" fill="#17202B"/>
+<text x="942" y="1041.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<polyline points="680,1034 536.5,1034" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="526,1034 541,1026.8 541,1041.2" fill="#2457C5"/>
+<text x="526" y="1087.2" font-size="20" font-weight="400" fill="#1D47A6">the listener for the hostname, then the route</text>
+<polyline points="1220,350 1720,350 1720,1254 1658.5,1254" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1648,1254 1663,1246.8 1663,1261.2" fill="#2457C5"/>
+<polyline points="1220,370 1700,370 1700,1154 1658.5,1154" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1648,1154 1663,1146.8 1663,1161.2" fill="#2457C5"/>
+<circle cx="1250" cy="360" r="18" fill="#17202B"/>
+<text x="1250" y="367.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<text x="1260" y="325.2" font-size="20" font-weight="400" fill="#1D47A6">{node}:{port} from the delivered Secret</text>
+<polyline points="1100,1154 848.5,1154" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="838,1154 853,1146.8 853,1161.2" fill="#3A4452"/>
+<text x="846" y="1141.2" font-size="20" font-weight="400" fill="#2B3440">the twin copies the selector</text>
+<polyline points="1027,1254 721.5,1254" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="3 9"/>
+<polygon points="711,1254 726,1246.8 726,1261.2" fill="#3A4452"/>
+<text x="746" y="1241.2" font-size="20" font-weight="400" fill="#2B3440">the twin copies the selector</text>
+<text x="40" y="1511.2" font-size="20" font-weight="400" fill="#55606E">kind only: a production target resolves the published name with its DNS, trusts the CA the Gateway's certificate comes from, and dials published addresses a certificate carries.</text>
+<text x="40" y="1537.2" font-size="20" font-weight="400" fill="#55606E">Hops 1 to 5 are Step 4 of Part 2, hop 6 is Step 5.</text>
+</svg>

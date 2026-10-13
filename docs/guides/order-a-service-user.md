@@ -768,6 +768,12 @@ that a pod on that cluster can reach; without them the orders report
 runs all of it on two kind clusters. See
 [Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
 
+On kind the published addresses need a path a real target cluster has by
+itself. [The path from the target](../quick-start-orders.md#tc-path) names the
+six hops.
+
+![The path from a pod on the target cluster to the devstack in six numbered hops. Hop 1: the Job's pod resolves keystone.127-0-0-1.nip.io, and a CoreDNS rewrite on the target answers with the ClusterIP of the selector-less Service keystone-public in the owner's namespace. Hop 2: the pod sends the HTTPS request to that Service, keeping the hostname and with it the SNI and the Host header. Hop 3: the Service's EndpointSlice points at the devstack node's InternalIP on NodePort 31443, reached over the docker network kind. Hop 4: the Envoy proxy Service on the devstack terminates TLS with the Gateway's self-signed certificate, which the Job trusts through a ConfigMap copied by hand. Hop 5: the Gateway's listener for the hostname and the HTTPRoute hand the request to the Keystone Service on port 5000. Hop 6: the database and the bus are dialed at the node's IP and the NodePorts of two twin Services, which the ControlPlane publishes as its database and messaging endpoints, set by hand because the operator publishes nothing. Every part marked kind only stands in for what a production target cluster has: a DNS name that resolves, a CA, and published addresses a certificate carries.](../diagrams/controlplane-orders-target-path.svg)
+
 ## Standalone Keystone, without a ControlPlane
 
 There is no ordering path for a standalone Keystone. `spec.controlPlaneRef` is

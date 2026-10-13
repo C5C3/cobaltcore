@@ -339,6 +339,29 @@ Run Part 2 in one shell: later steps read `workdir` and `NODE_IP` from earlier
 ones. Every command on the target names `--context kind-cobaltcore-target`;
 every other command runs on the devstack's cluster, `kind-cobaltcore`.
 
+### The path from the target {#tc-path}
+
+Steps 4 and 5 build the path a pod on the target takes to the devstack. Six
+hops:
+
+![The path from a pod on the target cluster to the devstack in six numbered hops. Hop 1: the Job's pod resolves keystone.127-0-0-1.nip.io, and a CoreDNS rewrite on the target answers with the ClusterIP of the selector-less Service keystone-public in the owner's namespace. Hop 2: the pod sends the HTTPS request to that Service, keeping the hostname and with it the SNI and the Host header. Hop 3: the Service's EndpointSlice points at the devstack node's InternalIP on NodePort 31443, reached over the docker network kind. Hop 4: the Envoy proxy Service on the devstack terminates TLS with the Gateway's self-signed certificate, which the Job trusts through a ConfigMap copied by hand. Hop 5: the Gateway's listener for the hostname and the HTTPRoute hand the request to the Keystone Service on port 5000. Hop 6: the database and the bus are dialed at the node's IP and the NodePorts of two twin Services, which the ControlPlane publishes as its database and messaging endpoints, set by hand because the operator publishes nothing. Every part marked kind only stands in for what a production target cluster has: a DNS name that resolves, a CA, and published addresses a certificate carries.](./diagrams/controlplane-orders-target-path.svg)
+
+1. The Job's pod resolves `keystone.127-0-0-1.nip.io`, and the CoreDNS rewrite
+   on the target answers with the ClusterIP of the selector-less Service
+   `keystone-public` in `workflow`.
+2. The pod sends the HTTPS request to that Service with the hostname unchanged,
+   so it carries the SNI and the `Host` header the Gateway's listener matches.
+3. The Service's EndpointSlice points at the devstack node's `InternalIP` on
+   NodePort 31443, reached over the docker network `kind`.
+4. The Envoy proxy Service on the devstack terminates TLS with the Gateway's
+   self-signed certificate, which the Job trusts through the ConfigMap
+   `keystone-public-ca`.
+5. The Gateway's listener for the hostname and the HTTPRoute hand the request
+   to the Keystone Service `controlplane-keystone` on port 5000.
+6. The database and the bus are dialed at the node's IP and the NodePorts of
+   the twins `openstack-db-public` and `openstack-rabbitmq-public`, which Step 5
+   publishes by hand as the ControlPlane's database and messaging endpoints.
+
 ### Step 1: Create the target cluster {#tc-cluster}
 
 ```bash
