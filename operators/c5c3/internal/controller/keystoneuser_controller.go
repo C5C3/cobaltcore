@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
@@ -359,6 +360,33 @@ func keystoneUserName(order *c5c3v1alpha1.KeystoneUser) string {
 // zero, which only a CR stored without the schema default carries, reads as 1.
 func keystoneUserPasswordGeneration(order *c5c3v1alpha1.KeystoneUser) int64 {
 	return max(order.Spec.PasswordGeneration, 1)
+}
+
+// defaultKeystoneUserRotationInterval is the rotation interval the schema
+// applies.
+const defaultKeystoneUserRotationInterval = 720 * time.Hour
+
+// keystoneUserRotationInterval resolves the password rotation interval. The API
+// server applies the schema default whenever it reads an order, so an absent
+// interval reaches the reconciler only from a cluster whose CRD predates the
+// field: a target cluster whose target-cluster-access CRDs were not applied
+// again. It reads as the default; 0s reads as 0, the schedule off.
+func keystoneUserRotationInterval(order *c5c3v1alpha1.KeystoneUser) time.Duration {
+	if d := order.Spec.Rotation.Interval; d != nil {
+		return d.Duration
+	}
+	return defaultKeystoneUserRotationInterval
+}
+
+// keystoneUserNextPasswordRotation is when the schedule rotates the password:
+// the last rotation plus the interval. It is nil with the schedule off and
+// before the first password is applied.
+func keystoneUserNextPasswordRotation(order *c5c3v1alpha1.KeystoneUser, interval time.Duration) *metav1.Time {
+	last := order.Status.LastPasswordRotation
+	if interval <= 0 || last == nil {
+		return nil
+	}
+	return &metav1.Time{Time: last.Add(interval)}
 }
 
 // --- ownership ---

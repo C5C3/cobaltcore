@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -23,6 +24,10 @@ import (
 
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
+
+// kuTestClock is the instant the reconciler's clock reads in these tests, on a
+// whole second the way a status time keeps it.
+var kuTestClock = time.Date(2026, time.October, 10, 12, 0, 0, 0, time.UTC)
 
 // runProvision drives provisionUser once for an order on cluster against the
 // seeded management cluster and returns its outcome and the client.
@@ -322,4 +327,37 @@ func TestKeystoneUserProvision_UserNotReady(t *testing.T) {
 			g.Expect(order.Status.PasswordGeneration).To(BeZero(), "no generation is reported before it is applied")
 		})
 	}
+}
+
+// --- the password schedule ---
+
+func TestKeystoneUserRotationInterval(t *testing.T) {
+	cases := []struct {
+		name     string
+		interval *metav1.Duration
+		want     time.Duration
+	}{
+		{name: "an absent interval reads as the default", want: 720 * time.Hour},
+		{name: "0s turns the schedule off", interval: &metav1.Duration{}, want: 0},
+		{name: "a set interval is kept", interval: &metav1.Duration{Duration: 36 * time.Hour}, want: 36 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			order := keystoneUserCR(kuTestNamespace)
+			order.Spec.Rotation.Interval = tc.interval
+			g.Expect(keystoneUserRotationInterval(order)).To(Equal(tc.want))
+		})
+	}
+}
+
+func TestKeystoneUserNextPasswordRotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := keystoneUserCR(kuTestNamespace)
+	g.Expect(keystoneUserNextPasswordRotation(order, time.Hour)).To(BeNil(), "nothing is scheduled before the first password")
+	order.Status.LastPasswordRotation = &metav1.Time{Time: kuTestClock}
+	g.Expect(keystoneUserNextPasswordRotation(order, time.Hour).Time).To(BeTemporally("==", kuTestClock.Add(time.Hour)))
+	g.Expect(keystoneUserNextPasswordRotation(order, 0)).To(BeNil(), "an interval of 0s schedules nothing")
+	g.Expect(keystoneUserNextPasswordRotation(order, -time.Hour)).To(BeNil(), "a negative interval schedules nothing")
 }
