@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A rotation interval of 87601h is rejected by the CEL rule on the field:
+# lastPasswordRotation plus the interval has to stay inside the range of a
+# Go duration. The error carries 'rotation.interval is at most 87600h'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: ku-invalid-interval-max
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  rotation:
+    interval: 87601h

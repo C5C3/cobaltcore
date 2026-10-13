@@ -132,3 +132,19 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'passwordGeneration may only increase')): true
+  # A 30s rotation interval (CEL rule on the field).
+  - try:
+    - apply:
+        file: 12-rotation-interval-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.interval is 0s or at least 1m')): true
+  # An 87601h rotation interval (CEL rule on the field).
+  - try:
+    - apply:
+        file: 13-rotation-interval-above-maximum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'rotation.interval is at most 87600h')): true

@@ -5519,6 +5519,14 @@ func TestIntegration_KeystoneUser_SchemaValidation(t *testing.T) {
 			name: "a controlPlaneRef namespace outside the label shape",
 			spec: map[string]any{"controlPlaneRef": map[string]any{"name": "cp", "namespace": "Bad_NS"}}, wantErrSub: "should match",
 		},
+		{
+			name: "a 30s rotation.interval", spec: map[string]any{"controlPlaneRef": ref, "rotation": map[string]any{"interval": "30s"}},
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		{
+			name: "an 87601h rotation.interval", spec: map[string]any{"controlPlaneRef": ref, "rotation": map[string]any{"interval": "87601h"}},
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
 	}
 	for i, tc := range createCases {
 		t.Run("create rejects "+tc.name, func(t *testing.T) {
@@ -5544,6 +5552,39 @@ func TestIntegration_KeystoneUser_SchemaValidation(t *testing.T) {
 		g.Expect(c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: strings.Repeat("a", 63)}, stored)).To(Succeed())
 		g.Expect(stored.Spec.PasswordGeneration).To(Equal(int64(1)))
 		g.Expect(stored.Spec.UserName).To(BeEmpty(), "the userName default is the reconciler's, not the schema's")
+
+		raw := &unstructured.Unstructured{}
+		raw.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind("KeystoneUser"))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(stored), raw)).To(Succeed())
+		g.Expect(raw.Object["spec"].(map[string]any)["rotation"]).To(Equal(map[string]any{"interval": "720h"}),
+			"an order without the block stores the interval default")
+	})
+
+	t.Run("the interval bounds are admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		for i, interval := range []string{"0s", "1m", "87600h"} {
+			g.Expect(c.Create(ctx, keystoneUserObject(fmt.Sprintf("bound-%d", i), ns.Name, map[string]any{
+				"controlPlaneRef": ref, "rotation": map[string]any{"interval": interval},
+			}))).To(Succeed(), "rotation.interval %s is admitted", interval)
+		}
+	})
+
+	t.Run("a typed order with the block left zero stores the default", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ku-cel-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+		order := &c5c3v1alpha1.KeystoneUser{
+			ObjectMeta: metav1.ObjectMeta{Name: "zero", Namespace: ns.Name},
+			Spec:       c5c3v1alpha1.KeystoneUserSpec{ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		stored := &c5c3v1alpha1.KeystoneUser{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
 	})
 
 	updateCases := []struct {
