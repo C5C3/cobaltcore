@@ -830,16 +830,16 @@ password. It then orders a project, a role assignment and a catalog entry, sees
 the role and the entry refused, admits both, scopes a token to the project and
 reads the entry out of the catalog. It orders an application credential, sees
 it refused before the role is assigned, authenticates with it, and observes a
-scheduled rotation on a three-minute interval, the superseded credential
-failing after its grace period, and a rotation by hand. It orders a database,
-writes and reads a row from a Job with its Secret, repairs the Secret, and
-forces an ESO refresh that delivers a new user. It refuses an order from an
-unassigned namespace, freezes every order by withdrawing the assignment,
-restores it, and deletes the orders: the database first, whose last credential
-stops working and whose schema stays under `Retain` and goes after a re-order
-with `Delete`, then the assignment to see it hold on the credential order, and
-the user to see it hold on the assignment. Against a
-full ControlPlane stack, run the suite with
+scheduled rotation on a three-minute interval, authenticates with the
+superseded credential inside its two-minute grace period and sees it fail after
+it, and rotates by hand. It orders a database, writes and reads a row from a
+Job with its Secret, repairs the Secret, and forces an ESO refresh that
+delivers a new user. It refuses an order from an unassigned namespace, freezes
+every order by withdrawing the assignment, restores it, and deletes the orders:
+the database first, whose last credential stops working and whose schema stays
+under `Retain` and goes after a re-order with `Delete`, then the assignment to
+see it hold on the credential order, and the user to see it hold on the
+assignment. Against a full ControlPlane stack, run the suite with
 `E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`.
 
 The suite brings up a Keystone-only ControlPlane of its own in chainsaw's

@@ -39,9 +39,10 @@
 #   APPCRED   the application credential is minted as the user and delivered
 #             with clouds.yaml, application_credential_id and
 #             application_credential_secret; a Job authenticates with it. The
-#             schedule rotates it to generation 2, the superseded credential
-#             stops working after the grace period, the schedule is turned off,
-#             and raising credentialGeneration rotates it once more.
+#             schedule rotates it to generation 2 and is turned off, the
+#             superseded credential still authenticates during the grace
+#             period and stops working after it, and raising
+#             credentialGeneration rotates it once more.
 #   DATABASE  a MariaDBDatabase is delivered with host, port, database,
 #             username and password; its OpenBao role, Database CR and ESO
 #             objects sit in the plane's namespace and nothing in the owner's; a
@@ -905,7 +906,8 @@ spec:
           assert_kv_live "${APPCRED_KV_PATH}" 120
 
           # The generation-1 document is kept, to prove the superseded
-          # credential stops working once its grace period ends. Never printed.
+          # credential still works during its grace period and stops working
+          # once it ends. Never printed.
           kubectl get secret "${APPCRED_SECRET}" -n "${TENANT_NS}" -o json \
             | jq '{apiVersion: "v1", kind: "Secret", type: "Opaque",
                    metadata: {name: "workflow-appcred-old", namespace: .metadata.namespace},
@@ -915,8 +917,13 @@ spec:
 
           # The schedule mints generation 2 three minutes after generation 1 and
           # switches the Secret once Keystone holds it; generation 1 stays for the
-          # one-minute grace period.
+          # two-minute grace period and authenticates until it ends. The
+          # schedule goes off at once, as on the quick start's Step 7, so no
+          # third scheduled rotation races the grace period or the manual
+          # rotation below; the grace period of generation 1 runs on regardless.
           wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.credentialGeneration}' 2 300
+          kubectl patch keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"rotation":{"interval":"0s"}}}'
           NEW_ID="$(appcred_status credentialID)"
           if [ -z "${NEW_ID}" ] || [ "${NEW_ID}" = "${OLD_ID}" ]; then
             echo "ERROR: the rotation did not change the credential id"; exit 1
@@ -925,15 +932,14 @@ spec:
             "$(appcred_status previousCredentialID)"
           assert_eq "both credentials sit in the plane's namespace during the grace period" "2" \
             "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
+          # The login needs only the copy, so no other wait eats into the grace
+          # period before it.
+          run_appcred_verify_job "during the grace period" workflow-appcred-old
           wait_delivered_appcred "${NEW_ID}" 120
-          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.previousCredentialID}' "" 180
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.nextRotation}' "" 120
+          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.previousCredentialID}' "" 300
           assert_eq "one credential is left once the grace period ends" "1" \
             "$(count_of applicationcredentials.openstack.k-orc.cloud "${CP_NS}" "${APPCRED_SELECTOR}")"
-          # The schedule goes off before a third scheduled rotation could race
-          # the manual one below.
-          kubectl patch keystoneapplicationcredential "${APPCRED}" -n "${TENANT_NS}" --type merge \
-            -p '{"spec":{"rotation":{"interval":"0s"}}}'
-          wait_field keystoneapplicationcredential "${APPCRED}" "${TENANT_NS}" '{.status.nextRotation}' "" 120
           run_appcred_verify_job "after the scheduled rotation"
           run_appcred_verify_job "with the superseded credential" workflow-appcred-old failed
           kubectl delete secret workflow-appcred-old -n "${TENANT_NS}"
