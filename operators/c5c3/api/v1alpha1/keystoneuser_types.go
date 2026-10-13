@@ -13,6 +13,7 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="ControlPlane",type="string",JSONPath=".spec.controlPlaneRef.name"
 // +kubebuilder:printcolumn:name="Generation",type="integer",JSONPath=".status.passwordGeneration"
+// +kubebuilder:printcolumn:name="NextRotation",type="string",JSONPath=".status.nextPasswordRotation"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="metadata.name must be at most 63 bytes; it is carried as a label value on the order's children"
 // +kubebuilder:validation:XValidation:rule="(has(self.spec.userName) ? self.spec.userName : self.metadata.name) == (has(oldSelf.spec.userName) ? oldSelf.spec.userName : oldSelf.metadata.name)",message="userName is immutable; delete and re-create the KeystoneUser to rename its user"
@@ -42,9 +43,15 @@ import (
 // same name that the order did not create is refused with
 // ServiceAccountCollision and never taken over.
 //
-// Raising spec.passwordGeneration rotates the password. The delivered Secret
-// is rewritten with the new one, and status.passwordGeneration reports the
-// generation Keystone holds.
+// spec.rotation schedules the rotation. Every spec.rotation.interval (default
+// 720h) the operator generates a new password and K-ORC applies it. The old
+// password stops authenticating at that moment: a Keystone user holds one
+// password, so there is no grace period. An interval of 0s turns the schedule
+// off. Raising spec.passwordGeneration above status.passwordGeneration rotates
+// at once. The delivered Secret is rewritten with the new password, and
+// status.passwordGeneration reports the generation Keystone holds. A
+// scheduled rotation that falls due while a KeystoneApplicationCredential in
+// the same namespace that names the user is being deleted waits for it.
 //
 // Deleting the order holds while a KeystoneRoleAssignment in the same namespace
 // names it as userRef, reporting ReferencedByRoleAssignments, and while a
@@ -54,8 +61,9 @@ import (
 //
 // The kind has no webhook, because a target cluster runs none: every
 // admission rule is a schema rule. An empty spec.userName means metadata.name,
-// and an empty spec.controlPlaneRef.namespace means the order's own namespace;
-// the reconciler resolves both defaults.
+// an empty spec.controlPlaneRef.namespace means the order's own namespace, and
+// an absent spec.rotation.interval means its default; the reconciler resolves
+// all of them.
 type KeystoneUser struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -102,14 +110,36 @@ type KeystoneUserSpec struct {
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
 	UserName string `json:"userName,omitempty"`
 
-	// PasswordGeneration is the generation of the user's password. Raising it
-	// rotates the password: the operator generates a new one, Keystone applies
-	// it, and the delivered Secret is rewritten. It may only increase.
+	// PasswordGeneration is the lowest password generation the order must hold.
+	// The schedule raises the live generation on its own, so raising this above
+	// status.passwordGeneration rotates the password at once: the operator
+	// generates a new one, Keystone applies it, and the delivered Secret is
+	// rewritten. It may only increase.
 	// +optional
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="passwordGeneration may only increase"
 	PasswordGeneration int64 `json:"passwordGeneration,omitempty"`
+
+	// Rotation schedules the rotation of the password. An order that omits the
+	// block gets the default of its interval. The block carries no rule of its
+	// own: there is no grace period to compare the interval with.
+	// +optional
+	// +kubebuilder:default={}
+	Rotation KeystoneUserRotationSpec `json:"rotation,omitempty"`
+}
+
+// KeystoneUserRotationSpec schedules the rotation of an ordered user's
+// password.
+type KeystoneUserRotationSpec struct {
+	// Interval is the time between two password rotations. 0s turns the
+	// schedule off. The interval is at most 87600h, so lastPasswordRotation plus
+	// the interval stays inside the range of a Go duration.
+	// +optional
+	// +kubebuilder:default="720h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || duration(self) >= duration('1m')",message="rotation.interval is 0s or at least 1m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('87600h')",message="rotation.interval is at most 87600h"
+	Interval *metav1.Duration `json:"interval,omitempty"`
 }
 
 // KeystoneUserStatus defines the observed state of a KeystoneUser.
@@ -136,9 +166,17 @@ type KeystoneUserStatus struct {
 	// +optional
 	PasswordGeneration int64 `json:"passwordGeneration,omitempty"`
 
-	// LastPasswordRotation is when the password was last rotated.
+	// LastPasswordRotation is when the current password became the live one:
+	// set when the operator re-points the password and again when K-ORC reports
+	// it applied, and on the first provision.
 	// +optional
 	LastPasswordRotation *metav1.Time `json:"lastPasswordRotation,omitempty"`
+
+	// NextPasswordRotation is when the schedule rotates next,
+	// lastPasswordRotation plus the interval. Absent with the schedule off and
+	// before the first password is applied.
+	// +optional
+	NextPasswordRotation *metav1.Time `json:"nextPasswordRotation,omitempty"`
 
 	// SecretName is the name of the delivered Secret in the order's namespace,
 	// <metadata.name>-credentials.
