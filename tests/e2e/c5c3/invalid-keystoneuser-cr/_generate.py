@@ -17,8 +17,8 @@ CEL rules), and no fixture leans on a defaulting webhook.
 
 Two fixture categories share the scaffold:
 
-* Create-rejection fixtures (``00``-``05`` and ``11``) are each applied once and
-  rejected at admission.
+* Create-rejection fixtures (``00``-``05`` and ``11``-``13``) are each applied
+  once and rejected at admission.
 * One immutability wave keyed by the metadata.name ``ku-immutable``. It opens
   with a valid base (``06``) that is applied first and admitted, and every later
   fixture of the wave renders that base with one field changed, so Chainsaw
@@ -68,6 +68,7 @@ LICENSE_HEADER = """\
 #   {ref_extra}           further spec.controlPlaneRef fields (indent 4) or ""
 #   {user_name}           the spec.userName line (indent 2) or ""
 #   {password_generation} the spec.passwordGeneration line (indent 2) or ""
+#   {rotation}            the spec.rotation block (indent 2) or ""
 #
 # metadata.namespace is absent on purpose (Chainsaw injects the ephemeral one).
 SCAFFOLD = """\
@@ -77,7 +78,7 @@ metadata:
   name: {name}
 spec:
   controlPlaneRef:
-{ref_name}{ref_extra}{user_name}{password_generation}"""
+{ref_name}{ref_extra}{user_name}{password_generation}{rotation}"""
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class Fixture:
     ref_extra: str = ""
     user_name: str = ""
     password_generation: str = ""
+    rotation: str = ""
 
     def render(self) -> str:
         ref_name = f"    name: {self.controlplane_name}\n" if self.controlplane_name else ""
@@ -100,6 +102,7 @@ class Fixture:
             ref_extra=self.ref_extra,
             user_name=self.user_name,
             password_generation=self.password_generation,
+            rotation=self.rotation,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
         return LICENSE_HEADER + comment_lines + body
@@ -242,6 +245,26 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         name="ku-invalid-username-too-long",
         user_name="  userName: " + "a" * 256 + "\n",
+    ),
+    Fixture(
+        filename="12-rotation-interval-below-minimum.yaml",
+        comment=(
+            "A rotation interval of 30s is rejected by the CEL rule on the field: the\n"
+            "schedule is off (0s) or rotates at most once a minute. The error carries\n"
+            "'rotation.interval is 0s or at least 1m'."
+        ),
+        name="ku-invalid-interval",
+        rotation="  rotation:\n    interval: 30s\n",
+    ),
+    Fixture(
+        filename="13-rotation-interval-above-maximum.yaml",
+        comment=(
+            "A rotation interval of 87601h is rejected by the CEL rule on the field:\n"
+            "lastPasswordRotation plus the interval has to stay inside the range of a\n"
+            "Go duration. The error carries 'rotation.interval is at most 87600h'."
+        ),
+        name="ku-invalid-interval-max",
+        rotation="  rotation:\n    interval: 87601h\n",
     ),
 )
 
