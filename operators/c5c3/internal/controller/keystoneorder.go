@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -318,6 +320,23 @@ func orderPassResult(cluster string, converged bool, result ctrl.Result) ctrl.Re
 		return ctrl.Result{}
 	}
 	return ctrl.Result{RequeueAfter: orderRefreshAfter}
+}
+
+// scheduledOrderPassResult is orderPassResult for a kind whose legs carry a
+// rotation timer: the legs' requeue is kept when it is the shorter one, so a
+// converged order on the management cluster waits for its timer or an event
+// and every other order comes back on orderRefreshAfter at the latest.
+func scheduledOrderPassResult(cluster string, converged bool, legs ctrl.Result) ctrl.Result {
+	return commonreconcile.ShortestRequeue(orderPassResult(cluster, converged, ctrl.Result{}), legs)
+}
+
+// orderClockNow reads clock, or time.Now when it is nil, truncated to the
+// second a status time keeps once it is written.
+func orderClockNow(clock func() time.Time) time.Time {
+	if clock == nil {
+		clock = time.Now
+	}
+	return clock().Truncate(time.Second)
 }
 
 // --- backup ---

@@ -177,12 +177,7 @@ func (r *KeystoneApplicationCredentialReconciler) Reconcile(ctx context.Context,
 
 // now reads the reconciler's clock, truncated to the second a status time
 // keeps once it is written.
-func (r *KeystoneApplicationCredentialReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now().Truncate(time.Second)
-	}
-	return time.Now().Truncate(time.Second)
-}
+func (r *KeystoneApplicationCredentialReconciler) now() time.Time { return orderClockNow(r.Now) }
 
 // reconcileNormal runs the shared gates, the three reference gates, then the
 // provision and the delivery.
@@ -248,15 +243,12 @@ func (r *KeystoneApplicationCredentialReconciler) reconcileNormal(
 
 // keystoneApplicationCredentialPassResult decides when the next pass runs once
 // both legs had their say, with DeliveryReady as the converged condition
-// (orderPassResult). The legs' requeue, which carries the rotation timers, is
-// kept when it is the shorter one: a converged order on the management cluster
-// waits for its timer or an event, and every other order comes back on
-// orderRefreshAfter at the latest.
+// (scheduledOrderPassResult). The legs' requeue carries the rotation timers.
 func keystoneApplicationCredentialPassResult(
 	order *c5c3v1alpha1.KeystoneApplicationCredential, cluster string, result ctrl.Result,
 ) ctrl.Result {
-	converged := conditions.AllTrue(order.Status.Conditions, conditionTypeKeystoneApplicationCredentialDeliveryReady)
-	return commonreconcile.ShortestRequeue(orderPassResult(cluster, converged, ctrl.Result{}), result)
+	return scheduledOrderPassResult(cluster,
+		conditions.AllTrue(order.Status.Conditions, conditionTypeKeystoneApplicationCredentialDeliveryReady), result)
 }
 
 // referenceGates loads the KeystoneUser and the KeystoneProject the order

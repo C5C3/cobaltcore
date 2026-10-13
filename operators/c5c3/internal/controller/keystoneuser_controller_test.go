@@ -14,6 +14,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	"github.com/go-logr/logr/funcr"
@@ -131,7 +132,7 @@ func newKUHarness(t *testing.T, cluster string, mgmtFuncs, orderFuncs *intercept
 		h.key = types.NamespacedName{Namespace: kuTestNamespace, Name: kuTestName}
 	}
 	h.mgmt = kuFakeClient(t, mgmtFuncs, mgmtObjs...)
-	h.r = &KeystoneUserReconciler{Client: h.mgmt, Scheme: h.mgmt.Scheme()}
+	h.r = &KeystoneUserReconciler{Client: h.mgmt, Scheme: h.mgmt.Scheme(), Now: kuTestNow}
 	h.order = h.mgmt
 	if cluster != c5c3v1alpha1.ManagementCluster {
 		h.order = kuFakeClient(t, orderFuncs, orderObjs...)
@@ -445,6 +446,8 @@ func TestKeystoneUser_WithdrawnAssignmentFreezes(t *testing.T) {
 	_, err := h.reconcile(ctx)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(conditions.AllTrue(h.get(t).Status.Conditions, "Ready")).To(BeTrue(), "the order converges first")
+	nextRotation := h.get(t).Status.NextPasswordRotation
+	g.Expect(nextRotation).NotTo(BeNil(), "the converged order is scheduled")
 
 	live := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(h.mgmt.Get(ctx, client.ObjectKeyFromObject(cp), live)).To(Succeed())
@@ -462,6 +465,7 @@ func TestKeystoneUser_WithdrawnAssignmentFreezes(t *testing.T) {
 	got := h.get(t)
 	expectBothConditions(t, got, reasonOrderNamespaceNotAssigned)
 	g.Expect(got.Status.SecretName).To(Equal("workflow-credentials"), "the frozen order keeps its status")
+	g.Expect(got.Status.NextPasswordRotation).To(Equal(nextRotation), "the frozen order keeps its schedule")
 
 	for _, obj := range []client.Object{
 		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: keystoneUserUserRef(order, ""), Namespace: "default"}},
@@ -474,6 +478,66 @@ func TestKeystoneUser_WithdrawnAssignmentFreezes(t *testing.T) {
 	g.Expect(h.mgmt.Get(ctx, secretKey, delivered)).To(Succeed())
 	g.Expect(string(delivered.Data[serviceAccountPasswordKey])).To(Equal("foo"),
 		"a frozen order's Secret is not repaired")
+}
+
+// TestKeystoneUser_RestoredOrderRotatesWhenTheAnchorHasPassed pins the pause
+// of the schedule: a frozen order whose anchor has passed rotates nothing, and
+// rotates on the first pass after its entry returns.
+func TestKeystoneUser_RestoredOrderRotatesWhenTheAnchorHasPassed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := keystoneUserControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	h := newKUHarness(t, c5c3v1alpha1.ManagementCluster, nil, nil,
+		append([]client.Object{order, cp}, kuConvergedChildren(order, cp, c5c3v1alpha1.ManagementCluster, 1)...)...)
+
+	_, err := h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectBothConditions(t, h.get(t), reasonOrderNamespaceNotAssigned)
+	g.Expect(kuPasswordRef(t, h.mgmt, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)),
+		"a frozen order rotates nothing")
+
+	live := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(h.mgmt.Get(ctx, client.ObjectKeyFromObject(cp), live)).To(Succeed())
+	live.Spec.NamespaceAssignments = []c5c3v1alpha1.NamespaceAssignmentSpec{
+		assignOn(kuTestNamespace, c5c3v1alpha1.ManagementCluster),
+	}
+	g.Expect(h.mgmt.Update(ctx, live)).To(Succeed())
+
+	_, err = h.reconcile(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(kuPasswordRef(t, h.mgmt, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)),
+		"the restored order rotates on its first pass")
+}
+
+// TestKeystoneUser_ConvergedOrderWakesAtTheNextRotation pins the timer of a
+// converged order: on the management cluster the pass waits for the next
+// rotation, on a target cluster the refresh is the shorter one.
+func TestKeystoneUser_ConvergedOrderWakesAtTheNextRotation(t *testing.T) {
+	t.Run("on the management cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, h := convergedOrderHarness(t, ksControlPlane(), c5c3v1alpha1.ManagementCluster, nil)
+
+		result, err := h.reconcile(context.Background())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(conditions.AllTrue(h.get(t).Status.Conditions, "Ready")).To(BeTrue())
+		g.Expect(result.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	})
+	t.Run("on a target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := ksControlPlane()
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.test/v3"
+		_, h := convergedOrderHarness(t, cp, kuTestCluster, nil)
+
+		result, err := h.reconcile(context.Background())
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(conditions.AllTrue(h.get(t).Status.Conditions, "Ready")).To(BeTrue())
+		g.Expect(h.get(t).Status.NextPasswordRotation).NotTo(BeNil())
+		g.Expect(result.RequeueAfter).To(Equal(orderRefreshAfter))
+	})
 }
 
 // --- shared gates ---

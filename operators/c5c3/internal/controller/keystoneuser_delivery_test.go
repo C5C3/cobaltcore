@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"testing"
+	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -97,7 +98,8 @@ func TestKeystoneUserDelivery_ManagementClusterOrderIsDelivered(t *testing.T) {
 
 	result, err := h.reconcile(ctx)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.IsZero()).To(BeTrue(), "the ControlPlane watch reaches a delivered order on the management cluster")
+	g.Expect(result.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval),
+		"a delivered order on the management cluster waits for its password schedule")
 
 	secret, found := deliveredSecret(t, h.order)
 	g.Expect(found).To(BeTrue())
@@ -322,74 +324,95 @@ func TestKeystoneUserDelivery_ApplyErrorIsReported(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("admission webhook denied the request"))
 }
 
-// TestKeystoneUserDelivery_RotationReachesTheSecret raises the generation on a
-// delivered order: while K-ORC has not applied v2 nothing new is delivered;
-// once it has, the backup is re-pushed with v2 and nothing is delivered until
-// ESO reports that push, although the PushSecret still reads Ready from the v1
-// push; then the Secret carries the v2 password.
+// TestKeystoneUserDelivery_RotationReachesTheSecret rotates a delivered order,
+// by a raised generation and on the schedule: while K-ORC has not applied v2
+// nothing new is delivered; once it has, the backup is re-pushed with v2 and
+// nothing is delivered until ESO reports that push, although the PushSecret
+// still reads Ready from the v1 push; then the Secret carries the v2 password.
 func TestKeystoneUserDelivery_RotationReachesTheSecret(t *testing.T) {
-	g := NewGomegaWithT(t)
-	ctx := context.Background()
+	cases := []struct {
+		name    string
+		trigger func(t *testing.T, h *kuHarness)
+	}{
+		{
+			name: "a raised generation",
+			trigger: func(t *testing.T, h *kuHarness) {
+				live := h.get(t)
+				live.Spec.PasswordGeneration = 2
+				NewGomegaWithT(t).Expect(h.order.Update(context.Background(), live)).To(Succeed())
+			},
+		},
+		{
+			name: "the schedule",
+			trigger: func(_ *testing.T, h *kuHarness) {
+				h.r.Now = func() time.Time { return kuTestClock.Add(defaultKeystoneUserRotationInterval) }
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
 
-	cp := ksControlPlane()
-	order, h := convergedOrderHarness(t, cp, c5c3v1alpha1.ManagementCluster, nil)
-	_, err := h.reconcile(ctx)
-	g.Expect(err).NotTo(HaveOccurred())
-	pushKey := types.NamespacedName{Namespace: "default", Name: keystoneUserPushSecretName(order, "")}
-	push := &esov1alpha1.PushSecret{}
-	g.Expect(h.mgmt.Get(ctx, pushKey, push)).To(Succeed())
-	v1Hash := push.Annotations[keystoneUserPushContentHashAnnotation]
-	g.Expect(v1Hash).NotTo(BeEmpty())
+			cp := ksControlPlane()
+			order, h := convergedOrderHarness(t, cp, c5c3v1alpha1.ManagementCluster, nil)
+			_, err := h.reconcile(ctx)
+			g.Expect(err).NotTo(HaveOccurred())
+			pushKey := types.NamespacedName{Namespace: "default", Name: keystoneUserPushSecretName(order, "")}
+			push := &esov1alpha1.PushSecret{}
+			g.Expect(h.mgmt.Get(ctx, pushKey, push)).To(Succeed())
+			v1Hash := push.Annotations[keystoneUserPushContentHashAnnotation]
+			g.Expect(v1Hash).NotTo(BeEmpty())
 
-	live := h.get(t)
-	live.Spec.PasswordGeneration = 2
-	g.Expect(h.order.Update(ctx, live)).To(Succeed())
-	_, err = h.reconcile(ctx)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(kuCondition(h.get(t), conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonWaitingForServiceAccounts),
-		"between the re-point and K-ORC applying v2 nothing is delivered")
+			tc.trigger(t, h)
+			_, err = h.reconcile(ctx)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(kuCondition(h.get(t), conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonWaitingForServiceAccounts),
+				"between the re-point and K-ORC applying v2 nothing is delivered")
 
-	v2 := &corev1.Secret{}
-	g.Expect(h.mgmt.Get(ctx, types.NamespacedName{
-		Namespace: "default", Name: keystoneUserPasswordSecretName(order, "", 2),
-	}, v2)).To(Succeed())
-	user, _ := kuGetUser(t, h.mgmt, keystoneUserUserRef(order, ""))
-	user.Status.Resource.AppliedPasswordRef = v2.Name
-	g.Expect(h.mgmt.Status().Update(ctx, user)).To(Succeed())
+			v2 := &corev1.Secret{}
+			g.Expect(h.mgmt.Get(ctx, types.NamespacedName{
+				Namespace: "default", Name: keystoneUserPasswordSecretName(order, "", 2),
+			}, v2)).To(Succeed())
+			user, _ := kuGetUser(t, h.mgmt, keystoneUserUserRef(order, ""))
+			user.Status.Resource.AppliedPasswordRef = v2.Name
+			g.Expect(h.mgmt.Status().Update(ctx, user)).To(Succeed())
 
-	_, err = h.reconcile(ctx)
-	g.Expect(err).NotTo(HaveOccurred())
-	got := h.get(t)
-	g.Expect(got.Status.PasswordGeneration).To(Equal(int64(2)))
-	g.Expect(kuCondition(got, conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserBackupNotSynced),
-		"a Ready left over from the v1 push does not let v2 through")
-	secret, _ := deliveredSecret(t, h.order)
-	g.Expect(string(secret.Data[serviceAccountPasswordKey])).To(Equal("seeded-password"),
-		"nothing is delivered before OpenBao holds v2")
+			_, err = h.reconcile(ctx)
+			g.Expect(err).NotTo(HaveOccurred())
+			got := h.get(t)
+			g.Expect(got.Status.PasswordGeneration).To(Equal(int64(2)))
+			g.Expect(kuCondition(got, conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserBackupNotSynced),
+				"a Ready left over from the v1 push does not let v2 through")
+			secret, _ := deliveredSecret(t, h.order)
+			g.Expect(string(secret.Data[serviceAccountPasswordKey])).To(Equal("seeded-password"),
+				"nothing is delivered before OpenBao holds v2")
 
-	source := &corev1.Secret{}
-	g.Expect(h.mgmt.Get(ctx, types.NamespacedName{
-		Namespace: "default", Name: keystoneUserSourceSecretName(order, ""),
-	}, source)).To(Succeed())
-	g.Expect(source.Data[serviceAccountPasswordKey]).To(Equal(v2.Data[serviceAccountPasswordKey]),
-		"the document the backup pushes carries v2")
-	g.Expect(h.mgmt.Get(ctx, pushKey, push)).To(Succeed())
-	sum := sha256.Sum256(source.Data[appCredCloudsYAMLKey])
-	g.Expect(push.Annotations).To(HaveKeyWithValue(keystoneUserPushContentHashAnnotation, hex.EncodeToString(sum[:])),
-		"the re-push is stamped with the v2 document")
-	g.Expect(push.Annotations[keystoneUserPushContentHashAnnotation]).NotTo(Equal(v1Hash))
+			source := &corev1.Secret{}
+			g.Expect(h.mgmt.Get(ctx, types.NamespacedName{
+				Namespace: "default", Name: keystoneUserSourceSecretName(order, ""),
+			}, source)).To(Succeed())
+			g.Expect(source.Data[serviceAccountPasswordKey]).To(Equal(v2.Data[serviceAccountPasswordKey]),
+				"the document the backup pushes carries v2")
+			g.Expect(h.mgmt.Get(ctx, pushKey, push)).To(Succeed())
+			sum := sha256.Sum256(source.Data[appCredCloudsYAMLKey])
+			g.Expect(push.Annotations).To(HaveKeyWithValue(keystoneUserPushContentHashAnnotation, hex.EncodeToString(sum[:])),
+				"the re-push is stamped with the v2 document")
+			g.Expect(push.Annotations[keystoneUserPushContentHashAnnotation]).NotTo(Equal(v1Hash))
 
-	// ESO pushes the new stamp: syncedResourceVersion moves.
-	push.Status.SyncedResourceVersion = "2-pushed"
-	g.Expect(h.mgmt.Update(ctx, push)).To(Succeed())
+			// ESO pushes the new stamp: syncedResourceVersion moves.
+			push.Status.SyncedResourceVersion = "2-pushed"
+			g.Expect(h.mgmt.Update(ctx, push)).To(Succeed())
 
-	_, err = h.reconcile(ctx)
-	g.Expect(err).NotTo(HaveOccurred())
-	got = h.get(t)
-	g.Expect(kuCondition(got, conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserDelivered))
-	secret, _ = deliveredSecret(t, h.order)
-	g.Expect(secret.Data[serviceAccountPasswordKey]).To(Equal(v2.Data[serviceAccountPasswordKey]))
-	g.Expect(string(secret.Data[serviceAccountPasswordKey])).NotTo(Equal("seeded-password"))
+			_, err = h.reconcile(ctx)
+			g.Expect(err).NotTo(HaveOccurred())
+			got = h.get(t)
+			g.Expect(kuCondition(got, conditionTypeKeystoneUserDeliveryReady).Reason).To(Equal(reasonKeystoneUserDelivered))
+			secret, _ = deliveredSecret(t, h.order)
+			g.Expect(secret.Data[serviceAccountPasswordKey]).To(Equal(v2.Data[serviceAccountPasswordKey]))
+			g.Expect(string(secret.Data[serviceAccountPasswordKey])).NotTo(Equal("seeded-password"))
+		})
+	}
 }
 
 // TestKeystoneUserDelivery_MissingPasswordIsAWait covers a generation whose

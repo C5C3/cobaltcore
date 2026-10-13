@@ -38,7 +38,9 @@ const (
 
 	// orderReferenceHoldRequeueAfter is the fallback cadence a KeystoneUser or
 	// KeystoneProject teardown re-checks the KeystoneRoleAssignments that hold it
-	// at. The assignment watch normally wakes it first.
+	// at, and a KeystoneUser's held password rotation the deleting
+	// KeystoneApplicationCredentials. The watch of the referencing kind normally
+	// wakes it first.
 	orderReferenceHoldRequeueAfter = time.Minute
 
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached

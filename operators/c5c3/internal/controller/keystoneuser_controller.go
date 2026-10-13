@@ -125,6 +125,8 @@ type KeystoneUserReconciler struct {
 	// cluster.
 	Resolver                commonmulticluster.ClusterResolver
 	MaxConcurrentReconciles int
+	// Now is the clock the password schedule reads; nil means time.Now.
+	Now func() time.Time
 }
 
 // RBAC for the KeystoneUser kind: the controller reads the orders and updates
@@ -171,6 +173,10 @@ func (r *KeystoneUserReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	return r.updateStatus(ctx, oc, &order, statusBefore, result, err)
 }
 
+// now reads the reconciler's clock, truncated to the second a status time
+// keeps once it is written.
+func (r *KeystoneUserReconciler) now() time.Time { return orderClockNow(r.Now) }
+
 // keystoneUserClusterRef returns the target-cluster ref of cluster, or nil for
 // the management cluster.
 func keystoneUserClusterRef(cluster string) *commonv1.TargetClusterRefSpec {
@@ -188,7 +194,7 @@ func keystoneUserLocation(cluster string) string {
 // The freeze of #1327 D2 is the assignment gate of orderAdmission: without an
 // entry the pass writes NamespaceNotAssigned and returns before anything is read
 // or written in the ControlPlane's namespace, so nothing is projected,
-// delivered, repaired or swept.
+// delivered, repaired or swept, and the password schedule pauses.
 //
 // The finalizer is installed only past that gate. An order the operator does not
 // serve has nothing to tear down, and in a namespace that is not assigned to it
@@ -214,8 +220,8 @@ func (r *KeystoneUserReconciler) reconcileNormal(
 	}
 
 	provisioned := false
-	result, err = instrumenter.Instrument(ctx, "KeystoneUserProvision", func(ctx context.Context) (ctrl.Result, error) {
-		ok, res, err := r.provisionUser(ctx, order, cp, cluster)
+	provisionResult, err := instrumenter.Instrument(ctx, "KeystoneUserProvision", func(ctx context.Context) (ctrl.Result, error) {
+		ok, res, err := r.provisionUser(ctx, oc, order, cp, cluster)
 		provisioned = ok
 		return res, err
 	})
@@ -225,25 +231,26 @@ func (r *KeystoneUserReconciler) reconcileNormal(
 	if !provisioned {
 		keystoneUserFail(order, conditionTypeKeystoneUserDeliveryReady)(reasonWaitingForServiceAccounts,
 			"the user is not provisioned yet; nothing is delivered")
-		return keystoneUserPassResult(order, cluster, result), nil
+		return keystoneUserPassResult(order, cluster, provisionResult), nil
 	}
 
-	result, err = instrumenter.Instrument(ctx, "KeystoneUserDelivery", func(ctx context.Context) (ctrl.Result, error) {
+	deliveryResult, err := instrumenter.Instrument(ctx, "KeystoneUserDelivery", func(ctx context.Context) (ctrl.Result, error) {
 		return r.deliverCredentials(ctx, oc, order, cp, cluster, order.Status.PasswordGeneration)
 	})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	return keystoneUserPassResult(order, cluster, result), nil
+	return keystoneUserPassResult(order, cluster, commonreconcile.ShortestRequeue(provisionResult, deliveryResult)), nil
 }
 
 // keystoneUserPassResult decides when the next pass runs once both legs had
-// their say, with DeliveryReady as the converged condition (orderPassResult). A
-// refusal only an edit outside the order's own watches lifts (an unpublished
+// their say, with DeliveryReady as the converged condition
+// (scheduledOrderPassResult). The legs' requeue carries the password schedule's
+// timer and the wait on a deleting KeystoneApplicationCredential. A refusal only an edit outside the order's own watches lifts (an unpublished
 // Keystone, a Secret somebody else owns, the admin identity) comes back on the
 // refresh.
 func keystoneUserPassResult(order *c5c3v1alpha1.KeystoneUser, cluster string, result ctrl.Result) ctrl.Result {
-	return orderPassResult(cluster,
+	return scheduledOrderPassResult(cluster,
 		conditions.AllTrue(order.Status.Conditions, conditionTypeKeystoneUserDeliveryReady), result)
 }
 
