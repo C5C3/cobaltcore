@@ -46,7 +46,9 @@ if err := (&controller.KeystoneUserReconciler{
 manager, which resolves a request's cluster name to that cluster's client; the
 empty name is the management cluster. `SetupWithManager` delegates to
 `setupWithOptions`, so the integration suites register the same watches with
-`SkipNameValidation`.
+`SkipNameValidation`. The `Now` field is the clock the password schedule reads.
+`main.go` leaves it nil, so the reconciler reads `time.Now`; the unit tests set
+a fixed one.
 
 The cluster-agnostic machinery (child naming and ownership, the admission
 gates, the pass result, the teardown and the label mapping) lives in
@@ -117,6 +119,10 @@ Reconcile
        ├─ EnsureFinalizer          c5c3.io/keystoneuser-teardown
        ├─ AdminCredentialReady     → WaitingForAdminCredential (10s)
        ├─ provisionUser   (instrumented: KeystoneUserProvision)
+       │    ├─ schedule due        → next password generation, held (1m) while
+       │    │                        a KeystoneApplicationCredential naming the
+       │    │                        user is being deleted
+       │    └─ converged           → timer at status.nextPasswordRotation
        └─ deliverCredentials (instrumented: KeystoneUserDelivery)
 ```
 
@@ -139,14 +145,16 @@ with the message a ControlPlane without the assignment writes, so the reason
 does not tell an owner there which ControlPlanes exist.
 
 When the provision step has not converged, `DeliveryReady` reads
-`WaitingForServiceAccounts` and the delivery is skipped. A pass that asked for
-no requeue ends in one of two ways: a delivered order on the management cluster
-waits for an event, and every other order comes back after 10 minutes, which
-covers the target clusters and the refusals no watch lifts.
+`WaitingForServiceAccounts` and the delivery is skipped. The pass keeps the
+shorter of the two steps' requeues, which carry the password timer and the
+one-minute wait of a held rotation. A delivered order on the management
+cluster then waits for its timer or an event. Every other order comes back
+after 10 minutes at the latest, which covers the target clusters and the
+refusals no watch lifts.
 
 ## User provisioning
 
-`provisionUser` writes `UserReady` in five steps:
+`provisionUser` writes `UserReady` in six steps:
 
 1. A user name that folds, as Keystone compares names, to one the ControlPlane
    creates in its admin domain itself is refused with `ServiceAccountCollision`
@@ -158,18 +166,36 @@ covers the target clusters and the refusals no watch lifts.
    user of that name exists in the admin domain. An existing one is refused
    with `ServiceAccountCollision` and never taken over; an order has no adopt.
    The probe is dropped once the managed User exists.
-4. The managed User `<prefix>user` is created in the admin domain with no
-   default project, pointing at the password Secret of the declared
-   generation, `<prefix>password-v<N>`.
-5. Once K-ORC reports the User Available with that Secret applied,
+4. The password schedule is due once the reconciler's clock reaches
+   `status.lastPasswordRotation` plus `spec.rotation.interval`. Only then does
+   the pass list the KeystoneApplicationCredentials in the order's namespace,
+   through the order's cluster client. One that names the user and is being
+   deleted holds the rotation; otherwise the scheduled generation is
+   `status.passwordGeneration` plus one.
+5. The managed User `<prefix>user` is created in the admin domain with no
+   default project, pointing at the password Secret `<prefix>password-v<N>` of
+   the higher of the declared and the scheduled generation.
+6. Once K-ORC reports the User Available with that Secret applied,
    `status.userID` and `status.passwordGeneration` are set and `UserReady`
-   reads `UserProvisioned`.
+   reads `UserProvisioned`. A held rotation adds the credential orders it waits
+   for to the message.
 
-`spec.passwordGeneration` drives the generation. A value above the current one
-writes the new password Secret and points the User at it; K-ORC applies a
-password only when that reference changes. The superseded Secret is deleted
-once K-ORC reports the new one applied, and a value below the current one never
-rolls the password back. A stored zero reads as 1.
+`spec.passwordGeneration` and the schedule drive the generation. A value above
+the current one writes the new password Secret and points the User at it;
+K-ORC applies a password only when that reference changes. The superseded
+Secret is deleted once K-ORC reports the new one applied, and a value below the
+current one never rolls the password back. A stored zero reads as 1. A raised
+`spec.passwordGeneration` is never held, and `interval: 0s` turns the schedule
+off.
+
+`status.lastPasswordRotation` is set from the reconciler's clock on the pass
+that points the User at a new password, and again on the pass that sees a new
+generation applied or finds no time recorded. The second write keeps a
+rotation whose first status write was lost from starting another one, and
+anchors both a fresh order and one created before the schedule existed.
+`status.nextPasswordRotation` follows on every pass that reaches the User, and
+a converged pass returns the time until it. A held rotation comes back after a
+minute; a change of the credential order it waits for wakes it sooner.
 
 A latched transport error on the User is cleared first, so K-ORC retries; any
 other terminal error reads `ServiceAccountsFailed`. Against an External-mode
@@ -292,6 +318,7 @@ back to `condition_type=UNKNOWN`.
 | Gates, freeze, mappers, teardown, the hold | `operators/c5c3/internal/controller/keystoneuser_controller_test.go` |
 | The shared scaffold | `operators/c5c3/internal/controller/keystoneorder_test.go` |
 | User provisioning | `operators/c5c3/internal/controller/keystoneuser_provision_test.go` |
+| The password schedule, the hold and the anchor | `keystoneuser_provision_test.go`, and the timer of a converged pass in `keystoneuser_controller_test.go` |
 | Credential delivery | `operators/c5c3/internal/controller/keystoneuser_delivery_test.go` |
 | The unscoped `clouds.yaml` | `operators/c5c3/internal/controller/korc_cloudsyaml_test.go` |
 | CRD schema | `TestIntegration_KeystoneUser_SchemaValidation` in `integration_test.go` |
