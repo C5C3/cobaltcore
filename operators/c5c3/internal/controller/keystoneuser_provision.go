@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -26,8 +28,17 @@ import (
 // The user is created in the ControlPlane's admin domain with no project. The
 // outcomes are a chain of early returns: a reserved name, the store, the
 // collision probe, a terminal K-ORC error, the wait.
+//
+// The password schedule runs here as well. Once the reconciler's clock reaches
+// status.lastPasswordRotation plus spec.rotation.interval, the User moves to
+// the generation after status.passwordGeneration, unless a
+// KeystoneApplicationCredential beside the order that names the user is being
+// deleted: those are listed through oc, the order's cluster client. The
+// returned result carries the timer that wakes the order at
+// status.nextPasswordRotation.
 func (r *KeystoneUserReconciler) provisionUser(
-	ctx context.Context, order *c5c3v1alpha1.KeystoneUser, cp *c5c3v1alpha1.ControlPlane, cluster string,
+	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, cp *c5c3v1alpha1.ControlPlane,
+	cluster string,
 ) (bool, ctrl.Result, error) {
 	fail := keystoneUserFail(order, conditionTypeKeystoneUserUserReady)
 	requeue := ctrl.Result{RequeueAfter: korcRequeueAfter}
@@ -101,6 +112,13 @@ func (r *KeystoneUserReconciler) provisionUser(
 		return false, requeue, nil
 	}
 
+	now, interval := r.now(), keystoneUserRotationInterval(order)
+	desired, held, err := keystoneUserScheduledGeneration(ctx, oc, order, now, interval)
+	if err != nil {
+		fail(reasonServiceAccountError, err.Error())
+		return false, ctrl.Result{}, err
+	}
+
 	user, gen, _, rotatedAt, err := ensureManagedAccountUser(ctx, r.Client, managedAccountUserInput{
 		name:           keystoneUserUserRef(order, cluster),
 		namespace:      cp.Namespace,
@@ -125,7 +143,7 @@ func (r *KeystoneUserReconciler) provisionUser(
 			claimKeystoneUserChild(obj, order, cluster)
 			return nil
 		},
-		desiredGeneration: keystoneUserPasswordGeneration(order),
+		desiredGeneration: desired,
 	})
 	if err != nil {
 		fail(reasonServiceAccountError, fmt.Sprintf("ensuring the managed user: %v", err))
@@ -135,10 +153,12 @@ func (r *KeystoneUserReconciler) provisionUser(
 		order.Status.UserID = *user.Status.ID
 	}
 	// The rotation time is recorded on the pass that re-points the password, which
-	// is ahead of the one that sees it applied.
+	// is ahead of the one that sees it applied. It is read off the leg's clock,
+	// the one the due check reads, so rotatedAt is only the signal.
 	if rotatedAt != nil {
-		order.Status.LastPasswordRotation = rotatedAt
+		order.Status.LastPasswordRotation = &metav1.Time{Time: now}
 	}
+	order.Status.NextPasswordRotation = keystoneUserNextPasswordRotation(order, interval)
 
 	// A latched transport error is handed back to K-ORC first; korc_unlatch.go
 	// states the policy.
@@ -163,10 +183,57 @@ func (r *KeystoneUserReconciler) provisionUser(
 		return false, requeue, nil
 	}
 
+	// The anchor is stamped again once a new generation is applied, so the
+	// schedule counts from the moment the password went live. A rotation whose
+	// re-point pass lost its status write still carries the old, due anchor;
+	// the stamp keeps the due check from starting a second rotation after this
+	// one. An order without an anchor is on its first provision, or was created
+	// before the schedule existed; either is anchored here. A fresh anchor is
+	// not due, so nothing waits for a credential order any more.
+	if order.Status.PasswordGeneration != gen || order.Status.LastPasswordRotation == nil {
+		order.Status.LastPasswordRotation = &metav1.Time{Time: now}
+		order.Status.NextPasswordRotation = keystoneUserNextPasswordRotation(order, interval)
+		held = nil
+	}
 	order.Status.PasswordGeneration = gen
-	keystoneUserSetTrue(order, conditionTypeKeystoneUserUserReady, reasonKeystoneUserProvisioned, fmt.Sprintf(
-		"Keystone user %q is provisioned in domain %q at password generation %d", userName, domain, gen))
-	return true, ctrl.Result{}, nil
+	message := fmt.Sprintf("Keystone user %q is provisioned in domain %q at password generation %d",
+		userName, domain, gen)
+	result := requeueAt(order.Status.NextPasswordRotation, now)
+	if len(held) > 0 {
+		message += fmt.Sprintf("; the scheduled password rotation waits until KeystoneApplicationCredential(s) "+
+			"%q in namespace %q are deleted", held, order.Namespace)
+		result = ctrl.Result{RequeueAfter: orderReferenceHoldRequeueAfter}
+	}
+	keystoneUserSetTrue(order, conditionTypeKeystoneUserUserReady, reasonKeystoneUserProvisioned, message)
+	return true, result, nil
+}
+
+// keystoneUserScheduledGeneration returns the password generation the pass
+// works toward and the deleting KeystoneApplicationCredentials that hold a due
+// rotation. The schedule is due once now reaches the anchor plus the interval.
+// The credential orders are listed through oc, the order's cluster client, only
+// then, so a converged order costs no List per pass. A credential order's
+// teardown does not rewrite its mint document, so K-ORC could no longer
+// authenticate its deletes with a new password: the scheduled rotation waits
+// while one naming the user is being deleted. Only a deletion the due pass
+// lists holds it. A declared generation above the status is never held,
+// because desired already carries it.
+func keystoneUserScheduledGeneration(
+	ctx context.Context, oc client.Client, order *c5c3v1alpha1.KeystoneUser, now time.Time, interval time.Duration,
+) (desired int64, held []string, err error) {
+	desired = keystoneUserPasswordGeneration(order)
+	next := keystoneUserNextPasswordRotation(order, interval)
+	if next == nil || now.Before(next.Time) {
+		return desired, nil, nil
+	}
+	held, err = referencingApplicationCredentials(ctx, oc, order.Namespace,
+		func(ac *c5c3v1alpha1.KeystoneApplicationCredential) bool {
+			return ac.Spec.UserRef.Name == order.Name && ac.DeletionTimestamp != nil
+		})
+	if err != nil || len(held) > 0 {
+		return desired, held, err
+	}
+	return max(desired, order.Status.PasswordGeneration+1), nil, nil
 }
 
 // keystoneUserReservedNames are the Keystone users a ControlPlane creates in its

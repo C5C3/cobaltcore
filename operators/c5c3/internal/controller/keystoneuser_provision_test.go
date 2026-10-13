@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -16,8 +17,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -29,8 +32,12 @@ import (
 // whole second the way a status time keeps it.
 var kuTestClock = time.Date(2026, time.October, 10, 12, 0, 0, 0, time.UTC)
 
+// kuTestNow is the reconciler clock that reads kuTestClock.
+func kuTestNow() time.Time { return kuTestClock }
+
 // runProvision drives provisionUser once for an order on cluster against the
-// seeded management cluster and returns its outcome and the client.
+// seeded management cluster and returns its outcome and the client. The one
+// fake client doubles as the order's cluster client.
 func runProvision(
 	t *testing.T, order *c5c3v1alpha1.KeystoneUser, cp *c5c3v1alpha1.ControlPlane, cluster string,
 	objs ...client.Object,
@@ -38,10 +45,72 @@ func runProvision(
 	t.Helper()
 	g := NewGomegaWithT(t)
 	c := kuFakeClient(t, nil, append([]client.Object{cp}, objs...)...)
-	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme()}
-	ok, res, err := r.provisionUser(context.Background(), order, cp, cluster)
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
+	ok, res, err := r.provisionUser(context.Background(), c, order, cp, cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	return ok, res, c
+}
+
+// kuOrderRotatedAgo returns the order at password generation 1 whose last
+// rotation lies age before kuTestClock; it is due once age reaches the
+// interval.
+func kuOrderRotatedAgo(age time.Duration) *c5c3v1alpha1.KeystoneUser {
+	order := keystoneUserCR(kuTestNamespace)
+	order.Status.PasswordGeneration = 1
+	order.Status.LastPasswordRotation = &metav1.Time{Time: kuTestClock.Add(-age)}
+	return order
+}
+
+// kuDeletingCredential returns a KeystoneApplicationCredential beside the order
+// that names the user and is being deleted; its finalizer keeps it listed.
+func kuDeletingCredential() *c5c3v1alpha1.KeystoneApplicationCredential {
+	credential := keystoneApplicationCredentialCR()
+	credential.DeletionTimestamp = ptr.To(metav1.Now())
+	return credential
+}
+
+// kuPasswordRef reads the password Secret the managed User points at.
+func kuPasswordRef(t *testing.T, c client.Client, order *c5c3v1alpha1.KeystoneUser) string {
+	t.Helper()
+	user, found := kuGetUser(t, c, keystoneUserUserRef(order, ""))
+	if !found {
+		t.Fatalf("the managed User is missing")
+	}
+	return string(*user.Spec.Resource.PasswordRef)
+}
+
+// kuPasswordSecretExists reports whether generation gen's password Secret is in
+// the ControlPlane's namespace.
+func kuPasswordSecretExists(t *testing.T, c client.Client, order *c5c3v1alpha1.KeystoneUser, gen int64) bool {
+	t.Helper()
+	err := c.Get(context.Background(), types.NamespacedName{
+		Namespace: "default", Name: keystoneUserPasswordSecretName(order, "", gen),
+	}, &corev1.Secret{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("reading the password Secret of generation %d: %v", gen, err)
+	}
+	return err == nil
+}
+
+// kuApply marks generation gen applied on the managed User, as K-ORC reports
+// it.
+func kuApply(t *testing.T, c client.Client, order *c5c3v1alpha1.KeystoneUser, gen int64) {
+	t.Helper()
+	user, _ := kuGetUser(t, c, keystoneUserUserRef(order, ""))
+	user.Status.Resource.AppliedPasswordRef = keystoneUserPasswordSecretName(order, "", gen)
+	if err := c.Status().Update(context.Background(), user); err != nil {
+		t.Fatalf("marking generation %d applied: %v", gen, err)
+	}
+}
+
+// kuFailCredentialList fails every List of KeystoneApplicationCredentials.
+var kuFailCredentialList = &interceptor.Funcs{
+	List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		if _, ok := list.(*c5c3v1alpha1.KeystoneApplicationCredentialList); ok {
+			return errors.New("boom")
+		}
+		return cl.List(ctx, list, opts...)
+	},
 }
 
 // absentUserProbe seeds the collision probe as K-ORC reports a user that does
@@ -174,9 +243,9 @@ func TestKeystoneUserProvision_ConvergedPassDeletesNothing(t *testing.T) {
 			return cl.Delete(ctx, obj, opts...)
 		},
 	}, append([]client.Object{cp}, kuConvergedChildren(order, cp, "", 1)...)...)
-	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme()}
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
 
-	ok, _, err := r.provisionUser(context.Background(), order, cp, "")
+	ok, _, err := r.provisionUser(context.Background(), c, order, cp, "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
@@ -239,13 +308,12 @@ func TestKeystoneUserProvision_ConvergedUserIsProvisioned(t *testing.T) {
 	ok, res, _ := runProvision(t, order, cp, "", kuConvergedChildren(order, cp, "", 1)...)
 
 	g.Expect(ok).To(BeTrue())
-	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval), "the converged leg waits for its schedule")
 	cond := kuCondition(order, conditionTypeKeystoneUserUserReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(reasonKeystoneUserProvisioned))
 	g.Expect(order.Status.UserID).To(Equal("ku-user-id"))
 	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(1)))
-	g.Expect(order.Status.LastPasswordRotation).To(BeNil(), "nothing was rotated")
 }
 
 // TestKeystoneUserProvision_RaisingTheGenerationRotates walks a rotation from 1
@@ -260,11 +328,11 @@ func TestKeystoneUserProvision_RaisingTheGenerationRotates(t *testing.T) {
 	order := keystoneUserCR(kuTestNamespace)
 	order.Spec.PasswordGeneration = 2
 	c := kuFakeClient(t, nil, append([]client.Object{cp}, kuConvergedChildren(order, cp, "", 1)...)...)
-	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme()}
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
 	v1 := types.NamespacedName{Namespace: "default", Name: keystoneUserPasswordSecretName(order, "", 1)}
 	v2 := types.NamespacedName{Namespace: "default", Name: keystoneUserPasswordSecretName(order, "", 2)}
 
-	ok, res, err := r.provisionUser(ctx, order, cp, "")
+	ok, res, err := r.provisionUser(ctx, c, order, cp, "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
 	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
@@ -274,11 +342,13 @@ func TestKeystoneUserProvision_RaisingTheGenerationRotates(t *testing.T) {
 	g.Expect(c.Get(ctx, v2, &corev1.Secret{})).To(Succeed())
 	g.Expect(c.Get(ctx, v1, &corev1.Secret{})).To(Succeed(), "v1 stays while Keystone still holds it")
 	g.Expect(order.Status.LastPasswordRotation).NotTo(BeNil())
+	g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", kuTestClock),
+		"the re-point pass stamps the reconciler's clock")
 
 	user.Status.Resource.AppliedPasswordRef = v2.Name
 	g.Expect(c.Status().Update(ctx, user)).To(Succeed())
 
-	ok, _, err = r.provisionUser(ctx, order, cp, "")
+	ok, _, err = r.provisionUser(ctx, c, order, cp, "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
 	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(2)))
@@ -360,4 +430,338 @@ func TestKeystoneUserNextPasswordRotation(t *testing.T) {
 	g.Expect(keystoneUserNextPasswordRotation(order, time.Hour).Time).To(BeTemporally("==", kuTestClock.Add(time.Hour)))
 	g.Expect(keystoneUserNextPasswordRotation(order, 0)).To(BeNil(), "an interval of 0s schedules nothing")
 	g.Expect(keystoneUserNextPasswordRotation(order, -time.Hour)).To(BeNil(), "a negative interval schedules nothing")
+}
+
+// TestKeystoneUserProvision_FirstProvisionStampsTheAnchor covers the pass that
+// first sees the password applied: it anchors the schedule at the clock and
+// wakes the order one interval later.
+func TestKeystoneUserProvision_FirstProvisionStampsTheAnchor(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	order := keystoneUserCR(kuTestNamespace)
+
+	ok, res, c := runProvision(t, order, cp, "", kuConvergedChildren(order, cp, "", 1)...)
+
+	g.Expect(ok).To(BeTrue())
+	g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", kuTestClock))
+	g.Expect(order.Status.NextPasswordRotation.Time).To(BeTemporally("==", kuTestClock.Add(defaultKeystoneUserRotationInterval)))
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)), "the anchor rotates nothing")
+}
+
+// TestKeystoneUserProvision_DueScheduleRotates walks a scheduled rotation from
+// 1 to 2: the due pass re-points the User and stamps the clock, and the pass
+// that sees v2 applied reports generation 2, stamps the anchor again and drops
+// v1.
+func TestKeystoneUserProvision_DueScheduleRotates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	c := kuFakeClient(t, nil, append([]client.Object{cp}, kuConvergedChildren(order, cp, "", 1)...)...)
+	clock := kuTestClock
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: func() time.Time { return clock }}
+
+	ok, res, err := r.provisionUser(ctx, c, order, cp, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	g.Expect(kuCondition(order, conditionTypeKeystoneUserUserReady).Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)))
+	g.Expect(kuPasswordSecretExists(t, c, order, 2)).To(BeTrue())
+	g.Expect(kuPasswordSecretExists(t, c, order, 1)).To(BeTrue(), "v1 stays while Keystone still holds it")
+	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(1)))
+	g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", kuTestClock))
+	g.Expect(order.Status.NextPasswordRotation.Time).To(BeTemporally("==", kuTestClock.Add(defaultKeystoneUserRotationInterval)))
+
+	kuApply(t, c, order, 2)
+	clock = kuTestClock.Add(time.Minute)
+
+	ok, res, err = r.provisionUser(ctx, c, order, cp, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
+	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(2)))
+	g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", clock),
+		"the pass that sees v2 applied stamps the anchor again")
+	g.Expect(order.Status.NextPasswordRotation.Time).To(BeTemporally("==", clock.Add(defaultKeystoneUserRotationInterval)))
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	g.Expect(kuPasswordSecretExists(t, c, order, 1)).To(BeFalse(), "the superseded generation is deleted once v2 is applied")
+	g.Expect(kuPasswordSecretExists(t, c, order, 3)).To(BeFalse(), "the applied generation is not rotated again")
+}
+
+func TestKeystoneUserProvision_ScheduleOffSchedulesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(800 * time.Hour)
+	order.Spec.Rotation.Interval = &metav1.Duration{}
+	order.Status.NextPasswordRotation = &metav1.Time{Time: kuTestClock.Add(-80 * time.Hour)}
+
+	ok, res, c := runProvision(t, order, cp, "", kuConvergedChildren(order, cp, "", 1)...)
+
+	g.Expect(ok).To(BeTrue())
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)))
+	g.Expect(kuPasswordSecretExists(t, c, order, 2)).To(BeFalse())
+	g.Expect(order.Status.NextPasswordRotation).To(BeNil(), "0s clears the next rotation")
+	g.Expect(res.IsZero()).To(BeTrue())
+}
+
+// TestKeystoneUserProvision_UpgradedOrderKeepsItsRecordedRotation pins the
+// upgrade anchor: an order rotated by hand longer than an interval ago rotates
+// at once, one without a record is only anchored.
+func TestKeystoneUserProvision_UpgradedOrderKeepsItsRecordedRotation(t *testing.T) {
+	t.Run("a recorded rotation older than the interval rotates at once", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := ksControlPlane()
+		order := kuOrderRotatedAgo(800 * time.Hour)
+
+		ok, _, c := runProvision(t, order, cp, "", kuConvergedChildren(order, cp, "", 1)...)
+
+		g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
+		g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)))
+	})
+	t.Run("no record only stamps the anchor", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := ksControlPlane()
+		order := keystoneUserCR(kuTestNamespace)
+		order.Status.PasswordGeneration = 1
+
+		ok, res, c := runProvision(t, order, cp, "", kuConvergedChildren(order, cp, "", 1)...)
+
+		g.Expect(ok).To(BeTrue())
+		g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)))
+		g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", kuTestClock))
+		g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	})
+}
+
+// TestKeystoneUserProvision_ScheduleWaitsForACredentialTeardown pins the hold:
+// a due schedule waits while a credential order beside the order that names
+// the user is being deleted, and only such a credential order holds it.
+func TestKeystoneUserProvision_ScheduleWaitsForACredentialTeardown(t *testing.T) {
+	t.Run("a deleting credential naming the user holds", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := ksControlPlane()
+		order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+
+		ok, res, c := runProvision(t, order, cp, "",
+			append(kuConvergedChildren(order, cp, "", 1), kuDeletingCredential())...)
+
+		g.Expect(ok).To(BeTrue(), "the live password stays valid")
+		g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)))
+		g.Expect(kuPasswordSecretExists(t, c, order, 2)).To(BeFalse())
+		cond := kuCondition(order, conditionTypeKeystoneUserUserReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(cond.Reason).To(Equal(reasonKeystoneUserProvisioned))
+		g.Expect(cond.Message).To(ContainSubstring(`; the scheduled password rotation waits until ` +
+			`KeystoneApplicationCredential(s) ["workflow-appcred"] in namespace "tenant-a" are deleted`))
+		g.Expect(res.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+		g.Expect(order.Status.NextPasswordRotation.Time).To(BeTemporally("==", kuTestClock.Add(-time.Hour)),
+			"the held order keeps its due anchor")
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(*c5c3v1alpha1.KeystoneApplicationCredential)
+	}{
+		{
+			name:   "a credential naming the user without a deletion timestamp",
+			mutate: func(ac *c5c3v1alpha1.KeystoneApplicationCredential) { ac.DeletionTimestamp = nil },
+		},
+		{
+			name:   "a deleting credential naming another user",
+			mutate: func(ac *c5c3v1alpha1.KeystoneApplicationCredential) { ac.Spec.UserRef.Name = "someone" },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" does not hold", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := ksControlPlane()
+			order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+			credential := kuDeletingCredential()
+			tc.mutate(credential)
+
+			ok, res, c := runProvision(t, order, cp, "", append(kuConvergedChildren(order, cp, "", 1), credential)...)
+
+			g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+			g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)))
+		})
+	}
+}
+
+// TestKeystoneUser_TargetClusterScheduleReadsTheOrderCluster pins that a due
+// schedule of an order on a target cluster reads the credential orders on that
+// cluster: a deleting one there holds the rotation, and a cluster that does not
+// serve the kind rotates.
+func TestKeystoneUser_TargetClusterScheduleReadsTheOrderCluster(t *testing.T) {
+	// The order and the credential land on the order's cluster, everything in
+	// the ControlPlane's namespace on the management cluster.
+	reconcileDue := func(t *testing.T, orderFuncs *interceptor.Funcs, extra ...client.Object) (
+		*c5c3v1alpha1.KeystoneUser, *kuHarness, ctrl.Result,
+	) {
+		t.Helper()
+		cp := keystoneUserControlPlane(assignOn(kuTestNamespace, kuTestCluster))
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.test/v3"
+		order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+		objs := append([]client.Object{order, cp}, kuConvergedChildren(order, cp, kuTestCluster, 1)...)
+		h := newKUHarness(t, kuTestCluster, nil, orderFuncs, append(objs, extra...)...)
+		result, err := h.reconcile(context.Background())
+		if err != nil {
+			t.Fatalf("reconciling the order: %v", err)
+		}
+		return order, h, result
+	}
+	passwordRef := func(t *testing.T, h *kuHarness, order *c5c3v1alpha1.KeystoneUser) string {
+		t.Helper()
+		user, found := kuGetUser(t, h.mgmt, keystoneUserUserRef(order, kuTestCluster))
+		if !found {
+			t.Fatalf("the managed User is missing")
+		}
+		return string(*user.Spec.Resource.PasswordRef)
+	}
+
+	t.Run("a deleting credential on the order's cluster holds", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		order, h, result := reconcileDue(t, nil, kuDeletingCredential())
+
+		g.Expect(passwordRef(t, h, order)).To(Equal(keystoneUserPasswordSecretName(order, kuTestCluster, 1)))
+		g.Expect(kuCondition(h.get(t), conditionTypeKeystoneUserUserReady).Message).To(
+			ContainSubstring("waits until KeystoneApplicationCredential(s)"))
+		g.Expect(result.RequeueAfter).To(Equal(orderReferenceHoldRequeueAfter))
+	})
+
+	t.Run("a cluster without the credential kind rotates", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		order, h, _ := reconcileDue(t, &interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*c5c3v1alpha1.KeystoneApplicationCredentialList); ok {
+					return &meta.NoKindMatchError{GroupKind: keystoneApplicationCredentialGVK.GroupKind()}
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		})
+
+		g.Expect(passwordRef(t, h, order)).To(Equal(keystoneUserPasswordSecretName(order, kuTestCluster, 2)))
+	})
+}
+
+func TestKeystoneUserProvision_RaisedGenerationIsNotHeld(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	order.Spec.PasswordGeneration = 2
+
+	ok, _, c := runProvision(t, order, cp, "", append(kuConvergedChildren(order, cp, "", 1), kuDeletingCredential())...)
+
+	g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)),
+		"a raised generation goes through a credential teardown")
+}
+
+// TestKeystoneUserProvision_LostStatusWriteDoesNotRotateTwice covers a re-point
+// pass whose status write was lost: the User points at v2, the status still
+// names generation 1 and its due anchor. No v3 follows, and the anchor moves
+// once v2 is applied.
+func TestKeystoneUserProvision_LostStatusWriteDoesNotRotateTwice(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	seeded := kuConvergedChildren(order, cp, "", 1)
+	user := seeded[0].(*orcv1alpha1.User)
+	user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(keystoneUserPasswordSecretName(order, "", 2)))
+	v2 := seeded[1].DeepCopyObject().(*corev1.Secret)
+	v2.Name = keystoneUserPasswordSecretName(order, "", 2)
+	c := kuFakeClient(t, nil, append([]client.Object{cp, v2}, seeded...)...)
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
+
+	ok, _, err := r.provisionUser(ctx, c, order, cp, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse(), "the order waits until K-ORC applies v2")
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 2)))
+	g.Expect(kuPasswordSecretExists(t, c, order, 3)).To(BeFalse(), "the due anchor starts no second rotation")
+
+	kuApply(t, c, order, 2)
+
+	ok, res, err := r.provisionUser(ctx, c, order, cp, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
+	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(2)))
+	g.Expect(order.Status.LastPasswordRotation.Time).To(BeTemporally("==", kuTestClock), "the anchor is stamped again")
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	g.Expect(kuPasswordSecretExists(t, c, order, 3)).To(BeFalse())
+}
+
+// TestKeystoneUserProvision_AppliedRotationEndsTheHold covers a re-point whose
+// status write was lost while a credential order is being deleted: the pass
+// that sees v2 applied anchors the schedule again, so nothing waits any more.
+func TestKeystoneUserProvision_AppliedRotationEndsTheHold(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	seeded := kuConvergedChildren(order, cp, "", 1)
+	user := seeded[0].(*orcv1alpha1.User)
+	user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(keystoneUserPasswordSecretName(order, "", 2)))
+	user.Status.Resource.AppliedPasswordRef = keystoneUserPasswordSecretName(order, "", 2)
+	v2 := seeded[1].DeepCopyObject().(*corev1.Secret)
+	v2.Name = keystoneUserPasswordSecretName(order, "", 2)
+	c := kuFakeClient(t, nil, append([]client.Object{cp, v2, kuDeletingCredential()}, seeded...)...)
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
+
+	ok, res, err := r.provisionUser(ctx, c, order, cp, "")
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
+	g.Expect(order.Status.PasswordGeneration).To(Equal(int64(2)))
+	g.Expect(kuCondition(order, conditionTypeKeystoneUserUserReady).Message).NotTo(ContainSubstring("waits"))
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval))
+	g.Expect(kuPasswordSecretExists(t, c, order, 3)).To(BeFalse())
+}
+
+func TestKeystoneUserProvision_CredentialListErrorIsReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(defaultKeystoneUserRotationInterval + time.Hour)
+	c := kuFakeClient(t, kuFailCredentialList, append([]client.Object{cp}, kuConvergedChildren(order, cp, "", 1)...)...)
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
+
+	ok, _, err := r.provisionUser(context.Background(), c, order, cp, "")
+
+	g.Expect(err).To(MatchError(ContainSubstring("listing KeystoneApplicationCredentials")))
+	g.Expect(err).To(MatchError(ContainSubstring("boom")))
+	g.Expect(ok).To(BeFalse())
+	cond := kuCondition(order, conditionTypeKeystoneUserUserReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+	g.Expect(cond.Message).To(Equal(err.Error()))
+	g.Expect(kuPasswordRef(t, c, order)).To(Equal(keystoneUserPasswordSecretName(order, "", 1)))
+}
+
+// TestKeystoneUserProvision_NotDueScheduleReadsNoCredentialOrders pins that
+// only a due pass reads the credential orders: with their List failing, a
+// pass whose schedule is not due still converges.
+func TestKeystoneUserProvision_NotDueScheduleReadsNoCredentialOrders(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	order := kuOrderRotatedAgo(time.Hour)
+	c := kuFakeClient(t, kuFailCredentialList, append([]client.Object{cp}, kuConvergedChildren(order, cp, "", 1)...)...)
+	r := &KeystoneUserReconciler{Client: c, Scheme: c.Scheme(), Now: kuTestNow}
+
+	ok, res, err := r.provisionUser(context.Background(), c, order, cp, "")
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
+	g.Expect(kuCondition(order, conditionTypeKeystoneUserUserReady).Reason).To(Equal(reasonKeystoneUserProvisioned))
+	g.Expect(res.RequeueAfter).To(Equal(defaultKeystoneUserRotationInterval - time.Hour))
 }

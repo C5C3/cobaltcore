@@ -213,12 +213,7 @@ func (r *RabbitMQVhostReconciler) Reconcile(ctx context.Context, req mcreconcile
 
 // now reads the reconciler's clock, truncated to the second a status time
 // keeps once it is written.
-func (r *RabbitMQVhostReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now().Truncate(time.Second)
-	}
-	return time.Now().Truncate(time.Second)
-}
+func (r *RabbitMQVhostReconciler) now() time.Time { return orderClockNow(r.Now) }
 
 // reconcileNormal runs the admission gates, the messaging gate, then the
 // provision and the delivery.
@@ -275,12 +270,11 @@ func (r *RabbitMQVhostReconciler) reconcileNormal(
 }
 
 // rabbitMQVhostPassResult decides when the next pass runs once the legs had
-// their say, with DeliveryReady as the converged condition (orderPassResult).
-// The legs' requeue, which carries the rotation timers, is kept when it is the
-// shorter one, as keystoneApplicationCredentialPassResult does.
+// their say, with DeliveryReady as the converged condition
+// (scheduledOrderPassResult). The legs' requeue carries the rotation timers.
 func rabbitMQVhostPassResult(order *c5c3v1alpha1.RabbitMQVhost, cluster string, result ctrl.Result) ctrl.Result {
-	converged := conditions.AllTrue(order.Status.Conditions, conditionTypeRabbitMQVhostDeliveryReady)
-	return commonreconcile.ShortestRequeue(orderPassResult(cluster, converged, ctrl.Result{}), result)
+	return scheduledOrderPassResult(cluster,
+		conditions.AllTrue(order.Status.Conditions, conditionTypeRabbitMQVhostDeliveryReady), result)
 }
 
 // rabbitMQVhostMessagingGate admits an order only onto a managed bus that is
