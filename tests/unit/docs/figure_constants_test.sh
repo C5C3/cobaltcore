@@ -45,7 +45,11 @@ service-glance-image-paths|operators/glance/internal/controller/reconcile_deploy
 service-glance-image-paths|operators/glance/internal/controller/reconcile_deployment.go|imageCacheVolumeName|emptyDir %s
 service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceStagingStorePath|%s,
 service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceTasksStorePath|%s,
-service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceImageCachePath|%s,"
+service-glance-image-paths|operators/glance/internal/controller/reconcile_config.go|glanceImageCachePath|%s,
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/keystoneapplicationcredential_types.go|default:Interval|interval %s,
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/keystoneapplicationcredential_types.go|default:GracePeriod|grace period %s
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/rabbitmqvhost_types.go|default:Interval|interval %s,
+secrets-rotation-orders|operators/c5c3/api/v1alpha1/rabbitmqvhost_types.go|default:GracePeriod|grace period %s"
 
 # read_default_marker <Go file> <FieldName>: print the value of the
 # `+kubebuilder:default="<value>"` marker in the comment block directly above

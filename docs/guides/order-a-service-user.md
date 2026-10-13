@@ -413,10 +413,21 @@ with the Secret it mounts replaced:
 
 The token table names the project.
 
-The schedule rotates the credential every 720 hours. The operator creates a
-successor, switches the Secret once Keystone holds it, and deletes the
-superseded credential 24 hours later, so the Secret never names an invalid
-credential. During those 24 hours the status names the superseded one:
+The schedule rotates the credential every 720 hours, in three steps the figure
+numbers:
+
+![Rotation of an ordered credential as a time strip with two generations. Generation N is delivered from its mint. At the mint plus the interval the operator creates generation N+1 beside it, step 1, and the Secret still holds N. Once the backend holds N+1 the order switches to it, step 2: the status names N+1, the Secret is rewritten after the backup holds the new document, and the status names N as the previous credential. Both generations are valid until the grace period ends, step 3, when N is deleted. A credential created with the schedule on also expires in Keystone at its mint plus the interval plus the grace period, so one the operator fails to delete stops on its own. The schedule, a raised generation in the spec, an expired credential or a lost secret start a rotation; none starts while a grace period runs. The defaults are an interval of 720 hours and a grace period of 24 hours for the KeystoneApplicationCredential, where N+1 is a new credential of the same user, and for the RabbitMQVhost, where N+1 is a new broker user. Two kinds rotate differently: the KeystoneUser password rotates only when a person raises the password generation, replaces the password of the same user and has no grace period, and the MariaDBDatabase credential follows the OpenBao lease on a cadence the order does not expose.](../diagrams/secrets-rotation-orders.svg)
+
+1. The operator creates generation N+1 in Keystone. The delivered Secret keeps
+   generation N, which stays valid.
+2. Once Keystone holds N+1, the order switches: `status.credentialGeneration`
+   reads N+1, `status.previousCredentialID` names N, and the Secret is
+   rewritten as soon as the backup holds the new document.
+3. When `status.previousCredentialDeleteAt` has passed, generation N is
+   deleted.
+
+The grace period between steps 2 and 3 is 24 hours, so the Secret never names
+an invalid credential. During it the status names the superseded credential:
 
 ```bash
 kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
@@ -509,11 +520,12 @@ for configure, write and read.
 The user rotates on the schedule the application credential follows: every 720
 hours the operator creates the successor user `<vhost>-v2`, switches the Secret
 once the broker holds it, and deletes the superseded user 24 hours later. The
-superseded user keeps working through those 24 hours, so a service reads the
-Secret again within them. `spec.rotation.interval` and
-`spec.rotation.gracePeriod` change the schedule, `interval: 0s` turns it off,
-and raising `spec.passwordGeneration` above `status.passwordGeneration`
-rotates at once.
+three steps are the ones of [the figure above](#order-an-application-credential),
+with a broker user in place of a credential. The superseded user keeps working
+through those 24 hours, so a service reads the Secret again within them.
+`spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule,
+`interval: 0s` turns it off, and raising `spec.passwordGeneration` above
+`status.passwordGeneration` rotates at once.
 
 Deleting the order deletes the user and its backup either way. The vhost and
 the queues and messages in it stay under the default `spec.deletionPolicy:
