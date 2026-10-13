@@ -26,6 +26,17 @@
 #      verbatim bring-up of that devstack
 #   9. Part 2 registers the target with both keys, namespaces=openstack and
 #      assignedNamespaces=workflow, and waits for `cluster engaged`
+#  10. Part 1 numbers its steps 1 to 10, Step 7 is the rotation {#cp-rotation}
+#      and Steps 8 to 10 keep {#cp-database}, {#cp-vhost} and {#cp-teardown};
+#      only Part 1 shortens the schedule (interval: 3m, gracePeriod: 2m), Part 2
+#      points at Part 1 Step 10, Step 6 keeps the generation-1 copy, the verify
+#      Job still holds the two strings Step 7 rewrites with sed, and Step 7 runs
+#      its commands in the order the rotation needs: the wait for generation 2
+#      or later and its timeout message, the schedule off, the late reader's
+#      wait for the Secret and its timeout message, copy, raise and wait, the
+#      copy authenticating, the wait for the cleared previousCredentialID, the
+#      copy refused, the raise by one, the wait for the Secret, the copy
+#      deleted; both runs with the copy repoint the Job's Secret
 #
 # Heading scans skip fenced code. QUICK_START_DOC overrides the page. The test
 # needs bash, grep, sed and awk alone and runs under Bash 3.2.
@@ -48,6 +59,7 @@ QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-orders.md}"
 VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
 KIND_CONFIG="$PROJECT_ROOT/hack/kind-config.yaml"
 CONTROLPLANE_TYPES="$PROJECT_ROOT/operators/c5c3/api/v1alpha1/controlplane_types.go"
+APPCRED_VERIFY_JOB="$PROJECT_ROOT/tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -71,6 +83,24 @@ section() {
     !fenced && /^## / { if (inside) exit; if ($0 ~ start) { inside = 1; next } }
     inside { print }
   ' "$QUICK_START_DOC"
+}
+
+# step_headings prints the `### Step` headings of Part $1 outside fenced code.
+step_headings() {
+  section "^## Part $1: " | awk '
+    /^[[:space:]]*(```|~~~)/ { fenced = !fenced; next }
+    !fenced && /^### Step / { print }
+  '
+}
+
+# step_text prints Step $2 of Part $1, its heading included, up to the next
+# `### ` heading.
+step_text() {
+  section "^## Part $1: " | awk -v heading="### Step $2: " '
+    index($0, heading) == 1 { inside = 1; print; next }
+    inside && /^### / { exit }
+    inside { print }
+  '
 }
 
 # record <ok 0|1> <description>: one PASS or FAIL.
@@ -142,10 +172,7 @@ test_sections() {
   echo "Test: every step heading carries an explicit anchor of its part"
   local part steps step anchored
   for part in "1:cp" "2:tc"; do
-    steps="$(section "^## Part ${part%%:*}: " | awk '
-      /^[[:space:]]*(```|~~~)/ { fenced = !fenced; next }
-      !fenced && /^### Step / { print }
-    ')"
+    steps="$(step_headings "${part%%:*}")"
     if [[ -z "$steps" ]]; then
       record 0 "Part ${part%%:*} holds step headings"
       continue
@@ -261,6 +288,70 @@ test_part_2_registers_two_keys() {
   assert_contains "Part 2 waits for the engagement" "$part2" "cluster engaged"
 }
 
+# --- Test 10: the rotation step of Part 1 ---
+test_part_1_rotation_step() {
+  echo "Test: Part 1 numbers ten steps and Step 7 watches a rotation in order"
+  local steps numbers want_numbers part1 part2 step7 needle line previous=0 ordered=1 missing=""
+  part1="$(section '^## Part 1: ')"
+  part2="$(section '^## Part 2: ')"
+  steps="$(step_headings 1)"
+  numbers="$(sed -E 's/^### Step ([0-9]+):.*/\1/' <<<"$steps" | tr '\n' ' ')"
+  want_numbers="1 2 3 4 5 6 7 8 9 10 "
+  assert_eq "Part 1 numbers its steps 1 to 10 in order" "$want_numbers" "$numbers"
+  assert_contains "Step 7 is the rotation" "$steps" "### Step 7: Watch the credential rotate {#cp-rotation}"
+  assert_contains "Step 8 keeps its anchor" "$steps" "### Step 8: Order a database {#cp-database}"
+  assert_contains "Step 9 keeps its anchor" "$steps" "### Step 9: Order a vhost {#cp-vhost}"
+  assert_contains "Step 10 keeps its anchor" "$steps" "### Step 10: Tear the orders down {#cp-teardown}"
+
+  assert_eq "Part 1 sets 'interval: 3m' once" "1" "$(grep -cE '^[[:space:]]+interval: 3m$' <<<"$part1" || true)"
+  assert_eq "Part 1 sets 'gracePeriod: 2m' once" "1" "$(grep -cE '^[[:space:]]+gracePeriod: 2m$' <<<"$part1" || true)"
+  assert_eq "Part 2 keeps the default schedule" "0" "$(grep -c 'gracePeriod:' <<<"$part2" || true)"
+  assert_file_contains_fixed "Part 2 points at Part 1 Step 10" "$QUICK_START_DOC" "Part 1 Step 10"
+  assert_file_not_contains "no reference to Part 1 Step 9 is left" "$QUICK_START_DOC" "Part 1 Step 9"
+
+  assert_contains "Step 6 keeps the generation-1 copy Step 7 mounts" "$(step_text 1 6)" \
+    'metadata: {name: "workflow-appcred-gen1", namespace: .metadata.namespace},'
+  # Step 7 rewrites the verify Job with sed, which changes nothing silently
+  # once the Job no longer holds the string it replaces.
+  assert_file_contains_fixed "the verify Job Step 7 renames is named workflow-appcred-verify" \
+    "$APPCRED_VERIFY_JOB" "name: workflow-appcred-verify"
+  assert_file_contains_fixed "the verify Job Step 7 repoints mounts workflow-appcred-credentials" \
+    "$APPCRED_VERIFY_JOB" "secretName: workflow-appcred-credentials"
+
+  step7="$(step_text 1 7)"
+  # Each needle is searched after the previous one's line, so a needle may
+  # occur twice in the list.
+  while IFS= read -r needle; do
+    line="$(grep -nF -- "$needle" <<<"$step7" | awk -F: -v after="$previous" '$1 > after { print $1; exit }')"
+    if [[ -n "$line" ]]; then
+      previous="$line"
+    else
+      ordered=0
+      if ! grep -qF -- "$needle" <<<"$step7"; then
+        missing+="${missing:+, }'${needle}'"
+      fi
+    fi
+  done <<'EOF'
+[ "${gen:-0}" -ge 2 ] && break
+[ "${gen:-0}" -ge 2 ] || echo "generation 2 did not appear within five minutes"
+-p '{"spec":{"rotation":{"interval":"0s"}}}'
+[ "$got" = "$id" ] && break
+[ "$got" = "$id" ] || echo "the Secret did not take credential $id within three minutes"
+metadata: {name: "workflow-appcred-gen1", namespace: .metadata.namespace},
+-p "{\"spec\":{\"credentialGeneration\":$((gen + 1))}}"
+--for=jsonpath="{.status.credentialGeneration}"=$((gen + 1))
+secretName: workflow-appcred-credentials|secretName: workflow-appcred-gen1|
+--for=condition=complete job/workflow-appcred-gen1-verify
+-o jsonpath='{.status.previousCredentialID}')" ] && break
+secretName: workflow-appcred-credentials|secretName: workflow-appcred-gen1|
+--for=condition=failed job/workflow-appcred-gen1-verify
+-p "{\"spec\":{\"credentialGeneration\":$((gen + 1))}}"
+-o jsonpath='{.data.application_credential_id}' | base64 -d)" = "$id" ] && break
+kubectl delete secret workflow-appcred-gen1 -n workflow
+EOF
+  record "$ordered" "Step 7 runs its commands in the order of the rotation${missing:+ (missing: ${missing})}"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -273,6 +364,7 @@ test_target_port_is_the_envoy_node_port
 test_published_fields_exist
 test_devstack_box
 test_part_2_registers_two_keys
+test_part_1_rotation_step
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
