@@ -18,9 +18,10 @@ Secret and nothing else.
 
 Beside the user the owner can order a project, a role for the user on it, a
 catalog entry and an application credential, each as a CR of its own. The
-user's Secret scopes a token to the project once the role is assigned. Of the
-further orders only the application credential delivers a Secret, which the
-operator rotates on a schedule. A `MariaDBDatabase` orders a database on the
+user's Secret scopes a token to the project once the role is assigned. The
+operator rotates the user's password on a schedule. Of the further orders only
+the application credential delivers a Secret, and the operator rotates it on a
+schedule too. A `MariaDBDatabase` orders a database on the
 ControlPlane's MariaDB, whose user OpenBao replaces every day. Apart from
 Keystone, the owner can order a vhost of their own on the ControlPlane's
 message bus with a `RabbitMQVhost`; its Secret carries a broker user the
@@ -241,20 +242,40 @@ openstack --insecure user show workflow
 
 ## Rotate the password
 
-Raise the password generation, which may only increase:
+The operator rotates the password every 720 hours, the default of
+`spec.rotation.interval`. The order reports its generation and when the next
+rotation is due:
 
 ```bash
+kubectl get keystoneuser workflow -n workflow \
+  -o jsonpath='{.status.passwordGeneration}{" "}{.status.nextPasswordRotation}{"\n"}'
+```
+
+A Keystone user holds one password, so there is no grace period: the old
+password stops authenticating the moment Keystone applies the new one. A
+service reads the Secret again, or reconnects when it changes. Anything that
+runs unattended belongs on an
+[application credential](#order-an-application-credential), which rotates with
+an overlap. For a consumer that cannot pick up a new password, set
+`spec.rotation.interval` to `0s`, which turns the schedule off.
+
+To rotate at once, raise the password generation above the one the status
+reports. It may only increase:
+
+```bash
+next=$(( $(kubectl get keystoneuser workflow -n workflow -o jsonpath='{.status.passwordGeneration}') + 1 ))
 kubectl patch keystoneuser workflow -n workflow --type merge \
-  -p '{"spec":{"passwordGeneration":2}}'
+  -p "{\"spec\":{\"passwordGeneration\":${next}}}"
 kubectl get keystoneuser workflow -n workflow -o jsonpath='{.status.passwordGeneration}{"\n"}'
 ```
 
 The operator generates a new password and K-ORC applies it in Keystone. While
 it does, the Secret keeps the old password, which still authenticates. Once
-`status.passwordGeneration` reads `2`, the Secret holding generation 1 is gone
-from `openstack`. The new password goes to OpenBao first; once ESO has pushed
-it, the Secret carries it and the order is `Ready` again. A service reads the
-Secret again to pick the new password up.
+`status.passwordGeneration` reads the raised generation, the Secret holding the
+previous one is gone from `openstack`. The new password goes to OpenBao first;
+once ESO has pushed it, the Secret carries it and the order is `Ready` again.
+The schedule starts the same steps once `status.nextPasswordRotation` has
+passed.
 
 ## Order a project
 
@@ -826,7 +847,8 @@ chainsaw test --test-dir tests/e2e/c5c3/keystone-user
 
 It orders a user from an assigned namespace and authenticates with the Secret
 from a Job there, repairs an edited and a deleted Secret, and rotates the
-password. It then orders a project, a role assignment and a catalog entry, sees
+password by hand to generation 2 and on a one-minute schedule to generation 3.
+It then orders a project, a role assignment and a catalog entry, sees
 the role and the entry refused, admits both, scopes a token to the project and
 reads the entry out of the catalog. It orders an application credential, sees
 it refused before the role is assigned, authenticates with it, and observes a

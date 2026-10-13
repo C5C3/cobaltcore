@@ -1437,15 +1437,15 @@ uploaded artifact.
 A third chainsaw step runs `tests/e2e/c5c3/keystone-user/`, the Keystone order
 suite, in ten steps: against a Keystone-only ControlPlane of its own that
 assigns one namespace, it proves the Secret delivered beside the user order, its
-repair and a rotation through `spec.passwordGeneration`; a project, a role
-assignment and a catalog entry ordered beside the user, refused until the entry
-admits the role and the catalog, then scoping a token and listing the entry; an
-application credential created as the user, its scheduled rotation on a
-three-minute interval, the superseded credential failing after its grace
-period, and a rotation by hand; the refusal of an unassigned namespace, the
-freeze when the assignment is withdrawn, and the teardown, which holds the
-assignment on the credential order and the user on its assignment, down to the
-OpenBao paths. It writes its JUnit XML as `chainsaw-report-keystone-user`.
+repair and a rotation through `spec.passwordGeneration` and on the schedule; a
+project, a role assignment and a catalog entry ordered beside the user, refused
+until the entry admits the role and the catalog, then scoping a token and
+listing the entry; an application credential created as the user, its
+scheduled rotation on a three-minute interval, the superseded credential
+failing after its grace period, and a rotation by hand; the refusal of an
+unassigned namespace, the freeze when the assignment is withdrawn, and the
+teardown, which holds the assignment on the credential order and the user on
+its assignment, down to the OpenBao paths. It writes its JUnit XML as `chainsaw-report-keystone-user`.
 
 A fourth chainsaw step runs `tests/e2e/c5c3/keystone-service/`, the own-namespace
 `KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own and
