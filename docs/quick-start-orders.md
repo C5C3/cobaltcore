@@ -1019,8 +1019,10 @@ chainsaw test --test-dir tests/e2e-orders-multicluster/orders
 
 `keystone-user` runs the Keystone and database orders of Part 1 on the
 management cluster, with the rotation, repair, freeze and teardown walks of the
-how-to guide, and `messaging` does the same for the vhost order. Both need the
-ControlPlane stack, which [ControlPlane E2E Test Suites](./reference/testing/controlplane-e2e-tests.md)
+how-to guide, including the login with the superseded credential inside its
+grace period that Step 7 shows, and `messaging` does the same for the vhost
+order. Both need the ControlPlane stack, which
+[ControlPlane E2E Test Suites](./reference/testing/controlplane-e2e-tests.md)
 describes. `tests/e2e-orders-multicluster/orders` runs Part 2 on two kind
 clusters; `make e2e-orders-multicluster` names the stack and the registration
 it needs, and the `e2e-orders-multicluster` CI job brings both up.

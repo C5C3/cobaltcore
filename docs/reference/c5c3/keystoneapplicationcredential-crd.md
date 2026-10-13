@@ -375,10 +375,10 @@ kubectl delete applicationcredentials.openstack.k-orc.cloud,pushsecrets.external
 `tests/e2e/c5c3/keystone-user/` runs on the `e2e-controlplane` job. It orders
 a credential beside the refused pieces and reads `NoRoleOnProject`, then, with
 the role assigned, reads generation 1, authenticates with it from a Job,
-observes the scheduled rotation to generation 2 and the superseded credential
-failing after the grace period, turns the schedule off, rotates by hand to
-generation 3, freezes the order, and tears it down to an empty OpenBao path
-after the assignment held on it.
+observes the scheduled rotation to generation 2, turns the schedule off,
+authenticates with the superseded credential inside the grace period and sees
+it fail after it, rotates by hand to generation 3, freezes the order, and tears
+it down to an empty OpenBao path after the assignment held on it.
 `tests/e2e/c5c3/invalid-keystoneapplicationcredential-cr/` is the admission
 rejection corpus, run on the `e2e-operator (c5c3)` job. The target-cluster path
 is proven in `TestIntegration_Multicluster_ControlPlanePlacement`.

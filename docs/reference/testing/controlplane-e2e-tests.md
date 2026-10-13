@@ -1070,7 +1070,7 @@ itself, as the foreign-namespace suite does, and runs eleven steps:
    entry's public URL. `workflow-member-dup` reads `DuplicateRoleAssignment`
    naming `workflow-member` and projects nothing, `workflow-dns-dup` reads
    `ServiceCollision` and registers no Service, and both are deleted.
-6. **Application credential**: `workflow-appcred`, on a 3m interval with a 1m
+6. **Application credential**: `workflow-appcred`, on a 3m interval with a 2m
    grace period, reads `Ready=True` within 15 min with
    `CredentialReady=True/CredentialMinted`, generation 1, a credential id, a
    next rotation and an expiry. One labelled K-ORC ApplicationCredential and one
@@ -1078,12 +1078,13 @@ itself, as the foreign-namespace suite does, and runs eleven steps:
    carries the three keys and a `v3applicationcredential` `clouds.yaml`, a Job
    authenticates with it, and the OpenBao path holds a live value. Within
    5 min the schedule reaches generation 2 with a new id, the old one in
-   `status.previousCredentialID` and two labelled credentials; the Secret names
-   the new id, and within 3 min the old credential is gone. With the schedule
-   off (`interval: 0s`) `status.nextRotation` is absent, a Job authenticates,
-   and a Job on a copy of the generation-1 document fails. Raising
-   `credentialGeneration` to 3 creates a credential with a new id and no
-   expiry, and a Job authenticates with it.
+   `status.previousCredentialID` and two labelled credentials, and the schedule
+   goes off (`interval: 0s`). A Job authenticates with the superseded
+   credential inside the grace period, the Secret names the new id,
+   `status.nextRotation` is absent, and within 5 min the old credential is
+   gone. A Job authenticates with the new credential, and a Job on a copy of
+   the generation-1 document fails. Raising `credentialGeneration` to 3 creates
+   a credential with a new id and no expiry, and a Job authenticates with it.
 7. **Database**: `workflow-db` with `deletionPolicy: Retain` reads
    `Ready=True` within 10 min with `DatabaseReady=True/DatabaseProvisioned` and
    `DeliveryReady=True/Delivered`, `status.databaseName` `workflow_db`, the five
