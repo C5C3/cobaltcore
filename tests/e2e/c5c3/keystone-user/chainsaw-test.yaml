@@ -533,9 +533,10 @@ spec:
           }
           # Runs the application-credential verify Job from scratch against the
           # Secret secretName names, and fails unless it ends as expected:
-          # complete (a token was issued) or failed (Keystone refused it).
+          # complete (a token was issued) or failed (Keystone could not find
+          # the credential).
           run_appcred_verify_job() { # <when> [secretName] [complete|failed]
-            local when="$1" secret="${2:-${APPCRED_SECRET}}" expect="${3:-complete}" logs
+            local when="$1" secret="${2:-${APPCRED_SECRET}}" expect="${3:-complete}" logs uid
             kubectl delete job workflow-appcred-verify -n "${TENANT_NS}" --ignore-not-found --wait=true
             sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|secretName: ${APPCRED_SECRET}|secretName: ${secret}|" \
               11-openstack-appcred-verify-job.yaml | kubectl apply -f -
@@ -543,6 +544,18 @@ spec:
               if ! kubectl wait --for=condition=Failed job/workflow-appcred-verify -n "${TENANT_NS}" --timeout=3m; then
                 echo "ERROR: the verify Job with ${secret} did not fail (${when})"
                 kubectl logs -n "${TENANT_NS}" job/workflow-appcred-verify 2>&1 || true
+                exit 1
+              fi
+              # A Gateway or DNS error fails the Job too; only the refusal the
+              # quick start quotes counts. It is searched in every attempt of
+              # the Job (backoffLimit 1), not only the first one `kubectl logs
+              # job/...` picks.
+              uid="$(kubectl get job workflow-appcred-verify -n "${TENANT_NS}" -o jsonpath='{.metadata.uid}')"
+              logs="$(kubectl logs -n "${TENANT_NS}" -l "batch.kubernetes.io/controller-uid=${uid}" \
+                --tail=-1 --prefix 2>&1 || true)"
+              if ! grep -q "Could not find Application Credential" <<<"${logs}"; then
+                echo "ERROR: the verify Job with ${secret} failed, but not on Keystone's refusal (${when})"
+                echo "${logs}"
                 exit 1
               fi
               echo "OK: Keystone refused the credential in ${secret} (${when})."
