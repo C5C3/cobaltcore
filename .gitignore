@@ -38,6 +38,10 @@ docs/.vitepress/dist/
 # Nix devshell — per-user direnv state (`echo 'use flake' > .envrc`). The
 # flake itself (flake.nix, flake.lock) is tracked; bin/ is ignored above.
 .direnv/
+# The out-links `nix build` leaves in the directory it runs from (the
+# repository root for ./nix/spike#<name>): result, result-<output>.
+/result
+/result-*
 
 # Collected CI evidence (debug-e2e-failure log excerpts, downloaded artifacts)
 # and other generated local output.
