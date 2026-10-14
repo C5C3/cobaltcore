@@ -46,6 +46,18 @@
 # right one; it has to be a vhost because nova's RPC topics are named after the
 # service, so two suites on one vhost would share the scheduler and conductor
 # queues.
+#
+# The workload of ../lib/workload.sh runs after the partition, not through it,
+# as a run without fault marks: Step 11 starts its token, network, server and
+# image streams once the recovered build is ACTIVE, and Step 12 judges them,
+# runs the placement audit and compares the Neutron and OVN databases. The
+# scheduler runs one worker, so workload builds during the partition would
+# queue between s-fail-warm and s-fail-cold, take the Placement connection Step
+# 10 proves s-fail-warm met, and push the suite's builds past their 150
+# seconds. The recovered Job deletes s-fail-warm and s-fail-cold before the
+# workload starts, so the server check finds no ERROR build of the suite's own.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0, recovery 0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -149,6 +161,9 @@ spec:
         tail: 200
     - events:
         namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump nova-placement-outage
     cleanup:
     - script:
         shell: bash
@@ -591,8 +606,36 @@ spec:
           echo "$LOGS"
           grep -q 'RECOVERED-OK' <<<"$LOGS"
           echo "OK: the scheduler places servers again"
+    # The workload starts on a recovered deployment; see the header for why it
+    # does not run through the partition.
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start nova-placement-outage --
+          --streams token,network,server,image
+          --keystone http://keystone-nova-placement-chaos.openstack.svc:5000/v3
+          --neutron http://neutron-nova-placement-chaos.openstack.svc:9696
+          --nova http://nova-placement-chaos.openstack.svc:8774/v2.1
+          --image-ref 4e0a0000-0000-4000-8000-000000000006
+          --flavor m1.nano
+          --glance http://glance-nova-placement-chaos.openstack.svc:9292
     catch: *placement-dump
-  # ── Step 12: Tear the deployment down ───────────────────────────────────
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop nova-placement-outage
+  # ── Step 12: Judge the workload, audit Placement, compare OVN ───────────
+  # 25 minutes: the 30 s observation and the DONE wait of verify, then the
+  # audit and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify nova-placement-outage
+          --placement-audit nova-placement-chaos
+          --ovn-db-sync neutron-nova-placement-chaos
+    catch: *placement-dump
+  # ── Step 13: Tear the deployment down ───────────────────────────────────
   # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
   # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
   # do inside that budget is wait out five workloads, so the suite does that

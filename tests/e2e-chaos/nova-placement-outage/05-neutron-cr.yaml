@@ -55,3 +55,9 @@ spec:
     secretRef:
       name: keystone-admin
       key: password
+  # The workload's verify (../lib/workload.sh --ovn-db-sync) runs this CronJob
+  # once in log mode to compare Neutron and the OVN Northbound database after
+  # the suite. Suspended, it never runs on its own and OVNDBSyncReady stays True.
+  ovnDBSync:
+    syncMode: log
+    suspend: true
