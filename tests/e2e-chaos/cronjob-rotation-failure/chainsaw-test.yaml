@@ -12,6 +12,12 @@
 # intercepts the Job's pods on creation (pod-failure action, mode: all).
 #
 # SC-CHAOS-005,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-cron through the fault. The fault never touches the
+# token path, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -38,15 +44,31 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start cronjob-rotation-failure -- --streams token --keystone http://keystone-chaos-cron.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-cron
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cronjob-rotation-failure
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cronjob-rotation-failure
   # ── Step 3: Inject PodChaos BEFORE Job creation ────────────────────────
   # PodChaos must be active before the Job is created so that Chaos Mesh
   # can intercept the Job's pods on creation with pod-failure action.
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cronjob-rotation-failure fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Trigger fernet rotation Job under chaos ────────────────────
   - try:
     - script:
@@ -56,6 +78,7 @@ spec:
     catch:
     - script:
         content: kubectl get cronjob -n $NAMESPACE -l app.kubernetes.io/instance=keystone-chaos-cron -o wide
+    - *workload-dump
   # ── Step 5: Assert FernetKeysReady=True and Ready=True maintained ──────
   # The failed rotation Job should not cause FernetKeysReady to go False
   # because existing fernet keys remain valid and in-place.
@@ -80,6 +103,7 @@ spec:
         content: kubectl logs -n $NAMESPACE -l job-name=chaos-cron-test --tail=50 2>/dev/null || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-cron --dep-label=job-name=chaos-cron-test
+    - *workload-dump
   # ── Step 6: Delete PodChaos to lift fault ──────────────────────────────
   - try:
     - delete:
@@ -87,6 +111,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: fail-cronjob
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cronjob-rotation-failure fault-end
+    catch:
+    - *workload-dump
   # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
   - try:
     - assert:
@@ -103,3 +132,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-cron --dep-label=job-name=chaos-cron-test
+    - *workload-dump
+  # ── Step 8: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cronjob-rotation-failure
+    catch:
+    - *workload-dump

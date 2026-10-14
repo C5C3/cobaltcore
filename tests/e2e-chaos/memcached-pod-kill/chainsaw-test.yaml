@@ -8,6 +8,15 @@
 # failures are treated as performance degradation only.
 #
 # SC-CHAOS-002,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-mc through the fault. The budget is what three kind
+# runs measured. While the Memcached pod is replaced, Keystone fails token
+# requests: pymemcache raises MemcacheUnexpectedCloseError and "All servers
+# seem to be down" through oslo.cache, the request ends in a 500 or in a
+# connection closed without an answer, and the budget covers that.
+# Chaos budget: failures=190 recovery=150s
+# Chaos budget measured: 2026-10-14, kind, failures 13/95/84, recovery 8/114/113 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -34,13 +43,29 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start memcached-pod-kill -- --streams token --keystone http://keystone-chaos-mc.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-mc
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump memcached-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop memcached-pod-kill
   # ── Step 3: Inject PodChaos to kill Memcached pod ──────────────────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark memcached-pod-kill fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Verify Memcached pod kill and recovery, assert Ready=True maintained ─
   # Polls the Memcached Deployment's readyReplicas instead of using kubectl wait
   # on individual Pods. kubectl wait resolves the label selector once at query
@@ -120,6 +145,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-mc --dep-label=app.kubernetes.io/name=memcached
+    - *workload-dump
   # ── Step 5: Delete PodChaos to allow Memcached recovery ────────────────
   - try:
     - delete:
@@ -127,6 +153,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-memcached
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark memcached-pod-kill fault-end
+    catch:
+    - *workload-dump
   # ── Step 6: Assert Ready=True after Memcached recovery ─────────────────
   - try:
     - assert:
@@ -143,3 +174,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-mc --dep-label=app.kubernetes.io/name=memcached
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify memcached-pod-kill
+    catch:
+    - *workload-dump

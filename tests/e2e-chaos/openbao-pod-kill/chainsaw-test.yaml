@@ -23,6 +23,12 @@
 # OpenBao recovery the kind topology cannot provide.
 #
 # SC-CHAOS-003,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-bao through the fault. The fault never touches the
+# token path, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -51,13 +57,29 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start openbao-pod-kill -- --streams token --keystone http://keystone-chaos-bao.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=shared-services
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump openbao-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop openbao-pod-kill
   # ── Step 3: Inject PodChaos to kill OpenBao pod ────────────────────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark openbao-pod-kill fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Assert SecretsReady=False after OpenBao kill ───────────────
   # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
   # keystone keystone-chaos-bao -n $NAMESPACE -o yaml` here] — diagnostics.sh
@@ -79,6 +101,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=shared-services --log-label=app.kubernetes.io/name=keystone-operator --eso
+    - *workload-dump
   # ── Step 5: Delete PodChaos to lift fault ──────────────────────────────
   - try:
     - delete:
@@ -86,6 +109,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-openbao
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark openbao-pod-kill fault-end
+    catch:
+    - *workload-dump
   # ── Step 6: Re-unseal openbao-0 (kind single-replica recovery) ─────────
   # See header comment for why this step exists. The helper is idempotent:
   # if openbao-0 happens to come back unsealed (it will not, in this
@@ -97,6 +125,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=shared-services --log-label=app.kubernetes.io/name=keystone-operator --eso
+    - *workload-dump
   # ── Step 7: Assert full recovery to SecretsReady=True and Ready=True ───
   # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
   # keystone keystone-chaos-bao -n $NAMESPACE -o yaml` here] — see Step 4
@@ -119,3 +148,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-bao --dep-label=app.kubernetes.io/name=openbao --dep-ns=shared-services --log-label=app.kubernetes.io/name=keystone-operator --eso
+    - *workload-dump
+  # ── Step 8: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify openbao-pod-kill
+    catch:
+    - *workload-dump

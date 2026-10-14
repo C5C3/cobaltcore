@@ -15,6 +15,12 @@
 # buildPodDisruptionBudget() which requires replicas > 1.
 #
 # SC-CHAOS-008,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-api through the fault. The budget is what three kind
+# runs measured.
+# Chaos budget: failures=0 recovery=30s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -41,9 +47,20 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start api-pod-kill-pdb -- --streams token --keystone http://keystone-chaos-api.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-api
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump api-pod-kill-pdb
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop api-pod-kill-pdb
   # ── Step 3: Assert PDB exists with minAvailable: 1 ────────────────────
   - try:
     - assert:
@@ -58,10 +75,16 @@ spec:
     catch:
     - script:
         content: kubectl describe pdb keystone-chaos-api -n $NAMESPACE 2>/dev/null || kubectl get pdb -n $NAMESPACE -o wide
+    - *workload-dump
   # ── Step 4: Inject PodChaos to kill one Keystone API pod ───────────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark api-pod-kill-pdb fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 5: Verify availability during involuntary disruption ───────────
   # Step 3 validates PDB *spec* (minAvailable: 1 exists). This step validates
   # that at least 1 replica remains *available* during an involuntary pod kill.
@@ -112,6 +135,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-api --dep-label=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-api
+    - *workload-dump
   # ── Step 6: Delete PodChaos to clean up ────────────────────────────────
   - try:
     - delete:
@@ -119,6 +143,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-keystone-api  # keystone-api-legacy: matches the PodChaos resource name in 01-podchaos.yaml
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark api-pod-kill-pdb fault-end
+    catch:
+    - *workload-dump
   # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
   - try:
     - assert:
@@ -135,3 +164,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-api --dep-label=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-api
+    - *workload-dump
+  # ── Step 8: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify api-pod-kill-pdb
+    catch:
+    - *workload-dump

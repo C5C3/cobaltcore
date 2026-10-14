@@ -9,6 +9,12 @@
 # restarts the operator pod and reconciliation resumes.
 #
 # SC-CHAOS-004,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-op through the fault. The fault never touches the
+# token path, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -35,9 +41,20 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start operator-pod-crash -- --streams token --keystone http://keystone-chaos-op.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-op
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump operator-pod-crash
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop operator-pod-crash
   # ── Step 3: Inject chaos and verify one operator pod was replaced ─────
   # Identity-based verification: capture pod UIDs, apply PodChaos, then wait
   # for at least one pre-chaos UID to disappear. Polling readyReplicas for a
@@ -81,7 +98,10 @@ spec:
           fi
           echo "Pre-chaos operator pod UIDs: ${OLD_UIDS}"
 
-          # Inject chaos (kill one operator pod).
+          # Inject chaos (kill one operator pod). The fault window is marked
+          # on the workload's clock first; the script omits set -e, hence
+          # the explicit exit.
+          ../lib/workload.sh mark operator-pod-crash fault-start || exit 1
           kubectl apply -f 01-podchaos.yaml
 
           # Phase 1: wait until at least one pre-chaos UID is gone, proving
@@ -129,6 +149,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system
+    - *workload-dump
   # ── Step 4: Delete PodChaos to clean up ────────────────────────────────
   - try:
     - delete:
@@ -136,6 +157,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-operator
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark operator-pod-crash fault-end
+    catch:
+    - *workload-dump
   # ── Step 5: Assert Ready=True after operator recovery ──────────────────
   - try:
     - assert:
@@ -152,3 +178,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-op --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify operator-pod-crash
+    catch:
+    - *workload-dump

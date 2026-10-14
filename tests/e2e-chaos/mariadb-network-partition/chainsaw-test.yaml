@@ -15,6 +15,12 @@
 # Ready=True autonomously.
 #
 # SC-CHAOS-006,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-net-part through the fault. The budget is what three
+# kind runs measured.
+# Chaos budget: failures=12 recovery=30s
+# Chaos budget measured: 2026-10-14, kind, failures 6/6/6, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -49,13 +55,29 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start mariadb-network-partition -- --streams token --keystone http://keystone-chaos-net-part.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump mariadb-network-partition
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop mariadb-network-partition
   # ── Step 3: Inject NetworkChaos to partition MariaDB traffic ───────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark mariadb-network-partition fault-start
     - apply:
         file: 01-networkchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Assert NetworkChaos injection is active ──────────
   # Confirms the fault is actually applied before checking effects. Without
   # this, a mis-targeted selector could allow the CR to be accepted but have
@@ -76,6 +98,7 @@ spec:
         content: kubectl get networkchaos/partition-mariadb -n openstack -o yaml 2>&1 || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - *workload-dump
   # ── Step 5: Assert Ready=False after network partition ─────────────────
   # The keystone pods cannot reach MariaDB, so their database-aware readiness
   # probe fails and the pods are depooled. The Deployment drops below its
@@ -99,6 +122,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - *workload-dump
   # ── Step 6: Delete NetworkChaos to lift partition ──────────────────────
   - try:
     - delete:
@@ -106,6 +130,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: NetworkChaos
           name: partition-mariadb
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark mariadb-network-partition fault-end
+    catch:
+    - *workload-dump
   # ── Step 7: Assert full recovery to Ready=True ─────────────────────────
   # Once the partition is lifted the readiness probe reaches MariaDB again, the
   # pods are re-pooled, the Deployment regains its ready replica, and the
@@ -127,3 +156,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-net-part --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - *workload-dump
+  # ── Step 8: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify mariadb-network-partition
+    catch:
+    - *workload-dump
