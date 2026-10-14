@@ -1,0 +1,8 @@
+{
+  "ref": "32.0.0",
+  "rev": "07dd0a203b6883efa66486035c436b92c83da0f3",
+  "hash": "sha256-DXpb5HhD5h/eRU7Kf2Ul7HfEqd+PRxXrkiannTI2hsI=",
+  "patches": [
+    "patches/glance/2026.1/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch"
+  ]
+}
