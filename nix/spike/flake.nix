@@ -65,6 +65,7 @@
       fhsLayout = import ./lib/fhs-layout.nix { inherit pkgs; };
       rootwrapConf = import ./lib/rootwrap-conf.nix;
       cephBindings = pkgs.callPackage ./pkgs/ceph-bindings.nix { python3Packages = python.pkgs; };
+      keystoneOperator = import ./operators/keystone.nix { inherit pkgs lib; };
 
       keystone = mkPythonEnv {
         service = "keystone";
@@ -98,6 +99,8 @@
         };
         ceph-bindings = cephBindings;
         glance-env = glance.venv;
+        keystone-operator-modroot = keystoneOperator.modroot;
+        keystone-operator-workvendor = keystoneOperator.workvendor;
       };
 
       checks.${system}.keystone-2026_1-tests = import ./checks/keystone-tests.nix {
