@@ -4,10 +4,11 @@
 #
 # The rados and rbd extension modules for Python 3.12, built from the ceph
 # source nixpkgs ships against its prebuilt librados and librbd. nixpkgs'
-# ceph builds its own bindings for the Python of ceph.pythonEnv, which is not
-# 3.12, and rebuilding ceph for another Python compiles all of it; these two
-# Cython modules need only the headers in ceph.dev and the libraries in
-# ceph.lib. The modules carry an RPATH into ceph.lib.
+# ceph puts its own bindings into ceph.out, whose closure carries the
+# daemons as well, and builds them for the Python nixpkgs picks for ceph;
+# rebuilding ceph for another Python compiles all of it. These two Cython
+# modules need only the headers in ceph.dev and the libraries in ceph.lib,
+# and they carry an RPATH into ceph.lib.
 #
 # $out/lib/python3.12/site-packages holds rados.cpython-312-*.so and
 # rbd.cpython-312-*.so and nothing else; an image puts the directory on the
