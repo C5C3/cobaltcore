@@ -1069,6 +1069,522 @@ DONE
   assert_eq "the outside failure fails the run" "1" "$EVAL_RC"
 }
 
+# ---------------------------------------------------------------------------
+# workload.sh, against a stub kubectl
+# ---------------------------------------------------------------------------
+
+WORKLOAD_SH="$LIB_DIR/workload.sh"
+KSTUB="$TMP_DIR/kstub"
+mkdir -p "$KSTUB/bin"
+
+# The stub kubectl keeps its state in $STUB_DIR:
+#   calls        one line per call; an argument over 300 bytes is written as
+#                <N bytes>, the source after `run ... -c` lands in
+#                run-source and the --overrides JSON in overrides
+#   log          what `logs <pod>` prints; log.after is appended to it when
+#                the stop file is touched, log.later on the
+#                $STUB_READY_AFTER-th `logs <pod>` call
+#   clock        the pod clock `exec ... date +%s` reads; each read adds 10
+#   ann-<mark>   the annotations `annotate` wrote
+# and reads these switches: STUB_PHASE (Running), STUB_POD_MISSING,
+# STUB_EXEC_FAIL (the date exec fails with it), STUB_TOUCH_FAIL,
+# STUB_AUDIT_RC and STUB_AUDIT_OUT, STUB_CRONJOB (the sync mode the CronJob's
+# command carries; unset, there is no CronJob), STUB_JOB_STATE, STUB_JOB_LOG.
+cat >"$KSTUB/bin/kubectl" <<'SH'
+#!/bin/bash
+{
+  for a in "$@"; do
+    if [ "${#a}" -gt 300 ]; then printf '<%d bytes> ' "${#a}"; else printf '%s ' "$a"; fi
+  done
+  echo
+} >>"$STUB_DIR/calls"
+missing() {
+  echo "Error from server (NotFound): $1 \"$2\" not found" >&2
+  exit 1
+}
+args="$*"
+case "$1" in
+  run)
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "-c" ]; then printf '%s' "$a" >"$STUB_DIR/run-source"; fi
+      case "$a" in --overrides=*) printf '%s' "${a#--overrides=}" >"$STUB_DIR/overrides" ;; esac
+      prev="$a"
+    done
+    ;;
+  delete | create) ;;
+  annotate)
+    for a in "$@"; do
+      case "$a" in
+        chaos.c5c3.io/*=*) k="${a%%=*}"; printf '%s' "${a#*=}" >"$STUB_DIR/ann-${k#chaos.c5c3.io/}" ;;
+      esac
+    done
+    ;;
+  logs)
+    case "$args" in
+      *job/*) printf '%s\n' "${STUB_JOB_LOG:-}"; exit 0 ;;
+    esac
+    if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$2"; fi
+    n=$(( $(cat "$STUB_DIR/logs.calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$STUB_DIR/logs.calls"
+    if [ "$n" = "${STUB_READY_AFTER:-}" ]; then cat "$STUB_DIR/log.later" >>"$STUB_DIR/log"; fi
+    cat "$STUB_DIR/log" 2>/dev/null
+    ;;
+  describe)
+    if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$3"; fi
+    printf 'Name:         %s\nStatus:       %s\n    Command:\n      python3\n      -c\n      """Workload and consistency harness."""\n    State:        Running\n    Environment:\n      OS_PASSWORD:  s3cret\n' "$3" "${STUB_PHASE:-Running}"
+    ;;
+  exec)
+    case "$args" in
+      *"date +%s.%N"*)
+        if [ -n "${STUB_EXEC_FAIL:-}" ]; then echo "$STUB_EXEC_FAIL" >&2; exit 1; fi
+        echo "${STUB_CLOCK:-1760000123.456789012}"
+        ;;
+      *"date +%s"*)
+        if [ -n "${STUB_EXEC_FAIL:-}" ]; then echo "$STUB_EXEC_FAIL" >&2; exit 1; fi
+        c="$(cat "$STUB_DIR/clock")"
+        echo "$c"
+        echo $((c + 10)) >"$STUB_DIR/clock"
+        ;;
+      *"touch /tmp/chaos-workload.stop"*)
+        if [ -n "${STUB_TOUCH_FAIL:-}" ]; then echo "$STUB_TOUCH_FAIL" >&2; exit 1; fi
+        cat "$STUB_DIR/log.after" >>"$STUB_DIR/log" 2>/dev/null
+        ;;
+      *nova-manage*)
+        printf '%s\n' "${STUB_AUDIT_OUT:-}"
+        exit "${STUB_AUDIT_RC:-0}"
+        ;;
+      *) echo "stub kubectl: unexpected exec: $args" >&2; exit 1 ;;
+    esac
+    ;;
+  get)
+    case "$2" in
+      secret) printf '%s' "$(printf 's3cret' | base64)" ;;
+      cronjob)
+        if [ -z "${STUB_CRONJOB:-}" ]; then missing cronjobs.batch "$3"; fi
+        printf '["neutron-ovn-db-sync-util","--config-file","/etc/neutron/neutron.conf","--ovn-neutron_sync_mode","%s"]' "$STUB_CRONJOB"
+        ;;
+      job) printf '%s' "${STUB_JOB_STATE:-}" ;;
+      pod)
+        if [ -n "${STUB_POD_MISSING:-}" ]; then missing pods "$3"; fi
+        case "$args" in
+          *phase=*) printf 'phase=%s fault-start=%s fault-end=%s\n' "${STUB_PHASE:-Running}" \
+            "$(cat "$STUB_DIR/ann-fault-start" 2>/dev/null)" "$(cat "$STUB_DIR/ann-fault-end" 2>/dev/null)" ;;
+          *fault-start*) cat "$STUB_DIR/ann-fault-start" 2>/dev/null ;;
+          *fault-end*) cat "$STUB_DIR/ann-fault-end" 2>/dev/null ;;
+          *status.phase*) printf '%s' "${STUB_PHASE:-Running}" ;;
+        esac
+        ;;
+      *) echo "stub kubectl: unexpected get: $args" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "stub kubectl: unexpected call: $args" >&2; exit 1 ;;
+esac
+exit 0
+SH
+printf '#!/bin/sh\nexit 0\n' >"$KSTUB/bin/sleep"
+chmod +x "$KSTUB/bin/kubectl" "$KSTUB/bin/sleep"
+
+# new_stub — empty the stub state; the pod clock starts at 1000.
+new_stub() {
+  rm -rf "$KSTUB/state"
+  mkdir -p "$KSTUB/state"
+  : >"$KSTUB/state/calls"
+  : >"$KSTUB/state/log"
+  echo 1000 >"$KSTUB/state/clock"
+}
+
+# wl <dir> [VAR=value...] -- <workload.sh args> — run workload.sh from <dir>
+# with the stub first on PATH; WL_OUT and WL_RC hold the result.
+wl() {
+  local dir="$1"
+  shift
+  local envs=()
+  while [ "$1" != "--" ]; do
+    envs+=("$1")
+    shift
+  done
+  shift
+  WL_RC=0
+  WL_OUT="$(cd "$dir" && env STUB_DIR="$KSTUB/state" NAMESPACE=openstack PATH="$KSTUB/bin:$PATH" \
+    ${envs[@]+"${envs[@]}"} bash "$WORKLOAD_SH" "$@" 2>&1)" || WL_RC=$?
+}
+
+calls() {
+  cat "$KSTUB/state/calls"
+}
+
+# suite_dir <name> <header lines> — a scratch suite directory whose
+# chainsaw-test.yaml starts with the given header.
+suite_dir() {
+  mkdir -p "$TMP_DIR/suites/$1"
+  printf '%s\napiVersion: chainsaw.kyverno.io/v1alpha1\nkind: Test\n' "$2" >"$TMP_DIR/suites/$1/chainsaw-test.yaml"
+  echo "$TMP_DIR/suites/$1"
+}
+
+# --- Test 13 --------------------------------------------------------------
+test_start_runs_the_pod_as_specified() {
+  echo "Test: start runs chaos-wl-<id> with both labels, the image, the password only with --keystone, and waits for READY"
+  new_stub
+  printf 'READY token\nREADY http\n' >"$KSTUB/state/log.later"
+  wl "$TMP_DIR" STUB_READY_AFTER=3 -- start t-one -- --streams token,http --keystone http://k:5000/v3 --http http://h/
+  assert_eq "start exits 0" "0" "$WL_RC"
+  assert_contains "it reports READY" "$WL_OUT" "OK: workload chaos-wl-t-one is READY on token,http"
+  local c
+  c="$(calls)"
+  assert_contains "a leftover pod is deleted first" "$(head -n1 <<<"$c")" \
+    "delete pod chaos-wl-t-one -n openstack --ignore-not-found --wait=true --timeout=60s"
+  local run
+  run="$(grep '^run ' <<<"$c")"
+  assert_contains "the pod is chaos-wl-<id>" "$run" "run chaos-wl-t-one -n openstack"
+  assert_contains "both labels" "$run" "--labels=app.kubernetes.io/name=chaos-workload,chaos.c5c3.io/workload=t-one"
+  assert_contains "the default image" "$run" "--image=ghcr.io/c5c3/tempest:2026.1 --restart=Never"
+  assert_contains "the admin password with --keystone" "$run" "--env OS_PASSWORD=s3cret"
+  assert_contains "the run options follow the source" "$run" \
+    "--command -- python3 -c <"
+  assert_contains "with the id and the stop file" "$run" \
+    "run --id t-one --stop-file /tmp/chaos-workload.stop --streams token,http --keystone http://k:5000/v3 --http http://h/"
+  assert_eq "the source is workload.py" "$(cat "$WORKLOAD_PY")" "$(cat "$KSTUB/state/run-source")"
+  local container
+  container="$(jq_py '[c for c in d["spec"]["containers"]]' <"$KSTUB/state/overrides")"
+  assert_contains "the overrides name the container kubectl run creates" "$container" "'name': 'chaos-wl-t-one'"
+  assert_contains "the pod gets requests and a memory limit" "$container" \
+    "'resources': {'requests': {'cpu': '50m', 'memory': '128Mi'}, 'limits': {'memory': '256Mi'}}"
+  assert_contains "and runs as the image's non-root user without privileges" "$container" \
+    "'runAsNonRoot': True, 'runAsUser': 42424, 'runAsGroup': 42424, 'allowPrivilegeEscalation': False, 'capabilities': {'drop': ['ALL']}"
+  assert_eq "the pod mounts no ServiceAccount token" "False" \
+    "$(jq_py 'd["spec"]["automountServiceAccountToken"]' <"$KSTUB/state/overrides")"
+  assert_contains "merged strategically" "$run" "--override-type=strategic"
+  assert_eq "the log was read until both READY lines were there" "3" "$(cat "$KSTUB/state/logs.calls")"
+
+  new_stub
+  printf 'READY http\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" CHAOS_WORKLOAD_IMAGE=registry.example/tempest:x -- start t-two -- --streams http --http http://h/
+  assert_eq "start without --keystone exits 0" "0" "$WL_RC"
+  c="$(calls)"
+  assert_not_contains "no password without --keystone" "$c" "OS_PASSWORD"
+  assert_not_contains "and no Secret read" "$c" "get secret"
+  assert_contains "CHAOS_WORKLOAD_IMAGE sets the image" "$c" "--image=registry.example/tempest:x "
+}
+
+# --- Test 14 --------------------------------------------------------------
+test_start_fails_on_a_terminal_pod_or_a_missing_ready() {
+  echo "Test: start fails on a pod that ended before READY and on a READY that never comes"
+  new_stub
+  printf 'usage: stream network needs --keystone\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" STUB_PHASE=Failed -- start t1 -- --streams network --neutron http://n/
+  assert_eq "a Failed pod: exit 1" "1" "$WL_RC"
+  assert_contains "it names the phase" "$WL_OUT" "FAIL: start t1: the pod reached Failed before READY on: network"
+  assert_contains "it prints the log" "$WL_OUT" "usage: stream network needs --keystone"
+  assert_contains "and the pod description" "$WL_OUT" "Name:         chaos-wl-t1"
+  assert_contains "with the password cut out" "$WL_OUT" "OS_PASSWORD:  <redacted>"
+  assert_not_contains "nowhere in clear text" "$WL_OUT" "s3cret"
+  assert_contains "and the command in short" "$WL_OUT" "Command:      python3 -c <lib/workload.py> run ..."
+  assert_not_contains "without the source of workload.py" "$WL_OUT" "Workload and consistency harness."
+  assert_contains "the lines after the command stay" "$WL_OUT" "State:        Running"
+
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" CHAOS_WORKLOAD_READY_SECONDS=1 -- start t1 -- --streams token,http --keystone http://k/v3 --http http://h/
+  assert_eq "a READY that never comes: exit 1" "1" "$WL_RC"
+  assert_contains "it names the missing stream and the bound" "$WL_OUT" "FAIL: start t1: no READY within 1s on: http"
+  assert_contains "it prints the log" "$WL_OUT" "READY token"
+}
+
+# --- Test 15 --------------------------------------------------------------
+test_start_rejects_an_invalid_id() {
+  echo "Test: start refuses an id outside ^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$"
+  local id40 id41
+  id40="$(printf 'a%.0s' $(seq 1 40))"
+  id41="${id40}a"
+  new_stub
+  wl "$TMP_DIR" -- start Bad_Id -- --streams http --http http://h/
+  assert_eq "Bad_Id: exit 2" "2" "$WL_RC"
+  assert_contains "it quotes the id" "$WL_OUT" "invalid id 'Bad_Id'"
+  wl "$TMP_DIR" -- start "$id41" -- --streams http --http http://h/
+  assert_eq "41 characters: exit 2" "2" "$WL_RC"
+  wl "$TMP_DIR" -- start -leading -- --streams http --http http://h/
+  assert_eq "a leading dash: exit 2" "2" "$WL_RC"
+  assert_eq "kubectl was never called" "" "$(calls)"
+  printf 'READY http\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" -- start "$id40" -- --streams http --http http://h/
+  assert_eq "40 characters are accepted" "0" "$WL_RC"
+  wl "$TMP_DIR" -- start t1 --streams http
+  assert_eq "start without the -- separator: exit 2" "2" "$WL_RC"
+}
+
+# --- Test 16 --------------------------------------------------------------
+test_mark_writes_the_pod_clock_and_fails_with_the_exec_error() {
+  echo "Test: mark writes the pod clock to the annotation and fails with the exec error"
+  new_stub
+  wl "$TMP_DIR" STUB_CLOCK=1760000123.456789012 -- mark t1 fault-start
+  assert_eq "mark exits 0" "0" "$WL_RC"
+  assert_eq "the pod clock lands in chaos.c5c3.io/fault-start" "1760000123.456789012" "$(cat "$KSTUB/state/ann-fault-start")"
+  assert_contains "the clock is read in the pod" "$(calls)" "exec chaos-wl-t1 -n openstack -- date +%s.%N"
+  assert_contains "the annotation is overwritten" "$(calls)" \
+    "annotate pod chaos-wl-t1 -n openstack chaos.c5c3.io/fault-start=1760000123.456789012 --overwrite"
+
+  new_stub
+  wl "$TMP_DIR" STUB_EXEC_FAIL="error: unable to upgrade connection: container not found" -- mark t1 fault-end
+  assert_eq "a failed exec: exit 1" "1" "$WL_RC"
+  assert_contains "it prints the error" "$WL_OUT" "error: unable to upgrade connection: container not found"
+  assert_eq "nothing is annotated" "no" "$([ -f "$KSTUB/state/ann-fault-end" ] && echo yes || echo no)"
+
+  wl "$TMP_DIR" -- mark t1 fault-middle
+  assert_eq "an unknown mark: exit 2" "2" "$WL_RC"
+}
+
+# --- Test 17 --------------------------------------------------------------
+test_verify_refuses_a_missing_double_or_malformed_budget_line() {
+  echo "Test: verify refuses a suite without exactly one valid budget line"
+  local dir
+  new_stub
+  dir="$(suite_dir no-budget '# A suite without a budget.')"
+  wl "$dir" -- verify t1
+  assert_eq "no budget line: exit 1" "1" "$WL_RC"
+  assert_contains "it names the file" "$WL_OUT" "$dir/chainsaw-test.yaml has no '# Chaos budget"
+
+  dir="$(suite_dir two-budgets $'# Chaos budget: failures=0 recovery=0s\n# Chaos budget: failures=2 recovery=60s')"
+  wl "$dir" -- verify t1
+  assert_eq "two budget lines: exit 1" "1" "$WL_RC"
+  assert_contains "it names the file and the count" "$WL_OUT" "$dir/chainsaw-test.yaml has 2 '# Chaos budget:' lines"
+
+  dir="$(suite_dir bad-budget '# Chaos budget: failures=0 recovery=abc')"
+  wl "$dir" -- verify t1
+  assert_eq "recovery=abc: exit 1" "1" "$WL_RC"
+  assert_contains "it names the line and the file" "$WL_OUT" \
+    "'# Chaos budget: failures=0 recovery=abc' in $dir/chainsaw-test.yaml does not read"
+  assert_eq "the workload was left alone" "" "$(calls)"
+}
+
+# good_run — a workload log that passes evaluate without marks, given to the
+# stub as what the pod prints after the stop file.
+good_run() {
+  printf 'READY token\n'
+  rec 1001 token issue true 201
+  rec 1031 token validate true
+  printf 'DONE\n'
+}
+
+# --- Test 18 --------------------------------------------------------------
+test_verify_maps_the_placement_audit_exit_codes() {
+  echo "Test: verify maps the placement audit's exit codes 0, 3 and 1"
+  local dir
+  dir="$(suite_dir audit '# Chaos budget: failures=0 recovery=0s')"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_AUDIT_RC=0 STUB_AUDIT_OUT="Processed 1 allocation." -- verify t1 --placement-audit nova-x
+  assert_eq "exit 0 from the audit: verify passes" "0" "$WL_RC"
+  assert_contains "it reports the audit" "$WL_OUT" "CONSISTENCY-OK placement-audit"
+  assert_contains "evaluate ran" "$WL_OUT" "stream token: 2 ok"
+  assert_contains "without marks it waited 30 s on the pod clock" "$WL_OUT" "observing until 1030"
+  local c
+  c="$(calls)"
+  assert_contains "the audit runs in the API container" "$c" \
+    "exec deploy/nova-x -n openstack -c nova-api -- nova-manage --config-dir /etc/nova/nova.conf.d placement audit --verbose"
+  assert_contains "the stop file is created" "$c" "exec chaos-wl-t1 -n openstack -- touch /tmp/chaos-workload.stop"
+  assert_contains "the pod is deleted" "$(tail -n1 <<<"$c")" "delete pod chaos-wl-t1 -n openstack --ignore-not-found --wait=false"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_AUDIT_RC=3 STUB_AUDIT_OUT="Allocations were set on resource provider rp1 for consumer c1" -- verify t1 --placement-audit nova-x
+  assert_eq "exit 3 from the audit: exit 1" "1" "$WL_RC"
+  assert_contains "it is a consistency failure" "$WL_OUT" "CONSISTENCY-FAIL placement-audit"
+  assert_contains "with the output" "$WL_OUT" "for consumer c1"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_AUDIT_RC=1 STUB_AUDIT_OUT="An error has occurred" -- verify t1 --placement-audit nova-x
+  assert_eq "exit 1 from the audit: exit 1" "1" "$WL_RC"
+  assert_contains "it names the code" "$WL_OUT" "FAIL: placement-audit: nova-manage exited 1"
+  assert_contains "with the output" "$WL_OUT" "An error has occurred"
+
+  # With marks: the window reaches evaluate and verify waits past
+  # fault_end + recovery + 30 = 1010 + 10 + 30 = 1050.
+  dir="$(suite_dir marked '# Chaos budget: failures=1 recovery=10s')"
+  new_stub
+  printf '1000.5' >"$KSTUB/state/ann-fault-start"
+  printf '1010.25' >"$KSTUB/state/ann-fault-end"
+  {
+    rec 990 token issue true 201
+    rec 1005 token issue false 503
+    rec 1055 token issue true 201
+    printf 'DONE\n'
+  } >"$KSTUB/state/log.after"
+  wl "$dir" -- verify t1
+  assert_eq "one failure in the window at a budget of 1: verify passes" "0" "$WL_RC"
+  assert_contains "the marks reach evaluate" "$WL_OUT" "stream token: 2 ok, 1 failed in window (budget 1), 0 outside"
+  assert_contains "it waits past fault_end + recovery + 30" "$WL_OUT" "observing until 1050"
+  assert_eq "it read the pod clock until it passed 1050" "1060" "$(cat "$KSTUB/state/clock")"
+
+  # A log that breaks the budget: the audit still runs and the pod still goes.
+  dir="$(suite_dir audit '# Chaos budget: failures=0 recovery=0s')"
+  new_stub
+  {
+    printf 'READY token\n'
+    rec 1001 token issue true 201
+    rec 1011 token issue false 503
+    printf 'DONE\n'
+  } >"$KSTUB/state/log.after"
+  wl "$dir" STUB_AUDIT_RC=0 -- verify t1 --placement-audit nova-x
+  assert_eq "a log evaluate fails: exit 1" "1" "$WL_RC"
+  assert_contains "it names evaluate" "$WL_OUT" "FAIL: workload.py evaluate exited 1"
+  assert_contains "the audit still runs" "$WL_OUT" "CONSISTENCY-OK placement-audit"
+  assert_contains "the log is printed" "$WL_OUT" "=== workload pod chaos-wl-t1: last 200 log lines ==="
+  assert_contains "the pod is still deleted" "$(calls)" "delete pod chaos-wl-t1 -n openstack --ignore-not-found --wait=false"
+  assert_contains "the verdict comes last" "$(tail -n1 <<<"$WL_OUT")" "FAIL: verify t1"
+}
+
+# --- Test 19 --------------------------------------------------------------
+test_verify_fails_on_a_stop_exec_error_or_a_missing_done() {
+  echo "Test: verify fails with the log and the pod status on a failed stop and on a missing DONE"
+  local dir
+  dir="$(suite_dir stop '# Chaos budget: failures=0 recovery=0s')"
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  wl "$dir" STUB_TOUCH_FAIL="error: Internal error occurred: container is not running" -- verify t1
+  assert_eq "a failed touch: exit 1" "1" "$WL_RC"
+  assert_contains "it prints the exec error" "$WL_OUT" "creating the stop file failed: error: Internal error occurred"
+  assert_contains "the log" "$WL_OUT" "READY token"
+  assert_contains "and the pod status" "$WL_OUT" "Status:       Running"
+
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  rec 1001 token issue true 201 >"$KSTUB/state/log.after"
+  wl "$dir" CHAOS_WORKLOAD_DONE_SECONDS=1 -- verify t1
+  assert_eq "no DONE: exit 1" "1" "$WL_RC"
+  assert_contains "it names the bound" "$WL_OUT" "no DONE within 1s of the stop file"
+  assert_contains "the log" "$WL_OUT" '"op": "issue"'
+  assert_contains "and the pod status" "$WL_OUT" "Status:       Running"
+
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  rec 1001 token issue true 201 >"$KSTUB/state/log.after"
+  wl "$dir" STUB_PHASE=Failed -- verify t1
+  assert_eq "a pod that ended without DONE: exit 1" "1" "$WL_RC"
+  assert_contains "it names the phase" "$WL_OUT" "the workload ended Failed without DONE"
+
+  new_stub
+  wl "$dir" STUB_POD_MISSING=1 -- verify t1
+  assert_eq "a missing pod: exit 1" "1" "$WL_RC"
+  assert_contains "it says the pod is missing" "$WL_OUT" 'the workload pod is missing: Error from server (NotFound): pods "chaos-wl-t1" not found'
+}
+
+# --- Test 20 --------------------------------------------------------------
+test_verify_reads_the_ovn_db_sync_log() {
+  echo "Test: verify runs the OVN db-sync CronJob once and reads its log"
+  local dir c
+  dir="$(suite_dir ovn '# Chaos budget: failures=0 recovery=0s')"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNetwork found in OVN NB DB but not in Neutron, network_id=x\nNeutron OVN DB sync completed' \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a drift line: exit 1" "1" "$WL_RC"
+  assert_contains "it is a consistency failure" "$WL_OUT" "CONSISTENCY-FAIL ovn-db-sync"
+  assert_contains "with the drift line" "$WL_OUT" "Network found in OVN NB DB but not in Neutron, network_id=x"
+  c="$(calls)"
+  assert_contains "the Job is created from the CronJob" "$c" \
+    "create job chaos-wl-t1-ovn-db-sync -n openstack --from=cronjob/neutron-x-ovn-db-sync"
+  assert_contains "and deleted afterwards" "$c" "delete job chaos-wl-t1-ovn-db-sync -n openstack --ignore-not-found --wait=false"
+
+  # The warnings of neutron 28.0.1 that report a difference without the words
+  # "found in".
+  local line
+  while IFS= read -r line; do
+    new_stub
+    good_run >"$KSTUB/state/log.after"
+    wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+      STUB_JOB_LOG=$'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed' \
+      -- verify t1 --ovn-db-sync neutron-x
+    assert_eq "'${line}': exit 1" "1" "$WL_RC"
+    assert_contains "it is a consistency failure with the line" "$WL_OUT" $'CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree\n'"${line}"
+  done <<'LINES'
+Number of Port Groups to add: 1, remove: 0
+ACLs to be added: 2 ACLs to be removed: 0
+ACL should be present in OVN but is not, adding:{'port_group': 'pg_x'}
+ACL should not be present in OVN, removing{'port_group': 'pg_x'}
+DHCP options for subnet s1 present in Neutron but out of sync with OVN NB DB
+Router 1 port forwarding for floating IPs ['f1'] Neutron out of sync or missing in OVN NB DB
+Router Port port_id=p1 needs to be updated in OVN NB DB as network(s) have changed
+Port QoS policy missing in OVN NB DB, port_id=p1
+Floating IP QoS policy missing in OVN NB DB, fip_id=f1
+The floating IP NAT rules must be updated to match the ``stateless_nat_enabled`` configuration flag.
+LINES
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+    STUB_JOB_LOG=$'Neutron OVN DB sync started\nHost h1 found both in OVN SB DB and Neutron. Trigger updating its SegmentHostMapping in Neutron, to keep OVN SB DB and Neutron data consistent\nNeutron OVN DB sync completed' \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a clean log: exit 0" "0" "$WL_RC"
+  assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
+  assert_contains "and shows that the sync ran" "$WL_OUT" "Neutron OVN DB sync completed"
+
+  # The Job would pass, so only the mode check can fail the run.
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=repair STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNeutron OVN DB sync completed' \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a CronJob in repair mode: exit 1" "1" "$WL_RC"
+  assert_contains "it asks for log mode" "$WL_OUT" \
+    "cronjob neutron-x-ovn-db-sync does not run in log mode: set spec.ovnDBSync.syncMode: log on the Neutron CR"
+  assert_not_contains "no Job is created" "$(calls)" "create job"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="" CHAOS_WORKLOAD_DB_SYNC_SECONDS=1 -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a Job that never finishes: exit 1" "1" "$WL_RC"
+  assert_contains "it names the bound" "$WL_OUT" "FAIL: ovn-db-sync: job chaos-wl-t1-ovn-db-sync did not complete within 1s"
+  assert_contains "the Job is deleted" "$(calls)" "delete job chaos-wl-t1-ovn-db-sync -n openstack --ignore-not-found --wait=false"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" STUB_JOB_LOG="" \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a completed Job whose log never reports completion: exit 1" "1" "$WL_RC"
+  assert_contains "it names the missing line" "$WL_OUT" "has no 'Neutron OVN DB sync completed' line"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="FailureTarget Failed" STUB_JOB_LOG="Traceback: cannot connect to OVN NB" \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a failed Job: exit 1" "1" "$WL_RC"
+  assert_contains "it says the Job failed" "$WL_OUT" "FAIL: ovn-db-sync: job chaos-wl-t1-ovn-db-sync failed"
+  assert_contains "with its log" "$WL_OUT" "Traceback: cannot connect to OVN NB"
+  assert_contains "the failed Job is deleted too" "$(calls)" "delete job chaos-wl-t1-ovn-db-sync -n openstack --ignore-not-found --wait=false"
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a missing CronJob: exit 1" "1" "$WL_RC"
+  assert_contains "it says how to get one" "$WL_OUT" \
+    "cronjob neutron-x-ovn-db-sync not found: set spec.ovnDBSync {syncMode: log, suspend: true} on the Neutron CR"
+  assert_not_contains "no Job is created" "$(calls)" "create job"
+}
+
+# --- Test 21 --------------------------------------------------------------
+test_dump_and_stop_exit_0_without_a_pod() {
+  echo "Test: dump and stop exit 0 when the pod is gone"
+  new_stub
+  wl "$TMP_DIR" STUB_POD_MISSING=1 -- dump t1
+  assert_eq "dump exits 0" "0" "$WL_RC"
+  assert_contains "it says what it dumps" "$WL_OUT" "=== chaos workload chaos-wl-t1 ==="
+  wl "$TMP_DIR" STUB_POD_MISSING=1 -- stop t1
+  assert_eq "stop exits 0" "0" "$WL_RC"
+  assert_contains "stop deletes without waiting" "$(calls)" "delete pod chaos-wl-t1 -n openstack --ignore-not-found --wait=false"
+
+  new_stub
+  printf '1000.5' >"$KSTUB/state/ann-fault-start"
+  printf 'READY token\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" -- dump t1
+  assert_contains "dump prints the phase and the marks of a live pod" "$WL_OUT" "phase=Running fault-start=1000.5 fault-end="
+  assert_contains "and its log" "$WL_OUT" "READY token"
+}
+
 # --- Run ---
 test_run_reaches_ready_on_every_stream
 test_a_503_fails_one_stream_and_leaves_the_others_ok
@@ -1087,6 +1603,15 @@ test_evaluate_passes_a_clean_log_and_fails_each_violation
 test_evaluate_without_marks_fails_any_failure
 test_evaluate_input_errors_exit_2_naming_the_cause
 test_evaluate_summary_counts_match_the_hand_computed_values
+test_start_runs_the_pod_as_specified
+test_start_fails_on_a_terminal_pod_or_a_missing_ready
+test_start_rejects_an_invalid_id
+test_mark_writes_the_pod_clock_and_fails_with_the_exec_error
+test_verify_refuses_a_missing_double_or_malformed_budget_line
+test_verify_maps_the_placement_audit_exit_codes
+test_verify_fails_on_a_stop_exec_error_or_a_missing_done
+test_verify_reads_the_ovn_db_sync_log
+test_dump_and_stop_exit_0_without_a_pod
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
