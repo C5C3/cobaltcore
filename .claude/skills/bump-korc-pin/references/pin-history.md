@@ -14,9 +14,10 @@ and the quay tag API on 2026-09-23.
 | d1a68660 | 2026-09-07 | `3f02592` | Region kind merged upstream (k-orc#862) | moved | 26 commits, 5 `api/` + 8 `config/` files (the new kind) |
 | c236aeb8 | 2026-09-16 | `ddb5fbb` | move to main HEAD; docs rewritten to the commit-pin form | moved | 31 commits, 7 `api/` + 10 `config/` files: Limit controller, RegionRef on Endpoint and RegisteredLimit, all new fields optional |
 | 6a0dc505 | 2026-09-20 | `ae54590` | upstream PR 913: transport errors retryable | moved; docs mirror moved | 9 commits, 22 `api/` files, no `config/` file |
+| ca34b418 | 2026-10-14 | `da276e4` | upstream PR 967 evicts the stale catalog; #1202 | moved across the v3 module path (`/v2` to `/v3`) | 98 commits, 35 `api/` + 20 `config/` files: DNSZone and SubnetPool kinds, `Unrestricted` and `Enabled` status fields to `*bool` |
 
-The current pin's tag `commit-ae54590` expires **2026-10-15 14:11:56 UTC**
-(quay `expiration`; `end_ts` 1792073516). Every `commit-*` tag expires
+The current pin's tag `commit-da276e4` expires **2026-11-11 16:03:22 UTC**
+(quay `expiration`; `end_ts` 1794413002). Every `commit-*` tag expires
 28 days after its push (`end_ts - start_ts` = 2419200 s, give or take a
 second), so a fresh candidate buys four weeks at most.
 
