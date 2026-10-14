@@ -372,13 +372,17 @@ paths any other chassis or metadata agent would share.
    the script reads and prints the key names only, never the values, because
    the Secret carries a cloud-admin password. K-ORC refreshes its own service
    catalog when it meets a missing endpoint, so nobody restarts it. The script
-   asserts that the pod template of `orc-controller-manager` carries no
-   `c5c3.io/korc-catalog-epoch-*` annotation and that the running K-ORC pod
-   predates the ControlPlane `openstack/controlplane-keystone`. It then applies
+   asserts that the pod template of `orc-controller-manager` carries no catalog
+   epoch annotation of older c5c3-operator charts (see
+   [K-ORC](../infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller))
+   and that every running K-ORC container started before the ControlPlane
+   `openstack/controlplane-keystone` was created. A rollout, a replaced pod and a
+   container restart each start a new K-ORC process, which logs in with the full
+   catalog and so needs no refresh. It then applies
    `fixtures.yaml` of the example overlay
    `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
-   downloads no cirros image) and waits up to 10 minutes for every K-ORC
-   resource in that file to report `Available`.
+   downloads no cirros image), waits up to 10 minutes for every K-ORC
+   resource in that file to report `Available`, and repeats the start-time check.
    `07-hypervisor-operator-verify-job.yaml` follows, a Job that
    authenticates as the hypervisor operator's user from the auth Secret and
    prints one line per block, which the suite greps:
