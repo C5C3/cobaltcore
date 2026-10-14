@@ -57,12 +57,25 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
 - **Recovery assertions are UID-gated** where the contract is "a new pod
   recovered" (compare the pod UID before/after the kill), and
   restart-count-gated where the contract is "survived without restart".
+- **Workload budget:** a suite that calls `lib/workload.sh start` carries one
+  `# Chaos budget: failures=<N> recovery=<S>s` line in its header comment,
+  with the three kind runs it was measured from in a
+  `# Chaos budget measured:` line under it. `verify` refuses a header with
+  none, two, or a malformed one. A suite without a workload says why in a
+  `# Chaos workload: none (<reason>)` line.
 
 ## Shared helpers
 
 - `diagnostics.sh baseline|chaos <cr-name> [options]` — call from
   `catch:` blocks for uniform failure dumps (CR conditions, dependency
   pods, Chaos Mesh status, logs, events).
+- `lib/workload.sh start|mark|verify|dump|stop <id>` — sends OpenStack
+  traffic through the fault from a pod running `lib/workload.py` on
+  `ghcr.io/c5c3/tempest:2026.1`, then judges the records and the state of
+  OpenStack against the budget line. A local run pulls the Tempest image from
+  GHCR unless `kind load docker-image` put it on the node. See
+  `docs/reference/testing/chaos-e2e-tests.md` (Workload and Consistency
+  Harness).
 - `unseal-openbao.sh` — OpenBao runs single-replica with Shamir sealing
   in kind; after a pod-kill the new pod starts **sealed** and stays 0/1
   forever. This helper re-unseals it (idempotent); production HA Raft
