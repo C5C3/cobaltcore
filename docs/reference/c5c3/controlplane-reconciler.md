@@ -113,7 +113,7 @@ can interact with the typed child CRDs:
 | `github.com/mariadb-operator/mariadb-operator` | `mariadbv1alpha1.AddToScheme` | `MariaDB` (projected and owned child) |
 | `github.com/external-secrets/external-secrets` | `esov1alpha1.SchemeBuilder` | `PushSecret` (admin-credential mirror) |
 | `github.com/external-secrets/external-secrets` | `esov1.SchemeBuilder` | `ExternalSecret`, `ClusterSecretStore`, `SecretStore` (K-ORC clouds.yaml gate + per-ControlPlane store selection) |
-| `github.com/k-orc/openstack-resource-controller/v2` | `orcv1alpha1.AddToScheme` | `ApplicationCredential`, `Service`, `Endpoint` |
+| `github.com/k-orc/openstack-resource-controller/v3` | `orcv1alpha1.AddToScheme` | `ApplicationCredential`, `Service`, `Endpoint` |
 
 > **Note (Memcached is unstructured):** `memcached.c5c3.io` ships **no Go
 > module**, so the `Memcached` child is **deliberately not** registered in the

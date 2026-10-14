@@ -766,9 +766,9 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` (commit `ae545905edc2966600944e391b4e106ac58cba06` on `main`) |
+| Source | `k-orc` `GitRepository` (commit `da276e44b40ca218ed9bb7b62114f6a461a29689` on `main`) |
 | Path | `./config/default` |
-| Image | `quay.io/orc/openstack-resource-controller:commit-ae54590`, pulled by digest |
+| Image | `quay.io/orc/openstack-resource-controller:commit-da276e4`, pulled by digest |
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource

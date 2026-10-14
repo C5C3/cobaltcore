@@ -40,7 +40,7 @@ RELEASE_YAML="deploy/flux-system/releases/k-orc.yaml"
 GOMOD="operators/c5c3/go.mod"
 GOSUM="operators/c5c3/go.sum"
 DOCS="docs/reference/infrastructure/infrastructure-manifests.md"
-MODULE="github.com/k-orc/openstack-resource-controller/v2"
+MODULE="github.com/k-orc/openstack-resource-controller/v3"
 IMAGE_REPO="quay.io/orc/openstack-resource-controller"
 QUAY_API="https://quay.io/api/v1/repository/orc/openstack-resource-controller"
 GH_REPO="k-orc/openstack-resource-controller"
@@ -273,7 +273,7 @@ else
   if is_hex "${suffix}" 12; then
     GOMOD_COMMIT="${suffix}"
     stamp="${GOMOD_VER%-*}"
-    stamp="${stamp##*.}"
+    stamp="${stamp##*[.-]}"
     info "pseudo-version commit ${GOMOD_COMMIT}, committed ${stamp} (UTC, yyyymmddhhmmss)"
     if [ "${GOMOD_COMMIT}" = "${SHORT12}" ]; then
       pass "go.mod pins the same commit as the Flux source (${SHORT12})"
