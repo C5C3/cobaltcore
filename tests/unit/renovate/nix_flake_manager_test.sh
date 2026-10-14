@@ -13,6 +13,11 @@
 # a rolling ref, so the re-lock is not a version bump and minimumReleaseAge cannot
 # gate it — a reviewer confirms the base-runtime bump the devshell inherits instead.
 #
+# The spike under nix/spike/ is pinned by hand. The manager's default pattern
+# matches its flake.nix, and a managerFilePatterns entry only adds to the
+# defaults, so a packageRule disables every update there instead: the weekly
+# re-lock of its flake.lock and the pep621 updates of its generated locks.
+#
 # Usage: bash tests/unit/renovate/nix_flake_manager_test.sh
 
 set -uo pipefail
@@ -90,9 +95,38 @@ test_lock_maintenance_scoped_to_nix_only() {
     "null" "$(jq -r '.lockFileMaintenance // "null"' "$RENOVATE_FILE")"
 }
 
+test_spike_disabled_for_every_manager() {
+  echo "Test: a packageRule disables every update under nix/spike/"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  local rule
+  rule="$(jq -c '.packageRules[] | select(.matchFileNames == ["nix/spike/**"])' \
+    "$RENOVATE_FILE" | head -1)"
+
+  if [ -z "$rule" ]; then
+    echo "  FAIL: no packageRule matches nix/spike/**"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  echo "  PASS: found a packageRule for matchFileNames=[nix/spike/**]"
+  PASS=$((PASS + 1))
+
+  assert_eq "the nix/spike/** packageRule sets enabled to false" \
+    "false" "$(jq -r '.enabled' <<<"$rule")"
+  # A manager filter would leave the other managers, pep621 among them, on.
+  assert_eq "the nix/spike/** packageRule names no manager" \
+    "null" "$(jq -r '.matchManagers // "null"' <<<"$rule")"
+}
+
 test_nix_manager_enabled_with_lock_maintenance
 test_nix_package_rule_present
 test_lock_maintenance_scoped_to_nix_only
+test_spike_disabled_for_every_manager
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
