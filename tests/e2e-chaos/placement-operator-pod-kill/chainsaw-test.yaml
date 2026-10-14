@@ -13,6 +13,12 @@
 # the operator runs 2 replicas and PodChaos mode: one picks its victim at
 # random, so the recorded pod survives the kill in ~half the runs and the
 # old-pod-gone poll fails spuriously. Mirrors glance-operator-pod-kill.
+#
+# Workload: the http stream of ../lib/workload.sh GETs
+# http://placement-chaos-op.openstack.svc:8778/ while the fault is active. The
+# operator is not on that request path, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -37,9 +43,20 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start placement-operator-pod-kill -- --streams http --http http://placement-chaos-op.openstack.svc:8778/
     catch:
     - script:
         content: ../diagnostics.sh baseline placement-chaos-op --cr-kind=placement --dep-label=app.kubernetes.io/name=placement-operator --dep-ns=placement-system
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump placement-operator-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop placement-operator-pod-kill
   # ── Step 2: Inject chaos and verify one operator pod was replaced ──────
   # Snapshot, apply and poll live in one script so the pre-chaos UID
   # snapshot and the wait share state. mode: one kills exactly one of the
@@ -87,7 +104,10 @@ spec:
           fi
           echo "Pre-chaos placement-api pod UIDs: ${WORKLOAD_UIDS}"
 
-          # Inject chaos (kill one operator pod).
+          # Inject chaos (kill one operator pod). The fault window is marked
+          # on the workload's clock first; the script omits set -e, hence
+          # the explicit exit.
+          ../lib/workload.sh mark placement-operator-pod-kill fault-start || exit 1
           kubectl apply -f 01-podchaos.yaml
 
           # Phase 1: wait until at least one pre-chaos UID is gone, proving
@@ -168,6 +188,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos placement-chaos-op --cr-kind=placement --dep-label=app.kubernetes.io/name=placement-operator --dep-ns=placement-system
+    - *workload-dump
   # ── Step 3: Delete PodChaos ────────────────────────────────────────────
   - try:
     - delete:
@@ -176,6 +197,11 @@ spec:
           kind: PodChaos
           name: kill-placement-operator
           namespace: placement-system
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark placement-operator-pod-kill fault-end
+    catch:
+    - *workload-dump
   # ── Step 4: Prove the recovered operator reconciles a spec change ──────
   - try:
     - patch:
@@ -206,3 +232,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos placement-chaos-op --cr-kind=placement --dep-label=app.kubernetes.io/name=placement-operator --dep-ns=placement-system
+    - *workload-dump
+  # ── Step 5: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify placement-operator-pod-kill
+    catch:
+    - *workload-dump
