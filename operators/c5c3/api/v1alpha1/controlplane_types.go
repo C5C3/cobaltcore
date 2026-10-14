@@ -382,7 +382,7 @@ type ServicesSpec struct {
 //   - mariadb-operator    => github.com/mariadb-operator/mariadb-operator v0.38.1
 //   - external-secrets    => github.com/external-secrets/external-secrets/apis
 //     (match the pin in operators/keystone/go.mod)
-//   - K-ORC               => github.com/k-orc/openstack-resource-controller/v2 v2.5.0
+//   - K-ORC               => github.com/k-orc/openstack-resource-controller/v3 (main-commit pseudo-version in go.mod)
 //   - memcached.c5c3.io   => NO public Go module; L2 uses unstructured.Unstructured
 //
 // DECISION AMENDED (admission-time extraConfig validation): the api package now

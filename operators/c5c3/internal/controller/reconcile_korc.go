@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v3/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -691,9 +691,9 @@ func (r *ControlPlaneReconciler) updateAdminApplicationCredentialStatus(
 	}
 
 	restricted := desiredRestricted
-	if ac.Status.Resource != nil {
+	if ac.Status.Resource != nil && ac.Status.Resource.Unrestricted != nil {
 		// K-ORC reports Unrestricted; invert back to our Restricted semantics.
-		restricted = !ac.Status.Resource.Unrestricted
+		restricted = !*ac.Status.Resource.Unrestricted
 	}
 
 	prev := cp.Status.AdminApplicationCredential

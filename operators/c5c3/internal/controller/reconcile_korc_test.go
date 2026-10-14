@@ -21,7 +21,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v3/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -1675,6 +1675,69 @@ func TestReconcileKORC_FreshCredentialIDAdvancesLastRotation(t *testing.T) {
 	g.Expect(cp.Status.AdminApplicationCredential.LastRotation).NotTo(BeNil())
 	g.Expect(cp.Status.AdminApplicationCredential.LastRotation.Time.After(oldRotation.Time)).To(BeTrue(),
 		"a re-minted credential with a new id must advance lastRotation")
+}
+
+// TestUpdateAdminApplicationCredentialStatus_RestrictedFollowsReportedUnrestricted
+// asserts that status.adminApplicationCredential.restricted inverts the
+// Unrestricted value K-ORC reports, whatever the desired value is, and falls back
+// to the desired value while K-ORC has reported no resource or no Unrestricted.
+func TestUpdateAdminApplicationCredentialStatus_RestrictedFollowsReportedUnrestricted(t *testing.T) {
+	cases := []struct {
+		name         string
+		resource     *orcv1alpha1.ApplicationCredentialResourceStatus
+		desired      bool
+		wantRestrict bool
+	}{
+		{name: "resource nil, desired true", resource: nil, desired: true, wantRestrict: true},
+		{name: "resource nil, desired false", resource: nil, desired: false, wantRestrict: false},
+		{
+			name:     "unrestricted nil, desired true",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{},
+			desired:  true, wantRestrict: true,
+		},
+		{
+			name:     "unrestricted nil, desired false",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{},
+			desired:  false, wantRestrict: false,
+		},
+		{
+			name:     "unrestricted false, desired true",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{Unrestricted: ptr.To(false)},
+			desired:  true, wantRestrict: true,
+		},
+		{
+			name:     "unrestricted false, desired false",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{Unrestricted: ptr.To(false)},
+			desired:  false, wantRestrict: true,
+		},
+		{
+			name:     "unrestricted true, desired true",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{Unrestricted: ptr.To(true)},
+			desired:  true, wantRestrict: false,
+		},
+		{
+			name:     "unrestricted true, desired false",
+			resource: &orcv1alpha1.ApplicationCredentialResourceStatus{Unrestricted: ptr.To(true)},
+			desired:  false, wantRestrict: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcControlPlane()
+			ac := &orcv1alpha1.ApplicationCredential{
+				Status: orcv1alpha1.ApplicationCredentialStatus{
+					ID:       ptr.To("ac-id"),
+					Resource: tc.resource,
+				},
+			}
+
+			(&ControlPlaneReconciler{}).updateAdminApplicationCredentialStatus(cp, ac, tc.desired)
+
+			g.Expect(cp.Status.AdminApplicationCredential).NotTo(BeNil())
+			g.Expect(cp.Status.AdminApplicationCredential.Restricted).To(Equal(tc.wantRestrict))
+		})
+	}
 }
 
 // --- 2.8: reconcileCatalog ---

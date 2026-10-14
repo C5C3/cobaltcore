@@ -35,7 +35,7 @@ therefore a recurring chore until the structural fix below lands.
 | `deploy/flux-system/sources/k-orc.yaml` | `spec.ref.commit` (40 hex) | every bump; the only field Renovate tracks (customManager, datasource `git-refs`, `currentValue` main, automerge after 3 days) |
 | `deploy/flux-system/releases/k-orc.yaml` | `spec.images[0].newTag` `commit-<7>` and `digest` | every bump, by hand; the digest resolves the pull, `newTag` is the drift anchor |
 | `docs/reference/infrastructure/infrastructure-manifests.md` | K-ORC table, Source and Image rows | every bump since c236aeb8 |
-| `operators/c5c3/go.mod` + `go.sum` | pseudo-version `v2.5.1-0.<utc stamp>-<12 hex>` | the documented rule (`docs/contributing/dependency-management.md`) moves it every time; mandatory when upstream `api/` changed |
+| `operators/c5c3/go.mod` + `go.sum` | pseudo-version `v3.0.0-<utc stamp>-<12 hex>` | the documented rule (`docs/contributing/dependency-management.md`) moves it every time; mandatory when upstream `api/` changed |
 
 `hack/ci-deploy-korc.sh` reads the first two at runtime: it requires a
 40-hex commit and a `sha256:<64 hex>` digest, asserts
@@ -127,7 +127,7 @@ check). Apply it:
 
    ```bash
    cd operators/c5c3
-   go get github.com/k-orc/openstack-resource-controller/v2@<12-hex sha>
+   go get github.com/k-orc/openstack-resource-controller/v3@<12-hex sha>
    go mod tidy
    go build ./... && go vet ./...
    ```
