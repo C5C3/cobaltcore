@@ -237,7 +237,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 				Resolver: mcMgr,
 			}
 			// In production the KeystoneService controller registers the
-			// spec.controlPlaneRef index the K-ORC catalog refresh lists
+			// spec.controlPlaneRef index reconcileRegistrationTenantStores lists
 			// registrations through. That controller does not run here.
 			if err := registerKeystoneServiceControlPlaneRefIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 				return err

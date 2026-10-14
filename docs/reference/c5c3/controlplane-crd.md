@@ -1515,16 +1515,12 @@ On a cloud that already has a `cc3test` domain or a `premium` volume type,
 the overlay's documented teardown therefore deletes them: `cc3test` with every
 project, user and group in it, and `premium` unless a volume still uses it.
 
-The c5c3-operator restarts K-ORC once the ControlPlane's registrations are
-settled, so the overlay needs no restart by hand. K-ORC then resolves the
-overlay's flavor, volume type, network and subnet against a service catalog with
-the `compute`, `network` and `block-storage` rows. See
-[reconcileKORCCatalogRefresh](./controlplane-reconciler.md#reconcilekorccatalogrefresh).
-A `Warning` event `KORCRestartSkipped` on the ControlPlane means the operator
-could not restart K-ORC, for example under a c5c3-operator chart older than
-0.15.0, which lacks the Deployment grant. Restart it by hand
-(`kubectl rollout restart deployment/orc-controller-manager -n orc-system`)
-before applying the overlay.
+K-ORC resolves the overlay's flavor, volume type, network and subnet against
+the current service catalog. A resource that meets a missing endpoint fails once
+with `No suitable endpoint could be found in the service catalog`. K-ORC then
+drops its cached client and logs in again, and the retry succeeds, so the
+overlay needs no restart by hand
+([k-orc/openstack-resource-controller#967](https://github.com/k-orc/openstack-resource-controller/pull/967)).
 
 ### NovaDedicatedBackingServicesSpec
 
@@ -3665,15 +3661,14 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by twenty-two sub-reconcilers. Twenty-one own
-one condition type each; `reconcileKORCCatalogRefresh` owns none. An aggregate
-`Ready` condition comes on top. The condition-type constants in
-`controlplane_controller.go` (`subConditionTypes`) are the single source of
-truth; call sites reference the constants rather than inline literals.
+The ControlPlane status is driven by twenty-one sub-reconcilers, one condition
+type each. An aggregate `Ready` condition comes on top. The condition-type
+constants in `controlplane_controller.go` (`subConditionTypes`) are the single
+source of truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in two phases. The first seven are a blocking prefix: a
-step that has not converged requeues and ends the pass. The other fifteen run
-as one group on every pass, and none of them stops another. Eleven steps gate
+step that has not converged requeues and ends the pass. The other fourteen run
+as one group on every pass, and none of them stops another. Ten steps gate
 **explicitly** on an earlier condition being `True` (`reconcileKeystone` on
 `InfrastructureReady`, `reconcileHorizon` on `KeystoneReady`, `reconcileGlance`,
 `reconcilePlacement` and `reconcileBarbican` on `KeystoneReady` and on the
@@ -3682,8 +3677,7 @@ itself, `reconcileNeutron` on `KeystoneReady` and `OVNReady` plus its own
 registration, `reconcileCinder` on `KeystoneReady` plus its own registration,
 `reconcileNova` on `KeystoneReady` and `PlacementReady` plus its own
 registration, `reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
-`AdminCredentialReady`, `reconcileKORCCatalogRefresh` on
-`ServiceAccountsReady`).
+`AdminCredentialReady`).
 
 The figure shows which condition waits for which.
 [Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow) lists

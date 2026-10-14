@@ -374,7 +374,7 @@ cluster-scoped `namespaces` verbs as well, which is why the markers add
 
 ## Reconciliation Flow
 
-A pass runs a blocking prefix of seven steps and then one group of fifteen
+A pass runs a blocking prefix of seven steps and then one group of fourteen
 members that all run. The figure draws an arrow only where one condition gates
 another.
 
@@ -393,14 +393,14 @@ One pass, in order:
    resolves. A pass that installs one ends with a requeue.
 5. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
    step that returns a requeue or an error ends the pass.
-6. Runs the tail group through `RunSequentialGroup`, rows 8 to 22. Every member
+6. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
    runs. Member requeues collapse to the shortest (`ShortestRequeue`), member
    errors are joined (`errors.Join`).
 7. Calls `updateStatus()` on every exit path of steps 5 and 6: it recomputes the
    aggregate `Ready` as `AllTrue(subConditionTypes)`, writes `status.services`,
    stamps `status.observedGeneration`, and skips the write when nothing changed.
 
-The 22 sub-reconcilers, in call order. The Gate column names the conditions a
+The 21 sub-reconcilers, in call order. The Gate column names the conditions a
 step checks itself and, after them, what else it waits for. A prefix step also
 runs only after the step before it has converged.
 
@@ -425,9 +425,8 @@ runs only after the step before it has converged.
 | 17 | `reconcileCinder` | `CinderReady` | `KeystoneReady`. Then the bus, its registration's `AccountReady` and its DB credential | Delivers the bus, projects the registration, the DB credential, the `CinderBackend` and `CinderBackupBackend` satellites and the Cinder child | 5s gated, 15s bus or child, 10s registration or DB credential |
 | 18 | `reconcileNova` | `NovaReady` | `KeystoneReady`, `PlacementReady`. Then the bus, its registration's `AccountReady` and its two DB credentials | Delivers the bus, projects the registration, the two DB credentials, the metadata shared secret and the Nova child, then the hypervisor operator's account when it is set | 5s gated, 15s bus or child, 10s registration or DB credential |
 | 19 | `reconcileServiceAccounts` | `ServiceAccountsReady` | nothing | Folds the `Ready` of the registrations the legs projected, up to eight | 10s while one is not Ready |
-| 20 | `reconcileKORCCatalogRefresh` | none | `ServiceAccountsReady`, and every registration settled | Records the catalog epoch on the K-ORC pod template. A change rolls the pod | none |
-| 21 | `reconcileRegistrationTenantStores` | `RegistrationTenantStoresReady` | nothing | Provisions the tenant-store trio in each allowlisted namespace that holds a registration. `True/NoRegistrationNamespaces` when there is none | 10s while a store is not Ready |
-| 22 | `reconcileNamespaceAssignments` | `NamespaceAssignmentsReady` | nothing | Reports every `spec.namespaceAssignments` entry in `status.namespaceAssignments`. `True/NoNamespaceAssignments` when there is none | 1m while an entry is not `Assigned` |
+| 20 | `reconcileRegistrationTenantStores` | `RegistrationTenantStoresReady` | nothing | Provisions the tenant-store trio in each allowlisted namespace that holds a registration. `True/NoRegistrationNamespaces` when there is none | 10s while a store is not Ready |
+| 21 | `reconcileNamespaceAssignments` | `NamespaceAssignmentsReady` | nothing | Reports every `spec.namespaceAssignments` entry in `status.namespaceAssignments`. `True/NoNamespaceAssignments` when there is none | 1m while an entry is not `Assigned` |
 
 A service whose block is not set reports its condition `True` with a
 `NotManaged` reason, so the aggregate is not blocked: `KeystoneNotManaged`,
@@ -453,8 +452,8 @@ error counter are emitted under a stable `sub_reconciler` label.
 
 **Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog, Glance,
 Placement, Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
-KORCCatalogRefresh, RegistrationTenantStores and NamespaceAssignments are the
-fifteen named members of one `commonreconcile.RunSequentialGroup`,
+RegistrationTenantStores and NamespaceAssignments are the
+fourteen named members of one `commonreconcile.RunSequentialGroup`,
 embedded as the pipeline's final **bare (unnamed)** `Step`. The group members
 self-instrument through `instrumenter.Instrument` — following the keystone
 self-instrumenting-group convention — which is why the enclosing group step
@@ -474,13 +473,10 @@ the shared message bus to be delivered into their namespace. Neutron gates on
 none, because the `OVNCentral` it mirrors is deployed outside the plane and
 nothing this chain produces can converge it.
 
-Of the four members that close the group, the first three depend on their
-order in it.
+Of the three members that close the group, the first depends on its order in it.
 ServiceAccounts carries **no** gate: it only folds the registration children the
 service legs wrote earlier in the same pass, so it must run after them and has
-nothing to defer. KORCCatalogRefresh is gated on the `ServiceAccountsReady` that
-ServiceAccounts has just written, so it acts on the same pass's aggregate (see
-[reconcileKORCCatalogRefresh](#reconcilekorccatalogrefresh)).
+nothing to defer.
 RegistrationTenantStores carries no gate either. It consumes no condition this
 chain produces — the trio it writes depends on cert-manager and OpenBao alone, exactly
 like its blocking-prefix twin — and sits in the group rather than in that prefix
@@ -507,8 +503,7 @@ pipeline := []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
                 // KORC, AdminCredential, Catalog, Glance, Placement,
                 // Barbican, OVN, Neutron, Cinder, Nova, ServiceAccounts,
-                // KORCCatalogRefresh, RegistrationTenantStores,
-                // NamespaceAssignments
+                // RegistrationTenantStores, NamespaceAssignments
             })
     }},
 }
@@ -614,8 +609,7 @@ fields that the schema declared but the reconciler previously never wrote:
 
 ## Sub-Reconciler Contracts
 
-Each sub-reconciler owns exactly one Ready sub-condition, except
-[`reconcileKORCCatalogRefresh`](#reconcilekorccatalogrefresh), which owns none.
+Each sub-reconciler owns exactly one Ready sub-condition.
 The tables below give each one's gate, what it projects/owns, and the condition
 reasons it sets on the `True`, requeue, and error paths. All condition constants are the exported
 source-of-truth strings in `controlplane_controller.go`; sub-reconcilers
@@ -3467,119 +3461,6 @@ the projected `KeystoneService` children and waits for them, because their K-ORC
 CRs belong to the registration and its controller tears them down through the
 admin credential the next step revokes.
 
-### reconcileKORCCatalogRefresh
-
-| Aspect | Value |
-| --- | --- |
-| File | `reconcile_korc_catalog_refresh.go` |
-| Condition | none; its errors are counted under `condition_type="KORCReady"` (see [Metrics Instrumentation](#metrics-instrumentation)) |
-| Gate | `ServiceAccountsReady == True`, which [`reconcileServiceAccounts`](#reconcileserviceaccounts) wrote earlier in the same pass |
-| Writes | one pod-template annotation on `Deployment orc-system/orc-controller-manager` |
-| Requeue | none |
-
-K-ORC keeps one provider client per `clouds.yaml` cloud for half the token
-lifetime, and that client carries the service catalog of the token it logged in
-with. A service registered after the ControlPlane's first K-ORC login is missing
-from that catalog, so a K-ORC `Flavor`, `Network`, `Subnet` or `VolumeType` that
-needs it fails with `No suitable endpoint could be found in the service catalog`
-until the cache expires. The cache lives in the K-ORC process and has no eviction
-API; only a new process starts with an empty one
-([k-orc/openstack-resource-controller#941](https://github.com/k-orc/openstack-resource-controller/issues/941)).
-This member rolls the K-ORC pod once the catalog registered through the
-ControlPlane has settled on a value K-ORC has not seen.
-
-**The epoch.** `korcCatalogEpoch` reads every `KeystoneService` registered
-through the ControlPlane, found through the `spec.controlPlaneRef` field index:
-the projected built-in children and the standalone registrations from
-allowlisted namespaces alike.
-
-1. A registration counts when it declares `spec.catalog`, is not Terminating and
-   comes from a namespace the ControlPlane admits: its own, a dedicated service
-   namespace, or one in `spec.korc.serviceRegistrations.allowedNamespaces`. A
-   registration from any other namespace projects nothing and stays
-   `CatalogReady=False` with reason `NamespaceNotAllowed`, so it never holds the
-   epoch. The account-only registrations (the network service's compute
-   notifier, the hypervisor operator) never count.
-2. A counted registration is settled when its `CatalogReady` is `True` at its
-   current generation. One unsettled registration leaves the pass without an
-   epoch, so an edited endpoint URL changes nothing until Keystone has the new
-   row.
-3. With no counted registration there is nothing to record.
-4. Otherwise the epoch is the first 16 hex characters of a SHA-256 over the
-   ControlPlane's UID followed by, per registration in namespace/name order, its
-   `<namespace>/<name>`, service type, service name (the CR name when unset) and
-   one `<interface>=<url>` per endpoint in interface order.
-
-The UID is part of the epoch because a deleted and re-created ControlPlane of
-the same name logs into K-ORC with a new credential before its services are
-registered. It needs a new pod although its registrations match the old ones.
-The recipe is pinned by `TestKORCCatalogEpoch_HashesTheDocumentedByteStream`:
-changing it changes every epoch, and the first pass after such an upgrade rolls
-the pod once per ControlPlane.
-
-**The rollout.** The epoch is recorded on the pod template of
-`Deployment orc-system/orc-controller-manager` under the key
-`c5c3.io/korc-catalog-epoch-<hash>`, where `<hash>` is the first 10 hex
-characters of the SHA-256 of the ControlPlane's `<namespace>/<name>`. The value
-is `<namespace>/<name>=<epoch>`, so a reader of the Deployment sees which
-ControlPlane wrote which key, and several ControlPlanes share one K-ORC without
-overwriting each other. A changed pod template is what `kubectl rollout restart`
-writes: the Deployment controller replaces the pod, and the new process logs in
-against the current catalog.
-
-The member reads the Deployment through the uncached reader, so no Deployment
-informer starts, and sends a JSON merge patch that carries only its own key
-under the field manager `cobaltcore-operator`. The `k-orc` Flux Kustomization
-reverts fields a `kubectl` manager owns and leaves this one alone, so the key
-stays and no rollout loop forms (see the
-[K-ORC manifests](../infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller)).
-
-| Path | Result | Event |
-| --- | --- | --- |
-| `ServiceAccountsReady` absent or not `True` | returns before any read | none |
-| a counted registration is unsettled | nothing written | none |
-| no registration declares a catalog entry | nothing written | none |
-| the recorded value equals the epoch | nothing written | none |
-| the epoch changed | patches the annotation; the K-ORC pod rolls | `Normal` `KORCRestarted` |
-| the Deployment Get or Patch answers NotFound or Forbidden, or admission denies the Patch (BadRequest from a webhook, Invalid from a ValidatingAdmissionPolicy) | nothing written, nil error | `Warning` `KORCRestartSkipped` |
-| any other List, Get or Patch error | returns the wrapped error | none |
-
-`KORCRestarted` reads `restarted Deployment orc-system/orc-controller-manager:
-the service catalog registered through ControlPlane <namespace>/<name> changed`,
-and the same line is logged at info level. `KORCRestartSkipped` reads
-`Deployment orc-system/orc-controller-manager cannot be restarted (<err>); K-ORC
-keeps its cached service catalog for up to half a token lifetime`. A missing or
-forbidden Deployment, or a denied patch, is no error, because the outcome is the
-behavior without this member, and an error would hold the whole ControlPlane in
-a permanent backoff: every retry meets the same refusal.
-
-**Why the gate.** The built-in registrations are projected one after another.
-Without the gate each one turning Ready would settle the list again and roll
-the pod again. `ServiceAccountsReady` turns `True` only once every projected
-child is Ready, so a bring-up costs one rollout.
-
-**What a rollout costs and what it misses.**
-
-- It interrupts K-ORC for every ControlPlane on the cluster. K-ORC retries a
-  failed resource once the new pod runs; the ControlPlane's `Ready` does not
-  wait for the rollout.
-- The first pass after an operator upgrade finds no key and rolls the pod once
-  for each ControlPlane with settled catalog registrations.
-- A registration's deletion changes the epoch as soon as it starts, so the pod
-  rolls during that registration's teardown and the new process resumes it.
-- A deleted ControlPlane's key stays on the Deployment. Removing it would change
-  the pod template in the middle of that ControlPlane's teardown, which K-ORC
-  itself executes.
-- A projected child's status change wakes the plane through its ownership legs.
-  A standalone registration's status change starts no pass (its watch leg drops
-  status-only writes), so the epoch it settles is read on the plane's next pass.
-- A service registered in Keystone outside a `KeystoneService`, for example
-  with the OpenStack CLI, is invisible to the operator and waits for the cache
-  to expire as before.
-
-The member is a workaround. [#1202](https://github.com/C5C3/cobaltcore/issues/1202)
-replaces it with the upstream fix once K-ORC evicts the stale client.
-
 ### reconcileRegistrationTenantStores
 
 | Aspect | Value |
@@ -4530,7 +4411,6 @@ The `condition_type` label is resolved from the package-private
 | `AdminPassword` | `AdminPasswordReady` |
 | `Catalog` | `CatalogReady` |
 | `ServiceAccounts` | `ServiceAccountsReady` |
-| `KORCCatalogRefresh` | `KORCReady` |
 | `RegistrationTenantStores` | `RegistrationTenantStoresReady` |
 | `NamespaceAssignments` | `NamespaceAssignmentsReady` |
 
@@ -4540,10 +4420,6 @@ than to this one; see the
 [KeystoneService Reconciler](./keystoneservice-reconciler.md). The
 `RegistrationTenantStores` series is kept apart from `ESOTenantStore`'s because
 the two carry different blast radii and one alert should not read as the other.
-`KORCCatalogRefresh` drives no condition of its own. Its errors carry
-`KORCReady`, because a failed rollout leaves K-ORC on a stale service catalog,
-and a member without a condition needs only this map entry, no
-`subConditionTypes` member.
 
 If `instrumenter.Instrument` is ever called with a name absent from the map, the
 helper emits the sentinel `condition_type=UNKNOWN`
@@ -4624,7 +4500,6 @@ cross-namespace teardown assertions.
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
-| `reconcile_korc_catalog_refresh_test.go` | The catalog epoch (nothing to record, unsettled, the pinned byte stream, order independence, each input that changes it, Terminating registrations, registrations from namespaces the plane does not admit), the annotation key, and the rollout: the gate, the registrations of this plane only, the uncached read, the merge patch and its field manager, the other annotations kept, the skip on a missing or forbidden Deployment or a denied patch, the wrapped errors, a nil recorder |
 | `reconcile_projected_children_test.go` | Prune and sweep of projected satellite children: ownership, name prefix, the `Keep` set, an absent CRD, the wrapped errors |
 | `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
 | `reconcile_cinder_test.go` | Cinder projection, the Keystone and registration gates, the satellite projection and prune, the derived Glance/Barbican/internal-tenant fields, the replica pins, the orphan teardown |
@@ -4734,8 +4609,6 @@ operators/c5c3/
     │   │                                        identity imports, opt-in entries, stall detection)
     │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (folds the built-in
     │   │                                        registrations into ServiceAccountsReady)
-    │   ├── reconcile_korc_catalog_refresh.go   reconcileKORCCatalogRefresh (records the catalog
-    │   │                                        epoch on the K-ORC pod template)
     │   ├── builtin_registrations.go            The leg Glance/Placement/Barbican/Neutron/Cinder/
     │   │                                        Nova share: project the KeystoneService child,
     │   │                                        gate, mirror, reclaim; plus the account-only
@@ -4782,7 +4655,6 @@ operators/c5c3/
     │   ├── reconcile_nova_hypervisor_operator_test.go Hypervisor-operator account tests
     │   ├── reconcile_nova_metadata_agent_test.go Metadata-agent shared-secret copy tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
-    │   ├── reconcile_korc_catalog_refresh_test.go K-ORC catalog refresh tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests
     │   ├── reconcile_catalog_external_test.go  External-catalog tests
