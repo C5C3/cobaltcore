@@ -38,7 +38,7 @@ func TestRBAC_DeploymentGrantIsScopedToKORC(t *testing.T) {
 	g.Expect(reaching).To(Equal([]rbacv1.PolicyRule{{
 		APIGroups:     []string{"apps"},
 		Resources:     []string{"deployments"},
-		ResourceNames: []string{korcDeploymentName},
+		ResourceNames: []string{"orc-controller-manager"},
 		Verbs:         []string{"get", "patch"},
 	}}))
 }

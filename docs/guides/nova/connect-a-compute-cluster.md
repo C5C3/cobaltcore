@@ -512,9 +512,9 @@ openstack --insecure role assignment list --user hypervisor-operator \
   --user-domain Default --project test --project-domain cc3test --role admin
 ```
 
-The c5c3-operator restarts K-ORC itself once the ControlPlane's
-registrations are settled; only a `Warning` event `KORCRestartSkipped` on the
-ControlPlane calls for a restart by hand (see
+A K-ORC resource that needs an endpoint registered after K-ORC's first login
+fails once with `No suitable endpoint could be found in the service catalog`.
+K-ORC then logs in again and the retry succeeds, so no restart is needed (see
 [ServiceNovaHypervisorOperatorSpec](../../reference/c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)).
 
 hvo reads its password once, at start. A `CredentialRotation` of the account
