@@ -63,6 +63,7 @@
       };
 
       fhsLayout = import ./lib/fhs-layout.nix { inherit pkgs; };
+      cephBindings = pkgs.callPackage ./pkgs/ceph-bindings.nix { python3Packages = python.pkgs; };
 
       keystone = mkPythonEnv {
         service = "keystone";
@@ -80,6 +81,7 @@
           inherit pkgs fhsLayout;
           inherit (keystone) venv;
         };
+        ceph-bindings = cephBindings;
         glance-env = glance.venv;
       };
     };
