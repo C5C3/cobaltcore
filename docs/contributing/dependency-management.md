@@ -99,6 +99,9 @@ re-lock is not a version bump and the 3-day cooldown cannot gate it — a review
 the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
 bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
+The spike under `nix/spike/` is outside every manager: a `packageRules` entry with
+`matchFileNames: ["nix/spike/**"]` sets `enabled: false`, so its `flake.lock` and the generated
+locks under `nix/spike/locks/` are pinned by hand and re-locked by whoever edits them.
 
 ### Flux HelmRelease chart versions
 
