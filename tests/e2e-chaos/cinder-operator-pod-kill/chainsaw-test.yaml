@@ -20,6 +20,13 @@
 # the operator runs 2 replicas and PodChaos mode: one picks its victim at
 # random, so the recorded pod survives the kill in ~half the runs and the
 # old-pod-gone poll fails spuriously. Mirrors glance-operator-pod-kill.
+#
+# Workload: the volume stream of ../lib/workload.sh creates, attaches,
+# detaches and deletes volumes through the noauth API of cinder-chaos-op while
+# the fault is active. The operator is not on that request path, so the budget
+# is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -55,6 +62,9 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start cinder-operator-pod-kill -- --streams volume --cinder http://cinder-chaos-op.openstack.svc:8776
     catch: &cinder-dump
     - script:
         content: ../diagnostics.sh chaos cinder-chaos-op --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system
@@ -72,12 +82,18 @@ spec:
             echo "--- $pod ---"
             kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
           done
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-operator-pod-kill
     cleanup:
     - script:
         shell: bash
         timeout: 2m
         content: |
           ../../e2e/cinder/broker-vhost.sh delete cinder-chaos-op || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-operator-pod-kill
   # ── Step 2: Inject chaos and verify one operator pod was replaced ───────
   # Snapshot, apply and poll live in one script so the pre-chaos UID snapshot
   # and the wait share state. mode: one kills exactly one of the two replicas,
@@ -127,7 +143,10 @@ spec:
           fi
           echo "Pre-chaos cinder pod UIDs: ${WORKLOAD_UIDS}"
 
-          # Inject chaos (kill one operator pod).
+          # Inject chaos (kill one operator pod). The fault window is marked
+          # on the workload's clock first; the script omits set -e, hence
+          # the explicit exit.
+          ../lib/workload.sh mark cinder-operator-pod-kill fault-start || exit 1
           kubectl apply -f 02-podchaos.yaml
 
           # Phase 1: wait until at least one pre-chaos UID is gone, proving
@@ -214,6 +233,13 @@ spec:
           kind: PodChaos
           name: kill-cinder-operator
           namespace: cinder-system
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cinder-operator-pod-kill fault-end
+    catch:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-operator-pod-kill
   # ── Step 4: Prove the recovered operator reconciles a spec change ───────
   - try:
     - patch:
@@ -241,4 +267,10 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    catch: *cinder-dump
+  # ── Step 5: Judge the workload against the budget ───────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-operator-pod-kill
     catch: *cinder-dump
