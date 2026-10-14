@@ -62,6 +62,8 @@
           ;
       };
 
+      fhsLayout = import ./lib/fhs-layout.nix { inherit pkgs; };
+
       keystone = mkPythonEnv {
         service = "keystone";
         release = "2026.1";
@@ -74,6 +76,10 @@
     {
       packages.${system} = {
         keystone-venv = keystone.venv;
+        keystone-image = import ./images/keystone.nix {
+          inherit pkgs fhsLayout;
+          inherit (keystone) venv;
+        };
         glance-env = glance.venv;
       };
     };
