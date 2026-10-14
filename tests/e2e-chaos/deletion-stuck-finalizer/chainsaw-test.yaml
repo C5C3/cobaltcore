@@ -24,6 +24,8 @@
 # the Deployment itself via an annotation (no cross-step temp files), and every
 # step between scale-down and scale-up restores it in its catch block so a
 # mid-test failure never leaves mariadb-operator wedged for later suites.
+#
+# Chaos workload: none (the Keystone under test is being deleted)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

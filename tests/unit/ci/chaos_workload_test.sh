@@ -14,7 +14,10 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
+#   4. The adoption: the sixteen suites that start a workload carry one
+#      valid budget line, verify and stop it and time every call;
+#      deletion-stuck-finalizer says why it has none.
+#   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
 #      pod runs on, and make shellcheck lints lib/*.sh.
 #
 # The stub serves Keystone, Nova, Neutron, Cinder, Glance and a plain HTTP
@@ -1594,6 +1597,84 @@ test_dump_and_stop_exit_0_without_a_pod() {
 }
 
 # ---------------------------------------------------------------------------
+# Adoption
+# ---------------------------------------------------------------------------
+
+CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
+ADOPTERS="api-pod-kill-pdb barbican-operator-pod-kill cinder-operator-pod-kill \
+cronjob-rotation-failure glance-operator-pod-kill horizon-memcached-pod-kill \
+horizon-operator-pod-kill mariadb-network-latency mariadb-network-partition \
+mariadb-pod-kill memcached-pod-kill nova-placement-outage openbao-pod-kill \
+operator-pod-crash operator-pod-kill placement-operator-pod-kill"
+BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
+MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
+
+have_yq() {
+  command -v yq >/dev/null 2>&1
+}
+
+# check_adopter <suite> <file> — the contract of a suite that calls start.
+check_adopter() {
+  local suite="$1" file="$2" budget measured ids
+  assert_eq "$suite: exactly one budget line" "1" "$(grep -c '^# Chaos budget:' "$file")"
+  budget="$(grep -m1 '^# Chaos budget:' "$file")"
+  assert_eq "$suite: the budget line reads failures=<N> recovery=<S>s" "yes" \
+    "$([[ "$budget" =~ $BUDGET_RE ]] && echo yes || echo "no: $budget")"
+  measured="$(grep -A1 '^# Chaos budget:' "$file" | sed -n 2p)"
+  assert_eq "$suite: the measured line follows it" "yes" \
+    "$([[ "$measured" =~ $MEASURED_RE ]] && echo yes || echo "no: $measured")"
+  ids="$(grep -oE 'workload\.sh (start|mark|verify|dump|stop) [^ ]+' "$file" | awk '{print $3}' | sort -u)"
+  assert_eq "$suite: every workload.sh call uses the directory name as its id" "$suite" "$ids"
+  assert_eq "$suite: one verify" "1" "$(grep -c "workload\.sh verify $suite" "$file")"
+  assert_eq "$suite: fault-start and fault-end come in a pair" \
+    "$(grep -c "workload\.sh mark $suite fault-start" "$file")" \
+    "$(grep -c "workload\.sh mark $suite fault-end" "$file")"
+  if ! have_yq; then
+    # The two yq checks below.
+    SKIP=$((SKIP + 2))
+    return 0
+  fi
+  assert_eq "$suite: a stop in a cleanup block" "1" "$(yq 'explode(.) | [.spec.steps[].cleanup[]? | select(has("script"))
+    | select(.script.content == "../lib/workload.sh stop '"$suite"'")] | length' "$file")"
+  assert_eq "$suite: a dump in a catch block" "true" "$(yq 'explode(.) | [.spec.steps[].catch[]? | select(has("script"))
+    | select(.script.content == "../lib/workload.sh dump '"$suite"'")] | length > 0' "$file")"
+}
+
+# --- Test 22 --------------------------------------------------------------
+test_every_suite_adopts_the_harness_or_declines_it() {
+  echo "Test: the sixteen adopters keep the harness contract and deletion-stuck-finalizer declines it"
+  local file suite found=""
+  for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
+    suite="$(basename "$(dirname "$file")")"
+    if grep -q 'lib/workload\.sh start' "$file"; then
+      found="$found $suite"
+      check_adopter "$suite" "$file"
+    fi
+  done
+  # shellcheck disable=SC2086 # word splitting builds the sorted list
+  assert_eq "exactly the sixteen suites call workload.sh start" "$(echo $ADOPTERS)" \
+    "$(printf '%s\n' $found | sort | xargs)"
+  local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
+  assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \
+    "# Chaos workload: none (the Keystone under test is being deleted)"
+  assert_eq "lib/ holds no chainsaw-test.yaml, so it is no suite" "no" \
+    "$([ -e "$LIB_DIR/chainsaw-test.yaml" ] && echo yes || echo no)"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (two checks per adopter and the untimed-call check skipped)"
+    SKIP=$((SKIP + 1))
+    return 0
+  fi
+  local untimed
+  untimed="$(for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
+    yq 'explode(.) | .spec.steps[] | (.try, .catch, .cleanup, .finally) | .[]? | select(has("script"))
+      | .script | select(.content | test("workload\\.sh")) | select(has("timeout") | not) | .content' "$file" |
+      sed "s|^|$(basename "$(dirname "$file")"): |"
+  done)"
+  assert_eq "every script that calls workload.sh sets timeout:" "" "$untimed"
+}
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 
@@ -1654,6 +1735,7 @@ test_verify_maps_the_placement_audit_exit_codes
 test_verify_fails_on_a_stop_exec_error_or_a_missing_done
 test_verify_reads_the_ovn_db_sync_log
 test_dump_and_stop_exit_0_without_a_pod
+test_every_suite_adopts_the_harness_or_declines_it
 test_ci_loads_the_tempest_image_on_the_keystone_stack_legs
 
 echo ""
