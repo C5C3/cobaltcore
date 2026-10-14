@@ -63,10 +63,15 @@
       };
 
       fhsLayout = import ./lib/fhs-layout.nix { inherit pkgs; };
+      rootwrapConf = import ./lib/rootwrap-conf.nix;
       cephBindings = pkgs.callPackage ./pkgs/ceph-bindings.nix { python3Packages = python.pkgs; };
 
       keystone = mkPythonEnv {
         service = "keystone";
+        release = "2026.1";
+      };
+      nova = mkPythonEnv {
+        service = "nova";
         release = "2026.1";
       };
       glance = mkPythonEnv {
@@ -80,6 +85,16 @@
         keystone-image = import ./images/keystone.nix {
           inherit pkgs fhsLayout;
           inherit (keystone) venv;
+        };
+        nova-rootwrap-image = import ./images/nova-rootwrap.nix {
+          inherit
+            pkgs
+            python
+            fhsLayout
+            cephBindings
+            rootwrapConf
+            ;
+          inherit (nova) venv;
         };
         ceph-bindings = cephBindings;
         glance-env = glance.venv;
