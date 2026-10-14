@@ -99,5 +99,10 @@
         ceph-bindings = cephBindings;
         glance-env = glance.venv;
       };
+
+      checks.${system}.keystone-2026_1-tests = import ./checks/keystone-tests.nix {
+        inherit pkgs;
+        env = keystone;
+      };
     };
 }
