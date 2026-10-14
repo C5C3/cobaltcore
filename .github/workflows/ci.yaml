@@ -2033,6 +2033,10 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/glance:2026.1
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            # The workload pod of tests/e2e-chaos/lib/workload.sh runs on it,
+            # and the nova suites' catalog, seed and verify Jobs run its
+            # openstack client.
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
       # Every entry below is gated on the legs that deploy it; the action skips
       # the blank lines the other legs render here.
       - name: Load E2E images
@@ -2058,9 +2062,9 @@ jobs:
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
             # The three nova outage suites run on the nova leg alone. The OVN
-            # pair above already covers that leg (!= 'pod'), and the keystone
-            # and glance images arrive with the keystone stack on every
-            # non-ovn leg, so seven refs are left to name here.
+            # pair above already covers that leg (!= 'pod'), and the keystone,
+            # glance and tempest images arrive with the keystone stack on every
+            # non-ovn leg, so six refs are left to name here.
             # A Nova boots no server without a Placement to claim from.
             ${{ matrix.suite == 'nova' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Placement API that operator rolls out.
@@ -2073,8 +2077,6 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The openstack client the catalog, seed and verify Jobs run.
-            ${{ matrix.suite == 'nova' && format('{0}/tempest:2026.1', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -2087,6 +2089,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # placement-operator-pod-kill is the only suite that touches placement and
       # it runs on the pod leg; none of the network leg's suites reference it.
       # Keep the load off that leg — `kind load docker-image` is a docker
@@ -2115,7 +2118,7 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # The nova leg's own seven. None of the per-leg steps above reaches them:
+      # The nova leg's own six. None of the per-leg steps above reaches them:
       # the placement pair is gated on the pod leg and the neutron pair on the
       # network one. The OVN pair this leg also needs is loaded by the
       # `!= 'pod'` step above.
@@ -2128,7 +2131,6 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind

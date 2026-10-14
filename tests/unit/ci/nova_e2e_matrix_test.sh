@@ -1077,8 +1077,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "$job" \
     "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}"
 
-  # Seven refs on top of the keystone stack every non-ovn leg loads and the OVN
-  # pair the `!= 'pod'` entries already cover here.
+  # Six refs on top of the keystone stack every non-ovn leg loads and the OVN
+  # pair the `!= 'pod'` entries already cover here. The tempest image the
+  # catalog, seed and verify Jobs run arrives with the keystone stack, which
+  # also carries it for the workload pod of tests/e2e-chaos/lib/workload.sh;
+  # test_ci_loads_the_tempest_image_on_the_keystone_stack_legs in
+  # tests/unit/ci/chaos_workload_test.sh checks that wiring.
   local load kind_load ref
   load=$(job_step e2e-chaos "Load E2E images")
   kind_load=$(job_step e2e-chaos "Load nova leg images into kind")
@@ -1086,7 +1090,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_contains "that load runs on the nova leg alone" "$kind_load" \
     "if: matrix.suite == 'nova'"
   for ref in placement-operator:dev placement:2026.1 neutron-operator:dev \
-    neutron:2026.1 nova-operator:dev nova:2026.1 tempest:2026.1; do
+    neutron:2026.1 nova-operator:dev nova:2026.1; do
     # Pulled from GHCR ...
     assert_contains "the leg pulls ${ref}" "$load" \
       "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"

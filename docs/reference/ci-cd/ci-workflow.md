@@ -1152,13 +1152,14 @@ A `Resolve OVN version` step reads the pin from `images/ovn/Dockerfile` through
 the tag itself never appears in the workflow. The `network`, `ovn` and `nova`
 legs load `ovn-operator:dev` and `ovn:$OVN_VERSION` into kind, the `network` leg
 adds `neutron-operator:dev` and `neutron:2026.1`, and the `ovn` leg loads none of
-the keystone stack. The `nova` leg names seven images of its own:
-`placement-operator:dev`, `placement:2026.1`, `neutron-operator:dev`,
-`neutron:2026.1`, `nova-operator:dev`, `nova:2026.1` and `tempest:2026.1`, the
-last of which carries the `openstack` client its catalog, seed and verify Jobs
-run. `WITH_MESSAGING` is set on the `network` and `nova` legs, the first for the
-vhosts two Cinder suites take, the second because every Nova process dials the
-bus. `Setup E2E infrastructure` passes
+the keystone stack. The keystone stack carries `tempest:2026.1`, which the
+workload pod of `tests/e2e-chaos/lib/workload.sh` runs on and whose `openstack`
+client the `nova` leg's catalog, seed and verify Jobs run. The `nova` leg names
+six images of its own: `placement-operator:dev`, `placement:2026.1`,
+`neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev` and
+`nova:2026.1`. `WITH_MESSAGING` is set on the `network` and `nova` legs, the
+first for the vhosts two Cinder suites take, the second because every Nova
+process dials the bus. `Setup E2E infrastructure` passes
 `WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}`, which is
 what makes `hack/deploy-infra.sh` load `openvswitch` and `geneve` for the chassis
 DaemonSet. The diagnostics dump follows the leg through
