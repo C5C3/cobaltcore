@@ -1047,6 +1047,11 @@
       "minimumReleaseAge": "3 days"
     },
     {
+      "description": "The Nix spike under nix/spike/ is pinned by hand (nix/spike/README.md): no manager re-locks its flake.lock or edits the generated pyproject.toml and uv.lock files under nix/spike/locks/",
+      "matchFileNames": ["nix/spike/**"],
+      "enabled": false
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["tests/unit/renovate/**.sh"],
       "matchPackageNames": ["renovate"],
