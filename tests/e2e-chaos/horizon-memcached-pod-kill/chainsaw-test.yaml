@@ -11,6 +11,13 @@
 # contract here (deliberate deviation from a "degraded condition" model,
 # which would require a dedicated cache-health probe the operator does not
 # have).
+#
+# Workload: the http stream of ../lib/workload.sh GETs
+# http://horizon-chaos-mc.openstack.svc:8080/auth/login/ while the fault is
+# active. The budget is what three kind runs measured. The login page answers
+# 500 while the Memcached pod is replaced, and the budget covers that.
+# Chaos budget: failures=148 recovery=130s
+# Chaos budget measured: 2026-10-14, kind, failures 57/49/74, recovery 77/97/95 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -37,13 +44,29 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start horizon-memcached-pod-kill -- --streams http --http http://horizon-chaos-mc.openstack.svc:8080/auth/login/
     catch:
     - script:
         content: ../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump horizon-memcached-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop horizon-memcached-pod-kill
   # ── Step 3: Inject PodChaos to kill a Memcached pod ────────────────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark horizon-memcached-pod-kill fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Verify the kill took effect and Memcached recovered ────────
   # Deployment-level polling (readyReplicas) is resilient to Pod replacement;
   # kubectl wait on individual Pods errors with NotFound when Chaos Mesh
@@ -105,6 +128,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon --dep-label=app.kubernetes.io/name=memcached
+    - *workload-dump
   # ── Step 5: Delete PodChaos ────────────────────────────────────────────
   - try:
     - delete:
@@ -112,6 +136,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-memcached-horizon
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark horizon-memcached-pod-kill fault-end
+    catch:
+    - *workload-dump
   # ── Step 6: Assert Ready held and zero dashboard pod restarts ──────────
   # Signed-cookie sessions make Memcached loss non-fatal: every dashboard
   # pod must report restartCount 0 (all pods are checked, not just the
@@ -140,3 +169,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon --dep-label=app.kubernetes.io/name=memcached
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify horizon-memcached-pod-kill
+    catch:
+    - *workload-dump
