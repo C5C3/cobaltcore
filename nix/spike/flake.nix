@@ -48,8 +48,33 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      inherit (pkgs) lib;
+      python = pkgs.python312;
+
+      mkPythonEnv = import ./lib/python-env.nix {
+        inherit
+          pkgs
+          lib
+          python
+          uv2nix
+          pyproject-nix
+          pyproject-build-systems
+          ;
+      };
+
+      keystone = mkPythonEnv {
+        service = "keystone";
+        release = "2026.1";
+      };
+      glance = mkPythonEnv {
+        service = "glance";
+        release = "2026.1";
+      };
     in
     {
-      packages.${system} = { };
+      packages.${system} = {
+        keystone-venv = keystone.venv;
+        glance-env = glance.venv;
+      };
     };
 }
