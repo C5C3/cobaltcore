@@ -8,6 +8,12 @@
 # StatefulSet restarts the killed pod.
 #
 # SC-CHAOS-001,
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-db through the fault. The budget is what three kind
+# runs measured.
+# Chaos budget: failures=36 recovery=50s
+# Chaos budget measured: 2026-10-14, kind, failures 13/18/13, recovery 19/20/19 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -34,13 +40,29 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start mariadb-pod-kill -- --streams token --keystone http://keystone-chaos-db.openstack.svc:5000/v3
     catch:
     - script:
         content: ../diagnostics.sh baseline keystone-chaos-db
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump mariadb-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop mariadb-pod-kill
   # ── Step 3: Inject PodChaos to kill MariaDB pod ────────────────────────
   - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark mariadb-pod-kill fault-start
     - apply:
         file: 01-podchaos.yaml
+    catch:
+    - *workload-dump
   # ── Step 4: Assert DatabaseReady=False after pod kill ──────────────────
   # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
   # keystone keystone-chaos-db -n $NAMESPACE -o yaml` here] — diagnostics.sh
@@ -62,6 +84,7 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-db --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - *workload-dump
   # ── Step 5: Delete PodChaos to lift fault ──────────────────────────────
   - try:
     - delete:
@@ -69,6 +92,11 @@ spec:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
           name: kill-mariadb
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark mariadb-pod-kill fault-end
+    catch:
+    - *workload-dump
   # ── Step 6: Assert full recovery to Ready=True ─────────────────────────
   # REVIEWER-DISAGREEMENT: [Reviewer requested adding inline `kubectl get
   # keystone keystone-chaos-db -n $NAMESPACE -o yaml` here] — see Step 4
@@ -91,3 +119,11 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-db --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify mariadb-pod-kill
+    catch:
+    - *workload-dump
