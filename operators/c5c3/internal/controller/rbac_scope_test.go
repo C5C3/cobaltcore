@@ -15,13 +15,13 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestRBAC_DeploymentGrantIsScopedToKORC guards least privilege on Deployments:
-// exactly one ClusterRole rule may reach apps/deployments, the get/patch rule
-// scoped to orc-controller-manager. It matches by membership, so a rule
-// controller-gen merged with another resource still counts. The chart's
-// ClusterRole mirrors config/rbac/role.yaml (make verify-helm-rbac), so this
-// covers the shipped chart too.
-func TestRBAC_DeploymentGrantIsScopedToKORC(t *testing.T) {
+// TestRBAC_NoDeploymentGrant guards least privilege on Deployments: since the
+// K-ORC restart was removed, the operator holds no verb on any Deployment, so no
+// ClusterRole rule may reach apps/deployments. It matches by membership, so a
+// rule controller-gen merged with another resource, or a wildcard, still counts.
+// The chart's ClusterRole mirrors config/rbac/role.yaml (make
+// verify-helm-rbac), so this covers the shipped chart too.
+func TestRBAC_NoDeploymentGrant(t *testing.T) {
 	g := NewGomegaWithT(t)
 	data, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
@@ -35,10 +35,5 @@ func TestRBAC_DeploymentGrantIsScopedToKORC(t *testing.T) {
 			reaching = append(reaching, rule)
 		}
 	}
-	g.Expect(reaching).To(Equal([]rbacv1.PolicyRule{{
-		APIGroups:     []string{"apps"},
-		Resources:     []string{"deployments"},
-		ResourceNames: []string{"orc-controller-manager"},
-		Verbs:         []string{"get", "patch"},
-	}}))
+	g.Expect(reaching).To(BeEmpty(), "the operator holds no verb on any Deployment")
 }

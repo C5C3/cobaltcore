@@ -135,6 +135,11 @@ surfaces as `ControlPlaneNotFound` on every declared block, with
 Registering an endpoint row never connects to it, so the URL may point at a
 service that is not running yet.
 
+After a `url` edit, K-ORC resources that call the service keep using the old URL
+until K-ORC's cached client expires, half the token lifetime after its login.
+[K-ORC](../infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller)
+has the restart that picks up the new URL at once.
+
 Every endpoint row is registered in the referenced ControlPlane's
 `spec.region`, so a client that sets `region_name` finds it. A row cannot be
 placed in any other region, and endpoint groups are not expressible: K-ORC has

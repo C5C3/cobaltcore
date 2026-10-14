@@ -790,14 +790,39 @@ namespaces every resource into it, so no `spec.targetNamespace` is set.
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.
 
-The c5c3-operator patches one pod-template annotation per ControlPlane,
-`c5c3.io/korc-catalog-epoch-<hash>`, onto `Deployment orc-controller-manager` under
-the field manager `cobaltcore-operator` whenever the service catalog registered
-through that ControlPlane settles on a new value. Each change rolls the K-ORC pod,
-and the new process logs in against the current catalog
-([`reconcileKORCCatalogRefresh`](../c5c3/controlplane-reconciler.md#reconcilekorccatalogrefresh)).
-The `k-orc` Kustomization sets no such annotation, and kustomize-controller reverts
-only the fields a `kubectl` manager owns, so it leaves the key alone.
+K-ORC at the pinned commit evicts its cached client the first time a service
+client cannot be built for a missing endpoint, so a service registered after its
+first login is picked up on the retry
+([k-orc/openstack-resource-controller#967](https://github.com/k-orc/openstack-resource-controller/pull/967)).
+K-ORC evicts its cached client only for a missing endpoint. After the URL of an
+existing endpoint changes, K-ORC keeps calling the old URL until its cached
+client expires, half the token lifetime after its login. Run
+`kubectl rollout restart deployment/orc-controller-manager -n orc-system` to
+pick up the new URL at once.
+
+c5c3-operator chart 0.18.0 relies on the missing-endpoint eviction and no longer
+restarts K-ORC. Upgrade K-ORC to commit `da276e44` or later before or together
+with the chart, by applying `deploy/flux-system/` of the same checkout again (see
+[Deployment](#deployment)). The `c5c3-operator` HelmRelease floats the chart
+version and the image tag, while the K-ORC pin moves only when that directory is
+applied. With an older K-ORC, a service registered after K-ORC's first login
+stays missing from its catalog for up to half a token lifetime, and the
+ControlPlane gets no `KORCRestartSkipped` event for it. Restart K-ORC by hand
+with the same `kubectl rollout restart` command.
+
+c5c3-operator chart versions 0.15.0 to 0.17.0 wrote one pod-template annotation
+per ControlPlane, `c5c3.io/korc-catalog-epoch-<hash>`, onto
+`Deployment orc-controller-manager` to restart K-ORC. Chart 0.18.0 neither writes
+nor removes it, because the operator no longer holds a verb on the Deployment. A
+cluster upgraded from those versions keeps the key until it is removed by hand,
+which rolls the K-ORC pod once:
+
+```bash
+kubectl get deployment orc-controller-manager -n orc-system \
+  -o jsonpath='{.spec.template.metadata.annotations}'
+kubectl patch deployment orc-controller-manager -n orc-system --type=json \
+  -p '[{"op":"remove","path":"/spec/template/metadata/annotations/c5c3.io~1korc-catalog-epoch-<hash>"}]'
+```
 
 The upstream installer has no global-cloud-config knob (the previous HelmRelease set
 `globalCloudConfig.secretName`). That is not on the credential critical path: K-ORC
