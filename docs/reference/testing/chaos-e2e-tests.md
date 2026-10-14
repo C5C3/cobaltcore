@@ -124,6 +124,173 @@ Most suites restate the assert timeout of 5 minutes (`5m`) at the spec level.
 `mariadb-network-partition` raises it to `8m`, the three nova suites raise single asserts to
 `8m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
 
+## Workload and Consistency Harness
+
+`tests/e2e-chaos/lib/` holds a workload that sends OpenStack traffic through the
+fault of a suite, and the checks that read the state of OpenStack after it.
+`lib/workload.py` is the workload: one Python process that uses the standard
+library only. `lib/workload.sh` is what a suite calls. It starts the workload in
+a `kubectl run` pod on `ghcr.io/c5c3/tempest:2026.1` (`CHAOS_WORKLOAD_IMAGE`
+overrides the image), marks the fault window on the pod clock, and judges the
+records against the error budget in the suite header. The directory holds no
+`chainsaw-test.yaml`, so `make e2e-chaos` does not run it as a suite.
+
+Sixteen suites start a workload: the fifteen pod and network suites that send no
+OpenStack traffic of their own, and `nova-placement-outage`, which runs it after
+its partition as the proof run of the server, network and image streams. The
+`Workload` line of each suite section below names its streams and its budget.
+
+### Streams
+
+Each stream is one thread that runs cycles one second apart until the stop file
+exists. Every HTTP call has a 15-second timeout. The streams that need a token
+issue a project-scoped token for the bootstrap admin, whose password `start`
+reads from the `keystone-admin` Secret, and issue a new one once when a call
+answers 401.
+
+| Stream | Options | Operations of one cycle |
+| --- | --- | --- |
+| `token` | `--keystone` | `issue`, `validate` |
+| `http` | `--http` | `get`; any final status below 400 counts as an answer, Glance's 300 included |
+| `network` | `--neutron`, `--keystone` | `create-network`, `create-port`, `delete-port`, `delete-network` |
+| `server` | `--nova`, `--image-ref`, `--flavor`, `--keystone` | `create` (microversion 2.37, `"networks": "none"`), `active` (300 s), `delete`, `gone` (120 s) |
+| `volume` | `--cinder`, optionally `--keystone` | `create`, `available`, `attach-create`, `attach-update`, `attach-complete`, `in-use`, `detach`, `detached`, `delete`, `gone` |
+| `image` | `--glance`, `--keystone` | `create` (raw, bare), `upload` (1 MiB of zero bytes), `active`, `delete` |
+
+The volume stream drives the attachments API at microversions 3.27 and 3.44,
+which cinder 28.0.0 defines for it. Without `--keystone` it sends the token
+`admin:admin` that the noauth Cinder of the chaos suites accepts. A failed
+operation abandons the rest of its cycle, and the stream then deletes what that
+cycle created, newest first, with one `cleanup-<kind>` record per resource, so a
+fault cannot fill a quota of the admin project. Resources are named
+`chaos-wl-<id>-<stream>-<n>`, and a stream prints `READY <stream>` after its
+first cycle in which every operation succeeded.
+
+### Records
+
+Every operation writes one JSON line to the pod log:
+
+```json
+{"t": 1791987267.893, "s": "token", "op": "issue", "ok": true, "code": 201, "ms": 42, "msg": ""}
+```
+
+`t` is the start of the operation on the pod clock. `code` is the HTTP status,
+or `null` when the request got no answer at all, such as a refused connection or
+a timeout, and `msg` then holds the exception. A wait that the stop file
+interrupts writes no record.
+
+Once the stop file exists, every stream finishes or abandons its current
+operation. A sweep then deletes every resource named `chaos-wl-<id>-` and writes
+`sweep-<kind>` records. A consistency check for each service the workload used
+prints `CONSISTENCY-OK <check>` or `CONSISTENCY-FAIL <check>: <detail>`, and the
+process prints `DONE` last.
+
+`workload.py evaluate` judges the log on the runner. The fault window runs from
+the `fault-start` mark to the `fault-end` mark plus the recovery time of the
+budget. The run fails in five cases:
+
+- a failed record falls outside the window, which every failed sweep record
+  does;
+- more failed records fall inside the window than the budget allows;
+- a stream has no ok record after the recovery deadline;
+- a `CONSISTENCY-FAIL` line is present;
+- `DONE` is missing.
+
+A failed record that comes before the `READY` line of its stream happened while
+the service was still coming up, because `start` waits for `READY`. Evaluate
+reports it apart and does not judge it. A run without marks has no window, so
+one failed record after `READY` fails it. Evaluate
+prints a summary line per stream and up to ten offending records, and exits 0
+on a pass, 1 on a violation and 2 on an input error:
+
+```text
+stream token: 63 ok, 0 failed in window (budget 0), 0 outside; observed failures=0 recovery=0.0s
+```
+
+### Budget line
+
+A suite that starts a workload carries one budget line in its header comment,
+with the measurement in the line under it:
+
+```yaml
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
+```
+
+`failures` is the number of failed records the fault window may hold.
+`recovery` is the time after `fault-end` in which a failure still counts against
+that number; after it, every stream has to answer again and no failure is
+allowed. Every consistency finding fails the run. `verify` refuses a header
+without a budget line, with two of them, or with one that does not match
+`^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$`.
+
+Budgets are measured on kind. Run the suite three times with
+`chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/<suite>`,
+set `failures` to twice the largest in-window count and `recovery` to the
+largest observed recovery plus 30 seconds, rounded up to ten seconds, and record
+the three observations in the measured line. The budget is zero where the fault
+does not touch the request path of the stream: the seven operator pod kills,
+`cronjob-rotation-failure`, `openbao-pod-kill` and `nova-placement-outage`. A
+failure in one of them is a defect to find, and raising the budget does not
+fix it.
+
+### Consistency checks
+
+The workload checks each service it used. A check re-reads for up to 120 seconds
+before it reports a failure, so a transition still in flight can finish:
+
+| Check | Fails on |
+| --- | --- |
+| `servers` | a server in `BUILD` or `ERROR`, or one named with the prefix, in `GET /servers/detail?all_tenants=1` |
+| `volumes` | a volume in a transitional status such as `creating`, `attaching`, `reserved` or `deleting` (the full list is in `lib/workload.py`), or one named with the prefix |
+| `images` | an image in `saving` or `queued`, or one named with the prefix, on every page of `GET /v2/images` |
+| `networks` | a network or a port named with the prefix |
+
+`verify` runs two more checks outside the pod when the suite asks for them:
+
+- `--placement-audit <deployment>` runs
+  `nova-manage --config-dir /etc/nova/nova.conf.d placement audit --verbose` in
+  the `nova-api` container, which carries `[placement]` and both database
+  connections. Exit 0 passes. Exit 3 means orphaned allocations and prints
+  `CONSISTENCY-FAIL placement-audit`. Any other code fails with the code and the
+  output.
+- `--ovn-db-sync <neutron>` creates a Job from the `<neutron>-ovn-db-sync`
+  CronJob, waits up to ten minutes for it (`CHAOS_WORKLOAD_DB_SYNC_SECONDS`),
+  and fails on every log line that reports a difference between Neutron and
+  the OVN Northbound database, as worded in neutron 28.0.1. In log mode the
+  utility exits 0 either way, so the log is the verdict, and a log without the
+  `Neutron OVN DB sync completed` line fails as well. The CronJob exists only
+  when the Neutron CR sets `spec.ovnDBSync`, and
+  `{syncMode: log, suspend: true}` keeps it from running on its own while
+  `OVNDBSyncReady` stays `True`. A CronJob in repair mode fails the check
+  before any Job runs, because repair rewrites the database it reports on.
+  [Repair OVN Drift with db-sync](../../guides/neutron/repair-ovn-drift-with-db-sync.md)
+  walks through the same Job by hand.
+
+### Adopting the harness
+
+A suite calls `../lib/workload.sh` from its own directory, with `<id>` set to
+the directory name. Every call sets `timeout:`, because the chaos configuration
+gives a script 30 seconds:
+
+| Call | Where it goes | `timeout:` |
+| --- | --- | --- |
+| `start <id> -- <run options>` | after the baseline `Ready` assertion, with `stop <id>` in the `cleanup:` of that step | 6m |
+| `mark <id> fault-start` | right before the chaos resource is applied, as a script of its own or inside the script that runs `kubectl apply` | 1m |
+| `mark <id> fault-end` | right after the Chainsaw `delete` of the chaos resource | 1m |
+| `verify <id>` with `--placement-audit` and `--ovn-db-sync` as needed | in a step after the last recovery or reconcile assertion | 15m, 25m in `nova-placement-outage` |
+| `dump <id>` | in the `catch:` of every step from `start` to `verify` | 1m |
+
+The pod is named `chaos-wl-<id>` and carries the label
+`app.kubernetes.io/name=chaos-workload`, which no chaos selector matches. It
+runs as the image's non-root user with a 256 MiB memory limit. `start` waits up
+to 300 seconds for `READY` on every stream (`CHAOS_WORKLOAD_READY_SECONDS`).
+`verify` waits until the pod clock passes `fault-end` plus the recovery time
+plus 30 seconds, or 30 seconds without marks, creates the stop file and waits up
+to 420 seconds for `DONE` (`CHAOS_WORKLOAD_DONE_SECONDS`). `dump` and `stop`
+always exit 0. A local run pulls the Tempest image from GHCR unless
+`kind load docker-image` put it on the node.
+
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
@@ -203,6 +370,9 @@ fault severs a whole broker. The suites run in a matrix entry of their own
 because the `network` entry already spends 78 of its 90 minutes and deploys no
 placement-operator.
 
+Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
+stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
+
 **Timeout:** 90 minutes for the `pod`, `network` and `ovn` entries and 150 minutes for the `nova` entry,
 to accommodate serial test execution and longer recovery assertion windows.
 
@@ -257,13 +427,16 @@ killed pod.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-db` with database `keystone_chaos_db` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-mariadb` targeting `app.kubernetes.io/name: mariadb` in `openstack` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-mariadb` targeting `app.kubernetes.io/name: mariadb` in `openstack`. `workload.sh mark fault-start` runs right before it. |
 | 4 | Assert degradation | `assert` (5m) | DatabaseReady=False — operator detects MariaDB is unavailable |
-| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-mariadb` to lift the fault |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-mariadb` to lift the fault. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert recovery | `assert` (5m) | DatabaseReady=True and Ready=True with reason AllReady |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-db`, started in step 2 and judged in step 7 against `failures=36 recovery=50s`. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Steps 2, 4, and 6 include catch blocks dumping Keystone CR status,
 MariaDB pod status, Chaos Mesh experiment status, operator logs (including `--previous`
@@ -289,13 +462,16 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-mc` with database `keystone_chaos_mc` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached` targeting `app.kubernetes.io/name: memcached` in `openstack` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached` targeting `app.kubernetes.io/name: memcached` in `openstack`. `workload.sh mark fault-start` runs right before it. |
 | 4 | Verify chaos effect and assert no-regression | `script` (150s) + `assert` (5m) | Reads desired replica count from Deployment `.spec.replicas`, polls Memcached Deployment `readyReplicas` to confirm chaos took effect (drop below desired replicas) and recovery completed (return to desired replicas), then asserts all 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
-| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached` to allow recovery |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached` to allow recovery. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-mc`, started in step 2 and judged in step 7 against `failures=190 recovery=150s`. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Steps 2, 4, and 6 include catch blocks dumping Memcached pod status,
 Chaos Mesh experiment status, Keystone CR status, pod logs (including `--previous`), and
@@ -330,15 +506,18 @@ PodChaos CR is created in `openstack` and targets `shared-services` via
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-bao` with database `keystone_chaos_bao` |
-| 2 | Assert baseline | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-openbao` targeting `app.kubernetes.io/name: openbao` in `shared-services` |
+| 2 | Assert baseline | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-openbao` targeting `app.kubernetes.io/name: openbao` in `shared-services`. `workload.sh mark fault-start` runs right before it. |
 | 4 | Assert degradation | `assert` (5m) | SecretsReady=False — ESO cannot reach OpenBao |
-| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-openbao` to lift the fault |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-openbao` to lift the fault. `workload.sh mark fault-end` runs right after it. |
 | 6 | Re-unseal OpenBao | `script` (180s) | Runs `../unseal-openbao.sh`: the single-replica OpenBao of the kind stack restarts sealed and has no auto-unseal, so the helper unseals `openbao-0` with the keys from Secret `openbao-init-keys` in `shared-services` |
 | 7 | Assert recovery | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`; step 6 runs the shared helper
 `tests/e2e-chaos/unseal-openbao.sh`
+
+**Workload:** the `token` stream against `keystone-chaos-bao`, started in step 2 and judged in step 8 against `failures=0 recovery=0s`. Every step from 2 to 8 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`, which dumps Keystone CR status,
 the logs of all pods in `openstack`, OpenBao pod status (in `shared-services`), and namespace
@@ -366,12 +545,15 @@ invisible to the CR's status conditions.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-op` with database `keystone_chaos_op` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection |
-| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator`, `mode: one`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`; the PodChaos CR itself is created in the test's `openstack` namespace), waits until at least one pre-chaos UID is gone, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
-| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator`, `mode: one`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`; the PodChaos CR itself is created in the test's `openstack` namespace), waits until at least one pre-chaos UID is gone, then waits until Deployment `readyReplicas` equals `.spec.replicas`. The script runs `workload.sh mark fault-start` right before the apply. |
+| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator` to clean up. `workload.sh mark fault-end` runs right after it. |
 | 5 | Assert Ready=True after re-reconciliation | `assert` (5m) | Ready=True with reason AllReady — no sub-condition stuck in False state |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-op`, started in step 2 and judged in step 6 against `failures=0 recovery=0s`. Every step from 2 to 6 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Steps 3 and 5 call
 `diagnostics.sh chaos` with
@@ -408,14 +590,17 @@ on creation.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-cron` with database `keystone_chaos_cron` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `fail-cronjob` targeting `job-name: chaos-cron-test` in `openstack` with `pod-failure` action and 60s duration |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `fail-cronjob` targeting `job-name: chaos-cron-test` in `openstack` with `pod-failure` action and 60s duration. `workload.sh mark fault-start` runs right before it. |
 | 4 | Trigger fernet rotation Job | `script` | Runs `kubectl create job chaos-cron-test --from=cronjob/keystone-chaos-cron-fernet-rotate` |
 | 5 | Assert FernetKeysReady=True and Ready=True maintained | `assert` (5m) | `FernetKeysReady=True` and `Ready=True` with reason AllReady — no condition cascade from CronJob failure |
-| 6 | Delete PodChaos | `delete` | Removes PodChaos `fail-cronjob` to lift the fault |
+| 6 | Delete PodChaos | `delete` | Removes PodChaos `fail-cronjob` to lift the fault. `workload.sh mark fault-end` runs right after it. |
 | 7 | Assert Ready=True after cleanup | `assert` (5m) | Ready=True with reason AllReady — CronJob remains correctly configured |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-cron`, started in step 2 and judged in step 8 against `failures=0 recovery=0s`. Every step from 2 to 8 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Step 4 catches with CronJob status.
 Step 5 catches with Job status, job pod logs (`job-name=chaos-cron-test`), and
@@ -448,14 +633,17 @@ Lifting the partition restores readiness and the CR returns to `Ready=True`.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-net-part` with database `keystone_chaos_net_part` |
-| 2 | Assert baseline Ready=True | `assert` (8m) | Ready=True with reason AllReady, which confirms healthy state before fault injection |
-| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml`: NetworkChaos `partition-mariadb` severing keystone↔MariaDB traffic at the MariaDB pods in `openstack` |
+| 2 | Assert baseline Ready=True | `assert` (8m) | Ready=True with reason AllReady, which confirms healthy state before fault injection. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml`: NetworkChaos `partition-mariadb` severing keystone↔MariaDB traffic at the MariaDB pods in `openstack`. `workload.sh mark fault-start` runs right before it. |
 | 4 | Assert NetworkChaos injection active | `script` (60s) | `kubectl wait` until NetworkChaos `partition-mariadb` reports `AllInjected` — confirms fault is active before checking effects |
 | 5 | Assert degradation | `assert` (8m) | DeploymentReady=False and Ready=False — keystone pods fail the database-aware readiness probe and are depooled. `DatabaseReady` stays True (the operator still sees the cluster CR as Ready) |
-| 6 | Delete NetworkChaos | `delete` | Removes NetworkChaos `partition-mariadb` to lift the partition |
+| 6 | Delete NetworkChaos | `delete` | Removes NetworkChaos `partition-mariadb` to lift the partition. `workload.sh mark fault-end` runs right after it. |
 | 7 | Assert recovery | `assert` (8m) | DeploymentReady=True and Ready=True with reason AllReady |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-net-part`, started in step 2 and judged in step 8 against `failures=12 recovery=30s`. Every step from 2 to 8 also dumps the workload in its catch block.
 
 **Catch blocks:** Steps 2, 4, 5, and 7 include catch blocks. Step 4 dumps the NetworkChaos
 CR status for injection diagnosis. All catch blocks use `diagnostics.sh` with appropriate
@@ -505,13 +693,16 @@ MariaDB keeps `Ready=True`, and that the operator pods do not restart meanwhile.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-net-lat` with database `keystone_chaos_net_lat` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection |
-| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml`: NetworkChaos `latency-mariadb` injecting 10s latency with 2s jitter on keystone→mariadb traffic |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before fault injection. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject NetworkChaos | `apply` | Applies `01-networkchaos.yaml`: NetworkChaos `latency-mariadb` injecting 10s latency with 2s jitter on keystone→mariadb traffic. `workload.sh mark fault-start` runs right before it. |
 | 4 | Assert operator tolerates latency | `script` (120s) + `assert` (5m) | Waits for NetworkChaos `AllInjected=True` via `kubectl wait`, allows one reconciliation cycle (15s), then verifies operator pod `restartCount` remains 0 for all pods by container name (`manager`); asserts Ready=True maintained |
-| 5 | Delete NetworkChaos | `delete` | Removes NetworkChaos `latency-mariadb` to lift the latency |
+| 5 | Delete NetworkChaos | `delete` | Removes NetworkChaos `latency-mariadb` to lift the latency. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert Ready=True persists | `assert` (5m) | Ready=True with reason AllReady, which confirms no delayed degradation after latency removal |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-net-lat`, started in step 2 and judged in step 7 against `failures=0 recovery=30s`. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Steps 2, 4, and 6 include catch blocks using `diagnostics.sh` with
 appropriate mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
@@ -551,14 +742,17 @@ PDB assertion step and a script-based availability check.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR (replicas: 3) | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-api` with database `keystone_chaos_api`, replicas: 3 |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
 | 3 | Assert PDB exists | `assert` (5m) | PDB `keystone-chaos-api` with `spec.minAvailable: 1` (apiVersion: `policy/v1`) |
-| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods) <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
+| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods). `workload.sh mark fault-start` runs right before it. <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
 | 5 | Verify PDB enforcement and assert conditions | `script` (120s) + `assert` (5m) | Script polls until `readyReplicas < 3` (kill took effect), then asserts `availableReplicas >= 1`; Chainsaw asserts `DeploymentReady=True` and `Ready=True` with reason AllReady |
-| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
+| 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up. `workload.sh mark fault-end` runs right after it. <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
 | 7 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady — full replica count restored |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-api`, started in step 2 and judged in step 8 against `failures=0 recovery=30s`. Every step from 2 to 8 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Step 3 catches with PDB describe.
 Steps 5 and 7 catch with `diagnostics.sh chaos` using
@@ -595,14 +789,17 @@ recovery to confirm the new leader processes spec changes end-to-end.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-opk` with database `keystone_chaos_opk` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before chaos injection |
-| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator-all`, `mode: all`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`), waits until none of the pre-chaos UIDs remain, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
-| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator-all` to lift the fault |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady, which confirms healthy state before chaos injection. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator-all`, `mode: all`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`), waits until none of the pre-chaos UIDs remain, then waits until Deployment `readyReplicas` equals `.spec.replicas`. The script runs `workload.sh mark fault-start` right before the apply. |
+| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator-all` to lift the fault. `workload.sh mark fault-end` runs right after it. |
 | 5 | Assert Ready=True after failover | `assert` (5m) | All 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
 | 6 | Patch replicas 1→2 | `patch` | Applies `02-patch-replicas.yaml`: patches `spec.deployment.replicas` to 2 |
 | 7 | Assert replica patch and Ready=True | `assert` (5m) | Deployment `keystone-chaos-opk` has `replicas: 2` and `availableReplicas: 2`; Ready=True with reason AllReady |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, `02-patch-replicas.yaml`
+
+**Workload:** the `token` stream against `keystone-chaos-opk`, started in step 2 and judged in step 8 against `failures=0 recovery=0s`. Every step from 2 to 8 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `diagnostics.sh baseline`. Steps 3, 5, and 7 call
 `diagnostics.sh chaos` with `--dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system`.
@@ -658,6 +855,8 @@ Chaos Mesh CR, so it needs no Chaos Mesh installation.
 | 7 | Assert deletion completes | `error` (5m) | With the controller processing finalizers again, all three MariaDB CRs are removed |
 
 **Fixtures:** `00-keystone-cr.yaml`
+
+**Workload:** none. The Keystone under test is being deleted, so no service is left to send traffic to.
 
 **Catch blocks:** Steps 1–2 call `diagnostics.sh baseline`. Steps 3, 4, 5, and 7 call
 `diagnostics.sh chaos` with
@@ -948,13 +1147,16 @@ loop does.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create cinder-chaos-op cinder-chaos-op-messaging openstack`, then `00-cinder-cr.yaml` (`cinder-chaos-op`) and `01-cinderbackend-cr.yaml` (`chaos-op-nfs1`) reach `Ready=True/AllReady`. The step cleanup deletes the vhost |
-| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `cinder-operator` Deployment, snapshot the operator pod UIDs in `cinder-system` and the workload pod UIDs in `openstack`, apply `02-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
-| 3 | Delete PodChaos | `delete` | Removes `PodChaos/kill-cinder-operator` from `cinder-system` |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) | `../../e2e/cinder/broker-vhost.sh create cinder-chaos-op cinder-chaos-op-messaging openstack`, then `00-cinder-cr.yaml` (`cinder-chaos-op`) and `01-cinderbackend-cr.yaml` (`chaos-op-nfs1`) reach `Ready=True/AllReady`. The step cleanup deletes the vhost. `workload.sh start` then starts the workload and waits for `READY`. |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `cinder-operator` Deployment, snapshot the operator pod UIDs in `cinder-system` and the workload pod UIDs in `openstack`, apply `02-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot. The script runs `workload.sh mark fault-start` right before the apply. |
+| 3 | Delete PodChaos | `delete` | Removes `PodChaos/kill-cinder-operator` from `cinder-system`. `workload.sh mark fault-end` runs right after it. |
 | 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `03-patch-scale.yaml` takes the API to two replicas; Deployment `cinder-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR stays `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-podchaos.yaml`,
 `03-patch-scale.yaml`.
+
+**Workload:** the noauth `volume` stream against `cinder-chaos-op`, started in step 1 and judged in step 5 against `failures=0 recovery=0s`. Every step from 1 to 5 also dumps the workload in its catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos cinder-chaos-op`
 with `--cr-kind=cinder`, `--dep-label=app.kubernetes.io/name=cinder-operator` and
@@ -1304,8 +1506,9 @@ met.
 | 8 | Baseline | `script` (11m) | `14-baseline-job.yaml` boots a server to ACTIVE, which means the scheduler reached Placement for candidates and claimed the host it picked (`BASELINE-OK`). The scheduler log then holds a `Starting new HTTP connection` for the Placement host: the connection the warm build meets, and the proof that urllib3's DEBUG records reach the log |
 | 9 | Inject NetworkChaos to partition Placement | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-placement-nova`), waited for `AllInjected`. The step cleanup deletes it |
 | 10 | Under the partition | `script` (8m) + `assert` | `15-failclosed-job.yaml` proves the serving half and the failing half in one pod: `GET /`, a server list, then two builds, `s-fail-warm` and `s-fail-cold`, each accepted with 202 and ending in ERROR inside 150 s with a fault that reports an unplaced build, read by server id (`FAILCLOSED-OK`). The scheduler log since the Job started then holds three `Starting new HTTP connection` lines for the Placement host (the warm build's retry and both attempts of the cold build) and no `Resetting dropped connection`. The CR still reads `SchedulerReady`, `NovaAPIReady` and `Ready` True |
-| 11 | Lift the partition and schedule again | `delete` + `script` (13m) | `16-recovered-job.yaml` creates a fresh server that reaches ACTIVE with no pod restart and no operator action, then deletes the two ERROR servers (`RECOVERED-OK`) |
-| 12 | Tear the deployment down | `script` (10m) | Deletes the compute and the three Jobs best-effort, then the Nova CR, and waits its pods out |
+| 11 | Lift the partition and schedule again | `delete` + `script` (13m) | `16-recovered-job.yaml` creates a fresh server that reaches ACTIVE with no pod restart and no operator action, then deletes the two ERROR servers (`RECOVERED-OK`). Then `workload.sh start` starts the workload streams. |
+| 12 | Judge the workload, audit Placement, compare OVN | `script` (25m) | `workload.sh verify` judges the streams without fault marks, then runs the placement audit against `nova-placement-chaos` and one log-mode run of the `neutron-nova-placement-chaos-ovn-db-sync` CronJob |
+| 13 | Tear the deployment down | `script` (10m) | Deletes the compute and the three Jobs best-effort, then the Nova CR, and waits its pods out |
 
 **Fixtures:** `01-keystone-cr.yaml`, `02-catalog-setup-job.yaml`,
 `03-messaging-secret.yaml`, `04-ovncentral-cr.yaml`, `05-neutron-cr.yaml`,
@@ -1313,6 +1516,8 @@ met.
 `09-image-seed-job.yaml`, `10-metadata-secret.yaml`, `11-nova-cr.yaml`,
 `12-fake-compute.yaml`, `13-networkchaos.yaml`, `14-baseline-job.yaml`,
 `15-failclosed-job.yaml`, `16-recovered-job.yaml`
+
+**Workload:** the `token`, `network`, `server` and `image` streams against the Keystone, Neutron, Nova and Glance of the suite, started in step 11 after the partition is lifted and judged in step 12 against `failures=0 recovery=0s` as a run without fault marks. The single scheduler worker leaves no room for other builds during the partition. `05-neutron-cr.yaml` sets `spec.ovnDBSync` to `{syncMode: log, suspend: true}` for the database comparison, and the shared catch anchor dumps the workload.
 
 **Catch blocks:** a shared anchor calls
 `../diagnostics.sh chaos nova-placement-chaos` with `--cr-kind=nova`,
@@ -1394,13 +1599,16 @@ restarts.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Horizon CR | `apply` | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-mc` with one replica and cache `clusterRef` `openstack-memcached` |
-| 2 | Assert baseline Ready=True | `assert` (5m) | `Ready=True` with reason `AllReady` |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached-horizon` (`action: pod-kill`, `mode: one`, `gracePeriod: 0`) targeting `app.kubernetes.io/name: memcached` in `openstack` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | `Ready=True` with reason `AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached-horizon` (`action: pod-kill`, `mode: one`, `gracePeriod: 0`) targeting `app.kubernetes.io/name: memcached` in `openstack`. `workload.sh mark fault-start` runs right before it. |
 | 4 | Verify the kill took effect and Memcached recovered | `script` (150s) + `assert` (5m) | Reads `.spec.replicas` of Deployment `openstack-memcached`, polls `readyReplicas` up to 15 times at 2 s until it drops below that count, then up to 45 times at 2 s until it equals that count again. Then asserts `Ready=True` with reason `AllReady` |
-| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached-horizon` |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached-horizon`. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert Ready held and zero dashboard pod restarts | `assert` (5m) + `script` | `Ready=True` with reason `AllReady`. The script reads the `restartCount` of every container in the pods labelled `app.kubernetes.io/name=horizon,app.kubernetes.io/instance=horizon-chaos-mc` and fails when one of them is not 0 |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`
+
+**Workload:** the `http` stream against `http://horizon-chaos-mc.openstack.svc:8080/auth/login/`, started in step 2 and judged in step 7 against `failures=148 recovery=130s`. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon`.
 Steps 4 and 6 call `../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon` with
@@ -1438,12 +1646,15 @@ reach the Deployment of the CR.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Horizon CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-op` with one replica, which reaches `Ready=True/AllReady` |
-| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshot and the polls share state: reads `.spec.replicas` of Deployment `horizon-operator` in `horizon-system`, snapshots the operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-horizon-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: horizon-operator` in `horizon-system`), waits up to 120 s for at least one pre-chaos UID to disappear, then waits up to 120 s for `readyReplicas` to equal the desired count |
-| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-horizon-operator` from `horizon-system` |
+| 1 | Apply Horizon CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-op` with one replica, which reaches `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshot and the polls share state: reads `.spec.replicas` of Deployment `horizon-operator` in `horizon-system`, snapshots the operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-horizon-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: horizon-operator` in `horizon-system`), waits up to 120 s for at least one pre-chaos UID to disappear, then waits up to 120 s for `readyReplicas` to equal the desired count. The script runs `workload.sh mark fault-start` right before the apply. |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-horizon-operator` from `horizon-system`. `workload.sh mark fault-end` runs right after it. |
 | 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `02-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `horizon-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`, `02-patch-scale.yaml`
+
+**Workload:** the `http` stream against `http://horizon-chaos-op.openstack.svc:8080/auth/login/`, started in step 1 and judged in step 5 against `failures=0 recovery=0s`. Every step from 1 to 5 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 1 calls `../diagnostics.sh baseline horizon-chaos-op --cr-kind=horizon`.
 Steps 2 and 4 call `../diagnostics.sh chaos horizon-chaos-op --cr-kind=horizon` with
@@ -1484,13 +1695,16 @@ Deployment of the CR, which shows that the recovered operator reconciles spec ch
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Glance CR and default store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-chaos-op` with database `glance_chaos_op` and one replica. Applies `01-glance-backend.yaml`: GlanceBackend `glance-chaos-op-s3` (`type: S3`, `isDefault: true`, bucket `glance-images`). The CR reaches `Ready=True/AllReady` |
-| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `glance-operator` in `glance-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=glance-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-glance-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: glance-operator` in `glance-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
-| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-glance-operator` from `glance-system` |
+| 1 | Apply Glance CR and default store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-glance-cr.yaml`: Glance CR `glance-chaos-op` with database `glance_chaos_op` and one replica. Applies `01-glance-backend.yaml`: GlanceBackend `glance-chaos-op-s3` (`type: S3`, `isDefault: true`, bucket `glance-images`). The CR reaches `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `glance-operator` in `glance-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=glance-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-glance-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: glance-operator` in `glance-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing. The script runs `workload.sh mark fault-start` right before the apply. |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-glance-operator` from `glance-system`. `workload.sh mark fault-end` runs right after it. |
 | 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `03-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `glance-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-glance-cr.yaml`, `01-glance-backend.yaml`, `02-podchaos.yaml`,
 `03-patch-scale.yaml`
+
+**Workload:** the `http` stream against `http://glance-chaos-op.openstack.svc:9292/healthcheck`, started in step 1 and judged in step 5 against `failures=0 recovery=0s`. Every step from 1 to 5 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 1 calls `../diagnostics.sh baseline glance-chaos-op --cr-kind=glance`.
 Steps 2 and 4 call `../diagnostics.sh chaos glance-chaos-op --cr-kind=glance` with
@@ -1537,12 +1751,15 @@ which shows that the recovered operator reconciles spec changes.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Placement CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-placement-cr.yaml`: Placement CR `placement-chaos-op` with database `placement_chaos_op` and one replica, which reaches `Ready=True/AllReady` |
-| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `placement-operator` in `placement-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=placement-chaos-op` in `openstack`, applies `01-podchaos.yaml` (PodChaos `kill-placement-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: placement-operator` in `placement-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
-| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-placement-operator` from `placement-system` |
+| 1 | Apply Placement CR and wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-placement-cr.yaml`: Placement CR `placement-chaos-op` with database `placement_chaos_op` and one replica, which reaches `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `placement-operator` in `placement-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=placement-chaos-op` in `openstack`, applies `01-podchaos.yaml` (PodChaos `kill-placement-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: placement-operator` in `placement-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing. The script runs `workload.sh mark fault-start` right before the apply. |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-placement-operator` from `placement-system`. `workload.sh mark fault-end` runs right after it. |
 | 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `02-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `placement-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-placement-cr.yaml`, `01-podchaos.yaml`, `02-patch-scale.yaml`
+
+**Workload:** the `http` stream against `http://placement-chaos-op.openstack.svc:8778/`, started in step 1 and judged in step 5 against `failures=0 recovery=0s`. Every step from 1 to 5 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 1 calls `../diagnostics.sh baseline placement-chaos-op` and steps 2
 and 4 call `../diagnostics.sh chaos placement-chaos-op`, all three with
@@ -1585,13 +1802,16 @@ which shows that the recovered operator reconciles spec changes.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply Barbican CR and store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-barbican-cr.yaml`: Barbican CR `barbican-chaos-op` with database `barbican_chaos_opkill` and one replica. Applies `01-barbican-secretstore.yaml`: BarbicanSecretStore `barbican-chaos-op-store` (`type: OpenBao`, `isDefault: true`, `instanceRef` `openbao-instance`). The CR reaches `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady` |
-| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `barbican-operator` in `barbican-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=barbican-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-barbican-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: barbican-operator` in `barbican-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing |
-| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-barbican-operator` from `barbican-system` |
+| 1 | Apply Barbican CR and store, wait for baseline Ready | `apply` + `assert` (5m) | Applies `00-barbican-cr.yaml`: Barbican CR `barbican-chaos-op` with database `barbican_chaos_opkill` and one replica. Applies `01-barbican-secretstore.yaml`: BarbicanSecretStore `barbican-chaos-op-store` (`type: OpenBao`, `isDefault: true`, `instanceRef` `openbao-instance`). The CR reaches `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
+| 2 | Inject chaos and verify one operator pod was replaced | `script` (270s) | One script, so the snapshots and the polls share state: reads `.spec.replicas` of Deployment `barbican-operator` in `barbican-system`, snapshots the operator pod UIDs and the UIDs of the pods labelled `app.kubernetes.io/instance=barbican-chaos-op` in `openstack`, applies `02-podchaos.yaml` (PodChaos `kill-barbican-operator`, `action: pod-kill`, `mode: one`, `gracePeriod: 0`, targeting `app.kubernetes.io/name: barbican-operator` in `barbican-system`), waits up to 120 s for at least one pre-chaos operator UID to disappear, waits up to 120 s for `readyReplicas` to equal the desired count, then fails if a pre-chaos workload UID is missing. The script runs `workload.sh mark fault-start` right before the apply. |
+| 3 | Delete PodChaos | `delete` | Removes PodChaos `kill-barbican-operator` from `barbican-system`. `workload.sh mark fault-end` runs right after it. |
 | 4 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Applies `03-patch-scale.yaml`: sets `spec.deployment.replicas` to 2. Deployment `barbican-chaos-op` reaches `replicas: 2`, `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-barbican-cr.yaml`, `01-barbican-secretstore.yaml`, `02-podchaos.yaml`,
 `03-patch-scale.yaml`
+
+**Workload:** the `http` stream against `http://barbican-chaos-op.openstack.svc:9311/healthcheck`, started in step 1 and judged in step 5 against `failures=0 recovery=0s`. Every step from 1 to 5 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 1 calls `../diagnostics.sh baseline barbican-chaos-op` and steps 2
 and 4 call `../diagnostics.sh chaos barbican-chaos-op`, all three with
@@ -2081,6 +2301,10 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
+The sixteen suites that start a workload also call `../lib/workload.sh dump <id>`
+in the catch block of every step from `start` to `verify`. It prints the phase
+of the workload pod, its two fault marks and the last 200 lines of its log.
+
 ## File Layout
 
 ```text
@@ -2155,6 +2379,9 @@ tests/e2e-chaos/
 │   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
 │   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
 │   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── lib/                              Workload and consistency harness, no suite
+│   ├── workload.py                   The workload streams (run) and the verdict (evaluate)
+│   └── workload.sh                   start, mark, verify, dump and stop, called by the suites
 ├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
 │   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
@@ -2264,7 +2491,10 @@ tests/e2e-chaos/
 3. Add `01-<chaos-type>.yaml` with the appropriate Chaos Mesh CRD
 4. Add `chainsaw-test.yaml` following the degradation/recovery or no-regression pattern
 5. Include catch blocks with diagnostic output on every assert step
-6. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+6. To send OpenStack traffic through the fault, call `../lib/workload.sh` as
+   [Adopting the harness](#adopting-the-harness) describes, put the measured
+   `# Chaos budget:` line in the header, and add `dump` to the catch blocks
+7. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests
