@@ -140,12 +140,15 @@ govulncheck:
 
 .PHONY: shellcheck
 # shellcheck lints all shell scripts with shellcheck --severity=warning.
-# Covers hack/ utility scripts and operator rotation scripts embedded via ConfigMaps.
+# Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps
+# and the chaos workload harness under tests/e2e-chaos/lib/.
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
 	@echo "Linting operator rotation scripts..."
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
+	@echo "Linting the chaos workload harness..."
+	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh
 
 .PHONY: chainsaw-lint
 # chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and
