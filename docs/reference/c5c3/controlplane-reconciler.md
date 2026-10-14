@@ -298,7 +298,6 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints`, `regions`, `users`, `domains`, `projects`, `roles`, `roleassignments` | get, list, watch, create, update, patch, delete |
 | `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status` | patch |
-| `apps` | `deployments` (`resourceNames: orc-controller-manager`) | get, patch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `generators.external-secrets.io` | `vaultdynamicsecrets`, `passwords` | get, list, watch, create, update, patch, delete |
@@ -313,11 +312,6 @@ is what the `priorityclasses` grant is for.
 The `patch` grant on the K-ORC status subresources lets the reconcilers clear a
 latched K-ORC transport error from a child's status
 (`unlatchKORCTransportErrors` in `korc_unlatch.go`).
-
-The `get` and `patch` grant on the `orc-controller-manager` Deployment serves
-[`reconcileKORCCatalogRefresh`](#reconcilekorccatalogrefresh), which reads that
-Deployment by name through the uncached reader and patches one annotation onto
-its pod template.
 
 The `CredentialRotationReconciler` markers (in
 `reconcile_credentialrotation.go`) are scoped tighter — it never mints, so it
@@ -352,12 +346,6 @@ details that privilege-escalation path. Two specifics apply to this operator:
   `bind` only on `system:auth-delegator` (narrowed by `resourceNames`), so it can
   hand out no permission it does not already hold. The cluster-wide Secret read
   therefore remains the dominant risk.
-- It can roll the K-ORC pod. The `apps/deployments` grant names
-  `orc-controller-manager`, and `resourceNames` matches that name in every
-  namespace. RBAC cannot narrow a patch to one annotation, so the grant covers
-  the whole Deployment, its image included. A pod running under K-ORC's
-  ServiceAccount adds nothing to what this identity reaches already: the
-  `serviceaccounts/token` grant lets it mint a token for that account directly.
 
 The c5c3-operator chart refuses `rbac.namespaceScoped: true`: the render fails
 with `rbac.namespaceScoped=true is not supported by c5c3-operator`. The
