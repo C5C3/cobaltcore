@@ -12,6 +12,10 @@
 #      in DONE; stuck resources fail their check after the settle window.
 #   2. workload.py evaluate, on hand-written logs: each violation exits 1,
 #      each input error exits 2, and the summary line carries the counts.
+#   3. workload.sh, against a stub kubectl: the pod start passes, each
+#      verb's failure paths, the budget line and the two out-of-band checks.
+#   4. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
+#      pod runs on, and make shellcheck lints lib/*.sh.
 #
 # The stub serves Keystone, Nova, Neutron, Cinder, Glance and a plain HTTP
 # target on one localhost port, each under a path prefix of its own, and
@@ -32,8 +36,12 @@ PASS=0
 FAIL=0
 SKIP=0
 
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 TMP_DIR="$(mktemp -d)"
 STUB_PID=""
@@ -1585,6 +1593,40 @@ test_dump_and_stop_exit_0_without_a_pod() {
   assert_contains "and its log" "$WL_OUT" "READY token"
 }
 
+# ---------------------------------------------------------------------------
+# Wiring
+# ---------------------------------------------------------------------------
+
+# --- Test 23 --------------------------------------------------------------
+test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
+  echo "Test: every non-ovn e2e-chaos leg loads the Tempest image, and make shellcheck lints the harness"
+  local stack kind_load
+  stack="$(job_step e2e-chaos "Load E2E images (keystone stack)")"
+  kind_load="$(job_step e2e-chaos "Load images into kind")"
+  assert_contains "the keystone-stack pull runs on every leg but ovn" "$stack" "if: matrix.suite != 'ovn'"
+  assert_contains "and pulls the Tempest image" "$stack" "\${{ env.IMAGE_PREFIX }}/tempest:2026.1"
+  assert_contains "the keystone-stack kind load runs on every leg but ovn" "$kind_load" "if: matrix.suite != 'ovn'"
+  assert_contains "and hands the Tempest image to the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name"
+  assert_not_contains "the nova-only pull no longer names it" \
+    "$(job_step e2e-chaos "Load E2E images")" "tempest:2026.1"
+  assert_not_contains "nor does the nova-only kind load" \
+    "$(job_step e2e-chaos "Load nova leg images into kind")" "tempest:2026.1"
+
+  local target
+  target="$(awk '/^shellcheck:/ { on = 1; next } on && /^[^\t]/ { exit } on { print }' "$PROJECT_ROOT/Makefile")"
+  assert_contains "make shellcheck lints tests/e2e-chaos/lib/*.sh" "$target" \
+    "shellcheck --severity=warning tests/e2e-chaos/lib/*.sh"
+  if command -v shellcheck >/dev/null 2>&1; then
+    local out rc=0
+    out="$(cd "$PROJECT_ROOT" && shellcheck --severity=warning tests/e2e-chaos/lib/workload.sh 2>&1)" || rc=$?
+    assert_eq "workload.sh passes shellcheck${out:+: $out}" "0" "$rc"
+  else
+    echo "  SKIP: shellcheck not installed (1 check skipped)"
+    SKIP=$((SKIP + 1))
+  fi
+}
+
 # --- Run ---
 test_run_reaches_ready_on_every_stream
 test_a_503_fails_one_stream_and_leaves_the_others_ok
@@ -1612,6 +1654,7 @@ test_verify_maps_the_placement_audit_exit_codes
 test_verify_fails_on_a_stop_exec_error_or_a_missing_done
 test_verify_reads_the_ovn_db_sync_log
 test_dump_and_stop_exit_0_without_a_pod
+test_ci_loads_the_tempest_image_on_the_keystone_stack_legs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
