@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="930" viewBox="0 0 1808 930" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Two racks of chassis-bearing nodes attached to a leaf and spine fabric over eBGP">
+<title>Two racks of chassis-bearing nodes attached to a leaf and spine fabric over eBGP</title>
+<rect width="1808" height="930" fill="#F6F5F1"/>
+<rect x="574" y="40" width="260" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="704" y="74.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">spine 1</text>
+<text x="704" y="103.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200000100</text>
+<rect x="974" y="40" width="260" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1104" y="74.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">spine 2</text>
+<text x="1104" y="103.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200000101</text>
+<text x="1250" y="71.2" font-size="20" font-weight="400" fill="#55606E">every leaf peers with both spines:</text>
+<text x="1250" y="99.2" font-size="20" font-weight="400" fill="#55606E">eBGP, one ASN per switch, ECMP</text>
+<rect x="40" y="200" width="660" height="610" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="772.36" font-size="26" font-weight="700" fill="#2B3440">rack 1</text>
+<rect x="70" y="262" width="230" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="185" y="296.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf A</text>
+<text x="185" y="325.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200001001</text>
+<rect x="440" y="262" width="230" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="555" y="296.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf B</text>
+<text x="555" y="325.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200001002</text>
+<rect x="140" y="506" width="460" height="170" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="166.5" y="524.5" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="208.5" y="551.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="264.5" y="551.14" font-size="24" font-weight="700" fill="#17202B">node 1</text>
+<text x="358.5" y="549.7" font-size="20" font-weight="400" fill="#55606E">AS 4200000001</text>
+<rect x="166.5" y="580" width="178" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="255.5" y="604.2" font-size="20" font-weight="700" fill="#A3262E" text-anchor="middle">lo 192.0.2.1/32</text>
+<text x="166.5" y="649.2" font-size="20" font-weight="400" fill="#55606E">announces /32, /128 only, accepts default</text>
+<polyline points="200,506 185.93,348.46" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="185,338 193.51,352.3 179.16,353.58" fill="#3A4452"/>
+<polyline points="540,506 554.07,348.46" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="555,338 560.84,353.58 546.49,352.3" fill="#3A4452"/>
+<text x="370" y="387.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">eBGP unnumbered, BFD 300 ms × 3</text>
+<text x="370" y="415.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">MTU 9000</text>
+<rect x="295" y="716" width="150" height="64" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="370" y="756.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">+ more</text>
+<text x="461" y="755.2" font-size="20" font-weight="400" fill="#55606E">dual-homed like node 1</text>
+<rect x="1108" y="200" width="660" height="610" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1127" y="772.36" font-size="26" font-weight="700" fill="#2B3440">rack 2</text>
+<rect x="1138" y="262" width="230" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1253" y="296.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf A</text>
+<text x="1253" y="325.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200001003</text>
+<rect x="1508" y="262" width="230" height="76" rx="8" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1623" y="296.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf B</text>
+<text x="1623" y="325.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">AS 4200001004</text>
+<rect x="1208" y="506" width="460" height="170" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="3"/>
+<rect x="1234.5" y="524.5" width="84" height="36" rx="18" fill="#3A4452"/>
+<text x="1276.5" y="551.14" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="1332.5" y="551.14" font-size="24" font-weight="700" fill="#17202B">node 1</text>
+<text x="1426.5" y="549.7" font-size="20" font-weight="400" fill="#55606E">AS 4200000002</text>
+<rect x="1234.5" y="580" width="178" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="1323.5" y="604.2" font-size="20" font-weight="700" fill="#A3262E" text-anchor="middle">lo 192.0.2.2/32</text>
+<polyline points="1268,506 1253.93,348.46" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1253,338 1261.51,352.3 1247.16,353.58" fill="#3A4452"/>
+<polyline points="1608,506 1622.07,348.46" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1623,338 1628.84,353.58 1614.49,352.3" fill="#3A4452"/>
+<text x="1438" y="387.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">eBGP unnumbered, BFD 300 ms × 3</text>
+<text x="1438" y="415.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">MTU 9000</text>
+<rect x="1363" y="716" width="150" height="64" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1438" y="756.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">+ more</text>
+<text x="1529" y="755.2" font-size="20" font-weight="400" fill="#55606E">dual-homed like node 1</text>
+<text x="904" y="287.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">every leaf:</text>
+<text x="904" y="315.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">accepts /32, /128 only, max 8192</text>
+<text x="904" y="343.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">sends the node the default route</text>
+<polyline points="614,116 145,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="674,116 515,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="734,116 1213,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="794,116 1583,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1014,116 225,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1074,116 595,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1134,116 1293,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="1194,116 1663,262" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="610.5,568 1197.5,568" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="1208,568 1193,575.2 1193,560.8" fill="#B38A00"/>
+<polygon points="600,568 615,575.2 615,560.8" fill="#B38A00"/>
+<text x="904" y="523.2" font-size="20" font-weight="400" fill="#6F5600" text-anchor="middle">Geneve UDP 6081,</text>
+<text x="904" y="551.2" font-size="20" font-weight="400" fill="#6F5600" text-anchor="middle">loopback to loopback</text>
+<polyline points="600,634 1208,634" fill="none" stroke="#C6343C" stroke-width="3" stroke-dasharray="9 6"/>
+<rect x="862" y="619" width="84" height="30" rx="15" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="904" y="640.48" font-size="18" font-weight="700" fill="#A3262E" text-anchor="middle">never</text>
+<text x="904" y="679.2" font-size="20" font-weight="400" fill="#A3262E" text-anchor="middle">no stretched L2</text>
+<text x="40" y="855.2" font-size="20" font-weight="400" fill="#55606E">Drawn for two racks with node 1 in full; every further node has its own loopback, ASN and two uplinks.</text>
+<text x="40" y="881.2" font-size="20" font-weight="400" fill="#55606E">ASNs and addresses are lab values from the private 4-byte ASN range and the documentation address ranges.</text>
+</svg>

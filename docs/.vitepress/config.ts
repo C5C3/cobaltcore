@@ -252,6 +252,13 @@ export default defineConfig({
             ],
           },
           {
+            text: 'Networking',
+            collapsed: true,
+            items: [
+              { text: 'BGP Fabric Contract', link: '/reference/networking/bgp-fabric-contract' },
+            ],
+          },
+          {
             text: 'Cinder',
             link: '/reference/cinder/',
             collapsed: true,
