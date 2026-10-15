@@ -27,8 +27,8 @@ The two kinds are coupled through status. An `OVNChassis` names an `OVNCentral`,
 waits for its published Southbound address and for `status.clientSecretName`,
 and mounts that Secret. When the two project onto different clusters, the
 chassis reads the addresses the central publishes on node ports and copies the
-Secret onto its own cluster, as `<chassis>-ovn-client`. That link is the whole
-coupling.
+Secret onto its own cluster, as `<chassis>-ovn-client`, and that link is the
+whole coupling.
 
 The figure shows what one `OVNCentral` runs and which client talks to which
 database. Only `ovn-controller` is pointed at the relay; every other client
@@ -80,7 +80,8 @@ this operator implements.
   zero-byte file behind, so retention gates on the exit code.
 
 BGP itself is tracked in its own meta,
-[#899](https://github.com/C5C3/cobaltcore/issues/899).
+[#899](https://github.com/C5C3/cobaltcore/issues/899), and the fabric side is
+written down in the [BGP Fabric Contract](../networking/bgp-fabric-contract.md).
 
 ## Owned resources
 
@@ -129,6 +130,6 @@ For an `OVNChassis` named `{name}`:
 
 The OVN image is release-independent and built from `images/ovn/Dockerfile`; see
 [build-ovn / merge-ovn-image / verify-ovn-image](../ci-cd/build-images-workflow.md#build-ovn-merge-ovn-image-verify-ovn-image).
-The `ovn` e2e leg and the multi-node overlay leg are documented in
+The `ovn` e2e test job and the multi-node overlay test job are documented in
 [e2e-operator](../ci-cd/ci-workflow.md#e2e-operator) and
 [e2e-ovn-overlay](../ci-cd/ci-workflow.md#e2e-ovn-overlay).

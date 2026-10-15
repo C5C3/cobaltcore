@@ -110,7 +110,8 @@ this operator implements.
   those queues outlive the process that declared them.
 
 BGP is out of scope here and tracked in its own meta,
-[#899](https://github.com/C5C3/cobaltcore/issues/899).
+[#899](https://github.com/C5C3/cobaltcore/issues/899), and the fabric side is
+written down in the [BGP Fabric Contract](../networking/bgp-fabric-contract.md).
 
 ## Owned resources
 

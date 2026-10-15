@@ -168,8 +168,9 @@ networks either.
 Gateway nodes are picked out by the second label of the chassis contract,
 `openstack.c5c3.io/gateway=true`, which the label guide sets and which makes a
 chassis eligible to host a distributed router's gateway port. That selection is
-what the route announcements will be anchored on. The page describing the fabric
-contract arrives with that work.
+what the route announcements will be anchored on. The
+[BGP Fabric Contract](../../reference/networking/bgp-fabric-contract.md) states
+what the fabric has to accept from those nodes.
 
 ## See also
 
@@ -194,7 +195,7 @@ chainsaw test --test-dir tests/e2e/neutron/provider-network-smoke
 
 The suite proves the bridge mapping on the node and the Southbound binding of
 the port; it runs none of the `openstack` commands and asserts no `ACTIVE`
-status, because its leg carries no Keystone and writes the logical model straight
+status, because its test job carries no Keystone and writes the logical model straight
 into the Northbound database.
 
 ::: details The OVNChassis the suite applies
