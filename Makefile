@@ -140,8 +140,9 @@ govulncheck:
 
 .PHONY: shellcheck
 # shellcheck lints all shell scripts with shellcheck --severity=warning.
-# Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps
-# and the chaos workload harness under tests/e2e-chaos/lib/.
+# Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps,
+# the chaos workload harness under tests/e2e-chaos/lib/ and the BGP fabric lab
+# runner under tests/lab/bgp-fabric/.
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
@@ -149,6 +150,8 @@ shellcheck:
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
 	@echo "Linting the chaos workload harness..."
 	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh
+	@echo "Linting the BGP fabric lab..."
+	@shellcheck --severity=warning tests/lab/bgp-fabric/*.sh
 
 .PHONY: chainsaw-lint
 # chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and
@@ -175,7 +178,7 @@ chainsaw-lint:
 test-shell:
 	@echo "Running shell unit tests..."
 	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh tests/unit/images/*_test.sh; do \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh tests/unit/images/*_test.sh tests/unit/lab/*_test.sh; do \
 		[ -f "$$t" ] || continue; \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \

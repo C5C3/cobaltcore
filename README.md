@@ -79,7 +79,7 @@ Flux, cert-manager, OpenBao, the MariaDB and Memcached operators, External Secre
 | [`releases/`](releases/) | Per-release source refs, upper constraints, extra packages, and Tempest excludes |
 | [`patches/`](patches/) | Patches applied to the upstream OpenStack sources at image build time |
 | [`deploy/`](deploy/) | FluxCD HelmReleases and kind overlays for the infrastructure stack and the operators |
-| [`tests/`](tests/) | Chainsaw E2E, chaos, multi-cluster, operator-upgrade, and Tempest suites |
+| [`tests/`](tests/) | Chainsaw E2E, chaos, multi-cluster, operator-upgrade, and Tempest suites, and the BGP fabric containerlab under `tests/lab/` |
 | [`docs/`](docs/) | The VitePress sources of the [documentation site](https://c5c3.github.io/cobaltcore/) |
 | [`hack/`](hack/) | Scripts behind the Makefile targets and the CI workflows |
 

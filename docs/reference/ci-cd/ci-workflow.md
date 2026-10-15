@@ -417,7 +417,7 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh` and the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) |
+| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`), the chaos workload harness (`tests/e2e-chaos/lib/*.sh`) and the BGP fabric lab runner (`tests/lab/bgp-fabric/*.sh`) |
 
 Timeout: 8 minutes.
 
@@ -540,7 +540,7 @@ Timeout: 8 minutes.
 ### test-shell
 
 Runs every shell unit test under `tests/unit/` (hack/, deploy/, renovate/, docs/, ci/,
-images/). The job carries no event guard, so it runs on pull requests and on the push
+images/, lab/). The job carries no event guard, so it runs on pull requests and on the push
 runs for `main` and `v*` tags: a breakage that lands on `main` fails main's own run.
 Tests read repo files only (no cluster, no untrusted input) and the job finishes in
 about a minute on a cold runner. Tests that depend on `yq` or `kustomize` are written to
