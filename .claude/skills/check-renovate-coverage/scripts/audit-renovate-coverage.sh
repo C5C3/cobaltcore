@@ -28,8 +28,11 @@
 #       deploy/kind/ has one owner, the flux manager or a customManager (the
 #       c5c3-charts releases are excluded by design), and is spelled x.y.z or
 #       >=…
+#   R9  every input of flake.lock has original.type github, the nix manager
+#       and its lockFileMaintenance are enabled, and a packageRules entry
+#       matches the nix manager
 #
-# R4, R6 and R8 read renovate.json with jq and are skipped without it. Defers
+# R4, R6, R8 and R9 read renovate.json with jq and are skipped without it. Defers
 # JSON-shape validation to `renovate-config-validator`. Exit code 1 on [FAIL].
 
 set -euo pipefail
@@ -700,6 +703,43 @@ else
   done <<< "${hr_files}"
   if [[ "${r8_seen}" -eq 0 ]]; then
     info "R8: no HelmRelease chart versions found"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# R9 — the flake.lock inputs are re-lockable by the nix manager
+# ---------------------------------------------------------------------------
+# The nix manager re-locks flake.lock through lockFileMaintenance and opens
+# the re-lock under the packageRules entry that matches it. It re-locks github
+# inputs; an input of another type would stay at its locked revision.
+hdr "R9: flake.lock inputs are re-lockable by the nix manager"
+if [[ "${have_jq}" -ne 1 ]]; then
+  info "R9: jq not on PATH, skipped"
+elif [[ ! -f flake.lock ]]; then
+  fail "R9: flake.lock is missing"
+else
+  while IFS=$'\t' read -r node type; do
+    [[ -z "${node}" ]] && continue
+    if [[ "${type}" == "github" ]]; then
+      pass "R9: flake.lock input ${node} has original.type github"
+    else
+      fail "R9: flake.lock input ${node} has original.type ${type}, not github"
+    fi
+  done < <(jq -r '.nodes | to_entries[] | select(.key != "root")
+    | "\(.key)\t\(.value.original.type // "missing")"' flake.lock)
+  for key in .nix.enabled .nix.lockFileMaintenance.enabled; do
+    value=$(jq -r "${key}" "${RENOVATE}")
+    if [[ "${value}" == "true" ]]; then
+      pass "R9: ${RENOVATE} ${key} is true"
+    else
+      fail "R9: ${RENOVATE} ${key} is ${value}, not true"
+    fi
+  done
+  nix_rules=$(jq '[.packageRules[]? | select((.matchManagers // []) | index("nix"))] | length' "${RENOVATE}")
+  if [[ "${nix_rules}" -gt 0 ]]; then
+    pass "R9: a packageRules entry matches the nix manager"
+  else
+    fail "R9: no packageRules entry has matchManagers containing nix"
   fi
 fi
 

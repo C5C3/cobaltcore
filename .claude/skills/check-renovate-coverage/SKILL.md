@@ -43,7 +43,7 @@ which Renovate has to understand:
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
 | GitHub Actions versions | `.github/workflows/*.yaml` (`uses: org/action@v…`) | native `github-actions` manager |
 | Dockerfile base images | `images/*/Dockerfile` and the single `operators/Dockerfile` (`FROM image:tag`) | native `dockerfile` manager; the `ARG OVN_VERSION` / `ARG NOVNC_VERSION` + `NOVNC_COMMIT` pins in `images/{ovn,nova}/Dockerfile` carry a customManager each |
-| Nix flake, venv-builder requirements | `flake.nix` + `flake.lock`, `images/venv-builder/requirements.txt` | native `nix` (enabled in `renovate.json`, weekly lockFileMaintenance) and `pip_requirements` |
+| Nix flake, venv-builder requirements | `flake.nix` + `flake.lock` (two inputs: `nixpkgs` on `nixos-unstable` feeds the dev shell, `nixpkgs-images` on `nixos-26.05` feeds the Nix-built images), `images/venv-builder/requirements.txt` | native `nix` (enabled in `renovate.json`, weekly lockFileMaintenance, both inputs grouped on the Monday schedule; R9) and `pip_requirements` |
 | e2e fixture images | the openldap, keycloak, aws-cli and nfs-server images pinned by tag + digest in `tests/e2e*/` fixtures | customManager per image |
 | Tool pins in Makefile + workflows | `GOFUMPT_VERSION` (customManager over `/Makefile$/` + workflows); `CONTROLLER_GEN_VERSION`, `GOLANGCI_LINT_VERSION`, `KIND_VERSION`, `YQ_VERSION`, `ACTIONLINT_VERSION` in workflow `env:` blocks; `RENOVATE_VALIDATOR_VERSION` in a `tests/unit/renovate/` test; `ENVTEST_K8S_VERSION ?= <major>.<minor>` in the Makefile | customManager each. The envtest one reads the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` (the assets setup-envtest downloads) and joins the Go build tooling rules through its `packageName` |
 | Duplicated Makefile ↔ ci.yaml pins | `GOFUMPT_VERSION` lives in both `Makefile` and the `ci.yaml` `env:` block ("Must be kept in sync" comment); `ENVTEST_K8S_VERSION` is single-sourced (ci.yaml `awk`-reads the Makefile) | one customManager bumps both files; R7 enforces the lockstep mechanically |
@@ -145,7 +145,14 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   owner. A release on a `chartRef` (`releases/openbao-operator.yaml`)
   carries no chart version and is skipped; a tree with no chart
   version prints `[INFO] R8: no HelmRelease chart versions found`.
-- R4, R6 and R8 need `jq` and report `[INFO]` skipped without it.
+- **R9** — every input of `flake.lock` (every node but `root`) has
+  `original.type` `github`, the shape the native `nix` manager
+  re-locks; an input of another type fails with its type named. It
+  also fails when `.nix.enabled` or `.nix.lockFileMaintenance.enabled`
+  in `renovate.json` is not `true`, or when no `packageRules` entry has
+  `matchManagers` containing `nix`. A missing `flake.lock` is one
+  failure.
+- R4, R6, R8 and R9 need `jq` and report `[INFO]` skipped without it.
 - The **inventory** is a review aid: every `<NAME>_VERSION` pin in the
   `Makefile` and in workflow `env:` blocks, each marked as tracked by
   a customManager (named), bumped by hand (no customManager claims it —
