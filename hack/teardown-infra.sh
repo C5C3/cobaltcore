@@ -576,6 +576,298 @@ teardown_dizzy_soak() {
   printf '%s\n' "${render}" | delete_and_wait "the dizzy soak objects" -f -
 }
 
+# The pod cleanup_openstack_workloads runs in openstack, one ControlPlane at a
+# time. A pod an interrupted run left behind is deleted before the next.
+CLEANUP_POD="teardown-openstack-cleanup"
+
+# ---------------------------------------------------------------------------
+# openstack_cleanup_program — Print the Python program
+# cleanup_openstack_workloads runs in its pod. It needs only the openstacksdk,
+# which the Nova image ships, and reads the clouds.yaml under /etc/openstack.
+# Its one argument is the number of seconds the whole run may take.
+# ---------------------------------------------------------------------------
+openstack_cleanup_program() {
+  cat <<'PY'
+"""Delete what Nova and Cinder hold, in every project, while both answer.
+
+The order follows the dependencies: the servers, whose delete detaches their
+volumes, then the volume backups, the volume snapshots and the volumes, with
+cascade for a snapshot the second pass missed. Every delete is forced, so a
+server or volume in an error state goes too, and an attachment Nova left on a
+volume after its server is gone is removed before the volume. Each kind is
+polled until none is left; on the deadline, the one argument in seconds, the
+objects still present are printed and the exit status is 1.
+"""
+
+import os
+import sys
+import time
+
+import openstack
+from openstack import exceptions
+
+CLOUDS_FILE = "/etc/openstack/clouds.yaml"
+CACERT_FILE = "/etc/openstack/cacert"
+POLL_SECONDS = 5
+
+timeout = int(sys.argv[1])
+deadline = time.monotonic() + timeout
+
+
+def say(line):
+    print(line, flush=True)
+
+
+def describe(kind, obj):
+    parts = [kind, obj.name or "<unnamed>", f"({obj.id})", obj.status or "?"]
+    project = getattr(obj, "project_id", None)
+    if project:
+        parts.append(f"project {project}")
+    host = getattr(obj, "compute_host", None)
+    if host:
+        parts.append(f"on {host}")
+    task = getattr(obj, "task_state", None)
+    if task:
+        parts.append(f"task {task}")
+    return " ".join(parts)
+
+
+def delete_all(kind, lister, deleter):
+    """Issue deleter() for every object lister() returns, then poll lister()
+    until it returns nothing. A delete the API refuses is logged and left to
+    the poll, which names the object on the deadline."""
+    found = False
+    for obj in lister():
+        found = True
+        say(f"Deleting {describe(kind, obj)}")
+        try:
+            deleter(obj)
+        except exceptions.SDKException as exc:
+            say(f"  delete refused: {exc}")
+    if not found:
+        say(f"No {kind} is present")
+        return
+    while True:
+        left = list(lister())
+        if not left:
+            say(f"Every {kind} is gone")
+            return
+        if time.monotonic() >= deadline:
+            say(f"ERROR: {len(left)} {kind}(s) still present after {timeout}s:")
+            for obj in left:
+                say(f"  {describe(kind, obj)}")
+            sys.exit(1)
+        time.sleep(POLL_SECONDS)
+
+
+config = openstack.config.OpenStackConfig(
+    config_files=[CLOUDS_FILE], vendor_files=[], load_envvars=False
+)
+clouds = list(config.get_cloud_names())
+if len(clouds) != 1:
+    say(f"ERROR: {CLOUDS_FILE} names {len(clouds)} clouds, expected one")
+    sys.exit(1)
+options = {"cacert": CACERT_FILE} if os.path.exists(CACERT_FILE) else {}
+conn = openstack.connect(cloud=clouds[0], load_envvars=False, **options)
+
+if conn.has_service("compute"):
+    delete_all(
+        "server",
+        lambda: conn.compute.servers(details=True, all_projects=True),
+        lambda s: conn.compute.delete_server(s, ignore_missing=True, force=True),
+    )
+else:
+    say("The catalog has no compute service; no server to delete")
+
+if conn.has_service("block-storage"):
+    delete_all(
+        "volume backup",
+        lambda: conn.block_storage.backups(details=True, all_projects=True),
+        lambda b: conn.block_storage.delete_backup(b, ignore_missing=True, force=True),
+    )
+    delete_all(
+        "volume snapshot",
+        lambda: conn.block_storage.snapshots(details=True, all_projects=True),
+        lambda s: conn.block_storage.delete_snapshot(s, ignore_missing=True, force=True),
+    )
+
+    def delete_volume(volume):
+        for attachment in volume.attachments or []:
+            attachment_id = attachment.get("attachment_id")
+            if not attachment_id:
+                continue
+            say(f"  removing attachment {attachment_id} to server {attachment.get('server_id')}")
+            try:
+                conn.block_storage.delete_attachment(attachment_id, ignore_missing=True)
+            except exceptions.SDKException as exc:
+                say(f"  attachment delete refused: {exc}")
+        conn.block_storage.delete_volume(volume, ignore_missing=True, force=True, cascade=True)
+
+    delete_all(
+        "volume",
+        lambda: conn.block_storage.volumes(details=True, all_projects=True),
+        delete_volume,
+    )
+else:
+    say("The catalog has no block-storage service; no volume to delete")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# cleanup_pod_manifest CP SECRET IMAGE — Print the Pod cleanup_openstack_workloads
+# runs the program in: IMAGE, the Nova API's, with SECRET, the admin clouds.yaml
+# of ControlPlane CP, under /etc/openstack. It sleeps until the program is
+# exec'd into it. The UID is the openstack user of images/python-base, which
+# every service image runs as; the image names it, so runAsNonRoot alone would
+# not do. The requests and limits fit the LimitRange of a tenant namespace.
+# ---------------------------------------------------------------------------
+cleanup_pod_manifest() {
+  local cp="$1" secret="$2" image="$3"
+  cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${CLEANUP_POD}
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: ${CLEANUP_POD}
+    app.kubernetes.io/managed-by: teardown-infra
+    c5c3.io/controlplane: ${cp}
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: cleanup
+      image: ${image}
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+  volumes:
+    - name: clouds
+      secret:
+        secretName: ${secret}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# cleanup_openstack_workloads CP SECRET IMAGE — Run openstack_cleanup_program
+# for ControlPlane CP: delete the pod of an earlier run, apply
+# cleanup_pod_manifest, wait until the pod is Ready, exec the program with
+# TEARDOWN_TIMEOUT as its deadline, logging every line it prints, and delete the
+# pod. A pod that does not turn Ready in time exits 1 and stays for a look; a
+# program that exits non-zero, after listing what is still present, exits 1
+# once the pod is gone.
+# ---------------------------------------------------------------------------
+cleanup_openstack_workloads() {
+  local cp="$1" secret="$2" image="$3"
+
+  delete_and_wait "the cleanup pod of an earlier run" pod "${CLEANUP_POD}" -n openstack
+
+  log "Starting the pod ${CLEANUP_POD} in openstack from ${image}..."
+  local out
+  if ! out="$(cleanup_pod_manifest "${cp}" "${secret}" "${image}" | kubectl apply -f - 2>&1)"; then
+    log "ERROR: cannot create the pod ${CLEANUP_POD} in openstack:"
+    log "         ${out}"
+    exit 1
+  fi
+  if ! out="$(kubectl wait "pod/${CLEANUP_POD}" -n openstack --for=condition=Ready \
+    --timeout="${TEARDOWN_TIMEOUT}s" 2>&1)"; then
+    log "ERROR: the pod ${CLEANUP_POD} in openstack did not turn Ready within ${TEARDOWN_TIMEOUT}s:"
+    log "         ${out}"
+    log "The pod stays for a look (kubectl describe pod ${CLEANUP_POD} -n openstack); the next run deletes it."
+    exit 1
+  fi
+
+  log "Deleting the servers, volume backups, snapshots and volumes of ControlPlane ${cp} in every project..."
+  local rc=0 line
+  openstack_cleanup_program |
+    kubectl exec -i -n openstack "${CLEANUP_POD}" -- python3 - "${TEARDOWN_TIMEOUT}" 2>&1 |
+    while IFS= read -r line; do log "         ${line}"; done || rc=$?
+
+  delete_and_wait "the cleanup pod" pod "${CLEANUP_POD}" -n openstack
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: the OpenStack cleanup of ControlPlane ${cp} failed or did not finish within ${TEARDOWN_TIMEOUT}s (its output is above)."
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# teardown_openstack_workloads — Sub-step 1 of step 0: delete, in every
+# project, what Nova and Cinder hold, while both still answer: the servers,
+# then the volume backups, the volume snapshots and the volumes. A NovaCompute
+# holds nova.openstack.c5c3.io/compute-drain until Nova counts no server on its
+# nodes, so a server the quick start or a soak left would keep sub-step 2
+# waiting until TEARDOWN_TIMEOUT; a volume goes with its Ceph or NFS in step 2
+# either way, but only Cinder deletes it cleanly. For every ControlPlane in
+# openstack:
+#   1. the Secret <cp>-admin-password-cloud, the admin clouds.yaml the
+#      c5c3-operator keeps current, and the image of the Deployment <cp>-nova,
+#      the ControlPlane's Nova API. A ControlPlane without the Secret has no
+#      credential to act with, and one without the Deployment runs no Nova and
+#      so holds no server; both are logged and skipped, and sub-step 2 reports
+#      a server that is left;
+#   2. cleanup_openstack_workloads with the three.
+# A read that fails exits 1 before anything is deleted. A cluster without the
+# controlplanes.c5c3.io CRD has no ControlPlane, so a second run makes no call.
+# ---------------------------------------------------------------------------
+teardown_openstack_workloads() {
+  if ! kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1; then
+    return 0
+  fi
+  local planes
+  if ! planes="$(kubectl get controlplanes.c5c3.io -n openstack -o name)"; then
+    log "ERROR: cannot list the ControlPlanes in openstack (kubectl's error is above)."
+    exit 1
+  fi
+
+  # kubectl may write warnings beside the names; only the names count.
+  local plane cp secret out image
+  while IFS= read -r plane; do
+    [[ "${plane}" == controlplane.c5c3.io/* ]] || continue
+    cp="${plane#*/}"
+    secret="${cp}-admin-password-cloud"
+    if ! out="$(kubectl get secret "${secret}" -n openstack --ignore-not-found -o name 2>&1)"; then
+      log "ERROR: cannot read the Secret ${secret} in openstack:"
+      log "         ${out}"
+      exit 1
+    fi
+    if ! grep -qxF "secret/${secret}" <<<"${out}"; then
+      log "ControlPlane ${cp} has no Secret ${secret}; its servers and volumes are left to their owners."
+      continue
+    fi
+    if ! image="$(kubectl get deployment "${cp}-nova" -n openstack --ignore-not-found \
+      -o jsonpath='{.spec.template.spec.containers[0].image}')"; then
+      log "ERROR: cannot read the Deployment ${cp}-nova in openstack (kubectl's error is above)."
+      exit 1
+    fi
+    if [[ -z "${image}" ]]; then
+      log "ControlPlane ${cp} runs no Nova (no Deployment ${cp}-nova in openstack); nothing to delete in OpenStack."
+      continue
+    fi
+    cleanup_openstack_workloads "${cp}" "${secret}" "${image}"
+  done <<<"${planes}"
+}
+
 # ---------------------------------------------------------------------------
 # teardown_hypervisors — Step 0 of teardown_external_cluster: remove the lab
 # hypervisors (deploy/lab/metal-stack/hypervisor and hypervisor-fixtures,
@@ -583,25 +875,29 @@ teardown_dizzy_soak() {
 # openstack-hypervisor-operator and kvm-node-agent still run. A no-op unless
 # ${OVERLAY_ROOT}/hypervisor/kustomization.yaml exists. Each kind is deleted
 # only where its CRD exists, like the ControlPlane in step 1:
-#   1. the NovaComputes, NeutronMetadataAgents and OVNChassis in openstack. A
+#   1. the servers, volume backups, volume snapshots and volumes of every
+#      project, through every ControlPlane's admin credential, while Nova and
+#      Cinder answer (teardown_openstack_workloads);
+#   2. the NovaComputes, NeutronMetadataAgents and OVNChassis in openstack. A
 #      NovaCompute holds nova.openstack.c5c3.io/compute-drain until Nova counts
-#      no server on its nodes, so a pool that still holds servers outlives the
-#      wait, and the teardown exits 1 with a hint to delete them;
-#   2. the Hypervisors, Evictions and Migrations of kvm.cloud.sap. Nodes own
+#      no server on its nodes, so a pool that still holds servers, one sub-step
+#      1 could not reach, outlives the wait, and the teardown exits 1 with a
+#      hint to delete them;
+#   3. the Hypervisors, Evictions and Migrations of kvm.cloud.sap. Nodes own
 #      them, so garbage collection never reaps them;
-#   3. the fixtures, when the overlay has them. Keystone refuses to delete an
+#   4. the fixtures, when the overlay has them. Keystone refuses to delete an
 #      enabled domain and K-ORC does not disable it, so a domain that exists
 #      is disabled first; the delete runs either way, so a rerun after a
 #      partial delete still takes the image and the flavor. A read of the
 #      domain that fails exits 1 before the delete: K-ORC applies no spec
 #      change to an object that is being deleted, so a domain deleted while
 #      enabled could never be disabled;
-#   4. the hypervisor overlay, the two operators and the migration port
+#   5. the hypervisor overlay, the two operators and the migration port
 #      reservation (deploy/lab/metal-stack/migration-ports) with it;
-#   5. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
+#   6. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
 #      operator leaves in kube-system for every node. Its lifecycle controller
-#      recreates them while it runs, hence after step 4;
-#   6. the four node labels and the aggregates annotation the lab sets by
+#      recreates them while it runs, hence after sub-step 5;
+#   7. the four node labels and the aggregates annotation the lab sets by
 #      hand, and the custom-traits annotation an older lab still carries.
 # Node state under /var/lib/nova, /var/lib/libvirt and /etc/pki stays, and so
 # does the reservation in net.ipv4.ip_local_reserved_ports until the node
@@ -612,7 +908,10 @@ teardown_hypervisors() {
     return 0
   fi
 
-  # 1. The node layer. The NovaCompute delete runs in a subshell, so its
+  # 1. What Nova and Cinder hold, while both answer.
+  teardown_openstack_workloads
+
+  # 2. The node layer. The NovaCompute delete runs in a subshell, so its
   # timeout can add the hint before the exit.
   if ! (delete_where_crd_exists novacomputes.nova.openstack.c5c3.io \
     "the NovaComputes in openstack" --all -n openstack); then
@@ -623,12 +922,12 @@ teardown_hypervisors() {
     "the NeutronMetadataAgents in openstack" --all -n openstack
   delete_where_crd_exists ovnchassis.ovn.openstack.c5c3.io "the OVNChassis in openstack" --all -n openstack
 
-  # 2. What the two operators keep per node.
+  # 3. What the two operators keep per node.
   delete_where_crd_exists hypervisors.kvm.cloud.sap "the Hypervisors" --all
   delete_where_crd_exists evictions.kvm.cloud.sap "the Evictions" --all
   delete_where_crd_exists migrations.kvm.cloud.sap "the Migrations" --all -A
 
-  # 3. The fixtures, through the ControlPlane's credential. Only the disable
+  # 4. The fixtures, through the ControlPlane's credential. Only the disable
   # needs the domain; a missing domain kind means there is none.
   if [[ -f "${OVERLAY_ROOT}/hypervisor-fixtures/kustomization.yaml" ]]; then
     local domain
@@ -657,10 +956,10 @@ teardown_hypervisors() {
     delete_and_wait "the hypervisor fixtures" -k "${OVERLAY_ROOT}/hypervisor-fixtures"
   fi
 
-  # 4. The overlay.
+  # 5. The overlay.
   delete_and_wait "the hypervisor overlay" -k "${OVERLAY_ROOT}/hypervisor"
 
-  # 5. The maintenance objects in kube-system, by name, in one delete.
+  # 6. The maintenance objects in kube-system, by name, in one delete.
   local nodes node names=()
   if ! nodes="$(kubectl get nodes -o name)"; then
     log "ERROR: cannot list the nodes (kubectl's error is above)."
@@ -675,7 +974,7 @@ teardown_hypervisors() {
       deployment,poddisruptionbudget "${names[@]}" -n kube-system
   fi
 
-  # 6. The node labels and the annotations.
+  # 7. The node labels and the annotations.
   log "Removing the hypervisor labels and annotations from every node..."
   kubectl label nodes --all openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
     nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle- >/dev/null
@@ -948,7 +1247,11 @@ teardown_dizzy() {
 # its Job and reader pod, which ends a running soak with its report, then the
 # render of dizzy-soak/ (the K-ORC identity, the RBAC and the claim). Then:
 #   0. the lab hypervisors, when the overlay has them (teardown_hypervisors),
-#      while everything they need still runs;
+#      while everything they need still runs: first the servers, volume
+#      backups, snapshots and volumes of every project, deleted in OpenStack
+#      through each ControlPlane's admin credential from a pod in openstack
+#      (teardown_openstack_workloads), then the node layer, the hypervisor
+#      objects, the fixtures, the overlay and the node labels;
 #   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
 #      reaps its children, then every OVNCentral there: the quick start's
 #      central is referenced, not owned, and its database pods would hold

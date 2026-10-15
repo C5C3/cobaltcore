@@ -62,6 +62,7 @@
 #      exits 0 on a second run that finds nothing, without printing kubectl's
 #      "No resources found".
 #   4. Step 0 removes the lab hypervisors before the ControlPlane: the
+#      servers, volume backups, snapshots and volumes in OpenStack, the
 #      NovaComputes, metadata agents and OVNChassis, the kvm.cloud.sap
 #      objects, the fixtures after disabling their domain and waiting for
 #      that, the hypervisor overlay, the maint-<node> objects in kube-system
@@ -71,6 +72,23 @@
 #      1 when the domain cannot be read or stays enabled, or the nodes cannot
 #      be listed, still deletes the fixtures once their domain is gone, and
 #      deletes none of its guarded kinds on a second run.
+#   4a. The OpenStack cleanup of step 0 runs per ControlPlane in openstack:
+#      it reads the admin clouds.yaml Secret and the Nova Deployment's image,
+#      deletes the pod of an earlier run, applies the pod from that image
+#      with the Secret mounted, waits for it, execs the program with
+#      TEARDOWN_TIMEOUT, and deletes the pod, all before the NovaCompute
+#      delete. It skips a ControlPlane without the Secret or the Deployment
+#      with a log line, exits 1 when the ControlPlanes, the Secret or the
+#      Deployment cannot be read (before any pod), when the pod does not turn
+#      Ready (leaving it) or when the program exits non-zero (after deleting
+#      the pod, quoting its output, before the NovaCompute delete), and makes
+#      no call on a second run. The program itself, run against a stand-in
+#      openstacksdk, deletes the servers, backups, snapshots and volumes of
+#      every project in that order, forced, removes a volume's attachments
+#      first, exits 0 once every kind is gone, exits 1 on the deadline
+#      naming what is left and deleting nothing after it, skips Cinder
+#      without a block-storage service, and refuses a clouds.yaml with two
+#      clouds.
 #   5. Chaos Mesh goes before step 0. A delete of the experiments that runs
 #      out exits 1 with kubectl's named object and the finalizer hint, and
 #      deletes nothing after it; a CRD scope read that fails exits 1 before
@@ -629,6 +647,131 @@ metadata:
   namespace: flux-system
 YAML
 
+  # A stand-in for the openstacksdk the cleanup program imports. The JSON file
+  # FAKE_SDK_STATE lists the objects of each kind (a `stuck` one survives its
+  # delete, a `refused` one raises), the clouds and the catalog's services;
+  # every call is appended to FAKE_SDK_LOG.
+  mkdir -p "$dir/pysdk/openstack"
+  cat >"$dir/pysdk/openstack/__init__.py" <<'PY'
+import json
+import os
+import types
+
+
+class SDKException(Exception):
+    pass
+
+
+exceptions = types.SimpleNamespace(SDKException=SDKException)
+
+with open(os.environ["FAKE_SDK_STATE"]) as f:
+    _STATE = json.load(f)
+
+
+def _log(line):
+    with open(os.environ["FAKE_SDK_LOG"], "a") as f:
+        f.write(line + "\n")
+
+
+def _kwargs(kwargs):
+    return "".join(f" {k}={v}" for k, v in sorted(kwargs.items()))
+
+
+class _Object:
+    def __init__(self, data):
+        self.name = None
+        self.status = None
+        self.project_id = None
+        self.compute_host = None
+        self.task_state = None
+        self.attachments = []
+        self.__dict__.update(data)
+
+
+class _Kind:
+    def __init__(self, name, items):
+        self.name = name
+        self.items = [dict(item) for item in items]
+
+    def list(self, all_projects):
+        _log(f"list {self.name} all_projects={all_projects}")
+        return [_Object(item) for item in self.items if not item.get("gone")]
+
+    def delete(self, obj, **kwargs):
+        _log(f"delete {self.name} {obj.name}{_kwargs(kwargs)}")
+        for item in self.items:
+            if item["id"] != obj.id:
+                continue
+            if item.get("refused"):
+                raise SDKException(f"{obj.name} is locked")
+            if not item.get("stuck"):
+                item["gone"] = True
+
+
+class _Compute:
+    def __init__(self):
+        self._servers = _Kind("server", _STATE.get("servers", []))
+
+    def servers(self, details=True, all_projects=False, **query):
+        return self._servers.list(all_projects)
+
+    def delete_server(self, server, ignore_missing=True, force=False):
+        self._servers.delete(server, force=force)
+
+
+class _BlockStorage:
+    def __init__(self):
+        self._backups = _Kind("backup", _STATE.get("backups", []))
+        self._snapshots = _Kind("snapshot", _STATE.get("snapshots", []))
+        self._volumes = _Kind("volume", _STATE.get("volumes", []))
+
+    def backups(self, details=True, all_projects=False, **query):
+        return self._backups.list(all_projects)
+
+    def snapshots(self, details=True, all_projects=False, **query):
+        return self._snapshots.list(all_projects)
+
+    def volumes(self, details=True, all_projects=False, **query):
+        return self._volumes.list(all_projects)
+
+    def delete_backup(self, backup, ignore_missing=True, force=False):
+        self._backups.delete(backup, force=force)
+
+    def delete_snapshot(self, snapshot, ignore_missing=True, force=False):
+        self._snapshots.delete(snapshot, force=force)
+
+    def delete_volume(self, volume, ignore_missing=True, force=False, cascade=False):
+        self._volumes.delete(volume, cascade=cascade, force=force)
+
+    def delete_attachment(self, attachment, ignore_missing=True):
+        _log(f"delete attachment {attachment}")
+
+
+class _Connection:
+    def __init__(self):
+        self.compute = _Compute()
+        self.block_storage = _BlockStorage()
+
+    def has_service(self, service_key, version=None):
+        return service_key in _STATE.get("services", ["compute", "block-storage"])
+
+
+class OpenStackConfig:
+    def __init__(self, **kwargs):
+        _log(f"OpenStackConfig{_kwargs(kwargs)}")
+
+    def get_cloud_names(self):
+        return list(_STATE.get("clouds", ["admin"]))
+
+
+config = types.SimpleNamespace(OpenStackConfig=OpenStackConfig)
+
+
+def connect(cloud=None, load_envvars=True, **kwargs):
+    _log(f"connect cloud={cloud} load_envvars={load_envvars}{_kwargs(kwargs)}")
+    return _Connection()
+PY
+
   cat >"$dir/kubectl" <<'STUB'
 #!/bin/bash
 dir="$(dirname "$0")"
@@ -654,9 +797,60 @@ case "$args" in
       exit 1
     fi
     ;;
+  "apply -f -")
+    manifest="$(cat)"
+    kinds="$(grep '^kind:' <<<"$manifest" | sed 's/^kind: //' | sort | tr '\n' ' ')"
+    echo "kubectl ${args} [kinds: ${kinds% }]" >>"$CALL_LOG"
+    printf '%s\n' "$manifest" >"$dir/applied.yaml"
+    ;;
+  "exec -i -n openstack teardown-openstack-cleanup -- python3 - "*)
+    # The program arrives on stdin; the test runs it against the stand-in.
+    cat >"$dir/cleanup.py"
+    echo "kubectl ${args}" >>"$CALL_LOG"
+    ;;
   *) echo "kubectl ${args}" >>"$CALL_LOG" ;;
 esac
 case "$args" in
+  "get controlplanes.c5c3.io -n openstack -o name")
+    if [ "${KUBECTL_CONTROLPLANES_RC:-0}" != "0" ]; then
+      echo 'Error from server (Forbidden): controlplanes.c5c3.io is forbidden: User "lab" cannot list resource "controlplanes" in API group "c5c3.io" in the namespace "openstack"' >&2
+      exit "${KUBECTL_CONTROLPLANES_RC}"
+    fi
+    if [ -n "${KUBECTL_CONTROLPLANE_NOISE:-}" ]; then
+      echo 'W1001 10:00:00.000000    4242 warnings.go:70] v1 ControlPlane is deprecated'
+    fi
+    [ -n "${KUBECTL_NO_CONTROLPLANE:-}" ] || echo 'controlplane.c5c3.io/controlplane'
+    ;;
+  "get secret controlplane-admin-password-cloud -n openstack --ignore-not-found -o name")
+    if [ "${KUBECTL_ADMIN_CLOUD_RC:-0}" != "0" ]; then
+      echo 'Unable to connect to the server: dial tcp 10.128.0.1:443: i/o timeout' >&2
+      exit "${KUBECTL_ADMIN_CLOUD_RC}"
+    fi
+    [ -n "${KUBECTL_ADMIN_CLOUD_ABSENT:-}" ] || echo 'secret/controlplane-admin-password-cloud'
+    ;;
+  "get deployment controlplane-nova -n openstack --ignore-not-found -o jsonpath="*)
+    if [ "${KUBECTL_NOVA_DEPLOYMENT_RC:-0}" != "0" ]; then
+      echo 'Unable to connect to the server: dial tcp 10.128.0.1:443: i/o timeout' >&2
+      exit "${KUBECTL_NOVA_DEPLOYMENT_RC}"
+    fi
+    [ -n "${KUBECTL_NOVA_ABSENT:-}" ] || printf '%s' 'ghcr.io/c5c3/nova:2026.1'
+    ;;
+  "wait pod/teardown-openstack-cleanup -n openstack --for=condition=Ready "*)
+    if [ "${KUBECTL_CLEANUP_POD_WAIT_RC:-0}" != "0" ]; then
+      echo 'error: timed out waiting for the condition on pods/teardown-openstack-cleanup' >&2
+      exit "${KUBECTL_CLEANUP_POD_WAIT_RC}"
+    fi
+    echo 'pod/teardown-openstack-cleanup condition met'
+    ;;
+  "exec -i -n openstack teardown-openstack-cleanup -- python3 - "*)
+    echo 'Deleting server lab-0 (55eccc79-9983-45a3-a33c-f6255fb5ea58) ACTIVE project ad9b0d2d on lab-a'
+    if [ "${KUBECTL_CLEANUP_RC:-0}" != "0" ]; then
+      echo "ERROR: 1 server(s) still present after ${args##* }s:"
+      echo '  server lab-0 (55eccc79-9983-45a3-a33c-f6255fb5ea58) ACTIVE project ad9b0d2d on lab-a task deleting'
+      exit "${KUBECTL_CLEANUP_RC}"
+    fi
+    echo 'Every server is gone'
+    ;;
   version*)
     if [ "${KUBECTL_VERSION_RC:-0}" != "0" ]; then
       echo "The connection to the server api.lab.example:443 was refused - did you specify the right host or port?" >&2
@@ -1118,7 +1312,7 @@ resolve() {
 # The recorded kubectl calls that change the cluster, plus the render, with the
 # delete flags every call carries and the patch payloads stripped, one per line.
 mutations() {
-  grep -E '^kubectl (delete|patch|kustomize|label|annotate) ' "$1" |
+  grep -E '^kubectl (delete|patch|kustomize|label|annotate|apply) ' "$1" |
     sed -e 's/ --ignore-not-found --wait --timeout=[0-9]*s//' \
       -e "s# --type merge -p {\"spec\":{\"suspend\":false}}##" \
       -e "s# --type merge -p {\"spec\":{\"deletionPolicy\":\"DeletePVCs\"}}##" \
@@ -1218,6 +1412,9 @@ test_external_teardown_order() {
     'kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground' \
     'kubectl kustomize deploy/lab/metal-stack/dizzy-soak' \
     'kubectl delete -f - [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]' \
+    'kubectl delete pod teardown-openstack-cleanup -n openstack' \
+    'kubectl apply -f - [kinds: Pod]' \
+    'kubectl delete pod teardown-openstack-cleanup -n openstack' \
     'kubectl delete novacomputes.nova.openstack.c5c3.io --all -n openstack' \
     'kubectl delete neutronmetadataagents.neutron.openstack.c5c3.io --all -n openstack' \
     'kubectl delete ovnchassis.ovn.openstack.c5c3.io --all -n openstack' \
@@ -1274,14 +1471,14 @@ test_external_teardown_order() {
     "$expected" "$actual"
 
   # Chaos Mesh goes first: its CRD scope read, then its deletes, all before the
-  # first call of step 0, which reads the NovaCompute CRD. The per-pod records
-  # are left to the CRD delete of step 8.
+  # first call of step 0, which reads the ControlPlane CRD for the OpenStack
+  # cleanup. The per-pod records are left to the CRD delete of step 8.
   local scope_read scope_line chaos_first_line chaos_overlay_line step0_line
   scope_read='kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope --no-headers'
   scope_line="$(grep -nxF "$scope_read" "$CALL_LOG" | cut -d: -f1 | head -n1)"
   chaos_first_line="$(grep -n '^kubectl delete schedules\.chaos-mesh\.org,' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   chaos_overlay_line="$(grep -nF '[kinds: DaemonSet HelmRelease HelmRepository]' "$CALL_LOG" | cut -d: -f1 | head -n1)"
-  step0_line="$(grep -n '^kubectl get crd novacomputes\.nova\.openstack\.c5c3\.io' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  step0_line="$(grep -n '^kubectl get crd controlplanes\.c5c3\.io' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   assert_eq "the Chaos Mesh CRD scope is read once" "1" "$(grep -cxF "$scope_read" "$CALL_LOG")"
   assert_eq "and before the schedules and workflows are deleted" "true" \
     "$([[ -n "$scope_line" && -n "$chaos_first_line" && "$scope_line" -lt "$chaos_first_line" ]] && echo true || echo false)"
@@ -1792,6 +1989,7 @@ test_hypervisor_step_zero() {
   assert_eq "and step 0 makes no call" "" \
     "$(grep -E -e '^kubectl (get crd|delete) (novacomputes|neutronmetadataagents|ovnchassis|hypervisors|evictions|migrations)\.' \
       -e 'domains\.openstack' -e 'delete -k [^ ]*/hypervisor' -e 'maint-' -e '^kubectl (get|label|annotate) nodes' \
+      -e 'controlplanes\.c5c3\.io -n openstack' -e 'teardown-openstack-cleanup' -e '^kubectl apply ' \
       <<<"$calls" || true)"
   assert_eq "the ControlPlane delete still comes first" "kubectl delete controlplane --all -n openstack" \
     "$(mutations "$CALL_LOG" | head -n 1)"
@@ -1904,9 +2102,309 @@ test_hypervisor_step_zero() {
   assert_eq "it deletes none of the six step 0 kinds" "" \
     "$(grep -E '^kubectl delete (novacomputes|neutronmetadataagents|ovnchassis|hypervisors|evictions|migrations)' <<<"$calls" || true)"
   assert_not_contains "it patches no domain" "$calls" "patch domains"
+  assert_not_contains "it lists no ControlPlane for the OpenStack cleanup" "$calls" "get controlplanes.c5c3.io"
   assert_contains "its fixtures delete finds nothing and passes" "$calls" \
     "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures "
   assert_contains "it reads the CRDs it would delete from" "$calls" "get crd hypervisors.kvm.cloud.sap"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 6a: the OpenStack cleanup of step 0
+# ---------------------------------------------------------------------------
+# run_program <tmp> <state json> <timeout> — Runs the program the exec stub
+# saved against the stand-in openstacksdk with the given state, echoes its
+# output and returns its exit status; the stand-in's call log is in
+# <tmp>/sdk.log.
+run_program() {
+  local tmp="$1" state="$2" timeout="$3"
+  printf '%s\n' "$state" >"$tmp/state.json"
+  : >"$tmp/sdk.log"
+  (
+    export FAKE_SDK_STATE="$tmp/state.json" FAKE_SDK_LOG="$tmp/sdk.log" PYTHONPATH="$tmp/bin/pysdk"
+    python3 -B "$tmp/bin/cleanup.py" "$timeout"
+  ) 2>&1
+}
+
+test_openstack_cleanup_step() {
+  echo "Test: step 0 deletes the servers, backups, snapshots and volumes in OpenStack before the NovaComputes"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (62 checks skipped)"
+    SKIP=$((SKIP + 62))
+    return
+  fi
+
+  local tmp output rc calls
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+
+  # The default run: the Secret and the Deployment are read, the pod of an
+  # earlier run is deleted, the pod is applied from the Nova image with the
+  # Secret mounted, waited for, the program exec'd with the timeout, and the
+  # pod deleted, all before the NovaCompute CRD is read.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true TEARDOWN_TIMEOUT=120)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "the default run exits 0" "0" "$rc"
+  assert_eq "the cleanup calls run in order" \
+    "$(printf '%s\n' \
+      'kubectl get crd controlplanes.c5c3.io' \
+      'kubectl get controlplanes.c5c3.io -n openstack -o name' \
+      'kubectl get secret controlplane-admin-password-cloud -n openstack --ignore-not-found -o name' \
+      'kubectl get deployment controlplane-nova -n openstack --ignore-not-found -o jsonpath={.spec.template.spec.containers[0].image}' \
+      'kubectl delete pod teardown-openstack-cleanup -n openstack --ignore-not-found --wait --timeout=120s' \
+      'kubectl apply -f - [kinds: Pod]' \
+      'kubectl wait pod/teardown-openstack-cleanup -n openstack --for=condition=Ready --timeout=120s' \
+      'kubectl exec -i -n openstack teardown-openstack-cleanup -- python3 - 120' \
+      'kubectl delete pod teardown-openstack-cleanup -n openstack --ignore-not-found --wait --timeout=120s' \
+      'kubectl get crd novacomputes.nova.openstack.c5c3.io')" \
+    "$(grep -E -e 'controlplanes\.c5c3\.io' -e 'admin-password-cloud' -e 'deployment controlplane-nova' \
+      -e 'teardown-openstack-cleanup' -e '^kubectl apply ' -e 'get crd novacomputes' <<<"$calls" | head -n 10)"
+  assert_contains "the step is logged with the ControlPlane" "$output" \
+    "Deleting the servers, volume backups, snapshots and volumes of ControlPlane controlplane in every project..."
+  assert_contains "the program's lines are logged" "$output" \
+    "Deleting server lab-0 (55eccc79-9983-45a3-a33c-f6255fb5ea58) ACTIVE project ad9b0d2d on lab-a"
+  assert_contains "the pod runs the Nova API's image" "$(cat "$tmp/bin/applied.yaml")" \
+    "image: ghcr.io/c5c3/nova:2026.1"
+  assert_contains "and mounts the admin clouds.yaml Secret" "$(cat "$tmp/bin/applied.yaml")" \
+    "secretName: controlplane-admin-password-cloud"
+  assert_contains "the pod sleeps until the program is exec'd" "$(cat "$tmp/bin/applied.yaml")" \
+    'command: ["sleep", "infinity"]'
+  assert_contains "the pod runs as the openstack user of python-base" "$(cat "$tmp/bin/applied.yaml")" \
+    "runAsUser: 42424"
+  assert_not_contains "the pod mounts no ServiceAccount token" "$(cat "$tmp/bin/applied.yaml")" \
+    "automountServiceAccountToken: true"
+  assert_contains "the program reads the clouds.yaml under /etc/openstack" "$(cat "$tmp/bin/cleanup.py")" \
+    'CLOUDS_FILE = "/etc/openstack/clouds.yaml"'
+
+  # Noise on stdout beside the ControlPlane name is not a ControlPlane.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CONTROLPLANE_NOISE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a warning beside the ControlPlane name does not fail the teardown" "0" "$rc"
+  assert_eq "and names no second ControlPlane" "1" "$(grep -c 'admin-password-cloud' <<<"$calls")"
+
+  # The ControlPlanes cannot be listed: exit 1 before any pod.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CONTROLPLANES_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a ControlPlane list that fails exits 1" "1" "$rc"
+  assert_contains "the error says the ControlPlanes cannot be listed" "$output" \
+    "ERROR: cannot list the ControlPlanes in openstack (kubectl's error is above)."
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+  assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
+
+  # No ControlPlane: no Secret read, no pod, and the NovaComputes still go.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NO_CONTROLPLANE=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cluster without a ControlPlane tears down" "0" "$rc"
+  assert_not_contains "no Secret is read" "$calls" "admin-password-cloud"
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+  assert_contains "the NovaComputes are still deleted" "$calls" "delete novacomputes.nova.openstack.c5c3.io --all -n openstack"
+
+  # The Secret is missing: the ControlPlane is skipped with a line and the
+  # NovaCompute delete still runs. A read that fails exits 1 instead.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_ADMIN_CLOUD_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a ControlPlane without the admin clouds.yaml does not fail the teardown" "0" "$rc"
+  assert_contains "the skip is logged" "$output" \
+    "ControlPlane controlplane has no Secret controlplane-admin-password-cloud; its servers and volumes are left to their owners."
+  assert_not_contains "no Deployment is read" "$calls" "get deployment controlplane-nova"
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+  assert_contains "the NovaComputes are still deleted" "$calls" "delete novacomputes.nova.openstack.c5c3.io --all -n openstack"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_ADMIN_CLOUD_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a Secret read that fails exits 1" "1" "$rc"
+  assert_contains "the error names the Secret" "$output" \
+    "ERROR: cannot read the Secret controlplane-admin-password-cloud in openstack:"
+  assert_contains "and quotes kubectl's error" "$output" "Unable to connect to the server"
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+  assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
+
+  # The ControlPlane runs no Nova: skipped with a line. A read that fails
+  # exits 1 instead.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NOVA_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a ControlPlane without Nova does not fail the teardown" "0" "$rc"
+  assert_contains "the skip is logged" "$output" \
+    "ControlPlane controlplane runs no Nova (no Deployment controlplane-nova in openstack); nothing to delete in OpenStack."
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+  assert_contains "the NovaComputes are still deleted" "$calls" "delete novacomputes.nova.openstack.c5c3.io --all -n openstack"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NOVA_DEPLOYMENT_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a Deployment read that fails exits 1" "1" "$rc"
+  assert_contains "the error names the Deployment" "$output" \
+    "ERROR: cannot read the Deployment controlplane-nova in openstack (kubectl's error is above)."
+  assert_not_contains "no pod is applied" "$calls" "kubectl apply"
+
+  # The pod does not turn Ready: exit 1, the pod stays for a look, nothing
+  # of the node layer is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CLEANUP_POD_WAIT_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a pod that does not turn Ready exits 1" "1" "$rc"
+  assert_contains "the error names the pod and the wait" "$output" \
+    "ERROR: the pod teardown-openstack-cleanup in openstack did not turn Ready within 600s:"
+  assert_contains "and quotes kubectl's error" "$output" \
+    "error: timed out waiting for the condition on pods/teardown-openstack-cleanup"
+  assert_contains "and says the pod stays" "$output" \
+    "The pod stays for a look (kubectl describe pod teardown-openstack-cleanup -n openstack); the next run deletes it."
+  assert_eq "the pod is deleted once, before the apply" "1" "$(grep -c 'delete pod teardown-openstack-cleanup' <<<"$calls")"
+  assert_not_contains "nothing is exec'd" "$calls" "kubectl exec"
+  assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
+
+  # The program exits 1: its listing is logged, the pod is deleted, the
+  # teardown exits 1 before the NovaComputes and the ControlPlane.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CLEANUP_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cleanup that ends 1 exits 1" "1" "$rc"
+  assert_contains "the program's listing is logged" "$output" "ERROR: 1 server(s) still present after 600s:"
+  assert_contains "with the object" "$output" \
+    "server lab-0 (55eccc79-9983-45a3-a33c-f6255fb5ea58) ACTIVE project ad9b0d2d on lab-a task deleting"
+  assert_eq "the last line names the ControlPlane and the timeout" \
+    "ERROR: the OpenStack cleanup of ControlPlane controlplane failed or did not finish within 600s (its output is above)." \
+    "$(tail -n 1 <<<"$output" | sed 's/^\[[^]]*\] //')"
+  assert_eq "the pod is deleted before and after the program" "2" "$(grep -c 'delete pod teardown-openstack-cleanup' <<<"$calls")"
+  assert_eq "the second delete follows the exec" "true" \
+    "$([[ "$(grep -n 'kubectl exec' <<<"$calls" | cut -d: -f1 | head -n1)" -lt \
+      "$(grep -n 'delete pod teardown-openstack-cleanup' <<<"$calls" | cut -d: -f1 | tail -n1)" ]] && echo true || echo false)"
+  assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
+  assert_not_contains "no ControlPlane is deleted" "$calls" "delete controlplane"
+
+  # A second run: the ControlPlane CRD is gone, so nothing is listed or run.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_SECOND_RUN=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a second run exits 0" "0" "$rc"
+  assert_not_contains "it lists no ControlPlane" "$calls" "get controlplanes.c5c3.io"
+  assert_not_contains "it applies no pod" "$calls" "kubectl apply"
+
+  # The program, against the stand-in openstacksdk the stubs ship.
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  SKIP: python3 not installed (22 checks skipped)"
+    SKIP=$((SKIP + 22))
+    unset CALL_LOG
+    return
+  fi
+  assert_eq "the program compiles" "0" "$(python3 -B -m py_compile "$tmp/bin/cleanup.py" >/dev/null 2>&1; echo $?)"
+
+  # Everything goes: the servers, then the backups, the snapshots and the
+  # volumes, every delete forced, the volume's stale attachment removed first,
+  # every list across all projects, and the config read without the
+  # environment.
+  local state
+  state='{"servers":[{"id":"s-0","name":"lab-0","status":"ACTIVE","project_id":"p1","compute_host":"lab-a"},
+                     {"id":"s-1","name":"lab-1","status":"ERROR","project_id":"p2","compute_host":"lab-b","task_state":"deleting"}],
+          "backups":[{"id":"b-0","name":"lab-bk","status":"available","project_id":"p1"}],
+          "snapshots":[{"id":"n-0","name":"snap-0","status":"available","project_id":"p1"}],
+          "volumes":[{"id":"v-0","name":"lab-vol","status":"in-use","project_id":"p1",
+                      "attachments":[{"attachment_id":"a-0","server_id":"s-0"}]},
+                     {"id":"v-1","name":"lab-nfs","status":"available","project_id":"p1"}]}'
+  output="$(run_program "$tmp" "$state" 600)"
+  rc=$?
+  assert_eq "the program exits 0 once everything is gone" "0" "$rc"
+  assert_eq "it calls the stand-in in dependency order" \
+    "$(printf '%s\n' \
+      "OpenStackConfig config_files=['/etc/openstack/clouds.yaml'] load_envvars=False vendor_files=[]" \
+      'connect cloud=admin load_envvars=False' \
+      'list server all_projects=True' \
+      'delete server lab-0 force=True' \
+      'delete server lab-1 force=True' \
+      'list server all_projects=True' \
+      'list backup all_projects=True' \
+      'delete backup lab-bk force=True' \
+      'list backup all_projects=True' \
+      'list snapshot all_projects=True' \
+      'delete snapshot snap-0 force=True' \
+      'list snapshot all_projects=True' \
+      'list volume all_projects=True' \
+      'delete attachment a-0' \
+      'delete volume lab-vol cascade=True force=True' \
+      'delete volume lab-nfs cascade=True force=True' \
+      'list volume all_projects=True')" \
+    "$(cat "$tmp/sdk.log")"
+  assert_eq "and says what it deletes, with the host, the project and the task" \
+    "$(printf '%s\n' \
+      'Deleting server lab-0 (s-0) ACTIVE project p1 on lab-a' \
+      'Deleting server lab-1 (s-1) ERROR project p2 on lab-b task deleting' \
+      'Every server is gone' \
+      'Deleting volume backup lab-bk (b-0) available project p1' \
+      'Every volume backup is gone' \
+      'Deleting volume snapshot snap-0 (n-0) available project p1' \
+      'Every volume snapshot is gone' \
+      'Deleting volume lab-vol (v-0) in-use project p1' \
+      '  removing attachment a-0 to server s-0' \
+      'Deleting volume lab-nfs (v-1) available project p1' \
+      'Every volume is gone')" \
+    "$output"
+
+  # Nothing to delete: one list per kind, no delete.
+  output="$(run_program "$tmp" '{}' 600)"
+  rc=$?
+  assert_eq "an empty cloud exits 0" "0" "$rc"
+  assert_eq "it says so per kind" \
+    "$(printf '%s\n' 'No server is present' 'No volume backup is present' 'No volume snapshot is present' 'No volume is present')" \
+    "$output"
+  assert_not_contains "and deletes nothing" "$(cat "$tmp/sdk.log")" "delete "
+
+  # A server that survives its delete: on the deadline the program names it
+  # and exits 1 before any Cinder call.
+  state='{"servers":[{"id":"s-0","name":"lab-0","status":"ACTIVE","project_id":"p1","compute_host":"lab-a","stuck":true},
+                     {"id":"s-1","name":"lab-1","status":"ACTIVE","project_id":"p1","compute_host":"lab-b"}],
+          "volumes":[{"id":"v-0","name":"lab-vol","status":"available","project_id":"p1"}]}'
+  output="$(run_program "$tmp" "$state" 0)"
+  rc=$?
+  assert_eq "a server that stays exits 1" "1" "$rc"
+  assert_contains "the deadline names the count and the timeout" "$output" "ERROR: 1 server(s) still present after 0s:"
+  assert_contains "and the server" "$output" "  server lab-0 (s-0) ACTIVE project p1 on lab-a"
+  assert_not_contains "but not the one that went" "$output" "  server lab-1"
+  assert_not_contains "nothing of Cinder is listed or deleted" "$(cat "$tmp/sdk.log")" "volume"
+
+  # A delete the API refuses is logged and left to the deadline.
+  state='{"servers":[{"id":"s-0","name":"lab-0","status":"ACTIVE","project_id":"p1","refused":true}]}'
+  output="$(run_program "$tmp" "$state" 0)"
+  rc=$?
+  assert_eq "a refused delete exits 1 on the deadline" "1" "$rc"
+  assert_contains "the refusal is logged" "$output" "  delete refused: lab-0 is locked"
+  assert_contains "and the server named on the deadline" "$output" "  server lab-0 (s-0) ACTIVE project p1"
+
+  # A catalog without block-storage: the servers go, Cinder is never called.
+  state='{"services":["compute"],"servers":[{"id":"s-0","name":"lab-0","status":"ACTIVE","project_id":"p1"}],
+          "volumes":[{"id":"v-0","name":"lab-vol","status":"available","project_id":"p1"}]}'
+  output="$(run_program "$tmp" "$state" 600)"
+  rc=$?
+  assert_eq "a cloud without Cinder exits 0" "0" "$rc"
+  assert_contains "the missing service is logged" "$output" \
+    "The catalog has no block-storage service; no volume to delete"
+  assert_contains "the servers still go" "$(cat "$tmp/sdk.log")" "delete server lab-0 force=True"
+  assert_not_contains "and no volume is listed" "$(cat "$tmp/sdk.log")" "list volume"
+
+  # A clouds.yaml with two clouds: refused before any connection.
+  output="$(run_program "$tmp" '{"clouds":["admin","other"]}' 600)"
+  rc=$?
+  assert_eq "two clouds exit 1" "1" "$rc"
+  assert_contains "the error counts them" "$output" "ERROR: /etc/openstack/clouds.yaml names 2 clouds, expected one"
+  assert_not_contains "and nothing connects" "$(cat "$tmp/sdk.log")" "connect"
   unset CALL_LOG
 }
 
@@ -2159,7 +2657,7 @@ test_dizzy_soak_step() {
   job_line="$(grep -nxF "$job" <<<"$calls" | cut -d: -f1 | head -n1)"
   render_line="$(grep -nx "kubectl kustomize .*/deploy/lab/metal-stack/dizzy-soak" <<<"$calls" | cut -d: -f1 | head -n1)"
   objects_line="$(grep -nxF "$objects" <<<"$calls" | cut -d: -f1 | head -n1)"
-  hypervisor_line="$(grep -nE '^kubectl (get crd|delete) novacomputes\.' <<<"$calls" | cut -d: -f1 | head -n1)"
+  hypervisor_line="$(grep -nE '^kubectl get crd controlplanes\.c5c3\.io' <<<"$calls" | cut -d: -f1 | head -n1)"
   controlplane_line="$(grep -n '^kubectl delete controlplane --all -n openstack ' <<<"$calls" | cut -d: -f1 | head -n1)"
   assert_eq "the Job and reader pod are deleted once, in the foreground, ignoring absence and waiting" "1" \
     "$(grep -cxF "$job" <<<"$calls")"
@@ -2756,6 +3254,7 @@ test_external_teardown_order
 test_script_names_no_platform_namespace
 test_external_teardown_failures
 test_hypervisor_step_zero
+test_openstack_cleanup_step
 test_chaos_mesh_step
 test_dizzy_step
 test_dizzy_soak_step
