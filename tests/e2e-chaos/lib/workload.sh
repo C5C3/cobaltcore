@@ -324,7 +324,11 @@ ovn_db_sync() {
   fi
   # The warnings neutron 28.0.1 (ovn_db_sync.py) logs in log mode for each
   # difference it finds. Most say "found in", the rest use their own words.
-  drift="$(grep -E 'found in (Neutron|OVN)|Port Groups to add|ACLs to be added|should (not )?be present in OVN|out of sync|missing in OVN|needs to be updated in OVN|must be updated' <<<"$log" || true)"
+  # The Southbound pass says "found in" too, but it runs in every mode, writes
+  # the segment host mappings it names and compares no Northbound row. Its
+  # "New host" line comes on every run for a chassis without bridge mappings,
+  # which never gets a mapping. Only its lines name the OVN SB DB.
+  drift="$(grep -E 'found in (Neutron|OVN)|Port Groups to add|ACLs to be added|should (not )?be present in OVN|out of sync|missing in OVN|needs to be updated in OVN|must be updated' <<<"$log" | grep -vF 'OVN SB DB' || true)"
   if [ -n "$drift" ]; then
     echo "CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree"
     echo "$drift"

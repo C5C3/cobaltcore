@@ -16,12 +16,13 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the thirty-three suites that start a workload carry one
+#   4. The adoption: the thirty-four suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
 #      deletion-stuck-finalizer says why it has none.
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
 #      pod runs on, the pod and network legs load and deploy Placement for
-#      the placement stream, and make shellcheck lints lib/*.sh.
+#      the placement stream, and make shellcheck lints lib/*.sh and every
+#      suite's probe-lib.sh.
 #
 # The stub serves Keystone, Nova, Neutron, Cinder, Glance, Placement,
 # Barbican and a plain HTTP target on one localhost port, each under a path
@@ -1812,6 +1813,32 @@ LINES
   assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
   assert_contains "and shows that the sync ran" "$WL_OUT" "Neutron OVN DB sync completed"
 
+  # The Southbound pass says "found in" too, but compares no Northbound row.
+  # Its "New host" line comes on every run for a chassis without bridge
+  # mappings (the nova leg of CI run 38800821802).
+  while IFS= read -r line; do
+    new_stub
+    good_run >"$KSTUB/state/log.after"
+    wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+      STUB_JOB_LOG=$'Neutron OVN DB sync started\n'"${line}"$'\nNeutron OVN DB sync completed' \
+      -- verify t1 --ovn-db-sync neutron-x
+    assert_eq "'${line}': exit 0" "0" "$WL_RC"
+    assert_contains "it reports the comparison" "$WL_OUT" "CONSISTENCY-OK ovn-db-sync"
+  done <<'LINES'
+New host h1 found in OVN SB DB, but not in Neutron. Add its SegmentHostMapping in Neutron
+Stale host h1 found in Neutron, but not in OVN SB DB. Clear its SegmentHostMapping in Neutron
+LINES
+
+  new_stub
+  good_run >"$KSTUB/state/log.after"
+  wl "$dir" STUB_CRONJOB=log STUB_JOB_STATE="SuccessCriteriaMet Complete" \
+    STUB_JOB_LOG=$'Neutron OVN DB sync started\nNew host h1 found in OVN SB DB, but not in Neutron. Add its SegmentHostMapping in Neutron\nPort found in Neutron but not in OVN NB DB, port_id=p1\nNeutron OVN DB sync completed' \
+    -- verify t1 --ovn-db-sync neutron-x
+  assert_eq "a Northbound line beside a Southbound one: exit 1" "1" "$WL_RC"
+  assert_contains "it fails on the Northbound line" "$WL_OUT" \
+    $'CONSISTENCY-FAIL ovn-db-sync: Neutron and OVN disagree\nPort found in Neutron but not in OVN NB DB, port_id=p1'
+  assert_not_contains "and leaves the Southbound line out" "$WL_OUT" "New host h1"
+
   # The Job would pass, so only the mode check can fail the run.
   new_stub
   good_run >"$KSTUB/state/log.after"
@@ -1886,7 +1913,7 @@ cronjob-rotation-failure glance-keystone-outage \
 glance-mariadb-outage glance-operator-pod-kill horizon-dashboard-pod-kill \
 horizon-memcached-pod-kill horizon-operator-pod-kill mariadb-network-latency \
 mariadb-network-partition mariadb-pod-kill memcached-network-partition \
-memcached-pod-kill neutron-keystone-outage \
+memcached-pod-kill neutron-keystone-outage neutron-metadata-agent-pod-kill \
 neutron-operator-pod-kill nova-keystone-outage nova-operator-pod-kill \
 nova-placement-outage openbao-pod-kill operator-pod-crash operator-pod-kill \
 ovn-operator-pod-kill placement-keystone-outage placement-mariadb-outage \
@@ -1927,7 +1954,7 @@ check_adopter() {
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the thirty-three adopters keep the harness contract and deletion-stuck-finalizer declines it"
+  echo "Test: the thirty-four adopters keep the harness contract and deletion-stuck-finalizer declines it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -1937,7 +1964,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the thirty-three suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the thirty-four suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \
@@ -1983,6 +2010,8 @@ test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
   target="$(awk '/^shellcheck:/ { on = 1; next } on && /^[^\t]/ { exit } on { print }' "$PROJECT_ROOT/Makefile")"
   assert_contains "make shellcheck lints tests/e2e-chaos/lib/*.sh" "$target" \
     "shellcheck --severity=warning tests/e2e-chaos/lib/*.sh"
+  assert_contains "make shellcheck lints the probe libraries the suites source" "$target" \
+    "tests/e2e-chaos/*/probe-lib.sh"
   if command -v shellcheck >/dev/null 2>&1; then
     local out rc=0
     out="$(cd "$PROJECT_ROOT" && shellcheck --severity=warning tests/e2e-chaos/lib/workload.sh 2>&1)" || rc=$?

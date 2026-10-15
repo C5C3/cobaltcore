@@ -141,15 +141,16 @@ govulncheck:
 .PHONY: shellcheck
 # shellcheck lints all shell scripts with shellcheck --severity=warning.
 # Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps,
-# the chaos workload harness under tests/e2e-chaos/lib/ and the patch checks
-# the hvo and kna manager builds run (images/*/patch-checks.sh).
+# the chaos workload harness (tests/e2e-chaos/lib/ and the probe-lib.sh a suite
+# sources) and the patch checks the hvo and kna manager builds run
+# (images/*/patch-checks.sh).
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
 	@echo "Linting operator rotation scripts..."
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
-	@echo "Linting the chaos workload harness..."
-	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh
+	@echo "Linting the chaos workload harness and probe libraries..."
+	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh tests/e2e-chaos/*/probe-lib.sh
 	@echo "Linting the image patch checks..."
 	@shellcheck --severity=warning images/*/patch-checks.sh
 

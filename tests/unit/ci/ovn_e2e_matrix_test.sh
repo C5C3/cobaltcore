@@ -394,8 +394,9 @@ test_chaos_ovn_leg_is_wired() {
 
   local setup dump
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
-  assert_contains "the ovn leg alone asks for the OVN kernel modules" "$setup" \
-    "WITH_OVN_KERNEL_MODULES: \${{ matrix.suite == 'ovn' && 'true' || '' }}"
+  # The nova leg's neutron-metadata-agent-pod-kill runs an OVNChassis too.
+  assert_contains "the ovn and nova legs ask for the OVN kernel modules" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}"
   assert_contains "Chaos Mesh stays on for every leg" "$setup" \
     'WITH_CHAOS_MESH: "true"'
   dump=$(job_step e2e-chaos "Dump diagnostic info")

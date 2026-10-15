@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The scripts the probe pods of neutron-metadata-agent-pod-kill run, mounted at
+# /probe. Each pod runs with the node's network namespace, privileged and as
+# root, with /run/netns from the host (probe-lib.sh).
+#
+#   plug.sh  moves metavif, the internal OVS port the step added to br-int
+#            with the port id of meta-chaos-vm as external_ids:iface-id, into
+#            the network namespace meta-chaos-ns with the port's MAC and
+#            address, routes 169.254.169.254 through the network's metadata
+#            port, and waits for the metadata of the server
+#   down.sh  arms on its first answer (PROBE-ARMED) and then GETs the
+#            metadata every 2 s across the kill: a failed GET counts only
+#            when /tmp/kill-applied existed as it started, and answers before
+#            the first counted failure are the old agent's (BEFORE lines);
+#            after it the probe stops at the first answer or 30 s later, and
+#            gives up 60 s after arming when no GET failed; one line per GET
+#   up.sh    GETs the metadata every 5 s for up to 180 s until it answers
+#   get.py   one GET of meta_data.json with a 10 s timeout: exit 0 on a 200
+#            that names SERVER_ID, 2 on another 200, 1 on anything else
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nova-meta-chaos-probe-scripts
+  namespace: openstack
+data:
+  get.py: |
+    import json, os, sys, urllib.error, urllib.request
+
+    URL = "http://169.254.169.254/openstack/latest/meta_data.json"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(URL, timeout=10) as resp:
+            status, body = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        print("HTTP %d" % exc.code)
+        sys.exit(1)
+    except OSError as exc:
+        print("no answer: %r" % exc)
+        sys.exit(1)
+    try:
+        uuid = json.loads(body).get("uuid")
+    except ValueError:
+        uuid = None
+    print("HTTP %d uuid=%s" % (status, uuid))
+    sys.exit(0 if status == 200 and uuid == os.environ["SERVER_ID"] else 2)
+  plug.sh: |
+    set -eu
+    NS=meta-chaos-ns
+    DEV=metavif
+    # The step added $DEV to br-int through the chassis pod before this pod
+    # started; ovs-vsctl waits for ovs-vswitchd, so the device exists here.
+    # Every command tolerates what an earlier attempt left behind.
+    ip link show "$DEV" >/dev/null 2>&1 || ip netns exec "$NS" ip link show "$DEV" >/dev/null 2>&1 || {
+      echo "FAIL: $DEV is not on the node; the step's add-port did not create it"
+      exit 1
+    }
+    [ -e "/run/netns/$NS" ] || ip netns add "$NS"
+    ip netns exec "$NS" ip link show "$DEV" >/dev/null 2>&1 || ip link set "$DEV" netns "$NS"
+    ip netns exec "$NS" ip link set "$DEV" address "$PORT_MAC"
+    ip netns exec "$NS" ip addr replace "$PORT_IP/24" dev "$DEV"
+    ip netns exec "$NS" ip link set "$DEV" up
+    ip netns exec "$NS" ip link set lo up
+    ip netns exec "$NS" ip route replace 169.254.169.254 via "$META_IP" dev "$DEV"
+    ip netns exec "$NS" ip addr show dev "$DEV"
+    ip netns exec "$NS" ip route
+    # The agent provisions the network once the chassis has claimed the
+    # port, so the first GETs may find no haproxy yet. 36 x 5 s = 180 s.
+    for _ in $(seq 1 36); do
+      if ip netns exec "$NS" python3 /probe/get.py; then
+        echo METADATA-OK
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "FAIL: no metadata of $SERVER_ID within 180s"
+    exit 1
+  down.sh: |
+    set -u
+    get() {
+      OUT="$(ip netns exec meta-chaos-ns python3 /probe/get.py 2>&1)"
+      RC=$?
+    }
+    # The script applies the PodChaos once it reads PROBE-ARMED, and creates
+    # /tmp/kill-applied once the old agent pod is gone. A GET that started
+    # before the marker may have failed on the old agent, so only the failure
+    # of a GET started after it is the kill's.
+    END=$(( $(date +%s) + 60 ))
+    get
+    while [ "$RC" -eq 1 ]; do
+      if [ "$(date +%s)" -ge "$END" ]; then
+        echo "FAIL: no metadata answer to arm the probe within 60s: $OUT"
+        exit 1
+      fi
+      sleep 2
+      get
+    done
+    echo PROBE-ARMED
+    END=$(( $(date +%s) + 60 ))
+    FIRST=""
+    while [ "$(date +%s)" -lt "$END" ]; do
+      NOW=$(date +%s)
+      KILLED=""
+      [ -e /tmp/kill-applied ] && KILLED=yes
+      get
+      if [ "$RC" -ne 1 ]; then
+        if [ -n "$FIRST" ]; then
+          echo "ATTEMPT $NOW answered $OUT"
+          exit 0
+        fi
+        echo "BEFORE $NOW answered $OUT"
+      elif [ -z "$KILLED" ]; then
+        echo "BEFORE $NOW failed $OUT"
+      else
+        echo "ATTEMPT $NOW failed $OUT"
+        if [ -z "$FIRST" ]; then
+          FIRST=$NOW
+          END=$(( NOW + 30 ))
+        fi
+      fi
+      sleep 2
+    done
+    echo "DOWN-WINDOW-OVER"
+  up.sh: |
+    set -u
+    for _ in $(seq 1 36); do
+      if ip netns exec meta-chaos-ns python3 /probe/get.py; then
+        echo METADATA-RECOVERED-OK
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "FAIL: no metadata of $SERVER_ID within 180s of the agent's return"
+    exit 1

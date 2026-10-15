@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis of the metadata agent pod-kill chaos test. Its pods program the
+# local Open vSwitch of every node the selector matches, which is the one kind
+# node; step 1 labels it.
+#
+# Neutron binds a port only to a host that has a live chassis row in the
+# Southbound database, and the chassis registers under the node's name, which
+# is why the fake compute of 12-fake-compute.yaml takes its [DEFAULT] host from
+# the same field. The metadata agent of 15-neutronmetadataagent-cr.yaml runs
+# beside these pods and reads its node's system-id over their runtime
+# directory.
+#
+# No bridge mappings and no gateway: there is no provider network on a kind
+# node to map. spec.image is left unset so the operator resolves the same OVN
+# image the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: nova-meta-chaos-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: nova-meta-chaos-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
