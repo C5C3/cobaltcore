@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The containerlab topology of the BGP fabric contract
+# (docs/reference/networking/bgp-fabric-contract.md): one node dual-homed to a
+# leaf pair under one spine, FRR on every box. run.sh deploys, checks and
+# destroys it.
+name: bgp-fabric
+
+# The management network on eth0 is the lab's own, with subnets Docker assigns:
+# containerlab's default 172.20.20.0/24 collides with any Docker network that
+# already holds 172.20.0.0/16. No FRR config announces it.
+mgmt:
+  network: bgp-fabric-mgmt
+  ipv4-subnet: auto
+  ipv6-subnet: auto
+
+topology:
+  kinds:
+    linux:
+      image: quay.io/frrouting/frr:10.7.1@sha256:e995beaa50fdc9edb35eadcfefa29b7f062cc06f2b812613789b68fa541554d2
+      # One daemons file for every box; containerlab adds each node's own
+      # binds to these.
+      binds:
+        - daemons:/etc/frr/daemons
+      sysctls:
+        net.ipv4.ip_forward: "1"
+        net.ipv6.conf.all.forwarding: "1"
+        net.ipv4.fib_multipath_hash_policy: "1"
+        net.ipv6.fib_multipath_hash_policy: "1"
+
+  nodes:
+    node1:
+      kind: linux
+      binds:
+        - node1/frr.conf:/etc/frr/frr.conf
+      # Docker's default routes on eth0 are kernel routes, which zebra prefers
+      # to the BGP defaults the leaves send. A node's only defaults are the
+      # fabric's, so drop Docker's.
+      exec:
+        - ip route del default
+        - ip -6 route del default
+    leaf1:
+      kind: linux
+      binds:
+        - leaf1/frr.conf:/etc/frr/frr.conf
+    leaf2:
+      kind: linux
+      binds:
+        - leaf2/frr.conf:/etc/frr/frr.conf
+    spine1:
+      kind: linux
+      binds:
+        - spine1/frr.conf:/etc/frr/frr.conf
+
+  links:
+    - endpoints: ["node1:eth1", "leaf1:eth1"]
+      mtu: 9000
+    - endpoints: ["node1:eth2", "leaf2:eth1"]
+      mtu: 9000
+    - endpoints: ["leaf1:eth2", "spine1:eth1"]
+      mtu: 9000
+    - endpoints: ["leaf2:eth2", "spine1:eth2"]
+      mtu: 9000

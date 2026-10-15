@@ -46,6 +46,9 @@ docs/.vitepress/dist/
 # Collected CI evidence (debug-e2e-failure log excerpts, downloaded artifacts)
 # and other generated local output.
 _output/
+# The working directory containerlab writes beside the BGP fabric lab topology;
+# destroy --cleanup removes it, a kept or crashed lab leaves it behind.
+tests/lab/bgp-fabric/clab-bgp-fabric/
 
 # Local developer scratch — throwaway CRs kept out of version control. Bare
 # names match by basename in any directory; already-tracked manifests such as
