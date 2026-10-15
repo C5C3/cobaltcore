@@ -835,6 +835,28 @@ manifest that previously declared it has been removed. The `orc-system` Namespac
 itself remains because the K-ORC installer's own resources land there. See
 [Admin Credential Chain](#admin-credential-chain) below.
 
+**Watch scope.** The one K-ORC instance in `orc-system` watches every namespace.
+The upstream manager takes a repeatable `--namespace` flag that would restrict
+it to the named namespaces; neither the vendored base nor this repo sets it, and
+`hack/ci-deploy-korc.sh` fails the deploy if the manager args ever carry one.
+The c5c3-operator places every K-ORC child (`ApplicationCredential`, `Service`,
+`Endpoint`, `Region`, `RoleAssignment`, `Project`, `User`, and the imports) and
+the `k-orc-clouds-yaml` Secret in the ControlPlane's own namespace, `openstack`
+in the lab, and nothing in `orc-system`. The same instance therefore serves
+every ControlPlane on the cluster: each CR authenticates through the Secret its
+`cloudCredentialsRef` names in its own namespace, so two ControlPlanes in two
+namespaces never share credentials. The `multi-controlplane` suite under
+`tests/e2e/c5c3/` is written to assert that against a live stack, but no CI leg
+exercises it yet: the c5c3 e2e-operator leg carries no keystone-operator, so the
+suite skips there, and the e2e-controlplane leg runs a fixed list of suites
+without it. K-ORC caches one authenticated client per distinct
+cloud configuration, `--scope-cache-max-size` entries (upstream default 10),
+and a ControlPlane uses about three (the admin password cloud, the admin
+application credential, and a short-lived mint cloud per order). Past the cap the
+oldest client is evicted and re-authenticated on its next use, which costs a
+Keystone login, not correctness; a cluster hosting several ControlPlanes can
+raise the cap with a `spec.patches` entry on the `k-orc` Kustomization.
+
 ### RabbitMQ Cluster Operator
 
 **File:** `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`

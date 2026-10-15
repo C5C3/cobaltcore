@@ -19,7 +19,20 @@
 # manifest (both at runtime, so the CI installer and the Flux stack never drift),
 # git-clones K-ORC at that commit, `kubectl apply --server-side -k`s a generated
 # kustomization that builds ./config/default with the same image override, then
-# waits for the orc-system controller Deployment to become Available.
+# waits for the orc-system controller Deployment to become Available, and
+# asserts the controller watches every namespace.
+#
+# Watch scope. K-ORC reconciles its CRs wherever they live: the c5c3-operator
+# places every K-ORC child and its clouds.yaml Secret in the ControlPlane's own
+# namespace (openstack in the lab), never in orc-system, and one controller
+# serves every ControlPlane on the cluster, each CR authenticating through the
+# Secret its CloudCredentialsRef names in its own namespace. That holds only
+# while the manager runs WITHOUT upstream's repeatable --namespace flag, which
+# would restrict the cache to the named namespaces. Nothing in this repo sets
+# the flag, but the args come from the vendored upstream base, so after the
+# Deployment is Available the script reads the manager args and fails on any
+# --namespace, rather than letting a silently namespaced K-ORC surface later as
+# ControlPlanes whose K-ORC children never reconcile.
 #
 # Integrity. Two things must be pinned, and each has its own content address:
 #   - the SOURCE tree, by the 40-char commit (a commit cannot be re-pointed, so the
@@ -200,4 +213,16 @@ kubectl apply --server-side -k "${KORC_BUILD}"
 echo "Waiting for the K-ORC controller Deployment in orc-system to become Available..."
 kubectl wait --for=condition=Available deployment --all \
   -n orc-system --timeout="${WAIT_TIMEOUT}"
-echo "K-ORC ${KORC_COMMIT} is deployed and Available."
+
+# Watch-scope guard (see the header): the manager must carry no --namespace
+# flag, or K-ORC stops reconciling the ControlPlane namespaces it is here for.
+# The args are read one per line so a flag is matched whole, never as a
+# substring of another (--namespace=x and "--namespace x" both match).
+KORC_MANAGER_ARGS="$(kubectl get deployment orc-controller-manager -n orc-system \
+  -o jsonpath='{range .spec.template.spec.containers[?(@.name=="manager")].args[*]}{@}{"\n"}{end}')"
+if grep -qE '^--namespace(=|$)' <<<"${KORC_MANAGER_ARGS}"; then
+  echo "::error::The K-ORC manager in orc-system carries a --namespace flag; it must watch every namespace so the c5c3-operator's K-ORC children reconcile in each ControlPlane's own namespace. Drop the flag from the upstream base or the image override; manager args:"
+  printf '%s\n' "${KORC_MANAGER_ARGS}" | sed 's/^/  /'
+  exit 1
+fi
+echo "K-ORC ${KORC_COMMIT} is deployed and Available, watching every namespace."
