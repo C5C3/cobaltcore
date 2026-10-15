@@ -103,7 +103,11 @@ class CycleFailed(Exception):
 
 
 class Response(NamedTuple):
-    """One HTTP answer: its status, its headers and its parsed JSON body."""
+    """One HTTP answer: its status, its headers and its body.
+
+    The body is the parsed JSON, or the raw bytes of a call that asked for no
+    parsing.
+    """
 
     status: int
     headers: Any
@@ -219,7 +223,10 @@ class Client:
 
     def send(self, method: str, url: str, expect: Any, body: Any,
              data: bytes | None, headers: dict, parse: bool) -> Response:
-        """Send one request as it is, without the token handling of call."""
+        """Send one request as it is, without the token handling of call.
+
+        Without parse the answer keeps its raw bytes as its body.
+        """
         headers.setdefault("Accept", "application/json")
         if body is not None:
             data = json.dumps(body).encode()
@@ -232,8 +239,10 @@ class Client:
             resp_headers = resp.headers
         if status not in expect:
             raise OpFailed(f"{method} {url} answered {status}", status)
+        if not parse:
+            return Response(status, resp_headers, raw)
         parsed = None
-        if parse and raw:
+        if raw:
             try:
                 parsed = json.loads(raw)
             except ValueError as exc:
@@ -829,9 +838,143 @@ class ImageStream(Stream):
         return [("images", images)]
 
 
+class PlacementStream(Stream):
+    """Create a resource provider, find it by name, delete it."""
+
+    name = "placement"
+    requires = ("placement", "keystone")
+    uses_token = True
+
+    def cycle(self, n: int) -> None:
+        """Run create-rp, list-rp, delete-rp."""
+        base = f"{self.ctx.args.placement}/resource_providers"
+        name = self.resource_name(n)
+        rp = self.measure("create-rp", lambda: self.create(base, name))
+        self.track("resource-provider", f"{base}/{rp}", (204,))
+        self.measure("list-rp", lambda: self.find(base, name, rp))
+        self.remove("delete-rp", f"{base}/{rp}")
+
+    def create(self, base: str, name: str) -> tuple[Response, str]:
+        """POST one resource provider and return its uuid.
+
+        The stream sends no microversion, and below 1.20 Placement answers 201
+        with an empty body and the provider in the Location header.
+        """
+        resp = self.client.call("POST", base, expect=(201,),
+                                body={"name": name}, parse=False)
+        location = resp.headers.get("Location")
+        if not location:
+            raise OpFailed(f"POST {base} answered without a Location",
+                           resp.status)
+        return resp, last_segment(location)
+
+    def find(self, base: str, name: str, rp: str) -> tuple[Response, None]:
+        """List the providers named name: exactly the one created as rp."""
+        resp = self.client.call("GET", f"{base}?name={name}", expect=(200,))
+        found = [p.get("uuid") for p in need(resp, "resource_providers")]
+        if found != [rp]:
+            raise OpFailed(f"GET {base}?name={name} listed {found}",
+                           resp.status)
+        return resp, None
+
+    def listing(self) -> list[dict]:
+        """List every resource provider by its uuid and name."""
+        resp = self.client.call(
+            "GET", f"{self.ctx.args.placement}/resource_providers",
+            expect=(200,))
+        return [{"id": p.get("uuid"), "name": p.get("name")}
+                for p in need(resp, "resource_providers")]
+
+    def sweep(self) -> None:
+        """Delete every leftover resource provider."""
+        deadline = time.monotonic() + SWEEP_SECONDS
+        items = self.sweep_list("resource-providers", self.listing)
+        self.sweep_each(
+            "resource-providers", items,
+            f"{self.ctx.args.placement}/resource_providers/{{id}}", (204,),
+            deadline)
+
+    def checks(self) -> list[tuple[str, Callable[[], list[str]]]]:
+        """Check that no resource provider carries the prefix."""
+        def providers() -> list[str]:
+            return prefixed(self.listing(), self.ctx.prefix,
+                            "resource provider")
+        return [("resource-providers", providers)]
+
+
+class SecretStream(Stream):
+    """Store a passphrase, read its payload back, delete it."""
+
+    name = "secret"
+    requires = ("barbican", "keystone")
+    uses_token = True
+
+    def cycle(self, n: int) -> None:
+        """Run create-secret, read-payload, delete-secret."""
+        base = f"{self.ctx.args.barbican}/v1/secrets"
+        name = self.resource_name(n)
+        url = self.measure("create-secret", lambda: self.create(base, name))
+        self.track("secret", url, (204,))
+        self.measure("read-payload", lambda: self.read(url, name))
+        self.remove("delete-secret", url)
+
+    def create(self, base: str, name: str) -> tuple[Response, str]:
+        """POST a passphrase whose payload is its name and return its URL.
+
+        Barbican writes secret_ref under its host_href, so the URL keeps the
+        uuid of the reference and the root the stream was given.
+        """
+        resp = self.client.call("POST", base, expect=(201,), body={
+            "name": name, "payload": name,
+            "payload_content_type": "text/plain",
+            "secret_type": "passphrase"})
+        return resp, f"{base}/{last_segment(need(resp, 'secret_ref'))}"
+
+    def read(self, url: str, name: str) -> tuple[Response, None]:
+        """GET the payload and fail unless it is the name, byte for byte."""
+        resp = self.client.call("GET", f"{url}/payload", expect=(200,),
+                                headers={"Accept": "text/plain"}, parse=False)
+        if resp.body != name.encode():
+            raise OpFailed(f"GET {url}/payload answered another payload",
+                           resp.status)
+        return resp, None
+
+    def listing(self) -> list[dict]:
+        """List every secret by its uuid and name, page by page."""
+        items: list[dict] = []
+        while True:
+            resp = self.client.call(
+                "GET", f"{self.ctx.args.barbican}/v1/secrets?limit=100"
+                f"&offset={len(items)}", expect=(200,))
+            page = need(resp, "secrets")
+            items.extend({"id": last_segment(s.get("secret_ref")),
+                          "name": s.get("name")} for s in page)
+            if not page or len(items) >= need(resp, "total"):
+                return items
+
+    def sweep(self) -> None:
+        """Delete every leftover secret."""
+        deadline = time.monotonic() + SWEEP_SECONDS
+        items = self.sweep_list("secrets", self.listing)
+        self.sweep_each("secrets", items,
+                        f"{self.ctx.args.barbican}/v1/secrets/{{id}}", (204,),
+                        deadline)
+
+    def checks(self) -> list[tuple[str, Callable[[], list[str]]]]:
+        """Check that no secret carries the prefix."""
+        def secrets() -> list[str]:
+            return prefixed(self.listing(), self.ctx.prefix, "secret")
+        return [("secrets", secrets)]
+
+
+def last_segment(ref: Any) -> str:
+    """Return the last path segment of a reference URL, the uuid it names."""
+    return str(ref or "").rstrip("/").rsplit("/", 1)[-1]
+
+
 STREAM_CLASSES = {cls.name: cls for cls in (
     TokenStream, HttpStream, NetworkStream, ServerStream, VolumeStream,
-    ImageStream)}
+    ImageStream, PlacementStream, SecretStream)}
 STREAMS = tuple(STREAM_CLASSES)
 
 
@@ -925,7 +1068,8 @@ def run(args: argparse.Namespace) -> int:
     settle = settle_seconds()
     # The service roots get their API paths appended; the http URL is used
     # as it is.
-    for option in ("keystone", "neutron", "nova", "cinder", "glance"):
+    for option in ("keystone", "neutron", "nova", "cinder", "glance",
+                   "placement", "barbican"):
         if getattr(args, option):
             setattr(args, option, getattr(args, option).rstrip("/"))
 
@@ -1114,6 +1258,10 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--flavor")
     run_parser.add_argument("--cinder")
     run_parser.add_argument("--glance")
+    run_parser.add_argument("--placement",
+                            help="the Placement API root, no version path")
+    run_parser.add_argument("--barbican",
+                            help="the Barbican API root, no version path")
 
     eval_parser = sub.add_parser("evaluate", help="judge a workload log")
     eval_parser.add_argument("--log", required=True)

@@ -156,10 +156,14 @@ answers 401.
 | `server` | `--nova`, `--image-ref`, `--flavor`, `--keystone` | `create` (microversion 2.37, `"networks": "none"`), `active` (300 s), `delete`, `gone` (120 s) |
 | `volume` | `--cinder`, optionally `--keystone` | `create`, `available`, `attach-create`, `attach-update`, `attach-complete`, `in-use`, `detach`, `detached`, `delete`, `gone` |
 | `image` | `--glance`, `--keystone` | `create` (raw, bare), `upload` (1 MiB of zero bytes), `active`, `delete` |
+| `placement` | `--placement`, `--keystone` | `create-rp` (no microversion, so a 201 with the provider in `Location`), `list-rp` (by name, the one provider it created), `delete-rp` |
+| `secret` | `--barbican`, `--keystone` | `create-secret` (a `passphrase` whose payload is its name), `read-payload` (`Accept: text/plain`, the payload byte for byte), `delete-secret` |
 
 The volume stream drives the attachments API at microversions 3.27 and 3.44,
 which cinder 28.0.0 defines for it. Without `--keystone` it sends the token
-`admin:admin` that the noauth Cinder of the chaos suites accepts. A failed
+`admin:admin` that the noauth Cinder of the chaos suites accepts. Barbican
+writes `secret_ref` under its `host_href`, so the secret stream keeps the uuid
+of the reference and its own `--barbican` root. A failed
 operation abandons the rest of its cycle, and the stream then deletes what that
 cycle created, newest first, with one `cleanup-<kind>` record per resource, so a
 fault cannot fill a quota of the admin project. Resources are named
@@ -245,6 +249,8 @@ before it reports a failure, so a transition still in flight can finish:
 | `volumes` | a volume in a transitional status such as `creating`, `attaching`, `reserved` or `deleting` (the full list is in `lib/workload.py`), or one named with the prefix |
 | `images` | an image in `saving` or `queued`, or one named with the prefix, on every page of `GET /v2/images` |
 | `networks` | a network or a port named with the prefix |
+| `resource-providers` | a resource provider named with the prefix in `GET /resource_providers` |
+| `secrets` | a secret named with the prefix on every page of `GET /v1/secrets` |
 
 `verify` runs two more checks outside the pod when the suite asks for them:
 
