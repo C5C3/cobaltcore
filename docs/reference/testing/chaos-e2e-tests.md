@@ -41,13 +41,13 @@ step under its number.
    service under test and asserts the baseline, `Ready=True` with reason
    `AllReady`.
 2. **Apply the chaos resource.** A `PodChaos` or a `NetworkChaos`. It lives in
-   `openstack`, or in the namespace of the operator it kills in the five
+   `openstack`, or in the namespace of the operator it kills in the eight
    operator suites of the other services. Its `selector` names the victims by
    namespace and label. `chaos-controller-manager` picks them and calls the
    `chaos-daemon` on their node, which kills the pod or a container, or sets
    rules in the network namespace of the pod.
-3. **Wait for the injection.** The `NetworkChaos` suites,
-   `ovn-southbound-outage` and `keystone-federation` run
+3. **Wait for the injection.** The `NetworkChaos` suites, the six Keystone
+   outage suites, `ovn-southbound-outage` and `keystone-federation` run
    `kubectl wait --for=condition=AllInjected` on the chaos resource. The other
    `PodChaos` suites prove the kill on the victim, by a pod UID that is gone
    or a ready replica count that drops, or read it from the condition of
@@ -121,8 +121,8 @@ settings tuned for fault injection scenarios:
 | `report.name` | `chainsaw-chaos-report` | `chainsaw-report` | Distinct JUnit report artifact |
 
 Most suites restate the assert timeout of 5 minutes (`5m`) at the spec level.
-`mariadb-network-partition` raises it to `8m`, the three nova suites raise single asserts to
-`8m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
+`mariadb-network-partition` raises it to `8m`, the six suites on the Nova stack raise single
+asserts to `8m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
 
 ## Workload and Consistency Harness
 
@@ -135,9 +135,11 @@ overrides the image), marks the fault window on the pod clock, and judges the
 records against the error budget in the suite header. The directory holds no
 `chainsaw-test.yaml`, so `make e2e-chaos` does not run it as a suite.
 
-Sixteen suites start a workload: the fifteen pod and network suites that send no
-OpenStack traffic of their own, and `nova-placement-outage`, which runs it after
-its partition as the proof run of the server, network and image streams. The
+Thirty-four suites start a workload: the fifteen pod and network suites that send
+no OpenStack traffic of their own, `nova-placement-outage`, which runs it after its
+partition as the proof run of the server, network and image streams, and the
+eighteen dependency-fault suites of #1389, from `glance-keystone-outage` to
+`neutron-metadata-agent-pod-kill`, which run it through their fault. The
 `Workload` line of each suite section below names its streams and its budget.
 
 ### Streams
@@ -232,11 +234,13 @@ Budgets are measured on kind. Run the suite three times with
 `chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/<suite>`,
 set `failures` to twice the largest in-window count and `recovery` to the
 largest observed recovery plus 30 seconds, rounded up to ten seconds, and record
-the three observations in the measured line. The budget is zero where the fault
-does not touch the request path of the stream: the seven operator pod kills,
-`cronjob-rotation-failure`, `openbao-pod-kill` and `nova-placement-outage`. A
-failure in one of them is a defect to find, and raising the budget does not
-fix it.
+the three observations in the measured line. A measured line whose environment
+reads `estimate` carries an estimate of the fault window that no run has measured
+yet, which is where the eighteen suites of #1389 start; three runs replace it. The
+budget is zero where the fault does not touch the request path of the stream: the
+ten operator pod kills, `cronjob-rotation-failure`, `openbao-pod-kill`,
+`nova-placement-outage` and `neutron-metadata-agent-pod-kill`. A failure in one of
+them is a defect to find, and raising the budget does not fix it.
 
 ### Consistency checks
 
@@ -284,7 +288,7 @@ gives a script 30 seconds:
 | `start <id> -- <run options>` | after the baseline `Ready` assertion, with `stop <id>` in the `cleanup:` of that step | 6m |
 | `mark <id> fault-start` | right before the chaos resource is applied, as a script of its own or inside the script that runs `kubectl apply` | 1m |
 | `mark <id> fault-end` | right after the Chainsaw `delete` of the chaos resource | 1m |
-| `verify <id>` with `--placement-audit` and `--ovn-db-sync` as needed | in a step after the last recovery or reconcile assertion | 15m, 25m in `nova-placement-outage` |
+| `verify <id>` with `--placement-audit` and `--ovn-db-sync` as needed | in a step after the last recovery or reconcile assertion | 15m, 25m in the suites on the Nova stack |
 | `dump <id>` | in the `catch:` of every step from `start` to `verify` | 1m |
 
 The pod is named `chaos-wl-<id>` and carries the label
@@ -335,26 +339,39 @@ non-blocking entries instead of negating the blocking one, so a fifth entry gate
 merges until it is argued out of that. The `ci:chaos` PR label runs every entry
 on demand for pre-validation. `run-chaos` still works as an alias for it.
 
-**Matrix entries and what they carry:** the `network` entry runs the NetworkChaos
-suites, the two Neutron ones (`neutron-mariadb-outage`, `neutron-broker-outage`)
-among them, and therefore deploys the neutron-operator and the ovn-operator
-alongside keystone. The three Cinder suites (`cinder-operator-pod-kill`,
-`cinder-broker-outage`, `cinder-nfs-outage`) run in that entry alone, so it
-deploys the cinder-operator into `cinder-system` as well and sets `WITH_NFS=true`
-and `WITH_MESSAGING=true` on the infrastructure bring-up: each of the three
-attaches an NFS backend the operator mounts as an inline CSI volume, and two of
-them (`cinder-operator-pod-kill`, `cinder-nfs-outage`) take a vhost on the shared
-broker. Two of the three run there for the Cinder stack of the entry, and their
+**Matrix entries and what they carry:** the `pod` entry runs the PodChaos suites
+of the keystone stack, the Keystone outage suites of Glance, Placement and
+Barbican, and `horizon-dashboard-pod-kill`, and deploys the horizon, glance,
+placement and barbican operators beside keystone. The `network` entry runs the
+NetworkChaos suites and every suite that needs the neutron, cinder or ovn
+operators: the four Neutron suites (`neutron-mariadb-outage`,
+`neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`),
+`ovn-operator-pod-kill`, the database outages of Glance, Placement, Barbican and
+Cinder, and `memcached-network-partition`. It therefore deploys the
+neutron-operator, the ovn-operator and the placement-operator alongside keystone,
+the last for `placement-mariadb-outage`. The seven Cinder suites
+(`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`,
+`cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`,
+`cinder-broker-pod-kill`) run in that entry alone, so it deploys the
+cinder-operator into `cinder-system` as well and sets `WITH_NFS=true` and
+`WITH_MESSAGING=true` on the infrastructure bring-up: each of the seven attaches
+an NFS backend the operator mounts as an inline CSI volume, five of them take a
+vhost on the shared broker, and the two broker suites bring a RabbitmqCluster of
+their own. Several of them run there for the Cinder stack of the entry, and their
 fault class would not put them there, so they inherit a `continue-on-error` the
-gate below justifies with a kernel-module dependency neither of them has:
-`cinder-operator-pod-kill` injects `PodChaos`, the class the blocking entry exists
-for, and `cinder-nfs-outage` writes no chaos-mesh CR at all. Each is the only
-automated check on the invariant it pins (operational independence and the
-fail-closed write path), and a regression in either goes red in an entry that
-reports green. Moving them to the `pod` entry means taking the Cinder stack, the
-NFS export and the broker there with them, which the blocking entry's
-`blacksmith-4vcpu-ubuntu-2404` runner has not been sized for; that move is
-tracked as a follow-up. The `ovn` entry is the third one, on the `self-hosted`
+gate below justifies with a kernel-module dependency they do not have:
+`cinder-operator-pod-kill`, `cinder-volume-pod-kill` and `cinder-broker-pod-kill`
+inject a `PodChaos` kill, the class the blocking entry exists for,
+`cinder-keystone-outage` injects a `pod-failure`, and `cinder-nfs-outage` writes
+no chaos-mesh CR at all. Each is the only automated check on the invariant it
+pins, and a regression in one goes red in an entry that reports green. Moving
+them to the `pod` entry means taking the Cinder stack, the NFS export and the
+broker there with them, which the blocking entry's `blacksmith-4vcpu-ubuntu-2404`
+runner has not been sized for; that move is tracked as a follow-up. The same
+holds for the PodChaos suites of the entry that need the neutron-operator or the
+ovn-operator. A `Dump diagnostic info (network leg)` step dumps the seven operator
+namespaces of the entry with `OPERATOR_ONLY=1`, so a failed operator kill there
+keeps the operator logs in the job log. The `ovn` entry is the third one, on the `self-hosted`
 runners as well and `continue-on-error` like the network one. It sets
 `WITH_OVN_KERNEL_MODULES=true` so `hack/deploy-infra.sh` modprobes `openvswitch`
 and `geneve` on the host (the chassis DaemonSets cannot start without them),
@@ -365,22 +382,30 @@ at the same time.
 
 The `nova` entry is the fourth, on the `self-hosted` runners and
 `continue-on-error` like the other two. It carries the heaviest stack in the job:
-each of its three suites (`nova-broker-outage`, `nova-mariadb-outage`,
-`nova-placement-outage`) brings up a Keystone, and the first and third add an
-OVNCentral, a Neutron, a Placement, a Glance and a fake-driver compute behind the
-Nova. On top of the keystone stack it deploys the placement, ovn, neutron and
-nova operators, and it sets `WITH_MESSAGING=true`: every Nova process dials the
-bus, `nova-mariadb-outage` and `nova-placement-outage` take a vhost on the shared
-broker, and `nova-broker-outage` brings a RabbitmqCluster of its own, because its
-fault severs a whole broker. The suites run in a matrix entry of their own
-because the `network` entry already spends 78 of its 90 minutes and deploys no
-placement-operator.
+each of its six suites (`nova-broker-outage`, `nova-mariadb-outage`,
+`nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
+`neutron-metadata-agent-pod-kill`) brings up a Keystone, and all but
+`nova-mariadb-outage` add an OVNCentral, a Neutron, a Placement, a Glance and a
+fake-driver compute behind the Nova. On top of the keystone stack it deploys the
+placement, ovn, neutron and nova operators, and it sets `WITH_MESSAGING=true`:
+every Nova process dials the bus, five of the six suites take a vhost on the
+shared broker, and `nova-broker-outage` brings a RabbitmqCluster of its own,
+because its fault severs a whole broker. It also sets
+`WITH_OVN_KERNEL_MODULES=true`: `neutron-metadata-agent-pod-kill` runs an
+OVNChassis and a metadata agent on the node, and the chassis DaemonSets need the
+`openvswitch` and `geneve` modules. The suites run in a matrix entry of their own
+because their stack does not fit beside the suites of the `network` entry.
 
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 90 minutes for the `pod`, `network` and `ovn` entries and 150 minutes for the `nova` entry,
-to accommodate serial test execution and longer recovery assertion windows.
+**Timeout:** 150 minutes for the `nova` entry, 135 for `network`, 90 for `pod` and 45 for
+`ovn`, seven hours in all, to accommodate serial test execution and longer recovery
+assertion windows. The last green run before the suites of #1389 (run 38626068128)
+took 48, 54, 12 and 69 minutes on `pod`, `network`, `ovn` and `nova`. A
+`network` suite took 80 to 370 seconds there and a suite on the Nova stack 11 to 21
+minutes, which puts the `network` and `nova` entries at about 122 and 132 minutes
+with the new suites.
 
 ## Test Suite Inventory
 
@@ -2086,7 +2111,7 @@ Keystone. Once the outage is lifted a fresh token gets 200 from the same request
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-glance-ks-outage` (database `keystone_glance_ks_outage`) reaches `Ready=True/AllReady` |
 | 2 | Apply Glance and its store | `apply` + `assert` (5m) + `script` (6m) | `glance-ks-outage` (database `glance_ks_outage`, `keystoneEndpoint` at the suite's Keystone, no anonymous access) and `glance-ks-outage-s3` reach `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
-| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `glance-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v2/images` with T1 once: 401 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Glance CR. The step cleanup deletes the `PodChaos` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `glance-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s until Keystone has refused every connection for 6 s and sends `GET /v2/images` with T1 once: 401 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Glance CR. The step cleanup deletes the `PodChaos` |
 | 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-glance`, then `workload.sh mark fault-end` |
 | 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `glance-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2123,9 +2148,15 @@ Keystone CR, the pod logs of the Glance CR and of the glance-operator, and every
 - The script reads `TOKEN-ISSUED` from the log of the running probe before it
   applies the `PodChaos`, so the probe runs `python3 -u`: a buffered stdout would
   hold the line until the pod ends.
-- The selector is `app.kubernetes.io/name: keystone` with the instance label of the
-  suite's Keystone. The Keystone Job pods carry no name label, and every other
-  Keystone in the namespace carries another instance label.
+- The selector is `app.kubernetes.io/name: keystone` and
+  `app.kubernetes.io/component: api` with the instance label of the suite's
+  Keystone. The trust-flush and key-rotation CronJob pods carry another component,
+  the Keystone Job pods carry no name label, and every other Keystone in the
+  namespace carries another instance label.
+- The probe takes Keystone for gone once every GET has been refused for 6 seconds.
+  A timeout, a reset or a single refusal does not count: a Keystone that is slow
+  under load, or still serving through its termination grace period, would validate
+  the token.
 - The Glance CR sets none of the anonymous-access settings `glance-garage-outage`
   needs in an entry without a Keystone, because they would let through the request
   this suite proves is refused.
@@ -2153,7 +2184,7 @@ the outage is lifted a fresh token gets 200 from the same request.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-placement-ks-outage` (database `keystone_placement_ks_outage`) reaches `Ready=True/AllReady` |
 | 2 | Apply Placement | `apply` + `assert` (5m) + `script` (6m) | `placement-ks-outage` (database `placement_ks_outage`, `keystoneEndpoint` at the suite's Keystone) reaches `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
-| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `placement-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `02-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /resource_providers` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Placement CR. The step cleanup deletes the `PodChaos` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `placement-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `02-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s until Keystone has refused every connection for 6 s and sends `GET /resource_providers` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Placement CR. The step cleanup deletes the `PodChaos` |
 | 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-placement`, then `workload.sh mark fault-end` |
 | 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `placement-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2203,7 +2234,7 @@ outage is lifted a fresh token gets 200 from the same request.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-ks-outage` (database `keystone_barbican_ks_outage`) reaches `Ready=True/AllReady` |
 | 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-ks-outage` (database `barbican_ks_outage`, one replica) and the store `barbican-ks-outage-store` on `openbao-instance` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`. `workload.sh start` then starts the workload and waits for `READY` |
-| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `barbican-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v1/secrets` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Barbican CR. The step cleanup deletes the `PodChaos` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `barbican-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s until Keystone has refused every connection for 6 s and sends `GET /v1/secrets` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Barbican CR. The step cleanup deletes the `PodChaos` |
 | 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-barbican`, then `workload.sh mark fault-end` |
 | 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `barbican-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2256,7 +2287,7 @@ outage is lifted a fresh token gets 200 from the same request.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-ks-outage` (database `keystone_neutron_ks_outage`) reaches `Ready=True/AllReady` |
 | 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret `neutron-ks-outage-messaging`, `neutron-ks-outage-ovn` and `neutron-ks-outage` (database `neutron_ks_outage`) reach `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
-| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `neutron-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `04-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v2.0/networks` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Neutron CR. The step cleanup deletes the `PodChaos` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `neutron-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `04-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s until Keystone has refused every connection for 6 s and sends `GET /v2.0/networks` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Neutron CR. The step cleanup deletes the `PodChaos` |
 | 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-neutron`, then `workload.sh mark fault-end` |
 | 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `neutron-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2309,7 +2340,7 @@ the same request.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-cinder-ks-outage` (database `keystone_cinder_ks_outage`) reaches `Ready=True/AllReady` |
 | 2 | Give the suite its vhost, apply Cinder | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-ks-outage cinder-ks-outage-messaging openstack`, then `cinder-ks-outage` (database `cinder_ks_outage`, `keystoneEndpoint` and `serviceUser` set) and the NFS backend `ks-outage-nfs1` reach `Ready=True/AllReady`. The step cleanup deletes the vhost. `workload.sh start` then starts the workload and waits for `READY` |
-| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `cinder-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v3/{project_id}/volumes` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Cinder CR. The step cleanup deletes the `PodChaos` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `cinder-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s until Keystone has refused every connection for 6 s and sends `GET /v3/{project_id}/volumes` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Cinder CR. The step cleanup deletes the `PodChaos` |
 | 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-cinder`, then `workload.sh mark fault-end` |
 | 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `cinder-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2504,7 +2535,7 @@ requests fail.
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `02-networkchaos.yaml`: `partition-mariadb-placement` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `placement-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `placement-db-chaos-failclosed-probe`: `GET /` answers 200, a token is still obtainable from `keystone-placement-db-chaos`, and one `POST /resource_providers` with `{"name": "db-outage-failclosed"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-placement`, then `workload.sh mark fault-end` |
-| 6 | Assert recovery | `script` (6m) | Pod `placement-db-chaos-recovery-probe`: `GET /resource_providers?name=db-outage-failclosed` lists nothing, and a fresh provider answers 201; the probe deletes what it created (`RECOVERY-OK`) |
+| 6 | Assert recovery | `script` (6m) | Pod `placement-db-chaos-recovery-probe`: `GET /resource_providers?name=db-outage-failclosed` lists nothing, and a fresh provider answers 201; the probe deletes what it created (`RECOVERY-OK`). Placement keeps provider names unique, so the probe deletes every provider named `db-outage-recovered` before the write, and a 409 on a retried write clears the name and writes once more |
 | 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-placement-cr.yaml`, `02-networkchaos.yaml`.
@@ -2559,7 +2590,7 @@ database-backed requests fail.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-db-chaos` (database `keystone_barbican_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
-| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-db-chaos` (database `barbican_db_chaos`, `harakiri: 20`) and `barbican-db-chaos-store` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`; `workload.sh start` waits for `READY` |
+| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-db-chaos` (database `barbican_db_chaos`, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `database`) and `barbican-db-chaos-store` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`; `workload.sh start` waits for `READY` |
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `03-networkchaos.yaml`: `partition-mariadb-barbican` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `barbican-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `barbican-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, a token is still obtainable from `keystone-barbican-db-chaos`, and one `POST /v1/secrets` with `{"name": "db-outage-failclosed", "payload": "x", "payload_content_type": "text/plain"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `BarbicanAPIReady=True/APIHealthy` on the CR |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-barbican`, then `workload.sh mark fault-end` |
@@ -2574,8 +2605,9 @@ and `barbican-db-chaos`, started before the partition and judged at the end agai
 `failures=40 recovery=90s`, an estimate no run has measured yet. The suite runs in
 the `network` matrix entry. The streams through the partitioned API fail about once
 every 16 seconds while it lasts, because a request that reaches the database waits
-until the workload's 15-second timeout. Every step from the workload start to
-`verify` dumps the workload in its catch block.
+until the workload's 15-second timeout or the socket timeouts of the CR, whichever
+ends first. Every step from the workload start to `verify` dumps the workload in its
+catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
 barbican-db-chaos` with `--cr-kind=barbican`,
@@ -2588,8 +2620,17 @@ and the operator logs, and dumps the workload.
 - The assert under the partition reads `BarbicanAPIReady` and leaves the aggregate
   `Ready` out, for the reason `barbican-openbao-outage` gives: the store controller
   revalidates its AppRole credentials against OpenBao on its own schedule.
-- The 4xx rule, the single bounded write, the listing by name, the `harakiri` bound
-  and the narrowed target follow `glance-mariadb-outage`, which gives the reasons.
+- The 4xx rule, the single bounded write, the listing by name and the narrowed
+  target follow `glance-mariadb-outage`, which gives the reasons.
+- The bound on a request that reaches the dead database is not `harakiri` but
+  pymysql's `read_timeout` and `write_timeout`, which oslo.db appends to the DSN from
+  `[database] connection_parameters`. uWSGI respawns a worker `harakiri` killed, the
+  worker loads the application again (`--lazy-apps`), and barbican connects to the
+  database while it loads, with the operator's `max_retries = -1`. Under the
+  partition that worker never comes back, the liveness probe restarts the container,
+  and the new one hangs the same way until the partition ends. With the socket
+  timeouts a request on a dead connection ends in a 500 within about 20 seconds and
+  the worker lives on.
 
 ---
 
@@ -2673,7 +2714,7 @@ reach the API Deployment, which proves the recovered operator reconciles.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-chaos-op` reaches `Ready=True/AllReady` |
 | 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret, `neutron-chaos-op-ovn` and `neutron-chaos-op` (one API replica) reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
-| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `neutron-operator` Deployment, snapshot the operator pod UIDs in `neutron-system` and the pod UIDs of `app.kubernetes.io/instance=neutron-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `neutron-operator` Deployment, snapshot the operator pod UIDs in `neutron-system` and the pod UIDs of `app.kubernetes.io/instance=neutron-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot. The step cleanup deletes the `PodChaos` |
 | 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-neutron-operator` from `neutron-system`, then `workload.sh mark fault-end` |
 | 5 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `05-patch-scale.yaml` takes `spec.deployment.replicas` to 2; Deployment `neutron-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is at `Ready=True/AllReady` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
@@ -2725,7 +2766,7 @@ replica count patched afterwards has to reach the northd Deployment.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-ovn-chaos-op` reaches `Ready=True/AllReady` |
 | 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret, `ovn-chaos-op` (one northd replica) and `neutron-ovn-chaos-op` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
-| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `ovn-operator` Deployment, snapshot the operator pod UIDs in `ovn-system` and the pod UIDs of `app.kubernetes.io/instance=ovn-chaos-op` (nb, sb, northd) and of `app.kubernetes.io/instance=neutron-ovn-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `ovn-operator` Deployment, snapshot the operator pod UIDs in `ovn-system` and the pod UIDs of `app.kubernetes.io/instance=ovn-chaos-op` (nb, sb, northd) and of `app.kubernetes.io/instance=neutron-ovn-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot. The step cleanup deletes the `PodChaos` |
 | 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-ovn-operator` from `ovn-system`, then `workload.sh mark fault-end` |
 | 5 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `05-patch-scale.yaml` takes `spec.northd.deployment.replicas` to 2; Deployment `ovn-chaos-op-northd` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the OVNCentral is at `Ready=True/AllReady` |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
@@ -2779,7 +2820,7 @@ reach the API Deployment.
 | --- | --- | --- | --- |
 | 1 to 8 | Bring up the stack | as `nova-keystone-outage` | The vhost, `keystone-nova-chaos-op`, the catalog Job, the four services, the seed image `4e0a0000-0000-4000-8000-000000000009`, the Nova CR `nova-chaos-op` with one API replica, the fake compute mapped into cell1 and the `m1.nano` flavor |
 | 9 | Start the workload | `script` (6m) | `workload.sh start` with the `token`, `network`, `server` and `image` streams |
-| 10 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `nova-operator` Deployment, snapshot the operator pod UIDs in `nova-system` and the pod UIDs of `app.kubernetes.io/instance=nova-chaos-op` in `openstack`, the fake compute among them, run `workload.sh mark fault-start`, apply `14-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 10 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `nova-operator` Deployment, snapshot the operator pod UIDs in `nova-system` and the pod UIDs of `app.kubernetes.io/instance=nova-chaos-op` in `openstack`, the fake compute among them, run `workload.sh mark fault-start`, apply `14-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot. The step cleanup deletes the `PodChaos` |
 | 11 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-nova-operator` from `nova-system`, then `workload.sh mark fault-end` |
 | 12 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `15-patch-scale.yaml` takes `spec.api.deployment.replicas` to 2; the API Deployment `nova-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is at `Ready=True/AllReady` |
 | 13 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-chaos-op --ovn-db-sync neutron-nova-chaos-op` against `failures=0 recovery=0s` |
@@ -2832,7 +2873,7 @@ check requires nothing transitional to remain.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, apply the CRs | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-volume-kill cinder-volume-kill-messaging openstack`, then `cinder-volume-kill` (database `cinder_volume_kill`, noauth) and `vol-kill-nfs1` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY`. The step cleanup deletes the vhost |
-| 2 | Kill the volume service while a volume attaches | `script` (8m) | Snapshot the UID of the pod with `app.kubernetes.io/component=volume-vol-kill-nfs1`. `kubectl exec` into the workload pod polls `GET /v3/volumes/detail?all_tenants=1` every second for up to 240 s until a volume named `chaos-wl-cinder-volume-pod-kill-` is `reserved` or `attaching` (`VOLUME-ATTACHING <id>`, or `FAIL: no attach observed in 240s`). Then `workload.sh mark fault-start`, `02-podchaos.yaml`, the old UID gone within 120 s and Deployment `cinder-volume-kill-volume-vol-kill-nfs1` available with a new pod within 300 s. The step cleanup deletes the `PodChaos` |
+| 2 | Kill the volume service while a volume attaches | `script` (8m) | Snapshot the UID of the pod with `app.kubernetes.io/component=volume-vol-kill-nfs1`, then `workload.sh mark fault-start`. `kubectl exec` into the workload pod polls `GET /v3/volumes/detail?all_tenants=1` every second for up to 240 s until a volume named `chaos-wl-cinder-volume-pod-kill-` is `reserved` or `attaching` after a listing that showed none (`VOLUME-ATTACHING <id>`, or `FAIL: no attach observed in 240s`), so the attach the kill meets started inside the fault window. Then `02-podchaos.yaml`, the old UID gone within 120 s and Deployment `cinder-volume-kill-volume-vol-kill-nfs1` available with a new pod within 300 s. The step cleanup deletes the `PodChaos` |
 | 3 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-cinder-volume`, then `workload.sh mark fault-end` |
 | 4 | The volume service is back | `assert` (5m) | `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` |
 | 5 | Judge the workload | `script` (15m) | `workload.sh verify`: the budget, the sweep and `CONSISTENCY-OK volumes` |
@@ -2935,7 +2976,8 @@ oslo.cache's `socket_timeout` of 1 second until the client marks the server dead
 `memcache_dead_retry` (300 seconds). Keystone's `[cache]` sets `memcache_servers`
 alone, so those defaults apply. The suite pins that the cache is a performance
 dependency: Ready and every sub-condition stay `True` for 120 seconds under the
-partition. It also records what the token stream sees, either answers through the
+partition, while a TCP connect from the Keystone API pod to Memcached times out. It
+also records what the token stream sees, either answers through the
 partition once the server is marked dead or failures as after a Memcached kill.
 
 **Steps:**
@@ -2945,9 +2987,9 @@ partition once the server is marked dead or failures as after a Memcached kill.
 | 1 | Apply Keystone CR | `apply` | `keystone-chaos-mc-part` (database `keystone_chaos_mc_part`) |
 | 2 | Assert baseline Ready=True | `assert` (5m) + `script` (6m) | `Ready=True/AllReady`; `workload.sh start` with the `token` stream |
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `partition-memcached` (`direction: both`, `duration: "600s"`) between the `app.kubernetes.io/name: memcached` pods and the API pods of `keystone-chaos-mc-part`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
-| 4 | Hold the partition for 120 s | `script` (3m) | Reads the CR every 10 seconds, twelve times, and fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
+| 4 | Hold the partition for 120 s | `script` (4m) | A TCP connect from the Keystone API pod to `openstack-memcached:11211` has to time out after 3 s (`PARTITION-EFFECTIVE-OK`). Then reads the CR every 10 seconds, twelve times, and fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-memcached`, then `workload.sh mark fault-end` |
-| 6 | Assert recovery | `assert` (5m) | `Ready=True/AllReady` |
+| 6 | Assert recovery | `assert` (5m) + `script` (3m) | `Ready=True/AllReady`, then the connect of step 4 succeeds within 20 tries 3 s apart (`PARTITION-LIFTED-OK`) |
 | 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`.
@@ -2970,6 +3012,10 @@ the NetworkChaos as YAML.
 - A single Chainsaw assert passes on its first read, so step 4 reads the conditions
   every 10 seconds for the whole 120 seconds. A condition that turns `False` for one
   reconcile fails the step.
+- Conditions that stay `True` read the same with no fault at all, so step 4 first
+  proves the partition reached the cache path: the connect goes to the address
+  Keystone's `[cache]` names, from the API pod the partition targets, and only a
+  timeout counts.
 - The target carries the instance label of this suite's Keystone. Every other client
   of `openstack-memcached` keeps its cache.
 
@@ -3045,8 +3091,8 @@ the network again on its first sync, and the server reads its metadata once more
 | 9 | Bring up the chassis and the agent | `apply` + `assert` (5m) | `nova-meta-chaos-chassis` reaches `Ready=True/AllReady` with `desiredNumberScheduled: 1` and `numberReady: 1`, then `nova-meta-chaos-agent` reaches `Ready=True/AllReady` with `numberReady: 1`. The probe scripts ConfigMap is applied beside them |
 | 10 | Start the workload | `script` (6m) | `workload.sh start` with the `token` and `server` streams |
 | 11 | Boot `meta-chaos-vm` | `script` (11m) | Job `nova-meta-chaos-boot` creates `meta-chaos-net` with `meta-chaos-subnet` (`10.99.0.0/24`) and boots `meta-chaos-vm` on it, ACTIVE within 150 s (`BOOT-OK`). The script copies the port id, MAC and address, the metadata port's address and the server id onto the Job as `chaos.c5c3.io/` annotations. The step cleanup deletes the server and the network through the API when the teardown did not run |
-| 12 | Plug the port and read the metadata | `script` (8m) | Probe pod `nova-meta-chaos-plug` adds `metavif` to `br-int` with `external_ids:iface-id` of the port, moves it into `meta-chaos-ns` with the port's MAC and address, routes `169.254.169.254` through the metadata port, and GETs `meta_data.json` every 5 s for up to 180 s until it names the server (`METADATA-OK`). The step cleanup deletes `metavif` and `meta-chaos-ns` through the chassis and agent pods, deletes the probe pods, and fails when either is left |
-| 13 | Kill the agent | `script` (8m) | Snapshot the agent pod UID, `workload.sh mark fault-start`, apply `17-podchaos.yaml` (`pod-kill`, `mode: all`, `gracePeriod: 0`), wait up to 120 s for the UID to go. Probe pod `nova-meta-chaos-probe-down` GETs the metadata every 2 s for 30 s and stops at the first answer; at least one GET has to fail, and an answer before the new agent container started fails the step (`METADATA-DOWN-OK`). The step cleanup deletes the `PodChaos` |
+| 12 | Plug the port and read the metadata | `script` (8m) | The step waits for `br-int` and adds `metavif` to it with `external_ids:iface-id` of the port through the chassis pod, then probe pod `nova-meta-chaos-plug` moves it into `meta-chaos-ns` with the port's MAC and address, routes `169.254.169.254` through the metadata port, and GETs `meta_data.json` every 5 s for up to 180 s until it names the server (`METADATA-OK`). The step cleanup deletes `metavif` and `meta-chaos-ns` through the chassis and agent pods, deletes the probe pods, and fails when either is left |
+| 13 | Kill the agent | `script` (8m) | Snapshot the agent pod UID and start probe pod `nova-meta-chaos-probe-down`, which arms on its first metadata answer (`PROBE-ARMED`) and then GETs every 2 s. Once armed: `workload.sh mark fault-start`, apply `17-podchaos.yaml` (`pod-kill`, `mode: all`, `gracePeriod: 0`), wait up to 120 s for the UID to go, then create `/tmp/kill-applied` in the probe pod. A failed GET counts only when it started after that marker existed, and answers before the first counted failure are the old agent's; the probe stops at the first answer after it, 30 s after it, or 60 s after arming when no GET failed. At least one GET has to fail, and an answer before the new agent container started fails the step (`METADATA-DOWN-OK`). The step cleanup deletes the `PodChaos` |
 | 14 | The agent is back | `script` (6m) + `assert` (5m) | The DaemonSet pod is Ready within 300 s; the CR is at `Ready=True/AllReady` with `numberReady: 1` |
 | 15 | Read the metadata again | `delete` + `script` (1m) + `script` (7m) | Removes `PodChaos/kill-metadata-agent`, `workload.sh mark fault-end`, then probe pod `nova-meta-chaos-probe-up` GETs every 5 s for up to 180 s until the metadata names the server (`METADATA-RECOVERED-OK`) |
 | 16 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-meta-chaos --ovn-db-sync neutron-nova-meta-chaos` against `failures=0 recovery=0s` |
@@ -3081,12 +3127,21 @@ network namespaces, and the logs of the three probe pods.
 - The down probe ends its window at the start of the new agent's container. The
   DaemonSet replaces the pod within seconds, and the new agent provisions the
   network on its first sync, so a probe that demanded 30 seconds of failures would
-  race that sync. The claim it keeps is the one that matters: no answer arrives
-  while no agent runs.
-- The probe pods run on the neutron image, which carries `python3`, `iproute2` and
-  `ovs-vsctl`; the OVN image carries no `python3`. They run with `hostNetwork`,
-  privileged and as root, with `/run/openvswitch` and `/run/netns` from the host,
-  the shape `ovn-southbound-outage` uses, which is why `spec.concurrent` is `false`.
+  race that sync. So would a probe started after the kill, whose first GET could
+  come after the new agent's sync and find no failure, which is why the probe arms
+  before the `PodChaos` goes in. The claim it keeps is the one that matters: no
+  answer arrives while no agent runs.
+- The armed probe GETs the old agent until the kill lands, so a failed GET counts
+  only when it started after the script created `/tmp/kill-applied` in the probe
+  pod, which the script does once the old pod's UID is gone. A transient failure
+  on the old agent followed by its answer would otherwise read as an answer while
+  no agent ran.
+- The probe pods run on the neutron image, which carries `python3` and `iproute2`,
+  and do the namespace work; the OVN image carries no `python3`. The step plugs
+  `metavif` through the chassis pod, as the step cleanup and
+  `tests/e2e/neutron/metadata-agent/` do. The probe pods run with `hostNetwork`,
+  privileged and as root, with `/run/netns` from the host, the shape
+  `ovn-southbound-outage` uses, which is why `spec.concurrent` is `false`.
 - The nova matrix entry loads the `openvswitch` and `geneve` modules on the host
   (`WITH_OVN_KERNEL_MODULES`), which the chassis DaemonSets need.
 
@@ -3353,7 +3408,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The sixteen suites that start a workload also call `../lib/workload.sh dump <id>`
+The thirty-four suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -3369,6 +3424,18 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
 │   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
+├── barbican-keystone-outage/         Keystone outage under the Barbican API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-ks-outage, the one the outage takes
+│   ├── 01-barbican-cr.yaml           Barbican barbican-ks-outage
+│   ├── 02-barbican-secretstore.yaml  BarbicanSecretStore barbican-ks-outage-store
+│   ├── 03-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
+├── barbican-mariadb-outage/          Database partition under the Barbican API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-db-chaos
+│   ├── 01-barbican-cr.yaml           Barbican barbican-db-chaos with database socket timeouts
+│   ├── 02-barbican-secretstore.yaml  BarbicanSecretStore barbican-db-chaos-store
+│   ├── 03-networkchaos.yaml          NetworkChaos severing barbican-api↔MariaDB traffic (server-side)
+│   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
 ├── barbican-openbao-outage/          Secret-store partition under the Barbican API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-outage
 │   ├── 01-barbican-cr.yaml           Barbican CR barbican-bao-outage, two replicas
@@ -3387,6 +3454,23 @@ tests/e2e-chaos/
 │   ├── 02-cinderbackend-cr.yaml      NFS backend broker-chaos-nfs1
 │   ├── 03-networkchaos.yaml          NetworkChaos severing cinder↔broker traffic (server-side)
 │   └── chainsaw-test.yaml            Test: scheduler and volume service NotReady → recovery
+├── cinder-broker-pod-kill/           Broker pod kill under a Cinder
+│   ├── 00-rabbitmqcluster.yaml       RabbitmqCluster cinder-broker-kill-rabbitmq
+│   ├── 01-cinder-cr.yaml             Cinder cinder-broker-kill, managed messaging, noauth
+│   ├── 02-cinderbackend-cr.yaml      NFS backend broker-kill-nfs1
+│   ├── 03-podchaos.yaml              PodChaos pod-kill of the broker pod
+│   └── chainsaw-test.yaml            Test: the bus consumers reconnect, the API never restarts
+├── cinder-keystone-outage/           Keystone outage under an authenticated Cinder
+│   ├── 00-keystone-cr.yaml           Keystone keystone-cinder-ks-outage
+│   ├── 01-cinder-cr.yaml             Cinder cinder-ks-outage with keystoneEndpoint and serviceUser
+│   ├── 02-cinderbackend-cr.yaml      NFS backend ks-outage-nfs1
+│   ├── 03-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
+├── cinder-mariadb-outage/            Database partition under the Cinder API
+│   ├── 00-cinder-cr.yaml             Cinder cinder-db-chaos, noauth, database socket timeouts
+│   ├── 01-cinderbackend-cr.yaml      NFS backend db-chaos-nfs1
+│   ├── 02-networkchaos.yaml          NetworkChaos severing cinder-api↔MariaDB traffic (server-side)
+│   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
 ├── cinder-nfs-outage/                NFS export outage under a Cinder
 │   ├── 00-cinder-cr.yaml             Cinder CR cinder-nfs-chaos
 │   ├── 01-cinderbackend-cr.yaml      NFS backend nfs-chaos-nfs1
@@ -3398,6 +3482,11 @@ tests/e2e-chaos/
 │   ├── 02-podchaos.yaml              PodChaos targeting cinder-operator in cinder-system
 │   ├── 03-patch-scale.yaml           Patch API replicas to 2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── cinder-volume-pod-kill/           Volume-service kill in the middle of an attach
+│   ├── 00-cinder-cr.yaml             Cinder cinder-volume-kill, noauth
+│   ├── 01-cinderbackend-cr.yaml      NFS backend vol-kill-nfs1
+│   ├── 02-podchaos.yaml              PodChaos pod-kill of the volume service of vol-kill-nfs1
+│   └── chainsaw-test.yaml            Test: killed mid-attach, the sweep leaves nothing transitional
 ├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
 │   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
@@ -3410,12 +3499,28 @@ tests/e2e-chaos/
 │   ├── 01-glancebackend-cr.yaml      Default S3 store glance-garage-chaos-s3
 │   ├── 02-networkchaos.yaml          NetworkChaos severing glance-api↔Garage traffic (server-side)
 │   └── chainsaw-test.yaml            Test: Ready maintained, the upload fails closed
+├── glance-keystone-outage/           Keystone outage under the Glance API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-glance-ks-outage, the one the outage takes
+│   ├── 01-glance-cr.yaml             Glance glance-ks-outage, no anonymous access
+│   ├── 02-glancebackend-cr.yaml      S3 backend glance-ks-outage-s3
+│   ├── 03-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 401, then 200 after the outage
+├── glance-mariadb-outage/            Database partition under the Glance API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-glance-db-chaos
+│   ├── 01-glance-cr.yaml             Glance glance-db-chaos with harakiri: 20
+│   ├── 02-glancebackend-cr.yaml      S3 backend glance-db-chaos-s3
+│   ├── 03-networkchaos.yaml          NetworkChaos severing glance-api↔MariaDB traffic (server-side)
+│   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
 ├── glance-operator-pod-kill/         glance-operator pod kill
 │   ├── 00-glance-cr.yaml             Glance CR fixture (glance-chaos-op)
 │   ├── 01-glance-backend.yaml        Default S3 store glance-chaos-op-s3
 │   ├── 02-podchaos.yaml              PodChaos targeting glance-operator in glance-system
 │   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── horizon-dashboard-pod-kill/       Dashboard pod kill under a Horizon
+│   ├── 00-horizon-cr.yaml            Horizon CR fixture (horizon-chaos-dash, replicas: 2)
+│   ├── 01-podchaos.yaml              PodChaos killing one of the two dashboard pods
+│   └── chainsaw-test.yaml            Test: one pod replaced, readyReplicas 2, Ready=True
 ├── horizon-memcached-pod-kill/       Memcached pod kill under a Horizon
 │   ├── 00-horizon-cr.yaml            Horizon CR fixture (horizon-chaos-mc)
 │   ├── 01-podchaos.yaml              PodChaos targeting memcached in openstack
@@ -3446,6 +3551,10 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-db)
 │   ├── 01-podchaos.yaml              PodChaos targeting mariadb in openstack
 │   └── chainsaw-test.yaml            Test: DatabaseReady=False → recovery
+├── memcached-network-partition/      Memcached partition under a Keystone
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-mc-part)
+│   ├── 01-networkchaos.yaml          NetworkChaos severing keystone↔Memcached traffic (server-side)
+│   └── chainsaw-test.yaml            Test: Ready and every sub-condition True for 120 s
 ├── memcached-pod-kill/               SC-CHAOS-002: Memcached pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-mc)
 │   ├── 01-podchaos.yaml              PodChaos targeting memcached in openstack
@@ -3457,6 +3566,13 @@ tests/e2e-chaos/
 │   ├── 03-neutron-cr.yaml            Neutron CR neutron-broker-chaos
 │   ├── 04-networkchaos.yaml          NetworkChaos severing neutron↔broker traffic (server-side)
 │   └── chainsaw-test.yaml            Test: Ready maintained, no broker connection at any point
+├── neutron-keystone-outage/          Keystone outage under the Neutron API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-neutron-ks-outage
+│   ├── 01-messaging-secret.yaml      Transport URL that never resolves
+│   ├── 02-ovncentral-cr.yaml         OVNCentral neutron-ks-outage-ovn
+│   ├── 03-neutron-cr.yaml            Neutron neutron-ks-outage
+│   ├── 04-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
 ├── neutron-mariadb-outage/           Database partition under the Neutron API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-neutron-outage
 │   ├── 01-messaging-secret.yaml      Transport URL Secret neutron-db-chaos-messaging
@@ -3464,6 +3580,24 @@ tests/e2e-chaos/
 │   ├── 03-neutron-cr.yaml            Neutron CR neutron-db-chaos
 │   ├── 04-networkchaos.yaml          NetworkChaos severing neutron-api↔MariaDB traffic (server-side)
 │   └── chainsaw-test.yaml            Test: two conditions maintained, the write fails closed
+├── neutron-metadata-agent-pod-kill/  Metadata agent pod kill under a booted server
+│   ├── 01-… to 12-*.yaml             The nova-placement-outage stack as nova-meta-chaos, host = node
+│   ├── 13-flavor-seed-job.yaml       The flavor m1.nano, and the compute up
+│   ├── 14-ovnchassis-cr.yaml         OVNChassis nova-meta-chaos-chassis
+│   ├── 15-neutronmetadataagent-cr.yaml NeutronMetadataAgent nova-meta-chaos-agent
+│   ├── 16-boot-job.yaml              meta-chaos-vm with a port on meta-chaos-net (BOOT-OK)
+│   ├── 17-podchaos.yaml              PodChaos pod-kill of the agent pod
+│   ├── 18-probe-scripts.yaml         ConfigMap of the scripts the probe pods run
+│   ├── chainsaw-test.yaml            Test: metadata down with the agent, back with the new pod
+│   └── probe-lib.sh                  Helpers the scripts source: probe pods, OpenStack cleanup
+├── neutron-operator-pod-kill/        neutron-operator pod kill
+│   ├── 00-keystone-cr.yaml           Keystone keystone-neutron-chaos-op
+│   ├── 01-messaging-secret.yaml      Transport URL that never resolves
+│   ├── 02-ovncentral-cr.yaml         OVNCentral neutron-chaos-op-ovn
+│   ├── 03-neutron-cr.yaml            Neutron neutron-chaos-op (one API replica)
+│   ├── 04-podchaos.yaml              PodChaos targeting neutron-operator in neutron-system
+│   ├── 05-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
 ├── nova-broker-outage/               Message-bus partition under a Nova
 │   ├── 00-rabbitmqcluster.yaml       The broker of this suite (nova-chaos-rabbitmq)
 │   ├── 01-keystone-cr.yaml           Keystone keystone-nova-broker-chaos
@@ -3483,6 +3617,11 @@ tests/e2e-chaos/
 │   ├── 15-blocked-job.yaml           GET / serves while a create stalls (BLOCKED-OK)
 │   ├── 16-recovered-job.yaml         The stalled create finishes, a new one runs (RECOVERED-OK)
 │   └── chainsaw-test.yaml            Test: both bus consumers NotReady → recovery
+├── nova-keystone-outage/             Keystone outage under a Nova deployment
+│   ├── 01-… to 12-*.yaml             The nova-placement-outage stack as nova-ks-chaos
+│   ├── 13-flavor-seed-job.yaml       The flavor m1.nano, and the compute up
+│   ├── 14-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, Nova stays Ready
 ├── nova-mariadb-outage/              Database partition under the Nova API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-nova-db-chaos
 │   ├── 01-catalog-setup-job.yaml     The compute catalog row
@@ -3492,6 +3631,12 @@ tests/e2e-chaos/
 │   ├── 05-list-job.yaml              The server list before and after the fault (LIST-OK)
 │   ├── 06-failclosed-job.yaml        GET / serves while the read fails (FAILCLOSED-OK)
 │   └── chainsaw-test.yaml            Test: four conditions maintained, the read fails closed
+├── nova-operator-pod-kill/           nova-operator pod kill
+│   ├── 01-… to 12-*.yaml             The nova-placement-outage stack as nova-chaos-op
+│   ├── 13-flavor-seed-job.yaml       The flavor m1.nano, and the compute up
+│   ├── 14-podchaos.yaml              PodChaos targeting nova-operator in nova-system
+│   ├── 15-patch-scale.yaml           Patch API replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
 ├── nova-placement-outage/            Placement partition under the scheduler
 │   ├── 01-keystone-cr.yaml           Keystone keystone-nova-placement-chaos
 │   ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
@@ -3523,12 +3668,30 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
 │   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
 │   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
+├── ovn-operator-pod-kill/            ovn-operator pod kill
+│   ├── 00-keystone-cr.yaml           Keystone keystone-ovn-chaos-op
+│   ├── 01-messaging-secret.yaml      Transport URL that never resolves
+│   ├── 02-ovncentral-cr.yaml         OVNCentral ovn-chaos-op (one northd replica)
+│   ├── 03-neutron-cr.yaml            Neutron neutron-ovn-chaos-op
+│   ├── 04-podchaos.yaml              PodChaos targeting ovn-operator in ovn-system
+│   ├── 05-patch-scale.yaml           Patch northd replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
 ├── ovn-southbound-outage/            Southbound database outage under a chassis
 │   ├── 01-ovncentral-cr.yaml         OVNCentral ovn-sb-chaos
 │   ├── 02-ovnchassis-cr.yaml         OVNChassis ovn-sb-chaos-chassis
 │   ├── 03-podchaos.yaml              PodChaos pod-failure on every Southbound member
 │   ├── 04-probe-scripts.yaml         ConfigMap of the scripts the probe Pods run
 │   └── chainsaw-test.yaml            Test: ping answers under the fault, chassis recovers
+├── placement-keystone-outage/        Keystone outage under the Placement API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-placement-ks-outage
+│   ├── 01-placement-cr.yaml          Placement placement-ks-outage
+│   ├── 02-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
+│   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
+├── placement-mariadb-outage/         Database partition under the Placement API
+│   ├── 00-keystone-cr.yaml           Keystone keystone-placement-db-chaos
+│   ├── 01-placement-cr.yaml          Placement placement-db-chaos with database socket timeouts
+│   ├── 02-networkchaos.yaml          NetworkChaos severing placement-api↔MariaDB traffic (server-side)
+│   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
 └── placement-operator-pod-kill/      placement-operator pod kill
     ├── 00-placement-cr.yaml          Placement CR fixture (placement-chaos-op)
     ├── 01-podchaos.yaml              PodChaos targeting placement-operator in placement-system
