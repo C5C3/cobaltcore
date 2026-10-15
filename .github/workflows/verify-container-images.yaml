@@ -22,6 +22,8 @@ name: Verify Container Images
       - tests/container-images/**
       - tests/scripts/**
       - tests/tempest/test_retry_helpers.py
+      - nix/lib/**
+      - .github/actions/build-nix-image/**
       - .github/workflows/build-images.yaml
       - .github/workflows/verify-container-images.yaml
 
