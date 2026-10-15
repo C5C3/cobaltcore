@@ -1962,6 +1962,7 @@ jobs:
               tests/e2e-chaos/glance-keystone-outage
               tests/e2e-chaos/placement-keystone-outage
               tests/e2e-chaos/barbican-keystone-outage
+              tests/e2e-chaos/horizon-dashboard-pod-kill
           - suite: network
             runner: self-hosted
             test_dirs: >-
@@ -1985,6 +1986,7 @@ jobs:
               tests/e2e-chaos/ovn-operator-pod-kill
               tests/e2e-chaos/cinder-volume-pod-kill
               tests/e2e-chaos/cinder-broker-pod-kill
+              tests/e2e-chaos/memcached-network-partition
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -2210,13 +2212,14 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       # The horizon chaos suites (horizon-operator-pod-kill,
-      # horizon-memcached-pod-kill) need the horizon-operator too. It must land
-      # in its own dedicated horizon-system namespace (not the script's
-      # keystone-system default) because horizon-operator-pod-kill selects and
-      # kills the operator pod by `-n horizon-system` — the same namespace the
-      # Flux/deploy-infra path installs it into — and its PodChaos targets
-      # horizon-system. Without this the operator installs into keystone-system,
-      # the pod selector finds nothing, and the recovery assertion fails.
+      # horizon-memcached-pod-kill, horizon-dashboard-pod-kill) need the
+      # horizon-operator too. It must land in its own dedicated horizon-system
+      # namespace (not the script's keystone-system default) because
+      # horizon-operator-pod-kill selects and kills the operator pod by
+      # `-n horizon-system` — the same namespace the Flux/deploy-infra path
+      # installs it into — and its PodChaos targets horizon-system. Without
+      # this the operator installs into keystone-system, the pod selector finds
+      # nothing, and the recovery assertion fails.
       - name: Deploy horizon operator
         if: matrix.suite != 'ovn'
         run: hack/ci-deploy-operator.sh

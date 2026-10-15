@@ -1,0 +1,229 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a network partition between Keystone and its
+# Memcached (#453 Phase A).
+#
+# ../memcached-pod-kill/ kills a Memcached pod, which closes every connection
+# at once. This suite partitions the Memcached pods from the API pods of one
+# Keystone instead, server-side (01-networkchaos.yaml), so every cache call of
+# that Keystone waits out oslo.cache's 1 s socket_timeout until the client
+# marks the server dead for memcache_dead_retry (300 s). The suite pins that
+# the cache is a performance dependency and nothing more:
+#
+#   - baseline: the Keystone is Ready and the token stream is READY
+#   - under the partition: a TCP connect from the Keystone API pod to
+#     openstack-memcached:11211 times out after 3 s (PARTITION-EFFECTIVE-OK),
+#     so the fault reached the cache path
+#   - under the partition: for 120 s after AllInjected, Ready stays True and
+#     every sub-condition (SecretsReady, FernetKeysReady, DatabaseReady,
+#     DeploymentReady, BootstrapReady) stays True, the no-regression pattern of
+#     ../memcached-pod-kill/
+#   - after the partition: Ready=True/AllReady, and the same connect succeeds
+#     again (PARTITION-LIFTED-OK)
+#
+# What the token stream sees under the partition is the open question this
+# suite records: Keystone may answer through it once the client has marked the
+# server dead, or fail as it does for two minutes after a Memcached kill (the
+# header of ../memcached-pod-kill/). No run has recorded it yet; the measured
+# line takes the answer.
+#
+# Blast radius: the API pods of keystone-chaos-mc-part alone. Every other
+# client of openstack-memcached keeps its cache.
+#
+# Workload, on the network leg: the token stream of ../lib/workload.sh issues
+# and validates tokens against keystone-chaos-mc-part through the fault. The
+# budget is an estimate that assumes the worst case, a failure in every cycle
+# of the window; no run has measured it yet.
+# Chaos budget: failures=500 recovery=180s
+# Chaos budget measured: 2026-10-15, estimate, failures 250, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-memcached-network-partition
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR ─────────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert baseline Ready=True, then start the workload ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-mc-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start memcached-network-partition -- --streams token --keystone http://keystone-chaos-mc-part.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-mc-part
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump memcached-network-partition
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop memcached-network-partition
+  # ── Step 3: Partition Memcached from the Keystone API ─────────────────────
+  # `kubectl wait --for=condition=AllInjected` stands in for a Chainsaw
+  # resource assert because NetworkChaos.status.conditions is a fixed 4-item
+  # list; chainsaw's list-merge rejects any shorter expected slice.
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark memcached-network-partition fault-start
+    - apply:
+        file: 01-networkchaos.yaml
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl wait networkchaos/partition-memcached -n openstack \
+            --for=condition=AllInjected --timeout=120s
+    catch:
+    - script:
+        content: kubectl get networkchaos/partition-memcached -n openstack -o yaml 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-mc-part --dep-label=app.kubernetes.io/name=memcached --log-label=app.kubernetes.io/instance=keystone-chaos-mc-part
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 01-networkchaos.yaml --ignore-not-found
+          echo "OK: the Memcached partition is lifted"
+  # ── Step 4: Hold the partition for 120 s, no condition may regress ────────
+  # The conditions alone read the same with no fault at all, so the script
+  # first connects from the Keystone API pod to openstack-memcached:11211, the
+  # address Keystone's [cache] names: the partition must leave that connect
+  # unanswered. A single assert passes on the first read, so the script then
+  # reads the CR every 10 s for the whole 120 s and fails on the first
+  # condition that is not True. The five sub-conditions and Ready are the six
+  # memcached-pod-kill asserts.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -eu
+          API_POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=keystone-chaos-mc-part,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          REACH="$(kubectl exec -n "$NAMESPACE" "$API_POD" -c keystone -- python3 -c '
+          import socket
+          try:
+              socket.create_connection(("openstack-memcached", 11211), 3).close()
+              print("REACHED")
+          except socket.timeout as e:
+              print("UNANSWERED %r" % e)
+          except OSError as e:
+              print("ERROR %r" % e)
+          ' 2>&1 || true)"
+          echo "$REACH"
+          if ! grep -q '^UNANSWERED ' <<<"$REACH"; then
+            echo "FAIL: the connect from the Keystone API pod $API_POD to Memcached was not left unanswered under the partition"
+            exit 1
+          fi
+          echo "PARTITION-EFFECTIVE-OK"
+
+          FAILED=""
+          for i in $(seq 1 12); do
+            for cond in SecretsReady FernetKeysReady DatabaseReady DeploymentReady BootstrapReady Ready; do
+              STATUS="$(kubectl get keystone keystone-chaos-mc-part -n "$NAMESPACE" \
+                -o "jsonpath={.status.conditions[?(@.type=='${cond}')].status}" 2>/dev/null || true)"
+              if [ "$STATUS" != "True" ]; then
+                FAILED="${cond}=${STATUS:-<none>} at read ${i}"
+                break 2
+              fi
+            done
+            sleep 10
+          done
+          if [ -n "$FAILED" ]; then
+            echo "FAIL: ${FAILED} under the Memcached partition"
+            kubectl get keystone keystone-chaos-mc-part -n "$NAMESPACE" -o jsonpath='{.status.conditions}' 2>&1 || true
+            exit 1
+          fi
+          echo "OK: Ready and every sub-condition stayed True for 120s under the partition"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-mc-part --dep-label=app.kubernetes.io/name=memcached --log-label=app.kubernetes.io/instance=keystone-chaos-mc-part
+    - *workload-dump
+  # ── Step 5: Lift the partition ────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-memcached
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark memcached-network-partition fault-end
+    catch:
+    - *workload-dump
+  # ── Step 6: Assert Ready=True after the partition ─────────────────────────
+  # The connect of step 4 must succeed again once the partition is gone.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-mc-part
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -eu
+          API_POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=keystone-chaos-mc-part,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          # 20 tries, 3 s apart, for the drop rules to leave the Memcached pods.
+          for _ in $(seq 1 20); do
+            REACH="$(kubectl exec -n "$NAMESPACE" "$API_POD" -c keystone -- python3 -c '
+          import socket
+          try:
+              socket.create_connection(("openstack-memcached", 11211), 3).close()
+              print("REACHED")
+          except OSError as e:
+              print("ERROR %r" % e)
+          ' 2>&1 || true)"
+            if grep -qx 'REACHED' <<<"$REACH"; then
+              echo "PARTITION-LIFTED-OK: $API_POD reaches Memcached again"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "$REACH"
+          echo "FAIL: the Keystone API pod $API_POD does not reach Memcached in 20 tries after the partition"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-mc-part --dep-label=app.kubernetes.io/name=memcached --log-label=app.kubernetes.io/instance=keystone-chaos-mc-part
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify memcached-network-partition
+    catch:
+    - *workload-dump

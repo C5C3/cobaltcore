@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition keystone <-> Memcached traffic.
+#
+# The partition is enforced on the Memcached (server) side on purpose.
+# keystone does not connect to a Memcached pod IP: it connects to the
+# ClusterIP Service openstack-memcached.openstack.svc:11211. chaos-mesh
+# installs its drop rule inside the selector pods' network namespace and
+# matches the target pods by their pod IPs. A rule on the keystone (client)
+# side would match Memcached pod IPs while the packet still carries the
+# Service ClusterIP, because kube-proxy only DNATs ClusterIP -> pod IP later,
+# in the node's root namespace, after the packet has left the pod. The rule
+# would therefore never match. On the Memcached side the packet already
+# carries the real keystone pod source IP, the same reason
+# ../mariadb-network-partition/01-networkchaos.yaml gives. direction 'both'
+# fully severs the link in either direction.
+#
+# Blast radius: the target is the API pods of this suite's Keystone
+# (app.kubernetes.io/name: keystone, app.kubernetes.io/instance:
+# keystone-chaos-mc-part). Every other client of openstack-memcached keeps its cache.
+# Keystone's [cache] sets memcache_servers alone
+# (operators/keystone/internal/controller/reconcile_config.go), so the
+# oslo.cache defaults apply: a socket_timeout of 1.0 s per call and a
+# memcache_dead_retry of 300 s before a server marked dead is tried again.
+#
+# Duration is a safety net; the suite lifts the partition explicitly. It
+# exceeds the 120 s hold of step 4 plus the asserts around it, so the
+# partition cannot end on its own while the suite reads the conditions.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-memcached
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: memcached
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: keystone-chaos-mc-part
+  duration: "600s"

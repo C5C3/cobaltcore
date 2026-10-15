@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 42 chaos test suites validate operator behavior during and after fault
+The 44 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 42 test suites require the infrastructure stack to be deployed and healthy.
+All 44 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -428,6 +428,8 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=nova-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `nova-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
 | [cinder-volume-pod-kill](#cinder-volume-pod-kill) | — | `cinder-volume-kill` | Volume-service kill mid-attach (state left behind) | A volume of the stream seen `reserved` or `attaching` (`VOLUME-ATTACHING`) before the `PodChaos`, the volume pod UID replaced and the Deployment available again, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` within 5 minutes, `verify` with `CONSISTENCY-OK volumes` and no failed `sweep-*` record |
 | [cinder-broker-pod-kill](#cinder-broker-pod-kill) | — | `cinder-broker-kill` | Broker pod kill (degrade and recover) | The broker pod UID replaced and the new server pod Ready within 300 s, `SchedulerReady=True/SchedulerReady`, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` within 5 minutes, the API container at `restartCount` 0 (`API-UP-OK`), `verify` with `CONSISTENCY-OK volumes` |
+| [memcached-network-partition](#memcached-network-partition) | — | `keystone-chaos-mc-part` | No-regression (NetworkChaos) | Ready and all five sub-conditions `True` on every read for 120 s under `AllInjected`, `Ready=True/AllReady` after the partition |
+| [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon-chaos-dash` | Dashboard pod kill (no-regression) | `Ready=True/AllReady` with two replicas at baseline, one of the two pre-chaos dashboard pod UIDs gone, Deployment `horizon-chaos-dash` back at `readyReplicas: 2`, `Ready=True/AllReady` after the kill |
 
 ---
 
@@ -2915,6 +2917,106 @@ the broker pod and the rabbitmq-cluster-operator logs.
   scheduler and the volume service outlive the pod on the broker's volume.
 - Step 7 tears the bus down through the RabbitmqCluster delete with foreground
   propagation, for the reasons `neutron-broker-outage` gives.
+
+---
+
+### memcached-network-partition
+
+**File:** `tests/e2e-chaos/memcached-network-partition/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs the API pods of one Keystone from the
+shared Memcached, enforced on the Memcached (server) side for the reason
+`mariadb-network-partition` documents. `memcached-pod-kill` kills the cache, which
+closes every connection at once; under a partition every cache call waits out
+oslo.cache's `socket_timeout` of 1 second until the client marks the server dead for
+`memcache_dead_retry` (300 seconds). Keystone's `[cache]` sets `memcache_servers`
+alone, so those defaults apply. The suite pins that the cache is a performance
+dependency: Ready and every sub-condition stay `True` for 120 seconds under the
+partition. It also records what the token stream sees, either answers through the
+partition once the server is marked dead or failures as after a Memcached kill.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | `keystone-chaos-mc-part` (database `keystone_chaos_mc_part`) |
+| 2 | Assert baseline Ready=True | `assert` (5m) + `script` (6m) | `Ready=True/AllReady`; `workload.sh start` with the `token` stream |
+| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `partition-memcached` (`direction: both`, `duration: "600s"`) between the `app.kubernetes.io/name: memcached` pods and the API pods of `keystone-chaos-mc-part`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 4 | Hold the partition for 120 s | `script` (3m) | Reads the CR every 10 seconds, twelve times, and fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
+| 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-memcached`, then `workload.sh mark fault-end` |
+| 6 | Assert recovery | `assert` (5m) | `Ready=True/AllReady` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`.
+
+**Workload:** the `token` stream against `keystone-chaos-mc-part`, started in step 2
+and judged in step 7 against `failures=500 recovery=180s`, an estimate that assumes
+a failure in every cycle of the window. No run has measured it yet, and the measured
+line will carry which of the two outcomes the stream saw. The suite runs in the
+`network` matrix entry. Every step from 2 to 7 dumps the workload in its catch
+block.
+
+**Catch blocks:** step 2 calls `../diagnostics.sh baseline keystone-chaos-mc-part`.
+Steps 3, 4 and 6 call `../diagnostics.sh chaos keystone-chaos-mc-part` with
+`--dep-label=app.kubernetes.io/name=memcached` and
+`--log-label=app.kubernetes.io/instance=keystone-chaos-mc-part`, and step 3 dumps
+the NetworkChaos as YAML.
+
+**Design notes:**
+
+- A single Chainsaw assert passes on its first read, so step 4 reads the conditions
+  every 10 seconds for the whole 120 seconds. A condition that turns `False` for one
+  reconcile fails the step.
+- The target carries the instance label of this suite's Keystone. Every other client
+  of `openstack-memcached` keeps its cache.
+
+---
+
+### horizon-dashboard-pod-kill
+
+**File:** `tests/e2e-chaos/horizon-dashboard-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills one of the two dashboard pods of
+`horizon-chaos-dash`. The dashboard pods were never faulted directly:
+`horizon-memcached-pod-kill` kills the cache and `horizon-operator-pod-kill` the
+operator. With two replicas the Service keeps an endpoint through the kill, so the
+login page keeps answering apart from the few requests the Service hands the dying
+endpoint, and the Deployment replaces the pod with no operator action.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Horizon CR | `apply` | `horizon-chaos-dash` with `spec.deployment.replicas: 2` |
+| 2 | Assert baseline Ready=True | `assert` (5m) + `assert` (5m) + `script` (6m) | `Ready=True/AllReady` and Deployment `horizon-chaos-dash` at `readyReplicas: 2`; `workload.sh start` with the `http` stream |
+| 3 | Kill one dashboard pod | `script` (6m) | Snapshot both dashboard pod UIDs, `workload.sh mark fault-start`, apply `01-podchaos.yaml` (`pod-kill`, `mode: one`, `gracePeriod: 0`, labels `app.kubernetes.io/name: horizon`, `app.kubernetes.io/instance: horizon-chaos-dash`, `app.kubernetes.io/component: api`), wait up to 120 s for one UID to disappear and up to 300 s for `readyReplicas: 2`. The step cleanup deletes the `PodChaos` |
+| 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-horizon-dashboard`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) | `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`.
+
+**Workload:** the `http` stream against
+`http://horizon-chaos-dash.openstack.svc:8080/auth/login/`, as the two sibling
+Horizon suites run it, started in step 2 and judged in step 6 against `failures=20
+recovery=60s`, an estimate no run has measured yet. The suite runs in the `pod`
+matrix entry. Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** step 2 calls `../diagnostics.sh baseline horizon-chaos-dash
+--cr-kind=horizon`; steps 3 and 5 call `../diagnostics.sh chaos horizon-chaos-dash`
+with `--cr-kind=horizon` and
+`--dep-label=app.kubernetes.io/instance=horizon-chaos-dash`.
+
+**Design notes:**
+
+- Both pre-chaos UIDs are snapshotted and one of them has to disappear, because
+  `mode: one` picks its victim at random.
+- No login stream POSTs credentials to the dashboard. The `http` stream reads the
+  login page, which needs neither a session nor Keystone.
 
 ---
 

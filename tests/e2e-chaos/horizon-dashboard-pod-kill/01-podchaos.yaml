@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill one dashboard pod of horizon-chaos-dash.
+#
+# One-shot pod-kill with gracePeriod 0: the pod dies without draining, so the
+# Service may still hand the dying endpoint a request until the endpoint
+# controller has removed it. mode one picks one of the two replicas; the other
+# keeps serving and the Deployment replaces the killed one.
+#
+# The selector is the three labels the operator puts on the dashboard pod
+# template (operators/horizon/internal/controller/reconcile_deployment.go,
+# naming.ComponentLabels("horizon", <cr>, "api")), so the pods of every other
+# Horizon in the namespace stay out.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-horizon-dashboard
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: horizon
+      app.kubernetes.io/instance: horizon-chaos-dash
+      app.kubernetes.io/component: api
+  gracePeriod: 0

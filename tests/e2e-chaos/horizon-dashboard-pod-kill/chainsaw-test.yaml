@@ -1,0 +1,182 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Horizon dashboard pod kill.
+#
+# The dashboard pods were never faulted directly:
+# ../horizon-memcached-pod-kill/ kills the cache and
+# ../horizon-operator-pod-kill/ the operator. Here a PodChaos kills one of the
+# two dashboard pods of horizon-chaos-dash (01-podchaos.yaml):
+#
+#   - baseline: the CR is Ready with two replicas and the http stream is READY
+#   - the kill: one of the two pre-chaos pod UIDs is gone and the Deployment is
+#     back at readyReplicas 2
+#   - after the kill: Ready=True/AllReady
+#
+# Identity-based verification: both pre-chaos UIDs are snapshotted and at least
+# one has to disappear, because mode one picks its victim at random.
+#
+# Blast radius: the dashboard pods of horizon-chaos-dash alone.
+#
+# Workload, on the pod leg: the http stream of ../lib/workload.sh GETs
+# http://horizon-chaos-dash.openstack.svc:8080/auth/login/ while the fault is
+# active, as the two sibling Horizon suites do. The Service may hand the stream
+# the dying endpoint for a few requests before it removes it. The budget is an
+# estimate of that window: no run has measured it yet.
+# Chaos budget: failures=20 recovery=60s
+# Chaos budget measured: 2026-10-15, estimate, failures 10, recovery 30 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-dashboard-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR ──────────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert baseline Ready=True, then start the workload ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-chaos-dash
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-chaos-dash
+            namespace: openstack
+          status:
+            readyReplicas: 2
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start horizon-dashboard-pod-kill -- --streams http --http http://horizon-chaos-dash.openstack.svc:8080/auth/login/
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline horizon-chaos-dash --cr-kind=horizon
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump horizon-dashboard-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop horizon-dashboard-pod-kill
+  # ── Step 3: Kill one dashboard pod and wait for the replacement ───────────
+  # Snapshot, mark, apply and both waits live in one script so the UID
+  # snapshot and the polls share state.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          # NOTE: set -e is omitted on purpose: the polling loops use
+          # ${VAR:-0} defaults that would abort under it when kubectl
+          # returns empty output, and every exit condition is checked
+          # explicitly.
+          SELECTOR=app.kubernetes.io/instance=horizon-chaos-dash,app.kubernetes.io/component=api
+          OLD_UIDS=$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}')
+          if [ "$(echo $OLD_UIDS | wc -w)" -ne 2 ]; then
+            echo "ERROR: want two dashboard pods before the kill, found: ${OLD_UIDS:-<none>}"
+            exit 1
+          fi
+          echo "Pre-chaos dashboard pod UIDs: ${OLD_UIDS}"
+
+          ../lib/workload.sh mark horizon-dashboard-pod-kill fault-start || exit 1
+          kubectl apply -f 01-podchaos.yaml || exit 1
+
+          # Phase 1: one of the two UIDs is gone. 60 × 2 s = 120 s.
+          REPLACED=0
+          for i in $(seq 1 60); do
+            CURRENT=$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}')
+            if [ -z "$CURRENT" ]; then
+              sleep 2
+              continue
+            fi
+            for uid in $OLD_UIDS; do
+              case " $CURRENT " in
+                *" $uid "*) ;;
+                *) REPLACED=1 ;;
+              esac
+            done
+            if [ "$REPLACED" -eq 1 ]; then
+              echo "One pre-chaos dashboard pod is gone"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$REPLACED" -ne 1 ]; then
+            echo "ERROR: no pre-chaos dashboard pod was killed (UIDs now: ${CURRENT:-<none>})"
+            exit 1
+          fi
+
+          # Phase 2: readyReplicas back at 2. 150 × 2 s = 300 s.
+          for i in $(seq 1 150); do
+            READY=$(kubectl get deployment horizon-chaos-dash -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq 2 ]; then
+              echo "Dashboard recovered: readyReplicas=2"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: the dashboard did not recover, readyReplicas=${READY:-0}"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos horizon-chaos-dash --cr-kind=horizon --dep-label=app.kubernetes.io/instance=horizon-chaos-dash
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 01-podchaos.yaml --ignore-not-found
+          echo "OK: the dashboard PodChaos is gone"
+  # ── Step 4: Delete PodChaos ───────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-horizon-dashboard
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark horizon-dashboard-pod-kill fault-end
+    catch:
+    - *workload-dump
+  # ── Step 5: Assert Ready=True after the kill ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-chaos-dash
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos horizon-chaos-dash --cr-kind=horizon --dep-label=app.kubernetes.io/instance=horizon-chaos-dash
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify horizon-dashboard-pod-kill
+    catch:
+    - *workload-dump
