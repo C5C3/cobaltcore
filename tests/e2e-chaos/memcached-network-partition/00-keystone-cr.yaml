@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the Memcached network partition chaos test. It is
+# ../memcached-pod-kill/00-keystone-cr.yaml under a unique name
+# (keystone-chaos-mc-part) and database (keystone_chaos_mc_part) to avoid conflicts
+# with other test suites. The cache is the shared openstack-memcached, which
+# 01-networkchaos.yaml partitions from the API pods of this CR alone.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-mc-part
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_mc_part
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
