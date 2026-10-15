@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 37 chaos test suites validate operator behavior during and after fault
+The 40 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 37 test suites require the infrastructure stack to be deployed and healthy.
+All 40 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -423,6 +423,9 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [placement-mariadb-outage](#placement-mariadb-outage) | — | `placement-db-chaos` | Database partition (fail-closed write) | `Ready=True/AllReady` maintained, `GET /` 200 under the partition, `POST /resource_providers` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh provider answering 201 (`RECOVERY-OK`) |
 | [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican-db-chaos` | Database partition (fail-closed write) | `BarbicanAPIReady=True/APIHealthy` maintained, `GET /healthcheck` 200 under the partition, `POST /v1/secrets` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh secret answering 201 (`RECOVERY-OK`) |
 | [cinder-mariadb-outage](#cinder-mariadb-outage) | — | `cinder-db-chaos` | Database partition (fail-closed write) | `Ready=True/AllReady` maintained, `GET /healthcheck` 200 under the partition, `POST /v3/volumes` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh volume reaching `available` within 240 s (`RECOVERY-OK`) |
+| [neutron-operator-pod-kill](#neutron-operator-pod-kill) | — | `neutron-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=neutron-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `neutron-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
+| [ovn-operator-pod-kill](#ovn-operator-pod-kill) | — | `ovn-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=ovn-chaos-op` and `neutron-ovn-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `ovn-chaos-op-northd` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
+| [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=nova-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `nova-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
 
 ---
 
@@ -2643,6 +2646,164 @@ and the operator logs, and dumps the workload.
   RPC clients of its volume API read the minimum service versions), so a worker
   `harakiri` killed hangs the same way a Barbican worker does, and the liveness probe
   restarts the container until the partition ends.
+
+---
+
+### neutron-operator-pod-kill
+
+**File:** `tests/e2e-chaos/neutron-operator-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills one of the two neutron-operator pods. The operator
+is a control-plane component: the API and the RPC workers it deployed keep running
+while it is gone and while it comes back. The suite states that as pod identity:
+every workload pod UID of `neutron-chaos-op` is snapshotted before the kill and
+compared after the recovery. A replica count patched after the recovery then has to
+reach the API Deployment, which proves the recovered operator reconciles.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-chaos-op` reaches `Ready=True/AllReady` |
+| 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret, `neutron-chaos-op-ovn` and `neutron-chaos-op` (one API replica) reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `neutron-operator` Deployment, snapshot the operator pod UIDs in `neutron-system` and the pod UIDs of `app.kubernetes.io/instance=neutron-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-neutron-operator` from `neutron-system`, then `workload.sh mark fault-end` |
+| 5 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `05-patch-scale.yaml` takes `spec.deployment.replicas` to 2; Deployment `neutron-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is at `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`,
+`02-ovncentral-cr.yaml`, `03-neutron-cr.yaml`, `04-podchaos.yaml`,
+`05-patch-scale.yaml`.
+
+**Workload:** the `token` and `network` streams against `keystone-neutron-chaos-op`
+and `neutron-chaos-op`, started in step 2 and judged in step 6 against `failures=0
+recovery=0s`. The suite runs in the `network` matrix entry. The operator is on no
+request path of the streams, so a failed record is a defect to find. Every step from
+2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+neutron-chaos-op` with `--cr-kind=neutron`,
+`--dep-label=app.kubernetes.io/name=neutron-operator` and `--dep-ns=neutron-system`,
+dumps the OVNCentral and the Neutron, lists their Deployments and pods, dumps the
+Neutron pod logs, and dumps the workload.
+
+**Design notes:**
+
+- The snapshot covers every pre-chaos operator pod UID, for the reason
+  `cinder-operator-pod-kill` gives: `PodChaos mode: one` picks its victim at random,
+  so a recorded single pod outlives the kill in about half the runs.
+- `set -euo pipefail` is omitted in the kill script on purpose, as in
+  `cinder-operator-pod-kill`: the polling loops use `${VAR:-0}` defaults and check
+  every exit condition explicitly.
+
+---
+
+### ovn-operator-pod-kill
+
+**File:** `tests/e2e-chaos/ovn-operator-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills one of the two ovn-operator pods. The Northbound and
+Southbound members and northd of `ovn-chaos-op` keep running while it is gone, and
+so does the Neutron that programs them: every network the workload creates is
+written to the Northbound database through `neutron-ovn-chaos-op`, so the stream
+proves the OVN control plane serves without its operator. The pod UIDs of both CRs
+are snapshotted before the kill and compared after the recovery, and a northd
+replica count patched afterwards has to reach the northd Deployment.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-ovn-chaos-op` reaches `Ready=True/AllReady` |
+| 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret, `ovn-chaos-op` (one northd replica) and `neutron-ovn-chaos-op` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 3 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `ovn-operator` Deployment, snapshot the operator pod UIDs in `ovn-system` and the pod UIDs of `app.kubernetes.io/instance=ovn-chaos-op` (nb, sb, northd) and of `app.kubernetes.io/instance=neutron-ovn-chaos-op` in `openstack`, run `workload.sh mark fault-start`, apply `04-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-ovn-operator` from `ovn-system`, then `workload.sh mark fault-end` |
+| 5 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `05-patch-scale.yaml` takes `spec.northd.deployment.replicas` to 2; Deployment `ovn-chaos-op-northd` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the OVNCentral is at `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`,
+`02-ovncentral-cr.yaml`, `03-neutron-cr.yaml`, `04-podchaos.yaml`,
+`05-patch-scale.yaml`.
+
+**Workload:** the `token` and `network` streams against `keystone-ovn-chaos-op` and
+`neutron-ovn-chaos-op`, started in step 2 and judged in step 6 against `failures=0
+recovery=0s`. The suite runs in the `network` matrix entry, where the
+neutron-operator and the ovn-operator are both deployed. Every step from 2 to 6
+dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos ovn-chaos-op`
+with `--cr-kind=ovncentral`, `--dep-label=app.kubernetes.io/name=ovn-operator` and
+`--dep-ns=ovn-system`, dumps the OVNCentral and the Neutron, lists their
+Deployments, StatefulSets and pods, dumps the Neutron pod logs, and dumps the
+workload.
+
+**Design notes:**
+
+- The snapshot covers every pre-chaos operator pod UID, for the reason
+  `cinder-operator-pod-kill` gives: `PodChaos mode: one` picks its victim at random,
+  so a recorded single pod outlives the kill in about half the runs.
+- `set -euo pipefail` is omitted in the kill script on purpose, as in
+  `cinder-operator-pod-kill`: the polling loops use `${VAR:-0}` defaults and check
+  every exit condition explicitly.
+- The OVNCentral backup CronJob is suspended, so no Job pod joins the instance label
+  inside the window. A new pod would pass the comparison, which looks only for the
+  snapshotted UIDs, and would still blur the dump.
+
+---
+
+### nova-operator-pod-kill
+
+**File:** `tests/e2e-chaos/nova-operator-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills one of the two nova-operator pods under a full Nova
+deployment. The API, the scheduler, the conductor, the metadata API and the console
+proxy keep running while it is gone, and so does the fake compute beside them. Every
+pod UID with the instance label `nova-chaos-op` is snapshotted before the kill and
+compared after the recovery, and an API replica count patched afterwards has to
+reach the API Deployment.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 to 8 | Bring up the stack | as `nova-keystone-outage` | The vhost, `keystone-nova-chaos-op`, the catalog Job, the four services, the seed image `4e0a0000-0000-4000-8000-000000000009`, the Nova CR `nova-chaos-op` with one API replica, the fake compute mapped into cell1 and the `m1.nano` flavor |
+| 9 | Start the workload | `script` (6m) | `workload.sh start` with the `token`, `network`, `server` and `image` streams |
+| 10 | Inject chaos and verify one operator pod was replaced | `script` (270s) | Three phases in one script, so the snapshot and the polls share state: read `spec.replicas` off the `nova-operator` Deployment, snapshot the operator pod UIDs in `nova-system` and the pod UIDs of `app.kubernetes.io/instance=nova-chaos-op` in `openstack`, the fake compute among them, run `workload.sh mark fault-start`, apply `14-podchaos.yaml`, wait up to 120 s for at least one pre-chaos operator UID to disappear, wait up to 120 s for `readyReplicas` to return to the desired count, then compare the workload UIDs against the snapshot |
+| 11 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-nova-operator` from `nova-system`, then `workload.sh mark fault-end` |
+| 12 | Prove the recovered operator reconciles a spec change | `patch` + `assert` (5m) | `15-patch-scale.yaml` takes `spec.api.deployment.replicas` to 2; the API Deployment `nova-chaos-op` reaches `availableReplicas: 2` and `updatedReplicas: 2`, and the CR is at `Ready=True/AllReady` |
+| 13 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-chaos-op --ovn-db-sync neutron-nova-chaos-op` against `failures=0 recovery=0s` |
+| 14 | Tear the deployment down | `script` (10m) | Deletes the fake compute and the three Jobs, then the Nova CR, and waits up to 180 s for its pods |
+
+**Fixtures:** `01-keystone-cr.yaml` to `12-fake-compute.yaml`, the stack of
+`nova-placement-outage` with every `nova-placement-chaos` renamed to
+`nova-chaos-op`, then `13-flavor-seed-job.yaml`, `14-podchaos.yaml` and
+`15-patch-scale.yaml`.
+
+**Workload:** the `token`, `network`, `server` and `image` streams against the
+suite's Keystone, Neutron, Nova and Glance, started in step 9 and judged in step 13
+against `failures=0 recovery=0s`, with the placement audit and the OVN db-sync
+comparison. The suite runs in the `nova` matrix entry. The operator is on no request
+path of the streams, so a failed record is a defect to find.
+
+**Catch blocks:** the shared YAML anchor of `nova-keystone-outage`, with
+`--dep-label=app.kubernetes.io/name=nova-operator` and `--dep-ns=nova-system`.
+
+**Design notes:**
+
+- The snapshot covers every pre-chaos operator pod UID, for the reason
+  `cinder-operator-pod-kill` gives: `PodChaos mode: one` picks its victim at random,
+  so a recorded single pod outlives the kill in about half the runs.
+- `set -euo pipefail` is omitted in the kill script on purpose, as in
+  `cinder-operator-pod-kill`: the polling loops use `${VAR:-0}` defaults and check
+  every exit condition explicitly.
+- The fake compute carries the instance label `nova-chaos-op`, so the snapshot
+  counts it. It is outside the operator's reach as well and must not restart either.
 
 ---
 

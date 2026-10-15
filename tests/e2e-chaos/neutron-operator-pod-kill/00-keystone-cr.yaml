@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the neutron-operator pod-kill chaos test. Unique name (keystone-neutron-chaos-op) and database
+# (keystone_neutron_chaos_op) to avoid conflicts with other test suites.
+#
+# The Neutron API rejects an unauthenticated request, so the workload needs a
+# token. The Service the operator projects carries the CR name, so the
+# Neutron CR's keystoneEndpoint resolves to
+# keystone-neutron-chaos-op.openstack.svc.cluster.local:5000, and the token the API validates
+# comes from the same Keystone the workload asked. The bootstrap admin
+# password comes from the pre-seeded keystone-admin Secret, which is also the
+# Neutron serviceUser's.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-neutron-chaos-op
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_neutron_chaos_op
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

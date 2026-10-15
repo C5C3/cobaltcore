@@ -1,0 +1,612 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a nova-operator pod kill.
+#
+# The operator is a control-plane component: the API, the scheduler, the
+# conductor, the metadata API and the console proxy it deployed keep running
+# while it is gone, and so does the fake compute beside them. The suite states
+# that as pod identity: every pod UID with app.kubernetes.io/instance:
+# nova-chaos-op is snapshotted before the kill and compared after the operator
+# has recovered, so a restart anywhere fails the test instead of passing as
+# "still Ready".
+#
+# The second half is the other side of the contract: an operator that survived
+# the kill still reconciles. An API replica count patched after the recovery
+# has to reach the API Deployment, which nothing but a working control loop
+# does.
+#
+# Identity-based verification of the kill follows ../cinder-operator-pod-kill/:
+# every pre-chaos operator pod UID is snapshotted, and at least one has to
+# disappear.
+#
+# Blast radius: the PodChaos selects app.kubernetes.io/name: nova-operator in
+# nova-system alone (14-podchaos.yaml). The stack is ../nova-placement-outage/
+# renamed to nova-chaos-op, on a vhost of the kind-only shared-rabbitmq.
+#
+# Workload, on the nova leg: the token, network, server and image streams of
+# ../lib/workload.sh against this suite's Keystone, Neutron, Nova and Glance.
+# The operator is on none of their request paths, so the budget is zero and a
+# failed record is a defect to find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-15, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-operator-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-placement-outage/ needs that for the same
+    # fixtures); the rest read a deployment that is already up.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost ──────────────────────────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test, which is why the vhost is taken here rather
+  # than beside the Nova CR five steps down.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-chaos-op nova-chaos-op-messaging openstack
+    catch: &nova-op-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-chaos-op --cr-kind=nova --dep-label=app.kubernetes.io/name=nova-operator --dep-ns=nova-system --log-label=app.kubernetes.io/instance=nova-chaos-op
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -A -o yaml 2>&1 || true
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-chaos-op
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-chaos-op-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-chaos-op
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-chaos-op
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-chaos-op
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-chaos-op-s3
+        namespace: openstack
+    # The compute and the Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-chaos-op-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-chaos-op-catalog-setup nova-chaos-op-image-seed nova-chaos-op-flavor-seed; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump nova-operator-pod-kill
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-chaos-op || true
+  # ── Step 2: Bring up Keystone ─────────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-op-dump
+  # ── Step 3: Register the four services in the catalog ─────────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-chaos-op-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 02-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-chaos-op-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-chaos-op-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-chaos-op-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-chaos-op-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-op-dump
+  # ── Step 4: Bring up the four services the boot path depends on ───────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-chaos-op-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-chaos-op-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-op-dump
+  # ── Step 5: Seed the image the servers boot from ──────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-chaos-op-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 09-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-chaos-op-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-chaos-op-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-chaos-op-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-chaos-op-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-op-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ───────────────────
+  # 8m: two schema migrations, a cell mapping and five workloads.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-op-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ──────────────────
+  # The Deployment mounts the compute-contract Secret the step above has just
+  # asserted. Discovery runs by hand rather than waiting out the scheduler's
+  # 300-second periodic.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-chaos-op-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../../e2e/nova/discover-hosts.sh nova-chaos-op "$NAMESPACE"
+    catch: *nova-op-dump
+  # ── Step 8: Seed the flavor the server stream boots with ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-chaos-op-flavor-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 13-flavor-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-chaos-op-flavor-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-chaos-op-flavor-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-chaos-op-flavor-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-chaos-op-flavor-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-op-dump
+  # ── Step 9: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start nova-operator-pod-kill --
+          --streams token,network,server,image
+          --keystone http://keystone-nova-chaos-op.openstack.svc:5000/v3
+          --neutron http://neutron-nova-chaos-op.openstack.svc:9696
+          --nova http://nova-chaos-op.openstack.svc:8774/v2.1
+          --image-ref 4e0a0000-0000-4000-8000-000000000009
+          --flavor m1.nano
+          --glance http://glance-nova-chaos-op.openstack.svc:9292
+    catch: *nova-op-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop nova-operator-pod-kill
+  # ── Step 10: Inject chaos and verify one operator pod was replaced ────────
+  # Snapshot, apply and poll live in one script so the pre-chaos UID snapshot
+  # and the wait share state. mode: one kills one of the two replicas, so "at
+  # least one pre-chaos UID gone" proves the kill took effect regardless of
+  # which pod chaos-mesh picked. Phase 3 then compares the workload UIDs
+  # snapshotted here against the post-recovery set.
+  - try:
+    - script:
+        # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
+        # worst case; Phase 3 is kubectl reads with no polling. 270s gives 30s
+        # margin.
+        timeout: 270s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling
+          # loops use ${VAR:-0} defensive defaults that would fail under
+          # set -e when kubectl returns empty output, and loop exit
+          # conditions are checked explicitly rather than via exit codes.
+
+          # Read desired replica count from the Deployment so the test stays
+          # valid if the operator replica count changes.
+          DESIRED=$(kubectl get deployment nova-operator -n nova-system -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count from nova-operator Deployment"
+            exit 1
+          fi
+          echo "Desired replicas: ${DESIRED}"
+
+          # Snapshot pre-chaos pod UIDs. mode: one must replace at least one
+          # of these; checking that at least one disappears is race-free.
+          OLD_UIDS=$(kubectl get pods -n nova-system -l app.kubernetes.io/name=nova-operator -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$OLD_UIDS" ]; then
+            echo "ERROR: no operator pods found before chaos injection"
+            exit 1
+          fi
+          echo "Pre-chaos operator pod UIDs: ${OLD_UIDS}"
+
+          # Snapshot the pod UIDs of the five Nova workloads, the fake compute and
+          # the completed Job pods of the CR. Killing the operator must disturb none of
+          # them, which is the operational-independence contract Phase 3
+          # checks.
+          UIDS_0=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=nova-chaos-op -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$UIDS_0" ]; then
+            echo "ERROR: no pods with app.kubernetes.io/instance=nova-chaos-op before chaos injection"
+            exit 1
+          fi
+          WORKLOAD_UIDS="${WORKLOAD_UIDS:-} ${UIDS_0}"
+          echo "Pre-chaos workload pod UIDs:${WORKLOAD_UIDS}"
+
+          # Inject chaos (kill one operator pod). The fault window is marked
+          # on the workload's clock first; the script omits set -e, hence
+          # the explicit exit.
+          ../lib/workload.sh mark nova-operator-pod-kill fault-start || exit 1
+          kubectl apply -f 14-podchaos.yaml
+
+          # Phase 1: wait until at least one pre-chaos UID is gone, proving
+          # mode: one replaced a pod. 60 iterations × 2s = 120s max. An empty
+          # CURRENT_UIDS (a transient kubectl failure) would spuriously match
+          # "no UIDs present", so those iterations are skipped. REPLACED is
+          # seeded before the loop, so a run of empty reads still fails the
+          # guard below.
+          REPLACED=0
+          for i in $(seq 1 60); do
+            CURRENT_UIDS=$(kubectl get pods -n nova-system -l app.kubernetes.io/name=nova-operator -o jsonpath='{.items[*].metadata.uid}')
+            if [ -z "$CURRENT_UIDS" ]; then
+              sleep 2
+              continue
+            fi
+            REPLACED=0
+            for uid in $OLD_UIDS; do
+              case " $CURRENT_UIDS " in
+                *" $uid "*) ;;
+                *) REPLACED=1; break ;;
+              esac
+            done
+            if [ "$REPLACED" -eq 1 ]; then
+              echo "At least one pre-chaos operator pod replaced"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$REPLACED" -ne 1 ]; then
+            echo "ERROR: no pre-chaos operator pod was replaced by chaos injection"
+            echo "  pre-chaos UIDs: ${OLD_UIDS}"
+            echo "  current UIDs:   ${CURRENT_UIDS}"
+            exit 1
+          fi
+
+          # Phase 2: wait until readyReplicas returns to DESIRED (operator
+          # recovered and reconciliation resumed). 60×2s = 120s max.
+          RECOVERED=0
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment nova-operator -n nova-system -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "${DESIRED}" ]; then
+              echo "Operator recovered: readyReplicas=${DESIRED}"
+              RECOVERED=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$RECOVERED" -ne 1 ]; then
+            echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, desired=${DESIRED}"
+            exit 1
+          fi
+
+          # Phase 3: operational independence. The workload must have been
+          # untouched by the operator outage: same pods, never restarted.
+          NOW_WORKLOAD_UIDS="$(kubectl get pods -n openstack -l app.kubernetes.io/instance=nova-chaos-op -o jsonpath='{.items[*].metadata.uid}')"
+          if [ -z "$(printf '%s' "$NOW_WORKLOAD_UIDS" | tr -d ' ')" ]; then
+            echo "ERROR: no workload pods present after the operator kill"
+            exit 1
+          fi
+          for uid in $WORKLOAD_UIDS; do
+            case " $NOW_WORKLOAD_UIDS " in
+              *" $uid "*) ;;
+              *)
+                echo "ERROR: workload pod ${uid} was replaced during the operator outage"
+                echo "  pre-chaos workload UIDs:${WORKLOAD_UIDS}"
+                echo "  current workload UIDs:   ${NOW_WORKLOAD_UIDS}"
+                exit 1
+                ;;
+            esac
+          done
+          echo "Workload undisturbed: pod UIDs unchanged across the kill"
+          exit 0
+    catch: *nova-op-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 14-podchaos.yaml --ignore-not-found
+          echo "OK: the operator PodChaos is gone"
+  # ── Step 11: Delete PodChaos ──────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-nova-operator
+          namespace: nova-system
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark nova-operator-pod-kill fault-end
+    catch: *nova-op-dump
+  # ── Step 12: Prove the recovered operator reconciles a spec change ────────
+  - try:
+    - patch:
+        file: 15-patch-scale.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-chaos-op
+            namespace: openstack
+          spec:
+            replicas: 2
+          status:
+            availableReplicas: 2
+            updatedReplicas: 2
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-op-dump
+  # ── Step 13: Judge the workload, audit Placement, compare OVN ─────────────
+  # 25 minutes: the observation and the DONE wait of verify, then the audit
+  # and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify nova-operator-pod-kill
+          --placement-audit nova-chaos-op
+          --ovn-db-sync neutron-nova-chaos-op
+    catch: *nova-op-dump
+  # ── Step 14: Tear the deployment down ─────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself, from the bus consumers inward. The fake compute holds a broker
+  # connection of its own and is not part of the CR, so it goes before the
+  # Nova. The compute and the Jobs, which the suite applied with kubectl, are
+  # deleted best-effort: a suite that already failed must still reach the CR
+  # delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-chaos-op-catalog-setup nova-chaos-op-image-seed nova-chaos-op-flavor-seed || true
+
+          kubectl delete nova nova-chaos-op -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-chaos-op -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-chaos-op -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *nova-op-dump

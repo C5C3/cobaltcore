@@ -1981,6 +1981,8 @@ jobs:
               tests/e2e-chaos/placement-mariadb-outage
               tests/e2e-chaos/barbican-mariadb-outage
               tests/e2e-chaos/cinder-mariadb-outage
+              tests/e2e-chaos/neutron-operator-pod-kill
+              tests/e2e-chaos/ovn-operator-pod-kill
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -2008,6 +2010,7 @@ jobs:
               tests/e2e-chaos/nova-mariadb-outage
               tests/e2e-chaos/nova-placement-outage
               tests/e2e-chaos/nova-keystone-outage
+              tests/e2e-chaos/nova-operator-pod-kill
     runs-on: ${{ matrix.runner }}
     # 150 minutes for the nova leg, 90 for the other three. This leg loads
     # eighteen images and runs eight operator deploys before its first suite,

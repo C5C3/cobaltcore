@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch applied AFTER the operator pod kill: proves the recovered operator
+# still reconciles spec changes end-to-end. The API Deployment carries the CR
+# name (operators/nova/internal/controller/reconcile_deployment.go).
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: Nova
+metadata:
+  name: nova-chaos-op
+  namespace: openstack
+spec:
+  api:
+    deployment:
+      replicas: 2

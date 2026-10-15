@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill a ovn-operator pod in ovn-system.
+#
+# One-shot pod-kill of one of the two operator replicas the chart runs; the
+# Deployment replaces it and the survivor or the new pod takes the leader
+# lease. The selector is the operator's own label in its own namespace, so no
+# OVN or Neutron workload pod in openstack is a candidate.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-ovn-operator
+  namespace: ovn-system
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - ovn-system
+    labelSelectors:
+      app.kubernetes.io/name: ovn-operator
+  gracePeriod: 0
