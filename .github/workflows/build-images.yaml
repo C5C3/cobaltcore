@@ -25,17 +25,22 @@ name: Build Images
       - .github/actions/**
       - tests/container-images/**
       - tests/lib/ceph_bindings.sh
+      - tests/lib/build_tools.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
       - flake.nix
       - flake.lock
       - nix/lib/**
+      - nix/pkgs/**
+      - nix/locks/**
+      - hack/nix-lock.sh
   # The pull-request list is exactly what this workflow reads: the images and
   # their build inputs, the composite actions it reaches (directly or through
   # build-push-image, build-nix-image, setup-docker-registry and
-  # merge-manifest-and-attest), the hack scripts it calls, the flake inputs and
-  # shared library the Nix-built images are built from, and the per-image
-  # verify scripts with the helper three of them source. The four structural scripts under
+  # merge-manifest-and-attest), the hack scripts it calls, the flake inputs,
+  # shared library, packages and locks the Nix-built images are built from with
+  # the generator nix-lock-check runs, and the per-image verify scripts with
+  # the two helpers they source. The four structural scripts under
   # tests/container-images/ belong to verify-container-images.yaml, which runs
   # them; this workflow never does, so they are excluded. GitHub
   # evaluates the list in order, which is why the negations follow the positive
@@ -57,7 +62,6 @@ name: Build Images
       - hack/ci-resolve-hvo-commit.sh
       - hack/ci-resolve-kna-commit.sh
       - hack/ci-resolve-ubuntu-digest.sh
-      - hack/ci-run-unit-tests.sh
       - hack/ci-wait-for-image.sh
       - hack/resolve-test-ref.sh
       - hack/gen-option-catalog.sh
@@ -75,6 +79,7 @@ name: Build Images
       - .github/actions/platform-pair/**
       - .github/actions/registry-login/**
       - .github/actions/setup-docker-registry/**
+      - .github/actions/setup-nix/**
       - .github/actions/supply-chain-attest/**
       - tests/container-images/**
       - "!tests/container-images/verify_build_images_workflow.sh"
@@ -82,11 +87,15 @@ name: Build Images
       - "!tests/container-images/verify_release_config.sh"
       - "!tests/container-images/verify_spdx_headers.sh"
       - tests/lib/ceph_bindings.sh
+      - tests/lib/build_tools.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
       - flake.nix
       - flake.lock
       - nix/lib/**
+      - nix/pkgs/**
+      - nix/locks/**
+      - hack/nix-lock.sh
 
 permissions:
   contents: read
@@ -106,8 +115,8 @@ jobs:
   # workflow_dispatch runs therefore publish exactly what they publish today.
   #
   # The base-image jobs stay outside this: they run on every run of the
-  # workflow, because four of their outputs are what the service, Tempest and
-  # test jobs build against.
+  # workflow, because four of their outputs are what nova-compute, the one
+  # image still built from them, builds against.
   #
   # To add a new service: see hack/ci-resolve-image-changes.sh for full
   # instructions.
@@ -138,62 +147,82 @@ jobs:
         with:
           filters: |
             # ---------------------------------------------------------------
-            # One filter per service image: its Dockerfile and build context,
-            # its patches, the option catalogs the build verifies, and the
-            # script that verifies the built image.
+            # One filter per service image: its image.nix and companion
+            # files, its locks, its patches, the option catalogs the build
+            # verifies, and the script that verifies the built image.
             # ---------------------------------------------------------------
             svc_keystone:
               - 'images/keystone/**'
+              - 'nix/locks/*/keystone/**'
               - 'patches/keystone/**'
               - 'operators/keystone/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_keystone.sh'
             svc_horizon:
               - 'images/horizon/**'
+              - 'nix/locks/*/horizon/**'
               - 'patches/horizon/**'
               - 'tests/container-images/verify_horizon.sh'
             svc_glance:
               - 'images/glance/**'
+              - 'nix/locks/*/glance/**'
               - 'patches/glance/**'
               - 'operators/glance/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_glance.sh'
               - 'tests/lib/ceph_bindings.sh'
             svc_placement:
               - 'images/placement/**'
+              - 'nix/locks/*/placement/**'
               - 'patches/placement/**'
               - 'tests/container-images/verify_placement.sh'
             svc_barbican:
               - 'images/barbican/**'
+              - 'nix/locks/*/barbican/**'
               - 'patches/barbican/**'
               - 'tests/container-images/verify_barbican.sh'
             svc_neutron:
               - 'images/neutron/**'
+              - 'nix/locks/*/neutron/**'
               - 'patches/neutron/**'
               - 'operators/neutron/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_neutron.sh'
             svc_cinder:
               - 'images/cinder/**'
+              - 'nix/locks/*/cinder/**'
               - 'patches/cinder/**'
               - 'operators/cinder/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_cinder.sh'
               - 'tests/lib/ceph_bindings.sh'
             svc_nova:
               - 'images/nova/**'
+              - 'nix/locks/*/nova/**'
               - 'patches/nova/**'
               - 'operators/nova/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_nova.sh'
               # The compute image is built from nova's pin, patches and
-              # constraints and rides the nova service name.
+              # constraints and rides the nova service name. It is the one
+              # image still built FROM the two base images.
               - 'images/nova-compute/**'
               - 'tests/container-images/verify_nova_compute.sh'
               - 'tests/lib/ceph_bindings.sh'
-            # ---------------------------------------------------------------
-            # Everything every service image is built from: the two base
-            # images, the release pins, the build scripts, the constraint
-            # overrides.
-            # ---------------------------------------------------------------
-            base:
               - 'images/python-base/**'
               - 'images/venv-builder/**'
+            # ---------------------------------------------------------------
+            # Everything every service image is built from: the flake inputs,
+            # the shared Nix library and packages, the lock generator, the
+            # action that builds the images, the release pins, the build
+            # scripts, the constraint overrides.
+            # ---------------------------------------------------------------
+            base:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - 'nix/pkgs/**'
+              - 'hack/nix-lock.sh'
+              - '.github/actions/build-nix-image/**'
+              - '.github/actions/setup-nix/**'
+              # The build-tools check of every service and Tempest verify
+              # script.
+              - 'tests/lib/build_tools.sh'
               - 'releases/**'
               - 'scripts/**'
               - 'overrides/**'
@@ -202,6 +231,7 @@ jobs:
             # ---------------------------------------------------------------
             tempest:
               - 'images/tempest/**'
+              - 'nix/locks/*/tempest/**'
               - 'tests/container-images/verify_tempest.sh'
             ovn:
               - 'images/ovn/**'
@@ -218,6 +248,7 @@ jobs:
               - 'flake.lock'
               - 'nix/lib/**'
               - '.github/actions/build-nix-image/**'
+              - '.github/actions/setup-nix/**'
             libvirt:
               - 'images/libvirt/**'
               - 'tests/container-images/verify_libvirt.sh'
@@ -251,7 +282,6 @@ jobs:
               - 'hack/ci-resolve-hvo-commit.sh'
               - 'hack/ci-resolve-kna-commit.sh'
               - 'hack/ci-resolve-ubuntu-digest.sh'
-              - 'hack/ci-run-unit-tests.sh'
               - 'hack/ci-wait-for-image.sh'
               - 'hack/resolve-test-ref.sh'
               - 'hack/gen-option-catalog.sh'
@@ -290,16 +320,7 @@ jobs:
         dockerfile:
           - images/python-base/Dockerfile
           - images/venv-builder/Dockerfile
-          - images/keystone/Dockerfile
-          - images/horizon/Dockerfile
-          - images/glance/Dockerfile
-          - images/placement/Dockerfile
-          - images/barbican/Dockerfile
-          - images/neutron/Dockerfile
-          - images/cinder/Dockerfile
-          - images/nova/Dockerfile
           - images/nova-compute/Dockerfile
-          - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
           - images/libvirt/Dockerfile
@@ -317,11 +338,14 @@ jobs:
           config: .hadolint.yaml
 
   # The gate of every Nix-built image, the counterpart of lint-dockerfiles:
-  # nix flake check evaluates every output of the runner's system and builds
-  # its checks (nix-lint runs nixfmt, statix and deadnix); the nix eval
-  # instantiates every arm64 image without building it, which --all-systems
-  # cannot do on an x86 runner. The Cachix step reads the cobaltcore cache and
-  # pushes to it only when CACHIX_AUTH_TOKEN is set.
+  # nix flake check --no-build evaluates every output of the runner's system,
+  # and the build step builds the three checks that need no service lock
+  # (nix-lint runs nixfmt, statix and deadnix); without --no-build the check
+  # would also run the unit tests of every lock, which test-service-images
+  # runs one leg each. The nix eval instantiates every arm64 output without
+  # building it, which --all-systems cannot do on an x86 runner. The Cachix
+  # step reads the cobaltcore cache and pushes to it only when
+  # CACHIX_AUTH_TOKEN is set.
   nix-flake-check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -330,23 +354,45 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-
-      # The cache only saves build time: a missing or unreachable cache fails
-      # no build, which then substitutes from cache.nixos.org.
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        continue-on-error: true
+      - uses: ./.github/actions/setup-nix
         with:
-          name: cobaltcore
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Check the flake
-        run: nix flake check --print-build-logs
+        run: |
+          nix flake check --no-build --print-build-logs
+          nix build .#checks.x86_64-linux.nix-lint .#checks.x86_64-linux.fhs-layout \
+            .#checks.x86_64-linux.service-tests --print-build-logs
 
       - name: Instantiate the arm64 images
         run: |
           nix eval --json .#packages.aarch64-linux --apply 'builtins.mapAttrs (_: p: p.drvPath)'
+
+  # The locks under nix/locks/ and the noVNC hash are derived from the release
+  # pins, the constraint overrides, the patches and the venv-builder pins:
+  # hack/nix-lock.sh --check regenerates them with the uv of the lock-tools
+  # shell and fails when the result differs from the committed files. A
+  # Renovate pull request that moves a pin fails here until `make nix-lock`
+  # is pushed to its branch. The GitHub token lifts the API rate limit of the
+  # source prefetches.
+  nix-lock-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the locks
+        run: |
+          nix develop .#lock-tools --command bash hack/nix-lock.sh --check || {
+            echo "::error::nix/locks is stale: run make nix-lock and commit the result"
+            exit 1
+          }
 
   # Single source for lowercase image owner.
   prepare:
@@ -526,7 +572,7 @@ jobs:
           bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
 
   generate-matrix:
-    needs: [changes, merge-base-images, verify-base-images]
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
@@ -550,8 +596,10 @@ jobs:
           SERVICES: ${{ needs.changes.outputs.services }}
         run: hack/ci-generate-build-matrix.sh
 
+  # Nix-built image: images/tempest/image.nix over the tempest lock of the
+  # release, which pins the five releases/<release>/test-refs.yaml versions.
   build-tempest:
-    needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]
+    needs: [changes, generate-matrix, nix-flake-check, nix-lock-check, prepare]
     if: needs.changes.outputs.build-tempest == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -563,18 +611,6 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.tempest-matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: mikefarah/yq@504fc38780cc46be8444ea1b72fb55919fc0bfb0 # v4.54.1
-
-      - name: Resolve Tempest versions
-        id: versions
-        env:
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: |
-          # shellcheck disable=SC2129 # deliberate: three independent appends read better here
-          echo "tempest=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" tempest)" >> "$GITHUB_OUTPUT"
-          echo "barbican-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" barbican-tempest-plugin)" >> "$GITHUB_OUTPUT"
-          echo "keystone-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" keystone-tempest-plugin)" >> "$GITHUB_OUTPUT"
-          echo "neutron-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" neutron-tempest-plugin)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare platform pair
         id: platform-pair
@@ -589,34 +625,31 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # A flake attribute cannot contain a dot, so the release names its
+      # attribute with an underscore (tempest-2026_1-image).
+      - name: Resolve flake attribute
+        id: attr
+        env:
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: echo "attribute=tempest-${MATRIX_RELEASE//./_}-image" >> "$GITHUB_OUTPUT"
+
       - name: Build Tempest image
         id: build-tempest
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'  # defense-in-depth: matrix already excludes ARM64 on PRs
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: ${{ steps.attr.outputs.attribute }}
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest
-          context: images/tempest
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          build-args: |
-            TEMPEST_VERSION=${{ steps.versions.outputs.tempest }}
-            BARBICAN_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.barbican-tempest-plugin }}
-            KEYSTONE_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.keystone-tempest-plugin }}
-            NEUTRON_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.neutron-tempest-plugin }}
-          build-contexts: |
-            python-base=docker-image://ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ needs.merge-base-images.outputs.python-base-digest }}
-            venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
-            upper-constraints=releases/${{ matrix.release }}/
-          labels-title: tempest
-          labels-description: OpenStack Tempest API testing framework
-          cache-scope: tempest-${{ matrix.release }}
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/tempest:{1}', needs.prepare.outputs.image-owner, matrix.release) || format('ghcr.io/{0}/tempest', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest:${{ matrix.release }}
           verify-script: tests/container-images/verify_tempest.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/tempest:${{ matrix.release }}
+          vulnix-artifact-name: vulnix-tempest-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
 
   merge-tempest-image:
     if: github.event_name != 'pull_request'
@@ -813,16 +846,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-
-      # The cache only saves build time: a missing or unreachable cache fails
-      # no build, which then substitutes from cache.nixos.org.
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        continue-on-error: true
+      - uses: ./.github/actions/setup-nix
         with:
-          name: cobaltcore
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build backup-shifter
         id: build-backup-shifter
@@ -1500,9 +1526,12 @@ jobs:
           docker pull "$KNA_IMAGE"
           bash tests/container-images/verify_kna.sh "$KNA_IMAGE"
 
-  # Per-platform service builds pushed by digest or loaded locally for PR verification.
+  # Per-platform service builds pushed by digest or loaded locally for PR
+  # verification. Each image is the flake attribute
+  # <service>-<release with _>-image, built from images/<service>/image.nix
+  # over the lock under nix/locks/<release>/<service>/.
   build-service-images:
-    needs: [changes, merge-base-images, verify-base-images, generate-matrix, prepare]
+    needs: [changes, generate-matrix, nix-flake-check, nix-lock-check, prepare]
     if: needs.changes.outputs.has-services == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -1517,19 +1546,6 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.build-matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout service source
-        id: checkout-source
-        uses: ./.github/actions/checkout-service-source
-        with:
-          service: ${{ matrix.service }}
-          release: ${{ matrix.release }}
-
-      - name: Resolve extra packages
-        id: extra-pkgs
-        env:
-          MATRIX_SERVICE: ${{ matrix.service }}
-          MATRIX_RELEASE: ${{ matrix.release }}
-        run: hack/ci-resolve-extra-packages.sh
 
       - name: Derive tags
         id: tags
@@ -1552,45 +1568,43 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # A flake attribute cannot contain a dot, so the release names its
+      # attribute with an underscore (keystone-2026_1-image).
+      - name: Resolve flake attribute
+        id: attr
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+        run: echo "attribute=${MATRIX_SERVICE}-${MATRIX_RELEASE//./_}-image" >> "$GITHUB_OUTPUT"
+
       - name: Build service image
         id: build-service
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: ${{ steps.attr.outputs.attribute }}
           image-name: ${{ steps.tags.outputs.image }}
-          context: images/${{ matrix.service }}
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          build-args: |
-            PIP_EXTRAS=${{ steps.extra-pkgs.outputs.pip-extras }}
-            PIP_PACKAGES=${{ steps.extra-pkgs.outputs.pip-packages }}
-            EXTRA_APT_PACKAGES=${{ steps.extra-pkgs.outputs.apt-packages }}
-          build-contexts: |
-            python-base=docker-image://${{ needs.merge-base-images.outputs.python-base-image }}
-            venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}
-            ${{ matrix.service }}=src/${{ matrix.service }}
-            upper-constraints=releases/${{ matrix.release }}/
-          # A Dockerfile that fetches from github.com with the git noble ships
-          # mounts this secret into that one RUN (see images/nova/Dockerfile,
-          # the only service image doing so today, for the noVNC tree); the
-          # others never read it. A secret, not a build-arg: it reaches no
-          # layer.
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
-          labels-title: ${{ matrix.service }}
-          labels-description: OpenStack ${{ matrix.service }} service
-          metadata-tags: |
-            type=raw,value=${{ steps.checkout-source.outputs.source-ref }}
-          extra-labels: |
-            org.opencontainers.image.base.name=${{ needs.merge-base-images.outputs.python-base-name }}
-            org.opencontainers.image.base.digest=${{ needs.merge-base-images.outputs.python-base-digest }}
-          cache-scope: ${{ matrix.service }}-${{ matrix.release }}
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && steps.tags.outputs.composite || steps.tags.outputs.image }}
           artifact-name: ${{ github.event_name != 'pull_request' && format('digests-service-{0}-{1}-{2}', matrix.service, matrix.release, steps.platform-pair.outputs.value) || '' }}
           grype-category: ${{ github.event_name == 'pull_request' && format('grype-{0}-{1}', matrix.service, steps.platform-pair.outputs.value) || '' }}
-          image-ref-for-scan: ${{ steps.tags.outputs.composite }}
           verify-script: ${{ github.event_name == 'pull_request' && format('tests/container-images/verify_{0}.sh', matrix.service) || '' }}
           verify-image-ref: ${{ steps.tags.outputs.composite }}
+          vulnix-artifact-name: vulnix-${{ matrix.service }}-${{ matrix.release }}-${{ steps.platform-pair.outputs.value }}
+
+      # After the build: the action applies the release patches to src/<service>
+      # and merges the constraint overrides into
+      # releases/<release>/upper-constraints.txt in place, and the build has to
+      # evaluate the unmodified tree. The option catalog check reads the
+      # source as SOURCE_DIR.
+      - name: Checkout service source
+        id: checkout-source
+        uses: ./.github/actions/checkout-service-source
+        with:
+          service: ${{ matrix.service }}
+          release: ${{ matrix.release }}
 
       - name: Verify option catalog
         if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder' || matrix.service == 'nova')
@@ -1604,7 +1618,7 @@ jobs:
   # Assembles per-platform service digests into multi-arch manifests with attestation.
   merge-service-images:
     if: github.event_name != 'pull_request'
-    needs: [merge-base-images, build-service-images, generate-matrix, prepare]
+    needs: [build-service-images, generate-matrix, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -1656,62 +1670,41 @@ jobs:
           sbom-output-file: sbom-${{ matrix.service }}.cyclonedx.json
           grype-category: grype-${{ matrix.service }}
 
+  # The unit tests of each service and release as Nix builds
+  # (nix/lib/service-tests.nix): the run succeeds whenever the suite ran and
+  # holds the subunit stream, so a failed suite still uploads its results; the check
+  # then fails the leg unless the run's exit status is 0. MySQL and PostgreSQL
+  # run inside the build sandbox. A failed run never reaches the cache.
   test-service-images:
-    needs: [changes, merge-base-images, verify-base-images, generate-matrix]
+    needs: [changes, generate-matrix, nix-lock-check]
     if: needs.changes.outputs.has-services == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
       packages: read
-    services:
-      mysql:
-        image: mysql:9.7
-        env: {MYSQL_ROOT_PASSWORD: openstack}
-        ports: ['3306:3306']
-        options: --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -popenstack" --health-interval=10s --health-timeout=5s --health-retries=5
-      postgres:
-        image: postgres:18
-        env: {POSTGRES_USER: openstack, POSTGRES_PASSWORD: openstack}
-        ports: ['5432:5432']
-        options: --health-cmd="pg_isready -U openstack" --health-interval=10s --health-timeout=5s --health-retries=5
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout service source
-        id: checkout-source
-        uses: ./.github/actions/checkout-service-source
-        with:
-          service: ${{ matrix.service }}
-          release: ${{ matrix.release }}
 
-      - name: Resolve pip extras
-        id: pip-extras
+      # A failed run never reaches the cache.
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          push-filter: '-test-run$'
+
+      - name: Run tests
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
         run: |
-          extras=$(yq -r ".\"${MATRIX_SERVICE}\".pip_extras // [] | join(\",\")" "releases/${MATRIX_RELEASE}/extra-packages.yaml")
-          echo "install_spec=.${extras:+[$extras]}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Docker registry
-        uses: ./.github/actions/setup-docker-registry
-        with:
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          install-cosign: 'false'
-
-      - name: Run tests
-        env:
-          SERVICE_NAME: ${{ matrix.service }}
-          SERVICE_VERSION: ${{ steps.checkout-source.outputs.source-ref }}
-          INSTALL_SPEC: ${{ steps.pip-extras.outputs.install_spec }}
-          VENV_BUILDER_IMAGE: ${{ needs.merge-base-images.outputs.venv-builder-image }}
-          RELEASE: ${{ matrix.release }}
-          OS_TEST_DBAPI_ADMIN_CONNECTION: "sqlite://;mysql+pymysql://root:openstack@127.0.0.1/;postgresql+psycopg2://openstack:openstack@127.0.0.1/openstack"
-        run: hack/ci-run-unit-tests.sh
+          attr="${MATRIX_SERVICE}-${MATRIX_RELEASE//./_}"
+          nix build ".#${attr}-test-run" --print-build-logs --out-link result-test-run
+          mkdir -p results && cp -L result-test-run/* results/
+          if [ -f results/summary.txt ]; then cat results/summary.txt; fi
+          nix build ".#checks.x86_64-linux.${attr}-tests" --print-build-logs
 
       - name: Upload test results
         if: always()

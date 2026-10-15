@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action that installs Nix and adds the cobaltcore Cachix cache, for
+# every job of build-images.yaml that builds from the flake. The cache only
+# saves build time: a missing or unreachable cache fails no build, which then
+# substitutes from cache.nixos.org. A composite action cannot read secrets, so
+# the job passes CACHIX_AUTH_TOKEN in; without it the job pushes nothing.
+
+name: Set up Nix
+description: >
+  Install Nix and read the cobaltcore Cachix cache, pushing what the job
+  builds when a Cachix auth token is passed.
+
+inputs:
+  cachix-auth-token:
+    description: The CACHIX_AUTH_TOKEN secret; empty reads the cache and pushes nothing
+    required: false
+    default: ''
+  push-filter:
+    description: Regular expression of the store paths never pushed (cachix-action pushFilter)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      continue-on-error: true
+      with:
+        name: cobaltcore
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipPush: ${{ inputs.cachix-auth-token == '' }}
+        pushFilter: ${{ inputs.push-filter }}

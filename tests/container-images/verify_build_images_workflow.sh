@@ -12,8 +12,7 @@
 # hack/. Many assertions below therefore traverse those composite-action YAML
 # files (supply-chain-attest, merge-manifest-and-attest, build-push-image,
 # build-nix-image, checkout-service-source, derive-service-tags,
-# setup-docker-registry) and the
-# hack/ci-run-unit-tests.sh + hack/ci-merge-manifest.sh helpers, instead of
+# setup-docker-registry) and the hack/ci-merge-manifest.sh helper, instead of
 # inspecting the workflow itself. The workflow is still verified for job
 # topology, permissions, concurrency, and correct composite-action wiring.
 
@@ -31,7 +30,7 @@ ACTION_BUILD_NIX="$PROJECT_ROOT/.github/actions/build-nix-image/action.yaml"
 ACTION_CHECKOUT_SOURCE="$PROJECT_ROOT/.github/actions/checkout-service-source/action.yaml"
 ACTION_DERIVE_TAGS="$PROJECT_ROOT/.github/actions/derive-service-tags/action.yaml"
 ACTION_SETUP_REGISTRY="$PROJECT_ROOT/.github/actions/setup-docker-registry/action.yaml"
-HACK_RUN_UNIT_TESTS="$PROJECT_ROOT/hack/ci-run-unit-tests.sh"
+ACTION_SETUP_NIX="$PROJECT_ROOT/.github/actions/setup-nix/action.yaml"
 HACK_MERGE_MANIFEST="$PROJECT_ROOT/hack/ci-merge-manifest.sh"
 HACK_GEN_MATRIX="$PROJECT_ROOT/hack/ci-generate-build-matrix.sh"
 
@@ -314,19 +313,46 @@ test_libvirt_keeper_tag() {
     "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$pr_paths" || true)"
 }
 
-# assert_cachix_step <job> — the job reads the cobaltcore cache, pushes only
-# with CACHIX_AUTH_TOKEN, and a cache it cannot reach fails no build.
+# assert_cachix_step <job> — the job installs Nix and reads the cobaltcore
+# cache through the setup-nix action (test_setup_nix_action), once, and hands
+# it CACHIX_AUTH_TOKEN to push with.
 assert_cachix_step() {
   local job_name="$1"
-  local cachix=".jobs[\"$job_name\"].steps[] | select(.uses != null and (.uses | test(\"^cachix/cachix-action@\")))"
-  assert_eq "$job_name: the Cachix step reads the cobaltcore cache" "cobaltcore" \
-    "$(yq_raw "$cachix | .with.name" "$WORKFLOW" || true)"
-  assert_eq "$job_name: the Cachix step authenticates with CACHIX_AUTH_TOKEN" \
-    '${{ secrets.CACHIX_AUTH_TOKEN }}' "$(yq_raw "$cachix | .with.authToken" "$WORKFLOW" || true)"
-  assert_eq "$job_name: the Cachix step pushes nothing without the secret" \
-    "\${{ secrets.CACHIX_AUTH_TOKEN == '' }}" "$(yq_raw "$cachix | .with.skipPush" "$WORKFLOW" || true)"
-  assert_eq "$job_name: a missing or unreachable cache fails no build" "true" \
-    "$(yq_raw "$cachix | .[\"continue-on-error\"]" "$WORKFLOW" || true)"
+  local setup=".jobs[\"$job_name\"].steps[] | select(.uses == \"./.github/actions/setup-nix\")"
+  assert_eq "$job_name: Nix is set up through the setup-nix action, once" "1" \
+    "$(yq_raw "[$setup] | length" "$WORKFLOW" || true)"
+  assert_eq "$job_name: setup-nix gets CACHIX_AUTH_TOKEN" \
+    '${{ secrets.CACHIX_AUTH_TOKEN }}' "$(yq_raw "$setup | .with[\"cachix-auth-token\"]" "$WORKFLOW" || true)"
+}
+
+# --- setup-nix: Nix and the Cachix cache of every flake job ---
+test_setup_nix_action() {
+  echo "Test: setup-nix installs Nix and reads the cobaltcore cache, pushing only with a token"
+
+  local uses
+  uses=$(yq_raw '.runs.steps[].uses | select(. != null)' "$ACTION_SETUP_NIX" || true)
+  assert_eq "setup-nix installs Nix from a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/install-nix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_eq "setup-nix reads the Cachix cache through a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/cachix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_file_contains "install-nix-action carries a version comment" "$ACTION_SETUP_NIX" \
+    'uses: cachix/install-nix-action@[0-9a-f]\{40\} # v[0-9]'
+  assert_file_contains "cachix-action carries a version comment" "$ACTION_SETUP_NIX" \
+    'uses: cachix/cachix-action@[0-9a-f]\{40\} # v[0-9]'
+
+  local cachix='.runs.steps[] | select(.uses != null and (.uses | test("^cachix/cachix-action@")))'
+  assert_eq "the Cachix step reads the cobaltcore cache" "cobaltcore" \
+    "$(yq_raw "$cachix | .with.name" "$ACTION_SETUP_NIX" || true)"
+  assert_eq "the Cachix step authenticates with the token input" \
+    '${{ inputs.cachix-auth-token }}' "$(yq_raw "$cachix | .with.authToken" "$ACTION_SETUP_NIX" || true)"
+  assert_eq "the Cachix step pushes nothing without a token" \
+    "\${{ inputs.cachix-auth-token == '' }}" "$(yq_raw "$cachix | .with.skipPush" "$ACTION_SETUP_NIX" || true)"
+  assert_eq "the Cachix step takes the push filter input" \
+    '${{ inputs.push-filter }}' "$(yq_raw "$cachix | .with.pushFilter" "$ACTION_SETUP_NIX" || true)"
+  assert_eq "a missing or unreachable cache fails no build" "true" \
+    "$(yq_raw "$cachix | .[\"continue-on-error\"]" "$ACTION_SETUP_NIX" || true)"
+  assert_eq "the token input defaults to empty" "" \
+    "$(yq_raw '.inputs["cachix-auth-token"].default' "$ACTION_SETUP_NIX" || true)"
 }
 
 # --- Nix-built image build/merge job structure ---
@@ -366,12 +392,6 @@ test_nix_image_jobs() {
   assert_contains "build step exports digests the merge job collects" \
     "$(yq_raw "$step | .with[\"artifact-name\"]" "$WORKFLOW" || true)" "digests-$img-"
 
-  local uses
-  uses=$(yq_raw "$job.steps[].uses | select(. != null)" "$WORKFLOW" || true)
-  assert_eq "build-$img installs Nix from a SHA-pinned action" "1" \
-    "$(grep -cE '^cachix/install-nix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
-  assert_eq "build-$img reads the Cachix cache through a SHA-pinned action" "1" \
-    "$(grep -cE '^cachix/cachix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
   assert_cachix_step "build-$img"
 
   local lint_matrix
@@ -409,19 +429,14 @@ test_nix_flake_check_job() {
   local runs
   runs=$(yq_raw "$job.steps[].run | select(. != null)" "$WORKFLOW" || true)
   assert_contains "nix-flake-check runs nix flake check" "$runs" "nix flake check"
+  # Without --no-build the check would run the unit tests of every lock.
+  assert_contains "nix flake check evaluates without building" "$runs" "nix flake check --no-build"
+  assert_contains "nix-flake-check builds the nix-lint check" "$runs" ".#checks.x86_64-linux.nix-lint"
+  assert_contains "nix-flake-check builds the fhs-layout check" "$runs" ".#checks.x86_64-linux.fhs-layout"
+  assert_contains "nix-flake-check builds the service-tests check" "$runs" ".#checks.x86_64-linux.service-tests"
   assert_contains "nix-flake-check instantiates every arm64 image" \
     "$runs" "nix eval --json .#packages.aarch64-linux --apply"
 
-  local uses
-  uses=$(yq_raw "$job.steps[].uses | select(. != null)" "$WORKFLOW" || true)
-  assert_eq "nix-flake-check installs Nix from a SHA-pinned action" "1" \
-    "$(grep -cE '^cachix/install-nix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
-  assert_eq "nix-flake-check reads the Cachix cache through a SHA-pinned action" "1" \
-    "$(grep -cE '^cachix/cachix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
-  assert_file_contains "install-nix-action carries a version comment" "$WORKFLOW" \
-    'uses: cachix/install-nix-action@[0-9a-f]\{40\} # v[0-9]'
-  assert_file_contains "cachix-action carries a version comment" "$WORKFLOW" \
-    'uses: cachix/cachix-action@[0-9a-f]\{40\} # v[0-9]'
   assert_cachix_step nix-flake-check
 }
 
@@ -483,6 +498,88 @@ test_nix_inputs_in_triggers() {
 
   for glob in 'images/backup-shifter/**' flake.nix flake.lock 'nix/lib/**' '.github/actions/build-nix-image/**'; do
     assert_eq "the shifter filter names $glob" "1" "$(grep -cxF "$glob" <<<"$shifter_globs" || true)"
+  done
+}
+
+# --- The service images build from their flake attribute through build-nix-image ---
+test_service_images_build_with_nix() {
+  echo "Test: build-service-images builds the flake attribute of the leg with build-nix-image"
+
+  local job='.jobs["build-service-images"]'
+  local step="$job.steps[] | select(.id == \"build-service\")"
+  assert_eq "build-service uses build-nix-image" "./.github/actions/build-nix-image" \
+    "$(yq_raw "$step | .uses" "$WORKFLOW" || true)"
+  assert_eq "build-service builds the attribute the attr step resolves" '${{ steps.attr.outputs.attribute }}' \
+    "$(yq_raw "$step | .with.attribute" "$WORKFLOW" || true)"
+  assert_eq "build-service verifies under the composite tag" '${{ steps.tags.outputs.composite }}' \
+    "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)"
+  assert_contains "the attr step names <service>-<release with _>-image" \
+    "$(yq_raw "$job.steps[] | select(.id == \"attr\") | .run" "$WORKFLOW" || true)" \
+    '${MATRIX_SERVICE}-${MATRIX_RELEASE//./_}-image'
+
+  assert_cachix_step build-service-images
+}
+
+# --- Tempest builds from its flake attribute through build-nix-image ---
+test_tempest_builds_with_nix() {
+  echo "Test: build-tempest builds the tempest attribute of the release with build-nix-image"
+
+  local job='.jobs["build-tempest"]'
+  local step="$job.steps[] | select(.id == \"build-tempest\")"
+  assert_eq "build-tempest uses build-nix-image" "./.github/actions/build-nix-image" \
+    "$(yq_raw "$step | .uses" "$WORKFLOW" || true)"
+  assert_eq "build-tempest builds the attribute the attr step resolves" '${{ steps.attr.outputs.attribute }}' \
+    "$(yq_raw "$step | .with.attribute" "$WORKFLOW" || true)"
+  assert_contains "the attr step names tempest-<release with _>-image" \
+    "$(yq_raw "$job.steps[] | select(.id == \"attr\") | .run" "$WORKFLOW" || true)" 'tempest-'
+  assert_contains "build-tempest verifies under the release tag" \
+    "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)" '/tempest:${{ matrix.release }}'
+
+  local needs
+  needs=$(yq_raw "$job.needs[]" "$WORKFLOW" || true)
+  assert_not_contains "build-tempest does not need merge-base-images" "$needs" "merge-base-images"
+
+  assert_cachix_step build-tempest
+}
+
+# --- The unit tests run as Nix builds inside the sandbox ---
+test_service_unit_tests_run_as_nix_checks() {
+  echo "Test: test-service-images builds the test run and the check of the leg"
+
+  local job='.jobs["test-service-images"]'
+  assert_eq "test-service-images starts no service containers" "null" \
+    "$(yq_raw "$job.services" "$WORKFLOW" || true)"
+
+  local run_step
+  run_step=$(yq_raw "$job.steps[] | select(.name == \"Run tests\") | .run" "$WORKFLOW" || true)
+  assert_contains "Run tests builds the test run" "$run_step" 'nix build ".#${attr}-test-run"'
+  assert_contains "Run tests builds the check" "$run_step" 'nix build ".#checks.x86_64-linux.${attr}-tests"'
+
+  local setup='.jobs["test-service-images"].steps[] | select(.uses == "./.github/actions/setup-nix")'
+  assert_eq "a failed run never reaches the cache" "-test-run\$" \
+    "$(yq_raw "$setup | .with[\"push-filter\"]" "$WORKFLOW" || true)"
+  assert_cachix_step test-service-images
+}
+
+# --- nix-lock-check: the locks stay equal to the pins ---
+test_nix_lock_check_job() {
+  echo "Test: nix-lock-check job"
+
+  local job='.jobs["nix-lock-check"]'
+  assert_eq "nix-lock-check job is defined" "true" "$(yq_raw "$job != null" "$WORKFLOW" || true)"
+  assert_eq "nix-lock-check runs on every event" "null" "$(yq_raw "$job.if" "$WORKFLOW" || true)"
+
+  local install_token runs
+  install_token=$(yq_raw "$job.steps[] | select(.uses != null and (.uses | test(\"^cachix/install-nix-action@\"))) | .with.github_access_token" "$WORKFLOW" || true)
+  assert_eq "install-nix-action gets the GitHub token for the prefetches" '${{ secrets.GITHUB_TOKEN }}' "$install_token"
+  runs=$(yq_raw "$job.steps[].run | select(. != null)" "$WORKFLOW" || true)
+  assert_contains "nix-lock-check runs the generator's check" "$runs" "hack/nix-lock.sh --check"
+  assert_contains "nix-lock-check runs in the lock-tools shell" "$runs" "nix develop .#lock-tools"
+
+  local dependant
+  for dependant in build-service-images build-tempest test-service-images; do
+    assert_contains "$dependant needs nix-lock-check" \
+      "$(yq_raw ".jobs[\"$dependant\"].needs[]" "$WORKFLOW" || true)" "nix-lock-check"
   done
 }
 
@@ -847,16 +944,23 @@ test_nova_compute_jobs() {
     "$WORKFLOW" "'tests/container-images/verify_nova_compute.sh'"
 }
 
-# --- build-service-images depends on build-base-images and verify-base-images ---
+# --- build-service-images builds behind the Nix gates, not the base images ---
 test_service_images_depend_on_base() {
-  echo "Test: build-service-images depends on build-base-images and verify-base-images"
+  echo "Test: build-service-images depends on the Nix gates, not on the base images"
 
   local needs
   needs=$(yq_raw '.jobs["build-service-images"]["needs"][]' "$WORKFLOW" || true)
 
-  assert_contains "build-service-images needs merge-base-images" "$needs" "merge-base-images"
-  assert_contains "build-service-images needs verify-base-images" "$needs" "verify-base-images"
-  assert_contains "build-service-images needs generate-matrix" "$needs" "generate-matrix"
+  local job
+  for job in changes generate-matrix nix-flake-check nix-lock-check prepare; do
+    assert_contains "build-service-images needs $job" "$needs" "$job"
+  done
+  assert_not_contains "build-service-images does not need merge-base-images" "$needs" "merge-base-images"
+  assert_not_contains "build-service-images does not need verify-base-images" "$needs" "verify-base-images"
+  # A python-base or venv-builder failure concerns nova-compute alone, which
+  # merges in a job of its own.
+  assert_not_contains "merge-service-images does not need merge-base-images" \
+    "$(yq_raw '.jobs["merge-service-images"]["needs"][]' "$WORKFLOW" || true)" "merge-base-images"
 }
 
 # --- Matrix is dynamic via fromJson ---
@@ -992,6 +1096,13 @@ test_changes_job_gates_matrix_jobs() {
     "$pr_paths" "hack/ci-resolve-kna-commit.sh"
   assert_contains "the pull-request trigger names one composite action" \
     "$pr_paths" ".github/actions/build-push-image/**"
+  assert_contains "the pull-request trigger names the setup-nix action" \
+    "$pr_paths" ".github/actions/setup-nix/**"
+  assert_contains "the pull-request trigger names the build-tools helper" \
+    "$pr_paths" "tests/lib/build_tools.sh"
+  assert_contains "the base filter rebuilds every image whose verify script sources the build-tools helper" \
+    "$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" | yq_raw '.base[]' - || true)" \
+    "tests/lib/build_tools.sh"
   assert_not_contains "the pull-request trigger drops the .github/actions/ catch-all" \
     "$pr_paths" ".github/actions/**"
   assert_not_contains "the pull-request trigger drops the hack/ci-* catch-all" \
@@ -1038,19 +1149,6 @@ test_constraint_overrides_step() {
   local overrides_run
   overrides_run=$(yq_raw '.runs.steps[] | select(.name == "Apply constraint overrides") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
   assert_contains "checkout-service-source runs apply-constraint-overrides.sh" "$overrides_run" "apply-constraint-overrides.sh"
-}
-
-# --- Four build-contexts for service images ---
-test_build_contexts_for_service_images() {
-  echo "Test: build-contexts for service images"
-
-  local build_contexts
-  build_contexts=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["build-contexts"]' "$WORKFLOW" || true)
-
-  assert_contains "build-context includes python-base" "$build_contexts" "python-base="
-  assert_contains "build-context includes venv-builder" "$build_contexts" "venv-builder="
-  assert_contains "build-context includes service source" "$build_contexts" "matrix.service"
-  assert_contains "build-context includes upper-constraints" "$build_contexts" "upper-constraints="
 }
 
 # --- Tag schema composite ---
@@ -1199,22 +1297,20 @@ test_actions_have_version_comments() {
   fi
 }
 
-# --- GHA caching present (cache-from and cache-to) ---
+# --- GHA caching present for the Docker-built base images ---
 test_gha_caching_present() {
   echo "Test: GHA caching present"
 
-  # cache-from / cache-to moved into build-push-image composite, which
-  # derives the scope from the cache-scope input.
+  # cache-from / cache-to live in the build-push-image composite, which
+  # derives the scope from the cache-scope input. The service images build
+  # from Nix and cache through Cachix instead.
   assert_file_contains "cache-from: type=gha present" "$ACTION_BUILD_PUSH" "cache-from: type=gha"
   assert_file_contains "cache-to: type=gha present" "$ACTION_BUILD_PUSH" "cache-to: type=gha"
 
-  # Verify workflow actually passes a cache-scope to each build-push-image call.
-  local base_scopes service_scope
+  local base_scopes
   base_scopes=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .with["cache-scope"]' "$WORKFLOW" || true)
-  service_scope=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["cache-scope"]' "$WORKFLOW" || true)
   assert_contains "build-base-images passes cache-scope for python-base" "$base_scopes" "python-base"
   assert_contains "build-base-images passes cache-scope for venv-builder" "$base_scopes" "venv-builder"
-  assert_contains "build-service passes cache-scope with matrix.service" "$service_scope" "matrix.service"
 }
 
 # --- All jobs have timeout-minutes ---
@@ -1445,15 +1541,19 @@ test_test_service_images_job_structure() {
   assert_eq "test-service-images has no security-events permission" "null" "$security_events"
 }
 
-# --- test-service-images depends on build-base-images and verify-base-images ---
+# --- test-service-images runs behind the lock check, not the base images ---
 test_test_service_images_depends_on_base() {
-  echo "Test: test-service-images depends on build-base-images and verify-base-images"
+  echo "Test: test-service-images depends on the lock check, not on the base images"
 
   local needs
   needs=$(yq_raw '.jobs["test-service-images"]["needs"][]' "$WORKFLOW" || true)
 
-  assert_contains "test-service-images needs merge-base-images" "$needs" "merge-base-images"
-  assert_contains "test-service-images needs verify-base-images" "$needs" "verify-base-images"
+  local job
+  for job in changes generate-matrix nix-lock-check; do
+    assert_contains "test-service-images needs $job" "$needs" "$job"
+  done
+  assert_not_contains "test-service-images does not need merge-base-images" "$needs" "merge-base-images"
+  assert_not_contains "test-service-images does not need verify-base-images" "$needs" "verify-base-images"
 }
 
 # --- test-service-images has matrix strategy matching build-service-images ---
@@ -1469,131 +1569,17 @@ test_test_service_images_has_matrix() {
   assert_eq "test-service-images has fail-fast: false" "false" "$fail_fast"
 }
 
-# --- test-service-images uses venv-builder-image from build-base-images outputs ---
-test_test_service_images_uses_venv_builder_output() {
-  echo "Test: test-service-images uses venv-builder-image output"
-
-  local run_step_env
-  run_step_env=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["VENV_BUILDER_IMAGE"]' "$WORKFLOW" || true)
-
-  assert_contains "Run tests env references venv-builder-image output" "$run_step_env" "needs.merge-base-images.outputs.venv-builder-image"
-}
-
-# --- test-service-images resolves source ref from source-refs.yaml ---
-test_test_service_images_source_ref_step() {
-  echo "Test: test-service-images has source-ref resolution step"
-
-  # source ref resolution + null/empty guard live in the
-  # checkout-service-source composite, which test-service-images consumes.
-  local uses
-  uses=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .uses' "$WORKFLOW" || true)
-  assert_contains "test-service-images uses checkout-service-source composite" "$uses" "./.github/actions/checkout-service-source"
-
-  local source_ref_run
-  source_ref_run=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
-
-  assert_not_empty "checkout-service-source has source-ref step" "$source_ref_run"
-  assert_contains "source-ref step reads source-refs.yaml" "$source_ref_run" "source-refs.yaml"
-  assert_contains "source-ref step checks for null" "$source_ref_run" '"null"'
-  assert_contains "source-ref step checks for empty value" "$source_ref_run" '-z "$ref"'
-  assert_contains "source-ref step exits on invalid ref" "$source_ref_run" "exit 1"
-}
-
-# --- test-service-images checks out service source at correct ref ---
-test_test_service_images_checkout_service_source() {
-  echo "Test: test-service-images checks out service source"
-
-  # the actions/checkout step now lives in the checkout-service-source composite.
-  local checkout_repo checkout_ref checkout_path
-  checkout_repo=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.repository' "$ACTION_CHECKOUT_SOURCE" || true)
-  checkout_ref=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.ref' "$ACTION_CHECKOUT_SOURCE" || true)
-  checkout_path=$(yq_raw '.runs.steps[] | select(.with.repository) | .with.path' "$ACTION_CHECKOUT_SOURCE" || true)
-
-  assert_contains "service checkout uses openstack/ repo" "$checkout_repo" "openstack/"
-  assert_contains "service checkout uses resolved source-ref output" "$checkout_ref" "steps.source-ref.outputs.source-ref"
-  assert_contains "service checkout path includes service input" "$checkout_path" "inputs.service"
-}
-
-# --- test-service-images applies patches ---
-test_test_service_images_apply_patches() {
-  echo "Test: test-service-images applies patches"
-
-  # patch application moved into checkout-service-source composite,
-  # which uses a shell-level compgen guard instead of a workflow hashFiles() expression.
-  local apply_step_run
-  apply_step_run=$(yq_raw '.runs.steps[] | select(.name == "Apply patches") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
-
-  assert_contains "Apply patches uses compgen guard on *.patch" "$apply_step_run" "compgen -G"
-  assert_contains "Apply patches references *.patch files" "$apply_step_run" '*.patch'
-  assert_contains "Apply patches runs git apply" "$apply_step_run" "git -C"
-}
-
-# --- test-service-images applies constraint overrides ---
-test_test_service_images_constraint_overrides() {
-  echo "Test: test-service-images applies constraint overrides"
-
-  local override_step_run
-  override_step_run=$(yq_raw '.runs.steps[] | select(.name == "Apply constraint overrides") | .run' "$ACTION_CHECKOUT_SOURCE" || true)
-
-  assert_contains "constraint overrides step runs apply-constraint-overrides.sh" "$override_step_run" "apply-constraint-overrides.sh"
-}
-
-# --- test-service-images Run tests step mounts correct volumes ---
-test_test_service_images_run_tests_volumes() {
-  echo "Test: test-service-images Run tests step mounts correct volumes"
-
-  # the docker run + volume mount sequence lives in hack/ci-run-unit-tests.sh.
-  local run_step
-  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
-  assert_contains "Run tests step invokes hack/ci-run-unit-tests.sh" "$run_step" "hack/ci-run-unit-tests.sh"
-
-  assert_file_contains "ci-run-unit-tests.sh mounts service source" "$HACK_RUN_UNIT_TESTS" "/workspace/src"
-  assert_file_contains "ci-run-unit-tests.sh mounts upper-constraints.txt" "$HACK_RUN_UNIT_TESTS" "upper-constraints.txt"
-  assert_file_contains "ci-run-unit-tests.sh mounts test-excludes directory" "$HACK_RUN_UNIT_TESTS" "test-excludes"
-  assert_file_contains "ci-run-unit-tests.sh mounts results directory" "$HACK_RUN_UNIT_TESTS" "/workspace/results"
-}
-
-# --- test-service-images Run tests step runs stestr ---
-test_test_service_images_run_tests_stestr() {
-  echo "Test: test-service-images Run tests step runs stestr"
-
-  assert_file_contains "ci-run-unit-tests.sh installs test dependencies with pip" "$HACK_RUN_UNIT_TESTS" "pip install"
-  assert_file_contains "ci-run-unit-tests.sh installs stestr" "$HACK_RUN_UNIT_TESTS" "stestr"
-  assert_file_contains "ci-run-unit-tests.sh runs stestr init" "$HACK_RUN_UNIT_TESTS" "stestr init"
-  assert_file_contains "ci-run-unit-tests.sh runs stestr run" "$HACK_RUN_UNIT_TESTS" "stestr run"
-}
-
-# --- test-service-images derives the PBR package name for PKG-INFO ---
-test_test_service_images_pkg_info_name() {
-  echo "Test: test-service-images derives the PBR package name for PKG-INFO"
-
-  # pbr ignores PKG-INFO when its Name does not match setup.cfg /
-  # pyproject.toml (placement ships as openstack-placement), so the
-  # runner must derive the name from the source tree instead of
-  # hard-coding SERVICE_NAME.
-  assert_file_contains "ci-run-unit-tests.sh reads the package name from setup.cfg metadata" \
-    "$HACK_RUN_UNIT_TESTS" 'cp.get("metadata", "name")'
-  assert_file_contains "ci-run-unit-tests.sh falls back to the pyproject.toml project name" \
-    "$HACK_RUN_UNIT_TESTS" 'tomllib.load(f).get("project", {}).get("name")'
-  assert_file_contains "ci-run-unit-tests.sh writes the derived name into PKG-INFO" \
-    "$HACK_RUN_UNIT_TESTS" '"$PKG_NAME" "$SERVICE_VERSION"'
-}
-
-# --- test-service-images uses exclude-list from test-excludes ---
-test_test_service_images_exclude_list() {
-  echo "Test: test-service-images uses exclude-list from test-excludes"
-
-  assert_file_contains "ci-run-unit-tests.sh builds EXCLUDE_LIST_ARG" "$HACK_RUN_UNIT_TESTS" "EXCLUDE_LIST_ARG"
-  assert_file_contains "ci-run-unit-tests.sh checks for service-specific exclude file" "$HACK_RUN_UNIT_TESTS" 'test-excludes/${SERVICE_NAME}.txt'
-  assert_file_contains "ci-run-unit-tests.sh passes exclude-list to stestr" "$HACK_RUN_UNIT_TESTS" "exclude-list"
-}
-
 # --- test-service-images exports subunit results ---
 test_test_service_images_subunit_output() {
   echo "Test: test-service-images exports subunit test results"
 
-  assert_file_contains "ci-run-unit-tests.sh exports subunit results" "$HACK_RUN_UNIT_TESTS" "stestr last --subunit"
-  assert_file_contains "ci-run-unit-tests.sh writes results to subunit file" "$HACK_RUN_UNIT_TESTS" "testresults.subunit"
+  local run_step upload_path
+  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
+  upload_path=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Upload test results") | .with.path' "$WORKFLOW" || true)
+
+  assert_contains "Run tests builds the test run of the matrix leg" "$run_step" '-test-run'
+  assert_contains "Run tests copies the run's results out of the store" "$run_step" 'cp -L result-test-run/* results/'
+  assert_eq "Upload test results uploads the subunit stream" "results/testresults.subunit" "$upload_path"
 }
 
 # --- test-service-images uploads test results as artifacts ---
@@ -1627,55 +1613,13 @@ test_test_service_images_artifact_name() {
 test_test_service_images_env_vars() {
   echo "Test: test-service-images steps use env vars for matrix values"
 
-  # checkout-service-source composite action receives service/release
-  # as inputs (not through workflow-level env vars). The composite then
-  # populates MATRIX_SERVICE / MATRIX_RELEASE env vars on its internal steps
-  # from those inputs, which keeps matrix values out of run: block interpolation.
-  local checkout_with_service checkout_with_release
-  checkout_with_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .with.service' "$WORKFLOW" || true)
-  checkout_with_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "checkout-source") | .with.release' "$WORKFLOW" || true)
-  assert_contains "checkout-source receives matrix.service" "$checkout_with_service" "matrix.service"
-  assert_contains "checkout-source receives matrix.release" "$checkout_with_release" "matrix.release"
-
-  # Inside the composite, steps are parameterized with env vars derived from inputs.
-  local composite_source_env composite_patches_env
-  composite_source_env=$(yq_raw '.runs.steps[] | select(.id == "source-ref") | .env["MATRIX_SERVICE"]' "$ACTION_CHECKOUT_SOURCE" || true)
-  composite_patches_env=$(yq_raw '.runs.steps[] | select(.name == "Apply patches") | .env["MATRIX_SERVICE"]' "$ACTION_CHECKOUT_SOURCE" || true)
-  assert_contains "composite source-ref step exposes MATRIX_SERVICE env" "$composite_source_env" "inputs.service"
-  assert_contains "composite apply-patches step exposes MATRIX_SERVICE env" "$composite_patches_env" "inputs.service"
-
-  # Run tests step uses env vars to inject matrix values into the shell script.
-  local run_tests_env_service run_tests_env_release
-  run_tests_env_service=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["SERVICE_NAME"]' "$WORKFLOW" || true)
-  run_tests_env_release=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["RELEASE"]' "$WORKFLOW" || true)
-
-  assert_contains "Run tests step has SERVICE_NAME env from matrix.service" "$run_tests_env_service" "matrix.service"
-  assert_contains "Run tests step has RELEASE env from matrix.release" "$run_tests_env_release" "matrix.release"
-
-  # INSTALL_SPEC env var references pip-extras output
-  local install_spec_env
-  install_spec_env=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .env["INSTALL_SPEC"]' "$WORKFLOW" || true)
-  assert_contains "Run tests step has INSTALL_SPEC referencing pip-extras output" "$install_spec_env" "steps.pip-extras.outputs.install_spec"
-
-  # Resolve pip extras step reads from extra-packages.yaml and outputs install_spec
-  local pip_extras_run
-  pip_extras_run=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.id == "pip-extras") | .run' "$WORKFLOW" || true)
-  assert_contains "Resolve pip extras reads extra-packages.yaml" "$pip_extras_run" "extra-packages.yaml"
-  assert_contains "Resolve pip extras outputs install_spec" "$pip_extras_run" "install_spec="
-}
-
-# --- test-service-images uses docker run with venv-builder image ---
-test_test_service_images_docker_run() {
-  echo "Test: test-service-images uses docker run with venv-builder image"
-
-  # docker run + venv-builder invocation lives in hack/ci-run-unit-tests.sh.
-  local run_step
-  run_step=$(yq_raw '.jobs["test-service-images"]["steps"][] | select(.name == "Run tests") | .run' "$WORKFLOW" || true)
-  assert_contains "Run tests step invokes hack/ci-run-unit-tests.sh" "$run_step" "hack/ci-run-unit-tests.sh"
-
-  assert_file_contains "ci-run-unit-tests.sh uses docker run" "$HACK_RUN_UNIT_TESTS" "docker run"
-  assert_file_contains "ci-run-unit-tests.sh references VENV_BUILDER_IMAGE" "$HACK_RUN_UNIT_TESTS" "VENV_BUILDER_IMAGE"
-  assert_file_contains "ci-run-unit-tests.sh creates results directory" "$HACK_RUN_UNIT_TESTS" "mkdir -p"
+  local step='.jobs["test-service-images"]["steps"][] | select(.name == "Run tests")'
+  assert_contains "Run tests step has MATRIX_SERVICE env from matrix.service" \
+    "$(yq_raw "$step | .env[\"MATRIX_SERVICE\"]" "$WORKFLOW" || true)" "matrix.service"
+  assert_contains "Run tests step has MATRIX_RELEASE env from matrix.release" \
+    "$(yq_raw "$step | .env[\"MATRIX_RELEASE\"]" "$WORKFLOW" || true)" "matrix.release"
+  assert_not_contains "Run tests step interpolates no expression into its run block" \
+    "$(yq_raw "$step | .run" "$WORKFLOW" || true)" '${{'
 }
 
 # --- Expression injection defense — run: blocks use env vars ---
@@ -1930,32 +1874,6 @@ test_metadata_action_steps_exist_in_build_base_images() {
   assert_eq "build-base-images invokes build-push-image twice" "2" "$base_build_count"
 }
 
-# --- metadata-action step invoked for each service build ---
-test_metadata_action_step_exists_in_build_service_images() {
-  echo "Test: build-service-images invokes build-push-image"
-
-  local service_build_count
-  service_build_count=$(yq_count '.jobs["build-service-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .uses' "$WORKFLOW")
-  assert_eq "build-service-images invokes build-push-image once" "1" "$service_build_count"
-}
-
-# --- service metadata uses raw version strategy ---
-test_service_metadata_uses_raw_version_strategy() {
-  echo "Test: service metadata uses raw version strategy"
-
-  # the metadata-tags input is passed by the caller (build-service-images)
-  # into build-push-image, which forwards it to docker/metadata-action.
-  local tags_input
-  tags_input=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["metadata-tags"]' "$WORKFLOW" || true)
-  assert_contains "build-service metadata-tags uses type=raw" "$tags_input" "type=raw"
-  assert_contains "build-service metadata-tags references checkout-source source-ref output" "$tags_input" "steps.checkout-source.outputs.source-ref"
-
-  # build-push-image forwards metadata-tags input into docker/metadata-action.
-  local composite_tags
-  composite_tags=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.tags' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image meta step forwards metadata-tags input" "$composite_tags" "inputs.metadata-tags"
-}
-
 # --- base metadata calls pass no metadata-tags (empty string default) ---
 test_base_metadata_steps_have_no_tags_override() {
   echo "Test: base build-push-image calls pass empty metadata-tags"
@@ -1987,32 +1905,20 @@ test_venv_builder_build_push_has_labels_input() {
   assert_eq "build-venv-builder passes labels-title=venv-builder" "venv-builder" "$title"
 }
 
-# --- service build-push-action has labels input ---
-test_service_build_push_has_labels_input() {
-  echo "Test: build-push-image passes labels for service build"
-
-  local title
-  title=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-title"]' "$WORKFLOW" || true)
-  assert_contains "build-service passes labels-title from matrix.service" "$title" "matrix.service"
-}
-
 # --- OCI base image labels present via extra-labels input ---
 test_oci_base_labels_in_build_steps() {
   echo "Test: OCI base image labels present via extra-labels"
 
   # build-push-image exposes an extra-labels input, used to inject
   # org.opencontainers.image.base.{name,digest} per call site.
-  local python_extra venv_extra service_extra
+  local python_extra venv_extra
   python_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["extra-labels"]' "$WORKFLOW" || true)
   venv_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["extra-labels"]' "$WORKFLOW" || true)
-  service_extra=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["extra-labels"]' "$WORKFLOW" || true)
 
   assert_contains "build-python-base extra-labels include base.name" "$python_extra" "org.opencontainers.image.base.name"
   assert_contains "build-python-base extra-labels include base.digest" "$python_extra" "org.opencontainers.image.base.digest"
   assert_contains "build-venv-builder extra-labels include base.name" "$venv_extra" "org.opencontainers.image.base.name"
   assert_contains "build-venv-builder extra-labels include base.digest" "$venv_extra" "org.opencontainers.image.base.digest"
-  assert_contains "build-service extra-labels include base.name" "$service_extra" "org.opencontainers.image.base.name"
-  assert_contains "build-service extra-labels include base.digest" "$service_extra" "org.opencontainers.image.base.digest"
 
   # build-push-image forwards extra-labels into docker/build-push-action labels input.
   assert_file_contains "build-push-image forwards extra-labels" "$ACTION_BUILD_PUSH" "inputs.extra-labels"
@@ -2026,14 +1932,13 @@ test_metadata_action_labels_include_oci_title() {
   labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
   assert_contains "build-push-image meta labels include OCI title" "$labels" "org.opencontainers.image.title"
 
-  # Each caller must pass a labels-title input so metadata-action can render it.
-  local python venv service
+  # Each base-image caller must pass a labels-title input so metadata-action
+  # can render it.
+  local python venv
   python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-title"]' "$WORKFLOW" || true)
   venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-title"]' "$WORKFLOW" || true)
-  service=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-title"]' "$WORKFLOW" || true)
   assert_not_empty "build-python-base passes labels-title" "$python"
   assert_not_empty "build-venv-builder passes labels-title" "$venv"
-  assert_not_empty "build-service passes labels-title" "$service"
 }
 
 # --- metadata-action labels include OCI description ---
@@ -2044,13 +1949,11 @@ test_metadata_action_labels_include_oci_description() {
   labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
   assert_contains "build-push-image meta labels include OCI description" "$labels" "org.opencontainers.image.description"
 
-  local python venv service
+  local python venv
   python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-description"]' "$WORKFLOW" || true)
   venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-description"]' "$WORKFLOW" || true)
-  service=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["labels-description"]' "$WORKFLOW" || true)
   assert_not_empty "build-python-base passes labels-description" "$python"
   assert_not_empty "build-venv-builder passes labels-description" "$venv"
-  assert_not_empty "build-service passes labels-description" "$service"
 }
 
 # --- metadata-action labels include OCI licenses ---
@@ -2093,23 +1996,6 @@ test_dockerfile_static_labels_venv_builder() {
   assert_file_contains "venv-builder has org.opencontainers.image.description" "$dockerfile" 'org.opencontainers.image.description='
   assert_file_contains "venv-builder has org.opencontainers.image.licenses" "$dockerfile" 'org.opencontainers.image.licenses='
   assert_file_contains "venv-builder has org.opencontainers.image.vendor" "$dockerfile" 'org.opencontainers.image.vendor='
-}
-
-# --- static OCI labels in keystone Dockerfile runtime stage ---
-test_dockerfile_static_labels_keystone() {
-  echo "Test: keystone Dockerfile has static OCI labels in runtime stage"
-
-  local dockerfile="$PROJECT_ROOT/images/keystone/Dockerfile"
-
-  # Extract only the runtime stage (Stage 2: from 'FROM python-base' to end of file)
-  # to verify labels are in the correct stage, not the build stage.
-  local runtime_stage
-  runtime_stage=$(sed -n '/^FROM python-base/,$ p' "$dockerfile")
-
-  assert_contains "keystone runtime stage has org.opencontainers.image.title" "$runtime_stage" 'org.opencontainers.image.title='
-  assert_contains "keystone runtime stage has org.opencontainers.image.description" "$runtime_stage" 'org.opencontainers.image.description='
-  assert_contains "keystone runtime stage has org.opencontainers.image.licenses" "$runtime_stage" 'org.opencontainers.image.licenses='
-  assert_contains "keystone runtime stage has org.opencontainers.image.vendor" "$runtime_stage" 'org.opencontainers.image.vendor='
 }
 
 # --- cosign-installer step in setup-docker-registry composite ---
@@ -2201,20 +2087,21 @@ test_grype_scan_steps_in_build_base_images() {
   assert_eq "supply-chain-attest has 2 Grype scan steps (sbom + image)" "2" "$scan_count"
 }
 
-# --- Grype scans also invoked for PR service builds via build-push-image ---
+# --- Grype scans also run for PR service builds via build-nix-image ---
 test_grype_scan_step_in_build_service_images() {
-  echo "Test: build-push-image invokes supply-chain-attest for PR service scans"
+  echo "Test: build-nix-image invokes supply-chain-attest for PR service scans"
 
-  # build-push-image composite invokes supply-chain-attest in
-  # scan-mode=image for PR builds of service images and tempest.
+  # build-nix-image invokes supply-chain-attest in scan-mode=image for PR
+  # builds of the service images and tempest.
   local pr_scan_count
-  pr_scan_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .uses' "$ACTION_BUILD_PUSH")
-  assert_eq "build-push-image invokes supply-chain-attest (PR scan branch)" "1" "$pr_scan_count"
+  pr_scan_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .uses' "$ACTION_BUILD_NIX")
+  assert_eq "build-nix-image invokes supply-chain-attest (PR scan branch)" "1" "$pr_scan_count"
 
   # The workflow passes a grype-category for build-service-images PR builds.
   local service_grype_cat
   service_grype_cat=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["grype-category"]' "$WORKFLOW" || true)
   assert_contains "build-service passes grype-category with matrix.service" "$service_grype_cat" "matrix.service"
+  assert_contains "build-service passes grype-category on pull requests only" "$service_grype_cat" "pull_request"
 }
 
 # --- anchore/scan-action is SHA-pinned ---
@@ -2324,10 +2211,13 @@ test_grype_image_input_wiring() {
   assert_contains "merge composite derives scan ref from inputs.image" "$composite_ref" "inputs.image"
   assert_contains "merge composite derives scan ref from merged digest" "$composite_ref" "steps.merge.outputs.digest"
 
-  # build-service-images forwards composite tag for PR image scans.
+  # build-nix-image scans the image it loaded under verify-image-ref, so
+  # build-service-images hands it the composite tag.
   local service_ref
-  service_ref=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["image-ref-for-scan"]' "$WORKFLOW" || true)
-  assert_contains "build-service passes composite tag as image-ref-for-scan" "$service_ref" "tags.outputs.composite"
+  service_ref=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["verify-image-ref"]' "$WORKFLOW" || true)
+  assert_contains "build-service passes the composite tag as verify-image-ref" "$service_ref" "tags.outputs.composite"
+  assert_eq "build-nix-image scans the verify-image-ref" '${{ inputs.verify-image-ref }}' \
+    "$(yq_raw '.runs.steps[] | select(.id == "scan") | .with["image-ref-for-scan"]' "$ACTION_BUILD_NIX" || true)"
 }
 
 # --- Grype scan severity threshold is high ---
@@ -2545,10 +2435,19 @@ echo ""
 test_libvirt_keeper_tag
 echo ""
 test_nix_flake_check_job
+test_setup_nix_action
 echo ""
 test_build_nix_image_action
 echo ""
 test_nix_inputs_in_triggers
+echo ""
+test_nix_lock_check_job
+echo ""
+test_service_images_build_with_nix
+echo ""
+test_tempest_builds_with_nix
+echo ""
+test_service_unit_tests_run_as_nix_checks
 echo ""
 test_ovn_jobs
 echo ""
@@ -2569,8 +2468,6 @@ echo ""
 test_patch_application_step
 echo ""
 test_constraint_overrides_step
-echo ""
-test_build_contexts_for_service_images
 echo ""
 test_tag_schema_composite
 echo ""
@@ -2622,24 +2519,6 @@ test_test_service_images_depends_on_base
 echo ""
 test_test_service_images_has_matrix
 echo ""
-test_test_service_images_uses_venv_builder_output
-echo ""
-test_test_service_images_source_ref_step
-echo ""
-test_test_service_images_checkout_service_source
-echo ""
-test_test_service_images_apply_patches
-echo ""
-test_test_service_images_constraint_overrides
-echo ""
-test_test_service_images_run_tests_volumes
-echo ""
-test_test_service_images_run_tests_stestr
-echo ""
-test_test_service_images_pkg_info_name
-echo ""
-test_test_service_images_exclude_list
-echo ""
 test_test_service_images_subunit_output
 echo ""
 test_test_service_images_upload_artifacts
@@ -2647,8 +2526,6 @@ echo ""
 test_test_service_images_artifact_name
 echo ""
 test_test_service_images_env_vars
-echo ""
-test_test_service_images_docker_run
 echo ""
 test_sbom_permissions_on_build_base_images
 echo ""
@@ -2678,17 +2555,11 @@ test_build_provenance_push_to_registry
 echo ""
 test_metadata_action_steps_exist_in_build_base_images
 echo ""
-test_metadata_action_step_exists_in_build_service_images
-echo ""
-test_service_metadata_uses_raw_version_strategy
-echo ""
 test_base_metadata_steps_have_no_tags_override
 echo ""
 test_python_base_build_push_has_labels_input
 echo ""
 test_venv_builder_build_push_has_labels_input
-echo ""
-test_service_build_push_has_labels_input
 echo ""
 test_oci_base_labels_in_build_steps
 echo ""
@@ -2703,8 +2574,6 @@ echo ""
 test_dockerfile_static_labels_python_base
 echo ""
 test_dockerfile_static_labels_venv_builder
-echo ""
-test_dockerfile_static_labels_keystone
 echo ""
 test_cosign_installer_in_build_base_images
 echo ""
