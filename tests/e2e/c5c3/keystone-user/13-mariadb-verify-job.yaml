@@ -14,7 +14,7 @@
 # TLS. The test script applies the Job, waits for it, and deletes it again
 # before the next run.
 #
-# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# The orders guide (docs/guides/order-resources-from-a-controlplane.md) imports the
 # region below.
 # region mariadb-verify-job
 apiVersion: batch/v1

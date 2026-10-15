@@ -24,7 +24,7 @@ ControlPlane's namespace on the management cluster, beside the
 
 For the control loop see
 [RabbitMQVhost Reconciler Architecture](./rabbitmqvhost-reconciler.md). The
-[Order a Service User](../../guides/order-a-service-user.md#order-a-message-bus-vhost)
+[Order Resources from a ControlPlane](../../guides/order-resources-from-a-controlplane.md#order-a-message-bus-vhost)
 guide walks the flow on the ControlPlane devstack.
 
 ## API Group and Version

@@ -2467,7 +2467,7 @@ credential as a Secret beside the order.
 [`RabbitMQVhost`](./rabbitmqvhost-crd.md) orders a vhost and a user on the
 managed message bus, rotates the user on a schedule, and delivers the
 credentials as a Secret beside the order. The
-[Order a Service User](../../guides/order-a-service-user.md) guide walks all
+[Order Resources from a ControlPlane](../../guides/order-resources-from-a-controlplane.md) guide walks all
 seven.
 
 | Field | Type | Required | Default | Description |
