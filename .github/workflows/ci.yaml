@@ -1998,14 +1998,16 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
-          # The three nova outage suites bring up the heaviest stack in this
-          # job: a Keystone, a Placement, an OVNCentral, a Neutron, a Glance
-          # and a Nova with a fake compute behind it. They get a leg of their
-          # own instead of widening the network leg, which already spends 78 of
-          # its 90 minutes and deploys no placement-operator. Like the ovn leg
-          # this one is non-blocking (see continue-on-error below): all three
-          # faults are NetworkChaos partitions and carry the sch_netem/ip_set
-          # dependency the network leg carries.
+          # The six nova-stack suites bring up the heaviest stack in this job:
+          # a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and a
+          # Nova with a fake compute behind it, and
+          # neutron-metadata-agent-pod-kill adds an OVNChassis and a metadata
+          # agent on the node. They get a leg of their own instead of widening
+          # the network leg, which carries the neutron, cinder and ovn suites.
+          # Like the ovn leg this one is non-blocking (see continue-on-error
+          # below): three of its faults are NetworkChaos partitions on the
+          # sch_netem/ip_set dependency the network leg carries, and the
+          # metadata-agent suite needs the openvswitch and geneve modules.
           - suite: nova
             runner: self-hosted
             test_dirs: >-
@@ -2017,13 +2019,21 @@ jobs:
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
     runs-on: ${{ matrix.runner }}
-    # 150 minutes for the nova leg, 90 for the other three. This leg loads
-    # eighteen images and runs eight operator deploys before its first suite,
-    # and its three suites each stand up a Keystone, an OVNCentral, a Neutron, a
-    # Placement, a Glance and a five-workload Nova. They run one after the other:
-    # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
-    # e2e-operator nova leg fits comparable suites into 90 minutes only because
-    # it runs them two at a time.
+    # 150 minutes for the nova leg, 135 for network, 45 for ovn and 90 for pod:
+    # 420 minutes for the four, the seven hours D6 of #1386 allows. Run
+    # 38626068128 (PR #1411) took 48 minutes on pod, 54 on network, 12 on ovn
+    # and 69 on nova, before the suites of #1389. Its JUnit reports put a
+    # network suite at 80 to 370 seconds and a nova-stack suite at 11 to 21
+    # minutes. The network leg gains eleven suites of the first kind, at most
+    # 68 minutes, and the nova leg three of the second, at most 63 minutes,
+    # which puts them at about 122 and 132 minutes; the pod leg gains four
+    # suites of the network kind and the ovn leg none. Every suite runs one
+    # after the other: tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1,
+    # where the e2e-operator nova leg fits comparable suites into 90 minutes
+    # only because it runs them two at a time. The nova leg loads eighteen
+    # images and runs eight operator deploys before its first suite, and each
+    # of its six suites stands up a Keystone, an OVNCentral, a Neutron, a
+    # Placement, a Glance and a five-workload Nova.
     #
     # The wall has to outlast that bring-up plus the suites that pass plus the
     # step a stalling suite times out in and the catch block after it —
@@ -2032,15 +2042,18 @@ jobs:
     # Under that, the job wall arrives first: chainsaw is killed outright, no
     # catch block and no step cleanup runs, the JUnit report is never written,
     # and the leg — non-blocking per continue-on-error below — reports as a
-    # cancelled job that says nothing about which suite stalled. The bring-up
-    # term is the estimate in that sum; confirm it against the first green run
-    # of this leg and re-derive if it overruns.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || 90 }}
+    # cancelled job that says nothing about which suite stalled. The per-suite
+    # times of the new suites are the estimate in these sums; read each leg's
+    # duration off the first green run with them and re-derive if one
+    # overruns.
+    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'ovn' && 45 || 90 }}
     # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
     # (their kernel-module dependency keeps them flakiness-prone). See the
-    # gating note above the job. The nova leg is the third of them because its
-    # three suites are NetworkChaos partitions on the sch_netem and ip_set
-    # modules, the same dependency the network leg's suites have.
+    # gating note above the job. The nova leg is the third of them because
+    # three of its suites are NetworkChaos partitions on the sch_netem and
+    # ip_set modules, the same dependency the network leg's suites have, and
+    # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
+    # needs.
     #
     # The three non-blocking legs are named, rather than negating the blocking
     # one: a fifth leg added to the matrix above then gates merges by default
@@ -2102,15 +2115,16 @@ jobs:
             # image that operator rolls out.
             ${{ matrix.suite != 'pod' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite != 'pod' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
-            # The two neutron outage suites run on the network leg alone.
+            # The four neutron suites of the network leg and the Neutron of
+            # ovn-operator-pod-kill; the nova leg loads its own pair below.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The three cinder outage suites run on the network leg alone.
-            # Each deploys a Cinder, so each needs the service image beside
-            # the operator one.
+            # The seven cinder suites run on the network leg alone. Each
+            # deploys a Cinder, so each needs the service image beside the
+            # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The three nova outage suites run on the nova leg alone. The OVN
+            # The six nova-stack suites run on the nova leg alone. The OVN
             # pair above already covers that leg (!= 'pod'), and the keystone,
             # glance and tempest images arrive with the keystone stack on every
             # non-ovn leg, so six refs are left to name here.
@@ -2122,7 +2136,7 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
             ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The operator whose CRs the three suites drive.
+            # The operator whose CRs the six suites drive.
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
@@ -2193,15 +2207,15 @@ jobs:
         env:
           WITH_CHAOS_MESH: "true"
           WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}
-          # The three cinder suites attach an NFS backend, which the operator
-          # mounts as an inline CSI volume from the kind NFS export, and two of
-          # them (cinder-operator-pod-kill, cinder-nfs-outage) take a vhost on
-          # the shared broker. Two of the three nova suites take a vhost there
-          # too (nova-mariadb-outage, nova-placement-outage); the third,
-          # nova-broker-outage, brings a RabbitmqCluster of its own, because
-          # its fault severs the whole broker and doing that to the shared one
-          # would take the rest of the leg down with it. The NFS export stays
-          # on the network leg alone. Empty elsewhere, where deploy-infra.sh
+          # The seven cinder suites attach an NFS backend, which the operator
+          # mounts as an inline CSI volume from the kind NFS export, and five
+          # of them take a vhost on the shared broker; cinder-broker-outage and
+          # cinder-broker-pod-kill bring a RabbitmqCluster of their own,
+          # because their faults take the whole broker away and doing that to
+          # the shared one would take the rest of the leg down with it. Five
+          # of the six nova-stack suites take a vhost there too;
+          # nova-broker-outage brings its own broker for the same reason. The
+          # NFS export stays on the network leg alone. Empty elsewhere, where deploy-infra.sh
           # keeps its default of installing neither.
           WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
           WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}
@@ -2280,8 +2294,8 @@ jobs:
           # restricted to the provisioner account of the proving instance.
           BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
       # ovn-southbound-outage drives an OVNCentral and an OVNChassis directly,
-      # and both neutron suites need a live OVNCentral before their Neutron can
-      # reach Ready. The deploy script installs the OVN CRDs on the way. Like
+      # ovn-operator-pod-kill kills this operator, and every neutron suite
+      # needs a live OVNCentral before its Neutron can reach Ready. The deploy script installs the OVN CRDs on the way. Like
       # the sibling operators it lands in its own ovn-system namespace, which is
       # also where the ovn leg's diagnostics dump looks.
       - name: Deploy ovn operator
@@ -2291,8 +2305,9 @@ jobs:
           OPERATOR: ovn
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
           NAMESPACE: ovn-system
-      # The two neutron outage suites run on the network leg alone, so the
-      # neutron-operator deploys there alone. It follows the keystone and ovn
+      # The neutron suites of the network leg (four, and the Neutron of
+      # ovn-operator-pod-kill) need the neutron-operator there; the nova leg
+      # deploys it in its own step below. It follows the keystone and ovn
       # deploys above: each suite creates a Keystone and an OVNCentral its
       # Neutron depends on.
       - name: Deploy neutron operator
@@ -2302,7 +2317,7 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
-      # The three cinder outage suites run on the network leg alone, so the
+      # The seven cinder suites run on the network leg alone, so the
       # cinder-operator deploys there alone. Like the sibling operators it
       # lands in its own cinder-system namespace, not the script's
       # keystone-system default: that is where the Flux/deploy-infra path
@@ -2315,8 +2330,8 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
-      # The three nova outage suites run on the nova leg alone, so the three
-      # operators they need deploy there alone. The first two names carry a
+      # The six nova-stack suites run on the nova leg alone, so the three
+      # operators they need beyond the ovn one deploy there alone. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
       # of an exact name and the placement and neutron steps above are pinned
       # by theirs: a second step under either name would be invisible to every
@@ -2371,6 +2386,16 @@ jobs:
         if: always() && matrix.suite == 'nova'
         run: |
           for op in nova placement glance ovn neutron; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      # The same for the network leg, whose suites drive seven operators
+      # beyond keystone, three of them through an operator kill: a failed
+      # neutron-, ovn- or cinder-operator-pod-kill needs the operator logs in
+      # the job log.
+      - name: Dump diagnostic info (network leg)
+        if: always() && matrix.suite == 'network'
+        run: |
+          for op in neutron ovn cinder placement glance barbican horizon; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
       - name: Upload JUnit report

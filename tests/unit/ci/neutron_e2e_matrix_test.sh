@@ -283,7 +283,7 @@ test_build_e2e_images_builds_the_neutron_images() {
 }
 
 test_chaos_network_leg_runs_the_neutron_suites() {
-  echo "Test: the e2e-chaos network leg runs both neutron outage suites"
+  echo "Test: the e2e-chaos network leg runs the four neutron suites and the ovn-operator kill"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -299,6 +299,27 @@ test_chaos_network_leg_runs_the_neutron_suites() {
     "tests/e2e-chaos/neutron-mariadb-outage"
   assert_contains "it runs the broker outage suite" "$entry" \
     "tests/e2e-chaos/neutron-broker-outage"
+  assert_contains "it runs the Keystone outage suite" "$entry" \
+    "tests/e2e-chaos/neutron-keystone-outage"
+  assert_contains "it runs the operator pod-kill suite" "$entry" \
+    "tests/e2e-chaos/neutron-operator-pod-kill"
+  # ovn-operator-pod-kill brings a Neutron that programs the OVN control
+  # plane, so it runs where the neutron-operator is deployed.
+  assert_contains "it runs the ovn-operator pod-kill suite" "$entry" \
+    "tests/e2e-chaos/ovn-operator-pod-kill"
+
+  # The first dump reads keystone-system alone on this leg, and three of its
+  # suites kill an operator, so the leg dumps every operator Namespace it
+  # deployed, one pass per operator with OPERATOR_ONLY, as the nova leg does.
+  local dump
+  dump=$(job_step e2e-chaos "Dump diagnostic info (network leg)")
+  assert_not_empty "the leg dumps the Namespaces the first dump misses" "$dump"
+  assert_contains "it dumps even when the suites failed" "$dump" \
+    "if: always() && matrix.suite == 'network'"
+  assert_contains "one call per operator the leg deploys beyond keystone" "$dump" \
+    "for op in neutron ovn cinder placement glance barbican horizon; do"
+  assert_contains "each pass hands its operator to the dump script" "$dump" \
+    'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
 
   local load
   load=$(job_step e2e-chaos "Load E2E images")
