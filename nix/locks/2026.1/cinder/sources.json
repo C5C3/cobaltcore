@@ -1,0 +1,11 @@
+{
+  "ref": "28.0.0",
+  "rev": "e83f4cba8722dc06ab7396ce2239a272b0345da8",
+  "hash": "sha256-MNHw+VV4bMCW/VyU6PE6I4fuz6ZcjYhc5ru7PozYSgg=",
+  "project": "cinder",
+  "patches": [
+    "patches/cinder/2026.1/0001-nfs-run-qemu-img-info-as-the-service-user.patch",
+    "patches/cinder/2026.1/0002-create-from-image-run-qemu-img-as-the-service-user.patch",
+    "patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch"
+  ]
+}

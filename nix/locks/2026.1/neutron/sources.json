@@ -1,0 +1,7 @@
+{
+  "ref": "28.0.1",
+  "rev": "8d11b5e2fd0f72840fc827ffe4ab4f3fa89221d0",
+  "hash": "sha256-zwa1ZofpUtib1+9ELXj65tqynTeBEG/Xu7rKmFTwzSg=",
+  "project": "neutron",
+  "patches": []
+}

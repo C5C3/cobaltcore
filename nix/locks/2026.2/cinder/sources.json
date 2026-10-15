@@ -1,0 +1,10 @@
+{
+  "ref": "29.0.0",
+  "rev": "e4a83e9391c7441bfcd6f551d905fd1f0bcb418a",
+  "hash": "sha256-/0UVMLcgxXWVTl9i7frr+RDXc3RzT01u9STlNpq8ZNc=",
+  "project": "cinder",
+  "patches": [
+    "patches/cinder/2026.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch",
+    "patches/cinder/2026.2/0002-create-from-image-run-qemu-img-as-the-service-user.patch"
+  ]
+}

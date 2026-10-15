@@ -1,0 +1,9 @@
+{
+  "ref": "33.0.0",
+  "rev": "abc1077f16e8d0818825618f64cdd7c0fb6edcf1",
+  "hash": "sha256-8aROkt9JHyuNEF/+505hRbCnqNgkx+4sJ3655DtJTbI=",
+  "project": "glance",
+  "patches": [
+    "patches/glance/2026.2/0001-test-new-image-with-location-do-not-rely-on-dns-resolution.patch"
+  ]
+}

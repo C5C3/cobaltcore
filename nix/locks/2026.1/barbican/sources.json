@@ -1,0 +1,7 @@
+{
+  "ref": "22.0.0",
+  "rev": "f8a331a40eb21e6c8f37e07794d57aa98b120af9",
+  "hash": "sha256-CboZov2ZUkm1M5KUHgcLeOJL8MgYyEEOfoc8zUKdw74=",
+  "project": "barbican",
+  "patches": []
+}
