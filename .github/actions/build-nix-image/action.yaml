@@ -1,0 +1,252 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Composite action building a container image from a flake attribute, the
+# Nix counterpart of build-push-image (docs/reference/ci-cd/nix-image-build.md).
+# `nix build` yields a dockerTools.streamLayeredImage: a script that writes
+# the image as a tar stream, not a BuildKit build. Every run scans the store
+# paths of the image with vulnix against NVD feeds fetched from a GitHub
+# release mirror. Then one of two paths:
+#
+#   pull request  load the stream into Docker, scan the loaded image with
+#                 Grype and run the verify script against it
+#   push          write the stream to a tar and push it by digest with skopeo,
+#                 then export the digest the merge job reads, exactly as for a
+#                 Docker-built image
+#
+# The push goes through skopeo because there is no BuildKit build to push.
+# The docker transport's `@@unknown-digest@@` suffix pushes without a tag
+# (containers/image#2209, skopeo 1.15.0 and later; the image-tools shell pins
+# the skopeo of flake.lock). Two pushes of one stream give one manifest
+# digest (nix/spike/README.md, D12), so a re-run of the push path is safe.
+
+name: Build Nix image
+description: >
+  Build a flake image attribute, scan its store paths with vulnix, and either
+  load, scan and verify it (PR) or push it by digest with skopeo and export
+  the digest as an artifact (push).
+
+inputs:
+  attribute:
+    description: Flake package attribute (e.g. backup-shifter-image)
+    required: true
+  image-name:
+    description: Full image name without tag (e.g. ghcr.io/c5c3/backup-shifter)
+    required: true
+  push-by-digest:
+    description: "'true' to push by digest (non-PR), 'false' to load locally (PR)"
+    required: false
+    default: 'true'
+  artifact-name:
+    description: Artifact name for digest export (empty = skip)
+    required: false
+    default: ''
+  grype-category:
+    description: Enables the PR Grype scan when non-empty; forwarded to supply-chain-attest, which uploads no SARIF on pull requests
+    required: false
+    default: ''
+  verify-script:
+    description: Path to verification script (empty = skip)
+    required: false
+    default: ''
+  verify-image-ref:
+    description: Local tag the loaded image gets on pull requests; the Grype scan and the verify script run against it
+    required: false
+    default: ''
+  vulnix-artifact-name:
+    description: Artifact name for the vulnix JSON report (empty = skip the upload)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Build image
+      id: build
+      shell: bash
+      env:
+        ATTRIBUTE: ${{ inputs.attribute }}
+      run: nix build ".#${ATTRIBUTE}" --print-build-logs --out-link result-image
+
+    # vulnix reads the NVD as the yearly JSON 2.0 feeds of the current year
+    # and the five before it. nvd.nist.gov serves them at a rate a GitHub
+    # runner does not finish inside the job budget (the first run of PR #1414
+    # was cancelled after 29.7 minutes in the scan step), so this step takes
+    # the same data from fkie-cad/nvd-json-data-feeds, a daily reconstruction
+    # of the feeds published as GitHub release assets. The release tag is
+    # resolved once from the `latest` redirect, so all files come from one
+    # day; rewrap-nvd-feed.py checks each file against the sha256 of its
+    # .meta and moves the items into the wrapper vulnix parses, under the
+    # file names vulnix requests from a mirror.
+    - name: Fetch the NVD feeds
+      id: nvd-feeds
+      shell: bash
+      run: |
+        mirror="${RUNNER_TEMP}/nvd-mirror"
+        rm -rf "${mirror}"
+        mkdir -p "${mirror}/src"
+        releases=https://github.com/fkie-cad/nvd-json-data-feeds/releases
+        tag_url=$(curl -fsS -o /dev/null -w '%{redirect_url}' "${releases}/latest/download/CVE-all.meta")
+        tag=${tag_url#"${releases}/download/"}
+        tag=${tag%/CVE-all.meta}
+        if [[ "${tag_url}" != "${releases}/download/"*"/CVE-all.meta" || -z "${tag}" || "${tag}" == */* ]]; then
+          echo "::error::${releases}/latest redirected to '${tag_url}', which names no release tag"
+          exit 1
+        fi
+        year=$(date -u +%Y)
+        years=()
+        for ((y = year - 5; y <= year; y++)); do years+=("${y}"); done
+        for y in "${years[@]}"; do
+          for ext in json.xz meta; do
+            curl -fsSL --retry 3 --retry-all-errors -o "${mirror}/src/CVE-${y}.${ext}" \
+              "${releases}/download/${tag}/CVE-${y}.${ext}"
+          done
+        done
+        printf '%s\n' "${years[@]}" | xargs -P 3 -I{} \
+          python3 -I "${GITHUB_ACTION_PATH}/rewrap-nvd-feed.py" "${mirror}/src/CVE-{}" "${mirror}/nvdcve-2.0-{}.json.gz"
+        rm -rf "${mirror}/src"
+        echo "nvd-feeds: ${tag}, ${years[0]} to ${years[-1]}" >> "${GITHUB_STEP_SUMMARY}"
+
+    # The scan covers the store paths of the image layers, which conf.json of
+    # the streamLayeredImage lists. The closure of the stream script itself
+    # adds the python3 the script runs on, which the image does not ship.
+    # vulnix reads the feeds of the nvd-feeds step through --mirror from a
+    # local http.server and builds its database afresh in RUNNER_TEMP, so no
+    # run depends on a cache and none asks the mirror for the "modified"
+    # feed, which the reconstruction does not publish.
+    # vulnix exits 2 when it finds a vulnerability and 0 when it finds none,
+    # and prints a JSON array in both cases; both are a completed scan. It
+    # also exits 2 on an internal error (a store path whose deriver it cannot
+    # find) and prints nothing, so a report that is no JSON array fails the
+    # step. Like the Grype scan (fail-build: false), findings never fail the
+    # build.
+    - name: Scan the image with vulnix
+      id: vulnix
+      shell: bash
+      env:
+        ATTRIBUTE: ${{ inputs.attribute }}
+      run: |
+        conf=$(nix build ".#${ATTRIBUTE}.conf" --no-link --print-out-paths)
+        mapfile -t layers < <(jq -r '.store_layers[][]' "${conf}")
+        mirror="${RUNNER_TEMP}/nvd-mirror"
+        if ! compgen -G "${mirror}/nvdcve-2.0-*.json.gz" > /dev/null; then
+          echo "::error::no NVD feeds in ${mirror}; the nvd-feeds step did not run"
+          exit 1
+        fi
+        python3 -I -u -m http.server --bind 127.0.0.1 --directory "${mirror}" 18765 > "${mirror}/http.log" 2>&1 &
+        server=$!
+        trap 'kill "${server}" 2> /dev/null || true' EXIT
+        ready=false
+        for _ in $(seq 1 50); do
+          if (exec 3<> /dev/tcp/127.0.0.1/18765) 2> /dev/null; then
+            ready=true
+            break
+          fi
+          sleep 0.2
+        done
+        if [[ "${ready}" != true ]]; then
+          echo "::error::the NVD mirror on 127.0.0.1:18765 did not come up"
+          exit 1
+        fi
+        rm -rf "${RUNNER_TEMP}/vulnix"
+        status=0
+        nix develop .#image-tools --command vulnix --mirror http://127.0.0.1:18765/ \
+          --cache-dir "${RUNNER_TEMP}/vulnix" --closure --json "${layers[@]}" > vulnix.json || status=$?
+        case "${status}" in
+          0 | 2) ;;
+          *)
+            echo "::error::vulnix exited with status ${status}"
+            exit 1
+            ;;
+        esac
+        if ! jq -e 'type == "array"' vulnix.json > /dev/null 2>&1; then
+          echo "::error::vulnix exited with status ${status} and wrote no JSON report"
+          exit 1
+        fi
+        findings=$(jq 'length' vulnix.json)
+        derivations=$(jq '[.[].derivation] | unique | length' vulnix.json)
+        echo "vulnix: ${findings} findings in ${derivations} derivations" >> "${GITHUB_STEP_SUMMARY}"
+
+    - name: Upload vulnix report
+      id: vulnix-upload
+      if: inputs.vulnix-artifact-name != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.vulnix-artifact-name }}
+        path: vulnix.json
+        if-no-files-found: error
+        retention-days: 14
+
+    - name: Load image (PR)
+      id: load
+      if: inputs.push-by-digest == 'false'
+      shell: bash
+      env:
+        VERIFY_IMAGE_REF: ${{ inputs.verify-image-ref }}
+      run: |
+        # docker's own error is already in the log; the check below names
+        # the failure.
+        loaded=$(./result-image | docker load | sed -n 's/^Loaded image: //p') || true
+        if [[ -z "${loaded}" ]]; then
+          echo '::error::docker load printed no "Loaded image:" line'
+          exit 1
+        fi
+        docker tag "${loaded}" "${VERIFY_IMAGE_REF}"
+
+    - name: Supply chain scan (PR)
+      id: scan
+      if: inputs.push-by-digest == 'false' && inputs.grype-category != ''
+      uses: ./.github/actions/supply-chain-attest
+      with:
+        image-name: ${{ inputs.image-name }}
+        image-digest: ''
+        sbom-output-file: ''
+        grype-category: ${{ inputs.grype-category }}
+        scan-mode: image
+        image-ref-for-scan: ${{ inputs.verify-image-ref }}
+
+    - name: Verify image (PR)
+      id: verify
+      if: inputs.push-by-digest == 'false' && inputs.verify-script != ''
+      shell: bash
+      env:
+        VERIFY_SCRIPT: ${{ inputs.verify-script }}
+        VERIFY_IMAGE_REF: ${{ inputs.verify-image-ref }}
+      run: bash "${VERIFY_SCRIPT}" "${VERIFY_IMAGE_REF}"
+
+    # skopeo reads the credentials `docker login` wrote to
+    # $HOME/.docker/config.json, so the caller's setup-docker-registry step
+    # is the login.
+    - name: Push by digest
+      id: push
+      if: inputs.push-by-digest == 'true'
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image-name }}
+      run: |
+        rm -f "${RUNNER_TEMP}/digest"
+        ./result-image > "${RUNNER_TEMP}/image.tar"
+        status=0
+        nix develop .#image-tools --command skopeo copy --retry-times 3 \
+          --digestfile "${RUNNER_TEMP}/digest" \
+          "docker-archive:${RUNNER_TEMP}/image.tar" \
+          "docker://${IMAGE_NAME}@@unknown-digest@@" || status=$?
+        if [[ "${status}" -ne 0 ]]; then
+          echo "::error::skopeo exited with status ${status}"
+          exit 1
+        fi
+        digest=$(cat "${RUNNER_TEMP}/digest" 2> /dev/null || true)
+        if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error::skopeo exited 0 but wrote no digest"
+          exit 1
+        fi
+        echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+    - name: Export digest
+      id: export
+      if: inputs.push-by-digest == 'true' && inputs.artifact-name != ''
+      uses: ./.github/actions/export-digest
+      with:
+        digest: ${{ steps.push.outputs.digest }}
+        artifact-name: ${{ inputs.artifact-name }}
