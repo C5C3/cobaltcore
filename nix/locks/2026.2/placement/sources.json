@@ -1,0 +1,7 @@
+{
+  "ref": "16.0.0",
+  "rev": "109ea4af9561aba4e67df8e6075055b764993489",
+  "hash": "sha256-plYbop4k2kP/vbjNTYfgAReYj0wH7LV8armB8itqGZY=",
+  "project": "openstack-placement",
+  "patches": []
+}

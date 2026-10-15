@@ -21,6 +21,8 @@
 # matches its flake.nix, and a managerFilePatterns entry only adds to the
 # defaults, so a packageRule disables every update there instead: the weekly
 # re-lock of its flake.lock and the pep621 updates of its generated locks.
+# The locks under nix/locks/ are derived by hack/nix-lock.sh and checked by
+# the nix-lock-check job, so a second rule disables every update there too.
 #
 # Usage: bash tests/unit/renovate/nix_flake_manager_test.sh
 
@@ -129,6 +131,34 @@ test_spike_disabled_for_every_manager() {
     "null" "$(jq -r '.matchManagers // "null"' <<<"$rule")"
 }
 
+test_nix_locks_disabled_for_every_manager() {
+  echo "Test: a packageRule disables every update under nix/locks/"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
+
+  local rule
+  rule="$(jq -c '.packageRules[] | select(.matchFileNames == ["nix/locks/**"])' \
+    "$RENOVATE_FILE" | head -1)"
+
+  if [ -z "$rule" ]; then
+    echo "  FAIL: no packageRule matches nix/locks/**"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  echo "  PASS: found a packageRule for matchFileNames=[nix/locks/**]"
+  PASS=$((PASS + 1))
+
+  assert_eq "the nix/locks/** packageRule sets enabled to false" \
+    "false" "$(jq -r '.enabled' <<<"$rule")"
+  # A manager filter would leave the pep621 and uv managers on.
+  assert_eq "the nix/locks/** packageRule names no manager" \
+    "null" "$(jq -r '.matchManagers // "null"' <<<"$rule")"
+}
+
 test_flake_lock_carries_both_inputs() {
   echo "Test: flake.lock carries both inputs as github channel branches"
 
@@ -153,6 +183,7 @@ test_nix_manager_enabled_with_lock_maintenance
 test_nix_package_rule_present
 test_lock_maintenance_scoped_to_nix_only
 test_spike_disabled_for_every_manager
+test_nix_locks_disabled_for_every_manager
 test_flake_lock_carries_both_inputs
 
 echo ""

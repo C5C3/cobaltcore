@@ -1054,6 +1054,11 @@
       "enabled": false
     },
     {
+      "description": "The locks under nix/locks/ are derived from the release pins by hack/nix-lock.sh (make nix-lock), and the nix-lock-check job fails when they drift: no manager edits the generated pyproject.toml and uv.lock files, which would bypass the generator",
+      "matchFileNames": ["nix/locks/**"],
+      "enabled": false
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["tests/unit/renovate/**.sh"],
       "matchPackageNames": ["renovate"],
