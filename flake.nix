@@ -75,6 +75,23 @@
           );
         };
 
+      # The tools hack/nix-lock.sh runs, from the images input: its uv wrote
+      # the committed locks, and its bash 5 runs the generator's associative
+      # arrays on macOS too.
+      lockToolsShells = forAllSystems (system: {
+        lock-tools = nixpkgs-images.legacyPackages.${system}.mkShell {
+          name = "cobaltcore-lock-tools";
+          packages = with nixpkgs-images.legacyPackages.${system}; [
+            bash
+            uv
+            yq-go
+            jq
+            git
+            python312
+          ];
+        };
+      });
+
       imageToolsShells = forImageSystems (system: {
         image-tools = (pkgsFor system).mkShell {
           name = "cobaltcore-image-tools";
@@ -132,6 +149,7 @@
             '';
           };
         }
+        // lockToolsShells.${system}
         // imageToolsShells.${system} or { }
       );
 

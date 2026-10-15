@@ -571,6 +571,20 @@ verify-option-catalogs:
 		done; \
 	done
 
+.PHONY: nix-lock
+# nix-lock regenerates every lock under nix/locks/ from the release pins and
+# writes the noVNC hash into images/nova/novnc.json (hack/nix-lock.sh --all),
+# with the uv of the lock-tools dev shell. Needs Nix with flakes and network
+# access to GitHub and PyPI. Commit what it changes.
+nix-lock:
+	nix develop .#lock-tools --command bash hack/nix-lock.sh --all
+
+.PHONY: nix-lock-check
+# nix-lock-check runs nix-lock and fails when the locks it writes differ from
+# the committed ones, the check of the nix-lock-check job in build-images.yaml.
+nix-lock-check:
+	nix develop .#lock-tools --command bash hack/nix-lock.sh --check
+
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or
 # REQ-NNN) appears anywhere in the tracked source tree — code, tests, CI,
