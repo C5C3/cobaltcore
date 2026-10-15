@@ -8,6 +8,8 @@ quadrant: infrastructure
 Reference documentation for the container image build system. This covers
 the Dockerfile hierarchy, base image contents, release configuration file formats,
 named build context patterns, constraint override tooling, and local build instructions.
+The images the root flake builds instead of a Dockerfile are described in
+[Nix Image Build](./nix-image-build.md).
 
 ## Dockerfile Hierarchy
 
@@ -44,16 +46,18 @@ install the service, then stage 2 extends `python-base` and copies only the
 virtualenv from stage 1. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
-OpenStack code, and all but two build straight on `ubuntu:noble`:
+OpenStack code, and three of them build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
 ├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
 ├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
 ├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
-├── backup-shifter             Single stage: distro rclone
 └── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
+
+`backup-shifter` has no Dockerfile: the root flake builds it from
+`images/backup-shifter/image.nix` ([Nix Image Build](./nix-image-build.md)).
 
 `openstack-hypervisor-operator` and `kvm-node-agent` compile Go programs and
 build on the two images the CobaltCore operator images use:
@@ -1565,26 +1569,28 @@ described in
 
 ### backup-shifter
 
-**Location:** `images/backup-shifter/Dockerfile`
+**Location:** `images/backup-shifter/image.nix`
 
-The rclone shifter for the OVN database backups: a single stage on
-`ubuntu:noble` with the distro `rclone` and `ca-certificates`. It is the
-`shifter` container of the `OVNCentral` backup CronJob and runs only when
-`spec.backup.s3` is set, copying the northbound and southbound snapshots the
-`backup` init container left on the PVC to the configured bucket. rclone comes
-from the Ubuntu archive, so the image has no version pin of its own and follows
-the `noble` package set. The Dockerfile sets no `ENTRYPOINT`: the operator
-renders the `rclone copy` command and the `RCLONE_S3_*` environment onto the
-CronJob container.
+The rclone shifter for the OVN database backups, built by Nix: the FHS façade
+of `nix/lib/fhs-layout.nix` without a Python environment, plus `rclone` and
+`coreutils`. It is the `shifter` container of the `OVNCentral` backup CronJob
+and runs only when `spec.backup.s3` is set, copying the northbound and
+southbound snapshots the `backup` init container left on the PVC to the
+configured bucket. rclone comes from the `nixpkgs-images` revision `flake.lock`
+pins, so the image has no version pin of its own. The image sets no `Cmd` and
+no `Entrypoint`: the operator renders the `rclone copy` command and the
+`RCLONE_S3_*` environment onto the CronJob container.
 
 ```bash
-docker build -t c5c3/backup-shifter:latest images/backup-shifter/
+nix build .#backup-shifter-image
+./result | docker load
 
 # Run the full image contract check
-bash tests/container-images/verify_backup_shifter.sh c5c3/backup-shifter:latest
+bash tests/container-images/verify_backup_shifter.sh backup-shifter:latest
 ```
 
-Its build, verification and tag scheme are described in
+[Nix Image Build](./nix-image-build.md) describes the flake, the shared library
+and the local commands. The build, verification and tag scheme are described in
 [build-backup-shifter / merge-backup-shifter-image](./build-images-workflow.md#build-backup-shifter-merge-backup-shifter-image).
 
 ### libvirt
@@ -2412,15 +2418,17 @@ per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/cinder/Dockerfile`, `images/nova/Dockerfile`,
 `images/nova-compute/Dockerfile`).
 
-`images/ovn/Dockerfile` and `images/backup-shifter/Dockerfile` carry the comment
-for the other half of the same decision. Neither derives from `python-base`, so
-each creates the `openstack` user and group itself. For `ovn` the distro
-packages would install separate `openvswitch` and `ovn` users, and the source
-build carries no such packaging. The `rclone` package that `backup-shifter`
-installs brings no service account at all. One identity across all non-root
-images keeps the pod security contexts uniform, and in the `OVNCentral` backup
-CronJob it lets the `backup` init container and the `shifter` container share a
-single pod security context.
+`images/ovn/Dockerfile` carries the comment for the other half of the same
+decision. It does not derive from `python-base`, so it creates the `openstack`
+user and group itself: the distro packages would install separate
+`openvswitch` and `ovn` users, and the source build carries no such packaging.
+The Nix-built `backup-shifter` image states the same decision in the header
+comment of `images/backup-shifter/image.nix`. It writes the `openstack` user and
+group through the `fakeNss` entry of the FHS façade, because rclone brings no
+service account at all. One identity across all non-root images keeps the pod
+security contexts uniform, and in the `OVNCentral` backup CronJob it lets the
+`backup` init container and the `shifter` container share a single pod
+security context.
 
 **Root instead of the `openstack` user (libvirt):**
 
