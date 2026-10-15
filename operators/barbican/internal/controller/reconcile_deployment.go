@@ -55,7 +55,7 @@ var secretStoreCAMountPath = path.Dir(secretStoreCAFilePath)
 // barbican/wsgi/api.py with a module-level `application` and no entry script (the
 // PBR wsgi_scripts entry is not materialised by the install mode), so the module
 // path is the only launch mode available. It has to stay in lockstep with
-// images/barbican/Dockerfile, which records the same path.
+// images/barbican/image.nix, which records the same path.
 const barbicanWSGIModule = "barbican.wsgi.api:application"
 
 // barbicanHealthcheckPath is the oslo_middleware healthcheck app the paste

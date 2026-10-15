@@ -67,10 +67,11 @@ const (
 )
 
 // Paths the cinder image ships its static data files at. Cinder's setup.cfg
-// installs etc/cinder/* under <prefix>/etc/cinder, and the image installs cinder
-// with --prefix /var/lib/openstack (images/cinder/Dockerfile), so the two must
-// stay in lockstep. The oslo defaults (/etc/cinder/…) do not exist in the
-// config-free image, which is why both options are rendered explicitly.
+// installs etc/cinder/* under <prefix>/etc/cinder, and the image puts the
+// venv it builds from the cinder lock at /var/lib/openstack
+// (images/cinder/image.nix), so the two must stay in lockstep. The oslo
+// defaults (/etc/cinder/…) do not exist in the config-free image, which is
+// why both options are rendered explicitly.
 const (
 	// apiPasteConfigPath is the WSGI pipeline definition [DEFAULT]
 	// api_paste_config names. It is what puts keystonemiddleware in front of the
