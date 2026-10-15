@@ -151,21 +151,6 @@ test_ci_merge_manifest_usage() {
   fi
 }
 
-# --- Test 9: ci-run-unit-tests.sh script usage ---
-test_ci_run_unit_tests_usage() {
-  echo "Test: ci-run-unit-tests.sh referenced >= 1 time"
-
-  local count
-  count=$(grep -c 'ci-run-unit-tests\.sh' "$WORKFLOW" || true)
-  if [[ "$count" -ge 1 ]]; then
-    echo "  PASS: ci-run-unit-tests.sh used $count times (>= 1)"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: ci-run-unit-tests.sh used $count times (expected >= 1)"
-    FAIL=$((FAIL + 1))
-  fi
-}
-
 # --- Test 10: No inline scripts over 5 lines ---
 # Detects multi-line run: | blocks that exceed 5 continuation lines.
 # Some inline blocks (matrix generation, tag derivation, version resolution,
@@ -292,8 +277,6 @@ echo ""
 test_export_digest_usage
 echo ""
 test_ci_merge_manifest_usage
-echo ""
-test_ci_run_unit_tests_usage
 echo ""
 test_no_inline_scripts_over_5_lines
 echo ""

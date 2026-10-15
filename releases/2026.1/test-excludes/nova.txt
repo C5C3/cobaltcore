@@ -9,7 +9,7 @@
 #
 # No pattern: the first run of the nova 33.0.0 suite in the venv-builder
 # container, with OS_NOVA_DISABLE_EVENTLET_PATCHING=False the way nova's own
-# tox py3 env runs it (hack/ci-run-unit-tests.sh sets it), counted 16803
+# tox py3 env runs it (nix/lib/service-tests.nix sets it), counted 16803
 # tests and passed with no environment-dependent failure. The 63 skips and
 # the 2 expected failures are upstream's own.
 #
@@ -18,7 +18,7 @@
 # nova/tests/unit/__init__.py has already selected eventlet, and oslo.service
 # raises BackendAlreadySelected. No pattern in this file can reach that
 # failure, because stestr imports every test module before it applies the
-# exclude list. The runner sets the variable instead.
+# exclude list. nix/lib/service-tests.nix sets the variable instead.
 #
 # Record a future environment failure here as one escaped regex with a
 # comment above it stating the reason.

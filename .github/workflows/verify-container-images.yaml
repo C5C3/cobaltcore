@@ -24,6 +24,7 @@ name: Verify Container Images
       - tests/tempest/test_retry_helpers.py
       - flake.nix
       - nix/lib/**
+      - nix/pkgs/**
       - .github/actions/build-nix-image/**
       - .github/workflows/build-images.yaml
       - .github/workflows/verify-container-images.yaml
