@@ -14,15 +14,17 @@
 # Three inputs override that and build everything, because everything is built
 # from them: any event that is not a pull request, a change to the workflow's
 # own plumbing (the workflow file, the composite actions, the build scripts),
-# and a change to the base images or the release configuration. The base class
-# also builds the Tempest image, which is built FROM python-base and
-# venv-builder and reads releases/<release>/. The OVN, federation proxy and
-# libvirt images build FROM ubuntu:noble and read neither, so they come from
-# their own filters only. The backup shifter is built by Nix from flake.lock
-# and reads neither either; its filter also covers flake.nix, flake.lock,
-# nix/lib/ and the build-nix-image action. The openstack-hypervisor-operator
-# and kvm-node-agent images build FROM golang and distroless, read neither
-# either, and follow their own filters too.
+# and a change to what the service images are built from (the flake inputs,
+# the Nix library and packages, the lock generator, the release
+# configuration). The base class also builds the Tempest image, which Nix
+# builds from its lock with the same flake inputs and library and which reads
+# releases/<release>/. The OVN, federation proxy and libvirt images build FROM
+# ubuntu:noble and read neither, so they come from their own filters only. The
+# backup shifter is built by Nix from flake.lock and reads no release; its
+# filter also covers flake.nix, flake.lock, nix/lib/ and the build-nix-image
+# action. The openstack-hypervisor-operator and kvm-node-agent images build
+# FROM golang and distroless, read neither either, and follow their own
+# filters too.
 #
 # Required env vars:
 #   EVENT_NAME   — github.event_name
@@ -31,7 +33,8 @@
 #
 # Optional env vars:
 #   FILTER_svc_<service> — One per name in ALL_SERVICES
-#   FILTER_base          — Base images, release configs, build scripts, overrides
+#   FILTER_base          — Flake inputs, Nix library and packages, release
+#                          configs, build scripts, overrides
 #   FILTER_tempest       — Tempest image sources
 #   FILTER_ovn           — OVN image sources
 #   FILTER_proxy         — Keystone federation proxy image sources

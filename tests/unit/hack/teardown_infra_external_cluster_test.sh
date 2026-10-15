@@ -2174,7 +2174,7 @@ test_openstack_cleanup_step() {
     "secretName: controlplane-admin-password-cloud"
   assert_contains "the pod sleeps until the program is exec'd" "$(cat "$tmp/bin/applied.yaml")" \
     'command: ["sleep", "infinity"]'
-  assert_contains "the pod runs as the openstack user of python-base" "$(cat "$tmp/bin/applied.yaml")" \
+  assert_contains "the pod runs as the openstack user of nix/lib/fhs-layout.nix" "$(cat "$tmp/bin/applied.yaml")" \
     "runAsUser: 42424"
   assert_not_contains "the pod mounts no ServiceAccount token" "$(cat "$tmp/bin/applied.yaml")" \
     "automountServiceAccountToken: true"

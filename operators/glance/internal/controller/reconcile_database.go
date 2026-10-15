@@ -236,10 +236,11 @@ func checkImageReleaseMismatch(glance *glancev1alpha1.Glance) (ctrl.Result, bool
 
 // glanceMetadefsSourcePath is the directory the glance image ships the default
 // metadata-definition JSON files at. Glance's setup.cfg installs etc/metadefs/*
-// to <prefix>/etc/glance/metadefs, and the image installs glance with
-// --prefix /var/lib/openstack (images/glance/Dockerfile); the two paths must
-// stay in lockstep. The oslo default (/etc/glance/metadefs/) does not exist in
-// the config-free image, so the db-sync Job passes this path explicitly.
+// to <prefix>/etc/glance/metadefs, and the image puts the venv it builds from
+// the glance lock at /var/lib/openstack (images/glance/image.nix); the two
+// paths must stay in lockstep. The oslo default (/etc/glance/metadefs/) does
+// not exist in the config-free image, so the db-sync Job passes this path
+// explicitly.
 const glanceMetadefsSourcePath = "/var/lib/openstack/etc/glance/metadefs"
 
 // glanceJobPod resolves the pod settings of every Glance Job and CronJob:

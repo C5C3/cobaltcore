@@ -717,9 +717,9 @@ PY
 # cleanup_pod_manifest CP SECRET IMAGE — Print the Pod cleanup_openstack_workloads
 # runs the program in: IMAGE, the Nova API's, with SECRET, the admin clouds.yaml
 # of ControlPlane CP, under /etc/openstack. It sleeps until the program is
-# exec'd into it. The UID is the openstack user of images/python-base, which
-# every service image runs as; the image names it, so runAsNonRoot alone would
-# not do. The requests and limits fit the LimitRange of a tenant namespace.
+# exec'd into it. The UID is the openstack user nix/lib/fhs-layout.nix writes,
+# which every service image runs as; the image names it, so runAsNonRoot alone
+# would not do. The requests and limits fit the LimitRange of a tenant namespace.
 # ---------------------------------------------------------------------------
 cleanup_pod_manifest() {
   local cp="$1" secret="$2" image="$3"

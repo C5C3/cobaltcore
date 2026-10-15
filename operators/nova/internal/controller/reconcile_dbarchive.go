@@ -115,10 +115,10 @@ const dbArchiveNameHashLength = 1 + 8
 // --task-log rides along with it and only with it: task_log rows are never
 // soft-deleted, so without a date the flag would move the current audit period
 // out from under the os-instance_usage_audit_log API, as nova-manage's own help
-// warns. The date arithmetic is GNU coreutils' "date -d", which the python-base
-// Debian image the nova image builds on ships. "$before" is deliberately
-// unquoted: an empty value must add no argument, and a quoted expansion would
-// hand nova-manage an empty one.
+// warns. The date arithmetic is GNU coreutils' "date -d", which the nova image
+// ships from nixpkgs' coreutils (nix/lib/service-image.nix). "$before" is
+// deliberately unquoted: an empty value must add no argument, and a quoted
+// expansion would hand nova-manage an empty one.
 var dbArchiveScript = `before=""; ` +
 	`if [ -n "${RETENTION_DAYS:-}" ]; then ` +
 	`before="--before $(date -u -d "-${RETENTION_DAYS} days" +%Y-%m-%d) --task-log"; fi; ` +
