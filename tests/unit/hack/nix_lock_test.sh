@@ -6,8 +6,9 @@
 # Verify hack/nix-lock.sh refuses bad input before it writes anything, writes
 # the release inputs into pyproject.toml and sources.json, keeps the previous
 # lock when a step fails, writes the noVNC hash, deletes the locks nothing
-# pins, reports stale locks, and that the committed locks under nix/locks/
-# are the set the release files pin.
+# pins, reports stale locks, resolves for the interpreter flake.nix builds
+# the images with, and that the committed locks under nix/locks/ are the set
+# the release files pin.
 #
 # The generator checks the release directory first and the six tools next,
 # so those failures need no tool at all. The other runs use a throwaway git
@@ -426,6 +427,20 @@ test_committed_locks_match_the_pins() {
     "$(jq -r .project "$LOCKS/2026.1/placement/sources.json")"
 }
 
+test_python_is_the_flake_interpreter() {
+  echo "Test: the locks resolve for the interpreter flake.nix builds the images with"
+
+  local flake_minor generator_minor pyproject
+  flake_minor=$(sed -n 's/^ *pythonFor = pkgs: pkgs\.python3\([0-9][0-9]*\);$/3.\1/p' "$PROJECT_ROOT/flake.nix")
+  generator_minor=$(sed -n 's/^PYTHON_MINOR=//p' "$GENERATOR")
+  assert_not_empty "flake.nix names the interpreter of the images" "$flake_minor"
+  assert_eq "PYTHON_MINOR is that interpreter" "$flake_minor" "$generator_minor"
+  for pyproject in "$LOCKS"/*/*/pyproject.toml; do
+    assert_file_contains_fixed "${pyproject#"$LOCKS"/} requires that interpreter" "$pyproject" \
+      "requires-python = \"==${flake_minor}.*\""
+  done
+}
+
 test_generator_is_shellcheck_clean() {
   echo "Test: nix-lock.sh is shellcheck-clean at --severity=warning"
 
@@ -451,6 +466,7 @@ test_all_writes_novnc_and_deletes_orphans
 test_check_reports_stale_locks
 test_failures_leave_the_lock_untouched
 test_committed_locks_match_the_pins
+test_python_is_the_flake_interpreter
 test_generator_is_shellcheck_clean
 
 echo ""

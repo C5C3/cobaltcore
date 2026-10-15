@@ -3,14 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json keeps both Nix flake inputs fresh: nixpkgs (nixos-unstable)
+# Verify renovate.json keeps the Nix flake inputs fresh: nixpkgs (nixos-unstable)
 # feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container
-# images. The `nix` manager is enabled with lockFileMaintenance (scoped to nix so
+# images, and pyproject-nix, uv2nix and pyproject-build-systems build their
+# Python environments. The `nix` manager is enabled with lockFileMaintenance (scoped to nix so
 # npm's package-lock.json is untouched), and a packageRule groups the nix updates
 # on the Monday schedule of the ubuntu digest bump. Without lockFileMaintenance
 # the committed flake.lock would become the one pinned artifact Renovate stops
-# bumping — a silent regression. flake.lock must name both inputs as github
-# branches, the shape the manager re-locks.
+# bumping — a silent regression. flake.lock must name every input as a github
+# input without a pinned rev, the shape the manager re-locks.
 #
 # The weekly re-lock is opened for human review (automerge off): both refs are
 # rolling channel branches, so the re-lock is not a version bump and
@@ -160,11 +161,11 @@ test_nix_locks_disabled_for_every_manager() {
 }
 
 test_flake_lock_carries_both_inputs() {
-  echo "Test: flake.lock carries both inputs as github channel branches"
+  echo "Test: flake.lock carries both nixpkgs inputs as github channel branches and the three pyproject-nix inputs as github inputs"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (4 checks skipped)"
-    SKIP=$((SKIP + 4))
+    echo "  SKIP: jq not installed (10 checks skipped)"
+    SKIP=$((SKIP + 10))
     return
   fi
 
@@ -177,6 +178,16 @@ test_flake_lock_carries_both_inputs() {
     "nixos-26.05" "$(jq -r '.nodes["nixpkgs-images"].original.ref' "$lock")"
   assert_eq "the nixpkgs-images input is a github input" \
     "github" "$(jq -r '.nodes["nixpkgs-images"].original.type' "$lock")"
+
+  # A rev in original would pin the input, and the re-lock would never move
+  # it.
+  local input
+  for input in pyproject-nix uv2nix pyproject-build-systems; do
+    assert_eq "the $input input is a github input" \
+      "github" "$(jq -r --arg n "$input" '.nodes[$n].original.type' "$lock")"
+    assert_eq "the $input input pins no rev" \
+      "null" "$(jq -r --arg n "$input" '.nodes[$n].original.rev // "null"' "$lock")"
+  done
 }
 
 test_nix_manager_enabled_with_lock_maintenance
