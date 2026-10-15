@@ -541,12 +541,12 @@
     },
     {
       "customType": "regex",
-      "description": "noVNC console assets bundled into images/nova/Dockerfile: the tag and the commit it names move together",
+      "description": "noVNC console assets of the nova image, pinned in images/nova/novnc.json: the tag and the commit it names move together, and make nix-lock then writes the hash of the new commit into the same file",
       "managerFilePatterns": [
-        "/images/nova/Dockerfile$/"
+        "/images/nova/novnc\\.json$/"
       ],
       "matchStrings": [
-        "(?m)^ARG NOVNC_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)[ \\t]*\\n^ARG NOVNC_COMMIT=(?<currentDigest>[a-f0-9]{40})[ \\t]*$"
+        "\"version\":\\s*\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\",\\s*\"rev\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
       ],
       "depNameTemplate": "novnc/noVNC",
       "datasourceTemplate": "github-tags",
@@ -1111,14 +1111,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchFileNames": ["images/nova/novnc.json"],
       "matchPackageNames": ["novnc/noVNC"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchFileNames": ["images/nova/novnc.json"],
       "matchPackageNames": ["novnc/noVNC"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": false,
@@ -1127,7 +1127,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/nova/Dockerfile"],
+      "matchFileNames": ["images/nova/novnc.json"],
       "matchPackageNames": ["novnc/noVNC"],
       "matchUpdateTypes": ["digest"],
       "enabled": false

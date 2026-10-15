@@ -3,26 +3,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json tracks the bundled noVNC assets of
-# images/nova/Dockerfile as one pin: the tag and the commit it names.
+# Verify renovate.json tracks the bundled noVNC assets of the nova image as
+# one pin in images/nova/novnc.json: the tag and the commit it names.
 #
 # Asserts:
 #   - exactly one customManager targets novnc/noVNC over
-#     images/nova/Dockerfile with the github-tags datasource and a regex
+#     images/nova/novnc.json with the github-tags datasource and a regex
 #     versioning, which the pin needs because it keeps the 'v' prefix of
 #     the upstream tag
-#   - one matchString captures ARG NOVNC_VERSION as currentValue and
-#     ARG NOVNC_COMMIT as currentDigest, so Renovate rewrites both lines
-#     in the same PR. A split pair would move the version while the build
-#     kept fetching the old commit, and the package.json check in the
-#     Dockerfile would abort that build.
-#   - that regex, replayed over the Dockerfile on disk, captures the two
-#     values the file carries. The adjacency of the two ARG lines is part
-#     of the contract: the regex joins them with [ \t]*\n, so a blank line
-#     between them stops the match and Renovate offers no bump at all.
-#     With \s*\n the engine would match across such a blank line, and the
-#     pin would look tracked while the file had drifted out of the shape
-#     Renovate rewrites.
+#   - one matchString captures "version" as currentValue and "rev" as
+#     currentDigest, so Renovate rewrites both keys in the same PR. A split
+#     pair would move the version while the build kept fetching the old
+#     commit, and the package.json check of images/nova/image.nix would
+#     abort that build.
+#   - that regex, replayed over the file on disk, captures the two values
+#     the file carries, and the file carries the hash of the fetched tree.
+#     The key order is part of the contract: hack/nix-lock.sh writes
+#     version, rev and hash in that order, and the regex joins the first
+#     two. Renovate leaves the hash stale, so nix-lock-check fails its PR
+#     until `make nix-lock` writes the new one.
 #   - a paired packageRule disables majors, the way majors are disabled
 #     for every custom-regex manager
 #   - a paired packageRule holds minors and patches for 3 days and does
@@ -67,20 +66,20 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-NOVA_DOCKERFILE="$PROJECT_ROOT/images/nova/Dockerfile"
+NOVNC_PIN="$PROJECT_ROOT/images/nova/novnc.json"
 
 PKG_NAME="novnc/noVNC"
-DOCKERFILE_PATH="images/nova/Dockerfile"
+PIN_PATH="images/nova/novnc.json"
 NOVNC_REPO="https://github.com/novnc/noVNC"
 
-# Reads the pinned tag out of the Dockerfile. The leading 'v' stays: it is
-# part of the value the manager captures and of the ref it looks up.
+# Reads the pinned tag out of novnc.json. The leading 'v' stays: it is part
+# of the value the manager captures and of the ref it looks up.
 pinned_version() {
-  grep '^ARG NOVNC_VERSION=' "$NOVA_DOCKERFILE" | head -1 | sed 's/^ARG NOVNC_VERSION=//'
+  jq -r '.version // empty' "$NOVNC_PIN"
 }
 
 pinned_commit() {
-  grep '^ARG NOVNC_COMMIT=' "$NOVA_DOCKERFILE" | head -1 | sed 's/^ARG NOVNC_COMMIT=//'
+  jq -r '.rev // empty' "$NOVNC_PIN"
 }
 
 # ls_remote_tag <refspec-suffix> prints the matching refs of the upstream
@@ -93,9 +92,9 @@ ls_remote_tag() {
   fi
 }
 
-# --- Test 1: the manager exists and its regex matches the Dockerfile ---
+# --- Test 1: the manager exists and its regex matches novnc.json ---
 test_manager_exists_and_regex_matches() {
-  echo "Test: the noVNC pin has a customManager whose regex matches both ARG lines"
+  echo "Test: the noVNC pin has a customManager whose regex matches version and rev"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed"
@@ -107,8 +106,8 @@ test_manager_exists_and_regex_matches() {
     SKIP=$((SKIP + 1))
     return
   fi
-  if [[ ! -f "$NOVA_DOCKERFILE" ]]; then
-    echo "  FAIL: $NOVA_DOCKERFILE missing"
+  if [[ ! -f "$NOVNC_PIN" ]]; then
+    echo "  FAIL: $NOVNC_PIN missing"
     FAIL=$((FAIL + 1))
     return
   fi
@@ -116,13 +115,13 @@ test_manager_exists_and_regex_matches() {
   local count
   count="$(jq --arg pkg "$PKG_NAME" '[.customManagers[]
     | select(.packageNameTemplate == $pkg)
-    | select(any(.managerFilePatterns[]; test("images/nova/Dockerfile")))] | length' "$RENOVATE_FILE")"
-  assert_eq "exactly one customManager targets ${PKG_NAME} over the Dockerfile" "1" "$count"
+    | select(any(.managerFilePatterns[]; test("images/nova/novnc")))] | length' "$RENOVATE_FILE")"
+  assert_eq "exactly one customManager targets ${PKG_NAME} over novnc.json" "1" "$count"
 
   local entry
   entry="$(jq -c --arg pkg "$PKG_NAME" '.customManagers[]
     | select(.packageNameTemplate == $pkg)
-    | select(any(.managerFilePatterns[]; test("images/nova/Dockerfile")))' "$RENOVATE_FILE" | head -1)"
+    | select(any(.managerFilePatterns[]; test("images/nova/novnc")))' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no customManager for ${PKG_NAME}"
@@ -130,8 +129,8 @@ test_manager_exists_and_regex_matches() {
     return
   fi
 
-  assert_contains "manager targets ${DOCKERFILE_PATH}" \
-    "$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")" "$DOCKERFILE_PATH"
+  assert_eq "manager targets ${PIN_PATH}" \
+    '/images/nova/novnc\.json$/' "$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")"
   assert_eq "manager uses the github-tags datasource (it resolves the tag to its commit)" \
     "github-tags" "$(jq -r '.datasourceTemplate' <<<"$entry")"
   assert_starts_with "manager uses a regex versioning (the pin keeps the upstream 'v')" \
@@ -151,10 +150,9 @@ test_manager_exists_and_regex_matches() {
     | select(contains("(?<currentValue>") and contains("(?<currentDigest>"))' <<<"$entry" | head -1)"
 
   # Replaying the regex over the file on disk is what ties the manager to
-  # the Dockerfile. A blank line inserted between the two ARG lines builds
-  # the same image and captures nothing here, because the regex joins the
-  # lines with [ \t]*\n.
-  captured="$(REGEX="$match_string" FILE="$NOVA_DOCKERFILE" perl -e '
+  # novnc.json. A key between "version" and "rev" builds the same image and
+  # captures nothing here, because the regex joins the two keys.
+  captured="$(REGEX="$match_string" FILE="$NOVNC_PIN" perl -e '
     my $re = $ENV{REGEX};
     local $/;
     open my $fh, "<", $ENV{FILE} or exit 1;
@@ -164,12 +162,14 @@ test_manager_exists_and_regex_matches() {
     }
   ')"
 
-  # The expected values come from the Dockerfile, so a Renovate bump keeps
-  # this test green. Never hard-code the version or the commit.
-  assert_eq "regex captures ARG NOVNC_VERSION as currentValue" \
+  # The expected values come from novnc.json, so a Renovate bump keeps this
+  # test green. Never hard-code the version or the commit.
+  assert_eq "regex captures version as currentValue" \
     "$(pinned_version)" "${captured%%|*}"
-  assert_eq "regex captures ARG NOVNC_COMMIT as currentDigest" \
+  assert_eq "regex captures rev as currentDigest" \
     "$(pinned_commit)" "${captured##*|}"
+  assert_starts_with "novnc.json carries the hash make nix-lock writes" \
+    "$(jq -r '.hash // empty' "$NOVNC_PIN")" "sha256-"
 }
 
 # --- Test 2: the paired packageRules gate the bump ---
@@ -183,21 +183,21 @@ test_package_rules() {
   fi
 
   local major_rule minor_rule digest_rule
-  major_rule="$(jq -c --arg file "$DOCKERFILE_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
+  major_rule="$(jq -c --arg file "$PIN_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
     | select(
         ((.matchFileNames // []) | index($file)) != null
         and (((.matchPackageNames // []) | index($pkg)) != null)
         and (((.matchUpdateTypes // []) | index("major")) != null)
       )' "$RENOVATE_FILE" | head -1)"
 
-  minor_rule="$(jq -c --arg file "$DOCKERFILE_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
+  minor_rule="$(jq -c --arg file "$PIN_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
     | select(
         ((.matchFileNames // []) | index($file)) != null
         and (((.matchPackageNames // []) | index($pkg)) != null)
         and (((.matchUpdateTypes // []) | index("patch")) != null)
       )' "$RENOVATE_FILE" | head -1)"
 
-  digest_rule="$(jq -c --arg file "$DOCKERFILE_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
+  digest_rule="$(jq -c --arg file "$PIN_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
     | select(
         ((.matchFileNames // []) | index($file)) != null
         and (((.matchPackageNames // []) | index($pkg)) != null)
@@ -205,7 +205,7 @@ test_package_rules() {
       )' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$major_rule" ]; then
-    echo "  FAIL: no packageRule disabling majors for ${DOCKERFILE_PATH}"
+    echo "  FAIL: no packageRule disabling majors for ${PIN_PATH}"
     FAIL=$((FAIL + 1))
   else
     assert_eq "major noVNC updates are disabled" \
@@ -215,7 +215,7 @@ test_package_rules() {
   # A retag of the pinned version is not a release. Left enabled, it would
   # arrive as a digest update outside the rules below.
   if [ -z "$digest_rule" ]; then
-    echo "  FAIL: no packageRule disabling digest updates for ${DOCKERFILE_PATH}"
+    echo "  FAIL: no packageRule disabling digest updates for ${PIN_PATH}"
     FAIL=$((FAIL + 1))
   else
     assert_eq "digest-only noVNC updates are disabled" \
@@ -259,8 +259,8 @@ test_tag_and_commit_agree_upstream() {
     SKIP=$((SKIP + 1))
     return
   fi
-  if [[ ! -f "$NOVA_DOCKERFILE" ]]; then
-    echo "  FAIL: $NOVA_DOCKERFILE missing"
+  if [[ ! -f "$NOVNC_PIN" ]]; then
+    echo "  FAIL: $NOVNC_PIN missing"
     FAIL=$((FAIL + 1))
     return
   fi
@@ -270,7 +270,7 @@ test_tag_and_commit_agree_upstream() {
   commit="$(pinned_commit)"
 
   if [ -z "$tag" ] || [ -z "$commit" ]; then
-    echo "  FAIL: $DOCKERFILE_PATH carries no ARG NOVNC_VERSION / ARG NOVNC_COMMIT pair"
+    echo "  FAIL: $PIN_PATH carries no version / rev pair"
     FAIL=$((FAIL + 1))
     return
   fi
@@ -312,7 +312,7 @@ test_tag_and_commit_agree_upstream() {
   local resolved
   resolved="$(printf '%s\n' "$refs" | awk '{ print $1 }' | head -1)"
 
-  assert_eq "tag ${tag} resolves to the pinned ARG NOVNC_COMMIT" \
+  assert_eq "tag ${tag} resolves to the pinned rev" \
     "$commit" "$resolved"
 }
 

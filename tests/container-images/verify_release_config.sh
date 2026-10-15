@@ -16,14 +16,17 @@ PASS=0
 FAIL=0
 
 # Services that every release must register in source-refs.yaml and
-# extra-packages.yaml, each with a matching images/<service>/Dockerfile.
+# extra-packages.yaml, each built by Nix from images/<service>/image.nix. Their
+# runtime packages live in that file, so their extra-packages.yaml blocks carry
+# no apt_packages key.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova"
 
 # Images built from another service's source pin, each with its own
 # extra-packages.yaml block and images/<name>/Dockerfile but no
-# source-refs.yaml key. Tests 2 to 4 check them like a service; tests 1, 7
-# and 9, which read source-refs.yaml keys, do not. nova-compute is built from
-# the nova pin.
+# source-refs.yaml key. Test 2 checks their block like a service's plus the
+# apt_packages key, and tests 3 and 4 check their Dockerfile's apt wiring;
+# tests 1, 7 and 9, which read source-refs.yaml keys, do not. nova-compute is
+# built from the nova pin.
 DERIVED_IMAGES="nova-compute"
 
 # ovn is deliberately absent from this list. The image is release-independent:
@@ -100,12 +103,11 @@ test_source_refs_valid_yaml_with_services() {
       fi
     done
 
-    # $SERVICES (plus $DERIVED_IMAGES) is what tests 2-4 iterate, and the
+    # $SERVICES (plus $DERIVED_IMAGES) is what test 2 iterates, and the
     # build matrix derives from these keys instead. Assert the converse
     # direction too: a service registered here but absent from the list would
-    # build and ship while its extra-packages entries go unvalidated and its
-    # Dockerfile never gets checked for hardcoded apt packages. Fail loudly
-    # rather than skip four tests silently.
+    # build and ship while its extra-packages entries go unvalidated. Fail
+    # loudly rather than skip the test silently.
     local unlisted
     unlisted=$(yq 'keys | .[]' "$source_refs" | tr -d '"' \
       | grep -vxF -f <(tr ' ' '\n' <<< "$SERVICES") || true)
@@ -161,17 +163,31 @@ test_extra_packages_valid_yaml_structure() {
         FAIL=$((FAIL + 1))
       fi
 
-      # Verify <service>.apt_packages exists and is an array (: allow empty lists per review #1)
-      local apt_tag
-      apt_tag=$(yq ".${service}.apt_packages | tag" "$extra_packages")
-      if [[ "$apt_tag" == "!!seq" ]]; then
-        local apt_count
-        apt_count=$(yq ".${service}.apt_packages | length" "$extra_packages")
-        echo "  PASS: [$release_name] $service.apt_packages is a valid array ($apt_count items)"
-        PASS=$((PASS + 1))
-      else
-        echo "  FAIL: [$release_name] $service.apt_packages must be an array (got $apt_tag)"
-        FAIL=$((FAIL + 1))
+      # A Nix-built service names its runtime packages in its image.nix, so
+      # an apt_packages key in its block would be read by nothing.
+      if [[ " $SERVICES " == *" $service "* ]]; then
+        if [[ "$(yq ".${service} | has(\"apt_packages\")" "$extra_packages")" == "true" ]]; then
+          echo "  FAIL: [$release_name] $service: apt_packages is gone; runtime packages live in images/$service/image.nix"
+          FAIL=$((FAIL + 1))
+        else
+          echo "  PASS: [$release_name] $service has no apt_packages key"
+          PASS=$((PASS + 1))
+        fi
+      fi
+
+      # Verify <image>.apt_packages exists and is an array (: allow empty lists per review #1)
+      if [[ " $DERIVED_IMAGES " == *" $service "* ]]; then
+        local apt_tag
+        apt_tag=$(yq ".${service}.apt_packages | tag" "$extra_packages")
+        if [[ "$apt_tag" == "!!seq" ]]; then
+          local apt_count
+          apt_count=$(yq ".${service}.apt_packages | length" "$extra_packages")
+          echo "  PASS: [$release_name] $service.apt_packages is a valid array ($apt_count items)"
+          PASS=$((PASS + 1))
+        else
+          echo "  FAIL: [$release_name] $service.apt_packages must be an array (got $apt_tag)"
+          FAIL=$((FAIL + 1))
+        fi
       fi
 
       # Verify pip_packages entries are valid if present (optional field).
@@ -207,15 +223,17 @@ test_extra_packages_valid_yaml_structure() {
       fi
 
       # Validate apt_packages entries match Debian package name pattern
-      local bad_apt
-      bad_apt=$(yq ".${service}.apt_packages[]" "$extra_packages" \
-        | tr -d '"' | grep -vE '^[a-z0-9][a-z0-9.+-]+$' || true)
-      if [ -z "$bad_apt" ]; then
-        echo "  PASS: [$release_name] $service.apt_packages entries match naming pattern"
-        PASS=$((PASS + 1))
-      else
-        echo "  FAIL: [$release_name] $service.apt_packages entries violate pattern ^[a-z0-9][a-z0-9.+-]+\$: $bad_apt"
-        FAIL=$((FAIL + 1))
+      if [[ " $DERIVED_IMAGES " == *" $service "* ]]; then
+        local bad_apt
+        bad_apt=$(yq ".${service}.apt_packages[]" "$extra_packages" \
+          | tr -d '"' | grep -vE '^[a-z0-9][a-z0-9.+-]+$' || true)
+        if [ -z "$bad_apt" ]; then
+          echo "  PASS: [$release_name] $service.apt_packages entries match naming pattern"
+          PASS=$((PASS + 1))
+        else
+          echo "  FAIL: [$release_name] $service.apt_packages entries violate pattern ^[a-z0-9][a-z0-9.+-]+\$: $bad_apt"
+          FAIL=$((FAIL + 1))
+        fi
       fi
     done
   done
@@ -227,6 +245,8 @@ test_extra_packages_valid_yaml_structure() {
 }
 
 # --- Test 3: Dockerfile and CI workflow support extra-packages.yaml ---
+# The Nix-built services read extra-packages.yaml through hack/nix-lock.sh;
+# only the Docker-built derived images take its fields as build args.
 test_extra_packages_build_wiring() {
   echo "Test: Dockerfiles and CI workflow support extra-packages.yaml"
 
@@ -239,7 +259,7 @@ test_extra_packages_build_wiring() {
   fi
 
   local service
-  for service in $SERVICES $DERIVED_IMAGES; do
+  for service in $DERIVED_IMAGES; do
     local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
     if [ ! -f "$dockerfile" ]; then
@@ -276,12 +296,14 @@ test_extra_packages_build_wiring() {
     fi
   done
 
-  # Verify CI workflow reads from extra-packages.yaml
-  if grep -q 'extra-packages.yaml' "$workflow"; then
-    echo "  PASS: CI workflow references extra-packages.yaml"
+  # Verify CI workflow reads extra-packages.yaml through the resolver the
+  # nova-compute build runs
+  if grep -q 'hack/ci-resolve-extra-packages.sh' "$workflow" &&
+     grep -q 'extra-packages.yaml' "$PROJECT_ROOT/hack/ci-resolve-extra-packages.sh"; then
+    echo "  PASS: CI workflow reads extra-packages.yaml through hack/ci-resolve-extra-packages.sh"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: CI workflow does not reference extra-packages.yaml"
+    echo "  FAIL: CI workflow does not read extra-packages.yaml through hack/ci-resolve-extra-packages.sh"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -291,7 +313,7 @@ test_no_hardcoded_apt_packages() {
   echo "Test: Dockerfiles do not hardcode apt package names"
 
   local service
-  for service in $SERVICES $DERIVED_IMAGES; do
+  for service in $DERIVED_IMAGES; do
     local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
     if [ ! -f "$dockerfile" ]; then

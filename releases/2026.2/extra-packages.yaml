@@ -2,33 +2,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Per-service Python extras, additional pip packages, and runtime system packages.
+# Per-service Python extras and additional pip packages, and the runtime
+# system packages of nova-compute.
 # pip_extras: bare Python extra names (e.g. ldap, not keystone[ldap]).
-#   The CI workflow reads these and passes them as the PIP_EXTRAS build arg to the
-#   Dockerfile, which appends them to the package path (e.g. "keystone[ldap,...]").
-#   verify_release_config.sh validates the wiring between this file, the Dockerfile,
-#   and the CI workflow.
-# pip_packages: additional pip packages installed alongside the service (PIP_PACKAGES
-#   build arg). Use an empty list when none are needed.
-# apt_packages: runtime system packages installed via apt in the final image
-#   (EXTRA_APT_PACKAGES build arg).
+#   hack/nix-lock.sh appends them to the project in the lock it writes under
+#   nix/locks/<release>/<service>/ (e.g. "keystone[ldap,...]"); for
+#   nova-compute the CI workflow passes them as the PIP_EXTRAS build arg.
+# pip_packages: additional pip packages installed alongside the service, locked
+#   the same way (PIP_PACKAGES build arg for nova-compute). Use an empty list
+#   when none are needed.
+# apt_packages: runtime system packages of nova-compute, installed via apt in
+#   its final image (EXTRA_APT_PACKAGES build arg). The Nix-built service
+#   images name theirs in images/<service>/image.nix.
+#   verify_release_config.sh validates the wiring between this file, the
+#   nova-compute Dockerfile and the CI workflow.
 keystone:
   pip_extras:
     - ldap
   pip_packages: []
-  apt_packages:
-    - libapache2-mod-wsgi-py3
-    - libldap2
-    - libsasl2-2
-    - libxml2
 horizon:
   pip_extras: []
   pip_packages: []
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; the
-    # dashboard is otherwise pure Python. Without this, uwsgi fails to load
-    # (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
 glance:
   pip_extras: []
   pip_packages:
@@ -41,53 +35,15 @@ glance:
     # overrides/2026.2/constraints.txt, which apply-constraint-overrides.sh
     # merges into the constraints file this install is run against.
     - lhafile
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; without
-    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
-    # The image_conversion image-import plugin shells out to `qemu-img info`
-    # and `qemu-img convert` on the staged image.
-    - qemu-utils
-    # The rados and rbd modules of the RBD store. glance_store/_drivers/rbd.py
-    # imports both behind a guard, and configure_add raises
-    # BadStoreConfiguration ("The required libraries(rbd and rados) are not
-    # available") without them. The store runs no ceph or rbd binary, so the
-    # image carries no ceph-common. Both packages install into
-    # /usr/lib/python3/dist-packages, and the Dockerfile links the two
-    # modules onto the venv's path.
-    - python3-rados
-    - python3-rbd
 placement:
   pip_extras: []
   pip_packages: []
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; placement
-    # is otherwise pure Python at runtime. Without this, uwsgi fails to load
-    # (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
 barbican:
   pip_extras: []
   pip_packages: []
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; barbican
-    # is otherwise pure Python at runtime. Without this, uwsgi fails to load
-    # (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
 neutron:
   pip_extras: []
   pip_packages: []
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; without
-    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
-    # neutron shells out to `ovsdb-client transact` in pre_fork_initialize
-    # (neutron/common/ovn/utils.py) and dies without the binary.
-    - openvswitch-common
-    # neutron-ovn-metadata-agent spawns `haproxy -f <cfg>` per network
-    # (neutron/agent/metadata/driver_base.py) through `ip netns exec`
-    # (neutron/agent/linux/ip_lib.py).
-    - haproxy
-    - iproute2
 cinder:
   pip_extras:
     # cinder 29.0.0 moved the backup drivers' libraries out of its hard
@@ -100,38 +56,6 @@ cinder:
     - gcs
     - swift
   pip_packages: []
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; without
-    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
-    # The NFS driver's do_setup probes for mount.nfs through the root helper
-    # (cinder/volume/drivers/nfs.py, do_setup) and raises NfsException when
-    # the probe's argv[0] is missing; the pod never mounts (D3), the probe's
-    # non-zero exit is tolerated. The root helper is `sudo cinder-rootwrap`
-    # with no sudoers entry (D3); sudo comes from python-base.
-    - nfs-common
-    # qemu-img: create-from-image, clone and extend go through
-    # cinder/image/image_utils.py (fetch_to_raw, resize_image, convert_image)
-    # and the LUKS qcow2 pre-create in cinder/volume/drivers/remotefs.py.
-    - qemu-utils
-    # ceph and rbd. The RBD volume driver (cinder/volume/drivers/rbd.py) runs
-    # `ceph mon dump --format=json` in _get_mon_addrs, `rbd import` in
-    # _create_encrypted_volume and _copy_image_to_volume, `rbd export` in
-    # copy_volume_to_image and `rbd status` in _get_image_status. The Ceph
-    # backup driver (cinder/backup/drivers/ceph.py) pipes `rbd export-diff`
-    # into `rbd import-diff` in _rbd_diff_transfer. The postinst adds the
-    # system user ceph and the directories /var/lib/ceph and /var/log/ceph,
-    # owned by it and not writable by 42424.
-    - ceph-common
-    # The rados and rbd modules. Both drivers import them behind a guard, and
-    # check_for_setup_error raises "rados and rbd python libraries not found"
-    # without them (VolumeBackendAPIException in the volume driver,
-    # BackupDriverException in the backup driver). ceph-common depends on
-    # both; they are named because the drivers import them. Both packages
-    # install into /usr/lib/python3/dist-packages, and the Dockerfile links
-    # the two modules onto the venv's path.
-    - python3-rados
-    - python3-rbd
 nova:
   pip_extras: []
   pip_packages:
@@ -142,13 +66,6 @@ nova:
     # generated from this image loses the [os_vif_ovs] section. Pinned by
     # upper-constraints.txt.
     - pyroute2
-  apt_packages:
-    # uWSGI is compiled in venv-builder against the shared libpython; without
-    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
-    - libpython3.12t64
-    # No qemu-utils: the control-plane roles convert nothing (#1014 D14). No
-    # libvirt0: the fake driver of #1018 needs no libvirt, and nova.virt.fake
-    # imports without it (#1015 section (a.1)).
 nova-compute:
   # The image of images/nova-compute/. It is built from the nova source pin
   # above with nova's patches and constraints, so it has no source-refs.yaml
