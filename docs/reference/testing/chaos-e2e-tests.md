@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 44 chaos test suites validate operator behavior during and after fault
+The 45 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 44 test suites require the infrastructure stack to be deployed and healthy.
+All 45 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -430,6 +430,7 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [cinder-broker-pod-kill](#cinder-broker-pod-kill) | — | `cinder-broker-kill` | Broker pod kill (degrade and recover) | The broker pod UID replaced and the new server pod Ready within 300 s, `SchedulerReady=True/SchedulerReady`, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` within 5 minutes, the API container at `restartCount` 0 (`API-UP-OK`), `verify` with `CONSISTENCY-OK volumes` |
 | [memcached-network-partition](#memcached-network-partition) | — | `keystone-chaos-mc-part` | No-regression (NetworkChaos) | Ready and all five sub-conditions `True` on every read for 120 s under `AllInjected`, `Ready=True/AllReady` after the partition |
 | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon-chaos-dash` | Dashboard pod kill (no-regression) | `Ready=True/AllReady` with two replicas at baseline, one of the two pre-chaos dashboard pod UIDs gone, Deployment `horizon-chaos-dash` back at `readyReplicas: 2`, `Ready=True/AllReady` after the kill |
+| [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `nova-meta-chaos-agent` | Metadata agent pod kill (data path) | `BOOT-OK`, then `METADATA-OK` with the server's uuid from a network namespace on the node, the agent pod UID replaced and no metadata answer before the new agent container started (`METADATA-DOWN-OK`), the agent pod Ready again with the CR at `Ready=True/AllReady` and `numberReady: 1`, the metadata answering with the uuid within 180 s (`METADATA-RECOVERED-OK`), workload budget zero with a passing placement audit and db-sync comparison, no netns, OVS port, server, network or node label left |
 
 ---
 
@@ -3017,6 +3018,77 @@ with `--cr-kind=horizon` and
   `mode: one` picks its victim at random.
 - No login stream POSTs credentials to the dashboard. The `http` stream reads the
   login page, which needs neither a session nor Keystone.
+
+---
+
+### neutron-metadata-agent-pod-kill
+
+**File:** `tests/e2e-chaos/neutron-metadata-agent-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills the pod of a `NeutronMetadataAgent` while a booted
+server reads its metadata. The suite boots `meta-chaos-vm` with a port on a network
+of its own, backs that port with an OVS interface in a network namespace on the node
+the way a hypervisor plugs a guest, and reads the metadata from `169.254.169.254`
+the way the guest would: through the agent's `ovnmeta-` namespace, its haproxy and
+the Nova metadata API. The haproxy processes die with the agent's container, so the
+metadata path fails while the agent is gone. The new pod of the DaemonSet provisions
+the network again on its first sync, and the server reads its metadata once more.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label the node and take a vhost | `script` (1m) + `script` (2m) | Labels the first node `openstack.c5c3.io/chassis=true` and runs `../../e2e/cinder/broker-vhost.sh create nova-meta-chaos nova-meta-chaos-messaging openstack`. The step cleanups delete the vhost and remove the label from every node |
+| 2 to 8 | Bring up the stack | as `nova-keystone-outage` | The stack of `nova-placement-outage` renamed to `nova-meta-chaos`, with the seed image `4e0a0000-0000-4000-8000-00000000000a`; the fake compute registers under the node's name and `../../e2e/nova/discover-hosts.sh` maps that host |
+| 9 | Bring up the chassis and the agent | `apply` + `assert` (5m) | `nova-meta-chaos-chassis` reaches `Ready=True/AllReady` with `desiredNumberScheduled: 1` and `numberReady: 1`, then `nova-meta-chaos-agent` reaches `Ready=True/AllReady` with `numberReady: 1`. The probe scripts ConfigMap is applied beside them |
+| 10 | Start the workload | `script` (6m) | `workload.sh start` with the `token` and `server` streams |
+| 11 | Boot `meta-chaos-vm` | `script` (11m) | Job `nova-meta-chaos-boot` creates `meta-chaos-net` with `meta-chaos-subnet` (`10.99.0.0/24`) and boots `meta-chaos-vm` on it, ACTIVE within 150 s (`BOOT-OK`). The script copies the port id, MAC and address, the metadata port's address and the server id onto the Job as `chaos.c5c3.io/` annotations. The step cleanup deletes the server and the network through the API when the teardown did not run |
+| 12 | Plug the port and read the metadata | `script` (8m) | Probe pod `nova-meta-chaos-plug` adds `metavif` to `br-int` with `external_ids:iface-id` of the port, moves it into `meta-chaos-ns` with the port's MAC and address, routes `169.254.169.254` through the metadata port, and GETs `meta_data.json` every 5 s for up to 180 s until it names the server (`METADATA-OK`). The step cleanup deletes `metavif` and `meta-chaos-ns` through the chassis and agent pods, deletes the probe pods, and fails when either is left |
+| 13 | Kill the agent | `script` (8m) | Snapshot the agent pod UID, `workload.sh mark fault-start`, apply `17-podchaos.yaml` (`pod-kill`, `mode: all`, `gracePeriod: 0`), wait up to 120 s for the UID to go. Probe pod `nova-meta-chaos-probe-down` GETs the metadata every 2 s for 30 s and stops at the first answer; at least one GET has to fail, and an answer before the new agent container started fails the step (`METADATA-DOWN-OK`). The step cleanup deletes the `PodChaos` |
+| 14 | The agent is back | `script` (6m) + `assert` (5m) | The DaemonSet pod is Ready within 300 s; the CR is at `Ready=True/AllReady` with `numberReady: 1` |
+| 15 | Read the metadata again | `delete` + `script` (1m) + `script` (7m) | Removes `PodChaos/kill-metadata-agent`, `workload.sh mark fault-end`, then probe pod `nova-meta-chaos-probe-up` GETs every 5 s for up to 180 s until the metadata names the server (`METADATA-RECOVERED-OK`) |
+| 16 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-meta-chaos --ovn-db-sync neutron-nova-meta-chaos` against `failures=0 recovery=0s` |
+| 17 | Tear the deployment down | `script` (10m) | Deletes `meta-chaos-vm` and `meta-chaos-net` through the API and fails when either is left, then the fake compute, the four Jobs and the Nova CR |
+
+**Fixtures:** `01-keystone-cr.yaml` to `12-fake-compute.yaml`, the stack of
+`nova-placement-outage` renamed to `nova-meta-chaos`, then
+`13-flavor-seed-job.yaml`, `14-ovnchassis-cr.yaml`,
+`15-neutronmetadataagent-cr.yaml`, `16-boot-job.yaml`, `17-podchaos.yaml` and
+`18-probe-scripts.yaml`, plus the helper `probe-lib.sh` the scripts source.
+
+**Workload:** the `token` and `server` streams against the suite's Keystone and
+Nova, started in step 10 and judged in step 16 against `failures=0 recovery=0s`,
+with the placement audit and the OVN db-sync comparison. The suite runs in the
+`nova` matrix entry. The agent is on no boot path of the fake driver, so a failed
+server cycle is a defect to find.
+
+**Catch blocks:** the shared YAML anchor of `nova-keystone-outage`, with
+`--dep-label=app.kubernetes.io/instance=nova-meta-chaos-agent`, plus the OVNChassis
+and the NeutronMetadataAgent, the chassis and agent pods with the agent logs and its
+network namespaces, and the logs of the three probe pods.
+
+**Design notes:**
+
+- The fake compute registers under the node's name. Neutron binds a port only to a
+  host with a live chassis, and the chassis registers under the node name, so a
+  compute named `fake-1` would leave the port of `meta-chaos-vm` unbound and the
+  boot in `ERROR`. `tests/tempest/nova-2026-1/11-fake-compute.yaml` does the same.
+- The plug routes `169.254.169.254` through the address of the network's
+  `network:distributed` port, the classless route OVN's DHCP hands a guest. The
+  agent's namespace owns `169.254.169.254` behind that port.
+- The down probe ends its window at the start of the new agent's container. The
+  DaemonSet replaces the pod within seconds, and the new agent provisions the
+  network on its first sync, so a probe that demanded 30 seconds of failures would
+  race that sync. The claim it keeps is the one that matters: no answer arrives
+  while no agent runs.
+- The probe pods run on the neutron image, which carries `python3`, `iproute2` and
+  `ovs-vsctl`; the OVN image carries no `python3`. They run with `hostNetwork`,
+  privileged and as root, with `/run/openvswitch` and `/run/netns` from the host,
+  the shape `ovn-southbound-outage` uses, which is why `spec.concurrent` is `false`.
+- The nova matrix entry loads the `openvswitch` and `geneve` modules on the host
+  (`WITH_OVN_KERNEL_MODULES`), which the chassis DaemonSets need.
 
 ---
 

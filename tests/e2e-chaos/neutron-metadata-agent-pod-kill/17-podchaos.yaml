@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR that kills the metadata agent pod of this suite.
+#
+# One-shot pod-kill with gracePeriod 0: the agent dies without shutting its
+# haproxy processes down, and they die with its container while the ovnmeta-
+# namespace stays on the node. The DaemonSet creates a new pod, whose first
+# sync provisions the network again. mode all covers the one pod the DaemonSet
+# runs on the one labelled node.
+#
+# The selector is the instance label the operator puts on the agent's pods, so
+# no other agent and none of the chassis pods beside it is touched.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-metadata-agent
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/instance: nova-meta-chaos-agent
+  gracePeriod: 0

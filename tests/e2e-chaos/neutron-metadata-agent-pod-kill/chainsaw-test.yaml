@@ -1,0 +1,814 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a NeutronMetadataAgent pod kill under a booted
+# server.
+#
+# The metadata agent was never faulted directly. This suite boots meta-chaos-vm
+# with a port on a network of its own, backs that port with an OVS interface in
+# a network namespace on the node, the way a hypervisor plugs a guest, and
+# reads the server's metadata from 169.254.169.254 the way the guest would:
+# through the agent's ovnmeta- namespace, its haproxy and the Nova metadata
+# API. The fault is a PodChaos pod-kill of the agent (17-podchaos.yaml):
+#
+#   - baseline: the stack, the chassis and the agent are Ready, the server is
+#     ACTIVE (BOOT-OK) and its metadata answers with its uuid (METADATA-OK)
+#   - under the kill: the agent pod UID is gone and the metadata path fails,
+#     because the haproxy processes die with the agent's container. A probe
+#     armed by an answer before the kill GETs the metadata every 2 s across
+#     it; a GET must fail, an answer after that before the new agent's
+#     container has started fails the suite, and the window ends at that start
+#     (METADATA-DOWN-OK)
+#   - after the kill: the DaemonSet pod is Ready with a new UID, the agent CR
+#     is Ready=True/AllReady with numberReady 1, and the metadata answers with
+#     the server's uuid within 180 s (METADATA-RECOVERED-OK): the new agent
+#     provisions the network it served
+#   - verify: the workload kept to a zero budget, the placement audit passes
+#     and Neutron and OVN agree
+#
+# The new pod's start ends the down window because the DaemonSet replaces the
+# pod within seconds, and the new agent provisions the network on its first
+# sync. A probe that demanded 30 s of failures would race that sync, and so
+# would a probe started after the kill, which is why the probe arms before it.
+#
+# The stack is ../nova-placement-outage/ renamed to nova-meta-chaos, with one
+# change: the fake compute registers under the node's name, because Neutron
+# binds a port only to a host with a live chassis (12-fake-compute.yaml).
+#
+# Blast radius: the PodChaos selects the agent pods of nova-meta-chaos-agent.
+# The three probe pods run with hostNetwork, privileged, and own /run/netns
+# on the node (probe-lib.sh), which is why spec.concurrent is false. The cleanups remove the netns meta-chaos-ns, the
+# OVS port metavif, meta-chaos-vm, meta-chaos-net and the node label.
+#
+# Workload, on the nova leg: the token and server streams of ../lib/workload.sh
+# against this suite's Keystone and Nova. The agent is on no boot path of the
+# fake driver, so the budget is zero and a failed server cycle is a defect to
+# find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-15, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-metadata-agent-pod-kill
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-placement-outage/ needs that for the same
+    # fixtures); the rest read a deployment that is already up.
+    assert: 5m
+  steps:
+  # ── Step 1: Label the node and give the suite its vhost ───────────────────
+  # The suite labels the node itself, so it runs against any kind cluster the
+  # CI job hands it, and the step cleanup takes the label off again, so no
+  # later suite finds a node advertising a chassis role nothing serves. One
+  # vhost per suite: nova's RPC topics are named after the service, so two
+  # suites on one vhost would share the scheduler and conductor queues. Both
+  # cleanups run at the end of the test.
+  - try:
+    - script:
+        timeout: 1m
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-meta-chaos nova-meta-chaos-messaging openstack
+    catch: &meta-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-meta-chaos --cr-kind=nova --dep-label=app.kubernetes.io/instance=nova-meta-chaos-agent --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-meta-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -A -o yaml 2>&1 || true
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-meta-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-meta-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-meta-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-meta-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-meta-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-meta-chaos-s3
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNChassis
+        name: nova-meta-chaos-chassis
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: NeutronMetadataAgent
+        name: nova-meta-chaos-agent
+        namespace: openstack
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== chassis and agent pods ==="
+          kubectl get ds,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-meta-chaos-chassis -o wide 2>&1 || true
+          kubectl get ds,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-meta-chaos-agent -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-meta-chaos-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=100 2>&1 || true
+            kubectl exec -n "$NAMESPACE" "$pod" -c metadata-agent -- ip netns list 2>&1 || true
+          done
+          echo "=== probe pods ==="
+          for pod in nova-meta-chaos-plug nova-meta-chaos-probe-down nova-meta-chaos-probe-up; do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" 2>&1 || true
+          done
+    # The compute and the Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-meta-chaos-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-meta-chaos-catalog-setup nova-meta-chaos-image-seed nova-meta-chaos-flavor-seed boot; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump neutron-metadata-agent-pod-kill
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-meta-chaos || true
+    - script:
+        timeout: 1m
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+          test -z "$(kubectl get nodes -l openstack.c5c3.io/chassis -o name)"
+  # ── Step 2: Bring up Keystone ─────────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-meta-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *meta-dump
+  # ── Step 3: Register the four services in the catalog ─────────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-meta-chaos-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 02-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-meta-chaos-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-meta-chaos-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-meta-chaos-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-meta-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *meta-dump
+  # ── Step 4: Bring up the four services the boot path depends on ───────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-meta-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-meta-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-meta-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-meta-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-meta-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *meta-dump
+  # ── Step 5: Seed the image the servers boot from ──────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-meta-chaos-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 09-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-meta-chaos-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-meta-chaos-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-meta-chaos-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-meta-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *meta-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ───────────────────
+  # 8m: two schema migrations, a cell mapping and five workloads.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-meta-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *meta-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ──────────────────
+  # The Deployment mounts the compute-contract Secret the step above has just
+  # asserted. Discovery runs by hand rather than waiting out the scheduler's
+  # 300-second periodic.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-meta-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          ../../e2e/nova/discover-hosts.sh nova-meta-chaos "$NAMESPACE" "$NODE"
+    catch: *meta-dump
+  # ── Step 8: Seed the flavor the server stream boots with ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-meta-chaos-flavor-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 13-flavor-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-meta-chaos-flavor-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-meta-chaos-flavor-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-meta-chaos-flavor-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-meta-chaos-flavor-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *meta-dump
+  # ── Step 9: Bring up the chassis and the metadata agent ───────────────────
+  - try:
+    - apply:
+        file: 14-ovnchassis-cr.yaml
+    - apply:
+        file: 18-probe-scripts.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: nova-meta-chaos-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 1
+            numberReady: 1
+    - apply:
+        file: 15-neutronmetadataagent-cr.yaml
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: nova-meta-chaos-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            numberReady: 1
+    catch: *meta-dump
+  # ── Step 10: Start the workload ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start neutron-metadata-agent-pod-kill --
+          --streams token,server
+          --keystone http://keystone-nova-meta-chaos.openstack.svc:5000/v3
+          --nova http://nova-meta-chaos.openstack.svc:8774/v2.1
+          --image-ref 4e0a0000-0000-4000-8000-00000000000a
+          --flavor m1.nano
+    catch: *meta-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop neutron-metadata-agent-pod-kill
+  # ── Step 11: Boot meta-chaos-vm with a port ───────────────────────────────
+  # The Job prints the values of the port; the script copies them onto the Job
+  # as annotations, which the probe pods of the later steps read. The step
+  # cleanup deletes the server and the network through the API when the suite
+  # ended before its teardown did.
+  - try:
+    - script:
+        shell: bash
+        timeout: 11m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-meta-chaos-boot -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 16-boot-job.yaml
+          kubectl wait --for=condition=complete job/nova-meta-chaos-boot \
+            -n "$NAMESPACE" --timeout=10m || {
+            kubectl logs -n "$NAMESPACE" job/nova-meta-chaos-boot 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-meta-chaos-boot -o wide
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-meta-chaos-boot)"
+          echo "$LOGS"
+          grep -qx 'BOOT-OK' <<<"$LOGS"
+          value() { sed -n "s/^$1: //p" <<<"$LOGS" | head -n1; }
+          kubectl annotate job nova-meta-chaos-boot -n "$NAMESPACE" --overwrite \
+            "chaos.c5c3.io/port-id=$(value PORT-ID)" \
+            "chaos.c5c3.io/port-mac=$(value PORT-MAC)" \
+            "chaos.c5c3.io/port-ip=$(value PORT-IP)" \
+            "chaos.c5c3.io/metadata-ip=$(value META-IP)" \
+            "chaos.c5c3.io/server-id=$(value SERVER-ID)"
+          for key in port-id port-mac port-ip metadata-ip server-id; do
+            test -n "$(kubectl get job nova-meta-chaos-boot -n "$NAMESPACE" -o "jsonpath={.metadata.annotations.chaos\.c5c3\.io/${key}}")"
+          done
+          echo "OK: meta-chaos-vm is ACTIVE and its port is recorded on the Job"
+    catch: *meta-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          source ./probe-lib.sh
+          openstack_cleanup || echo "meta-chaos-vm or meta-chaos-net is left; see above"
+  # ── Step 12: Plug the port on the node and read the metadata ──────────────
+  # The agent provisions a network once a port of it is bound on its chassis,
+  # and the chassis claims the port once an OVS interface carries its id, so
+  # the plug is what brings the ovnmeta- namespace up. The OVS half of the plug
+  # runs through the chassis pod, as tests/e2e/neutron/metadata-agent/ does.
+  # The probe pod then moves the interface into the namespace and reads the
+  # metadata. The step cleanup unplugs through the chassis and agent pods,
+  # deletes the probe pods and fails when the netns or the port is left.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          source ./probe-lib.sh
+          DS=ds/nova-meta-chaos-chassis-ovs
+          # br-int is created by ovn-controller rather than by the operator, so
+          # its existence is polled instead of assumed.
+          FOUND=""
+          for _ in $(seq 1 24); do
+            if kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 br-exists br-int >/dev/null 2>&1; then
+              FOUND=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$FOUND" ]; then
+            echo "FAIL: ovn-controller never created br-int on the node"
+            kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 list-br 2>&1 || true
+            exit 1
+          fi
+          PORT_ID="$(boot_value port-id)"
+          test -n "$PORT_ID"
+          # What a hypervisor's port plug does: an internal interface on br-int
+          # that carries the port id as external_ids:iface-id. --may-exist
+          # tolerates what an earlier attempt left behind.
+          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 --may-exist add-port br-int metavif \
+            -- set Interface metavif type=internal "external_ids:iface-id=$PORT_ID"
+          echo "OK: metavif on br-int carries port $PORT_ID"
+          OUT="$(run_probe nova-meta-chaos-plug plug.sh)"
+          echo "$OUT"
+          grep -qx 'METADATA-OK' <<<"$OUT"
+          echo "OK: meta-chaos-vm reads its metadata through the agent"
+    catch: *meta-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -u
+          source ./probe-lib.sh
+          kubectl exec ds/nova-meta-chaos-chassis-ovs -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 --if-exists del-port br-int metavif 2>&1 || true
+          AGENT="$(agent_pod)"
+          if [ -n "$AGENT" ]; then
+            kubectl exec -n "$NAMESPACE" "$AGENT" -c metadata-agent -- \
+              sh -c '[ ! -e /run/netns/meta-chaos-ns ] || ip netns delete meta-chaos-ns' 2>&1 || true
+          fi
+          kubectl delete pod nova-meta-chaos-plug nova-meta-chaos-probe-down nova-meta-chaos-probe-up \
+            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
+          # What is left. A command that cannot run prints its own error here.
+          LEFT=""
+          PORTS="$(kubectl exec ds/nova-meta-chaos-chassis-ovs -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 list-ports br-int 2>&1 || true)"
+          if grep -qx metavif <<<"$PORTS"; then LEFT="$LEFT port metavif"; fi
+          if [ -n "$AGENT" ] && kubectl exec -n "$NAMESPACE" "$AGENT" -c metadata-agent -- \
+            ip netns list 2>/dev/null | grep -q '^meta-chaos-ns'; then
+            LEFT="$LEFT netns meta-chaos-ns"
+          fi
+          if [ -n "$LEFT" ]; then
+            echo "FAIL: left on the node:$LEFT"
+            exit 1
+          fi
+          echo "OK: no meta-chaos-ns and no metavif left on the node"
+  # ── Step 13: Kill the agent; the metadata path goes with it ───────────────
+  # The down probe runs across the kill. It arms on its first answer, and the
+  # script marks the fault window and applies the PodChaos only once it reads
+  # PROBE-ARMED: a probe started after the kill would race the new agent's
+  # first sync, and a first GET that came after it would find no failure to
+  # report. The UID is read first, so the PodChaos follows with no read in
+  # between. The probe GETs the old agent until the kill lands, so a failed
+  # GET counts only when it started after the script created /tmp/kill-applied
+  # in the probe pod, which the script does once the old pod's UID is gone: a
+  # transient failure on the old agent followed by its answer would read as an
+  # answer while no agent ran.
+  # Answers before the first counted failure are the old agent's; the probe
+  # stops at the first answer after it. An answer before the new agent
+  # container started means the metadata path did not depend on the agent
+  # the kill took, and fails the step; an answer after it is the new agent's,
+  # and ends the window, because the DaemonSet brings the agent back within
+  # seconds.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          source ./probe-lib.sh
+          SELECTOR=app.kubernetes.io/instance=nova-meta-chaos-agent
+          OLD_UID="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}')"
+          if [ -z "$OLD_UID" ]; then
+            echo "ERROR: no metadata agent pod before the kill"
+            exit 1
+          fi
+          echo "agent pod UID before the kill: $OLD_UID"
+
+          PROBE=nova-meta-chaos-probe-down
+          PROBE_OUT="$(mktemp)"
+          kubectl delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=60s >/dev/null
+          run_probe "$PROBE" down.sh >"$PROBE_OUT" 2>&1 &
+          PROBE_PID=$!
+          trap 'kill "$PROBE_PID" 2>/dev/null || true; rm -f "$PROBE_OUT"' EXIT
+          # 90 × 2 s = 180 s for the pod to start and the probe to arm.
+          ARMED=""
+          for _ in $(seq 1 90); do
+            LOG="$(kubectl logs -n "$NAMESPACE" "$PROBE" 2>/dev/null || true)"
+            if grep -qx PROBE-ARMED <<<"$LOG"; then
+              ARMED=yes
+              break
+            fi
+            kill -0 "$PROBE_PID" 2>/dev/null || break
+            sleep 2
+          done
+          if [ -z "$ARMED" ]; then
+            wait "$PROBE_PID" || true
+            cat "$PROBE_OUT"
+            echo "FAIL: the down probe did not arm within 180s"
+            exit 1
+          fi
+
+          ../lib/workload.sh mark neutron-metadata-agent-pod-kill fault-start
+          kubectl apply -f 17-podchaos.yaml
+
+          GONE=""
+          for _ in $(seq 1 60); do
+            NOW="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true)"
+            case " $NOW " in
+              *" $OLD_UID "*) ;;
+              *) GONE=yes; break ;;
+            esac
+            sleep 2
+          done
+          if [ -z "$GONE" ]; then
+            echo "FAIL: agent pod $OLD_UID still present 120s after the PodChaos"
+            exit 1
+          fi
+          kubectl exec -n "$NAMESPACE" "$PROBE" -- touch /tmp/kill-applied
+          echo "OK: the agent pod $OLD_UID is gone"
+
+          wait "$PROBE_PID" || true
+          OUT="$(cat "$PROBE_OUT")"
+          echo "$OUT"
+          FAILED="$(grep -c '^ATTEMPT [0-9]* failed' <<<"$OUT" || true)"
+          ANSWER="$(sed -n 's/^ATTEMPT \([0-9]*\) answered.*/\1/p' <<<"$OUT")"
+          if [ "${FAILED:-0}" -eq 0 ]; then
+            echo "FAIL: metadata answered while the agent was gone (no GET failed across the kill)"
+            exit 1
+          fi
+          if [ -n "$ANSWER" ]; then
+            # The answer is the new agent's only when its container had
+            # started by then. The node's clock stamps both.
+            STARTED="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" \
+              -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="metadata-agent")].state.running.startedAt}' 2>/dev/null || true)"
+            if [ -z "$STARTED" ] || [ "$ANSWER" -lt "$(date -d "$STARTED" +%s)" ]; then
+              echo "FAIL: metadata answered while the agent was gone (answer at $ANSWER, new agent started at ${STARTED:-<not yet>})"
+              exit 1
+            fi
+            echo "the first answer at $ANSWER came from the new agent, started at $STARTED"
+          fi
+          echo "METADATA-DOWN-OK: $FAILED GET(s) failed while the agent was gone"
+    catch: *meta-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 17-podchaos.yaml --ignore-not-found
+          echo "OK: the agent PodChaos is gone"
+  # ── Step 14: The agent is back ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          SELECTOR=app.kubernetes.io/instance=nova-meta-chaos-agent
+          for _ in $(seq 1 150); do
+            READY="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" \
+              -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            if [ "$READY" = "True" ]; then
+              echo "OK: the DaemonSet pod of the agent is Ready again"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: no Ready agent pod within 300s of the kill"
+          kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o wide 2>&1 || true
+          exit 1
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: nova-meta-chaos-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            numberReady: 1
+    catch: *meta-dump
+  # ── Step 15: Delete PodChaos, read the metadata again ─────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-metadata-agent
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark neutron-metadata-agent-pod-kill fault-end
+    - script:
+        shell: bash
+        timeout: 7m
+        content: |
+          set -euo pipefail
+          source ./probe-lib.sh
+          OUT="$(run_probe nova-meta-chaos-probe-up up.sh)"
+          echo "$OUT"
+          grep -qx 'METADATA-RECOVERED-OK' <<<"$OUT"
+          echo "OK: the new agent serves the metadata of meta-chaos-vm again"
+    catch: *meta-dump
+  # ── Step 16: Judge the workload, audit Placement, compare OVN ─────────────
+  # 25 minutes: the observation and the DONE wait of verify, then the audit
+  # and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify neutron-metadata-agent-pod-kill
+          --placement-audit nova-meta-chaos
+          --ovn-db-sync neutron-nova-meta-chaos
+    catch: *meta-dump
+  # ── Step 17: Tear the deployment down ─────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself, from the bus consumers inward. The fake compute holds a broker
+  # connection of its own and is not part of the CR, so it goes before the
+  # Nova. The compute and the Jobs, which the suite applied with kubectl, are
+  # deleted best-effort: a suite that already failed must still reach the CR
+  # delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+          # meta-chaos-vm and meta-chaos-net go through the API while the
+          # Nova and the Neutron still serve it.
+          bash -c 'source ./probe-lib.sh && openstack_cleanup'
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-meta-chaos-catalog-setup nova-meta-chaos-image-seed nova-meta-chaos-flavor-seed nova-meta-chaos-boot || true
+
+          kubectl delete nova nova-meta-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-meta-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-meta-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *meta-dump

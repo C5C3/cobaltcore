@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots meta-chaos-vm with a port on a network of its own, the server whose
+# metadata the suite reads before, during and after the agent kill.
+#
+# The network and the subnet carry fixed names and a fixed range
+# (10.99.0.0/24), so the plug step and the teardown find them. Neutron renders
+# ovn_metadata_enabled = true, so the subnet create also gives the network its
+# network:distributed port, whose address is the next hop a guest reaches
+# 169.254.169.254 through (the classless route OVN's DHCP hands a guest).
+#
+# The Job prints the values the plug needs on lines of their own, and the
+# suite copies them onto this Job as annotations, so later steps read them
+# without a file between steps.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt
+# would find the server the first one created and fail on the name. A failed
+# Job therefore keeps the pod whose log says why.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-meta-chaos-boot
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-meta-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED=4e0a0000-0000-4000-8000-00000000000a
+
+              openstack network create meta-chaos-net -f value -c id
+              openstack subnet create --network meta-chaos-net \
+                --subnet-range 10.99.0.0/24 meta-chaos-subnet -f value -c id
+              openstack server create --flavor m1.nano --image "${SEED}" \
+                --network meta-chaos-net meta-chaos-vm -f value -c id
+
+              # 30 x 5s = 150s. On the deadline the server's own show output
+              # carries the fault that explains an ERROR.
+              STATUS=""
+              for _ in $(seq 1 30); do
+                STATUS="$(openstack server show meta-chaos-vm -f value -c status 2>/dev/null || true)"
+                if [ "${STATUS}" = "ACTIVE" ] || [ "${STATUS}" = "ERROR" ]; then
+                  break
+                fi
+                sleep 5
+              done
+              if [ "${STATUS}" != "ACTIVE" ]; then
+                echo "ERROR: meta-chaos-vm is '${STATUS:-<none>}', not ACTIVE, after 150s"
+                openstack server show meta-chaos-vm 2>&1 || true
+                exit 1
+              fi
+              echo "OK: meta-chaos-vm is ACTIVE"
+
+              # The values of the server's one port and of the network's
+              # metadata port. The output is captured before it is parsed: a
+              # pipeline into a parser that exits early fails under pipefail.
+              PORTS="$(openstack port list --server meta-chaos-vm -f json)"
+              META="$(openstack port list --network meta-chaos-net \
+                --device-owner network:distributed -f json)"
+              SERVER="$(openstack server show meta-chaos-vm -f value -c id)"
+              python3 - "${PORTS}" "${META}" "${SERVER}" <<'PY'
+              import json, sys
+              ports, meta, server = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+              if len(ports) != 1 or len(meta) != 1:
+                  sys.exit("want one server port and one metadata port, got %d and %d" % (len(ports), len(meta)))
+              def ip(port):
+                  return port["Fixed IP Addresses"][0]["ip_address"]
+              print("PORT-ID: " + ports[0]["ID"])
+              print("PORT-MAC: " + ports[0]["MAC Address"])
+              print("PORT-IP: " + ip(ports[0]))
+              print("META-IP: " + ip(meta[0]))
+              print("SERVER-ID: " + server)
+              PY
+              echo BOOT-OK

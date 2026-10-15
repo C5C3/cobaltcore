@@ -2015,6 +2015,7 @@ jobs:
               tests/e2e-chaos/nova-placement-outage
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
+              tests/e2e-chaos/neutron-metadata-agent-pod-kill
     runs-on: ${{ matrix.runner }}
     # 150 minutes for the nova leg, 90 for the other three. This leg loads
     # eighteen images and runs eight operator deploys before its first suite,
@@ -2182,15 +2183,16 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
-      # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind
-      # node, which needs the openvswitch and geneve modules on the host. Empty
-      # on the other two legs, where deploy-infra.sh keeps its default of not
-      # touching the host's modules.
+      # The chassis DaemonSets of the ovn leg's ovn-southbound-outage and of
+      # the nova leg's neutron-metadata-agent-pod-kill open a Geneve tunnel
+      # from the kind node, which needs the openvswitch and geneve modules on
+      # the host. Empty on the other two legs, where deploy-infra.sh keeps its
+      # default of not touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_CHAOS_MESH: "true"
-          WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}
           # The three cinder suites attach an NFS backend, which the operator
           # mounts as an inline CSI volume from the kind NFS export, and two of
           # them (cinder-operator-pod-kill, cinder-nfs-outage) take a vhost on

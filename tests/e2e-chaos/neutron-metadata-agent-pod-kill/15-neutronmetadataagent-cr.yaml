@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN metadata agent whose pod this suite kills. It terminates the
+# 169.254.169.254 requests of meta-chaos-vm in an ovnmeta-<network> namespace
+# on the node, with one haproxy per network, and forwards them to the Nova
+# metadata API, signed with the secret both sides read from
+# nova-meta-chaos-metadata-secret (10-metadata-secret.yaml, the Secret the Nova CR's
+# spec.metadata.sharedSecretRef names).
+#
+# spec.messaging is unset. The agent opens no RPC and no notification
+# connection of its own: it reads what it needs out of the Southbound database
+# the chassis pods share with it over their runtime directory.
+#
+# novaMetadata.host is the Service the Nova operator puts in front of the
+# metadata Deployment, named after the Nova CR plus "-metadata"
+# (operators/nova/internal/controller/reconcile_metadata.go). Port 8775 is
+# nova-api-metadata's own default; it is written out so the value does not
+# depend on the defaulting webhook.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: nova-meta-chaos-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  chassisRef:
+    name: nova-meta-chaos-chassis
+  novaMetadata:
+    host: nova-meta-chaos-metadata.openstack.svc.cluster.local
+    port: 8775
+    sharedSecretRef:
+      name: nova-meta-chaos-metadata-secret
