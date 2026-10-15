@@ -13,7 +13,9 @@ The repository ships a Nix flake so that entering the development environment
 yields the same toolchain a CI run gets, pinned to the versions the pipeline
 pins. It is a second, equally complete entry point next to
 `make install-test-deps` — the dependency-installation script and the CI setup
-steps are unchanged, and no pipeline behavior depends on the flake.
+steps are unchanged. The same flake also builds the container images that no
+longer have a Dockerfile, and the build-images workflow builds them from it;
+see [Nix Image Build](../reference/ci-cd/nix-image-build.md).
 
 ```bash
 nix develop
@@ -100,10 +102,12 @@ opens. Re-run `source hack/nix-devshell-hook.sh` once you are back online.
   `Makefile`, `hack/install-test-deps.sh`). The devshell re-reads those files on
   entry, so it self-heals with no flake edit — see
   [Dependency Management](./dependency-management.md).
-- **`flake.lock`** (the `nixpkgs` revision) is maintained by Renovate's native
-  `nix` manager, which opens a grouped weekly re-lock PR for review. The
-  `nixos-unstable` re-lock is not automerged — a human confirms the base-runtime
-  bump the devshell inherits.
+- **`flake.lock`** (the revisions of both inputs: `nixpkgs` on `nixos-unstable`
+  for the devshell, `nixpkgs-images` on `nixos-26.05` for the images) is
+  maintained by Renovate's native `nix` manager, which re-locks both on the
+  Monday schedule and opens one grouped re-lock PR for review. The re-lock is
+  not automerged — a human confirms the base-runtime bump the devshell and the
+  images inherit.
 
 ## Optional: direnv
 

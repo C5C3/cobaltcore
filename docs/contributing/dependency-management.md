@@ -92,11 +92,15 @@ not tracked (see `.gitignore`). The go command appends a checksum to it whenever
 workspace build needs one that no member `go.sum` holds, so its content depends on
 which command ran, and Renovate's gomod manager writes it only when it vendors.
 
-Separately, the native `nix` manager keeps the development flake fresh: it maintains
-`flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
-weekly re-lock PR. That PR is **not** automerged: `nixos-unstable` is a rolling ref, so the
-re-lock is not a version bump and the 3-day cooldown cannot gate it — a reviewer confirms
-the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
+Separately, the native `nix` manager keeps the root flake fresh: it maintains
+`flake.lock` via lock-file maintenance. The lock pins two inputs: `nixpkgs`
+(`nixos-unstable`) feeds the dev shell, `nixpkgs-images` (`nixos-26.05`) feeds the
+Nix-built container images ([Nix Image Build](../reference/ci-cd/nix-image-build.md)).
+The `nix flake inputs` package rule re-locks both on the Monday schedule of the ubuntu
+digest bump and opens one grouped PR. That PR is **not** automerged: both refs are
+rolling channel branches, so the re-lock is not a version bump and the 3-day cooldown
+cannot gate it — a reviewer confirms the base-runtime bump instead. A re-lock of
+`nixpkgs-images` rebuilds the Nix-built images on its pull request. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
 bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
 The spike under `nix/spike/` is outside every manager: a `packageRules` entry with
