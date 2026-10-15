@@ -65,18 +65,24 @@ file:
 - **`upper-constraints.txt`**: a snapshot of the upstream `stable/<series>`
   upper constraints file.
 - **`test-excludes/<svc>.txt`**: optional stestr exclude lists, consumed by
-  `hack/ci-run-unit-tests.sh`. Carry them over per service and re-triage:
+  `nix/lib/service-tests.nix`. Carry them over per service and re-triage:
   excludes that worked around bugs in the previous series may be fixed
   upstream. Every file's basename must match a `source-refs.yaml` key
   (`tests/container-images/verify_release_config.sh` Test 7). Record the
   first run of each suite in the file header (tag, test count, outcome), as
   `releases/2026.2/test-excludes/*.txt` do. A tag that drops the service's
   test driver (horizon 27.0.0 removed `tools/unit_tests.sh`) needs a branch
-  in `hack/ci-run-unit-tests.sh` keyed on the missing file (the
-  `[ -f tools/unit_tests.sh ]` test) instead of on `RELEASE`.
+  in `nix/lib/service-tests.nix` keyed on the missing file (the
+  `[ -f tools/unit_tests.sh ]` test) instead of on `RELEASE`. A test that
+  fails only in the build sandbox goes into that file's sandbox exclude list
+  instead, with its error.
 
 `tests/container-images/verify_release_config.sh` validates the structure of
-all of these; run it locally before pushing.
+all of these; run it locally before pushing. Then run `make nix-lock`, which
+writes the locks of the new release under `nix/locks/<version>/` (one per
+`source-refs.yaml` key plus tempest), and commit them: the flake builds one
+image and one unit-test run per lock, and the `nix-lock-check` job fails until
+the locks match the release files.
 
 ## Build inputs outside `releases/`
 
@@ -91,10 +97,12 @@ Three more per-release inputs live elsewhere in the tree:
   image-import plugin loads, which has no upper-constraints entry of its own;
   `tests/container-images/verify_glance.sh` Test 11 fails when any
   `overrides/*/constraints.txt` lacks that pin.
-- **`patches/<svc>/<version>/`**. Downstream source patches, applied by
-  `hack/ci-build-service-image.sh` and the image build workflow before the
-  install (cinder and glance carry some today). A missing directory builds
-  the service unpatched without any error, so re-triage every patch of the
+- **`patches/<svc>/<version>/`**. Downstream source patches (cinder and
+  glance carry some today). `hack/nix-lock.sh` lists them in the lock's
+  `sources.json`, and `nix/lib/python-env.nix` applies them as derivation
+  inputs to the fetched source before the image and the unit tests are built
+  from it, so `make nix-lock` follows every added or retired patch. A missing
+  directory builds the service unpatched without any error, so re-triage every patch of the
   previous release against the new upstream tag: carry it over while it
   still applies and is still needed, and drop it once the fix ships
   upstream. A patch without a twin in the new release says why in its own
@@ -295,8 +303,8 @@ None of these are mechanical; decide and record each in the PR description:
   `basic-deployment` suites, `deploy/kind/controlplane/controlplane.yaml`
   (`openStackRelease`), the `hack/deploy-infra.sh` image preload, the
   `${VAR:-YYYY.N}` fallbacks in `hack/` (`RELEASE` in
-  `ci-build-service-image.sh`, `ci-build-tempest-image.sh`, and
-  `run-tempest.sh`; `IMAGE_TAG` in `perf-reconcile-benchmark.sh`), the
+  `ci-build-service-image.sh` and `run-tempest.sh`; `IMAGE_TAG` in
+  `perf-reconcile-benchmark.sh`), the
   slug fallbacks of `hack/ci-run-tempest.sh` (`CONFIG_DIR` defaults to
   `tests/tempest/${SERVICE}-<slug>` and `SERVICE_K8S_NAME` to
   `${SERVICE}-tempest-<slug>`), the two `ghcr.io/c5c3/nova:<default>` refs of

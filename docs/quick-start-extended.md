@@ -744,30 +744,18 @@ kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name cobaltcore
 
 ### Option B — Build locally
 
+The keystone image is a flake attribute of the repository
+([Nix Image Build](./reference/ci-cd/nix-image-build.md)). The build needs Nix
+with flakes enabled:
+
 ```bash
-# Resolve the upstream source ref
-SERVICE_REF=$(yq '.keystone' "releases/${RELEASE}/source-refs.yaml")
-PIP_EXTRAS=$(yq -r '.keystone.pip_extras // [] | join(",")' "releases/${RELEASE}/extra-packages.yaml")
-PIP_PACKAGES=$(yq -r '.keystone.pip_packages // [] | join(" ")' "releases/${RELEASE}/extra-packages.yaml")
-APT_PACKAGES=$(yq -r '.keystone.apt_packages // [] | join(" ")' "releases/${RELEASE}/extra-packages.yaml")
+# Build the image of the release and load it (replace `docker` with `podman`
+# when using Podman)
+nix build ".#keystone-${RELEASE//./_}-image"
+./result | docker load
 
-# Clone upstream Keystone at the pinned ref
-git clone --depth 1 --branch "${SERVICE_REF}" \
-  https://github.com/openstack/keystone.git /tmp/keystone-src
-
-# Apply constraint overrides
-scripts/apply-constraint-overrides.sh "${RELEASE}"
-
-# Build the image chain (replace `docker` with `podman` when using Podman)
-docker build -t python-base images/python-base/
-docker build -t venv-builder images/venv-builder/
-docker build -t "ghcr.io/c5c3/keystone:${RELEASE}" \
-  --build-arg PIP_EXTRAS="${PIP_EXTRAS}" \
-  --build-arg PIP_PACKAGES="${PIP_PACKAGES}" \
-  --build-arg EXTRA_APT_PACKAGES="${APT_PACKAGES}" \
-  --build-context keystone=/tmp/keystone-src \
-  --build-context "upper-constraints=releases/${RELEASE}" \
-  images/keystone/
+# Name it the way the Keystone CR references it
+docker tag "keystone:${RELEASE}" "ghcr.io/c5c3/keystone:${RELEASE}"
 
 # Load into kind
 kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name cobaltcore

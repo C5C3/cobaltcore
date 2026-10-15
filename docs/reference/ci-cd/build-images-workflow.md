@@ -16,7 +16,7 @@ Docker.
 Repeated inline step sequences are extracted into reusable composite GitHub Actions
 (`.github/actions/setup-docker-registry/`, `.github/actions/supply-chain-attest/`,
 `.github/actions/checkout-service-source/`, `.github/actions/export-digest/`) and
-standalone CI scripts (`hack/ci-merge-manifest.sh`, `hack/ci-run-unit-tests.sh`), reducing
+standalone CI scripts (`hack/ci-merge-manifest.sh`, `hack/nix-lock.sh`), reducing
 duplication across jobs. All jobs produce identical outputs and maintain the same
 security pipeline. See [Reusable Components](#reusable-components) for details.
 
@@ -31,8 +31,9 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Checkout Service Source action | `.github/actions/checkout-service-source/action.yaml` |
 | Export Digest action | `.github/actions/export-digest/action.yaml` |
 | Build Nix Image action | `.github/actions/build-nix-image/action.yaml` |
+| Setup Nix action | `.github/actions/setup-nix/action.yaml` |
 | Merge Manifest script | `hack/ci-merge-manifest.sh` |
-| Run Unit Tests script | `hack/ci-run-unit-tests.sh` |
+| Lock generator | `hack/nix-lock.sh` |
 | Resolve image changes script | `hack/ci-resolve-image-changes.sh` |
 | Generate build matrix script | `hack/ci-generate-build-matrix.sh` |
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
@@ -62,11 +63,12 @@ The two path lists differ. The push list is the broad one it has always been:
 `hack/ci-*` and `.github/actions/**` as catch-alls, so any CI script or composite
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
-`scripts/**`, `overrides/**`, the option catalogs it verifies, and the ten
+`scripts/**`, `overrides/**`, the option catalogs it verifies, and the eleven
 composite actions and thirteen `hack/` scripts its jobs call, directly or through
 `build-push-image`, `build-nix-image`, `setup-docker-registry` and
-`merge-manifest-and-attest`. Both lists name `flake.nix`, `flake.lock` and
-`nix/lib/**`, the inputs of the Nix-built images; the pull-request list also names
+`merge-manifest-and-attest`. Both lists name `flake.nix`, `flake.lock`,
+`nix/lib/**`, `nix/pkgs/**` and `nix/locks/**`, the inputs of the Nix-built images,
+and `hack/nix-lock.sh`, which `nix-lock-check` runs; the pull-request list also names
 `.github/actions/build-nix-image/**`, which the push list's `.github/actions/**`
 covers. Four
 negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
@@ -77,10 +79,13 @@ this workflow never does. GitHub evaluates the list in order, so each negation f
 the positive `tests/container-images/**` entry it carves out of. Both lists also name
 `tests/lib/ceph_bindings.sh`, the helper the glance, cinder and nova-compute verify
 scripts source, and so do the `svc_glance`, `svc_cinder` and `svc_nova` filters of the
-[`changes`](#changes) job.
+[`changes`](#changes) job. They name `tests/lib/build_tools.sh` too, the build-tools
+check every service and Tempest verify script sources, which the `base` filter names
+because it rebuilds exactly those images.
 
 > **Fork PRs are not supported.** Base images must be pushed to GHCR on every run
-> (because downstream `docker-image://` URIs require registry availability), but fork
+> (because the nova-compute build reads them through `docker-image://` URIs, which
+> require registry availability), but fork
 > PRs receive a read-only `GITHUB_TOKEN` that cannot write packages. The workflow
 > detects fork PRs and fails fast with a clear error message.
 
@@ -152,9 +157,9 @@ ensuring every merge commit produces a complete set of images.
 
 ## Reusable Components
 
-Repeated inline step sequences are extracted into ten composite GitHub Actions and
+Repeated inline step sequences are extracted into eleven composite GitHub Actions and
 thirteen `hack/` scripts. These components encapsulate patterns that were previously
-duplicated across multiple jobs, ensuring consistency. This section documents five of
+duplicated across multiple jobs, ensuring consistency. This section documents six of
 the actions and four of the scripts. All components follow the repository's CI script
 and composite action conventions.
 
@@ -171,9 +176,9 @@ that was previously inlined in every job.
 | `password` | yes | — | Registry password/token |
 | `install-cosign` | no | `'true'` | Whether to install cosign |
 
-**Usage:** Every job that pulls or pushes images calls this composite action: 27 of the
-32 jobs, all but `changes`, `lint-dockerfiles`, `nix-flake-check`, `prepare` and
-`generate-matrix`. Jobs
+**Usage:** Every job that pulls or pushes images calls this composite action: 26 of the
+33 jobs, all but `changes`, `lint-dockerfiles`, `nix-flake-check`, `nix-lock-check`,
+`prepare`, `generate-matrix` and `test-service-images`. Jobs
 that do not need cosign (build jobs, verification jobs) pass `install-cosign: 'false'`.
 Only merge jobs (which run attestation and signing) leave it at the default `'true'`.
 
@@ -260,7 +265,29 @@ Builds a flake image attribute, the counterpart of `build-push-image` for the im
 the root flake builds. Its inputs and steps are documented under
 [The build-nix-image action](./nix-image-build.md#the-build-nix-image-action).
 
-**Usage:** `build-backup-shifter` calls this composite action.
+**Usage:** `build-backup-shifter`, `build-tempest` and `build-service-images` call this
+composite action.
+
+### setup-nix
+
+Installs Nix with `cachix/install-nix-action` and adds the Cachix cache `cobaltcore`
+with `cachix/cachix-action`, which runs with `continue-on-error: true`: a cache that
+does not exist or does not answer fails no build, which then substitutes from
+`cache.nixos.org`. A composite action cannot read secrets, so the job passes the
+token in; without one the action reads the cache and pushes nothing. The
+[binary cache](./nix-image-build.md#binary-cache) section of Nix Image Build
+describes the cache.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `cachix-auth-token` | no | `''` | The `CACHIX_AUTH_TOKEN` secret; empty pushes nothing (`skipPush`) |
+| `push-filter` | no | `''` | Regular expression of the store paths never pushed (`pushFilter`) |
+
+**Usage:** `nix-flake-check`, `build-tempest`, `build-backup-shifter`,
+`build-service-images` and `test-service-images` call this composite action with
+<code v-pre>cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}</code>; `test-service-images` also
+passes `push-filter: '-test-run$'`. `nix-lock-check` installs Nix itself, because it
+hands the GitHub token to `install-nix-action` and reads no cache.
 
 ### hack/ci-merge-manifest.sh
 
@@ -282,27 +309,18 @@ Writes `digest=sha256:<hex>` to `$GITHUB_OUTPUT`.
 composite action calls this script via `run:` with env vars passed through the step's
 `env:` block. Every merge job reaches it through that action.
 
-### hack/ci-run-unit-tests.sh
+### hack/nix-lock.sh
 
-Runs stestr-based OpenStack service unit tests inside a `venv-builder` container image.
-Handles volume mounts for source code, constraints, test excludes, and result collection.
-Follows the repo's CI-script conventions.
+Writes the locks under `nix/locks/` the Python images are built from, one per
+service and release plus one per release for Tempest, and the noVNC hash of
+`images/nova/novnc.json`. `--check` regenerates every lock and exits 1 with
+`nix-lock.sh: the locks are stale; run make nix-lock and commit the result`
+when the result differs from the committed files. The lock format, the
+seeding and the Renovate flow are documented under
+[Python environments and locks](./nix-image-build.md#python-environments-and-locks).
 
-| Env var | Required | Default | Description |
-| --- | --- | --- | --- |
-| `SERVICE_NAME` | yes | — | OpenStack service name (e.g. `keystone`) |
-| `SERVICE_VERSION` | yes | — | Version string for PBR PKG-INFO |
-| `INSTALL_SPEC` | yes | — | pip install spec (e.g. `.[ldap]` or `.`) |
-| `VENV_BUILDER_IMAGE` | yes | — | Docker image to run tests in |
-| `RELEASE` | yes | — | Release directory name (e.g. `2026.1`) |
-| `WORKSPACE_DIR` | no | `$GITHUB_WORKSPACE` or `pwd` | Root workspace directory |
-| `OS_TEST_DBAPI_ADMIN_CONNECTION` | no | — | oslo.db admin connection string for opportunistic DB tests |
-
-Writes `results/testresults.subunit` to the workspace.
-
-**Usage:** `test-service-images` calls this script, replacing the ~50-line inline
-`docker run` block. The script can also be run locally with appropriate env vars for
-debugging failed tests.
+**Usage:** `nix-lock-check` runs `hack/nix-lock.sh --check` in the `lock-tools`
+shell of the flake; `make nix-lock` and `make nix-lock-check` run it locally.
 
 ### hack/ci-resolve-image-changes.sh
 
@@ -405,47 +423,46 @@ changes ──────────┬──> build-backup-shifter (matrix: a
 nix-flake-check ──┤      └──> merge-backup-shifter-image (push only)
 prepare ──────────┘
 
+changes ──> generate-matrix ──┬──> build-tempest (matrix: release × platform)
+nix-flake-check ──────────────┤      └──> merge-tempest-image (push only)
+nix-lock-check ───────────────┤
+prepare ──────────────────────┼──> build-service-images (matrix: service × release × platform)
+                              │      └──> merge-service-images (push only) ──┐
+                              │                                              ├──> verify-service-images (push only)
+                              └──> test-service-images ──────────────────────┘
+                                     └── nix build .#<service>-<rel_>-test-run
+
 lint-dockerfiles ─┬──> build-base-images (matrix: amd64 + arm64)
-prepare ──────────┘      └──> merge-base-images ──> verify-base-images ──> generate-matrix ──┐
-                                                                                             │
-                  ┌──────────────────────────────────────────────────────────────────────────┘
-                  │
-                  ├──> build-tempest (matrix: release × platform)
-                  │      └──> merge-tempest-image (push only)
-                  │
-                  ├──> build-service-images (matrix: service × release × platform)
-                  │      └──> merge-service-images (push only) ──┐
-                  │                                              ├──> verify-service-images (push only)
-                  ├──> test-service-images ──────────────────────┘
-                  │      └── hack/ci-run-unit-tests.sh (stestr run)
-                  │
-                  └──> build-nova-compute-image (matrix: release × platform)
-                         └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
+prepare ──────────┘      └──> merge-base-images ──> verify-base-images ──┐
+generate-matrix ─────────────────────────────────────────────────────────┴──> build-nova-compute-image (matrix: release × platform)
+                                                                                └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
 ```
 
 The graph leaves out the `needs` entries that a drawn path already implies (`prepare` on
-`build-tempest`, `build-service-images`, `build-nova-compute-image` and every merge job
-except `merge-nova-compute-image`, `lint-dockerfiles` on `build-tempest`, and
-`merge-base-images`, `verify-base-images` and `generate-matrix` on jobs further down
-their chain) and `changes` on `generate-matrix`, `build-tempest`, `build-service-images`
-and `test-service-images`: `changes` supplies the service list the matrix is built from
-and the flags the other three gate on.
+`build-nova-compute-image` and every merge job except `merge-nova-compute-image`, and
+`merge-base-images` and `verify-base-images` on jobs further down their chain) and
+`changes` on `build-tempest`, `build-service-images` and `test-service-images`:
+`changes` supplies the service list the matrix is built from and the flags the other
+three gate on. `test-service-images` needs `nix-lock-check` and `generate-matrix` but
+not `nix-flake-check` or `prepare`.
 
 Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
 built on a native runner and pushed by digest. `merge-base-images` then assembles the
 multi-arch manifest list and runs the supply chain security pipeline via the
 `supply-chain-attest` composite action. The same pattern applies to service
 images via `build-service-images` and `merge-service-images`, and to Tempest images via
-`build-tempest` and `merge-tempest-image`.
+`build-tempest` and `merge-tempest-image`; those two build jobs build a flake attribute
+with `build-nix-image` instead of a Dockerfile.
 
 The `verify-base-images` job validates base image properties (Python version, user
-UID/GID, PATH, uv version) before service image builds begin. This catches base image
-regressions before they cascade into service image failures. The `test-service-images`
-job runs upstream unit tests for each service via `hack/ci-run-unit-tests.sh`, in parallel with `build-service-images`. On push events, the
+UID/GID, PATH, uv version) before the nova-compute build begins. This catches base image
+regressions before they cascade into the compute image. The `test-service-images`
+job runs the upstream unit tests of each service as a Nix build
+(`nix/lib/service-tests.nix`), in parallel with `build-service-images`. On push events, the
 `verify-service-images` job validates service images pulled from GHCR and gates on
 `merge-service-images` and `test-service-images`. On PRs, the equivalent image
-verification runs as an inline step within `build-service-images` because `--load` makes
-the image available only on the same runner (ARM64 is excluded on PRs).
+verification runs as an inline step within `build-service-images` because the loaded
+image is available only on the same runner (ARM64 is excluded on PRs).
 
 Every job that pulls or pushes images uses the `setup-docker-registry` composite action
 for Docker Buildx setup, registry authentication, and optional cosign installation,
@@ -454,8 +471,9 @@ replacing the previously duplicated three-step setup sequence.
 ### changes
 
 Classifies the changed paths of a pull request into paths filters — one per service
-image, one for the base images and release configuration, one per release-independent
-image, and one for the workflow's own plumbing — and hands them to
+image, one for what every service image is built from (the flake inputs, the Nix
+library and packages, the lock generator, the release configuration), one per
+release-independent image, and one for the workflow's own plumbing — and hands them to
 [`hack/ci-resolve-image-changes.sh`](#hack-ci-resolve-image-changes-sh), which resolves
 them into the service list and the image flags.
 
@@ -488,23 +506,53 @@ The gate of every Nix-built image, as `lint-dockerfiles` is for the Docker-built
 | `timeout-minutes` | `15` |
 | Permissions | `contents: read` |
 
-The job installs Nix with `cachix/install-nix-action`, adds the Cachix cache
-`cobaltcore` with `cachix/cachix-action`, and runs two commands:
+The job installs Nix and adds the Cachix cache `cobaltcore` through the
+[`setup-nix`](#setup-nix) composite action, and runs three commands:
 
 ```bash
-nix flake check --print-build-logs
+nix flake check --no-build --print-build-logs
+nix build .#checks.x86_64-linux.nix-lint .#checks.x86_64-linux.fhs-layout \
+  .#checks.x86_64-linux.service-tests --print-build-logs
 nix eval --json .#packages.aarch64-linux --apply 'builtins.mapAttrs (_: p: p.drvPath)'
 ```
 
-`nix flake check` evaluates every output of the runner's system, fails on an attribute
-under `packages` or `checks` that is not a derivation, and builds the checks of
-`x86_64-linux`: `nix-lint` (nixfmt, statix, deadnix) and `fhs-layout`. It leaves the
+`nix flake check --no-build` evaluates every output of the runner's system and fails on
+an attribute under `packages` or `checks` that is not a derivation. Without
+`--no-build` it would also build every check, the unit tests of all sixteen service
+locks included, which `test-service-images` runs one matrix entry each. The second
+command builds the three checks that need no service lock: `nix-lint` (nixfmt,
+statix, deadnix), `fhs-layout` and `service-tests`. `nix flake check` leaves the
 other systems unevaluated, and `--all-systems` would try to build the arm64 checks on
-the x86 runner, so `nix eval` instantiates every arm64 image without building it. The
-Cachix step pushes only when the secret `CACHIX_AUTH_TOKEN` is set
-(`skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}`), and a cache it cannot reach fails
+the x86 runner, so `nix eval` instantiates every arm64 output without building it. The
+`setup-nix` action pushes only when the job hands it the secret `CACHIX_AUTH_TOKEN`
+(`skipPush: ${{ inputs.cachix-auth-token == '' }}`), and a cache it cannot reach fails
 no build (`continue-on-error: true`), as described under
 [Binary cache](./nix-image-build.md#binary-cache).
+
+### nix-lock-check
+
+Fails when the locks under `nix/locks/` or the noVNC hash differ from what the release
+pins produce.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `30` |
+| Permissions | `contents: read` |
+
+The job runs on every event. It installs Nix with the workflow token as
+`github_access_token`, which lifts the GitHub API rate limit of the source prefetches,
+and runs:
+
+```bash
+nix develop .#lock-tools --command bash hack/nix-lock.sh --check
+```
+
+A failure adds the annotation `nix/locks is stale: run make nix-lock and commit the
+result`. `build-service-images`, `build-tempest` and `test-service-images` need the job,
+so no image and no unit test is built from a stale lock. A Renovate pull request that
+moves a pin the locks are derived from fails here until `make nix-lock` is pushed to
+its branch ([Renovate](./nix-image-build.md#renovate)).
 
 ### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
 
@@ -602,10 +650,9 @@ version. The job therefore passes the workflow token to `build-push-image`
 as the `github_token` secret (`secrets: github_token=...`), which the
 Dockerfile mounts into the one `RUN` that fetches and turns into the
 basic-auth header `actions/checkout` sends. A secret reaches no layer; a build
-without it, such as a local `docker build`, fetches anonymously.
-`images/nova/Dockerfile` is the one service Dockerfile fetching from github.com, for the
-noVNC console assets, and gets the same secret from the `Build service image` step of
-`build-service-images`.
+without it, such as a local `docker build`, fetches anonymously. No service image
+fetches from github.com inside its build: the nova image takes its noVNC assets
+through a fixed-output Nix fetch, which needs no token.
 
 `build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
 `if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
@@ -822,16 +869,18 @@ ensuring the exact manifests that were just assembled are the ones being tested.
 ### build-service-images
 
 Builds service images per platform on native runners and pushes each single-arch image by
-digest. Depends on `merge-base-images` for image references and on
-`verify-base-images` to ensure base images are valid before building on top of them. The multi-arch manifest list is assembled by `merge-service-images`.
+digest. Each image is the flake attribute `<service>-<rel_>-image`, built from
+`images/<service>/image.nix` over the lock `nix/locks/<release>/<service>/` by the
+`build-nix-image` action ([Nix Image Build](./nix-image-build.md)). The job runs behind
+`nix-flake-check` and `nix-lock-check`. The multi-arch manifest list is assembled by
+`merge-service-images`.
 
 On pull requests, ARM64 is excluded (only `linux/amd64` is built) and the image is loaded
 locally for inline verification instead of being pushed to GHCR.
 
-The figure shows what steps 2 and 3 of the table below read from the repository
-and where the build takes it in.
-[Dockerfile Hierarchy](container-images.md#dockerfile-hierarchy) names both
-stages of every image.
+The figure shows the Docker build nova-compute still runs; the service images build from
+Nix. [Dockerfile Hierarchy](container-images.md#dockerfile-hierarchy) names both stages
+of that build.
 
 ![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
 
@@ -839,7 +888,7 @@ stages of every image.
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `45` |
-| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix, prepare]` |
+| `needs` | `[changes, generate-matrix, nix-flake-check, nix-lock-check, prepare]` |
 | Condition | `needs.changes.outputs.has-services == 'true'` |
 | Matrix | `service × release × platform × runner` (from `generate-matrix.build-matrix`; ARM64 excluded on PRs) |
 
@@ -850,13 +899,14 @@ stages of every image.
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out this repository |
-| 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides |
-| 3 | Resolve extra packages | `hack/ci-resolve-extra-packages.sh` | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards. |
-| 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)). Passes no `image` input, so the image is named after the service |
-| 5 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
-| 6 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled) |
-| 7 | Build service image | `.github/actions/build-push-image` | Produces OCI labels with `docker/metadata-action@v6` and overrides version to the upstream release ref via `type=raw` strategy. Builds with `docker/build-push-action@v7`, four named build contexts and three build args, and passes the workflow token as the `github_token` BuildKit secret. A secret reaches only a `RUN` that mounts it, and `images/nova/Dockerfile` (the noVNC fetch) is the one service Dockerfile that does. Non-PR: `push-by-digest=true`, digest uploaded as artifact `digests-service-<service>-<release>-<platform-pair>`. PR: `load: true`, composite tag, Grype scan of the locally loaded image (`scan-mode: image`; no SARIF upload), then `verify_${{ matrix.service }}.sh` with the locally loaded image ref |
-| 8 | Verify option catalog | `hack/gen-option-catalog.sh --check` | PR only, for `keystone`, `glance`, `neutron`, `cinder` and `nova`: diffs the option catalog generated from the locally loaded image against the committed catalog file |
+| 2 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)). Passes no `image` input, so the image is named after the service |
+| 3 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for artifact names |
+| 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled) |
+| 5 | Set up Nix | `.github/actions/setup-nix` | Installs Nix and reads the `cobaltcore` cache; pushes only with `CACHIX_AUTH_TOKEN` set; an unreachable cache fails no build |
+| 6 | Resolve flake attribute | Shell | Writes `attribute=<service>-<release with _>-image` (`keystone-2026_1-image`), because a flake attribute cannot contain a dot |
+| 7 | Build service image | `.github/actions/build-nix-image` | Builds the attribute and scans its store paths with vulnix (artifact `vulnix-<service>-<release>-<platform-pair>`). Non-PR: pushes the stream by digest with skopeo, digest uploaded as artifact `digests-service-<service>-<release>-<platform-pair>`. PR: loads the stream, tags it with the composite tag, Grype scan of the loaded image (`scan-mode: image`; no SARIF upload), then `verify_${{ matrix.service }}.sh` against it |
+| 8 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides into `src/<service>`. It runs after the build because it edits `releases/<release>/upper-constraints.txt` in place, and the build has to evaluate an unmodified tree |
+| 9 | Verify option catalog | `hack/gen-option-catalog.sh --check` | PR only, for `keystone`, `glance`, `neutron`, `cinder` and `nova`: diffs the option catalog generated from the locally loaded image against the committed catalog file, with `src/<service>` as `SOURCE_DIR` |
 
 :::
 
@@ -870,7 +920,7 @@ Runs only on push events.
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `45` |
-| `needs` | `[merge-base-images, build-service-images, generate-matrix, prepare]` |
+| `needs` | `[build-service-images, generate-matrix, prepare]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
 | Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write`, `security-events: write` |
@@ -895,26 +945,28 @@ were computed during the build.
 
 **Build Contexts:**
 
-The service image build passes four named build contexts to resolve `FROM` and
-`--mount=type=bind,from=` directives in the Dockerfile:
+The service images are built by Nix and take no build context. The nova-compute build
+of [build-nova-compute-image](#build-nova-compute-image-merge-nova-compute-image-verify-nova-compute-image)
+passes four named build contexts to resolve `FROM` and `--mount=type=bind,from=`
+directives in `images/nova-compute/Dockerfile`:
 
 | Context name | Source | Purpose |
 | --- | --- | --- |
 | `python-base` | `docker-image://<python-base-image>` | Runtime base image (output already includes `@sha256:<digest>`) |
 | `venv-builder` | `docker-image://<venv-builder-image>` | Build stage image (output already includes `@sha256:<digest>`) |
-| `<service>` | `src/<service>` | Service source tree (upstream checkout) |
+| `nova` | `src/nova` | nova source tree (upstream checkout) |
 | `upper-constraints` | `releases/<release>/` | Release directory containing `upper-constraints.txt` |
 
 **Build Arguments:**
 
-The service image build passes three build arguments sourced from
-`releases/<release>/extra-packages.yaml` by the "Resolve extra packages" step:
+The nova-compute build passes three build arguments sourced from the `nova-compute`
+block of `releases/<release>/extra-packages.yaml` by `hack/ci-resolve-extra-packages.sh`:
 
 | Build arg | Source field | Format | Example |
 | --- | --- | --- | --- |
-| `PIP_EXTRAS` | `<service>.pip_extras` | Comma-separated | `ldap,oauth1` |
-| `PIP_PACKAGES` | `<service>.pip_packages` | Space-separated | *(empty by default)* |
-| `EXTRA_APT_PACKAGES` | `<service>.apt_packages` | Space-separated | `libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2` |
+| `PIP_EXTRAS` | `nova-compute.pip_extras` | Comma-separated | *(empty)* |
+| `PIP_PACKAGES` | `nova-compute.pip_packages` | Space-separated | `libvirt-python pyroute2` |
+| `EXTRA_APT_PACKAGES` | `nova-compute.apt_packages` | Space-separated | `libvirt0 qemu-utils open-iscsi ...` |
 
 `PIP_EXTRAS` and `PIP_PACKAGES` are consumed in the Dockerfile build stage (stage 1).
 `EXTRA_APT_PACKAGES` is consumed in the runtime stage (stage 2). See
@@ -926,26 +978,24 @@ refs independently via its own matrix strategy.
 
 ### test-service-images
 
-::: v-pre
+Runs the upstream unit tests of each service and release as Nix builds
+([Unit tests](./nix-image-build.md#unit-tests)). The run derivation
+`<service>-<rel_>-test-run` executes the suite over the patched source with the venv
+of the lock's test group, MySQL 8.4 and PostgreSQL 18 running on 127.0.0.1 inside the
+build sandbox, and succeeds whenever the suite ran; the check
+`<service>-<rel_>-tests` then fails the job unless the run's exit status is 0. The
+split lets a failed run still upload its subunit stream. An optional per-service exclude-list
+(`releases/<release>/test-excludes/<service>.txt`) skips known-failing tests via
+`stestr run --exclude-list`.
 
-Runs upstream unit tests for each service inside the `venv-builder` container.
-The job checks out the service source at the version specified in `source-refs.yaml`,
-applies any patches and constraint overrides, then executes `stestr run` inside a Docker
-container built from the `venv-builder` image. Test results are exported as subunit
-artifacts. An optional per-service exclude-list (`releases/<release>/test-excludes/<service>.txt`)
-skips known-failing tests via `stestr run --exclude-list`.
-
-:::
-
-This job runs in parallel with `build-service-images` — both depend on
-`merge-base-images` and `verify-base-images`, but not on each other. The
-`verify-service-images` job gates on both.
+This job runs in parallel with `build-service-images`, behind `nix-lock-check` but not
+behind the base images. The `verify-service-images` job gates on both.
 
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `90` |
-| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix]` |
+| `needs` | `[changes, generate-matrix, nix-lock-check]` |
 | Condition | `needs.changes.outputs.has-services == 'true'` |
 | Permissions | `contents: read`, `packages: read` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
@@ -957,11 +1007,9 @@ This job runs in parallel with `build-service-images` — both depend on
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides; eliminates "MUST stay in sync" duplication with `build-service-images` |
-| 3 | Resolve pip extras | Shell | Reads `pip_extras` from `extra-packages.yaml` to construct the install spec (e.g. `.[ldap]` or `.`) |
-| 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); authenticates to pull `venv-builder` image |
-| 5 | Run tests | `hack/ci-run-unit-tests.sh` | Runs stestr-based unit tests inside the `venv-builder` container via env var interface; replaces ~50-line inline `docker run` block |
-| 6 | Upload test results | `actions/upload-artifact@v7` | Always runs. Uploads `results/testresults.subunit` with 30-day retention |
+| 2 | Set up Nix | `.github/actions/setup-nix` | As in `build-service-images`, plus `push-filter: '-test-run$'`, so a failed run never reaches the cache |
+| 3 | Run tests | Shell | `nix build ".#<service>-<rel_>-test-run" --out-link result-test-run`, copies its files to `results/`, prints `results/summary.txt`, then `nix build ".#checks.x86_64-linux.<service>-<rel_>-tests"` |
+| 4 | Upload test results | `actions/upload-artifact@v7` | Always runs. Uploads `results/testresults.subunit` as `test-results-<service>-<release>` with 30-day retention |
 
 :::
 
@@ -971,7 +1019,9 @@ If `releases/<release>/test-excludes/<service>.txt` exists, stestr uses it as
 `--exclude-list` to skip tests matching the regex patterns in the file. The file follows
 stestr exclude-list format: blank lines are ignored, `#` lines are comments, all other
 lines are regex patterns matching test IDs to skip. See
-`releases/2026.1/test-excludes/keystone.txt` for an example.
+`releases/2026.1/test-excludes/keystone.txt` for an example. A test that fails only in
+the build sandbox goes into the sandbox exclude list of `nix/lib/service-tests.nix`
+instead, with its error.
 
 **Test Coverage:**
 
@@ -982,20 +1032,12 @@ and steps:
 | --- | --- |
 | `test_test_service_images_job_structure` | `runs-on: ubuntu-latest`, `timeout-minutes: 90`, `contents: read`, `packages: read`, no `id-token`, `attestations`, or `security-events` |
 | `test_test_service_images_has_matrix` | Matrix is a `fromJson` expression over a `generate-matrix` output, with `fail-fast: false` |
-| `test_test_service_images_depends_on_base` | `needs` array contains `merge-base-images` and `verify-base-images` |
-| `test_test_service_images_uses_venv_builder_output` | `Run tests` step env `VENV_BUILDER_IMAGE` references `needs.merge-base-images.outputs.venv-builder-image` |
-| `test_test_service_images_source_ref_step` | Job calls `checkout-service-source`, whose source-ref step reads `source-refs.yaml` with null/empty guard |
-| `test_test_service_images_checkout_service_source` | `checkout-service-source` checks out upstream service repo at correct ref and path |
-| `test_test_service_images_apply_patches` | `Apply patches` step of `checkout-service-source` runs `git -C` on `*.patch` files behind a `compgen -G` guard |
-| `test_test_service_images_constraint_overrides` | Constraint overrides step references `apply-constraint-overrides.sh` |
-| `test_test_service_images_run_tests_volumes` | `Run tests` step calls `hack/ci-run-unit-tests.sh`, which mounts service source, constraints, test-excludes, and results volumes |
-| `test_test_service_images_run_tests_stestr` | `hack/ci-run-unit-tests.sh` has `pip install` with `stestr`, `stestr init`, and `stestr run` |
-| `test_test_service_images_exclude_list` | `hack/ci-run-unit-tests.sh` builds `EXCLUDE_LIST_ARG`, checks for `test-excludes/${SERVICE_NAME}.txt` and passes `exclude-list` |
-| `test_test_service_images_subunit_output` | `stestr last --subunit` exports results to `testresults.subunit` |
+| `test_test_service_images_depends_on_base` | `needs` array contains `changes`, `generate-matrix` and `nix-lock-check`, and neither `merge-base-images` nor `verify-base-images` |
+| `test_service_unit_tests_run_as_nix_checks` | No `services:` block, a `-test-run` build and a `checks.x86_64-linux.` build in `Run tests`, and `push-filter: '-test-run$'` on the `setup-nix` step |
+| `test_test_service_images_subunit_output` | `Run tests` builds the `-test-run` attribute and copies `result-test-run/*` to `results/`, and the upload path is `results/testresults.subunit` |
 | `test_test_service_images_upload_artifacts` | `Upload test results` step for subunit output with `if: always()` and 30-day retention |
 | `test_test_service_images_artifact_name` | Artifact name includes `matrix.service` and `matrix.release` for disambiguation |
-| `test_test_service_images_env_vars` | `run:` blocks use `env:` for matrix values, not direct <code v-pre>${{ matrix.* }}</code> interpolation |
-| `test_test_service_images_docker_run` | `Run tests` step calls `hack/ci-run-unit-tests.sh`, which uses `docker run` with `VENV_BUILDER_IMAGE` |
+| `test_test_service_images_env_vars` | `Run tests` gets `MATRIX_SERVICE` and `MATRIX_RELEASE` from `env:` and interpolates no <code v-pre>${{ }}</code> expression into its run block |
 | `test_verify_service_images_depends_on_service_images` | `verify-service-images` `needs` includes `merge-service-images`, `test-service-images` and `generate-matrix` |
 | `test_timeout_minutes_on_all_jobs` | All jobs including `test-service-images` have `timeout-minutes` set |
 | `test_runs_on_ubuntu_latest` | `test-service-images`, `verify-base-images`, `merge-base-images`, `merge-service-images`, `verify-service-images` and the six release-independent merge jobs use `runs-on: ubuntu-latest`; `build-base-images`, `build-service-images`, the six release-independent build jobs and `verify-ovn-image`, `verify-hvo-image`, `verify-kna-image` use `matrix.runner` |
@@ -1049,7 +1091,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 
 | Script | Validates |
 | --- | --- |
-| `tests/container-images/verify_<service>.sh` | Service-specific checks (e.g. `keystone-manage --version` exits 0), runs as `openstack` user, no build tools (gcc, python3-dev, uv), runtime apt packages installed |
+| `tests/container-images/verify_<service>.sh` | Service-specific checks (e.g. `keystone-manage --version` exits 0), runs as `openstack` user, no build tools (gcc, cc, uv and python3-config not on PATH, no compiler, binutils or uv package in /nix/store), runtime packages present |
 
 The job fails the workflow if the verify script exits non-zero. Tag derivation uses the
 `.github/actions/derive-service-tags` composite action, which is the single source of
@@ -1235,7 +1277,9 @@ see a plan without deleting anything.
 
 The figure shows both paths for a service image: what every run builds and
 pushes, where a pull request ends, and what a push merges, attests and signs.
-The table lists the differences aspect by aspect.
+It shows the Docker lineage nova-compute still uses; the service images build
+from Nix through `build-nix-image` and run their unit tests as Nix builds. The
+table lists the differences aspect by aspect.
 
 ![The image build workflow on its two paths. On every run, build-base-images builds python-base and venv-builder for amd64 and arm64 and pushes them by digest, merge-base-images joins each pair into one manifest and pushes it to ghcr.io, verify-base-images checks both, and generate-matrix works out the services, releases and platforms to build. On a pull request, build-service-images builds each service image for linux/amd64 only and loads it into the local Docker daemon, scans it with Grype, runs its verify script and checks the option catalog. test-service-images runs the upstream unit tests. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, pushes by digest and exports the digest. merge-service-images creates and pushes the manifest with its tags, generates an SBOM, scans the SBOM with Grype and uploads the report, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check, once merge-service-images and test-service-images have passed.](../../diagrams/ci-image-publish.svg)
 
@@ -1246,10 +1290,10 @@ The workflow behaves differently depending on the trigger event:
 | Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
 | Service matrix | The services whose sources changed, every release each | Every service |
-| Tempest images | On `images/tempest/**`, its verify script, a base change, or a plumbing change | Always |
+| Tempest images | On `images/tempest/**`, its locks, its verify script, a base change, or a plumbing change | Always |
 | OVN, federation proxy, backup shifter, libvirt, openstack-hypervisor-operator, kvm-node-agent | On their own sources, or a plumbing change | Always |
 | Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
-| Service image push | No (`load: true` on amd64 runner) | Yes (by digest, tags assigned by `merge-service-images`) |
+| Service image push | No (`docker load` on amd64 runner) | Yes (by digest with skopeo, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
 | SBOM generation | Skipped | CycloneDX JSON for every merged manifest |
 | Vulnerability scanning | Image-based scan on PR (`image:` input): service images in `build-service-images`, base images in `merge-base-images` | SBOM-based scan in the merge jobs (`sbom:` input) |
@@ -1261,19 +1305,19 @@ The workflow behaves differently depending on the trigger event:
 | ovn image verification | Inline step in `build-ovn` (`verify_ovn.sh` on `:pr-verify`) | Separate `verify-ovn-image` job (pulled by digest from GHCR) |
 | nova-compute image verification | Inline step in `build-nova-compute-image` (`verify_nova_compute.sh`, amd64) | Separate `verify-nova-compute-image` job on `ubuntu-latest` and `ubuntu-24.04-arm` |
 
-On a pull request the Nix-built backup shifter is scanned twice: Grype scans the loaded
-image, and vulnix scans the store paths of the image
+On a pull request every Nix-built image (the service images, Tempest and the backup
+shifter) is scanned twice: Grype scans the loaded image, and vulnix scans the store
+paths of the image
 ([The build-nix-image action](./nix-image-build.md#the-build-nix-image-action)).
 
-**Why base images are always pushed:** Service Dockerfiles reference base images via
-`docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
-referenced image to exist in a registry — local images are not sufficient. Pushing
-small base images on every PR is a deliberate trade-off to keep Dockerfiles
-registry-independent.
+**Why base images are always pushed:** The nova-compute Dockerfile, the one service
+Dockerfile left, references the base images via `docker-image://` URIs in build
+contexts. This Docker BuildKit feature requires the referenced image to exist in a
+registry — local images are not sufficient. Pushing small base images on every PR is
+a deliberate trade-off to keep that Dockerfile registry-independent.
 
-**Why PRs use single-arch for service images:** `docker/build-push-action` with
-`load: true` only supports single-platform builds. Multi-platform images cannot be loaded
-into the local Docker daemon. Since the inline verification step needs the image locally,
+**Why PRs use single-arch for service images:** `docker load` reads a single-platform
+image, and a multi-platform image cannot be loaded into the local Docker daemon. Since the inline verification step needs the image locally,
 PRs build only `linux/amd64`. Base images are still built for both platforms on PRs (by
 digest), so the native ARM runner is exercised without requiring a locally loaded result.
 
@@ -1292,12 +1336,13 @@ Each image has a unique cache scope per platform to prevent cross-arch cache col
 | --- | --- |
 | `python-base` | `python-base-linux-amd64` / `python-base-linux-arm64` |
 | `venv-builder` | `venv-builder-linux-amd64` / `venv-builder-linux-arm64` |
-| Service images | `<service>-<release>-linux-amd64` / `<service>-<release>-linux-arm64` (e.g., `keystone-2026.1-linux-amd64`) |
+| `nova-compute` | `nova-compute-<release>-linux-amd64` / `nova-compute-<release>-linux-arm64` |
 
 The `mode=max` setting caches all intermediate layers, not just the final image layer.
 
-A Nix-built image uses no `type=gha` scope: its build jobs read the Cachix cache
-`cobaltcore` ([Binary cache](./nix-image-build.md#binary-cache)).
+A Nix-built image, the service and Tempest images among them, uses no `type=gha` scope:
+its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
+([Binary cache](./nix-image-build.md#binary-cache)).
 
 ## Action Pinning
 
@@ -1378,8 +1423,8 @@ On pull requests:
 - No attestations are created for ephemeral PR builds.
 - PR CI time is not increased by SBOM/attestation steps.
 
-Base images are always pushed to GHCR (even on PRs) because downstream service builds
-reference them via `docker-image://` URIs. However, SBOM generation and attestation for
+Base images are always pushed to GHCR (even on PRs) because the nova-compute build
+references them via `docker-image://` URIs. However, SBOM generation and attestation for
 base images are still skipped on PRs — the composite action's `scan-mode` guard applies
 uniformly.
 
@@ -1662,27 +1707,28 @@ configuration:
 
 ## OCI Annotations
 
-Every container image receives OCI Image Spec annotations via a two-layer
+Every Docker-built container image receives OCI Image Spec annotations via a two-layer
 approach: static `LABEL` instructions in Dockerfiles provide baseline metadata for local
 builds, while `docker/metadata-action` in CI generates dynamic labels that supplement the
-static ones at push time.
+static ones at push time. A Nix-built image sets its labels in its Nix expression
+([Nix-Built Images](#nix-built-images)).
 
 ### Static Dockerfile Labels
 
 Each Dockerfile includes a `LABEL` instruction with four OCI annotations that are always
 present, regardless of whether the image is built locally or in CI:
 
-| Label | Value (example for keystone) |
+| Label | Value (example for nova-compute) |
 | --- | --- |
-| `org.opencontainers.image.title` | `keystone` |
-| `org.opencontainers.image.description` | `OpenStack keystone service` |
+| `org.opencontainers.image.title` | `nova-compute` |
+| `org.opencontainers.image.description` | `OpenStack nova-compute service` |
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 
 In `python-base` and `venv-builder`, the `LABEL` instruction is placed after the last
-`RUN` instruction. In `keystone`, the `LABEL` is placed in Stage 2 (runtime, `FROM
-python-base`) before the `USER` instruction — Stage 1 (build) labels are discarded by
-Docker's multi-stage build process.
+`RUN` instruction. In a multi-stage Dockerfile such as `nova-compute`'s, the `LABEL` is
+placed in the runtime stage before the `USER` instruction, because Docker discards the
+labels of the build stage.
 
 ### CI Metadata Action
 
@@ -1695,7 +1741,7 @@ labels. The action auto-generates dynamic labels from the GitHub context:
 | `org.opencontainers.image.revision` | `GITHUB_SHA` (40-character Git SHA) |
 | `org.opencontainers.image.source` | GitHub repository URL |
 | `org.opencontainers.image.url` | GitHub repository URL |
-| `org.opencontainers.image.version` | Git-derived version (or raw override for keystone) |
+| `org.opencontainers.image.version` | Git-derived version (or raw override for nova-compute) |
 
 The `labels` input of each metadata-action step provides the four custom labels (title,
 description, licenses, vendor). These supplement the auto-generated labels.
@@ -1713,31 +1759,28 @@ while the static labels serve as fallback for local builds where no metadata-act
 
 ### Nix-Built Images
 
-A Nix-built image carries the four static labels alone, set in its `image.nix`, and no
-metadata-action step runs for it. Without the five per-build labels and the
-`base.name` / `base.digest` pair, its digest moves only when an input of the flake
-moves; the build-provenance attestation of the merge job records the commit. See
+A Nix-built image carries four static labels, set in its Nix expression, and no
+metadata-action step runs for it. A service or Tempest image adds
+`org.opencontainers.image.version`, the upstream ref its lock pins (`29.0.0` for
+keystone 2026.1, the tempest version for Tempest); that label changes only with the
+lock. Without the per-build labels (`created`, `revision`, `source`, `url`) and the
+`base.name` / `base.digest` pair, the digest of a Nix-built image moves only when an
+input of the flake moves; the build-provenance attestation of the merge job records the
+commit. See
 [Labels and reproducibility](./nix-image-build.md#labels-and-reproducibility).
 
-### Keystone Version Override
+### Version Label from the Lock
 
-By default, `docker/metadata-action` derives `org.opencontainers.image.version` from the
-Git context (branch name or tag). For keystone, this would produce a Git-derived version
-rather than the upstream OpenStack release version (e.g., `28.0.0`).
-
-To ensure the OCI version annotation reflects the actual software version, the
-`Build service image` step passes a `type=raw` tag strategy as the `metadata-tags`
-input, which `build-push-image` hands to the `tags` input of its `meta` step:
-
-```yaml
-metadata-tags: |
-  type=raw,value=${{ steps.checkout-source.outputs.source-ref }}
-```
-
-This overrides the version to match the value from `source-refs.yaml` (e.g., `28.0.0`).
-The base images (`python-base`, `venv-builder`) do not specify a `tags` input and use the
-default Git-derived version strategy, which is appropriate for infrastructure images
-without an upstream software version.
+The upstream version of a service image comes from its lock: `nix/lib/service-image.nix`
+sets `org.opencontainers.image.version` to the `ref` of the lock's `sources.json`, the
+value `releases/<release>/source-refs.yaml` pins. The OCI version annotation therefore
+reflects the software version, not a Git-derived one, and no `type=raw` metadata
+strategy is involved. The nova-compute build keeps the `type=raw` strategy for the same
+purpose: its `Build compute image` step passes the source ref as the
+`metadata-tags` input, which `build-push-image` hands to the `tags` input of its `meta`
+step. The base images (`python-base`, `venv-builder`) use the default Git-derived
+version strategy, which is appropriate for infrastructure images without an upstream
+software version.
 
 > **Note:** The `tags` input on `docker/metadata-action` controls the
 > `org.opencontainers.image.version` label, not the image tags passed to
@@ -1752,31 +1795,28 @@ The `verify_build_images_workflow.sh` script validates OCI annotation configurat
 | Test | Validates |
 | --- | --- |
 | `test_metadata_action_steps_exist_in_build_base_images` | `build-push-image` has one `docker/metadata-action` step with the ID `meta`, and `build-base-images` calls `build-push-image` twice |
-| `test_metadata_action_step_exists_in_build_service_images` | `build-service-images` calls `build-push-image` once |
-| `test_service_metadata_uses_raw_version_strategy` | `build-service` step passes `metadata-tags` with `type=raw` and `steps.checkout-source.outputs.source-ref`, and the `meta` step forwards `inputs.metadata-tags` |
 | `test_base_metadata_steps_have_no_tags_override` | `build-python-base` and `build-venv-builder` do not pass a `metadata-tags` input |
 | `test_python_base_build_push_has_labels_input` | `build` step of `build-push-image` wires `steps.meta.outputs.labels` |
 | `test_venv_builder_build_push_has_labels_input` | `build-venv-builder` step passes `labels-title: venv-builder` |
-| `test_service_build_push_has_labels_input` | `build-service` step passes a `labels-title` with `matrix.service` |
-| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the `build-python-base`, `build-venv-builder` and `build-service` steps pass `labels-title` |
-| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the same three steps pass `labels-description` |
+| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the `build-python-base` and `build-venv-builder` steps pass `labels-title` |
+| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the same two steps pass `labels-description` |
 | `test_metadata_action_labels_include_oci_licenses` | The `meta` step includes `org.opencontainers.image.licenses=Apache-2.0` |
 | `test_metadata_action_labels_include_oci_vendor` | The `meta` step includes `org.opencontainers.image.vendor` |
 | `test_dockerfile_static_labels_python_base` | `images/python-base/Dockerfile` has `LABEL` for title, description, licenses, vendor |
 | `test_dockerfile_static_labels_venv_builder` | `images/venv-builder/Dockerfile` has `LABEL` for title, description, licenses, vendor |
-| `test_dockerfile_static_labels_keystone` | `images/keystone/Dockerfile` has `LABEL` for title, description, licenses, vendor in Stage 2 |
 
 ## Adding a New Service
 
 To add a new service (e.g., `nova`) to the build matrix:
 
-### 1. Create the Dockerfile
+### 1. Create the image expression
 
-Add a Dockerfile at `images/<service>/Dockerfile` following the two-stage pattern in
-`images/keystone/Dockerfile`. The Dockerfile must use named build contexts
-(`python-base`, `venv-builder`, `<service>`, `upper-constraints`) — not hardcoded paths.
-Include a `LABEL` instruction in the runtime stage with OCI annotations (title,
-description, licenses, vendor) — see [OCI Annotations](#oci-annotations).
+Add `images/<service>/image.nix`, a call of `nix/lib/service-image.nix` in the shape of
+`images/keystone/image.nix`: a header comment with the `# DEVIATION` line, the
+description `OpenStack <service> service`, and whatever the image adds to the venv (a
+WSGI script, runtime packages, state directories). Name only the arguments the file
+uses and end the argument set with `...`, because deadnix fails on an unused one.
+`checks.<system>.nix-lint` formats and lints it ([Lint](./nix-image-build.md#lint)).
 
 ### 2. Add the source ref
 
@@ -1787,20 +1827,20 @@ keystone: "28.0.0"
 nova: "31.0.0"        # ← new entry
 ```
 
-### 3. Add extra-packages entry
+### 3. Add extra-packages entry and write the locks
 
-Add the service to `releases/<release>/extra-packages.yaml` with its Python extras,
-additional pip packages, and runtime system packages. This file is the source of truth
-for build arguments `PIP_EXTRAS`, `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` — the
-service will not build without an entry here.
+Add the service to `releases/<release>/extra-packages.yaml` with its Python extras and
+additional pip packages; its runtime packages go into `image.nix`, and
+`verify_release_config.sh` fails a service block with an `apt_packages` key. Then run
+`make nix-lock`, which writes `nix/locks/<release>/<service>/` for every release, and
+commit the result: the flake outputs follow the lock directories, and `nix-lock-check`
+fails until the locks exist.
 
 ```yaml
 nova:
   pip_extras:
     - oslo_vmware
   pip_packages: []
-  apt_packages:
-    - libvirt0
 ```
 
 ### 4. Wire the change class, then verify matrix discovery
@@ -1815,7 +1855,8 @@ The [`changes`](#changes) job needs three edits in `.github/workflows/build-imag
 because its filter names cannot be generated:
 
 1. A `svc_<service>` paths filter listing `images/<service>/**`,
-   `patches/<service>/**`, `tests/container-images/verify_<service>.sh`, and
+   `nix/locks/*/<service>/**`, `patches/<service>/**`,
+   `tests/container-images/verify_<service>.sh`, and
    `operators/<service>/api/v1alpha1/catalogs/**` when the workflow verifies that
    service's option catalog.
 2. A <code v-pre>FILTER_svc_&lt;service&gt;: ${{ steps.filter.outputs.svc_&lt;service&gt; }}</code>
@@ -1830,28 +1871,28 @@ stays green.
 ### 5. (Optional) Add patches
 
 If the service requires patches, create patch files at
-`patches/<service>/<release>/*.patch`. The workflow applies them automatically when
-present; no workflow changes are needed.
+`patches/<service>/<release>/*.patch` and run `make nix-lock`, which lists them in the
+lock's `sources.json`; `nix/lib/python-env.nix` applies them to the source of the image
+and of the unit tests. No workflow changes are needed.
 
 ### 6. (Optional) Add constraint overrides
 
 If the service requires constraint overrides, add entries to
-`overrides/<release>/constraints.txt`. The `apply-constraint-overrides.sh` script
-processes them automatically.
+`overrides/<release>/constraints.txt` and run `make nix-lock`. The
+`apply-constraint-overrides.sh` script merges them into the constraints of the lock.
 
 ### 7. (Optional) Add test exclusions
 
 If the service has upstream unit tests that cannot pass in CI (environment-dependent,
 flaky, or infrastructure-requiring tests), create an exclusion file at
 `releases/<release>/test-excludes/<service>.txt`. The file uses stestr exclude-list
-format: one regex pattern per line, `#` for comments, blank lines allowed. The
-`test-service-images` job picks up the file automatically when present — no workflow
+format: one regex pattern per line, `#` for comments, blank lines allowed.
+`nix/lib/service-tests.nix` picks up the file automatically when present — no workflow
 changes are needed.
 
-The tag derivation, build context resolution, source checkout (via
-`checkout-service-source`), unit test execution (via `hack/ci-run-unit-tests.sh`), supply
-chain attestation (via `supply-chain-attest`), and verification steps all use matrix
-variables and work automatically for new services. The `verify-service-images`
+The tag derivation, the flake attribute of the build, the unit test run (via
+`nix/lib/service-tests.nix`), supply chain attestation (via `supply-chain-attest`), and
+verification steps all use matrix variables and work automatically for new services. The `verify-service-images`
 job derives its own image refs independently via its own matrix strategy. Note that
 adding a new service also requires creating a corresponding `verify_<service>.sh` test
 script in `tests/container-images/`; the inline PR verification in
@@ -1929,11 +1970,11 @@ releases/2026.1/
 └── upper-constraints.txt     # From openstack/requirements stable/2026.1
 ```
 
-`extra-packages.yaml` is required — the workflow reads it to resolve `PIP_EXTRAS`,
-`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required —
-the `build-tempest` job reads it to resolve the `TEMPEST_VERSION`,
-`BARBICAN_TEMPEST_PLUGIN_VERSION`, `KEYSTONE_TEMPEST_PLUGIN_VERSION` and
-`NEUTRON_TEMPEST_PLUGIN_VERSION` build arguments. See
+`extra-packages.yaml` is required — `hack/nix-lock.sh` reads the extras and pip
+packages of every service from it, and the nova-compute build reads its three build
+arguments. `test-refs.yaml` is required — the tempest lock pins its five keys (tempest
+and the barbican, keystone, neutron and cinder plugins). Then run `make nix-lock`, which
+writes the locks of the new release under `nix/locks/<release>/`, and commit them. See
 [Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for
 the YAML schema and `releases/2026.1/extra-packages.yaml` for a working example.
 
@@ -1949,7 +1990,8 @@ changes are needed. The job produces `service × release` matrices for all downs
 
 ### 3. (Optional) Add patches and overrides
 
-Create `patches/<service>/<release>/` and `overrides/<release>/constraints.txt` as needed.
+Create `patches/<service>/<release>/` and `overrides/<release>/constraints.txt` as
+needed, and run `make nix-lock` afterwards.
 
 ### 4. (Optional) Add test exclusions
 
@@ -1978,7 +2020,7 @@ The workflow triggers on pull requests only:
 
 | Event | Scope | Description |
 | --- | --- | --- |
-| `pull_request` | all branches | Runs when a changed path matches `images/**`, `releases/**`, `patches/**`, `scripts/**`, `hack/tempest/**`, `hack/gen-option-catalog.sh`, the keystone or glance option catalogs, `tests/container-images/**`, `tests/scripts/**`, `tests/tempest/test_retry_helpers.py`, `build-images.yaml` or `verify-container-images.yaml` |
+| `pull_request` | all branches | Runs when a changed path matches `images/**`, `releases/**`, `patches/**`, `scripts/**`, `hack/tempest/**`, `hack/gen-option-catalog.sh`, the keystone or glance option catalogs, `tests/container-images/**`, `tests/scripts/**`, `tests/tempest/test_retry_helpers.py`, `flake.nix`, `nix/lib/**`, `nix/pkgs/**`, the `build-nix-image` action, `build-images.yaml` or `verify-container-images.yaml` |
 
 ### Permissions and Concurrency
 
@@ -2072,11 +2114,13 @@ The build-images workflow depends on the following artifacts:
 
 | Artifact | Used by | Purpose |
 | --- | --- | --- |
-| `images/python-base/Dockerfile` | `build-base-images` | Python runtime base image |
-| `images/venv-builder/Dockerfile` | `build-base-images` | Build-stage image with uv and compilers |
-| `images/keystone/Dockerfile` | `build-service-images` | Keystone service image (two-stage build) |
-| `releases/2026.1/source-refs.yaml` | `build-service-images` | Upstream version resolution |
-| `releases/2026.1/upper-constraints.txt` | `build-service-images` | Python dependency pins |
-| `scripts/apply-constraint-overrides.sh` | `build-service-images` | Constraint override application |
+| `images/python-base/Dockerfile` | `build-base-images` | Python runtime base image of nova-compute |
+| `images/venv-builder/Dockerfile` | `build-base-images` | Build-stage image of nova-compute with uv and compilers |
+| `images/<service>/image.nix` | `build-service-images` | Service image (Nix expression over `nix/lib/service-image.nix`) |
+| `nix/locks/<release>/<service>/` | `build-service-images`, `test-service-images`, `nix-lock-check` | The lock of the service release: source pin, patches, resolved dependencies |
+| `flake.nix`, `flake.lock` | every Nix job | The flake inputs and outputs |
+| `releases/2026.1/source-refs.yaml` | `nix-lock-check`, `build-nova-compute-image` | Upstream version resolution |
+| `releases/2026.1/upper-constraints.txt` | `nix-lock-check`, `build-nova-compute-image` | Python dependency pins |
+| `scripts/apply-constraint-overrides.sh` | `nix-lock-check`, `build-nova-compute-image` | Constraint override application |
 
 :::

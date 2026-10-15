@@ -6,44 +6,38 @@ quadrant: infrastructure
 # Container Images
 
 Reference documentation for the container image build system. This covers
-the Dockerfile hierarchy, base image contents, release configuration file formats,
-named build context patterns, constraint override tooling, and local build instructions.
-The images the root flake builds instead of a Dockerfile are described in
-[Nix Image Build](./nix-image-build.md).
+the Dockerfile hierarchy, base image contents, the contents of every service
+image, release configuration file formats, named build context patterns,
+constraint override tooling, and local build instructions. The eight Python
+service images (keystone, horizon, glance, placement, barbican, neutron,
+cinder, nova), the Tempest image and `backup-shifter` are built by the root
+flake from `images/<name>/image.nix`, as
+[Nix Image Build](./nix-image-build.md) describes; the sections below name
+what each of them carries.
 
 ## Dockerfile Hierarchy
 
-The OpenStack service images follow a three-layer hierarchy. Each layer builds on the
+nova-compute is the one OpenStack service image left on the three-layer
+Docker hierarchy until #1407 moves it to Nix. Each layer builds on the
 previous one, separating concerns between runtime base, build tooling, and
 service-specific code.
 
 The figure follows one service image from the files of the repository to the
 image: which file feeds which step before the build, which stage starts from
-which base image, and what the two contexts and the three build args carry. The
-table names both stages of every image.
+which base image, and what the two contexts and the three build args carry. It
+shows the Docker lineage nova-compute still uses; the other service images
+build from Nix. The table names both stages of the nova-compute build.
 
 ![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
 
 | Image | Build stage, on `venv-builder` | Runtime stage, on `python-base` |
 | --- | --- | --- |
-| `keystone` | installs Keystone into the virtualenv | copies the virtualenv, adds runtime apt packages |
-| `horizon` | installs Horizon, pre-builds the static assets | copies the virtualenv and the static assets |
-| `glance` | installs Glance, `glance_store[s3]` and `lhafile` | copies the virtualenv, adds runtime apt packages |
-| `placement` | installs Placement, writes the WSGI entry | copies the virtualenv, adds runtime apt packages |
-| `barbican` | installs Barbican into the virtualenv | copies the virtualenv, adds runtime apt packages |
-| `neutron` | installs Neutron into the virtualenv | copies the virtualenv, adds runtime apt packages |
-| `cinder` | installs Cinder into the virtualenv | copies the virtualenv, adds runtime apt packages |
-| `nova` | installs Nova into the virtualenv. A stage `novnc`, on `python-base`, fetches the pinned noVNC tree | copies the virtualenv and noVNC, adds runtime apt packages |
 | `nova-compute` | installs Nova and `libvirt-python`, built against `libvirt-dev` | copies the virtualenv, adds host tools and the rootwrap posture |
 
-The `tempest` image builds on the same pair
-([Container Image](../testing/tempest-test-infrastructure.md#container-image)).
-
 The `venv-builder` image never runs in production. It is the `FROM` target of
-the build stages and the container the service unit tests run in. Service images
-(e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder` to
-install the service, then stage 2 extends `python-base` and copies only the
-virtualenv from stage 1. This ensures the final image contains no build tools.
+the nova-compute build stage, which extends `venv-builder` to install nova;
+the runtime stage extends `python-base` and copies only the virtualenv from
+it. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
 OpenStack code, and three of them build straight on `ubuntu:noble`:
@@ -56,8 +50,9 @@ ubuntu:noble
 └── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
 
-`backup-shifter` has no Dockerfile: the root flake builds it from
-`images/backup-shifter/image.nix` ([Nix Image Build](./nix-image-build.md)).
+`backup-shifter`, the eight Python service images and `tempest` have no
+Dockerfile: the root flake builds them from `images/<name>/image.nix`
+([Nix Image Build](./nix-image-build.md)).
 
 `openstack-hypervisor-operator` and `kvm-node-agent` compile Go programs and
 build on the two images the CobaltCore operator images use:
@@ -79,7 +74,8 @@ Each is described under [Release-independent images](#release-independent-images
 
 **Location:** `images/python-base/Dockerfile`
 
-The foundational runtime image for all OpenStack service containers.
+The runtime base of the nova-compute image, the one service image still built
+by Docker.
 
 | Property | Value |
 | --- | --- |
@@ -120,8 +116,8 @@ with dynamic labels (created, revision, source, url, version) — see
 **Location:** `images/venv-builder/Dockerfile`
 
 Build-stage image that extends `python-base` with compilation tools and a prepared
-Python virtualenv. This image is never deployed. It is the `FROM` target of the service
-build stages and the container the service unit tests run in.
+Python virtualenv. This image is never deployed. It is the `FROM` target of the
+nova-compute build stage, and it retires with that image in #1407.
 
 | Property | Value |
 | --- | --- |
@@ -142,12 +138,13 @@ build stages and the container the service unit tests run in.
 | `libssl-dev` | cryptography/pyOpenSSL compilation |
 | `python3-dev` | Python headers for C extensions |
 | `python3-venv` | `venv` module for virtualenv creation |
-| `qemu-utils` | `qemu-img`, which cinder's `TestFormatInspectors` shell out to when they build their fixture images. Not a build dependency: this container also runs the service unit tests |
+| `qemu-utils` | `qemu-img`, which cinder's `TestFormatInspectors` shell out to when they build their fixture images. Not a build dependency: the container ran the service unit tests until #1405, which moved them to `nix/lib/service-tests.nix` |
 
 **Pre-installed common packages:**
 
 The virtualenv includes five packages shared by all OpenStack services, version-pinned in
-`images/venv-builder/requirements.txt`:
+`images/venv-builder/requirements.txt`. `hack/nix-lock.sh` adds the same pins to every
+lock under `nix/locks/`:
 
 | Package | Purpose |
 | --- | --- |
@@ -162,7 +159,8 @@ reproducible — without pins they would resolve to whatever is latest on PyPI a
 The image stays release-independent: the pins are deliberately not taken from any single
 release's `upper-constraints.txt`. The OpenStack-dependency subset (`cryptography`,
 `pymemcache`, `pymysql`, `python-memcached`) is authoritatively re-pinned per release by
-service Dockerfiles via `uv pip install --constraint upper-constraints.txt`; `uwsgi` is not
+the nova-compute Dockerfile via `uv pip install --constraint upper-constraints.txt` and by
+the constraints of each lock; `uwsgi` is not
 an OpenStack dependency (it is absent from `upper-constraints.txt`), so its version is fixed
 here. Renovate tracks these pins through its native `pip_requirements` manager — major bumps
 are gated for manual review, minor/patch are automerged after a three-day soak.
@@ -174,7 +172,9 @@ licenses, and vendor are embedded in the Dockerfile for local build visibility.
 
 CI builds, verifies and publishes these images through the
 [Build Images Workflow](build-images-workflow.md). The figure shows that
-workflow on a pull request and on a push.
+workflow on a pull request and on a push. It shows the Docker lineage
+nova-compute still uses: the other service images build from Nix through the
+`build-nix-image` action, and their unit tests run as Nix builds.
 [PR vs Push Behavior](build-images-workflow.md#pr-vs-push-behavior) lists the
 differences aspect by aspect.
 
@@ -182,152 +182,113 @@ differences aspect by aspect.
 
 ### keystone
 
-**Location:** `images/keystone/Dockerfile`
+**Location:** `images/keystone/image.nix`, built from the lock
+`nix/locks/<release>/keystone/` ([Nix Image Build](./nix-image-build.md#service-images))
 
-The Keystone identity service image uses a two-stage build:
+The venv holds keystone with its `ldap` extra and uwsgi from the venv-builder
+pins. pyproject.nix generates no PBR `wsgi_scripts`, so `image.nix` writes the
+uWSGI entry script `/var/lib/openstack/bin/keystone-wsgi-public`; its callable
+matches the `wsgi_scripts` entry of keystone's `setup.cfg`. The
+keystone-operator launches uWSGI with `--wsgi-file` on that path.
 
-**Stage 1 (`build`)** — extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` for build-time injection of extras
-  and additional packages from `extra-packages.yaml` (passed by the CI workflow)
-- Mounts `upper-constraints.txt` and the Keystone source tree via named build contexts
-- Installs Keystone with extras into the virtualenv using `uv pip install --constraint`
-
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES` for build-time injection of runtime system packages
-  from `extra-packages.yaml` (passed by the CI workflow)
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-  (the `--link` flag enables parallel layer extraction and deduplication)
-- Installs runtime system packages via `apt-get install ${EXTRA_APT_PACKAGES}`
-- Sets `USER openstack` for non-root execution
-
-**Runtime packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `libapache2-mod-wsgi-py3` | Apache WSGI module for serving Keystone |
-| `libldap2` | LDAP client library (python-ldap runtime dependency) |
-| `libsasl2-2` | SASL authentication library (LDAP SASL bind support) |
-| `libxml2` | XML parsing library (lxml runtime dependency) |
+**Runtime packages:** none beyond the venv. python-ldap brings `libldap` and
+`libsasl` in its closure. The image carries no Apache module, because keystone
+runs under uWSGI.
 
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Keystone dependencies
 - `keystone-manage` CLI available via `PATH`
 
-**OCI labels:** The `LABEL` instruction is placed in Stage 2 (runtime) before
-the `USER` instruction. Labels added in Stage 1 (build) are discarded by Docker's
-multi-stage build process — only the runtime stage labels appear on the final image. In
-CI, `docker/metadata-action` overrides `org.opencontainers.image.version` with the
-upstream OpenStack release version from `source-refs.yaml` via a `type=raw` tag strategy.
+**Build and verify:**
+
+```bash
+nix build .#keystone-2026_1-image && ./result | docker load
+bash tests/container-images/verify_keystone.sh keystone:2026.1
+```
+
+**OCI labels:** the five labels of
+[Labels and reproducibility](./nix-image-build.md#labels-and-reproducibility);
+`org.opencontainers.image.version` is the keystone ref of the lock.
 
 ### horizon
 
-**Location:** `images/horizon/Dockerfile`
+**Location:** `images/horizon/image.nix`, built from the lock
+`nix/locks/<release>/horizon/`
 
-The Horizon dashboard image uses the same two-stage build as Keystone, with two
-horizon-specific twists: static assets are pre-built at image-build time, and the
-`horizon===` pin in `upper-constraints.txt` must be stripped before the build
-(see [Constraint Overrides](#constraint-overrides)).
+The `horizon===` pin in `upper-constraints.txt` is stripped before the lock is
+resolved (see [Constraint Overrides](#constraint-overrides)). Two parts of the
+image are horizon's own:
 
-**Stage 1 (`build`)** — extends `venv-builder`:
+- The static assets are built with the image. A derivation copies
+  `openstack_dashboard` out of the venv into a writable tree, replaces
+  `local/local_settings.py` with build-time settings, and runs
+  `collectstatic --noinput` and `compress --force` (django-compressor offline
+  compression). The assets are written to `/var/lib/openstack/horizon-static`
+  with the offline manifest at `dashboard/manifest.json`. The build-time settings use
+  the in-process cache backend: horizon wraps the Angular template-cache
+  preloads in a cache block (`horizon/_scripts.html`), and with an unreachable
+  Memcached django-compressor skips that block and every page render fails at
+  runtime with `OfflineGenerationError`
+- The packaged `openstack_dashboard/local/local_settings.py` is a link to
+  `/etc/openstack-dashboard/local_settings.py`, where the horizon-operator
+  mounts the rendered Django settings ConfigMap. The image creates
+  `/etc/openstack-dashboard/`, owned by root; the link dangles until the
+  ConfigMap is mounted
 
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for horizon today;
-  the wiring mirrors keystone so `extra-packages.yaml` stays the single edit point)
-- Mounts `upper-constraints.txt` and the Horizon source tree via named build contexts
-  (`--build-context horizon=...` / `--build-context upper-constraints=...`)
-- Installs Horizon into the virtualenv using `uv pip install --constraint`
-- Pre-builds static assets: a throwaway `local_settings.py` is written into the
-  installed `openstack_dashboard/local/` package, `collectstatic --noinput` and
-  `compress --force` (django-compressor offline compression) run against it, and the
-  throwaway file is removed. Assets land in `/var/lib/openstack/horizon-static` with
-  the offline manifest at `dashboard/manifest.json`
-
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
-  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which python-base
-  does not ship. The dashboard is otherwise pure Python; the pymemcache session-cache
-  client comes from the venv-builder base venv
-- Copies `/var/lib/openstack` (virtualenv plus pre-built static assets) from the build
-  stage using `COPY --from=build --link`
-- Creates `/etc/openstack-dashboard/` and symlinks the packaged
-  `openstack_dashboard/local/local_settings.py` to
-  `/etc/openstack-dashboard/local_settings.py`, where the horizon-operator mounts the
-  rendered Django settings ConfigMap. The symlink dangles at build time by design
-- Sets `USER openstack` for non-root execution
-
-**Runtime packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+**Runtime packages:** none beyond the venv; the pymemcache session-cache client
+and uwsgi come from the venv-builder pins.
 
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Serves via uWSGI loading `openstack_dashboard.wsgi` directly (the module ships
   `application`) — no hand-written wsgi script, and static assets are served through
   `uwsgi --static-map /static=/var/lib/openstack/horizon-static`
 - i18n message catalogs are not compiled (`compilemessages` needs gettext at build
   time); the dashboard renders in English. Deferred until a locale requirement lands
 
-**Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
-`hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
-horizon's upstream `tools/unit_tests.sh` driver in the pytest path. Horizon
-27.0.0 (2026.2) no longer ships that driver, so for it the runner calls pytest
-four times the way that tag's `tox.ini` does, once per project with its own
-Django settings module (`openstack_auth`, `horizon`, `openstack_dashboard` and
-its plugin tests).
+**Unit tests:** horizon ships no `.stestr.conf`, and its Django suite runs
+under pytest. `nix/lib/service-tests.nix` branches on `.stestr.conf` presence
+and delegates to horizon's upstream `tools/unit_tests.sh` driver in the pytest
+path, without a database. Horizon 27.0.0 (2026.2) no longer ships that driver,
+so for it the run calls pytest four times the way that tag's `tox.ini` does,
+once per project with its own Django settings module (`openstack_auth`,
+`horizon`, `openstack_dashboard` and its plugin tests).
+
+**Build and verify:**
+
+```bash
+nix build .#horizon-2026_1-image && ./result | docker load
+bash tests/container-images/verify_horizon.sh horizon:2026.1
+```
 
 ### glance
 
-**Location:** `images/glance/Dockerfile`
+**Location:** `images/glance/image.nix`, built from the lock
+`nix/locks/<release>/glance/`
 
-The Glance service image uses the same two-stage build as Keystone. The
-operator runs the API under uWSGI on every supported release with the
-hand-shipped `/var/lib/openstack/bin/glance-wsgi-api` entry script. Glance's
-stock module path (`glance.wsgi.api:application`) is unusable under the
-operator's config layout: `wsgi_app.init_app()` ignores `sys.argv` (and so
-uWSGI's `--pyargv`) and reads only `$OS_GLANCE_CONFIG_DIR/glance-api.conf`, so
-the shim redirects config discovery to the two mounted `--config-dir` roots
-instead.
+The operator runs the API under uWSGI on every supported release with the
+hand-shipped `/var/lib/openstack/bin/glance-wsgi-api` entry script, which
+`image.nix` installs from `images/glance/glance-wsgi-api` with mode 0555 (the
+path the glance-operator's `--wsgi-file` flag references). Glance's stock
+module path (`glance.wsgi.api:application`) is unusable under the operator's
+config layout: `wsgi_app.init_app()` ignores `sys.argv` (and so uWSGI's
+`--pyargv`) and reads only `$OS_GLANCE_CONFIG_DIR/glance-api.conf`, so the shim
+redirects config discovery to the two mounted `--config-dir` roots instead.
 
-**Stage 1 (`build`)** — extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` (unused by glance today; kept for parity) and
-  `ARG PIP_PACKAGES`, which carries two packages: `glance_store[s3]` (the S3 store
-  driver's extra lives on `glance_store`, not `glance`, and pulls `boto3`, `botocore`,
-  and `s3transfer`, all pinned in `upper-constraints.txt`) and `lhafile` (optional
-  LHA-archive support for the `image_decompression` image-import plugin, pinned in
-  `overrides/<release>/constraints.txt`)
-- Mounts `upper-constraints.txt` and the Glance source tree via named build
-  contexts (`--build-context glance=...` / `--build-context upper-constraints=...`)
-- Installs Glance into the virtualenv using `uv pip install --constraint`. The
-  `--prefix` install generates the `glance-api` and `glance-manage` console
-  scripts from `setup.cfg` (it only skips PBR `wsgi_scripts`); the uWSGI entry
-  script is not generated but copied in during the runtime stage
-
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`, `qemu-utils`,
-  `python3-rados` and `python3-rbd`: the venv-builder-compiled uwsgi binary links
-  `libpython3.12.so.1.0`, which python-base does not ship (the same rationale as
-  horizon), and the `image_conversion` image-import plugin shells out to `qemu-img info`
-  and `qemu-img convert` on the staged image. The two bindings carry the `rados` and
-  `rbd` modules of the RBD store. The store runs no `ceph` or `rbd` binary, so the
-  image carries no `ceph-common`
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Copies the `glance-wsgi-api` uWSGI entry script to
-  `/var/lib/openstack/bin/glance-wsgi-api` (the path the glance-operator's
-  `--wsgi-file` flag references)
-- Links the Ceph bindings into `/var/lib/openstack/ceph-bindings` and writes
-  `ceph-bindings.pth` into the virtualenv's `site-packages` (see below)
-- Sets `USER openstack` for non-root execution
+The venv holds glance with the two `pip_packages` of
+`releases/<release>/extra-packages.yaml`: `glance_store[s3]` (the S3 store
+driver's extra lives on `glance_store`, not `glance`, and pulls `boto3`,
+`botocore` and `s3transfer`, all pinned in `upper-constraints.txt`) and
+`lhafile` (optional LHA-archive support for the `image_decompression`
+image-import plugin, pinned in `overrides/<release>/constraints.txt`). Its
+`glance-api` and `glance-manage` console scripts come from `setup.cfg`.
 
 The image stays config-free: the glance-operator mounts `glance-api.conf`,
 `glance-api-paste.ini`, and policy, and provides the staging/tasks paths as
@@ -337,33 +298,26 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 
 | Package | Purpose |
 | --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
 | `qemu-utils` | `qemu-img`, which the `image_conversion` image-import plugin runs on the staged image (`qemu-img info`, `qemu-img convert`) |
-| `python3-rados` | The `rados` module. `glance_store/_drivers/rbd.py` imports it behind a guard, and `configure_add` raises `BadStoreConfiguration` ("The required libraries(rbd and rados) are not available") without it |
-| `python3-rbd` | The `rbd` module, imported behind the same guard and checked by the same `configure_add` test |
+| `rados`, `rbd` | The modules of `nix/pkgs/ceph-bindings.nix`. `glance_store/_drivers/rbd.py` imports both behind a guard, and `configure_add` raises `BadStoreConfiguration` ("The required libraries(rbd and rados) are not available") without them. The store runs no `ceph` or `rbd` binary, so the image carries no ceph CLI |
 
-**Ceph bindings in the virtualenv:** `images/venv-builder/Dockerfile` creates
-the virtualenv with `python3 -m venv`, which excludes the system site
-packages. The Ceph bindings have no PyPI wheels: noble installs `rados` and
-`rbd` into `/usr/lib/python3/dist-packages`, a directory
-`/var/lib/openstack/bin/python` never searches. It stays that way, because the
-directory also receives every other `python3-*` package an apt entry pulls in,
-at versions the upper constraints never resolved. After the package install,
-the runtime stage links the two extension modules (`rados.cpython-*.so`,
-`rbd.cpython-*.so`) into `/var/lib/openstack/ceph-bindings` and writes
-`ceph-bindings.pth` into the directory that `sysconfig.get_path("purelib")`
-reports inside the virtualenv
-(`/var/lib/openstack/lib/python3.12/site-packages`), with the single line
-`/var/lib/openstack/ceph-bindings`. Python's `site` module appends that
-directory to `sys.path`. `rados` and `rbd` resolve, and no other module from
-`dist-packages` does. The step runs outside the build-arg guard. Without
-`--build-arg EXTRA_APT_PACKAGES` the two globs match nothing, and the entry
-names an empty directory. When `python3-rbd` is installed, the step imports
-`rados` and `rbd` with `/var/lib/openstack/bin/python` (`rbd` imports
-`rados`), so a module file the globs miss or a failed link fails the build. On
-a push to `main` the verify scripts run only after the tag is published, so
-this check is the one that keeps such an image from shipping. The cinder and
-nova-compute images write the same file and run the same check.
+**Ceph bindings in the virtualenv:** the Ceph bindings have no PyPI wheels.
+`nix/pkgs/ceph-bindings.nix` builds the two extension modules for Python 3.12
+from the ceph source of `nixpkgs-images`, against its `librados` and `librbd`.
+`nix/lib/service-image.nix` puts their directory at
+`/var/lib/openstack/ceph-bindings` and writes `ceph-bindings.pth` with that
+single line into the venv's own `site-packages`. The venv's `bin/python` pins
+`sys.prefix` to the venv's store path, so the `.pth` has to live in the venv
+itself. Python's `site` module appends the directory to `sys.path`, and `rados`
+and `rbd` resolve. The cinder image carries the same two modules.
+
+**How a patch reaches the image:** `hack/nix-lock.sh` lists every
+`patches/<service>/<release>/*.patch` in the `patches` array of the lock's
+`sources.json`, and `nix/lib/python-env.nix` applies them with
+`pkgs.applyPatches` to the fetched source before the venv and the unit tests
+are built from it. Adding or retiring a patch is followed by `make nix-lock`;
+`nix-lock-check` fails until the lock names the new set. A patch keeps its
+`Applies-to` line and its assertion in the verify script.
 
 **Source patch:**
 `patches/glance/2026.1/0001-normalize-scheme-prefixed-s3-host-in-location-repair.patch`
@@ -432,11 +386,12 @@ that carries neither function fails the test.
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Glance dependencies and the S3 store driver
 - `glance-manage` and `glance-api` CLIs available via `PATH`
 
-**Unit tests:** glance ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+**Unit tests:** glance ships a `.stestr.conf`, so `nix/lib/service-tests.nix`
 runs its suite under stestr (the default path, as for keystone). No release
 carries an exclude file. The first CI run of the 33.0.0 suite counted 2,423
 tests with the one `test_new_image_with_location` failure the source patch
@@ -445,68 +400,50 @@ above removes; a run of the patched tree in the venv-builder container
 2,422 passed, 1 skipped.
 
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
-gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
-driver's boto3 resolution, non-root execution, and the absence of build tools.
+gate — it verifies the CLIs, importability, the uWSGI entry script, that uwsgi
+imports `glance`, the S3 store driver's boto3 resolution, non-root execution, and the absence of build tools.
 On 2026.1, its Test 12 fails against an image built without the
 source patch above. Test 13 covers the RBD store's bindings with the checks
 of `tests/lib/ceph_bindings.sh`, which the cinder and nova-compute scripts
-share: `ceph-bindings.pth` holds its single line, `rados` and `rbd` import and
-resolve to the files in `/usr/lib/python3/dist-packages`, and that directory is
-absent from the virtualenv's `sys.path`. The store's guard attributes `rbd` and
+share, with the `nix` origin: `ceph-bindings.pth` holds its single line,
+`rados` and `rbd` import and resolve below the store path of
+`nix/pkgs/ceph-bindings.nix`, and `/usr/lib/python3/dist-packages` is absent
+from the virtualenv's `sys.path`. The store's guard attributes `rbd` and
 `rados` must not be `None`, and `command -v ceph` and `command -v rbd` must
-fail, so a manifest edit that adds `ceph-common` to the glance image fails the
-build. Against an image built
-without `--build-arg EXTRA_APT_PACKAGES`, the script fails tests 8, 9 and 13,
-and Test 13 names `No module named 'rados'`.
+fail, so an `image.nix` edit that adds the ceph CLI to the glance image fails
+the build.
+
+**Build and verify:**
+
+```bash
+nix build .#glance-2026_1-image && ./result | docker load
+bash tests/container-images/verify_glance.sh glance:2026.1
+```
 
 ### placement
 
-**Location:** `images/placement/Dockerfile`
+**Location:** `images/placement/image.nix`, built from the lock
+`nix/locks/<release>/placement/` of the project `openstack-placement`
 
-The Placement service image uses the same two-stage build as Keystone. Its one
-service-specific twist is the WSGI entry script: upstream ships no usable one
-for either release. 15.0.0 (2026.1) packages with `pyproject.toml` and
-declares no WSGI script at all. 16.0.0 (2026.2) declares only
-`placement-manage` and `placement-status` under `[project.scripts]` and no WSGI script either. The
-entry is therefore written by hand in the build stage under the upstream name,
-for every release, with no release conditional.
-
-**Stage 1 (`build`)** — extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for placement
-  today; the wiring mirrors the other service images so `extra-packages.yaml`
-  stays the single edit point)
-- Mounts `upper-constraints.txt` and the Placement source tree via named build
-  contexts (`--build-context placement=...` /
-  `--build-context upper-constraints=...`)
-- Installs Placement into the virtualenv using `uv pip install --constraint`.
-  The `--prefix` install generates the `placement-manage` and `placement-status`
-  console scripts (it only skips PBR `wsgi_scripts`)
-- Writes `/var/lib/openstack/bin/placement-api` — a two-line entry that calls
-  `placement.wsgi.init_application()` — and marks it executable
-
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
-  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
-  python-base does not ship (the same rationale as glance and horizon).
-  Placement is otherwise pure Python at runtime
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Sets `USER openstack` for non-root execution
+The image's one service-specific part is the WSGI entry script: upstream ships
+no usable one for either release. 15.0.0 (2026.1) packages with
+`pyproject.toml` and declares no WSGI script at all. 16.0.0 (2026.2) declares
+only `placement-manage` and `placement-status` under `[project.scripts]` and
+no WSGI script either. `image.nix` therefore writes
+`/var/lib/openstack/bin/placement-api`, a two-line entry that calls
+`placement.wsgi.init_application()`, under the upstream name for every
+release.
 
 The image stays config-free: placement locates its configuration via the
 `OS_PLACEMENT_CONFIG_DIR` environment variable set by the operator.
 
-**Runtime packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+**Runtime packages:** none beyond the venv.
 
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Placement dependencies
 - `placement-manage` and `placement-status` CLIs available via `PATH`
 - The uWSGI entry script at `/var/lib/openstack/bin/placement-api`
@@ -514,70 +451,53 @@ The image stays config-free: placement locates its configuration via the
 **Image contract check:** `tests/container-images/verify_placement.sh` is the
 hard gate — it verifies the CLIs, importability, the uWSGI entry script
 (present, executable, parsable, and its import target resolvable), that uwsgi
-runs, non-root execution, and the absence of build tools.
+runs and imports `placement`, non-root execution, and the absence of build tools.
+
+**Build and verify:**
+
+```bash
+nix build .#placement-2026_1-image && ./result | docker load
+bash tests/container-images/verify_placement.sh placement:2026.1
+```
 
 ### barbican
 
-**Location:** `images/barbican/Dockerfile`
+**Location:** `images/barbican/image.nix`, built from the lock
+`nix/locks/<release>/barbican/`
 
-The Barbican service image uses the same two-stage build as Keystone. It ships
-no WSGI entry script at all. Both releases ship `barbican/wsgi/api.py` with a
-module-level `application`, so the barbican-operator launches uWSGI with the
-stock module path `barbican.wsgi.api:application` against config mounted at
-`/etc/barbican/`. Placement's entry script is written by hand because upstream
-ships no usable one, and glance carries the `glance-wsgi-api` shim because its
-stock module path ignores the operator's config layout. Barbican needs neither.
-
-**Stage 1 (`build`)** — extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for barbican
-  today; the wiring mirrors the other service images so `extra-packages.yaml`
-  stays the single edit point)
-- Mounts `upper-constraints.txt` and the Barbican source tree via named build
-  contexts (`--build-context barbican=...` /
-  `--build-context upper-constraints=...`)
-- Installs Barbican into the virtualenv using `uv pip install --constraint`.
-  The `--prefix` install generates the console scripts from `setup.cfg`. It
-  skips only the PBR `wsgi_scripts` entry `barbican-wsgi-api`, which no
-  hand-written script replaces
-
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
-  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
-  python-base does not ship (the same rationale as glance, horizon, and
-  placement). Barbican is otherwise pure Python at runtime
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Sets `USER openstack` for non-root execution
+The image ships no WSGI entry script at all. Both releases ship
+`barbican/wsgi/api.py` with a module-level `application`, so the
+barbican-operator launches uWSGI with the stock module path
+`barbican.wsgi.api:application` against config mounted at `/etc/barbican/`.
+Placement's entry script is written by hand because upstream ships no usable
+one, and glance carries the `glance-wsgi-api` shim because its stock module
+path ignores the operator's config layout. Barbican needs neither.
 
 The image stays config-free: the barbican-operator mounts `barbican.conf` and
 `barbican-api-paste.ini` under `/etc/barbican/`.
 
-**Runtime packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+**Runtime packages:** none beyond the venv.
 
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Barbican dependencies, including
   the in-tree vault secret-store plugin and castellan
 - `barbican-manage` and `barbican-status` CLIs available via `PATH`
 - No WSGI entry script; the service is launched via the
   `barbican.wsgi.api:application` module path
 
-**Unit tests:** barbican ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+**Unit tests:** barbican ships a `.stestr.conf`, so `nix/lib/service-tests.nix`
 runs its suite under stestr (the default path, as for keystone).
 
 **Image contract check:** `tests/container-images/verify_barbican.sh` is the
 hard gate — it verifies the CLIs, importability, that the `vault_plugin` and
 `castellan.drivers` `vault` stevedore entry points load, that
 `barbican.wsgi.api` resolves and binds `application` to something other than
-the `None` sentinel, that uwsgi runs, non-root execution, and the absence of
-build tools. Both plugin halves are loaded through their entry-point metadata
+the `None` sentinel, that uwsgi runs and imports `barbican`, non-root
+execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI
@@ -593,42 +513,29 @@ and a binding in a nested scope is a different symbol. A module whose only
 module-level binding is that sentinel is rejected; otherwise uWSGI binds
 `application` to `None` and every request fails.
 
+**Build and verify:**
+
+```bash
+nix build .#barbican-2026_1-image && ./result | docker load
+bash tests/container-images/verify_barbican.sh barbican:2026.1
+```
+
 ### neutron
 
-**Location:** `images/neutron/Dockerfile`
+**Location:** `images/neutron/image.nix`, built from the lock
+`nix/locks/<release>/neutron/`
 
-The Neutron service image uses the same two-stage build as Keystone. It ships
-no WSGI entry script. No release ships a `neutron-server` script.
-`neutron/wsgi/api.py` is byte-identical at 28.0.1 (2026.1) apart from one
-argument 29.0.0 (2026.2) adds, `prog='neutron-api'`, to the `boot_server` call.
-Both tags bind a module-level `application` inside a
-`threading.Lock()` block, so the neutron-operator launches uWSGI with
-`--module neutron.wsgi.api` and lets the process find its configuration
-through the `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES` environment
-variables. 28.0.1 declares no WSGI script.
-
-**Stage 1 (`build`)** extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for neutron
-  today; the wiring mirrors the other service images so `extra-packages.yaml`
-  stays the single edit point)
-- Mounts `upper-constraints.txt` and the Neutron source tree via named build
-  contexts (`--build-context neutron=...` /
-  `--build-context upper-constraints=...`)
-- Installs Neutron into the virtualenv using `uv pip install --constraint`.
-  The `--prefix` install generates the console scripts declared in
-  `pyproject.toml` (28.0.1): `neutron-db-manage`,
-  `neutron-status`, `neutron-periodic-workers`,
-  `neutron-ovn-maintenance-worker`, `neutron-ovn-metadata-agent` and
-  `neutron-ovn-db-sync-util`
-
-**Stage 2 (runtime)** extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries four packages: the shared
-  libpython the venv-builder-compiled uwsgi links against, plus the
-  `ovsdb-client`, `haproxy` and `ip` binaries neutron shells out to
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Sets `USER openstack` for non-root execution
+The image ships no WSGI entry script. No release ships a `neutron-server`
+script. `neutron/wsgi/api.py` is byte-identical at 28.0.1 (2026.1) apart from
+one argument 29.0.0 (2026.2) adds, `prog='neutron-api'`, to the `boot_server`
+call. Both tags bind a module-level `application` inside a `threading.Lock()`
+block, so the neutron-operator launches uWSGI with `--module neutron.wsgi.api`
+and lets the process find its configuration through the
+`OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES` environment variables.
+The venv carries the console scripts declared in `pyproject.toml` (28.0.1):
+`neutron-db-manage`, `neutron-status`, `neutron-periodic-workers`,
+`neutron-ovn-maintenance-worker`, `neutron-ovn-metadata-agent` and
+`neutron-ovn-db-sync-util`.
 
 The image stays config-free. The neutron-operator supplies the configuration
 through `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES`, and either
@@ -642,17 +549,17 @@ points `[DEFAULT] api_paste_config` at the shipped package data file
 | --- | --- |
 | `haproxy` | The metadata agent spawns `haproxy -f <cfg>` per network (`neutron/agent/metadata/driver_base.py`) |
 | `iproute2` | `ip`, which that agent uses for `ip netns exec` (`neutron/agent/linux/ip_lib.py`) |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
-| `openvswitch-common` | `ovsdb-client`, which `pre_fork_initialize` shells out to (`neutron/common/ovn/utils.py`); without it every API worker dies with `[Errno 2] No such file or directory: 'ovsdb-client'` |
+| `procps` | `sysctl`, which that agent runs through `ip netns exec` in every namespace it creates (`IpNetnsCommand.add` in `neutron/agent/linux/ip_lib.py`); without it no network gets its haproxy |
+| `openvswitch` | `ovsdb-client`, which `pre_fork_initialize` shells out to (`neutron/common/ovn/utils.py`); without it every API worker dies with `[Errno 2] No such file or directory: 'ovsdb-client'` |
 
-Noble ships Open vSwitch 3.3.9. The OVSDB wire protocol is schema-independent,
-so that client talks to the OVN 26.03 server.
+The four come from `nixpkgs-images`, and their binaries are on the image's
+`PATH`. The OVSDB wire protocol is schema-independent, so the client talks to
+the OVN 26.03 server.
 
 The virtualenv holds `ovs` 3.7.0 (2026.1) and 3.7.1 (2026.2), whose
 `ovs/dns_resolve.py` resolves no hostname without the `unbound` Python module.
-The image ships no `python3-unbound`: the distribution package installs into
-the system interpreter, which the virtualenv under `/var/lib/openstack` does
-not see, so `import unbound` inside the image raises `ModuleNotFoundError`.
+The image ships no `unbound` module, so `import unbound` inside the image
+raises `ModuleNotFoundError`.
 Per decision D9 of issue #898, `OVNCentral` publishes IP addresses in
 `status.dbAddress` and `status.internalDbAddress`, and the neutron-operator
 renders `[ovn] ovn_nb_connection` and `ovn_sb_connection` from those.
@@ -660,28 +567,28 @@ renders `[ovn] ovn_nb_connection` and `ovn_sb_connection` from those.
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Neutron dependencies
 - The console scripts listed above available via `PATH`
 - No WSGI entry script; the service is launched via the `neutron.wsgi.api`
   module path
 
-**Unit tests:** neutron ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
-runs its suite under stestr (the default path, as for keystone). The script
-appends `--exclude-list /workspace/test-excludes/neutron.txt` only when
-`releases/<release>/test-excludes/neutron.txt` exists, and no release
-excludes a test: the first runs at 27.0.3, 28.0.1 and 29.0.0 (22,093 tests)
-hit no environment-dependent failure. At roughly 21,000 tests the suite is the
-largest in the tree.
+**Unit tests:** neutron ships a `.stestr.conf`, so `nix/lib/service-tests.nix`
+runs its suite under stestr (the default path, as for keystone), with
+`releases/<release>/test-excludes/neutron.txt` and the sandbox exclude list.
+No release file excludes a test: the first runs at 27.0.3, 28.0.1 and 29.0.0
+(22,093 tests) hit no environment-dependent failure. At roughly 21,000 tests
+the suite is the largest in the tree.
 
 **Image contract check:** `tests/container-images/verify_neutron.sh` is the
 hard gate. Its 12 tests cover `neutron-db-manage --help` and
 `neutron-status --help`, the importability of `neutron` and of the `ovs` and
 `ovsdbapp` client libraries, the presence of `api-paste.ini`, and `--help` on
 the four companion console scripts. `ovsdb-client --version` naming Open
-vSwitch, `haproxy -v` and `ip -V` prove the apt wiring. The
-remaining tests check non-root execution, the absence of build tools, and that
-uwsgi runs. The WSGI check inspects the module instead of importing it:
+vSwitch, `haproxy -v`, `ip -V` and `sysctl --version` prove the four runtime
+packages. The remaining tests check non-root execution, the absence of build
+tools, and that uwsgi runs and imports `neutron`. The WSGI check inspects the module instead of importing it:
 importing `neutron.wsgi.api` executes `server.boot_server(api.api_server)`,
 which reads the configuration the operator mounts and the bare image does not
 carry. So it pairs `importlib.util.find_spec` for the module path with an
@@ -689,55 +596,40 @@ carry. So it pairs `importlib.util.find_spec` for the module path with an
 binding of `application` is the `None` sentinel. Pointed at a barbican image,
 the script fails in each of its first nine tests.
 
+**Build and verify:**
+
+```bash
+nix build .#neutron-2026_1-image && ./result | docker load
+bash tests/container-images/verify_neutron.sh neutron:2026.1
+```
+
 ### cinder
 
-**Location:** `images/cinder/Dockerfile`
+**Location:** `images/cinder/image.nix`, built from the lock
+`nix/locks/<release>/cinder/`
 
-The Cinder service image uses the same two-stage build as Keystone. It ships
-no WSGI entry script. `cinder/wsgi/api.py` is byte-identical at 28.0.0
+The image ships no WSGI entry script. `cinder/wsgi/api.py` is byte-identical at 28.0.0
 (2026.1) and 29.0.0 (2026.2), and both tags bind a
 module-level `application` inside a `threading.Lock()` block. The
 cinder-operator launches uWSGI with
 `--module cinder.wsgi.api:application` and `--pyargv "--config-dir <dir>"`,
 because `initialize_application()` reads `CONF(sys.argv[1:])`.
 
-**Stage 1 (`build`)** extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for cinder
-  today; the wiring mirrors the other service images so `extra-packages.yaml`
-  stays the single edit point)
-- Mounts `upper-constraints.txt` and the Cinder source tree via named build
-  contexts (`--build-context cinder=...` /
-  `--build-context upper-constraints=...`)
-- Installs Cinder into the virtualenv using `uv pip install --constraint`.
-  The `--prefix` install generates the nine console scripts declared in
-  `pyproject.toml` (28.0.0): `cinder-api`,
-  `cinder-backup`, `cinder-manage`, `cinder-rootwrap`, `cinder-rtstool`,
-  `cinder-scheduler`, `cinder-status`, `cinder-volume` and
-  `cinder-volume-usage-audit`
-
-**Stage 2 (runtime)** extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries six packages: the shared
-  libpython the venv-builder-compiled uwsgi links against, the `mount.nfs` and
-  `qemu-img` binaries the volume drivers reach for, and the Ceph client the RBD
-  volume and backup drivers use (`ceph-common` for the `ceph` and `rbd` tools,
-  `python3-rados` and `python3-rbd` for the bindings). The `sudo` of the root
-  helper comes from `python-base`
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Creates the five state directories under `/var/lib/cinder`, empty and owned
-  by UID/GID 42424
-- Copies `cinder-amqp-ready` to `/var/lib/openstack/bin/cinder-amqp-ready`
-  with mode 0755
-- Links the Ceph bindings and writes `ceph-bindings.pth`, as the
-  [glance](#glance) image does
-- Sets `USER openstack` for non-root execution
+The venv carries the nine console scripts declared in `pyproject.toml`
+(28.0.0): `cinder-api`, `cinder-backup`, `cinder-manage`, `cinder-rootwrap`,
+`cinder-rtstool`, `cinder-scheduler`, `cinder-status`, `cinder-volume` and
+`cinder-volume-usage-audit`; at 29.0.0 it carries the `s3`, `gcs` and `swift`
+extras of `releases/2026.2/extra-packages.yaml`. `image.nix` adds the five
+state directories under `/var/lib/cinder`, empty and owned by UID/GID 42424
+together with `/var/lib/cinder` itself, and installs `cinder-amqp-ready` at
+`/var/lib/openstack/bin/cinder-amqp-ready` with mode 0555. The root helper's
+`sudo` comes from `nix/lib/service-image.nix`.
 
 The image stays config-free. The package data files `api-paste.ini`,
 `resource_filters.json`, `rootwrap.conf` and `rootwrap.d/volume.filters` land
 under `/var/lib/openstack/etc/cinder/` at both tags, declared under
 `[tool.setuptools.data-files]` in `pyproject.toml` at 28.0.0 and 29.0.0.
-Nothing in the Dockerfile copies `etc/cinder/` by hand, and the contract script asserts the four files. The
+Nothing in `images/cinder/image.nix` copies `etc/cinder/` by hand, and the contract script asserts the four files. The
 cinder-operator points `api_paste_config` and `resource_query_filters_file` at
 those absolute paths.
 
@@ -745,27 +637,18 @@ those absolute paths.
 
 | Package | Purpose |
 | --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
-| `nfs-common` | `mount.nfs`, which `NfsDriver.do_setup` probes for through the root helper (`cinder/volume/drivers/nfs.py`) and raises `NfsException` without. Under the restricted posture the pod never mounts and the probe's non-zero exit is tolerated, but the binary has to exist |
+| `nfs-utils` | `mount.nfs`, which `NfsDriver.do_setup` probes for through the root helper (`cinder/volume/drivers/nfs.py`) and raises `NfsException` without. Under the restricted posture the pod never mounts and the probe's non-zero exit is tolerated, but the binary has to exist. nixpkgs installs it into `bin/`, so the image links `/usr/sbin/mount.nfs`, the path the probe names, to it |
 | `qemu-utils` | `qemu-img`, which create-from-image, clone and extend shell out to (`fetch_to_raw`, `resize_image`, `convert_image` in `cinder/image/image_utils.py`), along with the LUKS qcow2 pre-create in `cinder/volume/drivers/remotefs.py` |
-| `ceph-common` | `ceph` and `rbd`. The RBD volume driver (`cinder/volume/drivers/rbd.py`) runs `ceph mon dump --format=json` in `_get_mon_addrs`, `rbd import` in `_create_encrypted_volume` and `_copy_image_to_volume`, `rbd export` in `copy_volume_to_image` and `rbd status` in `_get_image_status`. The Ceph backup driver (`cinder/backup/drivers/ceph.py`) pipes `rbd export-diff` into `rbd import-diff` in `_rbd_diff_transfer` |
-| `python3-rados` | The `rados` module. Both drivers import it behind a guard, and `check_for_setup_error` raises "rados and rbd python libraries not found" without it (`VolumeBackendAPIException` in the volume driver, `BackupDriverException` in the backup driver). `ceph-common` depends on it; the list names it because the drivers import it |
-| `python3-rbd` | The `rbd` module, imported behind the same guard and named for the same reason |
-| `sudo` | The root helper is `sudo cinder-rootwrap` and the image carries no sudoers entry. `sudo` comes from `python-base`, not from `extra-packages.yaml` |
+| `ceph-client` | `ceph`, `rbd` and `rados`, the `client` output of nixpkgs' ceph. The RBD volume driver (`cinder/volume/drivers/rbd.py`) runs `ceph mon dump --format=json` in `_get_mon_addrs`, `rbd import` in `_create_encrypted_volume` and `_copy_image_to_volume`, `rbd export` in `copy_volume_to_image` and `rbd status` in `_get_image_status`. The Ceph backup driver (`cinder/backup/drivers/ceph.py`) pipes `rbd export-diff` into `rbd import-diff` in `_rbd_diff_transfer` |
+| `rados`, `rbd` | The modules of `nix/pkgs/ceph-bindings.nix`. Both drivers import them behind a guard, and `check_for_setup_error` raises "rados and rbd python libraries not found" without them (`VolumeBackendAPIException` in the volume driver, `BackupDriverException` in the backup driver) |
+| `sudo` | The root helper is `sudo cinder-rootwrap` and the image carries no sudoers entry. `sudo` comes from `nix/lib/service-image.nix` |
 
 **Ceph client:** the image writes the `ceph-bindings.pth` of the
-[glance](#glance) section, because the virtualenv does not search
-`/usr/lib/python3/dist-packages`, the only directory noble installs the two
-bindings into. `ceph-common` also brings `python3-requests`, `python3-yaml`
-and their dependencies, `python3-chardet` among them, into that directory, and
-the virtualenv imports none of them. The postinst of `ceph-common` adds the
-system user `ceph` (UID 64045) and the directories `/var/lib/ceph` (mode 0750)
-and `/var/log/ceph` (mode 3770), both owned by it. The service user 42424 can
-write neither. The `ceph.conf` the cinder-operator renders for an RBD backend
-sets `log_file = /dev/null` and an admin socket under `/tmp`, so the client
-writes neither to `/var/log/ceph` nor to `/var/run/ceph`. noble serves Ceph
-19.2.3 (Squid). Its `librbd` reads cephx keys of the classic `aes` type and not
-the `aes256k` keys a fresh Ceph Tentacle prefers. The cipher pin therefore
+[glance](#glance) section. The client is Ceph 20.2.4 (Tentacle) from
+`nixpkgs-images`. The image creates no `ceph` system user and no
+`/var/lib/ceph` or `/var/log/ceph`, because nothing reads them: the
+`ceph.conf` the cinder-operator renders for an RBD backend sets
+`log_file = /dev/null` and an admin socket under `/tmp`. The cipher pin
 belongs to the lab's Ceph (decision D7 of issue #1338), and the image does not
 set it.
 
@@ -789,13 +672,10 @@ The flip is necessary but not sufficient, and the cinder-operator of issue
 one. The operator therefore has to write `nas_secure_file_operations = true`
 explicitly; without it `qemu-img info` still goes through
 `sudo cinder-rootwrap`, which has no sudoers entry, and every
-create-from-image, clone and extend fails. Both build paths
-apply every `patches/<service>/<release>/*.patch` before installing:
-`.github/actions/checkout-service-source/action.yaml` for the build and
-unit-test jobs, `hack/ci-build-service-image.sh` for the e2e image build. A
-local build runs `git -C src/cinder apply "$PWD"/patches/cinder/<release>/*.patch`
-between Step 2 and Step 3 of the
-[local build instructions](#local-build-instructions). Cinder's
+create-from-image, clone and extend fails. The patches reach the image as the
+[glance](#glance) section describes: the lock's `sources.json` lists them, and
+`nix/lib/python-env.nix` applies them to the fetched source of the image, the
+unit tests and the e2e images alike. Cinder's
 `test_copy_volume_from_snapshot` keeps expecting `run_as_root=True` and stays
 green, because its test driver never calls `set_nas_security_options` and
 `_execute_as_root` keeps its default `True`, so the patch carries no test
@@ -882,24 +762,25 @@ directories in the image are what a plain `docker run` gets.
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Cinder dependencies
 - The nine console scripts and `cinder-amqp-ready` available via `PATH`
 - No WSGI entry script; the API is launched via the
   `cinder.wsgi.api:application` module path
 - `sudo` present with no sudoers entry
 
-**Unit tests:** cinder ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+**Unit tests:** cinder ships a `.stestr.conf`, so `nix/lib/service-tests.nix`
 runs its suite under stestr. Both releases carry an exclude file. The 2026.1
 file records the 13 `TestFormatInspectors` failures of its first run (they
 build their fixture images with `qemu-img create` and died with exit status
 127) and does not exclude them: six of the 13 are the safety checks between a
-tenant-uploaded image and the volume host, and this leg is the only gate in the
-pipeline that runs them, so `images/venv-builder/Dockerfile` installs
-`qemu-utils` instead. `releases/2026.1/test-excludes/cinder.txt` excludes one
-test, `test_put_container_disabled`, which passes upstream only because tox
-runs unprivileged and `os.makedirs` raises `PermissionError`, whereas the
-container runs it as root; the first run of the 28.0.0 suite counted 18,076
+tenant-uploaded image and the volume host, and this run is the only gate in
+the pipeline that runs them, so the test run carries `qemu-utils` instead.
+`releases/2026.1/test-excludes/cinder.txt` excludes one test,
+`test_put_container_disabled`, which passes upstream only because tox runs
+unprivileged and `os.makedirs` raises `PermissionError`, whereas the
+venv-builder container of the first runs ran it as root; the first run of the 28.0.0 suite counted 18,076
 tests. `releases/2026.2/test-excludes/cinder.txt` keeps that one pattern, and
 the first run of the 29.0.0 suite counted 19,003 tests with no failure (18,984
 passed, 19 skipped).
@@ -912,7 +793,7 @@ Barbican key manager, `boto3`, `tooz`, `taskflow`, `oslo_privsep`), the four
 package data files, and `--help` on `cinder-scheduler`, `cinder-volume`,
 `cinder-backup` and `cinder-api`. `mount.nfs` being present and executable,
 `qemu-img --version`, `sudo --version` and a refused `sudo -n true` prove the
-apt wiring. The Ceph test, which runs right after it as test 16, runs the
+runtime tools. The Ceph test, which runs right after it as test 16, runs the
 bindings checks of the [glance](#glance) Test 13. After
 `cinder.objects.register_all()`, the guard attributes `rados` and `rbd` of
 `cinder.volume.drivers.rbd` and `cinder.backup.drivers.ceph` must not be
@@ -923,9 +804,7 @@ asserts no version. `rbd help export-diff` and `rbd help import-diff` must exit
 0, and `ceph --conf /nonexistent --connect-timeout 1 mon dump` must fail fast
 with `error calling conf_read_file`, which is what a cinder-volume pod with a
 broken `ceph.conf` shows. An image without `ceph-bindings.pth` fails the `.pth`
-and import assertions while the tools still run. An image built without
-`--build-arg EXTRA_APT_PACKAGES` fails tests 8, 14 and 16, and test 16 names
-`No module named 'rados'`. The probe test covers its presence and
+and import assertions while the tools still run. The probe test covers its presence and
 executability, the exit 1
 that names port 5672 in a bare container, that it honours
 `CINDER_AMQP_PORT=1`, that a `CINDER_AMQP_PORT` carrying a URL is refused
@@ -940,7 +819,8 @@ covers the create-from-image path: the `run_as_root` with which the volume
 manager (`CreateVolumeFromSpecTask._create_from_image_cache_or_download`) and
 `image_utils.fetch_verify_image` inspect the downloaded image has to come out
 `False`. The remaining tests check non-root execution, the absence of build
-tools, that uwsgi runs, and the five state directories, empty and owned by
+tools, that uwsgi runs and imports `cinder`, and the five state directories,
+empty and owned by
 42424 along with their parent. The WSGI check
 inspects `cinder.wsgi.api` instead of
 importing it: an import runs `initialize_application()` at module level and
@@ -951,12 +831,19 @@ rejects a module whose only module-level binding of `application` is the
 15 and 16, and passes only the three shared checks (non-root, no build tools,
 uwsgi).
 
+**Build and verify:**
+
+```bash
+nix build .#cinder-2026_1-image && ./result | docker load
+bash tests/container-images/verify_cinder.sh cinder:2026.1
+```
+
 ### nova
 
-**Location:** `images/nova/Dockerfile`
+**Location:** `images/nova/image.nix` and `images/nova/novnc.json`, built
+from the lock `nix/locks/<release>/nova/`
 
-The Nova service image uses the same two-stage build as Keystone, plus a
-`novnc` stage for the noVNC console assets `nova-novncproxy` serves. It is
+The image carries the noVNC console assets `nova-novncproxy` serves. It is
 built from nova 33.0.0 (2026.1) and 34.0.0 (2026.2) and ships no WSGI entry
 script. The nova-operator
 of issue #1017 launches uWSGI on the module paths
@@ -968,80 +855,43 @@ time through `wsgi_app.init_application`, so importing either one inside a
 bare image raises `ConfigFilesNotFoundError`. At 33.0.0 both also call
 `monkey_patch.patch(backend='threading')` at import.
 
-**Stage 0 (`novnc`)** extends `python-base`:
-
-- Declares `ARG NOVNC_VERSION` and `ARG NOVNC_COMMIT`, the noVNC pin
-- Installs `git` from the signed noble archive. The stage does not extend
-  `venv-builder`, which also carries git, and stays out of the `build` stage:
-  both run third-party build code from PyPI as root (`venv-builder` builds
-  uwsgi from its sdist after installing git), and the `github_token` secret
-  must not reach a git binary or a git configuration that code could have
-  replaced. `tests/unit/images/github_token_stage_base_test.sh` fails on any
-  stage mounting the secret that takes files from `venv-builder`, through its
-  `FROM`, a `COPY --from` or a bind mount
-- Fetches the pinned noVNC tree from github.com, with up to three attempts and
-  a linear backoff, and stages nine paths of it under `/opt/novnc`. A stage of
-  its own keeps the fetch off the install's cache chain, so only a pin bump
-  fetches again
-
-**Stage 1 (`build`)** extends `venv-builder`:
-
-- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for nova today;
-  nova's `osprofiler`, `zvm` and `vmware` extras are not wanted, and the
-  wiring mirrors the other service images so `extra-packages.yaml` stays the
-  single edit point)
-- Mounts `upper-constraints.txt` and the Nova source tree via named build
-  contexts (`--build-context nova=...` /
-  `--build-context upper-constraints=...`)
-- Installs Nova into the virtualenv using `uv pip install --constraint`. The
-  `--prefix` install generates the eleven console scripts declared in
-  `[project.scripts]` of `pyproject.toml` (33.0.0): `nova-compute`,
-  `nova-conductor`, `nova-manage`, `nova-novncproxy`, `nova-policy`,
-  `nova-rootwrap`, `nova-rootwrap-daemon`, `nova-scheduler`,
-  `nova-serialproxy`, `nova-spicehtml5proxy` and `nova-status`
-
-**Stage 2 (runtime)** extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES`, which carries one package: the shared
-  libpython the venv-builder-compiled uwsgi links against. The `sudo` that
-  `nova-rootwrap` would use comes from `python-base`
-- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
-- Copies the staged `/opt/novnc` from the `novnc` stage to `/usr/share/novnc`
-- Creates the two state directories under `/var/lib/nova`, empty and owned by
-  UID/GID 42424
-- Copies `nova-amqp-ready` to `/var/lib/openstack/bin/nova-amqp-ready` with
-  mode 0755
-- Sets `USER openstack` for non-root execution
+The venv carries `pyroute2`, the one `pip_packages` entry of the 2026.2
+release, and the eleven console scripts declared in `[project.scripts]` of
+`pyproject.toml` (33.0.0): `nova-compute`, `nova-conductor`, `nova-manage`,
+`nova-novncproxy`, `nova-policy`, `nova-rootwrap`, `nova-rootwrap-daemon`,
+`nova-scheduler`, `nova-serialproxy`, `nova-spicehtml5proxy` and
+`nova-status`. `image.nix` adds the noVNC tree at `/usr/share/novnc`, the two
+state directories under `/var/lib/nova`, empty and owned by UID/GID 42424
+together with `/var/lib/nova` itself, and `nova-amqp-ready` at
+`/var/lib/openstack/bin/nova-amqp-ready` with mode 0555.
 
 The image stays config-free. The package data files `api-paste.ini`,
 `rootwrap.conf` and `rootwrap.d/compute.filters` land under
 `/var/lib/openstack/etc/nova/` at both tags, declared under
 `[tool.setuptools.data-files]` in `pyproject.toml` at 33.0.0 and 34.0.0.
 `api-paste.ini` and `rootwrap.conf` are byte-identical at both tags.
-Nothing in the Dockerfile copies `etc/nova/` by hand, and the contract script
-asserts the three files.
+Nothing in `images/nova/image.nix` copies `etc/nova/` by hand, and the
+contract script asserts the three files.
 
 **Runtime packages:**
 
 | Package | Purpose |
 | --- | --- |
-| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
-| `sudo` | The root helper `nova-rootwrap` is a compute-side tool, and the image carries no sudoers entry. `sudo` comes from `python-base`, not from `extra-packages.yaml` |
+| `sudo` | The root helper `nova-rootwrap` is a compute-side tool, and the image carries no sudoers entry. `sudo` comes from `nix/lib/service-image.nix` |
 
 `qemu-utils` and `libvirt0` stay out (decision D14 of issue #1014). The
 control-plane roles convert no images, and the fake driver of issue #1018
 needs no libvirt: `nova.virt.fake` imports without it.
 
-**noVNC pin:** `ARG NOVNC_VERSION` names the upstream tag, `v1.7.0`, and
-`ARG NOVNC_COMMIT` the commit that tag resolves to. `v1.7.0` is an annotated
+**noVNC pin:** `images/nova/novnc.json` holds `version`, the upstream tag
+`v1.7.0`, `rev`, the commit that tag resolves to, and `hash`, the NAR hash of
+that commit's tree, which `make nix-lock` writes. `v1.7.0` is an annotated
 tag, so the pin names the peeled commit, not the tag object. The build fetches
-by commit and then greps the checked-out `package.json` for the version the
-tag carries. A tree that disagrees fails the build with
-`noVNC package.json version does not match NOVNC_VERSION=<tag>: NOVNC_COMMIT
-is stale`, so a bump that moved one line and left the other behind stops there
-instead of shipping old assets under a new version. A fetch that fails three
-times ends the build with `noVNC fetch of <commit> failed after 3 attempts`
-instead, so a rejected token or a network error does not read as a stale pin.
+by commit and hash with `fetchFromGitHub` and compares the version of the
+fetched `package.json` with the pin. A tree that disagrees fails the build
+with `novnc.json: version <tag> does not match package.json`, so a bump that
+moved one key and left the other behind stops there instead of shipping old
+assets under a new version.
 
 Nine paths are copied: `app/`, `core/`, `vendor/`, `vnc.html`,
 `vnc_lite.html`, `defaults.json`, `mandatory.json`, `package.json` and
@@ -1054,20 +904,18 @@ licence notice of the assets: MPL-2.0 for the core library, plus the licences
 it lists for the bundled parts. The tests, the docs, `po/`, `snap/`, `utils/`
 and the lint configuration are not copied.
 
-The fetching `RUN` mounts the `github_token` BuildKit secret that the
-`Build service image` step of
-[build-service-images](./build-images-workflow.md#build-service-images) and
-`hack/ci-build-service-image.sh` pass; a build without it, such as a local
-`docker build`, fetches anonymously. Renovate tracks both ARGs through one
-custom manager (`github-tags` on `novnc/noVNC`, regex versioning for the
-leading `v`), whose single `matchStrings` entry spans the two adjacent lines,
-so the tag and the commit move in one PR. Majors are disabled; minors and
+The fetch is a fixed-output derivation, so it needs no GitHub token. Renovate
+tracks `version` and `rev` through one custom manager (`github-tags` on
+`novnc/noVNC`, regex versioning for the leading `v`), whose single
+`matchStrings` entry spans the two adjacent keys, so the tag and the commit
+move in one PR. Renovate leaves `hash` stale, so `nix-lock-check` fails the PR
+until `make nix-lock` is pushed to its branch. Majors are disabled; minors and
 patches wait the 3-day cooldown and are not automerged, because the console
 page is user-facing and no e2e suite loads it before issue #1018. Digest
 updates are disabled too: a tag moved upstream to another commit is not a
 release, and the pin stays on the reviewed commit.
 `tests/unit/renovate/novnc_pin_custommanager_test.sh` replays the regex over
-the Dockerfile, checks the three rules, and resolves `refs/tags/v1.7.0^{}`
+`novnc.json`, checks the three rules, and resolves `refs/tags/v1.7.0^{}`
 upstream when it has network access, which is where a moved tag shows up.
 
 **Readiness probe:** `images/nova/nova-amqp-ready` is the exec readiness probe
@@ -1113,7 +961,8 @@ are what a plain `docker run` gets.
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Contains no build tools (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`, and
+  `/nix/store` holds no compiler, binutils or uv package)
 - Virtualenv at `/var/lib/openstack` with all Nova dependencies
 - The eleven console scripts and `nova-amqp-ready` available via `PATH`
 - No WSGI entry script; the two APIs are launched via the
@@ -1122,8 +971,8 @@ are what a plain `docker run` gets.
 - The noVNC console assets under `/usr/share/novnc`
 - `sudo` present with no sudoers entry
 
-**Unit tests:** nova ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
-runs its suite under stestr. That script sets
+**Unit tests:** nova ships a `.stestr.conf`, so `nix/lib/service-tests.nix`
+runs its suite under stestr. It sets
 `OS_NOVA_DISABLE_EVENTLET_PATCHING=False` for every service, the value nova's
 tox py3 env uses: at 33.0.0 `nova/cmd/scheduler.py` selects the threading
 backend at import while `nova/tests/unit/__init__.py` has already selected
@@ -1142,9 +991,9 @@ importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
 package data files, the eleven console scripts as executables, and `--help` on
 `nova-scheduler`, `nova-conductor`, `nova-novncproxy` and `nova-compute`. The
 noVNC test asserts that the copied files are present and readable by the
-service user and that the `package.json` version equals the
-`ARG NOVNC_VERSION` pin it reads out of the Dockerfile; with that pin edited
-to `v9.9.9` it is the only test that fails, reporting `1.7.0` against `9.9.9`.
+service user and that the `package.json` version equals the `version` it
+reads out of `images/nova/novnc.json`; with that version edited to `v9.9.9` it
+is the only test that fails, reporting `1.7.0` against `9.9.9`.
 The probe test covers its presence and executability, the exit 1 that names
 port 5672 in a bare container, that it honours `NOVA_AMQP_PORT=1`, that a
 `NOVA_AMQP_PORT` carrying a transport URL and one carrying `0` are both
@@ -1156,8 +1005,9 @@ network namespace, with and without a shared PID namespace, once that
 container has been shown the connection's row. The connection is held against
 a listener that never accepts, so the container owns the client end alone and
 a probe that read a row's local port would fail the ready checks.
-`uwsgi --version`, the absence of `qemu-img`, `sudo --version` and a refused
-`sudo -n true` prove the apt wiring. The remaining tests check non-root
+`uwsgi --version`, uwsgi importing `nova`, the absence of `qemu-img`,
+`sudo --version` and a refused
+`sudo -n true` prove the runtime wiring. The remaining tests check non-root
 execution, the absence of build tools, and the two state directories, empty
 and owned by 42424 along with their parent. The WSGI check inspects the two
 modules instead of importing them: an import runs
@@ -1166,11 +1016,18 @@ modules instead of importing them: an import runs
 `importlib.util.find_spec` for each module path with an `ast.parse` of the
 module source, and rejects a module whose only module-level binding of
 `application` is the `None` sentinel.
-Both release images pass all 56 assertions.
+Both release images pass all 57 assertions.
 Pointed at a cinder image the script exits 1 with 37 of them failing: every
 test but the non-root and build-tool ones fails, while the wrong image still
-satisfies the uwsgi and sudo halves of the apt test and the libvirt-absence
-half of the import test.
+satisfies the uwsgi and sudo halves of the runtime test and the
+libvirt-absence half of the import test.
+
+**Build and verify:**
+
+```bash
+nix build .#nova-2026_1-image && ./result | docker load
+bash tests/container-images/verify_nova.sh nova:2026.1
+```
 
 ### nova-compute
 
@@ -1191,14 +1048,13 @@ The [nova](#nova) control-plane image carries none of it (decision D14 of
 issue #1014). Its consumer is the [NovaCompute](../nova/novacompute-crd.md)
 node pool, which runs it under the tag of the Nova's installed release.
 
-The image has a directory of its own instead of a second stage in
-`images/nova/Dockerfile`. `hack/ci-generate-cleanup-matrix.sh` turns every
+The image has a directory of its own instead of being part of
+`images/nova/image.nix`. `hack/ci-generate-cleanup-matrix.sh` turns every
 `images/<name>/` directory into a package the nightly GHCR cleanup prunes. The only
 other packages it knows are the `<name>-operator` images, one per `operators/<name>/`
-directory with a `go.mod`. Every nova build takes the last stage as its default target,
-so a second stage would make the order of stages matter. And `verify_nova.sh` would
-share a Dockerfile with an image it must not describe. The price is one repeated install
-step.
+directory with a `go.mod`. And `verify_nova.sh` would share an image definition with
+an image it must not describe. Until #1407 moves it to Nix, it is the one service
+image built FROM `python-base` and `venv-builder`.
 
 **Stage 1 (`build`)** extends `venv-builder`:
 
@@ -2006,13 +1862,15 @@ Its build, verification and tag scheme are described in
 
 ## Named Build Contexts
 
-Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
-release-specific files without embedding them in the Dockerfile or using `COPY` from the
-build directory. This keeps Dockerfiles release-independent.
+The nova-compute Dockerfile, the one service Dockerfile left, uses Docker's
+named build context feature (`--build-context`) to inject release-specific
+files without embedding them in the Dockerfile or using `COPY` from the build
+directory. This keeps the Dockerfile release-independent. The Nix-built
+service images take the same inputs from their locks
+([Python environments and locks](./nix-image-build.md#python-environments-and-locks)).
 
-A local build passes two named build contexts (shown here for Keystone; the
-Horizon build is identical with `horizon` in place of `keystone`). CI passes two
-more, `python-base` and `venv-builder`, as `docker-image://` references to the
+A local build passes two named build contexts. CI passes two more,
+`python-base` and `venv-builder`, as `docker-image://` references to the
 digests `merge-base-images` published. The figure under
 [Dockerfile Hierarchy](#dockerfile-hierarchy) shows where each context and each
 build arg enters the build.
@@ -2020,28 +1878,27 @@ build arg enters the build.
 | Context name | Contents | Mounted as |
 | --- | --- | --- |
 | `upper-constraints` | Release directory containing `upper-constraints.txt` | `/tmp/upper-constraints.txt` |
-| `keystone` | Keystone source tree (git checkout at the version from `source-refs.yaml`) | `/tmp/keystone` |
+| `nova` | Nova source tree (git checkout at the version from `source-refs.yaml`, with the nova patches applied) | `/tmp/nova` |
 
 These are passed to `docker build` via `--build-context` flags:
 
 ```bash
-docker build images/keystone \
-  --build-context keystone=src/keystone \
+docker build images/nova-compute \
+  --build-context nova=src/nova \
   --build-context upper-constraints=releases/2026.1/
 ```
 
 Inside the Dockerfile, named build contexts are consumed via `--mount=type=bind,from=`.
-Extras are injected via `ARG PIP_EXTRAS` (comma-separated; keystone passes `ldap`)
-which the CI workflow reads from `extra-packages.yaml`:
+Extras and packages are injected via `ARG PIP_EXTRAS` (comma-separated) and
+`ARG PIP_PACKAGES`, which the CI workflow reads from the `nova-compute` block
+of `extra-packages.yaml`:
 
 ```dockerfile
-ARG PIP_EXTRAS=""
-ARG PIP_PACKAGES=""
-
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
-    --mount=type=bind,from=keystone,target=/tmp/keystone,readwrite \
-    PKG="/tmp/keystone" && \
+    --mount=type=bind,from=nova,target=/tmp/nova,readwrite \
+    PKG="/tmp/nova" && \
     if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
+    set -f && \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
         "$PKG" $PIP_PACKAGES
@@ -2055,8 +1912,9 @@ selects a specific file within that context.
 
 All release-specific configuration lives under `releases/<release>/` (e.g.,
 `releases/2026.1/`). These files are the single source of truth for what gets built.
-Adding a new service or updating a version requires editing only these files — not
-Dockerfiles.
+Adding a new service or updating a version requires editing only these files
+and running `make nix-lock`, which writes the locks under `nix/locks/` from
+them.
 
 ### source-refs.yaml
 
@@ -2075,7 +1933,7 @@ the version to build.
 keystone: "28.0.0"
 ```
 
-Each key is a service name matching the Dockerfile directory under `images/`. Values
+Each key is a service name matching the image directory under `images/`. Values
 are quoted strings representing git refs — typically release tags (e.g., `"28.0.0"`).
 
 To add a new service, add a single line: `<service>: "<git-ref>"`.
@@ -2105,8 +1963,9 @@ the standard format used by OpenStack's global requirements process.
 
 **Location:** `releases/<release>/extra-packages.yaml`
 
-Defines per-service Python extras and runtime system packages that are not part of the
-core OpenStack package.
+Defines per-service Python extras and additional pip packages that are not part of the
+core OpenStack package, and the runtime system packages of nova-compute.
+`hack/nix-lock.sh` reads the first two into each lock under `nix/locks/`.
 
 **Format:**
 
@@ -2119,21 +1978,16 @@ keystone:
   pip_extras:
     - ldap
   pip_packages: []
-  apt_packages:
-    - libapache2-mod-wsgi-py3
-    - libldap2
-    - libsasl2-2
-    - libxml2
 ```
 
 | Key | Purpose |
 | --- | --- |
-| `<service>.pip_extras` | Bare Python extra names combined with the service name to form install arguments (e.g. `keystone[ldap]`). Passed as the `PIP_EXTRAS` build arg. |
-| `<service>.pip_packages` | Additional pip packages to install alongside the service (space-separated in the build arg `PIP_PACKAGES`). Use an empty list (`[]`) when none are needed. |
-| `<service>.apt_packages` | Runtime system packages installed via `apt` in the final image. Passed as the `EXTRA_APT_PACKAGES` build arg. |
+| `<service>.pip_extras` | Bare Python extra names combined with the project name to form the dependency of the lock (e.g. `keystone[ldap]`); the `PIP_EXTRAS` build arg for nova-compute. |
+| `<service>.pip_packages` | Additional pip packages locked and installed alongside the service; the `PIP_PACKAGES` build arg for nova-compute. Use an empty list (`[]`) when none are needed. |
+| `nova-compute.apt_packages` | Runtime system packages installed via `apt` in the nova-compute image, passed as the `EXTRA_APT_PACKAGES` build arg. A Nix-built service names its runtime packages in `images/<service>/image.nix`, and `verify_release_config.sh` fails a service block that carries the key. |
 
 To add packages for a new service, add a new top-level key matching the service name
-with both `pip_extras` and `apt_packages` lists.
+with a `pip_extras` list, then run `make nix-lock`.
 
 `nova-compute` is the one key that is not a service. It configures the image of
 `images/nova-compute/`, which is built from the `nova` pin and has no
@@ -2202,7 +2056,17 @@ directory (must be invoked from the repository root) and modifies it in-place. I
 
 ## Local Build Instructions
 
-Build the complete image chain locally for development and verification:
+The service and Tempest images build with Nix:
+
+```bash
+nix build .#keystone-2026_1-image && ./result | docker load
+bash tests/container-images/verify_keystone.sh keystone:2026.1
+```
+
+Every `<name>-<rel_>-image` attribute of
+[Nix Image Build](./nix-image-build.md#build-and-load-locally) works the same
+way. The steps below build nova-compute, the one service image left on the
+Docker chain.
 
 ### Step 1: Build base images
 
@@ -2210,7 +2074,7 @@ Build the complete image chain locally for development and verification:
 # Build python-base (tag must match FROM python-base in downstream Dockerfiles)
 docker build images/python-base -t python-base
 
-# Build venv-builder (tag must match FROM venv-builder in keystone Stage 1)
+# Build venv-builder (tag must match FROM venv-builder in the nova-compute build stage)
 docker build images/venv-builder -t venv-builder
 ```
 
@@ -2225,69 +2089,7 @@ docker build images/python-base -t python-base -t c5c3/python-base:3.12-noble
 docker build images/venv-builder -t venv-builder -t c5c3/venv-builder:3.12-noble
 ```
 
-### Step 2: Clone the service source
-
-```bash
-git clone --branch 29.0.0 --depth 1 \
-  https://github.com/openstack/keystone.git src/keystone
-```
-
-The branch/tag must match the version specified in `releases/2026.1/source-refs.yaml`.
-
-### Step 3: Build the service image
-
-Extras are read from `extra-packages.yaml` and passed as `--build-arg`:
-
-```bash
-docker build images/keystone \
-  -t c5c3/keystone:29.0.0 \
-  --build-arg PIP_EXTRAS=ldap \
-  --build-arg "EXTRA_APT_PACKAGES=libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2" \
-  --build-context keystone=src/keystone \
-  --build-context upper-constraints=releases/2026.1/
-```
-
-### Step 4: Verify the image
-
-```bash
-# Verify Keystone CLI is functional
-docker run --rm c5c3/keystone:29.0.0 keystone-manage --version
-
-# Verify non-root execution
-docker run --rm c5c3/keystone:29.0.0 whoami
-# Expected output: openstack
-
-# Verify no build tools in final image
-docker run --rm c5c3/keystone:29.0.0 which gcc \
-  && echo "FAIL: gcc found in image" \
-  || echo "PASS: gcc not found"
-```
-
-### Building horizon locally
-
-The horizon build follows the same steps with two differences: the constraint override
-must be applied first (it strips the `horizon===` self-pin in-place), and one build arg
-is needed, `EXTRA_APT_PACKAGES=libpython3.12t64` (the other horizon lists in
-`extra-packages.yaml` are empty):
-
-```bash
-# Strip the horizon=== pin from upper-constraints.txt (GNU sed; run on Linux/CI)
-./scripts/apply-constraint-overrides.sh 2026.1
-
-git clone --branch 25.7.0 --depth 1 \
-  https://opendev.org/openstack/horizon.git src/horizon
-
-docker build images/horizon \
-  -t c5c3/horizon:25.7.0 \
-  --build-arg EXTRA_APT_PACKAGES=libpython3.12t64 \
-  --build-context horizon=src/horizon \
-  --build-context upper-constraints=releases/2026.1/
-
-# Run the full image contract check
-bash tests/container-images/verify_horizon.sh c5c3/horizon:25.7.0
-```
-
-### Building nova-compute locally
+### Step 2: Build nova-compute
 
 The compute image builds from the nova source at the release's pin, with the
 two build args read from the `nova-compute` block by mikefarah `yq` v4 (the
@@ -2400,23 +2202,27 @@ output.
 ## Design Deviations
 
 The implementation deviates from the original design document in four areas,
-documented with `# DEVIATION` comments in the affected Dockerfiles:
+documented with `# DEVIATION` comments in the affected Dockerfiles and Nix
+expressions:
 
 **Generic `openstack` user instead of per-service users:**
 
 The original design's Keystone Dockerfile example creates a per-service user
 (e.g., `groupadd keystone` / `useradd keystone`). The implementation uses a single
-generic `openstack` user (UID/GID 42424) defined in `python-base` and shared by all
-service images. This reduces complexity and image layers — each service image inherits
-the user via `USER openstack` without needing its own user creation step.
+generic `openstack` user (UID/GID 42424) shared by all service images. This
+reduces complexity: no service image needs its own user creation step.
 
-The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
-user is created) and in every service Dockerfile that uses it instead of a
-per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
-`images/glance/Dockerfile`, `images/placement/Dockerfile`,
-`images/barbican/Dockerfile`, `images/neutron/Dockerfile`,
-`images/cinder/Dockerfile`, `images/nova/Dockerfile`,
-`images/nova-compute/Dockerfile`).
+`nix/lib/service-image.nix` carries the full `# DEVIATION` paragraph: the
+Nix-built service and Tempest images run as the user that
+`nix/lib/fhs-layout.nix` writes. Each service's `image.nix` carries a short
+`# DEVIATION` comment pointing at it (`images/keystone/image.nix`,
+`images/horizon/image.nix`, `images/glance/image.nix`,
+`images/placement/image.nix`, `images/barbican/image.nix`,
+`images/neutron/image.nix`, `images/cinder/image.nix`,
+`images/nova/image.nix`). nova-compute still inherits the user through
+`USER openstack` from `python-base`, so `images/python-base/Dockerfile` (where
+the user is created) and `images/nova-compute/Dockerfile` carry the comment
+too.
 
 `images/ovn/Dockerfile` carries the comment for the other half of the same
 decision. It does not derive from `python-base`, so it creates the `openstack`

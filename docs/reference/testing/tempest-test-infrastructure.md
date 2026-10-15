@@ -19,7 +19,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 
 | File | Purpose |
 | --- | --- |
-| `images/tempest/Dockerfile` | Two-stage Tempest container image (venv-builder → python-base) |
+| `images/tempest/image.nix` | Tempest container image, built by Nix from `nix/locks/<release>/tempest/` |
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
 | `tests/tempest/keystone-2026-2/` | Keystone 2026.2 Tempest configuration |
@@ -49,8 +49,11 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 ```text
 releases/<release>/test-refs.yaml       Version pins (tempest and the barbican, keystone, neutron and
         │                               cinder Tempest plugins)
-        ▼ (yq resolution)
-images/tempest/Dockerfile               2-stage build: venv-builder → python-base
+        ▼ (hack/nix-lock.sh, make nix-lock)
+nix/locks/<release>/tempest/            uv lock of the five pins and the clients
+        │
+        ▼
+images/tempest/image.nix                Nix build over nix/lib/service-image.nix
         │
         ├──▶ build-images.yaml          Build, scan, sign, push to GHCR
         │       generate-matrix job      Discovers releases from releases/*/
@@ -58,7 +61,7 @@ images/tempest/Dockerfile               2-stage build: venv-builder → python-b
         │       merge-tempest-image job  Per-release multi-arch manifest + SBOM + Grype + cosign
         │
         └──▶ ci.yaml                    build-e2e-images job builds, tempest job runs per service and release
-                build-e2e-images job      Per-release: hack/ci-build-tempest-image.sh builds the image
+                build-e2e-images job      Per-release: hack/ci-nix-build-e2e-images.sh builds the image
                 tempest job (matrix)      Per leg: load image → deploy services → run Tempest → upload JUnit
                                          │
 tests/tempest/<config-dir>/              │ prepared in _output/tempest/config, mounted at /etc/tempest
@@ -97,37 +100,30 @@ need `>= 46.2.0`, where the web-download bad-URL negative test accepts the
 synchronous 400 that glance's DNS-based URI filtering returns.
 
 Each key is a PyPI package name. Values are quoted strings representing exact version
-pins. CI workflows resolve versions from this file via `yq`:
+pins. `hack/nix-lock.sh` reads the five keys into the tempest lock
+`nix/locks/<release>/tempest/`, and a missing key fails it with
+`nix-lock.sh: no key '<key>' in releases/<release>/test-refs.yaml`. The
+`merge-tempest-image` job reads the tempest version for its version tag:
 
 ```bash
-TEMPEST_VERSION=$(yq -r '.tempest' releases/<release>/test-refs.yaml)
-KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/<release>/test-refs.yaml)
+TEMPEST_VERSION=$(hack/resolve-test-ref.sh releases/<release>/test-refs.yaml tempest)
 ```
 
-Both `ci.yaml` and `build-images.yaml` use the same resolution pattern. A null or empty
-result from `yq` causes the CI step to fail with a descriptive error.
-
-To update versions, edit `test-refs.yaml` — no Dockerfile changes are needed.
+To update versions, edit `test-refs.yaml` and run `make nix-lock`; the
+`nix-lock-check` job fails until the lock matches the pins.
 
 ## Container Image
 
-### Dockerfile
+### Image expression
 
-**Location:** `images/tempest/Dockerfile`
+**Location:** `images/tempest/image.nix`, built from the lock
+`nix/locks/<release>/tempest/`
 
-The Tempest image uses the same two-stage build pattern as service images but differs
-in three ways: (1) it installs from PyPI instead of mounting a git source tree,
-(2) it has no WSGI entrypoint, and (3) it requires no `PIP_EXTRAS` or
-`EXTRA_APT_PACKAGES`.
-
-**Stage 1 (`build`)** — extends `venv-builder`:
-
-- Declares `ARG TEMPEST_VERSION`, `ARG BARBICAN_TEMPEST_PLUGIN_VERSION`,
-  `ARG KEYSTONE_TEMPEST_PLUGIN_VERSION`, `ARG NEUTRON_TEMPEST_PLUGIN_VERSION`,
-  and `ARG CINDER_TEMPEST_PLUGIN_VERSION` for build-time version injection
-  (resolved from `test-refs.yaml` by CI)
-- Mounts `upper-constraints.txt` from the release directory via named build context
-- Installs these packages into the shared virtualenv via `uv pip install --constraint`:
+The Tempest image is built by Nix like the service images
+([Nix Image Build](../ci-cd/nix-image-build.md)) but differs in three ways: (1) its
+lock installs from PyPI instead of a git source tree, (2) it has no WSGI entrypoint,
+and (3) it has no unit-test run. The lock pins these packages, resolved against the
+release's constraints:
 
 | Package | Purpose |
 | --- | --- |
@@ -143,12 +139,11 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | `junitxml` | Subunit-to-JUnit XML conversion (`subunit2junitxml`) |
 | `defusedxml` | Hardened XML parsing for the result-processing tooling |
 
-**Stage 2 (runtime)** — extends `python-base`:
-
-- Copies `/var/lib/openstack` virtualenv from the build stage via `COPY --from=build --link`
-- Sets static OCI labels (title, description, licenses, vendor) following the
-  two-layer annotation pattern
-- Runs as `openstack` user (UID 42424, GID 42424)
+The image creates `/etc/tempest/`, owned by root, where the tempest Job mounts its
+configuration. `hack/tempest/run-tests.sh` sets `HOME=/tmp`, so the read-only
+`/var/lib/openstack` needs no owner change. The labels are the five of
+[Labels and reproducibility](../ci-cd/nix-image-build.md#labels-and-reproducibility);
+`org.opencontainers.image.version` is the tempest version of the lock.
 
 **Final image properties:**
 
@@ -158,55 +153,28 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | `tempest` CLI | Available via `PATH` (`/var/lib/openstack/bin/tempest`) |
 | `openstack` CLI | Available via `PATH`; verified by `verify_tempest.sh` (`openstack --version`) |
 | `subunit2junitxml` | Available via `PATH` |
-| Build tools | Absent (`gcc`, `python3-dev`, `uv` are not in the final image) |
-
-**Named build contexts:**
-
-| Context name | Contents | Mounted as |
-| --- | --- | --- |
-| `python-base` | Runtime base image | `FROM python-base` |
-| `venv-builder` | Build stage base image | `FROM venv-builder AS build` |
-| `upper-constraints` | Release directory containing `upper-constraints.txt` | `/tmp/upper-constraints.txt` |
-
-**Build args:**
-
-| Arg | Default | Source |
-| --- | --- | --- |
-| `TEMPEST_VERSION` | `46.3.0` | `test-refs.yaml` → `.tempest` |
-| `BARBICAN_TEMPEST_PLUGIN_VERSION` | `4.4.0` | `test-refs.yaml` → `.["barbican-tempest-plugin"]` |
-| `KEYSTONE_TEMPEST_PLUGIN_VERSION` | `0.19.0` | `test-refs.yaml` → `.["keystone-tempest-plugin"]` |
-| `NEUTRON_TEMPEST_PLUGIN_VERSION` | `3.2.0` | `test-refs.yaml` → `.["neutron-tempest-plugin"]` |
-| `CINDER_TEMPEST_PLUGIN_VERSION` | `1.22.0` | `test-refs.yaml` → `.["cinder-tempest-plugin"]` |
+| Build tools | Absent (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`; `/nix/store` holds no compiler, binutils or uv package) |
 
 ### Local Build
 
-Build the Tempest image locally (requires `python-base` and `venv-builder` images):
+Build the Tempest image of a release with Nix and load it into Docker:
 
 ```bash
-# Build base images first (if not already available)
-docker build images/python-base -t python-base
-docker build images/venv-builder -t venv-builder
-
-# Build Tempest image for a specific release (e.g., 2026.1 or 2026.2).
-# Resolve versions from the release's test-refs.yaml:
 RELEASE=2026.1   # or 2026.2
-TEMPEST_VERSION=$(yq -r '.tempest' releases/${RELEASE}/test-refs.yaml)
-BTP_VERSION=$(yq -r '.["barbican-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
-KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
-NTP_VERSION=$(yq -r '.["neutron-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
-CTP_VERSION=$(yq -r '.["cinder-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
-
-docker build images/tempest \
-  -t c5c3/tempest:${RELEASE} \
-  --build-arg TEMPEST_VERSION=${TEMPEST_VERSION} \
-  --build-arg BARBICAN_TEMPEST_PLUGIN_VERSION=${BTP_VERSION} \
-  --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION} \
-  --build-arg NEUTRON_TEMPEST_PLUGIN_VERSION=${NTP_VERSION} \
-  --build-arg CINDER_TEMPEST_PLUGIN_VERSION=${CTP_VERSION} \
-  --build-context python-base=docker-image://python-base \
-  --build-context venv-builder=docker-image://venv-builder \
-  --build-context upper-constraints=releases/${RELEASE}/
+nix build ".#tempest-${RELEASE//./_}-image" && ./result | docker load
+bash tests/container-images/verify_tempest.sh "tempest:${RELEASE}"
 ```
+
+`hack/run-tempest.sh` runs the same build when `BUILD_IMAGE` is `true` (the default),
+naming the attribute of the host's system (`packages.x86_64-linux.` or
+`packages.aarch64-linux.`), and tags the loaded `tempest:<release>` as
+`TEMPEST_IMAGE`. Without `nix` on `PATH` it exits 1 with `run-tempest.sh: nix not
+found; install Nix or rerun with BUILD_IMAGE=false
+TEMPEST_IMAGE=ghcr.io/c5c3/tempest:<release>`. The flake builds images for those two
+Linux systems only, so on any other host (macOS) it exits 1 before Nix runs, naming
+the host and the same `BUILD_IMAGE=false` rerun.
+`tests/unit/hack/run_tempest_build_image_test.sh` pins the build with stub `nix`,
+`docker` and `uname` commands.
 
 ## Test Configuration
 
@@ -519,9 +487,9 @@ only core `tempest.` ones, leaves the other phase empty, which both runners
 allow.
 
 A service tested through core `tempest.api.*` alone needs no image change. One
-that brings its own Tempest plugin adds a build arg and an install line to
-`images/tempest/Dockerfile` plus a version pin to every release's
-`test-refs.yaml`, the way `barbican-tempest-plugin`,
+that brings its own Tempest plugin adds its key to the plugin list of
+`hack/nix-lock.sh` plus a version pin to every release's `test-refs.yaml`,
+and runs `make nix-lock`, the way `barbican-tempest-plugin`,
 `neutron-tempest-plugin` and `cinder-tempest-plugin` are wired.
 `hack/run-tempest.sh` (local execution) runs a single keystone leg and accepts
 `SERVICE`, `RELEASE`, and `ADMIN_SECRET` overrides.
@@ -555,7 +523,7 @@ bash tests/container-images/verify_tempest.sh [image_name]
 | `test_openstack_cli_available` | `openstack --version` exits 0 with non-empty output | `openstack` CLI is installed and functional |
 | `test_osc_placement_cli_registered` | `openstack resource class list --help` exits 0 and prints `usage: openstack resource class list` | osc-placement registers its `openstack` CLI commands |
 | `test_runs_as_openstack_user` | `whoami` outputs `openstack` | Container runs as non-root user |
-| `test_no_build_tools_in_final_image` | `which gcc`, `dpkg -s python3-dev`, `which uv` all fail | Build tools are not in the runtime image |
+| `test_no_build_tools_in_final_image` | `command -v` finds none of `gcc`, `cc`, `uv` and `python3-config`, and `ls /nix/store` lists no compiler, binutils or uv package | Build tools are not in the runtime image |
 
 All test functions use the exit-code guard pattern (`|| exit_code=$?`) to prevent
 `set -e` from aborting the script before assertions run.
@@ -782,11 +750,12 @@ Builds the Tempest container image per release and per platform, runs verificati
 and pushes by digest on push events. The job is parameterized by release via the
 `generate-matrix` job, which discovers all releases from `releases/*/` directories.
 
-**Dependencies:** `needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]`
+**Dependencies:** `needs: [changes, generate-matrix, nix-flake-check, nix-lock-check, prepare]`
 
 **Condition:** `needs.changes.outputs.build-tempest == 'true'`. On a pull request the
-job runs when `images/tempest/**`, `tests/container-images/verify_tempest.sh`, or one
-of the base-image and release-configuration inputs changed; on a push it always runs.
+job runs when `images/tempest/**`, the tempest locks under `nix/locks/`,
+`tests/container-images/verify_tempest.sh`, or one of the flake and
+release-configuration inputs changed; on a push it always runs.
 See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 
 **Matrix strategy:** `release × platform × runner` (from `generate-matrix.tempest-matrix`; ARM64 excluded on PRs)
@@ -795,21 +764,20 @@ See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 
 | Step | Condition | Description |
 | --- | --- | --- |
-| Resolve Tempest versions | Always | Reads `releases/<release>/test-refs.yaml` via `yq` |
-| Generate metadata | Always | OCI labels via `docker/metadata-action` |
-| Build Tempest image | PR: amd64 only; push: both platforms | `docker/build-push-action` with named build contexts, `upper-constraints` from `releases/<release>/` |
-| Export digest | Push only | Writes digest to `/tmp/digests/` for merge job |
-| Upload digest artifact | Push only | `digests-tempest-<release>-<platform-pair>`, 1-day retention |
-| Scan for vulnerabilities | PR, amd64 only | Grype scan against loaded image |
+| Set up Nix | Always | The `setup-nix` action: Nix and the `cobaltcore` cache |
+| Resolve flake attribute | Always | `tempest-<release with _>-image`, because a flake attribute cannot contain a dot |
+| Build Tempest image | PR: amd64 only; push: both platforms | The `build-nix-image` action: `nix build` of the attribute and a vulnix scan of its store paths (artifact `vulnix-tempest-<release>-<platform-pair>`) |
+| Push and export digest | Push only | skopeo pushes the stream by digest; artifact `digests-tempest-<release>-<platform-pair>` |
+| Scan for vulnerabilities | PR, amd64 only | Grype scan against the loaded image |
 | Upload SARIF | Skipped | The composite uploads SARIF on push events only; `merge-tempest-image` publishes `grype-tempest-<release>` |
-| Verify Tempest image | PR, amd64 only | Runs `verify_tempest.sh` against the built image |
+| Verify Tempest image | PR, amd64 only | Runs `verify_tempest.sh` against the loaded image |
 
 **PR vs push behavior:**
 
 | Behavior | Pull Request | Push to main/stable |
 | --- | --- | --- |
 | Platforms built | amd64 only | amd64 + arm64 |
-| Image destination | Loaded locally (`load: true`) | Pushed by digest to GHCR |
+| Image destination | Loaded locally (`docker load`) | Pushed by digest to GHCR |
 | Verification | `verify_tempest.sh` runs | Deferred to `merge-tempest-image` |
 | Vulnerability scan | Against local image | Against SBOM (in merge job) |
 | SARIF upload | None | `grype-tempest-<release>` (in merge job) |
@@ -850,27 +818,12 @@ security. The job is parameterized by release via the `generate-matrix` job.
 | SBOM attestation | `actions/attest` | Signed attestation pushed to GHCR registry |
 | Image signing | `sigstore/cosign` | Keyless signature via Sigstore OIDC |
 
-### lint-dockerfiles
+### nix-flake-check
 
-The Tempest Dockerfile is included in the `lint-dockerfiles` matrix job alongside other
-Dockerfiles:
-
-```yaml
-strategy:
-  matrix:
-    dockerfile:
-      - images/python-base/Dockerfile
-      - images/venv-builder/Dockerfile
-      - images/keystone/Dockerfile
-      # ...
-      - images/tempest/Dockerfile
-      # ...
-```
-
-Hadolint runs with `failure-threshold: warning` and the project's `.hadolint.yaml`
-configuration. The Tempest Dockerfile uses `# hadolint ignore=DL3006` on `FROM`
-directives (consistent with other Dockerfiles) because named build contexts resolve
-the base image at build time.
+The Tempest image has no Dockerfile and no `lint-dockerfiles` entry. Its expression
+`images/tempest/image.nix` is linted by the `nix-lint` check that `nix-flake-check`
+builds (nixfmt, statix and deadnix), and `build-tempest` needs that job and
+`nix-lock-check` ([Lint](../ci-cd/nix-image-build.md#lint)).
 
 ## Data Flow (CI End-to-End)
 
@@ -882,17 +835,11 @@ order the job runs them.
 ![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
 
 ```text
-releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_TEMPEST_PLUGIN_VERSION +
-                         │                KEYSTONE_TEMPEST_PLUGIN_VERSION + NEUTRON_TEMPEST_PLUGIN_VERSION +
-                         │                CINDER_TEMPEST_PLUGIN_VERSION
-                         ▼ (build-e2e-images job, per release: hack/ci-build-tempest-image.sh)
-         docker build --build-arg TEMPEST_VERSION=... \
-                      --build-arg BARBICAN_TEMPEST_PLUGIN_VERSION=... \
-                      --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=... \
-                      --build-arg NEUTRON_TEMPEST_PLUGIN_VERSION=... \
-                      --build-arg CINDER_TEMPEST_PLUGIN_VERSION=... \
-                      --build-context upper-constraints=releases/<release>/ \
-                      images/tempest/
+releases/<release>/test-refs.yaml ──hack/nix-lock.sh──▶ nix/locks/<release>/tempest/
+                         │                (tempest and the four plugin pins, committed)
+                         ▼ (build-e2e-images job, per release: hack/ci-nix-build-e2e-images.sh)
+         nix build .#tempest-<rel_>-image   (in the nixos/nix container)
+         docker load < .nix-e2e/tempest-<release>.tar
                          │
                          ▼ (tempest job, per matrix.service and matrix.release)
          hack/ci-run-tempest.sh, in this order:
@@ -940,12 +887,13 @@ releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + BARBICAN_T
 
 | Artifact | Used by Tempest infrastructure |
 | --- | --- |
-| `images/python-base/Dockerfile`, `images/venv-builder/Dockerfile` | Base images for the Tempest Dockerfile build chain |
-| `releases/<release>/upper-constraints.txt` | Dependency constraints for PyPI installs |
+| `images/tempest/image.nix`, `nix/lib/service-image.nix` | The Nix expression of the Tempest image |
+| `nix/locks/<release>/tempest/` | The lock the image's environment is built from |
+| `releases/<release>/upper-constraints.txt` | Dependency constraints of the lock |
 | `tests/lib/assertions.sh` | Assertion helpers sourced by `verify_tempest.sh` |
 | SBOM attestation pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest SBOM |
 | Cosign signing pattern in `build-images.yaml` | Reused by `merge-tempest-image` for Tempest signing |
-| Two-layer OCI annotation pattern | Static Dockerfile labels + CI metadata-action |
+| OCI labels of `nix/lib/service-image.nix` | The four static labels plus the tempest version |
 | Grype scanning pattern in `build-images.yaml` | Reused by `build-tempest` and `merge-tempest-image` |
 
 :::
