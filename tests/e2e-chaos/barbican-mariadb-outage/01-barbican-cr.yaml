@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR for the MariaDB partition chaos test. Unique name
+# (barbican-db-chaos) and database (barbican_db_chaos) to avoid conflicts with
+# other test suites. Managed database via clusterRef to openstack-db, cache
+# via clusterRef to openstack-memcached. keystoneEndpoint points at the
+# Keystone of 00-keystone-cr.yaml, and serviceUser is its bootstrap admin.
+#
+# The partition leaves a request that reached the database waiting on a dead
+# connection for as long as TCP retransmits, and the workload sends one such
+# request about every 16 s. Without a bound the two workers of the pod would
+# both wait, the readiness probe would find no free worker, and the API would
+# leave its Service for a fault its probe path never touches. The sibling
+# database-outage suites bound that wait with uWSGI's harakiri. Barbican
+# cannot: uWSGI respawns a killed worker, the worker loads the application
+# again (--lazy-apps), and barbican 22.0.0 connects to the database while it
+# loads (barbican/api/app.py, setup_database_engine_and_factory) with the
+# operator's max_retries = -1. Under the partition the respawned worker never
+# comes back, the liveness probe restarts the container, and the new one hangs
+# the same way until the partition ends (CI run 38770151068). The bound is put
+# on the connection instead: pymysql's read_timeout and write_timeout, which
+# oslo.db appends to the DSN from connection_parameters. A request on a dead
+# connection ends in a 500 within about 20 s (the 10 s read timeout, then the
+# 10 s connect timeout of the fresh connection the pool tries), and the worker
+# lives on. The bound also ends the fail-closed write before the partition is
+# lifted, so it cannot complete afterwards and pass the recovery listing as a
+# record that should not exist. A healthy request of this suite takes well
+# under a second.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  extraConfig:
+    database:
+      connection_parameters: read_timeout=10&write_timeout=10
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_db_chaos
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-barbican-db-chaos.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

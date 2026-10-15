@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the MariaDB partition chaos test. Unique name (glance-db-chaos)
+# and database (glance_db_chaos) to avoid conflicts with other test suites.
+# Managed database via clusterRef to openstack-db, cache via clusterRef to
+# openstack-memcached.
+#
+# keystoneEndpoint points at the Keystone of 00-keystone-cr.yaml and
+# serviceUser is its bootstrap admin, so the token the API validates and the
+# token the probes present come from one Keystone. Nothing opens the API
+# without a token: a 401 is a failure in this suite, not a fault.
+#
+# harakiri bounds every request a uWSGI worker serves to 20 s. The partition
+# leaves a request that reached the database waiting on a dead connection for
+# as long as TCP retransmits, and the workload sends one such request about
+# every 16 s. Without a bound the two workers of the pod would both wait,
+# the readiness probe would find no free worker, and the API would leave its
+# Service for a fault its probe path never touches. The bound also kills the
+# fail-closed write before the partition is lifted, so it cannot complete
+# afterwards and pass the recovery listing as a record that should not exist;
+# ../glance-garage-outage/ bounds its upload for that reason. 20 s stays under
+# the webhook's bound of terminationGracePeriodSeconds - preStopSleepSeconds
+# (30 - 5 = 25 at the deployment defaults), and a healthy request of this
+# suite takes well under a second.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  apiServer:
+    uwsgi:
+      harakiri: 20
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_db_chaos
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-glance-db-chaos.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

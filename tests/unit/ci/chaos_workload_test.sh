@@ -16,11 +16,12 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the twenty-two suites that start a workload carry one
+#   4. The adoption: the twenty-six suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
 #      deletion-stuck-finalizer says why it has none.
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
-#      pod runs on, and make shellcheck lints lib/*.sh.
+#      pod runs on, the pod and network legs load and deploy Placement for
+#      the placement stream, and make shellcheck lints lib/*.sh.
 #
 # The stub serves Keystone, Nova, Neutron, Cinder, Glance, Placement,
 # Barbican and a plain HTTP target on one localhost port, each under a path
@@ -1878,14 +1879,15 @@ test_dump_and_stop_exit_0_without_a_pod() {
 # ---------------------------------------------------------------------------
 
 CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
-ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-operator-pod-kill \
-cinder-keystone-outage cinder-operator-pod-kill cronjob-rotation-failure \
-glance-keystone-outage glance-operator-pod-kill horizon-memcached-pod-kill \
+ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
+barbican-operator-pod-kill cinder-keystone-outage cinder-mariadb-outage \
+cinder-operator-pod-kill cronjob-rotation-failure glance-keystone-outage \
+glance-mariadb-outage glance-operator-pod-kill horizon-memcached-pod-kill \
 horizon-operator-pod-kill mariadb-network-latency mariadb-network-partition \
 mariadb-pod-kill memcached-pod-kill neutron-keystone-outage \
 nova-keystone-outage nova-placement-outage openbao-pod-kill \
 operator-pod-crash operator-pod-kill placement-keystone-outage \
-placement-operator-pod-kill"
+placement-mariadb-outage placement-operator-pod-kill"
 BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
 MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
 
@@ -1922,7 +1924,7 @@ check_adopter() {
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the twenty-two adopters keep the harness contract and deletion-stuck-finalizer declines it"
+  echo "Test: the twenty-six adopters keep the harness contract and deletion-stuck-finalizer declines it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -1932,7 +1934,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the twenty-two suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the twenty-six suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \
@@ -1988,6 +1990,33 @@ test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
   fi
 }
 
+# --- Test 24 --------------------------------------------------------------
+test_ci_runs_placement_on_the_pod_and_network_legs() {
+  echo "Test: the pod and network e2e-chaos legs load and deploy Placement, the nova leg keeps its own steps"
+  # The placement stream needs a Placement on every leg that runs a placement
+  # suite: placement-operator-pod-kill and placement-keystone-outage on pod,
+  # placement-mariadb-outage on network.
+  local expr="(matrix.suite == 'pod' || matrix.suite == 'network')"
+  local load
+  load="$(job_step e2e-chaos "Load E2E images")"
+  assert_contains "the pull of the placement-operator image covers both legs" "$load" \
+    "\${{ ${expr} && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}"
+  assert_contains "the pull of the placement service image covers both legs" "$load" \
+    "\${{ ${expr} && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}"
+  local name step
+  for name in "Load placement images into kind" "Deploy placement operator"; do
+    step="$(job_step e2e-chaos "$name")"
+    assert_eq "${name}: runs on the pod and network legs alone" \
+      "if: matrix.suite == 'pod' || matrix.suite == 'network'" \
+      "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
+  done
+  assert_eq "the nova leg's placement deploy keeps its own condition" \
+    "if: matrix.suite == 'nova'" \
+    "$(job_step e2e-chaos "Deploy placement operator (nova leg)" | grep -E '^ *if:' | sed 's/^ *//')"
+  assert_contains "the network leg runs the placement database outage" \
+    "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/placement-mariadb-outage"
+}
+
 # --- Run ---
 test_run_reaches_ready_on_every_stream
 test_a_503_fails_one_stream_and_leaves_the_others_ok
@@ -2023,6 +2052,7 @@ test_verify_reads_the_ovn_db_sync_log
 test_dump_and_stop_exit_0_without_a_pod
 test_every_suite_adopts_the_harness_or_declines_it
 test_ci_loads_the_tempest_image_on_the_keystone_stack_legs
+test_ci_runs_placement_on_the_pod_and_network_legs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

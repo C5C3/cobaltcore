@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the MariaDB partition chaos test.
+#
+# Managed mode throughout: the schema cinder_db_chaos on the openstack-db
+# MariaDB cluster, the openstack-memcached cache and the ESO-synced cinder-db
+# credentials (deploy/kind/infrastructure). The transport URL comes from the
+# Secret ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on
+# the kind-only shared-rabbitmq broker.
+#
+# The name and the schema carry the suite's own prefix: every suite of this
+# tree runs in the shared openstack namespace, and spec.cinderRef on a
+# CinderBackend is immutable, so a shared name would tie two suites to one CR.
+#
+# No keystoneEndpoint and no serviceUser: the two are set together or not at
+# all (the pairing CEL rule on CinderSpec), and leaving both out renders
+# auth_strategy = noauth. Keystone is not the subject here, so the probes and
+# the workload send the token admin:admin, as ../cinder-operator-pod-kill/
+# does.
+#
+# The partition leaves a request that reached the database waiting on a dead
+# connection for as long as TCP retransmits, and the workload sends one such
+# request about every 16 s. Without a bound the two workers of the pod would
+# both wait, the readiness probe would find no free worker, and the API would
+# leave its Service for a fault its probe path never touches. Cinder cannot
+# take uWSGI's harakiri, for the reason ../barbican-mariadb-outage/ gives:
+# uWSGI respawns a killed worker, the worker loads the application again
+# (--lazy-apps), and cinder 28.0.0 reads the database while it loads (the
+# volume controller builds cinder.volume.api.API, whose scheduler and volume
+# RPC clients read the minimum service versions in cinder/rpc.py) with
+# oslo.db's default max_retries = 10, which the operator leaves in place.
+# Under the partition the respawned workers spend minutes in connect
+# attempts, the liveness probe restarts the container, and the new one hangs
+# the same way until the partition ends (network leg of CI run 38864239649).
+# The bound is put on the connection instead: pymysql's read_timeout and
+# write_timeout, which oslo.db appends to the DSN from connection_parameters.
+# A request on a dead connection ends in a 500 within about 20 s (the 10 s
+# read timeout, then the 10 s connect timeout of the fresh connection the
+# pool tries), and the worker lives on. The bound also ends the fail-closed
+# write before the partition is lifted, so it cannot complete afterwards and
+# pass the recovery listing as a record that should not exist. A healthy
+# request of this suite takes well under a second.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  extraConfig:
+    database:
+      connection_parameters: read_timeout=10&write_timeout=10
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_db_chaos
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-db-chaos-messaging

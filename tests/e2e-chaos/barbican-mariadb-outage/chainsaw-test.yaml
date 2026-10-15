@@ -1,0 +1,415 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a MariaDB outage under the Barbican API. The
+# partition severs barbican-api <-> MariaDB traffic. It is enforced on the
+# MariaDB (server) side so it catches the ClusterIP-routed connection the API
+# uses (see 03-networkchaos.yaml for why a client-side rule would be a no-op).
+# The suite proves the API fails closed on writes while it keeps serving and
+# keeps reporting itself healthy:
+#   - baseline: the workload streams are READY against a Ready Barbican
+#   - under the partition: GET /healthcheck stays 200 and a POST /v1/secrets
+#     named db-outage-failclosed FAILS the way a database outage fails (5xx or
+#     a bounded timeout, never a 4xx). A 4xx is not accepted: the suite exists
+#     to prove the DATABASE write fails closed, and an auth-pipeline regression
+#     that turns every write into a 401 would otherwise read as proof
+#   - under the partition: BarbicanAPIReady stays True/APIHealthy, as
+#     ../barbican-openbao-outage/ asserts it. The readiness probe GETs
+#     /healthcheck, which touches no table, so a database outage is invisible
+#     to readiness, and the operator's database condition reads the MariaDB
+#     CRs, which the partition leaves alone. The aggregate Ready is left out
+#     for the reason that suite gives: the store controller revalidates its
+#     AppRole credentials against OpenBao on its own cadence
+#   - after the partition is lifted the failed write is absent from a listing
+#     by its name, and a fresh write succeeds again
+#
+# Blast radius: the partition drops traffic between the MariaDB pods and the
+# API pods of barbican-db-chaos alone (03-networkchaos.yaml). Keystone, OpenBao
+# and the other services keep their database.
+#
+# Workload, on the network leg: the token and secret streams of
+# ../lib/workload.sh against keystone-barbican-db-chaos and barbican-db-chaos.
+# The streams through the partitioned API fail while it lasts, one record about
+# every 16 s, because a request that reaches the database waits until the
+# workload's 15 s timeout or the socket timeouts of 01-barbican-cr.yaml,
+# whichever ends first. The budget is an estimate of that window: no run has
+# measured it yet.
+# Chaos budget: failures=40 recovery=90s
+# Chaos budget measured: 2026-10-15, estimate, failures 20, recovery 60 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-mariadb-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR the probes authenticate against ─────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-barbican-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-barbican-db-chaos
+  # ── Step 2: Apply Barbican and its store, then start the workload ─────────
+  - try:
+    - apply:
+        file: 01-barbican-cr.yaml
+    - apply:
+        file: 02-barbican-secretstore.yaml
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-db-chaos-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start barbican-mariadb-outage --
+          --streams token,secret
+          --keystone http://keystone-barbican-db-chaos.openstack.svc:5000/v3
+          --barbican http://barbican-db-chaos.openstack.svc:9311
+    catch: &barbican-db-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos barbican-db-chaos --cr-kind=barbican --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=barbican-db-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - podLogs:
+        namespace: barbican-system
+        selector: app.kubernetes.io/name=barbican-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump barbican-mariadb-outage
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop barbican-mariadb-outage
+  # ── Step 3: Partition MariaDB from the Barbican API ───────────────────────
+  # The fault window opens on the workload's clock right before the apply.
+  # `kubectl wait --for=condition=AllInjected` stands in for a Chainsaw
+  # resource assert because NetworkChaos.status.conditions is a fixed 4-item
+  # list (Selected/AllInjected/AllRecovered/Paused); chainsaw's list-merge
+  # rejects any shorter expected slice, and chaos-mesh writes all four False
+  # before the selector has run, so a negative assertion would pass on an
+  # experiment that never injected anything.
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark barbican-mariadb-outage fault-start
+    - apply:
+        file: 03-networkchaos.yaml
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl wait networkchaos/partition-mariadb-barbican -n openstack \
+            --for=condition=AllInjected --timeout=120s
+    catch: *barbican-db-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 03-networkchaos.yaml --ignore-not-found
+          echo "OK: the MariaDB partition is lifted"
+  # ── Step 4: Assert fail-closed while the API stays up ─────────────────────
+  # The probe reads its verdict from the pod log after the pod has ended, the
+  # way ../neutron-mariadb-outage/ reads its probes. The assert after it reads
+  # the CR under the partition: the readiness probe touches no table, so the
+  # pod stays pooled and only database-backed requests fail.
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -eu
+          POD=barbican-db-chaos-failclosed-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-barbican-db-chaos.openstack.svc.cluster.local:5000/v3"
+          API = "http://barbican-db-chaos.openstack.svc.cluster.local:9311"
+          PROBE = "/healthcheck"
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=12, retry_5xx=False):
+              # Retries what got no answer, and a 5xx when asked to; any other
+              # HTTP error fails at once with its body.
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      if not retry_5xx or e.code < 500:
+                          fail("%s -> HTTP %d: %s" % (what, e.code, e.read(300).decode("utf-8", "replace")))
+                      err = "HTTP %d" % e.code
+                  except NOANSWER as e:
+                      err = repr(e)
+                  print("retry %d for %s: %s" % (i, what, err))
+                  time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def token():
+              if not KEYSTONE:
+                  # The noauth API of this suite takes this token as the admin.
+                  return "admin:admin"
+              body = json.dumps({"auth": {
+                  "identity": {"methods": ["password"], "password": {"user": {
+                      "name": "admin", "domain": {"id": "default"},
+                      "password": os.environ["OS_PASSWORD"]}}},
+                  "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+              return do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                     headers={"Content-Type": "application/json"}),
+                        "keystone token").headers["X-Subject-Token"]
+
+          def headers(tok):
+              return {"X-Auth-Token": tok, "Content-Type": "application/json"}
+
+          WRITE = "/v1/secrets"
+          BODY = {"name": "db-outage-failclosed", "payload": "x", "payload_content_type": "text/plain"}
+
+          def probe_path(what):
+              resp = do(lambda: call("GET", API + PROBE, timeout=15), what)
+              if resp.status != 200:
+                  fail("%s -> %d during the partition, want 200" % (what, resp.status))
+
+          # The readiness probe GETs this path, which touches no table, so the
+          # API has to keep answering it.
+          probe_path("GET " + PROBE)
+          print("GET %s answered 200 during the partition (API up)" % PROBE)
+
+          tok = token()
+          print("token in hand; the partition leaves identity traffic alone")
+
+          # Fail-closed contract: the write needs the partitioned database, so it
+          # must not answer 2xx. A 5xx or a bounded timeout is the expected
+          # outcome. A 4xx is not accepted: an auth-pipeline regression that
+          # turns every write into a 401 would otherwise read as proof. One
+          # attempt only, bounded at 90 s: a retry could store a second record
+          # under the same name and blur what the recovery step reads.
+          try:
+              resp = call("POST", API + WRITE, data=json.dumps(BODY).encode(),
+                          headers=headers(tok), timeout=90)
+              if 200 <= resp.status < 300:
+                  fail("POST %s returned %d during the partition -- the write did NOT fail closed" % (WRITE, resp.status))
+              print("POST non-2xx %d during the partition (fail-closed OK)" % resp.status)
+          except urllib.error.HTTPError as e:
+              if e.code < 500:
+                  fail("POST %s -> HTTP %d during the partition: a client error does not prove the database failed closed: %s"
+                       % (WRITE, e.code, e.read(300).decode("utf-8", "replace")))
+              print("POST -> HTTP %d during the partition (fail-closed OK)" % e.code)
+          except NOANSWER as e:
+              print("POST -> %r during the partition (fail-closed OK)" % e)
+
+          # The failed write must not have taken the API down with it.
+          probe_path("GET %s after the failed write" % PROBE)
+          print("GET %s answered 200 after the failed write (API still up)" % PROBE)
+          print("FAILCLOSED-OK")
+          '
+          # Poll for a terminal phase rather than Succeeded alone: a probe
+          # that fails ends in Failed, and its log says why.
+          phase=""
+          for _ in $(seq 1 100); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'FAILCLOSED-OK' <<<"$OUT"
+          echo "OK: the write failed closed while the API stayed up"
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'BarbicanAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+    catch: *barbican-db-dump
+  # ── Step 5: Lift the partition ────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-mariadb-barbican
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark barbican-mariadb-outage fault-end
+    catch: *barbican-db-dump
+  # ── Step 6: Assert recovery, and that the failed write stayed failed ──────
+  # The fail-closed step accepts a bounded timeout, but a timeout only proves
+  # the client gave up: the request could still have completed in the worker
+  # it waited in. Listing by name once the database is reachable again is
+  # what separates the two. The fresh write after it proves the API recovers
+  # with no operator action and no pod restart; the probe deletes what it
+  # created, so the workload's checks read only their own records.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -eu
+          POD=barbican-db-chaos-recovery-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-barbican-db-chaos.openstack.svc.cluster.local:5000/v3"
+          API = "http://barbican-db-chaos.openstack.svc.cluster.local:9311"
+          PROBE = "/healthcheck"
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=12, retry_5xx=False):
+              # Retries what got no answer, and a 5xx when asked to; any other
+              # HTTP error fails at once with its body.
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      if not retry_5xx or e.code < 500:
+                          fail("%s -> HTTP %d: %s" % (what, e.code, e.read(300).decode("utf-8", "replace")))
+                      err = "HTTP %d" % e.code
+                  except NOANSWER as e:
+                      err = repr(e)
+                  print("retry %d for %s: %s" % (i, what, err))
+                  time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def token():
+              if not KEYSTONE:
+                  # The noauth API of this suite takes this token as the admin.
+                  return "admin:admin"
+              body = json.dumps({"auth": {
+                  "identity": {"methods": ["password"], "password": {"user": {
+                      "name": "admin", "domain": {"id": "default"},
+                      "password": os.environ["OS_PASSWORD"]}}},
+                  "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+              return do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                     headers={"Content-Type": "application/json"}),
+                        "keystone token").headers["X-Subject-Token"]
+
+          def headers(tok):
+              return {"X-Auth-Token": tok, "Content-Type": "application/json"}
+
+          LIST = "/v1/secrets?name=db-outage-failclosed"
+          KEY = "secrets"
+          WRITE = "/v1/secrets"
+          BODY = {"name": "db-outage-recovered", "payload": "x", "payload_content_type": "text/plain"}
+
+          tok = token()
+
+          # The SQLAlchemy pool may hand out a connection that died in the
+          # partition once more before it reconnects, so a 5xx is retried for
+          # two minutes. A 4xx stays fatal.
+          listing = json.loads(do(lambda: call("GET", API + LIST, headers=headers(tok)),
+                                  "list by name", tries=24, retry_5xx=True).read())
+          left = listing.get(KEY, [])
+          print("the listing by name holds %d record(s)" % len(left))
+          if left:
+              fail("the write that failed closed left a record behind: %s" % json.dumps(left)[:500])
+
+          resp = do(lambda: call("POST", API + WRITE, data=json.dumps(BODY).encode(),
+                                 headers=headers(tok)),
+                    "fresh write", tries=24, retry_5xx=True)
+          print("POST %s answered %d after the partition" % (WRITE, resp.status))
+          if resp.status != 201:
+              fail("POST /v1/secrets -> %d after the partition, want 201" % resp.status)
+          # barbican writes secret_ref under its host_href; the uuid is what
+          # the delete needs.
+          secret = json.loads(resp.read())["secret_ref"].rstrip("/").rsplit("/", 1)[-1]
+          do(lambda: call("DELETE", API + "/v1/secrets/" + secret, headers={"X-Auth-Token": tok}),
+             "delete the fresh secret", retry_5xx=True)
+          print("created and deleted secret %s" % secret)
+          print("RECOVERY-OK")
+          '
+          # Poll for a terminal phase rather than Succeeded alone: a probe
+          # that fails ends in Failed, and its log says why.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'RECOVERY-OK' <<<"$OUT"
+          echo "OK: the failed write is absent and the API writes again"
+    catch: *barbican-db-dump
+  # ── Step 7: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify barbican-mariadb-outage
+    catch: *barbican-db-dump
