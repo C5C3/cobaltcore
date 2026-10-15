@@ -20,12 +20,14 @@
 # the home directory of user 42424, is then an empty directory unless
 # extraRoots names something.
 #
-# extraRoots maps a path below /var/lib/openstack to a store path. A target
-# that does not exist fails the build and names the path.
+# extraRoots maps a path below /var/lib/openstack to a store path, rootLinks
+# a path relative to the image root (usr/share/novnc) to one. A target that
+# does not exist fails the build and names the path.
 { pkgs }:
 {
   venv ? null,
   extraRoots ? { },
+  rootLinks ? { },
 }:
 let
   inherit (pkgs) lib;
@@ -33,20 +35,25 @@ let
   uid = toString defaults.uid;
   gid = toString defaults.gid;
 
-  extras = pkgs.runCommand "var-lib-openstack-extra-roots" { } (
-    ''
-      mkdir -p "$out"
-    ''
-    + lib.concatStrings (
+  # The shell lines that link each entry of an attribute set below $out.
+  linkAll =
+    argument: entries:
+    lib.concatStrings (
       lib.mapAttrsToList (rel: target: ''
         if [ ! -e ${lib.escapeShellArg target} ]; then
-          echo ${lib.escapeShellArg "fhs-layout: extraRoots.\"${rel}\" names ${target}, which does not exist"} >&2
+          echo ${lib.escapeShellArg "fhs-layout: ${argument}.\"${rel}\" names ${target}, which does not exist"} >&2
           exit 1
         fi
         mkdir -p "$(dirname "$out/"${lib.escapeShellArg rel})"
         ln -s ${lib.escapeShellArg target} "$out/"${lib.escapeShellArg rel}
-      '') extraRoots
-    )
+      '') entries
+    );
+
+  extras = pkgs.runCommand "var-lib-openstack-extra-roots" { } (
+    ''
+      mkdir -p "$out"
+    ''
+    + linkAll "extraRoots" extraRoots
   );
 
   openstackRoot = pkgs.symlinkJoin {
@@ -54,13 +61,16 @@ let
     paths = lib.optional (venv != null) venv ++ [ extras ];
   };
 
-  links = pkgs.runCommand "fhs-links" { } ''
-    mkdir -p "$out/var/lib" "$out/bin" "$out/usr/bin"
-    ln -s ${openstackRoot} "$out/var/lib/openstack"
-    ln -s ${pkgs.bash}/bin/bash "$out/bin/sh"
-    ln -s ${pkgs.bash}/bin/bash "$out/bin/bash"
-    ln -s ${pkgs.coreutils}/bin/env "$out/usr/bin/env"
-  '';
+  links = pkgs.runCommand "fhs-links" { } (
+    ''
+      mkdir -p "$out/var/lib" "$out/bin" "$out/usr/bin"
+      ln -s ${openstackRoot} "$out/var/lib/openstack"
+      ln -s ${pkgs.bash}/bin/bash "$out/bin/sh"
+      ln -s ${pkgs.bash}/bin/bash "$out/bin/bash"
+      ln -s ${pkgs.coreutils}/bin/env "$out/usr/bin/env"
+    ''
+    + linkAll "rootLinks" rootLinks
+  );
 
   nss = pkgs.dockerTools.fakeNss.override {
     extraPasswdLines = [ "openstack:x:${uid}:${gid}::/var/lib/openstack:/usr/sbin/nologin" ];

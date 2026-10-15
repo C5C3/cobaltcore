@@ -27,8 +27,8 @@
 #   checks.<system>.nix-lint         nixfmt, statix and deadnix over flake.nix,
 #                                    nix/lib/ and images/; nix/spike/ is the
 #                                    Phase 0 record and stays outside the set
-#   checks.<system>.fhs-layout       nix/lib/fhs-layout.nix built with a venv
-#                                    and an extraRoots entry
+#   checks.<system>.fhs-layout       nix/lib/fhs-layout.nix built with a venv,
+#                                    an extraRoots and a rootLinks entry
 #   devShells.<system>.image-tools   skopeo and vulnix for the
 #                                    build-nix-image composite action
 {
@@ -189,8 +189,8 @@
                 touch "$out"
               '';
 
-          # The façade with a Python environment and an extraRoots entry, the
-          # two inputs no image passes yet.
+          # The façade with a Python environment, an extraRoots entry and a
+          # rootLinks entry, independent of any service lock.
           fhs-layout =
             let
               fhsLayout = import ./nix/lib/fhs-layout.nix { inherit pkgs; };
@@ -201,11 +201,13 @@
               layout = fhsLayout {
                 inherit venv;
                 extraRoots."etc/svc/svc.conf" = pkgs.writeText "svc-conf-fixture" "x";
+                rootLinks."usr/share/fixture" = pkgs.writeText "root-link-fixture" "y";
               };
             in
             pkgs.runCommand "fhs-layout-check" { } ''
               test -e ${layout}/var/lib/openstack/bin/svc
               test "$(cat ${layout}/var/lib/openstack/etc/svc/svc.conf)" = x
+              test "$(cat ${layout}/usr/share/fixture)" = y
               test -x ${layout}/bin/sh
               test -e ${layout}/usr/bin/env
               test -s ${layout}/etc/ssl/certs/ca-certificates.crt
