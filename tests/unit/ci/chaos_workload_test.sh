@@ -16,7 +16,7 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the sixteen suites that start a workload carry one
+#   4. The adoption: the twenty-two suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
 #      deletion-stuck-finalizer says why it has none.
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
@@ -1878,11 +1878,14 @@ test_dump_and_stop_exit_0_without_a_pod() {
 # ---------------------------------------------------------------------------
 
 CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
-ADOPTERS="api-pod-kill-pdb barbican-operator-pod-kill cinder-operator-pod-kill \
-cronjob-rotation-failure glance-operator-pod-kill horizon-memcached-pod-kill \
+ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-operator-pod-kill \
+cinder-keystone-outage cinder-operator-pod-kill cronjob-rotation-failure \
+glance-keystone-outage glance-operator-pod-kill horizon-memcached-pod-kill \
 horizon-operator-pod-kill mariadb-network-latency mariadb-network-partition \
-mariadb-pod-kill memcached-pod-kill nova-placement-outage openbao-pod-kill \
-operator-pod-crash operator-pod-kill placement-operator-pod-kill"
+mariadb-pod-kill memcached-pod-kill neutron-keystone-outage \
+nova-keystone-outage nova-placement-outage openbao-pod-kill \
+operator-pod-crash operator-pod-kill placement-keystone-outage \
+placement-operator-pod-kill"
 BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
 MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
 
@@ -1919,7 +1922,7 @@ check_adopter() {
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the sixteen adopters keep the harness contract and deletion-stuck-finalizer declines it"
+  echo "Test: the twenty-two adopters keep the harness contract and deletion-stuck-finalizer declines it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -1929,7 +1932,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the sixteen suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the twenty-two suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \

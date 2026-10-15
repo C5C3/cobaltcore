@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR for the Keystone outage chaos test. Unique name
+# (barbican-ks-outage) and database (barbican_ks_outage) to avoid conflicts
+# with other test suites. Managed database via clusterRef to openstack-db,
+# cache via clusterRef to openstack-memcached.
+#
+# keystoneEndpoint points at the Keystone of 00-keystone-cr.yaml, the Keystone
+# the outage takes away, and serviceUser is its bootstrap admin, whose
+# password the pre-seeded keystone-admin Secret carries.
+#
+# One replica, where ../barbican-openbao-outage/ runs two: that suite parks a
+# uWSGI worker on a write into its partition and asserts /healthcheck beside
+# it. Here a request whose token cannot be validated is answered at once.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-ks-outage
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_ks_outage
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-barbican-ks-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

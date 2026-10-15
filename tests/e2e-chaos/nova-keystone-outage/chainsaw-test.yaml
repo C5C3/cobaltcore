@@ -1,0 +1,762 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Keystone outage under a Nova deployment.
+#
+# The fault is a PodChaos pod-failure on the API pods of this suite's own
+# Keystone (14-podchaos.yaml): the Service loses its endpoint, and every
+# connection to Keystone is refused at once. The suite pins what the Nova API
+# does with a token it cannot validate while Keystone is gone, and that the
+# deployment keeps reporting itself healthy through it:
+#
+#   - baseline: the Keystone, the four services Nova depends on and the Nova
+#     are Ready, the fake compute is mapped into cell1, and the token, network,
+#     server and image streams of the workload are READY
+#   - under the outage: a token issued before the outage, and never presented
+#     to Nova until then, gets 503 on GET /v2.1/servers. keystonemiddleware
+#     cannot reach Keystone to validate it and answers HTTPServiceUnavailable.
+#     A 2xx would mean Nova served a token nobody validated
+#   - under the outage: the Keystone CR reports DeploymentReady=False while the
+#     Nova CR stays Ready=True/AllReady with NovaAPIReady=True/APIHealthy,
+#     SchedulerReady=True and ConductorReady=True. The API's probes do not
+#     authenticate and the scheduler and conductor take their readiness off the
+#     broker socket, so the outage is invisible to the conditions
+#   - after the outage: the Keystone is Ready again and a fresh token lists the
+#     servers with 200; the workload's verify then audits Placement and
+#     compares the Neutron and OVN databases
+#
+# The probe needs a token Nova has never seen. Nova's keystonemiddleware caches
+# a validated token for token_cache_time, 300 s by default, in the shared
+# Memcached, so a token the workload presented before the outage can keep
+# working through it. The same holds for the service tokens Nova presents to
+# Placement, Neutron and Glance.
+#
+# Blast radius: the PodChaos selects app.kubernetes.io/name: keystone,
+# app.kubernetes.io/instance: keystone-nova-ks-chaos and
+# app.kubernetes.io/component: api, the API pods of this suite's Keystone and
+# nothing else. The Nova takes a vhost on the kind-only shared-rabbitmq;
+# nothing here touches the bus.
+#
+# Workload, on the nova leg: the token, network, server and image streams of
+# ../lib/workload.sh against this suite's Keystone, Neutron, Nova and Glance.
+# The token stream fails from the PodChaos until the Keystone answers again;
+# the other streams fail once a service on their path needs a token it has not
+# cached, a build included: the scheduler's Placement call and the compute's
+# image download each present a token of their own. The budget is an estimate
+# of that window: no run has measured it yet.
+# Chaos budget: failures=500 recovery=180s
+# Chaos budget measured: 2026-10-15, estimate, failures 250, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-keystone-outage
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-placement-outage/ needs that for the same
+    # fixtures); the rest read a deployment that is already up.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost ──────────────────────────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test, which is why the vhost is taken here rather
+  # than beside the Nova CR five steps down.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-ks-chaos nova-ks-chaos-messaging openstack
+    catch: &nova-ks-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-ks-chaos --cr-kind=nova --dep-label=app.kubernetes.io/instance=keystone-nova-ks-chaos --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-ks-chaos
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -A -o yaml 2>&1 || true
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-ks-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-ks-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-ks-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-ks-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-ks-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-ks-chaos-s3
+        namespace: openstack
+    # The compute and the Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-ks-chaos-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-ks-chaos-catalog-setup nova-ks-chaos-image-seed nova-ks-chaos-flavor-seed; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump nova-keystone-outage
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-ks-chaos || true
+  # ── Step 2: Bring up Keystone ─────────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-ks-dump
+  # ── Step 3: Register the four services in the catalog ─────────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-ks-chaos-catalog-setup -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 02-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/nova-ks-chaos-catalog-setup \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-ks-chaos-catalog-setup 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-ks-chaos-catalog-setup -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-ks-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-ks-dump
+  # ── Step 4: Bring up the four services the boot path depends on ───────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-ks-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-ks-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-ks-dump
+  # ── Step 5: Seed the image the servers boot from ──────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-ks-chaos-image-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 09-image-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-ks-chaos-image-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-ks-chaos-image-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-ks-chaos-image-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-ks-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-ks-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ───────────────────
+  # 8m: two schema migrations, a cell mapping and five workloads.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-ks-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ──────────────────
+  # The Deployment mounts the compute-contract Secret the step above has just
+  # asserted. Discovery runs by hand rather than waiting out the scheduler's
+  # 300-second periodic.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-ks-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../../e2e/nova/discover-hosts.sh nova-ks-chaos "$NAMESPACE"
+    catch: *nova-ks-dump
+  # ── Step 8: Seed the flavor the server stream boots with ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-ks-chaos-flavor-seed -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 13-flavor-seed-job.yaml
+          kubectl wait --for=condition=complete job/nova-ks-chaos-flavor-seed \
+            -n "$NAMESPACE" --timeout=5m || {
+            kubectl logs -n "$NAMESPACE" job/nova-ks-chaos-flavor-seed 2>&1 || true
+            kubectl get pods -n "$NAMESPACE" -l job-name=nova-ks-chaos-flavor-seed -o wide
+            exit 1
+          }
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-ks-chaos-flavor-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-ks-dump
+  # ── Step 9: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start nova-keystone-outage --
+          --streams token,network,server,image
+          --keystone http://keystone-nova-ks-chaos.openstack.svc:5000/v3
+          --neutron http://neutron-nova-ks-chaos.openstack.svc:9696
+          --nova http://nova-ks-chaos.openstack.svc:8774/v2.1
+          --image-ref 4e0a0000-0000-4000-8000-000000000008
+          --flavor m1.nano
+          --glance http://glance-nova-ks-chaos.openstack.svc:9292
+    catch: *nova-ks-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop nova-keystone-outage
+  # ── Step 10: Take Keystone away under a token Nova has never seen ─────────
+  # The probe issues its token T1 first and prints TOKEN-ISSUED; only then
+  # does the script mark the fault window and apply the PodChaos, so T1
+  # comes from a live Keystone and reaches Nova only once Keystone is gone.
+  # The probe reads its verdict from the pod log after the pod has ended;
+  # python3 -u keeps TOKEN-ISSUED from waiting in a stdout buffer while the
+  # pod runs. The asserts after it read both CRs under the fault.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -eu
+          POD=nova-ks-chaos-failclosed-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # The bootstrap admin password travels as a pod env var, the way
+          # the sibling suites hand it to their probes. The token never
+          # leaves the pod.
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-nova-ks-chaos.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://nova-ks-chaos.openstack.svc.cluster.local:8774/v2.1/servers"
+          EXPECT = 503
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def answer(url, token):
+              # The status of one GET and how to print it; None when nothing answered.
+              try:
+                  with call("GET", url, headers={"X-Auth-Token": token}, timeout=30) as resp:
+                      return resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except NOANSWER as e:
+                  return None, repr(e)
+
+          # T1 is issued while Keystone answers. The service has never seen it,
+          # so no cached validation can stand in for Keystone once it is gone.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          token = None
+          for i in range(24):
+              try:
+                  with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                            headers={"Content-Type": "application/json"}) as resp:
+                      token = resp.headers["X-Subject-Token"]
+                      project = json.loads(resp.read())["token"]["project"]["id"]
+                  break
+              except urllib.error.HTTPError as e:
+                  fail("POST /auth/tokens -> HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace")))
+              except NOANSWER as e:
+                  print("retry %d for the token: %r" % (i, e))
+                  time.sleep(5)
+          if token is None:
+              fail("no token from Keystone within 120s")
+          print("TOKEN-ISSUED")
+
+          # The script applies the PodChaos once it reads TOKEN-ISSUED. The
+          # outage is there once every GET has been refused for 6 s: the
+          # Service has no endpoint left. A timeout, a reset or a single
+          # refusal is not the outage, because a Keystone that is slow under
+          # load, or still serving through its termination grace period,
+          # would validate T1.
+          deadline = time.time() + 180
+          refused = None
+          while True:
+              try:
+                  call("GET", KEYSTONE, timeout=5).close()
+                  refused = None
+              except urllib.error.HTTPError as e:
+                  e.close()
+                  refused = None
+              except NOANSWER as e:
+                  if isinstance(getattr(e, "reason", e), ConnectionRefusedError):
+                      refused = refused or time.time()
+                      if time.time() - refused >= 6:
+                          print("keystone is gone: refused for %.0f s: %r" % (time.time() - refused, e))
+                          break
+                  else:
+                      refused = None
+                      print("not the outage yet: %r" % e)
+              if time.time() >= deadline:
+                  fail("keystone stayed reachable")
+              time.sleep(2)
+
+          target = TARGET.format(project_id=project)
+          deadline = time.time() + 120
+          while True:
+              code, detail = answer(target, token)
+              if code == EXPECT:
+                  print("GET %s answered %s to the token Keystone cannot validate" % (target, detail))
+                  print("FAILCLOSED-OK")
+                  sys.exit(0)
+              if code is not None and 200 <= code < 300:
+                  fail("answered %d with an unvalidated token during the outage" % code)
+              if time.time() >= deadline:
+                  fail("last answer " + detail)
+              print("retry: %s" % detail)
+              time.sleep(5)
+          '
+          ISSUED=""
+          for _ in $(seq 1 60); do
+            OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>/dev/null || true)"
+            if grep -qx 'TOKEN-ISSUED' <<<"$OUT"; then
+              ISSUED=yes
+              break
+            fi
+            case "$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)" in
+              Succeeded|Failed) break ;;
+            esac
+            sleep 2
+          done
+          if [ -z "$ISSUED" ]; then
+            kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+            echo "FAIL: the probe printed no TOKEN-ISSUED within 120s"
+            exit 1
+          fi
+
+          ../lib/workload.sh mark nova-keystone-outage fault-start
+          kubectl apply -f 14-podchaos.yaml
+          kubectl wait podchaos/fail-keystone-nova -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=120s
+
+          # Poll for a terminal phase rather than Succeeded alone: a probe
+          # that fails ends in Failed, and its log says why.
+          phase=""
+          for _ in $(seq 1 180); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'FAILCLOSED-OK' <<<"$OUT"
+          echo "OK: Nova answered 503 to a token it could not validate"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "False"
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-ks-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 14-podchaos.yaml --ignore-not-found
+          echo "OK: the Keystone outage is lifted"
+  # ── Step 11: Lift the outage ──────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: fail-keystone-nova
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark nova-keystone-outage fault-end
+    catch: *nova-ks-dump
+  # ── Step 12: Assert recovery with a fresh token ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-ks-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 7m
+        content: |
+          set -eu
+          POD=nova-ks-chaos-recovery-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-nova-ks-chaos.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://nova-ks-chaos.openstack.svc.cluster.local:8774/v2.1/servers"
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def answer(url, token):
+              # The status of one GET and how to print it; None when nothing answered.
+              try:
+                  with call("GET", url, headers={"X-Auth-Token": token}, timeout=30) as resp:
+                      return resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except NOANSWER as e:
+                  return None, repr(e)
+
+          # A fresh token. Keystone is Ready again, but a worker that is still
+          # starting may refuse the connection or answer 5xx once more.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          deadline = time.time() + 180
+          token = None
+          while token is None:
+              try:
+                  with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                            headers={"Content-Type": "application/json"}) as resp:
+                      token = resp.headers["X-Subject-Token"]
+                      project = json.loads(resp.read())["token"]["project"]["id"]
+                  break
+              except urllib.error.HTTPError as e:
+                  detail = "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+                  if e.code < 500:
+                      fail("POST /auth/tokens -> " + detail)
+              except NOANSWER as e:
+                  detail = repr(e)
+              if time.time() >= deadline:
+                  fail("no token from Keystone within 180s: " + detail)
+              print("retry for the token: %s" % detail)
+              time.sleep(5)
+
+          # The service may still answer 503 or 401 for a few requests while its
+          # keystonemiddleware reconnects; every other status fails at once.
+          target = TARGET.format(project_id=project)
+          deadline = time.time() + 180
+          while True:
+              code, detail = answer(target, token)
+              if code == 200:
+                  print("GET %s answered 200 with a fresh token" % target)
+                  print("RECOVERY-OK")
+                  sys.exit(0)
+              if code is not None and code not in (401, 503):
+                  fail("GET %s answered %s after the outage" % (target, detail))
+              if time.time() >= deadline:
+                  fail("last answer " + detail)
+              print("retry: %s" % detail)
+              time.sleep(5)
+          '
+          phase=""
+          for _ in $(seq 1 200); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'RECOVERY-OK' <<<"$OUT"
+          echo "OK: Nova accepts a fresh token again"
+    catch: *nova-ks-dump
+  # ── Step 13: Judge the workload, audit Placement, compare OVN ─────────────
+  # 25 minutes: the observation and the DONE wait of verify, then the audit
+  # and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify nova-keystone-outage
+          --placement-audit nova-ks-chaos
+          --ovn-db-sync neutron-nova-ks-chaos
+    catch: *nova-ks-dump
+  # ── Step 14: Tear the deployment down ─────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself, from the bus consumers inward. The fake compute holds a broker
+  # connection of its own and is not part of the CR, so it goes before the
+  # Nova. The compute and the Jobs, which the suite applied with kubectl, are
+  # deleted best-effort: a suite that already failed must still reach the CR
+  # delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-ks-chaos-catalog-setup nova-ks-chaos-image-seed nova-ks-chaos-flavor-seed || true
+
+          kubectl delete nova nova-ks-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-ks-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-ks-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *nova-ks-dump

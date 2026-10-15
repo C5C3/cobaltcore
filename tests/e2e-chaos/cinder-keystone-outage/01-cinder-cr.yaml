@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the Keystone outage chaos test, the first chaos suite with an
+# authenticated Cinder.
+#
+# It is ../cinder-operator-pod-kill/00-cinder-cr.yaml with keystoneEndpoint and
+# serviceUser added. The two are set together or not at all (the pairing CEL
+# rule on CinderSpec): with both set the API renders [keystone_authtoken] and
+# validates every token against the Keystone of 00-keystone-cr.yaml, the
+# Keystone the outage takes away. Without them it would render
+# auth_strategy = noauth, the mode the other Cinder chaos suites run in, and
+# there would be no validation for the outage to break.
+#
+# Managed mode otherwise: the schema cinder_ks_outage on the openstack-db
+# MariaDB cluster, the openstack-memcached cache and the ESO-synced cinder-db
+# credentials. The transport URL comes from the Secret
+# ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on the
+# kind-only shared-rabbitmq broker.
+#
+# One API replica. The volume and backup blocks are absent, so the schema
+# default of three replicas never applies to them.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-ks-outage
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_ks_outage
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-ks-outage-messaging
+  keystoneEndpoint: http://keystone-cinder-ks-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

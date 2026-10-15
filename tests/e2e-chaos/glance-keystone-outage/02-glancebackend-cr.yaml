@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-ks-outage CR. It points at the
+# in-cluster Garage S3 endpoint on the pre-created glance-images bucket with
+# SigV4 region "garage"; credentials come from the ESO-synced
+# garage-s3-credentials Secret. glance-api registers no store without it, so
+# it has to go Ready before the Glance CR can. The outage of this suite takes
+# Keystone away and leaves the store alone.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-ks-outage-s3
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-ks-outage
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.shared-services.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

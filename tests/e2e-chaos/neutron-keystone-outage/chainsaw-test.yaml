@@ -1,0 +1,443 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Keystone outage under the Neutron API.
+#
+# The fault is a PodChaos pod-failure on the API pods of this suite's own
+# Keystone (04-podchaos.yaml): the Service loses its endpoint, and every
+# connection to Keystone is refused at once. The suite pins what Neutron does
+# with a token it cannot validate while Keystone is gone:
+#
+#   - baseline: the Keystone and the Neutron are Ready, and the workload
+#     streams are READY
+#   - under the outage: a token issued before the outage, and never presented
+#     to Neutron until then, gets 503 on GET /v2.0/networks. keystonemiddleware
+#     cannot reach Keystone to validate it and answers HTTPServiceUnavailable
+#     ("The Keystone service is temporarily unavailable."). A 2xx would mean
+#     Neutron served a token nobody validated, and a hang would mean the
+#     request has no bounded answer
+#   - under the outage: the Keystone CR reports DeploymentReady=False while the
+#     Neutron CR stays Ready=True/AllReady, because no Neutron condition
+#     watches Keystone
+#   - after the outage: the Keystone is Ready again and a fresh token gets 200
+#     from the same request
+#
+# The probe needs a token Neutron has never seen. keystonemiddleware caches a
+# validated token for token_cache_time, 300 s by default, in the shared
+# Memcached, so a token the workload presented before the outage can keep
+# working through it.
+#
+# Blast radius: the PodChaos selects app.kubernetes.io/name: keystone,
+# app.kubernetes.io/instance: keystone-neutron-ks-outage and
+# app.kubernetes.io/component: api, the API pods of this suite's Keystone and
+# nothing else (04-podchaos.yaml).
+#
+# Workload, on the network leg: the token and network streams of
+# ../lib/workload.sh against keystone-neutron-ks-outage and neutron-ks-outage.
+# The token stream fails from the PodChaos until the Keystone answers again;
+# the network stream fails once Neutron needs a token it has not cached. The
+# budget is an estimate of that window: no run has measured it yet.
+# Chaos budget: failures=400 recovery=150s
+# Chaos budget measured: 2026-10-15, estimate, failures 200, recovery 120 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-keystone-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR the outage takes away ───────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-neutron-ks-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-neutron-ks-outage
+  # ── Step 2: Apply the OVN control plane and Neutron, start the workload ───
+  - try:
+    - apply:
+        file: 01-messaging-secret.yaml
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: neutron-ks-outage-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-ks-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start neutron-keystone-outage --
+          --streams token,network
+          --keystone http://keystone-neutron-ks-outage.openstack.svc:5000/v3
+          --neutron http://neutron-ks-outage.openstack.svc:9696
+    catch: &neutron-ks-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos neutron-ks-outage --cr-kind=neutron --dep-label=app.kubernetes.io/instance=keystone-neutron-ks-outage --dep-ns=openstack
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-neutron-ks-outage
+        namespace: openstack
+    - podLogs:
+        selector: app.kubernetes.io/instance=neutron-ks-outage
+        tail: 100
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump neutron-keystone-outage
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop neutron-keystone-outage
+  # ── Step 3: Take Keystone away under a token Neutron has never seen ───────
+  # The probe issues its token T1 first and prints TOKEN-ISSUED; only then
+  # does the script mark the fault window and apply the PodChaos, so T1
+  # comes from a live Keystone and reaches Neutron only once Keystone is
+  # gone. The probe reads its verdict from the pod log after the pod has
+  # ended, the way ../neutron-mariadb-outage/ reads its probes; python3 -u
+  # keeps TOKEN-ISSUED from waiting in a stdout buffer while the pod runs.
+  # The asserts after it read both CRs under the fault: the Keystone reports
+  # its API pods unready, and Neutron keeps reporting itself Ready,
+  # because no Neutron condition watches Keystone.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -eu
+          POD=neutron-ks-outage-failclosed-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # The bootstrap admin password travels as a pod env var, the way
+          # the sibling suites hand it to their probes. The token never
+          # leaves the pod.
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-neutron-ks-outage.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://neutron-ks-outage.openstack.svc.cluster.local:9696/v2.0/networks"
+          EXPECT = 503
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def answer(url, token):
+              # The status of one GET and how to print it; None when nothing answered.
+              try:
+                  with call("GET", url, headers={"X-Auth-Token": token}, timeout=30) as resp:
+                      return resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except NOANSWER as e:
+                  return None, repr(e)
+
+          # T1 is issued while Keystone answers. The service has never seen it,
+          # so no cached validation can stand in for Keystone once it is gone.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          token = None
+          for i in range(24):
+              try:
+                  with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                            headers={"Content-Type": "application/json"}) as resp:
+                      token = resp.headers["X-Subject-Token"]
+                      project = json.loads(resp.read())["token"]["project"]["id"]
+                  break
+              except urllib.error.HTTPError as e:
+                  fail("POST /auth/tokens -> HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace")))
+              except NOANSWER as e:
+                  print("retry %d for the token: %r" % (i, e))
+                  time.sleep(5)
+          if token is None:
+              fail("no token from Keystone within 120s")
+          print("TOKEN-ISSUED")
+
+          # The script applies the PodChaos once it reads TOKEN-ISSUED. The
+          # outage is there once every GET has been refused for 6 s: the
+          # Service has no endpoint left. A timeout, a reset or a single
+          # refusal is not the outage, because a Keystone that is slow under
+          # load, or still serving through its termination grace period,
+          # would validate T1.
+          deadline = time.time() + 180
+          refused = None
+          while True:
+              try:
+                  call("GET", KEYSTONE, timeout=5).close()
+                  refused = None
+              except urllib.error.HTTPError as e:
+                  e.close()
+                  refused = None
+              except NOANSWER as e:
+                  if isinstance(getattr(e, "reason", e), ConnectionRefusedError):
+                      refused = refused or time.time()
+                      if time.time() - refused >= 6:
+                          print("keystone is gone: refused for %.0f s: %r" % (time.time() - refused, e))
+                          break
+                  else:
+                      refused = None
+                      print("not the outage yet: %r" % e)
+              if time.time() >= deadline:
+                  fail("keystone stayed reachable")
+              time.sleep(2)
+
+          target = TARGET.format(project_id=project)
+          deadline = time.time() + 120
+          while True:
+              code, detail = answer(target, token)
+              if code == EXPECT:
+                  print("GET %s answered %s to the token Keystone cannot validate" % (target, detail))
+                  print("FAILCLOSED-OK")
+                  sys.exit(0)
+              if code is not None and 200 <= code < 300:
+                  fail("answered %d with an unvalidated token during the outage" % code)
+              if time.time() >= deadline:
+                  fail("last answer " + detail)
+              print("retry: %s" % detail)
+              time.sleep(5)
+          '
+          ISSUED=""
+          for _ in $(seq 1 60); do
+            OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>/dev/null || true)"
+            if grep -qx 'TOKEN-ISSUED' <<<"$OUT"; then
+              ISSUED=yes
+              break
+            fi
+            case "$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)" in
+              Succeeded|Failed) break ;;
+            esac
+            sleep 2
+          done
+          if [ -z "$ISSUED" ]; then
+            kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+            echo "FAIL: the probe printed no TOKEN-ISSUED within 120s"
+            exit 1
+          fi
+
+          ../lib/workload.sh mark neutron-keystone-outage fault-start
+          kubectl apply -f 04-podchaos.yaml
+          kubectl wait podchaos/fail-keystone-neutron -n "$NAMESPACE" \
+            --for=condition=AllInjected --timeout=120s
+
+          # Poll for a terminal phase rather than Succeeded alone: a probe
+          # that fails ends in Failed, and its log says why.
+          phase=""
+          for _ in $(seq 1 180); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'FAILCLOSED-OK' <<<"$OUT"
+          echo "OK: Neutron answered 503 to a token it could not validate"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-neutron-ks-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'DeploymentReady']):
+            - status: "False"
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-ks-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *neutron-ks-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 04-podchaos.yaml --ignore-not-found
+          echo "OK: the Keystone outage is lifted"
+  # ── Step 4: Lift the outage ───────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: fail-keystone-neutron
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark neutron-keystone-outage fault-end
+    catch: *neutron-ks-dump
+  # ── Step 5: Assert recovery with a fresh token ────────────────────────────
+  # Chaos Mesh restores the keystone image and the container restarts, so the
+  # CR is back at Ready=True/AllReady once the startup probe passes. The
+  # probe then issues a fresh token and repeats the request of step 3.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-neutron-ks-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 7m
+        content: |
+          set -eu
+          POD=neutron-ks-outage-recovery-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -u -c '
+          import http.client, json, os, sys, time, urllib.error, urllib.request
+
+          KEYSTONE = "http://keystone-neutron-ks-outage.openstack.svc.cluster.local:5000/v3"
+          TARGET = "http://neutron-ks-outage.openstack.svc.cluster.local:9696/v2.0/networks"
+          NOANSWER = (OSError, http.client.HTTPException)
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=15):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def answer(url, token):
+              # The status of one GET and how to print it; None when nothing answered.
+              try:
+                  with call("GET", url, headers={"X-Auth-Token": token}, timeout=30) as resp:
+                      return resp.status, "HTTP %d" % resp.status
+              except urllib.error.HTTPError as e:
+                  return e.code, "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+              except NOANSWER as e:
+                  return None, repr(e)
+
+          # A fresh token. Keystone is Ready again, but a worker that is still
+          # starting may refuse the connection or answer 5xx once more.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          deadline = time.time() + 180
+          token = None
+          while token is None:
+              try:
+                  with call("POST", KEYSTONE + "/auth/tokens", data=body,
+                            headers={"Content-Type": "application/json"}) as resp:
+                      token = resp.headers["X-Subject-Token"]
+                      project = json.loads(resp.read())["token"]["project"]["id"]
+                  break
+              except urllib.error.HTTPError as e:
+                  detail = "HTTP %d: %s" % (e.code, e.read(300).decode("utf-8", "replace"))
+                  if e.code < 500:
+                      fail("POST /auth/tokens -> " + detail)
+              except NOANSWER as e:
+                  detail = repr(e)
+              if time.time() >= deadline:
+                  fail("no token from Keystone within 180s: " + detail)
+              print("retry for the token: %s" % detail)
+              time.sleep(5)
+
+          # The service may still answer 503 or 401 for a few requests while its
+          # keystonemiddleware reconnects; every other status fails at once.
+          target = TARGET.format(project_id=project)
+          deadline = time.time() + 180
+          while True:
+              code, detail = answer(target, token)
+              if code == 200:
+                  print("GET %s answered 200 with a fresh token" % target)
+                  print("RECOVERY-OK")
+                  sys.exit(0)
+              if code is not None and code not in (401, 503):
+                  fail("GET %s answered %s after the outage" % (target, detail))
+              if time.time() >= deadline:
+                  fail("last answer " + detail)
+              print("retry: %s" % detail)
+              time.sleep(5)
+          '
+          phase=""
+          for _ in $(seq 1 200); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          grep -qx 'RECOVERY-OK' <<<"$OUT"
+          echo "OK: Neutron accepts a fresh token again"
+    catch: *neutron-ks-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify neutron-keystone-outage
+    catch: *neutron-ks-dump

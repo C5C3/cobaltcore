@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the flavor the server stream of ../lib/workload.sh boots with
+# (--flavor m1.nano) and waits until the fake compute reports itself up.
+#
+# The flavor is tiny because the fake driver allocates nothing, and the
+# scheduler still checks the claim against the inventory the compute published
+# in Placement. Its id is fixed and unique to this suite, and the create is
+# guarded by a `flavor show` on that id, so a pod the backoffLimit retries
+# creates nothing twice.
+#
+# The compute reports itself over the bus and its inventory into Placement, so
+# a service list with fake-1 up says both paths carry traffic before
+# the workload starts its first build.
+#
+# It runs against the Nova API, so it comes after the Nova is Ready, and
+# authenticates as the bootstrap admin (keystone-admin Secret).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-ks-chaos-flavor-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-ks-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              FLAVOR_ID="4e0a7e57-0000-4000-8000-000000000081"
+              openstack flavor show "${FLAVOR_ID}" >/dev/null 2>&1 \
+                || openstack flavor create --id "${FLAVOR_ID}" \
+                  --vcpus 1 --ram 128 --disk 1 --public m1.nano
+              echo "OK: flavor m1.nano (${FLAVOR_ID})"
+
+              # 24 x 5s = 2m. The output is captured before it is matched: an
+              # `openstack ... | grep -q` pipeline fails under pipefail
+              # when it matches, because grep closes the pipe first.
+              SERVICES=""
+              for _ in $(seq 1 24); do
+                SERVICES="$(openstack compute service list --service nova-compute \
+                  -f value -c Host -c State || true)"
+                if grep -q ' up$' <<<"${SERVICES}"; then
+                  echo "OK: compute service up: ${SERVICES}"
+                  exit 0
+                fi
+                sleep 5
+              done
+              echo "ERROR: no nova-compute reported state up within 120s"
+              echo "${SERVICES}"
+              exit 1
