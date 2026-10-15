@@ -1041,10 +1041,12 @@
       "schedule": ["before 6am on monday"]
     },
     {
+      "description": "flake.lock has two inputs: nixpkgs (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container images. Both are re-locked in the Monday window of the ubuntu digest bump, grouped in one pull request and never automerged: both inputs are rolling channel branches, so minimumReleaseAge cannot gate the re-lock and a reviewer confirms it",
       "matchManagers": ["nix"],
       "groupName": "nix flake inputs",
       "automerge": false,
-      "minimumReleaseAge": "3 days"
+      "minimumReleaseAge": "3 days",
+      "schedule": ["before 6am on monday"]
     },
     {
       "description": "The Nix spike under nix/spike/ is pinned by hand (nix/spike/README.md): no manager re-locks its flake.lock or edits the generated pyproject.toml and uv.lock files under nix/spike/locks/",

@@ -3,15 +3,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json keeps the Nix flake input fresh: the `nix` manager is
-# enabled with lockFileMaintenance (scoped to nix so npm's package-lock.json is
-# untouched), and a packageRule groups the nix updates. Without lockFileMaintenance
+# Verify renovate.json keeps both Nix flake inputs fresh: nixpkgs (nixos-unstable)
+# feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container
+# images. The `nix` manager is enabled with lockFileMaintenance (scoped to nix so
+# npm's package-lock.json is untouched), and a packageRule groups the nix updates
+# on the Monday schedule of the ubuntu digest bump. Without lockFileMaintenance
 # the committed flake.lock would become the one pinned artifact Renovate stops
-# bumping — a silent regression.
+# bumping — a silent regression. flake.lock must name both inputs as github
+# branches, the shape the manager re-locks.
 #
-# The weekly re-lock is opened for human review (automerge off): nixos-unstable is
-# a rolling ref, so the re-lock is not a version bump and minimumReleaseAge cannot
-# gate it — a reviewer confirms the base-runtime bump the devshell inherits instead.
+# The weekly re-lock is opened for human review (automerge off): both refs are
+# rolling channel branches, so the re-lock is not a version bump and
+# minimumReleaseAge cannot gate it — a reviewer confirms the base-runtime bump the
+# devshell and the images inherit instead.
 #
 # The spike under nix/spike/ is pinned by hand. The manager's default pattern
 # matches its flake.nix, and a managerFilePatterns entry only adds to the
@@ -55,8 +59,8 @@ test_nix_package_rule_present() {
   echo "Test: a packageRule groups the nix manager updates for a review-gated re-lock"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (4 checks skipped)"
-    SKIP=$((SKIP + 4))
+    echo "  SKIP: jq not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
@@ -79,6 +83,8 @@ test_nix_package_rule_present() {
     "nix flake inputs" "$(jq -r '.groupName' <<<"$rule")"
   assert_eq "nix packageRule gates automerge on release age" \
     "3 days" "$(jq -r '.minimumReleaseAge' <<<"$rule")"
+  assert_eq "nix packageRule runs on the Monday schedule" \
+    '["before 6am on monday"]' "$(jq -c '.schedule' <<<"$rule")"
 }
 
 test_lock_maintenance_scoped_to_nix_only() {
@@ -123,10 +129,31 @@ test_spike_disabled_for_every_manager() {
     "null" "$(jq -r '.matchManagers // "null"' <<<"$rule")"
 }
 
+test_flake_lock_carries_both_inputs() {
+  echo "Test: flake.lock carries both inputs as github channel branches"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
+    return
+  fi
+
+  local lock="$PROJECT_ROOT/flake.lock"
+  assert_eq "the nixpkgs input follows nixos-unstable" \
+    "nixos-unstable" "$(jq -r '.nodes.nixpkgs.original.ref' "$lock")"
+  assert_eq "the nixpkgs input is a github input" \
+    "github" "$(jq -r '.nodes.nixpkgs.original.type' "$lock")"
+  assert_eq "the nixpkgs-images input follows nixos-26.05" \
+    "nixos-26.05" "$(jq -r '.nodes["nixpkgs-images"].original.ref' "$lock")"
+  assert_eq "the nixpkgs-images input is a github input" \
+    "github" "$(jq -r '.nodes["nixpkgs-images"].original.type' "$lock")"
+}
+
 test_nix_manager_enabled_with_lock_maintenance
 test_nix_package_rule_present
 test_lock_maintenance_scoped_to_nix_only
 test_spike_disabled_for_every_manager
+test_flake_lock_carries_both_inputs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
