@@ -1,0 +1,244 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a cinder-volume pod kill in the middle of an
+# attach.
+#
+# The fault is a PodChaos pod-kill of the volume service of the one backend
+# (02-podchaos.yaml), timed to the moment the workload's volume stream holds a
+# volume in reserved or attaching. The suite pins what a volume service lost in
+# the middle of a request leaves behind:
+#
+#   - baseline: the Cinder is Ready and the volume stream is READY
+#   - the kill: a volume of the stream is seen attaching (VOLUME-ATTACHING),
+#     the volume pod UID changes, and the Deployment is available again
+#   - after the kill: VolumeServicesReady=True and Ready=True/AllReady within
+#     five minutes
+#   - the verdict is the harness's: the failed cycle and its cleanup-volume
+#     record fall in the fault window and are budgeted; the sweep then deletes
+#     the attachment and the volume the kill left reserved, and CONSISTENCY-OK
+#     volumes requires nothing transitional to remain
+#
+# cinder 28.0.0 init_host resets creating and downloading volumes to error and
+# resumes deleting ones, and leaves a reserved volume as it is. If Cinder
+# cannot clear such a volume through the attachments API alone, the sweep
+# records fail outside the window and the suite fails. That is a finding to
+# file against the operator or upstream, not a budget to raise.
+#
+# Blast radius: the PodChaos selects the volume-service pods of
+# volume-vol-kill-nfs1 of cinder-volume-kill; the API and the scheduler stay
+# up.
+#
+# Workload, on the network leg: the noauth volume stream of ../lib/workload.sh
+# against cinder-volume-kill. The cycle the kill meets fails, and so does every
+# cycle whose create or attach needs the volume service before the new pod has
+# started. The budget is an estimate of that window: no run has measured it
+# yet.
+# Chaos budget: failures=40 recovery=210s
+# Chaos budget measured: 2026-10-15, estimate, failures 20, recovery 180 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-volume-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, apply the CRs, start the workload ───
+  # One vhost per suite: Cinder's RPC topics are named after the deployment,
+  # so two suites on one vhost would share the scheduler and volume-service
+  # queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create cinder-volume-kill cinder-volume-kill-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-volume-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-volume-pod-kill --
+          --streams volume
+          --cinder http://cinder-volume-kill.openstack.svc:8776
+    catch: &vol-kill-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-volume-kill --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system --log-label=app.kubernetes.io/instance=cinder-volume-kill
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: vol-kill-nfs1
+        namespace: openstack
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Cinder children ==="
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-volume-kill -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-volume-kill -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-volume-pod-kill
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete cinder-volume-kill || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-volume-pod-kill
+  # ── Step 2: Kill the volume service while a volume attaches ───────────────
+  # The poll runs in the workload pod, which already reaches the API, every
+  # second for up to 240 s, until a volume of the stream is reserved or
+  # attaching. The harness stamps a record with the time its operation
+  # started, so the fault window opens before the poll, and a sighting counts
+  # only after a listing that showed no volume of the stream reserved or
+  # attaching: the attach the kill meets started inside the window. The UID
+  # is read first, so the PodChaos follows the sighting with no read in
+  # between. The window of an attach is short, so the kill meets the attach
+  # itself or the cycle right after it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -eu
+          SELECTOR=app.kubernetes.io/instance=cinder-volume-kill,app.kubernetes.io/component=volume-vol-kill-nfs1
+          OLD_UID="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}')"
+          if [ -z "$OLD_UID" ]; then
+            echo "ERROR: no volume service pod before the kill"
+            exit 1
+          fi
+          echo "volume service pod UID before the kill: $OLD_UID"
+
+          ../lib/workload.sh mark cinder-volume-pod-kill fault-start
+          OUT="$(kubectl exec chaos-wl-cinder-volume-pod-kill -n "$NAMESPACE" -- python3 -c '
+          import json, sys, time, urllib.request
+
+          URL = "http://cinder-volume-kill.openstack.svc:8776/v3/volumes/detail?all_tenants=1"
+          PREFIX = "chaos-wl-cinder-volume-pod-kill-"
+          deadline = time.time() + 240
+          idle = False
+          while time.time() < deadline:
+              try:
+                  req = urllib.request.Request(URL, headers={"X-Auth-Token": "admin:admin", "Accept": "application/json"})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      volumes = json.loads(resp.read())["volumes"]
+              except (OSError, ValueError) as e:
+                  print("retry: %r" % e)
+                  time.sleep(1)
+                  continue
+              busy = [v["id"] for v in volumes if str(v.get("name") or "").startswith(PREFIX) and (
+                  v.get("status") in ("reserved", "attaching") or v.get("attach_status") == "attaching")]
+              if busy and idle:
+                  print("VOLUME-ATTACHING " + busy[0])
+                  sys.exit(0)
+              idle = idle or not busy
+              time.sleep(1)
+          print("FAIL: no attach observed in 240s")
+          sys.exit(1)
+          ' 2>&1 || true)"
+          echo "$OUT"
+          if ! grep -q '^VOLUME-ATTACHING ' <<<"$OUT"; then
+            echo "FAIL: no volume of the stream was seen attaching"
+            exit 1
+          fi
+
+          kubectl apply -f 02-podchaos.yaml
+
+          # The old pod goes at once: gracePeriod 0. 60 × 2 s = 120 s.
+          GONE=""
+          for _ in $(seq 1 60); do
+            NOW="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true)"
+            case " $NOW " in
+              *" $OLD_UID "*) ;;
+              *) GONE=yes; break ;;
+            esac
+            sleep 2
+          done
+          if [ -z "$GONE" ]; then
+            echo "FAIL: volume service pod $OLD_UID still present 120s after the PodChaos"
+            exit 1
+          fi
+          echo "OK: the volume service pod $OLD_UID is gone"
+
+          # A new pod, available. 150 × 2 s = 300 s.
+          for _ in $(seq 1 150); do
+            AVAILABLE="$(kubectl get deployment cinder-volume-kill-volume-vol-kill-nfs1 -n "$NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+            NOW="$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true)"
+            if [ "${AVAILABLE:-0}" = "1" ] && [ -n "$NOW" ] && [ "$NOW" != "$OLD_UID" ]; then
+              echo "OK: Deployment cinder-volume-kill-volume-vol-kill-nfs1 is available again with pod $NOW"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: Deployment cinder-volume-kill-volume-vol-kill-nfs1 not available with a new pod within 300s (available=${AVAILABLE:-0}, pods: ${NOW:-<none>})"
+          exit 1
+    catch: *vol-kill-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 02-podchaos.yaml --ignore-not-found
+          echo "OK: the volume-service PodChaos is gone"
+  # ── Step 3: Delete PodChaos ───────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-cinder-volume
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cinder-volume-pod-kill fault-end
+    catch: *vol-kill-dump
+  # ── Step 4: The volume service is back ────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-volume-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *vol-kill-dump
+  # ── Step 5: Judge the workload: budget, sweep and the volumes check ───────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-volume-pod-kill
+    catch: *vol-kill-dump

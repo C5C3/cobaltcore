@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the cinder-volume pod-kill chaos test.
+#
+# Managed mode throughout: the schema cinder_volume_kill on the openstack-db
+# MariaDB cluster, the openstack-memcached cache and the ESO-synced cinder-db
+# credentials (deploy/kind/infrastructure). The transport URL comes from the
+# Secret ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on
+# the kind-only shared-rabbitmq broker.
+#
+# No keystoneEndpoint and no serviceUser: the two are set together or not at
+# all (the pairing CEL rule on CinderSpec), and leaving both out renders
+# auth_strategy = noauth, as ../cinder-operator-pod-kill/ does. Keystone is
+# not the subject here.
+#
+# The volume service of the one backend is the Deployment
+# cinder-volume-kill-volume-vol-kill-nfs1 with one replica, the replica count the CEL rule
+# on spec.volume allows, so killing its pod leaves no volume service until
+# the ReplicaSet has made a new one.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-volume-kill
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_volume_kill
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-volume-kill-messaging

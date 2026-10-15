@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The message bus whose pod this suite kills.
+#
+# It is a broker of its own rather than the kind-only shared-rabbitmq the other
+# Cinder suites take a vhost on: the fault here takes the whole broker away,
+# and doing that to the shared one would take every other suite on the leg
+# down with it. It is a plain RabbitmqCluster, as in ../cinder-broker-outage/,
+# because the subject is what a Cinder in managed messaging mode does when its
+# broker pod dies.
+#
+# One replica. The RabbitMQ Cluster Operator's defaults for image and
+# persistence are left alone, so the broker comes back on its own volume. Its
+# resource default is not: the operator requests 1 CPU and 2Gi per pod, which
+# on the single kind node of the self-hosted network leg leaves the next pod
+# Pending on "Insufficient cpu" (../cinder-broker-outage/00-rabbitmqcluster.yaml
+# records the same reason).
+#
+# The cluster-operator labels the broker's pods app.kubernetes.io/name=<cluster
+# name> and names the single server pod <cluster>-server-0, which is what
+# 03-podchaos.yaml, the kill step and the teardown use.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: cinder-broker-kill-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi

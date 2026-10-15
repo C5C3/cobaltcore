@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the broker pod-kill chaos test.
+#
+# Managed messaging: messaging.clusterRef points at the RabbitmqCluster of
+# 00-rabbitmqcluster.yaml, so the operator builds the transport URL from that
+# cluster's default-user Secret. That is the mode the fault is about, and it
+# is why this suite takes no vhost from ../../e2e/cinder/broker-vhost.sh: the
+# broker carries one deployment, so there is nothing to keep apart.
+#
+# Everything else is managed too: the schema cinder_broker_kill on the
+# openstack-db MariaDB cluster, the openstack-memcached cache and the
+# ESO-synced cinder-db credentials.
+#
+# No keystoneEndpoint and no serviceUser: the two are set together or not at
+# all (the pairing CEL rule on CinderSpec), and leaving both out renders
+# auth_strategy = noauth. Keystone is not the subject here.
+#
+# One API replica, so the restartCount read after the kill has one container
+# to read.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-broker-kill
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_broker_kill
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: cinder-broker-kill-rabbitmq

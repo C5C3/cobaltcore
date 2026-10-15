@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR that kills the volume service of the one backend.
+#
+# action pod-kill with gracePeriod 0: the pod dies in the middle of whatever it
+# serves, the attach the kill step waits for among it, and runs no graceful
+# shutdown that could finish that work first. The ReplicaSet creates a new pod,
+# whose init_host resets creating and downloading volumes to error and resumes
+# deleting ones (cinder 28.0.0 cinder/volume/manager.py); it leaves a reserved
+# volume as it is.
+#
+# The selector is the three labels the operator puts on the volume-service pod
+# template (operators/cinder/internal/controller/reconcile_volumeservices.go):
+# the component volume-vol-kill-nfs1 narrows it to this backend of this CR, so the
+# API and the scheduler stay up. mode all covers the one replica there is.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-cinder-volume
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: cinder
+      app.kubernetes.io/instance: cinder-volume-kill
+      app.kubernetes.io/component: volume-vol-kill-nfs1
+  gracePeriod: 0
