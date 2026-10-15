@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR for the MariaDB partition chaos test. Unique name
+# (placement-db-chaos) and database (placement_db_chaos) to avoid conflicts
+# with other test suites. Managed database via clusterRef to openstack-db,
+# cache via clusterRef to openstack-memcached. keystoneEndpoint points at the
+# Keystone of 00-keystone-cr.yaml, which the probes and the workload
+# authenticate against too.
+#
+# The partition leaves a request that reached the database waiting on a dead
+# connection for as long as TCP retransmits, and the workload sends one such
+# request about every 16 s. Without a bound the two workers of the pod would
+# both wait, the readiness probe would find no free worker, and the API would
+# leave its Service for a fault its probe path never touches. Placement cannot
+# take uWSGI's harakiri, for the reason ../barbican-mariadb-outage/ gives:
+# uWSGI respawns a killed worker, the worker loads the application again
+# (--lazy-apps), and placement 15.0.0 reads the database while it loads
+# (placement/deploy.py, loadapp calls update_database, which syncs the traits
+# and resource classes) with the operator's max_retries = -1. Under the
+# partition the respawned workers never come back, the liveness probe
+# restarts the container, and the new one hangs the same way until the
+# partition ends (network leg of CI run 38800821802). The bound is put on the
+# connection instead: pymysql's read_timeout and write_timeout, which oslo.db
+# appends to the DSN from connection_parameters, here under
+# [placement_database]. A request on a dead connection ends in a 500 within
+# about 20 s (the 10 s read timeout, then the 10 s connect timeout of the
+# fresh connection the pool tries), and the worker lives on. The bound also
+# ends the fail-closed write before the partition is lifted, so it cannot
+# complete afterwards and pass the recovery listing as a record that should
+# not exist. A healthy request of this suite takes well under a second.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  extraConfig:
+    placement_database:
+      connection_parameters: read_timeout=10&write_timeout=10
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_db_chaos
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-placement-db-chaos.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

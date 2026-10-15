@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition placement-api <-> MariaDB traffic.
+#
+# The partition is enforced on the MariaDB (server) side on purpose. placement
+# does not connect to a MariaDB pod IP: it connects to the ClusterIP Service
+# openstack-db.openstack.svc:3306. chaos-mesh installs its drop rule inside the
+# selector pods' network namespace and matches the target pods by their pod
+# IPs. If the rule were installed on the placement (client) side, it would
+# match MariaDB pod IPs, but at that point the packet still carries the
+# Service ClusterIP, because kube-proxy only DNATs ClusterIP -> pod IP later,
+# in the node's root namespace, after the packet has left the pod. The rule
+# would therefore never match and the partition would be a no-op for
+# Service-routed traffic.
+#
+# Installing the rule on the MariaDB pods and dropping traffic from the
+# placement pods works because, by the time the packet reaches the MariaDB
+# namespace, it has already been DNATed and carries the real placement pod
+# source IP, the same reason Kubernetes NetworkPolicies can match
+# Service-routed traffic by client pod IP. direction 'both' fully severs the
+# link in either direction.
+#
+# The target is narrowed to the API component of this suite's Placement.
+# The API pods serve the requests the probes and the workload make; the db-sync Job pods
+# carry the same name and instance labels and reach the same database, so
+# partitioning them would put a second failure under one verdict. The three
+# labels are what the operator puts on the API pod template
+# (naming.ComponentLabels("placement", <cr>, "api")).
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; the suite lifts the partition explicitly. It must exceed the
+# Chainsaw assert window, not equal it: an equal duration self-heals at the
+# deadline, in the same instant the fail-closed probe may still wait on its
+# bounded write. 600s sits above the 5m assert window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-mariadb-placement
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: mariadb
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: placement
+        app.kubernetes.io/instance: placement-db-chaos
+        app.kubernetes.io/component: api
+  duration: "600s"

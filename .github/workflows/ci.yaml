@@ -1977,6 +1977,10 @@ jobs:
               tests/e2e-chaos/cinder-nfs-outage
               tests/e2e-chaos/neutron-keystone-outage
               tests/e2e-chaos/cinder-keystone-outage
+              tests/e2e-chaos/glance-mariadb-outage
+              tests/e2e-chaos/placement-mariadb-outage
+              tests/e2e-chaos/barbican-mariadb-outage
+              tests/e2e-chaos/cinder-mariadb-outage
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -2080,10 +2084,11 @@ jobs:
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
-            # placement is exercised by the pod leg alone (see the pod-leg-only
-            # load and deploy steps below).
-            ${{ matrix.suite == 'pod' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
-            ${{ matrix.suite == 'pod' && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
+            # placement-operator-pod-kill and placement-keystone-outage run on
+            # the pod leg, placement-mariadb-outage on the network leg (see the
+            # placement load and deploy steps below).
+            ${{ (matrix.suite == 'pod' || matrix.suite == 'network') && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'pod' || matrix.suite == 'network') && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
             # Both the ovn leg and the network leg's neutron suites bring up an
             # OVNCentral, so both need the operator image and the OVN daemon
             # image that operator rolls out.
@@ -2126,13 +2131,14 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # placement-operator-pod-kill is the only suite that touches placement and
-      # it runs on the pod leg; none of the network leg's suites reference it.
-      # Keep the load off that leg — `kind load docker-image` is a docker
-      # save piped into the node's containerd and the placement service image is
-      # the expensive half of the pair.
+      # The pod leg's two placement suites and the network leg's
+      # placement-mariadb-outage need both images on the node. The ovn leg runs
+      # no Placement, and the nova leg loads the pair in its own step below.
+      # `kind load docker-image` is a docker save piped into the node's
+      # containerd, and the placement service image is the expensive half of
+      # the pair, so the load stays off the legs that do not use it.
       - name: Load placement images into kind
-        if: matrix.suite == 'pod'
+        if: matrix.suite == 'pod' || matrix.suite == 'network'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
@@ -2155,9 +2161,9 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
       # The nova leg's own six. None of the per-leg steps above reaches them:
-      # the placement pair is gated on the pod leg and the neutron pair on the
-      # network one. The OVN pair this leg also needs is loaded by the
-      # `!= 'pod'` step above.
+      # the placement pair is gated on the pod and network legs and the
+      # neutron pair on the network one. The OVN pair this leg also needs is
+      # loaded by the `!= 'pod'` step above.
       - name: Load nova leg images into kind
         if: matrix.suite == 'nova'
         run: |
@@ -2213,11 +2219,12 @@ jobs:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
           NAMESPACE: horizon-system
-      # The glance chaos suites (glance-operator-pod-kill, glance-garage-outage)
-      # need the glance-operator too. Like horizon it must land in its own
-      # dedicated glance-system namespace (not the script's keystone-system
-      # default) because glance-operator-pod-kill selects and kills the operator
-      # pod by `-n glance-system` — the same namespace the Flux/deploy-infra path
+      # The glance chaos suites (glance-operator-pod-kill, glance-garage-outage,
+      # glance-keystone-outage, glance-mariadb-outage) need the glance-operator
+      # too. Like horizon it must land in its own dedicated glance-system
+      # namespace (not the script's keystone-system default) because
+      # glance-operator-pod-kill selects and kills the operator pod by
+      # `-n glance-system` — the same namespace the Flux/deploy-infra path
       # installs it into — and its PodChaos targets glance-system. Without this
       # the operator installs into keystone-system, the pod selector finds
       # nothing, and the recovery assertion fails.
@@ -2228,22 +2235,24 @@ jobs:
           OPERATOR: glance
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
           NAMESPACE: glance-system
-      # The placement chaos suite needs the placement-operator too. Like horizon
-      # and glance it must land in its own placement-system namespace, not the
-      # script's keystone-system default: that is where the Flux/deploy-infra
-      # path installs it and where the suite's pod selector and PodChaos look.
-      # Pod leg only — the suite that needs it runs there, so the network leg
-      # would `helm install --wait` an operator that reconciles nothing.
+      # The placement chaos suites need the placement-operator too. Like
+      # horizon and glance it must land in its own placement-system namespace,
+      # not the script's keystone-system default: that is where the
+      # Flux/deploy-infra path installs it and where placement-operator-pod-kill's
+      # pod selector and PodChaos look. The pod leg runs two of the suites and
+      # the network leg runs placement-mariadb-outage; the ovn leg would
+      # `helm install --wait` an operator that reconciles nothing, and the nova
+      # leg deploys it in its own step below.
       - name: Deploy placement operator
-        if: matrix.suite == 'pod'
+        if: matrix.suite == 'pod' || matrix.suite == 'network'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: placement
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
           NAMESPACE: placement-system
-      # Both barbican chaos suites need the barbican-operator, one per leg
-      # (barbican-operator-pod-kill on pod, barbican-openbao-outage on network),
-      # so unlike placement this deploy runs on both keystone-stack legs. Like
+      # The four barbican chaos suites need the barbican-operator:
+      # barbican-operator-pod-kill and barbican-keystone-outage on pod,
+      # barbican-openbao-outage and barbican-mariadb-outage on network. Like
       # horizon and glance it must land in its own barbican-system namespace,
       # not the script's keystone-system default: that is where the
       # Flux/deploy-infra path installs it and where the pod-kill suite's
@@ -2255,7 +2264,7 @@ jobs:
           OPERATOR: barbican
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
           NAMESPACE: barbican-system
-          # Both suites create their managed BarbicanSecretStore in the openstack
+          # All four suites create their managed BarbicanSecretStore in the openstack
           # Namespace, and the operator only mints their OpenBaoCluster
           # provisioner token where the chart granted it a TokenRequest Role,
           # restricted to the provisioner account of the proving instance.

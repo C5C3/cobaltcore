@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 33 chaos test suites validate operator behavior during and after fault
+The 37 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 33 test suites require the infrastructure stack to be deployed and healthy.
+All 37 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -419,6 +419,10 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [neutron-keystone-outage](#neutron-keystone-outage) | — | `neutron-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Neutron gets 503 on `GET /v2.0/networks`; Keystone `DeploymentReady=False` and Neutron `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
 | [cinder-keystone-outage](#cinder-keystone-outage) | — | `cinder-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Cinder gets 503 on `GET /v3/{project_id}/volumes`; Keystone `DeploymentReady=False` and Cinder `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
 | [nova-keystone-outage](#nova-keystone-outage) | — | `nova-ks-chaos` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Nova gets 503 on `GET /v2.1/servers`; Keystone `DeploymentReady=False` and Nova `Ready=True/AllReady`, `NovaAPIReady=True/APIHealthy`, `SchedulerReady=True` and `ConductorReady=True` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`); placement audit and OVN db-sync comparison after the workload |
+| [glance-mariadb-outage](#glance-mariadb-outage) | — | `glance-db-chaos` | Database partition (fail-closed write) | `Ready=True/AllReady` maintained, `GET /healthcheck` 200 under the partition, `POST /v2/images` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh image answering 201 (`RECOVERY-OK`) |
+| [placement-mariadb-outage](#placement-mariadb-outage) | — | `placement-db-chaos` | Database partition (fail-closed write) | `Ready=True/AllReady` maintained, `GET /` 200 under the partition, `POST /resource_providers` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh provider answering 201 (`RECOVERY-OK`) |
+| [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican-db-chaos` | Database partition (fail-closed write) | `BarbicanAPIReady=True/APIHealthy` maintained, `GET /healthcheck` 200 under the partition, `POST /v1/secrets` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh secret answering 201 (`RECOVERY-OK`) |
+| [cinder-mariadb-outage](#cinder-mariadb-outage) | — | `cinder-db-chaos` | Database partition (fail-closed write) | `Ready=True/AllReady` maintained, `GET /healthcheck` 200 under the partition, `POST /v3/volumes` named `db-outage-failclosed` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), the listing by that name empty after the partition and a fresh volume reaching `available` within 240 s (`RECOVERY-OK`) |
 
 ---
 
@@ -2397,6 +2401,248 @@ workload.
   waits for the compute. The scheduler keeps its one worker and the urllib3
   connection logs of `nova-placement-outage`; here the logs show when each Nova
   workload reconnected to Keystone.
+
+---
+
+### glance-mariadb-outage
+
+**File:** `tests/e2e-chaos/glance-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs the Glance API pods from MariaDB,
+enforced on the MariaDB (server) side for the reason `mariadb-network-partition`
+documents. The suite pins the fail-closed contract of a partitioned database: a
+write that cannot reach it must not answer 2xx, and the record it would have created
+must be absent once the database is back. The readiness probe GETs `/healthcheck`,
+which touches no table, and the operator's database condition reads the MariaDB CRs,
+which the partition leaves alone, so `Ready=True/AllReady` holds while
+database-backed requests fail.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-glance-db-chaos` (database `keystone_glance_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
+| 2 | Apply Glance and its store | `apply` + `assert` (5m) + `script` (6m) | `glance-db-chaos` (database `glance_db_chaos`, `harakiri: 20`) and `glance-db-chaos-s3` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `03-networkchaos.yaml`: `partition-mariadb-glance` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `glance-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `glance-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, a token is still obtainable from `keystone-glance-db-chaos`, and one `POST /v2/images` with `{"name": "db-outage-failclosed", "disk_format": "raw", "container_format": "bare"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
+| 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-glance`, then `workload.sh mark fault-end` |
+| 6 | Assert recovery | `script` (6m) | Pod `glance-db-chaos-recovery-probe`: `GET /v2/images?name=db-outage-failclosed` lists nothing, and a fresh image answers 201; the probe deletes what it created (`RECOVERY-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-glance-cr.yaml`,
+`02-glancebackend-cr.yaml`, `03-networkchaos.yaml`.
+
+**Workload:** the `token` and `image` streams against `keystone-glance-db-chaos` and
+`glance-db-chaos`, started before the partition and judged at the end against
+`failures=40 recovery=90s`, an estimate no run has measured yet. The suite runs in
+the `network` matrix entry. The streams through the partitioned API fail about once
+every 16 seconds while it lasts, because a request that reaches the database waits
+until the workload's 15-second timeout. Every step from the workload start to
+`verify` dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+glance-db-chaos` with `--cr-kind=glance`,
+`--dep-label=app.kubernetes.io/name=mariadb` and
+`--log-label=app.kubernetes.io/instance=glance-db-chaos`, dumps every NetworkChaos
+and the operator logs, and dumps the workload.
+
+**Design notes:**
+
+- A 4xx during the partition fails the suite, for the reason
+  `neutron-mariadb-outage` gives: an auth-pipeline regression would otherwise pass
+  for proof. The write is attempted once, so a retry cannot store a second record
+  under the same name.
+- The recovery listing by name separates a write that failed from one the client
+  gave up on while the worker completed it. The listing retries a 5xx for up to two
+  minutes, because the SQLAlchemy pool hands out a connection that died in the
+  partition once more before it reconnects.
+- The CR sets `harakiri: 20` on its uWSGI server. A request that reaches the
+  database waits on a dead connection for as long as TCP retransmits, and the
+  workload sends one about every 16 seconds; without a bound both workers of the pod
+  would wait, and the readiness probe would find no free worker. The bound also ends
+  the fail-closed write before the partition is lifted, so it cannot complete
+  afterwards. `glance-garage-outage` bounds its upload the same way.
+- The target is narrowed to `app.kubernetes.io/component: api`. The Job pods carry
+  the same name and instance labels and reach the same database, so partitioning
+  them would widen the fault past what the suite asserts.
+- A Glance image record without data stays `queued`, which the `images` check of the
+  workload reports, so the recovery probe deletes the image it created.
+
+---
+
+### placement-mariadb-outage
+
+**File:** `tests/e2e-chaos/placement-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs the Placement API pods from MariaDB,
+enforced on the MariaDB (server) side for the reason `mariadb-network-partition`
+documents. The suite pins the fail-closed contract of a partitioned database: a
+write that cannot reach it must not answer 2xx, and the record it would have created
+must be absent once the database is back. The readiness probe GETs `/`, which
+touches no table, and the operator's database condition reads the MariaDB CRs, which
+the partition leaves alone, so `Ready=True/AllReady` holds while database-backed
+requests fail.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-placement-db-chaos` (database `keystone_placement_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
+| 2 | Apply Placement | `apply` + `assert` (5m) + `script` (6m) | `placement-db-chaos` (database `placement_db_chaos`, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `placement_database`) reaches `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `02-networkchaos.yaml`: `partition-mariadb-placement` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `placement-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `placement-db-chaos-failclosed-probe`: `GET /` answers 200, a token is still obtainable from `keystone-placement-db-chaos`, and one `POST /resource_providers` with `{"name": "db-outage-failclosed"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
+| 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-placement`, then `workload.sh mark fault-end` |
+| 6 | Assert recovery | `script` (6m) | Pod `placement-db-chaos-recovery-probe`: `GET /resource_providers?name=db-outage-failclosed` lists nothing, and a fresh provider answers 201; the probe deletes what it created (`RECOVERY-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-placement-cr.yaml`, `02-networkchaos.yaml`.
+
+**Workload:** the `token` and `placement` streams against
+`keystone-placement-db-chaos` and `placement-db-chaos`, started before the partition
+and judged at the end against `failures=40 recovery=90s`, an estimate no run has
+measured yet. The suite runs in the `network` matrix entry. The streams through the
+partitioned API fail about once every 16 seconds while it lasts, because a request
+that reaches the database waits until the workload's 15-second timeout or the socket
+timeouts of the CR, whichever ends first. Every step from the workload start to
+`verify` dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+placement-db-chaos` with `--cr-kind=placement`,
+`--dep-label=app.kubernetes.io/name=mariadb` and
+`--log-label=app.kubernetes.io/instance=placement-db-chaos`, dumps every
+NetworkChaos and the operator logs, and dumps the workload.
+
+**Design notes:**
+
+- The suite runs in the `network` matrix entry, so that entry loads and deploys the
+  placement-operator as the `pod` entry does.
+- The 4xx rule, the single bounded write, the listing by name and the narrowed
+  target follow `glance-mariadb-outage`, which gives the reasons.
+- The bound on a request that reaches the dead database is not `harakiri` but the
+  socket timeouts `barbican-mariadb-outage` uses, set in
+  `[placement_database] connection_parameters`. Placement reads the database while
+  it loads (it syncs the traits and resource classes), so a worker `harakiri` killed
+  hangs the same way a Barbican worker does, and the liveness probe restarts the
+  container until the partition ends.
+
+---
+
+### barbican-mariadb-outage
+
+**File:** `tests/e2e-chaos/barbican-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs the Barbican API pods from MariaDB,
+enforced on the MariaDB (server) side for the reason `mariadb-network-partition`
+documents. The suite pins the fail-closed contract of a partitioned database: a
+write that cannot reach it must not answer 2xx, and the record it would have created
+must be absent once the database is back. The readiness probe GETs `/healthcheck`,
+which touches no table, and the operator's database condition reads the MariaDB CRs,
+which the partition leaves alone, so `BarbicanAPIReady=True/APIHealthy` holds while
+database-backed requests fail.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-db-chaos` (database `keystone_barbican_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
+| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-db-chaos` (database `barbican_db_chaos`, `harakiri: 20`) and `barbican-db-chaos-store` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`; `workload.sh start` waits for `READY` |
+| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `03-networkchaos.yaml`: `partition-mariadb-barbican` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `barbican-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `barbican-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, a token is still obtainable from `keystone-barbican-db-chaos`, and one `POST /v1/secrets` with `{"name": "db-outage-failclosed", "payload": "x", "payload_content_type": "text/plain"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `BarbicanAPIReady=True/APIHealthy` on the CR |
+| 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-barbican`, then `workload.sh mark fault-end` |
+| 6 | Assert recovery | `script` (6m) | Pod `barbican-db-chaos-recovery-probe`: `GET /v1/secrets?name=db-outage-failclosed` lists nothing, and a fresh secret answers 201; the probe deletes what it created (`RECOVERY-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-barbican-cr.yaml`,
+`02-barbican-secretstore.yaml`, `03-networkchaos.yaml`.
+
+**Workload:** the `token` and `secret` streams against `keystone-barbican-db-chaos`
+and `barbican-db-chaos`, started before the partition and judged at the end against
+`failures=40 recovery=90s`, an estimate no run has measured yet. The suite runs in
+the `network` matrix entry. The streams through the partitioned API fail about once
+every 16 seconds while it lasts, because a request that reaches the database waits
+until the workload's 15-second timeout. Every step from the workload start to
+`verify` dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+barbican-db-chaos` with `--cr-kind=barbican`,
+`--dep-label=app.kubernetes.io/name=mariadb` and
+`--log-label=app.kubernetes.io/instance=barbican-db-chaos`, dumps every NetworkChaos
+and the operator logs, and dumps the workload.
+
+**Design notes:**
+
+- The assert under the partition reads `BarbicanAPIReady` and leaves the aggregate
+  `Ready` out, for the reason `barbican-openbao-outage` gives: the store controller
+  revalidates its AppRole credentials against OpenBao on its own schedule.
+- The 4xx rule, the single bounded write, the listing by name, the `harakiri` bound
+  and the narrowed target follow `glance-mariadb-outage`, which gives the reasons.
+
+---
+
+### cinder-mariadb-outage
+
+**File:** `tests/e2e-chaos/cinder-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs the Cinder API pods from MariaDB,
+enforced on the MariaDB (server) side for the reason `mariadb-network-partition`
+documents. The suite pins the fail-closed contract of a partitioned database: a
+write that cannot reach it must not answer 2xx, and the record it would have created
+must be absent once the database is back. The readiness probe GETs `/healthcheck`,
+which touches no table, and the operator's database condition reads the MariaDB CRs,
+which the partition leaves alone, so `Ready=True/AllReady` holds while
+database-backed requests fail.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-db-chaos cinder-db-chaos-messaging openstack`, then `cinder-db-chaos` (database `cinder_db_chaos`, noauth, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `database`) and the NFS backend `db-chaos-nfs1` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY`. The step cleanup deletes the vhost |
+| 2 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `02-networkchaos.yaml`: `partition-mariadb-cinder` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `cinder-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 3 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `cinder-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, and one `POST /v3/volumes` with `{"volume": {"name": "db-outage-failclosed", "size": 1}}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
+| 4 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-cinder`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `script` (8m) | Pod `cinder-db-chaos-recovery-probe`: `GET /v3/volumes/detail?all_tenants=1&name=db-outage-failclosed` lists nothing, and a fresh volume reaches `available` within 240 s; the probe deletes what it created (`RECOVERY-OK`) |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`,
+`02-networkchaos.yaml`.
+
+**Workload:** the noauth `volume` stream against `cinder-db-chaos`, started before
+the partition and judged at the end against `failures=40 recovery=90s`, an estimate
+no run has measured yet. The suite runs in the `network` matrix entry. The streams
+through the partitioned API fail about once every 16 seconds while it lasts, because
+a request that reaches the database waits until the workload's 15-second timeout or
+the socket timeouts of the CR, whichever ends first. Every step from the workload
+start to `verify` dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+cinder-db-chaos` with `--cr-kind=cinder`,
+`--dep-label=app.kubernetes.io/name=mariadb` and
+`--log-label=app.kubernetes.io/instance=cinder-db-chaos`, dumps every NetworkChaos
+and the operator logs, and dumps the workload.
+
+**Design notes:**
+
+- The Cinder runs `auth_strategy = noauth`, as `cinder-operator-pod-kill` does, and
+  every request carries the token `admin:admin`, because Keystone is not the subject
+  of this suite.
+- The scheduler and the volume service keep their database. The target is the API
+  alone, so a write fails on one request path with one verdict.
+- The 4xx rule, the single bounded write, the listing by name and the narrowed
+  target follow `glance-mariadb-outage`, which gives the reasons.
+- The bound on a request that reaches the dead database is not `harakiri` but the
+  socket timeouts `barbican-mariadb-outage` uses, set in
+  `[database] connection_parameters`. Cinder reads the database while it loads (the
+  RPC clients of its volume API read the minimum service versions), so a worker
+  `harakiri` killed hangs the same way a Barbican worker does, and the liveness probe
+  restarts the container until the partition ends.
 
 ---
 
