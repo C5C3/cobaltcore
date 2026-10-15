@@ -15,6 +15,7 @@
 #       Chart.yaml), which by repo convention carry no inline header
 #   S4  every SPDX-License-Identifier value has a matching LICENSES/<id>.txt
 #   S5  every LICENSES/<id>.txt is referenced by at least one file
+#   S6  *.nix under flake.nix, nix/, images/ has both headers
 #
 # No CI job runs `reuse lint` and the repo has no REUSE.toml; these checks
 # are the only tree-wide mechanised SPDX check. Exit code 1 on [FAIL].
@@ -170,12 +171,29 @@ info "S3 totals: scanned=${yaml_total} fail=${yaml_fail}"
 [[ "${yaml_fail}" -eq 0 ]] && pass "S3 clean (${yaml_total} files scanned)"
 
 # ---------------------------------------------------------------------------
+# S6 — *.nix (the flake, the image library and the image expressions)
+# ---------------------------------------------------------------------------
+hdr "S6: *.nix under flake.nix, nix/, images/ has SPDX headers"
+nix_total=0
+nix_fail=0
+while IFS= read -r f; do
+  [[ -z "${f}" ]] && continue
+  nix_total=$((nix_total + 1))
+  if ! has_spdx_pair "${f}"; then
+    fail "S6: ${f} missing SPDX header(s)"
+    nix_fail=$((nix_fail + 1))
+  fi
+done < <(find flake.nix nix images -type f -name '*.nix' 2>/dev/null | sort)
+info "S6 totals: scanned=${nix_total} fail=${nix_fail}"
+[[ "${nix_fail}" -eq 0 ]] && pass "S6 clean (${nix_total} files scanned)"
+
+# ---------------------------------------------------------------------------
 # S4 / S5 — licence inventory
 # ---------------------------------------------------------------------------
 hdr "S4: every SPDX-License-Identifier value has a matching LICENSES/<id>.txt"
 ids=$(grep -rhE 'SPDX-License-Identifier:[[:space:]]*[A-Za-z0-9.+-]+' \
   --include='*.go' --include='*.sh' --include='*.yaml' --include='*.yml' \
-  --include='*.toml' --include='*.py' --include='Makefile' --include='Dockerfile' \
+  --include='*.toml' --include='*.py' --include='*.nix' --include='Makefile' --include='Dockerfile' \
   . 2>/dev/null \
   | sed -nE 's/.*SPDX-License-Identifier:[[:space:]]*([A-Za-z0-9.+-]+).*/\1/p' \
   | sort -u || true)
@@ -207,6 +225,7 @@ hdr "Inventory — header coverage breakdown by extension"
 info "Go files scanned=${go_total} missing-header=${go_fail}"
 info "Shell scripts scanned=${sh_total} missing-header=${sh_fail}"
 info "YAML/TOML scanned=${yaml_total} missing-header=${yaml_fail}"
+info "Nix files scanned=${nix_total} missing-header=${nix_fail}"
 
 # ---------------------------------------------------------------------------
 hdr "Summary"

@@ -3,7 +3,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify SPDX license headers on all Dockerfiles, YAML configs, and scripts
+# Verify SPDX license headers on all Dockerfiles, YAML configs, scripts, and the
+# Nix files of the image build
 # Usage: bash tests/container-images/verify_spdx_headers.sh
 
 set -euo pipefail
@@ -102,6 +103,34 @@ test_script_has_spdx_after_shebang() {
   fi
 }
 
+# --- Test 4: The Nix files of the image build have SPDX headers ---
+# flake.nix, the shared library under nix/lib/ and every images/<name>/image.nix
+# carry the pair in '#' comments on lines 1 and 3. An image directory without
+# an image.nix leaves its glob empty, which checks nothing.
+test_nix_files_have_spdx() {
+  echo "Test: all Nix files have SPDX headers"
+
+  local nix_file rel line1 line3
+  for nix_file in "$PROJECT_ROOT"/flake.nix "$PROJECT_ROOT"/nix/lib/*.nix \
+                  "$PROJECT_ROOT"/images/*/image.nix; do
+    [[ -e "$nix_file" ]] || continue
+    rel="${nix_file#"$PROJECT_ROOT"/}"
+    line1=$(sed -n '1p' "$nix_file")
+    line3=$(sed -n '3p' "$nix_file")
+
+    if [[ "$line1" =~ ^#\ SPDX-FileCopyrightText:\ Copyright\ [0-9]{4}\ SAP\ SE ]] &&
+       [[ "$line3" == "# SPDX-License-Identifier: Apache-2.0" ]]; then
+      echo "  PASS: $rel has SPDX header"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $rel missing SPDX header"
+      echo "    line 1: $line1"
+      echo "    line 3: $line3"
+      FAIL=$((FAIL + 1))
+    fi
+  done
+}
+
 # --- Run all tests ---
 echo "=== SPDX header verification tests ==="
 echo ""
@@ -110,6 +139,8 @@ echo ""
 test_yaml_configs_have_spdx
 echo ""
 test_script_has_spdx_after_shebang
+echo ""
+test_nix_files_have_spdx
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -2,7 +2,7 @@
 name: check-spdx-reuse
 description: >-
   Audit SPDX / REUSE compliance across the CobaltCore source tree — every
-  *.go, *.sh, hand-authored YAML, and CI workflow file should carry
+  *.go, *.sh, *.nix, hand-authored YAML, and CI workflow file should carry
   matching SPDX-FileCopyrightText and SPDX-License-Identifier headers,
   and every license referenced in a header has a corresponding text
   under LICENSES/. Use when
@@ -30,7 +30,7 @@ statement:
 
 | Mechanism | Where it applies | Source of truth |
 |---|---|---|
-| Inline header | Every hand-authored `*.go`, `*.sh`, `*.py`, `Dockerfile`, `Makefile`, and `*.yaml` outside Helm charts and controller-gen output | Two comment lines: `SPDX-FileCopyrightText: …` and `SPDX-License-Identifier: …` |
+| Inline header | Every hand-authored `*.go`, `*.sh`, `*.py`, `*.nix`, `Dockerfile`, `Makefile`, and `*.yaml` outside Helm charts and controller-gen output | Two comment lines: `SPDX-FileCopyrightText: …` and `SPDX-License-Identifier: …` |
 | Licence text inventory | Every licence identifier used anywhere | A matching file under `LICENSES/` (only `Apache-2.0.txt` today) |
 
 Three file classes carry no inline header by convention, and the script
@@ -56,7 +56,7 @@ does not fail them:
 lint`, and nothing else checks headers tree-wide; a handful of shell
 unit tests pin the header on the files they own
 (`tests/unit/deploy/nfs_overlay_test.sh`, `metrics_server_overlay_test.sh`,
-`chaos_mesh_overlay_test.sh`, `dizzy_overlay_test.sh`). The S1–S5
+`chaos_mesh_overlay_test.sh`, `dizzy_overlay_test.sh`). The S1–S6
 checks below are the only mechanised check. `reuse lint` would fail on
 the three header-less classes above (and on JSON files such as
 `values.schema.json` and the option catalogs, `*.tpl` helpers, lock
@@ -104,6 +104,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **S5** — every `<id>.txt` under `LICENSES/` is referenced by at
   least one file (no unused licence inventory); an unused text is an
   `[INFO]`.
+- **S6** — every `*.nix` file of the image build (`flake.nix`, the
+  files under `nix/`, and every `images/<name>/image.nix`) has both
+  headers.
 - The **inventory** lists, per file class, the number of files scanned
   and the number missing a header.
 
@@ -139,7 +142,7 @@ reuse lint
 ```
 
 Report its outcome as an inventory, not as a verdict: until a
-`REUSE.toml` exists, S1–S5 are the checks the repo holds itself to.
+`REUSE.toml` exists, S1–S6 are the checks the repo holds itself to.
 
 ### 4. Report
 
