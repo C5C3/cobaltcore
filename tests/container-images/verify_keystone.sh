@@ -18,6 +18,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: keystone-manage --version outputs version and exits 0 ---
 test_keystone_manage_version() {
@@ -43,33 +47,30 @@ test_runs_as_openstack_user() {
 # --- Test 3: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
-# --- Test 4: runtime apt packages are installed ---
-test_runtime_apt_packages_installed() {
-  echo "Test: runtime apt packages are installed"
-  local dpkg_output exit_code=0
-  dpkg_output=$(docker run --rm "$IMAGE" dpkg -l 2>&1) || exit_code=$?
+# --- Test 4: the runtime libraries and entry points work ---
+test_runtime_libraries_present() {
+  echo "Test: the runtime libraries and entry points work"
+  # python-ldap links libldap and libsasl, which its closure carries; the
+  # ldap extra of releases/<release>/extra-packages.yaml installs it. uWSGI
+  # loads keystone-wsgi-public (operators/keystone, --wsgi-file). Stderr is
+  # captured, so a missing library is named on failure.
+  local output exit_code=0
+  output=$(docker run --rm "$IMAGE" python -c 'import ldap' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "import ldap exits 0" "0" "$exit_code"
 
-  assert_eq "dpkg -l exits 0" "0" "$exit_code"
-  for pkg in libapache2-mod-wsgi-py3 libldap2 libsasl2-2 libxml2; do
-    assert_contains "$pkg is installed" "$dpkg_output" "$pkg"
-  done
+  exit_code=0
+  docker run --rm "$IMAGE" sh -c 'test -x /var/lib/openstack/bin/keystone-wsgi-public' || exit_code=$?
+  assert_eq "keystone-wsgi-public is executable" "0" "$exit_code"
+
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" uwsgi --version 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  assert_eq "uwsgi --version exits 0" "0" "$exit_code"
+  assert_uwsgi_imports keystone
 }
 
 # --- Run all tests ---
@@ -82,7 +83,7 @@ test_runs_as_openstack_user
 echo ""
 test_no_build_tools_in_final_image
 echo ""
-test_runtime_apt_packages_installed
+test_runtime_libraries_present
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

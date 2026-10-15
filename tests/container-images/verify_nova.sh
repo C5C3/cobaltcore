@@ -18,6 +18,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: nova-manage console script runs ---
 test_nova_manage_version() {
@@ -155,11 +159,11 @@ if all(isinstance(b.value, ast.Constant) and b.value.value is None for b in bind
 test_package_data_files_shipped() {
   echo "Test: the package data files ship in the image"
   # The data files the package declares (data_files in setup.cfg at 32.0.0,
-  # [tool.setuptools.data-files] in pyproject.toml at 33.0.0). Nothing in the
-  # Dockerfile copies etc/nova/ by hand, so a tag that drops the data-file
-  # declaration fails here instead of at container start. The nova-operator
-  # (#1017) points api_paste_config and rootwrap_config at these absolute
-  # paths.
+  # [tool.setuptools.data-files] in pyproject.toml at 33.0.0). Nothing in
+  # images/nova/image.nix copies etc/nova/ by hand, so a tag that drops the
+  # data-file declaration fails here instead of at container start. The
+  # nova-operator (#1017) points api_paste_config and rootwrap_config at
+  # these absolute paths.
   # One container checks the three files and prints the ones that are absent.
   local missing
 
@@ -219,9 +223,9 @@ test_novnc_assets() {
   local exit_code missing pinned="" shipped=""
 
   # The proxy reads these files as the openstack user, which is who a plain
-  # `docker run` is, and the COPY --link carries the upstream modes over. One
-  # container checks the six files and prints the ones that are absent or
-  # unreadable.
+  # `docker run` is; /usr/share/novnc links into the store, whose files are
+  # world-readable. One container checks the six files and prints the ones
+  # that are absent or unreadable.
   missing=$(docker run --rm "$IMAGE" sh -c \
     'for file; do test -f "$file" && test -r "$file" || echo "$file"; done' sh \
     /usr/share/novnc/vnc_lite.html \
@@ -234,19 +238,18 @@ test_novnc_assets() {
 
   assert_eq "the noVNC files are present and readable by the service user" "" "$missing"
 
-  # The version app/ui.js shows, against the ARG NOVNC_VERSION pin the
-  # Renovate customManager bumps. The build guard compares the same two values
-  # while the source tree is still around; a content pin that slipped past it,
-  # or an asset tree copied from elsewhere, fails here.
-  pinned=$(grep '^ARG NOVNC_VERSION=' "$SCRIPT_DIR/../../images/nova/Dockerfile" || true)
-  pinned="${pinned#*=}"
+  # The version app/ui.js shows, against the version of images/nova/novnc.json
+  # the Renovate customManager bumps. The build guard compares the same two
+  # values while the source tree is still around; a content pin that slipped
+  # past it, or an asset tree copied from elsewhere, fails here.
+  pinned=$(jq -r '.version' "$SCRIPT_DIR/../../images/nova/novnc.json" 2>/dev/null || true)
   pinned="${pinned#v}"
 
   exit_code=0
   shipped=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
     'import json; print(json.load(open("/usr/share/novnc/package.json"))["version"])' 2>&1) || exit_code=$?
   assert_eq "the noVNC package.json is readable" "0" "$exit_code"
-  assert_eq "noVNC package.json version equals the ARG NOVNC_VERSION pin" \
+  assert_eq "noVNC package.json version equals the novnc.json pin" \
     "$pinned" "$shipped"
 }
 
@@ -433,28 +436,28 @@ sys.exit(0 if any(f[3] == "01" and f[2].endswith(":1628") for f in rows) else 1)
     "$output" "no established connection to broker port 5672"
 }
 
-# --- Test 10: the apt wiring of the runtime stage ---
-test_apt_wiring() {
-  echo "Test: the apt-installed packages are wired"
+# --- Test 10: the runtime wiring of the image ---
+test_runtime_wiring() {
+  echo "Test: the runtime tools are wired"
   local version exit_code=0
 
-  # libpython3.12t64. The venv-builder-compiled uwsgi binary links
-  # libpython3.12.so.1.0, which python-base does not ship, so a uwsgi that
-  # prints its version proves the one apt entry of extra-packages.yaml
-  # arrived.
+  # uwsgi serves the API and the metadata service, so a uwsgi that prints its
+  # version proves the venv's uwsgi starts.
   version=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/uwsgi --version 2>&1) || exit_code=$?
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
+  assert_uwsgi_imports nova
 
   # No qemu-utils. The control-plane roles convert no images (#1014 D14), and
   # an image that grew the conversion tooling grew a compute-side dependency
   # the nova-operator never uses.
+  # "command" is a shell builtin, so the probe runs in sh.
   exit_code=0
-  docker run --rm "$IMAGE" which qemu-img > /dev/null 2>&1 || exit_code=$?
+  docker run --rm "$IMAGE" sh -c 'command -v qemu-img' > /dev/null 2>&1 || exit_code=$?
   assert_nonzero_exit "qemu-img not found" "$exit_code"
 
-  # sudo. python-base ships it and the image carries no sudoers entry for the
-  # service user, so sudo is present and unusable. nova-rootwrap is a
+  # sudo. The image ships it and carries no sudoers entry for the service
+  # user (nix/lib/service-image.nix), so sudo is present and unusable. nova-rootwrap is a
   # compute-side tool. A passing `sudo -n true` would mean the image grew a
   # sudoers entry and the restricted posture no longer holds.
   exit_code=0
@@ -479,21 +482,7 @@ test_runs_as_openstack_user() {
 # --- Test 12: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 13: the state directories ship empty and owned by 42424 ---
@@ -505,22 +494,26 @@ test_state_directories() {
   # be owned by 42424, the UID the container runs under. The nova-operator
   # (#1017) mounts an emptyDir over the tree, so this is the layout a plain
   # `docker run` gets.
-  local output exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/nova -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort | tr "\n" " "' 2>&1) || exit_code=$?
-  assert_eq "the two state directories are present" "instances tmp " "$output"
-
-  exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/nova -mindepth 2 | wc -l' 2>&1) || exit_code=$?
-  assert_eq "the state directories are empty" "0" "$(echo "$output" | tr -d ' ')"
-
-  # The owning UID of the whole tree as a sorted set, so a directory the
-  # chown -R missed shows up here instead of only on the one that is checked.
-  exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'stat -c %u /var/lib/nova /var/lib/nova/* | sort -u | tr "\n" " "' 2>&1) || exit_code=$?
-  assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
+  # One listing of the tree: the entries below /var/lib/nova, whether any of
+  # them has an entry of its own, and the owning UIDs of /var/lib/nova and
+  # every entry as a sorted set, so a directory the ownership step missed
+  # shows up here instead of only on the one that is checked.
+  local output exit_code=0 names nested owners
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import os
+root = "/var/lib/nova"
+names = sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n)))
+print(" ".join(names) + " ")
+print(sum(len(os.listdir(os.path.join(root, n))) for n in os.listdir(root)))
+paths = [root] + [os.path.join(root, n) for n in os.listdir(root)]
+print(" ".join(sorted({str(os.stat(p).st_uid) for p in paths})) + " ")' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  names=$(sed -n 1p <<<"$output")
+  nested=$(sed -n 2p <<<"$output")
+  owners=$(sed -n 3p <<<"$output")
+  assert_eq "the two state directories are present" "instances tmp " "$names"
+  assert_eq "the state directories are empty" "0" "$nested"
+  assert_eq "the state tree is owned by 42424 alone" "42424 " "$owners"
 }
 
 # --- Run all tests ---
@@ -545,7 +538,7 @@ test_novnc_assets
 echo ""
 test_amqp_readiness_probe
 echo ""
-test_apt_wiring
+test_runtime_wiring
 echo ""
 test_runs_as_openstack_user
 echo ""

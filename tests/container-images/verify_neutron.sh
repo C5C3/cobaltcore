@@ -18,6 +18,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: neutron-db-manage console script runs ---
 test_neutron_db_manage_help() {
@@ -162,7 +166,7 @@ test_companion_scripts_runnable() {
 # --- Test 8: the ovsdb-client binary is callable ---
 test_ovsdb_client_binary() {
   echo "Test: ovsdb-client --version succeeds"
-  # Proves the openvswitch-common apt wiring. neutron's pre_fork_initialize
+  # Proves openvswitch is on the image's PATH. neutron's pre_fork_initialize
   # shells out to `ovsdb-client transact` and dies with "[Errno 2] No such
   # file or directory: 'ovsdb-client'" when the binary is absent, which is a
   # startup failure of every API worker rather than a degraded feature.
@@ -175,11 +179,13 @@ test_ovsdb_client_binary() {
 
 # --- Test 9: the metadata agent's helper binaries are callable ---
 test_metadata_agent_binaries() {
-  echo "Test: haproxy and ip run"
-  # Proves the haproxy and iproute2 apt wiring. The
+  echo "Test: haproxy, ip and sysctl run"
+  # Proves haproxy, iproute2 and procps are on the image's PATH. The
   # neutron-ovn-metadata-agent spawns `haproxy -f <cfg>` per network through
-  # `ip netns exec`, so both binaries have to resolve on PATH inside this
-  # image. Neither is pulled in by the virtualenv.
+  # `ip netns exec`, and runs `sysctl -w` through the same `ip netns exec` in
+  # every namespace it creates (neutron/agent/linux/ip_lib.py,
+  # IpNetnsCommand.add), so all three binaries have to resolve on PATH inside
+  # this image. None is pulled in by the virtualenv.
   local output exit_code=0
   output=$(docker run --rm "$IMAGE" haproxy -v 2>&1) || exit_code=$?
   assert_eq "haproxy -v exits 0" "0" "$exit_code"
@@ -189,6 +195,11 @@ test_metadata_agent_binaries() {
   output=$(docker run --rm "$IMAGE" ip -V 2>&1) || exit_code=$?
   assert_eq "ip -V exits 0" "0" "$exit_code"
   assert_not_empty "ip version output is non-empty" "$output"
+
+  exit_code=0
+  output=$(docker run --rm "$IMAGE" sysctl --version 2>&1) || exit_code=$?
+  assert_eq "sysctl --version exits 0" "0" "$exit_code"
+  assert_not_empty "sysctl version output is non-empty" "$output"
 }
 
 # --- Test 10: runs as openstack user ---
@@ -204,33 +215,19 @@ test_runs_as_openstack_user() {
 # --- Test 11: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 12: uwsgi is runnable (serves the neutron API at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
-  # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
-  # uwsgi binary links libpython3.12.so.1.0, which python-base does not ship.
+  # Proves the venv's uwsgi, which links libpython3.12.so.1.0, starts.
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/uwsgi --version 2>&1) || exit_code=$?
 
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
+  assert_uwsgi_imports neutron
 }
 
 # --- Run all tests ---

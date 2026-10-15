@@ -18,6 +18,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: placement-manage --version outputs version and exits 0 ---
 test_placement_manage_version() {
@@ -78,10 +82,10 @@ test_wsgi_entry_present() {
   # target is an assumption against two independently-moving trees — resolve
   # it here. Test 3 imports the package, not this submodule and symbol.
   # Execute the entry's own import statements rather than a re-typed copy: a
-  # typo in the Dockerfile's printf parses fine and would only surface when
-  # uWSGI loads the file at pod start. The remaining statement calls
-  # init_application(), which needs the operator-mounted config, so it stays
-  # out. The assert turns an entry that lost its imports into a failure
+  # typo in the entry script of images/placement/image.nix parses fine and
+  # would only surface when uWSGI loads the file at pod start. The remaining
+  # statement calls init_application(), which needs the operator-mounted
+  # config, so it stays out. The assert turns an entry that lost its imports into a failure
   # instead of an empty, trivially-passing exec.
   # The exec alone proves only whatever the entry imports today, so the
   # trailing explicit import stays as the independent oracle: an entry
@@ -117,33 +121,19 @@ test_runs_as_openstack_user() {
 # --- Test 6: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 7: uwsgi is runnable (serves placement-api at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
-  # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
-  # uwsgi binary links libpython3.12.so.1.0, which python-base does not ship.
+  # Proves the venv's uwsgi, which links libpython3.12.so.1.0, starts.
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/uwsgi --version 2>&1) || exit_code=$?
 
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
+  assert_uwsgi_imports placement
 }
 
 # --- Run all tests ---
