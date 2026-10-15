@@ -29,12 +29,21 @@
 #                                    names are flat because nix flake check
 #                                    rejects a nested attribute set under
 #                                    packages
+#   packages.<system>.<name>-<rel_>-test-run
+#                                    the unit tests of a service lock, a build
+#                                    that succeeds whenever the suite ran and
+#                                    holds the results
+#   checks.<system>.<name>-<rel_>-tests
+#                                    fails unless that run passed
 #   checks.<system>.nix-lint         nixfmt, statix and deadnix over flake.nix,
 #                                    nix/lib/, nix/pkgs/ and images/;
 #                                    nix/spike/ is the Phase 0 record and
 #                                    stays outside the set
 #   checks.<system>.fhs-layout       nix/lib/fhs-layout.nix built with a venv,
 #                                    an extraRoots and a rootLinks entry
+#   checks.<system>.service-tests    nix/lib/service-tests.nix over a fixture
+#                                    suite with a failing test, and the check
+#                                    that fails on it
 #   devShells.<system>.image-tools   skopeo and vulnix for the
 #                                    build-nix-image composite action
 #
@@ -113,6 +122,9 @@
           attr = "${name}-${lib.replaceStrings [ "." ] [ "_" ] release}";
         }) (subdirs (./nix/locks + "/${release}"))
       ) (subdirs ./nix/locks);
+      # tempest has no unit tests.
+      testedLocks = builtins.filter (lock: lock.name != "tempest") locks;
+
       # What the Python images of one system are built from, evaluated once
       # per system for packages and checks.
       imageLibs = forImageSystems (
@@ -139,11 +151,24 @@
               })
             ) locks
           );
+          envFor = lock: envs.${lock.attr};
+          serviceTests = import ./nix/lib/service-tests.nix { inherit pkgs; };
         in
         {
-          inherit pkgs fhsLayout;
-          envFor = lock: envs.${lock.attr};
+          inherit
+            pkgs
+            fhsLayout
+            envFor
+            serviceTests
+            ;
           serviceImage = import ./nix/lib/service-image.nix { inherit pkgs fhsLayout; };
+          # horizon's unit tests run under pytest without a database.
+          testsFor =
+            lock:
+            serviceTests {
+              env = envFor lock;
+              withDatabases = lock.name != "horizon";
+            };
           cephBindings = pkgs.callPackage ./nix/pkgs/ceph-bindings.nix { python3Packages = python.pkgs; };
         }
       );
@@ -253,6 +278,7 @@
             fhsLayout
             envFor
             serviceImage
+            testsFor
             cephBindings
             ;
         in
@@ -272,14 +298,20 @@
             )
           ) locks
         )
+        // lib.listToAttrs (
+          map (lock: lib.nameValuePair "${lock.attr}-test-run" (testsFor lock).run) testedLocks
+        )
       );
 
       checks = forImageSystems (
         system:
         let
-          pkgs = pkgsFor system;
+          inherit (imageLibs.${system}) pkgs testsFor serviceTests;
         in
-        {
+        lib.listToAttrs (
+          map (lock: lib.nameValuePair "${lock.attr}-tests" (testsFor lock).check) testedLocks
+        )
+        // {
           nix-lint =
             pkgs.runCommand "nix-lint"
               {
@@ -319,6 +351,50 @@
               test -x ${layout}/bin/sh
               test -e ${layout}/usr/bin/env
               test -s ${layout}/etc/ssl/certs/ca-certificates.crt
+              touch "$out"
+            '';
+
+          # A run of nix/lib/service-tests.nix over a suite with one failing
+          # test still writes its exit status, a subunit stream and a
+          # summary that counts the failure, and the check of that run
+          # fails and names the command that lists the result links
+          # keeping the run alive. The failing test names a store path,
+          # which nuke-refs blanks inside a packet, so the stream decodes
+          # to the two results only if subunit-crc.py rewrote that
+          # packet's checksum.
+          service-tests =
+            let
+              env = import ./nix/lib/fixtures/service-tests/env.nix pkgs;
+              inherit
+                (serviceTests {
+                  inherit env;
+                  withDatabases = false;
+                })
+                run
+                check
+                ;
+              failed = pkgs.testers.testBuildFailure check;
+            in
+            pkgs.runCommand "service-tests-check" { nativeBuildInputs = [ env.testVenv ]; } ''
+              test "$(cat ${run}/exit-status)" != 0
+              grep -q 'Failed: 1' ${run}/summary.txt
+              grep -q '/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' ${run}/testresults.subunit
+              python - ${run}/testresults.subunit <<'PY'
+              import sys
+              import subunit
+              import testtools
+              tests = []
+              result = testtools.StreamToDict(tests.append)
+              result.startTestRun()
+              with open(sys.argv[1], "rb") as f:
+                  subunit.ByteStreamToStreamResult(f, non_subunit_name="stdout").run(result)
+              result.stopTestRun()
+              got = {t["id"].rsplit(".", 1)[-1]: t["status"] for t in tests}
+              assert got == {"test_passes": "success", "test_fails": "fail"}, got
+              PY
+              test "$(cat ${failed}/testBuildFailure.exit)" = 1
+              grep -q 'fixture 0 unit tests failed (exit 1)' ${failed}/testBuildFailure.log
+              grep -qF 'nix-store --query --roots ${run}' ${failed}/testBuildFailure.log
               touch "$out"
             '';
         }
