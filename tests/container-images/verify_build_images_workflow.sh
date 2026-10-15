@@ -11,7 +11,8 @@
 # logic to composite actions under .github/actions/ and helper scripts under
 # hack/. Many assertions below therefore traverse those composite-action YAML
 # files (supply-chain-attest, merge-manifest-and-attest, build-push-image,
-# checkout-service-source, derive-service-tags, setup-docker-registry) and the
+# build-nix-image, checkout-service-source, derive-service-tags,
+# setup-docker-registry) and the
 # hack/ci-run-unit-tests.sh + hack/ci-merge-manifest.sh helpers, instead of
 # inspecting the workflow itself. The workflow is still verified for job
 # topology, permissions, concurrency, and correct composite-action wiring.
@@ -26,6 +27,7 @@ WORKFLOW="$PROJECT_ROOT/.github/workflows/build-images.yaml"
 ACTION_SUPPLY_CHAIN="$PROJECT_ROOT/.github/actions/supply-chain-attest/action.yaml"
 ACTION_MERGE_MANIFEST="$PROJECT_ROOT/.github/actions/merge-manifest-and-attest/action.yaml"
 ACTION_BUILD_PUSH="$PROJECT_ROOT/.github/actions/build-push-image/action.yaml"
+ACTION_BUILD_NIX="$PROJECT_ROOT/.github/actions/build-nix-image/action.yaml"
 ACTION_CHECKOUT_SOURCE="$PROJECT_ROOT/.github/actions/checkout-service-source/action.yaml"
 ACTION_DERIVE_TAGS="$PROJECT_ROOT/.github/actions/derive-service-tags/action.yaml"
 ACTION_SETUP_REGISTRY="$PROJECT_ROOT/.github/actions/setup-docker-registry/action.yaml"
@@ -310,6 +312,178 @@ test_libvirt_keeper_tag() {
     "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$plumbing_globs" || true)"
   assert_eq "the pull-request trigger names hack/ci-tag-libvirt-keeper.sh" "1" \
     "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$pr_paths" || true)"
+}
+
+# assert_cachix_step <job> — the job reads the cobaltcore cache, pushes only
+# with CACHIX_AUTH_TOKEN, and a cache it cannot reach fails no build.
+assert_cachix_step() {
+  local job_name="$1"
+  local cachix=".jobs[\"$job_name\"].steps[] | select(.uses != null and (.uses | test(\"^cachix/cachix-action@\")))"
+  assert_eq "$job_name: the Cachix step reads the cobaltcore cache" "cobaltcore" \
+    "$(yq_raw "$cachix | .with.name" "$WORKFLOW" || true)"
+  assert_eq "$job_name: the Cachix step authenticates with CACHIX_AUTH_TOKEN" \
+    '${{ secrets.CACHIX_AUTH_TOKEN }}' "$(yq_raw "$cachix | .with.authToken" "$WORKFLOW" || true)"
+  assert_eq "$job_name: the Cachix step pushes nothing without the secret" \
+    "\${{ secrets.CACHIX_AUTH_TOKEN == '' }}" "$(yq_raw "$cachix | .with.skipPush" "$WORKFLOW" || true)"
+  assert_eq "$job_name: a missing or unreachable cache fails no build" "true" \
+    "$(yq_raw "$cachix | .[\"continue-on-error\"]" "$WORKFLOW" || true)"
+}
+
+# --- Nix-built image build/merge job structure ---
+# test_nix_image_jobs <image> <verify-script> <attribute>
+# A release-independent image built by Nix: build-<image> builds the flake
+# attribute through build-nix-image behind nix-flake-check instead of
+# lint-dockerfiles, and merge-<image>-image has the shape of the merge job of
+# every distro-package image.
+test_nix_image_jobs() {
+  local img="$1" script="$2" attribute="$3"
+  echo "Test: $img job structure (Nix-built)"
+
+  local job=".jobs[\"build-$img\"]"
+  local needs
+  needs=$(yq_raw "$job.needs[]" "$WORKFLOW" || true)
+  assert_contains "build-$img needs changes" "$needs" "changes"
+  assert_contains "build-$img needs nix-flake-check" "$needs" "nix-flake-check"
+  assert_contains "build-$img needs prepare" "$needs" "prepare"
+  assert_not_contains "build-$img does not need lint-dockerfiles" "$needs" "lint-dockerfiles"
+
+  local matrix_platforms
+  matrix_platforms=$(yq_raw "$job.strategy.matrix.include[].platform" "$WORKFLOW" || true)
+  assert_contains "build-$img matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-$img matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  local step="$job.steps[] | select(.id == \"build-$img\")"
+  assert_eq "build step uses build-nix-image" "./.github/actions/build-nix-image" \
+    "$(yq_raw "$step | .uses" "$WORKFLOW" || true)"
+  assert_eq "build step builds the flake attribute $attribute" "$attribute" \
+    "$(yq_raw "$step | .with.attribute" "$WORKFLOW" || true)"
+  assert_eq "build step wires the verify script" "$script" \
+    "$(yq_raw "$step | .with[\"verify-script\"]" "$WORKFLOW" || true)"
+  assert_contains "build step conditions push-by-digest on pull_request" \
+    "$(yq_raw "$step | .with[\"push-by-digest\"]" "$WORKFLOW" || true)" "pull_request"
+  assert_contains "build step names a local verify tag" \
+    "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)" "$img:pr-verify"
+  assert_contains "build step exports digests the merge job collects" \
+    "$(yq_raw "$step | .with[\"artifact-name\"]" "$WORKFLOW" || true)" "digests-$img-"
+
+  local uses
+  uses=$(yq_raw "$job.steps[].uses | select(. != null)" "$WORKFLOW" || true)
+  assert_eq "build-$img installs Nix from a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/install-nix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_eq "build-$img reads the Cachix cache through a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/cachix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_cachix_step "build-$img"
+
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_not_contains "lint-dockerfiles does not list a $img Dockerfile" \
+    "$lint_matrix" "images/$img/Dockerfile"
+
+  assert_eq "build-$img does not resolve the ubuntu:noble digest" "0" \
+    "$(yq_raw "[$job.steps[] | select(.run == \"hack/ci-resolve-ubuntu-digest.sh\")] | length" "$WORKFLOW" || true)"
+
+  # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
+  local merge_if
+  merge_if=$(yq_raw ".jobs[\"merge-$img-image\"][\"if\"]" "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw ".jobs[\"merge-$img-image\"][\"needs\"][]" "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-$img"
+
+  local merge_tags
+  merge_tags=$(yq_raw ".jobs[\"merge-$img-image\"][\"steps\"][] | select(.id == \"merge-$img\") | .with[\"tags\"]" "$WORKFLOW" || echo "null")
+  assert_contains "merge tags include :latest" "$merge_tags" "$img:latest"
+  assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
+  assert_eq "merge job collects digests-$img-*" "digests-$img-*" \
+    "$(yq_raw ".jobs[\"merge-$img-image\"].steps[] | select(.id == \"merge-$img\") | .with[\"artifact-pattern\"]" "$WORKFLOW" || true)"
+}
+
+# --- nix-flake-check: the gate of every Nix-built image ---
+test_nix_flake_check_job() {
+  echo "Test: nix-flake-check job"
+
+  local job='.jobs["nix-flake-check"]'
+  assert_eq "nix-flake-check job is defined" "true" "$(yq_raw "$job != null" "$WORKFLOW" || true)"
+
+  local runs
+  runs=$(yq_raw "$job.steps[].run | select(. != null)" "$WORKFLOW" || true)
+  assert_contains "nix-flake-check runs nix flake check" "$runs" "nix flake check"
+  assert_contains "nix-flake-check instantiates every arm64 image" \
+    "$runs" "nix eval --json .#packages.aarch64-linux --apply"
+
+  local uses
+  uses=$(yq_raw "$job.steps[].uses | select(. != null)" "$WORKFLOW" || true)
+  assert_eq "nix-flake-check installs Nix from a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/install-nix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_eq "nix-flake-check reads the Cachix cache through a SHA-pinned action" "1" \
+    "$(grep -cE '^cachix/cachix-action@[0-9a-f]{40}$' <<<"$uses" || true)"
+  assert_file_contains "install-nix-action carries a version comment" "$WORKFLOW" \
+    'uses: cachix/install-nix-action@[0-9a-f]\{40\} # v[0-9]'
+  assert_file_contains "cachix-action carries a version comment" "$WORKFLOW" \
+    'uses: cachix/cachix-action@[0-9a-f]\{40\} # v[0-9]'
+  assert_cachix_step nix-flake-check
+}
+
+# --- build-nix-image: build, scan, then load or push ---
+test_build_nix_image_action() {
+  echo "Test: build-nix-image builds, scans, then loads or pushes"
+
+  assert_eq "the steps run in the order build, vulnix, load, scan, verify, push, export" \
+    "build vulnix load scan verify push export" \
+    "$(yq_raw '[.runs.steps[].id | select(. == "build" or . == "vulnix" or . == "load" or . == "scan" or . == "verify" or . == "push" or . == "export")] | join(" ")' "$ACTION_BUILD_NIX" || true)"
+
+  local id
+  for id in load scan verify; do
+    assert_contains "the $id step runs on pull requests only" \
+      "$(yq_raw ".runs.steps[] | select(.id == \"$id\") | .if" "$ACTION_BUILD_NIX" || true)" \
+      "inputs.push-by-digest == 'false'"
+  done
+  for id in push export; do
+    assert_contains "the $id step runs on push only" \
+      "$(yq_raw ".runs.steps[] | select(.id == \"$id\") | .if" "$ACTION_BUILD_NIX" || true)" \
+      "inputs.push-by-digest == 'true'"
+  done
+
+  assert_eq "the scan step uses supply-chain-attest" "./.github/actions/supply-chain-attest" \
+    "$(yq_raw '.runs.steps[] | select(.id == "scan") | .uses' "$ACTION_BUILD_NIX" || true)"
+  assert_eq "the scan step scans the loaded image" "image" \
+    "$(yq_raw '.runs.steps[] | select(.id == "scan") | .with["scan-mode"]' "$ACTION_BUILD_NIX" || true)"
+  assert_eq "the export step uses export-digest" "./.github/actions/export-digest" \
+    "$(yq_raw '.runs.steps[] | select(.id == "export") | .uses' "$ACTION_BUILD_NIX" || true)"
+
+  local push_run vulnix_run
+  push_run=$(yq_raw '.runs.steps[] | select(.id == "push") | .run' "$ACTION_BUILD_NIX" || true)
+  assert_contains "the push step pushes without a tag" "$push_run" "@@unknown-digest@@"
+  assert_contains "the push step reads the digest skopeo writes" "$push_run" "--digestfile"
+  vulnix_run=$(yq_raw '.runs.steps[] | select(.id == "vulnix") | .run' "$ACTION_BUILD_NIX" || true)
+  assert_contains "the vulnix step scans the closure" "$vulnix_run" "--closure"
+
+  local runs
+  runs=$(yq_raw '.runs.steps[].run | select(. != null)' "$ACTION_BUILD_NIX" || true)
+  assert_eq "no run block interpolates an input" "0" "$(grep -cF '${{ inputs.' <<<"$runs" || true)"
+}
+
+# --- The Nix inputs trigger the workflow and rebuild the Nix-built image ---
+test_nix_inputs_in_triggers() {
+  echo "Test: the flake inputs and the shared library trigger the shifter build"
+
+  local push_paths pr_paths filters shifter_globs glob
+  push_paths=$(yq_raw '.on.push.paths[]' "$WORKFLOW" || true)
+  pr_paths=$(yq_raw '.on.pull_request.paths[]' "$WORKFLOW" || true)
+  filters=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .with.filters' "$WORKFLOW" || true)
+  shifter_globs=$(yq_raw '.shifter[]' - <<<"$filters" || true)
+
+  for glob in flake.nix flake.lock 'nix/lib/**'; do
+    assert_eq "the push trigger names $glob" "1" "$(grep -cxF "$glob" <<<"$push_paths" || true)"
+    assert_eq "the pull-request trigger names $glob" "1" "$(grep -cxF "$glob" <<<"$pr_paths" || true)"
+  done
+  assert_eq "the pull-request trigger names .github/actions/build-nix-image/**" "1" \
+    "$(grep -cxF '.github/actions/build-nix-image/**' <<<"$pr_paths" || true)"
+
+  for glob in 'images/backup-shifter/**' flake.nix flake.lock 'nix/lib/**' '.github/actions/build-nix-image/**'; do
+    assert_eq "the shifter filter names $glob" "1" "$(grep -cxF "$glob" <<<"$shifter_globs" || true)"
+  done
 }
 
 # --- ovn build/merge/verify job structure ---
@@ -2364,11 +2538,17 @@ test_base_image_digest_outputs
 echo ""
 test_distro_image_jobs keystone-federation-proxy tests/container-images/verify_keystone_federation_proxy.sh
 echo ""
-test_distro_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh
+test_nix_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh backup-shifter-image
 echo ""
 test_distro_image_jobs libvirt tests/container-images/verify_libvirt.sh
 echo ""
 test_libvirt_keeper_tag
+echo ""
+test_nix_flake_check_job
+echo ""
+test_build_nix_image_action
+echo ""
+test_nix_inputs_in_triggers
 echo ""
 test_ovn_jobs
 echo ""

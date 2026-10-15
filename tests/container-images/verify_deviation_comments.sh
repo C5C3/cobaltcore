@@ -15,14 +15,16 @@ PASS=0
 FAIL=0
 
 # Service images that inherit the generic user instead of creating their own.
-# python-base is checked separately: it is where the user is created. ovn and
-# backup-shifter create the user themselves because they do not derive from
-# python-base, so each has its own function below. libvirt keeps root and
-# creates no user at all, and has its own function too. The
-# openstack-hypervisor-operator image is a static Go binary on distroless that
-# runs as uid 65532 and creates no user either; it has its own function. The
-# kvm-node-agent image is a static Go binary on distroless too, but runs as
-# root, and has its own function as well.
+# python-base is checked separately: it is where the user is created. ovn
+# creates the user itself because it does not derive from python-base, so it
+# has its own function below. backup-shifter carries the same decision but is
+# built by Nix: its function checks the comment in
+# images/backup-shifter/image.nix and the user entry nix/lib/fhs-layout.nix
+# writes. libvirt keeps root and creates no user at all, and has its own
+# function too. The openstack-hypervisor-operator image is a static Go binary
+# on distroless that runs as uid 65532 and creates no user either; it has its
+# own function. The kvm-node-agent image is a static Go binary on distroless
+# too, but runs as root, and has its own function as well.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova nova-compute"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -73,17 +75,18 @@ test_ovn_deviation_comment() {
     "$dockerfile" "useradd -u 42424"
 }
 
-# --- Test 4: the backup-shifter image creates the generic user itself ---
+# --- Test 4: the Nix-built backup-shifter image carries the generic user itself ---
 test_backup_shifter_deviation_comment() {
-  echo "Test: backup-shifter Dockerfile has DEVIATION comment (user created locally)"
+  echo "Test: backup-shifter image.nix has DEVIATION comment (user written by the FHS façade)"
 
-  local dockerfile="$PROJECT_ROOT/images/backup-shifter/Dockerfile"
+  local nix="$PROJECT_ROOT/images/backup-shifter/image.nix"
+  local fhs="$PROJECT_ROOT/nix/lib/fhs-layout.nix"
 
-  assert_file_contains "backup-shifter/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "backup-shifter/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment references the generic openstack user" \
-    "$(deviation_block "$dockerfile")" "openstack"
-  assert_file_contains "backup-shifter/Dockerfile creates the user itself (not inherited from python-base)" \
-    "$dockerfile" "useradd -u 42424"
+    "$(deviation_block "$nix")" "openstack"
+  assert_file_contains_fixed "fhs-layout.nix writes the openstack user (not inherited from python-base)" \
+    "$fhs" 'openstack:x:${uid}:${gid}'
 }
 
 # --- Test 5: the libvirt image keeps root and creates no user ---

@@ -16,11 +16,13 @@
 # own plumbing (the workflow file, the composite actions, the build scripts),
 # and a change to the base images or the release configuration. The base class
 # also builds the Tempest image, which is built FROM python-base and
-# venv-builder and reads releases/<release>/. The OVN, federation proxy, backup
-# shifter and libvirt images build FROM ubuntu:noble and read neither, so they
-# come from their own filters only. The openstack-hypervisor-operator and
-# kvm-node-agent images build FROM golang and distroless, read neither either,
-# and follow their own filters too.
+# venv-builder and reads releases/<release>/. The OVN, federation proxy and
+# libvirt images build FROM ubuntu:noble and read neither, so they come from
+# their own filters only. The backup shifter is built by Nix from flake.lock
+# and reads neither either; its filter also covers flake.nix, flake.lock,
+# nix/lib/ and the build-nix-image action. The openstack-hypervisor-operator
+# and kvm-node-agent images build FROM golang and distroless, read neither
+# either, and follow their own filters too.
 #
 # Required env vars:
 #   EVENT_NAME   — github.event_name

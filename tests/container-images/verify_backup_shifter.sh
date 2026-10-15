@@ -51,7 +51,14 @@ test_runs_as_openstack_user() {
 # --- Test 3: no build tooling in the runtime image ---
 test_no_build_tooling() {
   echo "Test: build tooling is absent"
-  local tool exit_code
+  local tool exit_code=0
+  # Without a shell every probe below exits non-zero and passes vacuously.
+  docker run --rm "$IMAGE" sh -c true > /dev/null 2>&1 || exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    echo "  FAIL: sh does not run, so the probes below would pass vacuously"
+    FAIL=$((FAIL + 1))
+    return
+  fi
   for tool in gcc git python3; do
     exit_code=0
     # Wrapped in a shell: "command" is a shell builtin and the image declares no
@@ -72,6 +79,26 @@ test_tmp_writable() {
   assert_eq "/tmp is writable" "0" "$exit_code"
 }
 
+# --- Test 5: /bin/sh runs rclone the way the operator renders the command ---
+# The operator runs the shifter as /bin/sh -c "rclone copy ...". The Nix image
+# has no base image that brings /bin/sh; nix/lib/fhs-layout.nix links it.
+test_operator_command_shape() {
+  echo "Test: /bin/sh -c runs rclone"
+  local exit_code=0
+  docker run --rm "$IMAGE" /bin/sh -c 'rclone version' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "/bin/sh -c 'rclone version' exits 0" "0" "$exit_code"
+}
+
+# --- Test 6: the CA bundle rclone verifies the S3 endpoint against ---
+test_ca_bundle_present() {
+  echo "Test: the CA bundle is present"
+  local exit_code=0
+  docker run --rm "$IMAGE" test -s /etc/ssl/certs/ca-certificates.crt || exit_code=$?
+
+  assert_eq "/etc/ssl/certs/ca-certificates.crt is non-empty" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== backup-shifter container verification tests ==="
 echo "Image: $IMAGE"
@@ -83,6 +110,10 @@ echo ""
 test_no_build_tooling
 echo ""
 test_tmp_writable
+echo ""
+test_operator_command_shape
+echo ""
+test_ca_bundle_present
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

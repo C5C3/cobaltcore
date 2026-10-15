@@ -27,11 +27,15 @@ name: Build Images
       - tests/lib/ceph_bindings.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
+      - flake.nix
+      - flake.lock
+      - nix/lib/**
   # The pull-request list is exactly what this workflow reads: the images and
   # their build inputs, the composite actions it reaches (directly or through
-  # build-push-image, setup-docker-registry and merge-manifest-and-attest), the
-  # hack scripts it calls, and the per-image verify scripts with the helper
-  # three of them source. The four structural scripts under
+  # build-push-image, build-nix-image, setup-docker-registry and
+  # merge-manifest-and-attest), the hack scripts it calls, the flake inputs and
+  # shared library the Nix-built images are built from, and the per-image
+  # verify scripts with the helper three of them source. The four structural scripts under
   # tests/container-images/ belong to verify-container-images.yaml, which runs
   # them; this workflow never does, so they are excluded. GitHub
   # evaluates the list in order, which is why the negations follow the positive
@@ -62,6 +66,7 @@ name: Build Images
       - operators/neutron/api/v1alpha1/catalogs/**
       - operators/cinder/api/v1alpha1/catalogs/**
       - operators/nova/api/v1alpha1/catalogs/**
+      - .github/actions/build-nix-image/**
       - .github/actions/build-push-image/**
       - .github/actions/checkout-service-source/**
       - .github/actions/derive-service-tags/**
@@ -79,6 +84,9 @@ name: Build Images
       - tests/lib/ceph_bindings.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
+      - flake.nix
+      - flake.lock
+      - nix/lib/**
 
 permissions:
   contents: read
@@ -201,9 +209,15 @@ jobs:
             proxy:
               - 'images/keystone-federation-proxy/**'
               - 'tests/container-images/verify_keystone_federation_proxy.sh'
+            # A Nix-built image is rebuilt when its flake inputs, the shared
+            # library or the action that builds it move.
             shifter:
               - 'images/backup-shifter/**'
               - 'tests/container-images/verify_backup_shifter.sh'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - '.github/actions/build-nix-image/**'
             libvirt:
               - 'images/libvirt/**'
               - 'tests/container-images/verify_libvirt.sh'
@@ -288,7 +302,6 @@ jobs:
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
-          - images/backup-shifter/Dockerfile
           - images/libvirt/Dockerfile
           - images/openstack-hypervisor-operator/Dockerfile
           - images/kvm-node-agent/Dockerfile
@@ -302,6 +315,38 @@ jobs:
           dockerfile: ${{ matrix.dockerfile }}
           failure-threshold: warning
           config: .hadolint.yaml
+
+  # The gate of every Nix-built image, the counterpart of lint-dockerfiles:
+  # nix flake check evaluates every output of the runner's system and builds
+  # its checks (nix-lint runs nixfmt, statix and deadnix); the nix eval
+  # instantiates every arm64 image without building it, which --all-systems
+  # cannot do on an x86 runner. The Cachix step reads the cobaltcore cache and
+  # pushes to it only when CACHIX_AUTH_TOKEN is set.
+  nix-flake-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      # The cache only saves build time: a missing or unreachable cache fails
+      # no build, which then substitutes from cache.nixos.org.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        continue-on-error: true
+        with:
+          name: cobaltcore
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+
+      - name: Check the flake
+        run: nix flake check --print-build-logs
+
+      - name: Instantiate the arm64 images
+        run: |
+          nix eval --json .#packages.aarch64-linux --apply 'builtins.mapAttrs (_: p: p.drvPath)'
 
   # Single source for lowercase image owner.
   prepare:
@@ -725,13 +770,15 @@ jobs:
           sbom-output-file: sbom-keystone-federation-proxy.cyclonedx.json
           grype-category: grype-keystone-federation-proxy
 
-  # Release-independent rclone shifter for the OVN database backups. rclone
-  # comes from the ubuntu:noble archive, so the image has no release axis:
-  # per-platform builds pushed by digest (base-image pattern), verified
-  # inline on PRs (tempest pattern), merged + attested with the base-image
-  # :latest / :<sha> tag scheme on push events.
+  # Release-independent rclone shifter for the OVN database backups, the first
+  # Nix-built image: images/backup-shifter/image.nix, built by build-nix-image
+  # (docs/reference/ci-cd/nix-image-build.md). rclone comes from the
+  # nixpkgs-images revision flake.lock pins, so the image has no release axis:
+  # per-platform builds pushed by digest (base-image pattern), verified inline
+  # on PRs (tempest pattern), merged + attested with the base-image :latest /
+  # :<sha> tag scheme on push events, like the Docker-built images.
   build-backup-shifter:
-    needs: [changes, lint-dockerfiles, prepare]
+    needs: [changes, nix-flake-check, prepare]
     if: needs.changes.outputs.build-shifter == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -766,36 +813,32 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - name: Resolve ubuntu:noble digest
-        id: ubuntu-base
-        run: hack/ci-resolve-ubuntu-digest.sh
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      # The cache only saves build time: a missing or unreachable cache fails
+      # no build, which then substitutes from cache.nixos.org.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        continue-on-error: true
+        with:
+          name: cobaltcore
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
 
       - name: Build backup-shifter
         id: build-backup-shifter
         # PR mode loads locally for the inline scan+verify; ARM64 is skipped
         # on PRs because docker load supports a single platform.
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: backup-shifter-image
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter
-          context: images/backup-shifter
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          build-args: |
-            APT_MIRROR=http://azure.archive.ubuntu.com
-          labels-title: backup-shifter
-          labels-description: rclone shifter for OVN database backups
-          extra-labels: |
-            org.opencontainers.image.base.name=ubuntu:noble
-            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
-          cache-scope: backup-shifter
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/backup-shifter:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/backup-shifter', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-backup-shifter-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-backup-shifter-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:pr-verify
           verify-script: tests/container-images/verify_backup_shifter.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:pr-verify
+          vulnix-artifact-name: vulnix-backup-shifter-${{ steps.platform-pair.outputs.value }}
 
   merge-backup-shifter-image:
     if: github.event_name != 'pull_request'
