@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR that takes the Keystone of this suite away.
+#
+# action pod-failure, not pod-kill: a killed pod is replaced by its Deployment
+# within seconds, and the suite needs Keystone gone for as long as the
+# fail-closed probe and the asserts under the fault take. pod-failure swaps the
+# keystone container for a pause image, so the pod stays scheduled, its
+# readiness probe on /v3 fails, it leaves the endpoints of the Service, and a
+# connection to keystone-neutron-ks-outage:5000 is refused at once. That refusal is
+# what gives the probe a bounded answer. A NetworkChaos partition would leave
+# every validation waiting out its TCP connect retries instead: the operators
+# set no http_connect_timeout in [keystone_authtoken], and keystonemiddleware
+# has no default for it.
+#
+# The selector is the API pods of this suite's Keystone. The three labels are
+# what reconcile_deployment.go puts on the API pod template. The trust-flush
+# and key-rotation CronJob pods carry the same name and instance labels but
+# another component, the db-sync, bootstrap and fernet Job pods carry no
+# app.kubernetes.io/name label, and every other Keystone in the namespace
+# carries another instance label, so none of them is touched. mode all covers
+# every replica: the fixture runs one, and "Keystone is gone" holds only when
+# no replica answers.
+#
+# The duration is a safety net for a run that never reaches the delete; the
+# suite lifts the outage explicitly. It must exceed the fail-closed step, whose
+# probe gives up after 180 s of waiting for the outage and 120 s of retries,
+# and the asserts that follow it, or the outage would end on its own in the
+# middle of an assertion. 600s sits above that with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-keystone-neutron
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-neutron-ks-outage
+      app.kubernetes.io/component: api

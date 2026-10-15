@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the Keystone outage chaos test. Unique name (glance-ks-outage)
+# and database (glance_ks_outage) to avoid conflicts with other test suites.
+# Managed database via clusterRef to openstack-db, cache via clusterRef to
+# openstack-memcached.
+#
+# keystoneEndpoint and serviceUser are set the way
+# ../../e2e/glance/basic-deployment-2026-2/00-glance-cr.yaml sets them, with
+# the endpoint pointed at the Keystone of 00-keystone-cr.yaml. Nothing opens
+# the API without a token: no allow_anonymous_access, no unauthenticated
+# context middleware and no policy override. ../glance-garage-outage/ needs
+# those on a leg without a Keystone; here they would let through the request
+# this suite proves is refused. The operator renders delay_auth_decision =
+# true into the paste pipeline, which is why this Glance answers 401 to a
+# token it cannot validate where the other services answer 503.
+#
+# One replica: the suite asserts the answer to one request.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-ks-outage
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_ks_outage
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-glance-ks-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 27 chaos test suites validate operator behavior during and after fault
+The 33 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 27 test suites require the infrastructure stack to be deployed and healthy.
+All 33 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -413,6 +413,12 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [barbican-operator-pod-kill](#barbican-operator-pod-kill) | — | `barbican-chaos-op` | Operator self-recovery | `SecretStoresReady=True/AllStoresProjected` and `Ready=True/AllReady` at baseline, every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `barbican-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady` |
 | [glance-garage-outage](#glance-garage-outage) | — | `glance-garage-chaos` | Object-store partition (fail-closed write) | `BackendsReady=True/AllBackendsProjected` at baseline, `Ready=True/AllReady` maintained, `GET /healthcheck` 200 under the partition, `PUT /v2/images/{id}/file` never 2xx under the partition (`FAILCLOSED-OK`), the image not `active` after the partition (`STAYED-FAILED-OK`), a fresh upload reaching `active` (`WRITE-OK`) |
 | [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican-bao-outage` | Secret-store partition (fail-closed write) | `BarbicanAPIReady=True/APIHealthy` maintained, `GET /healthcheck` 200 before and after the failed write, a Keystone token still obtainable, `POST /v1/secrets` answering 5xx or timing out and never 2xx or 4xx (`FAILCLOSED-OK`), no secret of that name returning the payload after the partition (`STAYED-FAILED-OK`), a fresh secret read back with its payload (`WRITE-OK`) |
+| [glance-keystone-outage](#glance-keystone-outage) | — | `glance-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Glance gets 401 on `GET /v2/images`; Keystone `DeploymentReady=False` and Glance `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
+| [placement-keystone-outage](#placement-keystone-outage) | — | `placement-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Placement gets 503 on `GET /resource_providers`; Keystone `DeploymentReady=False` and Placement `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
+| [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Barbican gets 503 on `GET /v1/secrets`; Keystone `DeploymentReady=False` and Barbican `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
+| [neutron-keystone-outage](#neutron-keystone-outage) | — | `neutron-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Neutron gets 503 on `GET /v2.0/networks`; Keystone `DeploymentReady=False` and Neutron `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
+| [cinder-keystone-outage](#cinder-keystone-outage) | — | `cinder-ks-outage` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Cinder gets 503 on `GET /v3/{project_id}/volumes`; Keystone `DeploymentReady=False` and Cinder `Ready=True/AllReady` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`) |
+| [nova-keystone-outage](#nova-keystone-outage) | — | `nova-ks-chaos` | Keystone outage (fail-closed token validation) | `TOKEN-ISSUED` before the `PodChaos`, then `FAILCLOSED-OK`: a token issued before the outage and never shown to Nova gets 503 on `GET /v2.1/servers`; Keystone `DeploymentReady=False` and Nova `Ready=True/AllReady`, `NovaAPIReady=True/APIHealthy`, `SchedulerReady=True` and `ConductorReady=True` under the fault; Keystone back at `Ready=True/AllReady` and a fresh token answered 200 (`RECOVERY-OK`); placement audit and OVN db-sync comparison after the workload |
 
 ---
 
@@ -2043,6 +2049,354 @@ BarbicanSecretStore as YAML. Steps 5, 6 and 7 also dump the NetworkChaos as YAML
 - Every probe takes its verdict from the pod log, for the reason
   `glance-garage-outage` gives. The bootstrap admin password reaches the probe pod as
   the environment variable `OS_PASSWORD`, read from the Secret `keystone-admin`.
+
+---
+
+### glance-keystone-outage
+
+**File:** `tests/e2e-chaos/glance-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away while Glance keeps running. The suite pins how Glance treats a token
+it cannot validate: a token issued before the outage, and never shown to Glance
+until then, gets 401 on `GET /v2/images`. Glance alone passes `delay_auth_decision =
+true` into its paste pipeline, so keystonemiddleware marks the token invalid when
+Keystone is unreachable, and Glance's `ContextMiddleware` rejects the unconfirmed
+identity. The Keystone CR reports `DeploymentReady=False` in the same window, and
+the Glance CR stays `Ready=True/AllReady`, because no Glance condition watches
+Keystone. Once the outage is lifted a fresh token gets 200 from the same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-glance-ks-outage` (database `keystone_glance_ks_outage`) reaches `Ready=True/AllReady` |
+| 2 | Apply Glance and its store | `apply` + `assert` (5m) + `script` (6m) | `glance-ks-outage` (database `glance_ks_outage`, `keystoneEndpoint` at the suite's Keystone, no anonymous access) and `glance-ks-outage-s3` reach `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `glance-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v2/images` with T1 once: 401 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Glance CR. The step cleanup deletes the `PodChaos` |
+| 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-glance`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `glance-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-glance-cr.yaml`,
+`02-glancebackend-cr.yaml`, `03-podchaos.yaml`.
+
+**Workload:** the `token` and `image` streams against `keystone-glance-ks-outage`
+and `glance-ks-outage`, started in step 2 and judged in step 6 against `failures=400
+recovery=150s`, an estimate no run has measured yet. The suite runs in the `pod`
+matrix entry. The token stream fails from the injection until Keystone answers
+again, and the `image` stream fails once Glance needs a token it has not cached.
+Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-glance-ks-outage`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos glance-ks-outage` with `--cr-kind=glance` and
+`--dep-label=app.kubernetes.io/instance=keystone-glance-ks-outage`, dumps the
+Keystone CR, the pod logs of the Glance CR and of the glance-operator, and every
+`PodChaos`, and dumps the workload.
+
+**Design notes:**
+
+- `pod-failure` swaps the keystone container for a pause image. The pod stays
+  scheduled, its readiness probe on `/v3` fails, the Service loses its endpoint, and
+  every connection is refused at once, which gives the probe a bounded answer. A
+  `NetworkChaos` partition would leave every validation waiting out its TCP connect
+  retries instead: the operators set no `http_connect_timeout` in
+  `[keystone_authtoken]`, and keystonemiddleware has no default for it. The same
+  refusal needs no kernel module, so the suite runs in the blocking `pod` entry.
+- The probe uses a token the service has never seen. keystonemiddleware caches a
+  validated token for `token_cache_time` (300 s by default) in the shared Memcached,
+  so a token the workload presented before the outage can keep working through it.
+- The script reads `TOKEN-ISSUED` from the log of the running probe before it
+  applies the `PodChaos`, so the probe runs `python3 -u`: a buffered stdout would
+  hold the line until the pod ends.
+- The selector is `app.kubernetes.io/name: keystone` with the instance label of the
+  suite's Keystone. The Keystone Job pods carry no name label, and every other
+  Keystone in the namespace carries another instance label.
+- The Glance CR sets none of the anonymous-access settings `glance-garage-outage`
+  needs in an entry without a Keystone, because they would let through the request
+  this suite proves is refused.
+
+---
+
+### placement-keystone-outage
+
+**File:** `tests/e2e-chaos/placement-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away while Placement keeps running. The suite pins how Placement treats a
+token it cannot validate: a token issued before the outage, and never shown to
+Placement until then, gets 503 on `GET /resource_providers`. keystonemiddleware
+cannot reach Keystone to validate it and answers `HTTPServiceUnavailable`. The
+Keystone CR reports `DeploymentReady=False` in the same window, and the Placement CR
+stays `Ready=True/AllReady`, because no Placement condition watches Keystone. Once
+the outage is lifted a fresh token gets 200 from the same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-placement-ks-outage` (database `keystone_placement_ks_outage`) reaches `Ready=True/AllReady` |
+| 2 | Apply Placement | `apply` + `assert` (5m) + `script` (6m) | `placement-ks-outage` (database `placement_ks_outage`, `keystoneEndpoint` at the suite's Keystone) reaches `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `placement-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `02-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /resource_providers` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Placement CR. The step cleanup deletes the `PodChaos` |
+| 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-placement`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `placement-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-placement-cr.yaml`, `02-podchaos.yaml`.
+
+**Workload:** the `token` and `placement` streams against
+`keystone-placement-ks-outage` and `placement-ks-outage`, started in step 2 and
+judged in step 6 against `failures=400 recovery=150s`, an estimate no run has
+measured yet. The suite runs in the `pod` matrix entry. The token stream fails from
+the injection until Keystone answers again, and the `placement` stream fails once
+Placement needs a token it has not cached. Every step from 2 to 6 dumps the workload
+in its catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-placement-ks-outage`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos placement-ks-outage` with `--cr-kind=placement` and
+`--dep-label=app.kubernetes.io/instance=keystone-placement-ks-outage`, dumps the
+Keystone CR, the pod logs of the Placement CR and of the placement-operator, and
+every `PodChaos`, and dumps the workload.
+
+**Design notes:**
+
+- The `PodChaos`, the token the service has never seen and the unbuffered probe
+  follow `glance-keystone-outage`, which gives the reasons.
+
+---
+
+### barbican-keystone-outage
+
+**File:** `tests/e2e-chaos/barbican-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away while Barbican keeps running. The suite pins how Barbican treats a
+token it cannot validate: a token issued before the outage, and never shown to
+Barbican until then, gets 503 on `GET /v1/secrets`. keystonemiddleware cannot reach
+Keystone to validate it and answers `HTTPServiceUnavailable`. The Keystone CR
+reports `DeploymentReady=False` in the same window, and the Barbican CR stays
+`Ready=True/AllReady`, because no Barbican condition watches Keystone. Once the
+outage is lifted a fresh token gets 200 from the same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-ks-outage` (database `keystone_barbican_ks_outage`) reaches `Ready=True/AllReady` |
+| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-ks-outage` (database `barbican_ks_outage`, one replica) and the store `barbican-ks-outage-store` on `openbao-instance` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `barbican-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v1/secrets` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Barbican CR. The step cleanup deletes the `PodChaos` |
+| 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-barbican`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `barbican-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-barbican-cr.yaml`,
+`02-barbican-secretstore.yaml`, `03-podchaos.yaml`.
+
+**Workload:** the `token` and `secret` streams against `keystone-barbican-ks-outage`
+and `barbican-ks-outage`, started in step 2 and judged in step 6 against
+`failures=400 recovery=150s`, an estimate no run has measured yet. The suite runs in
+the `pod` matrix entry. The token stream fails from the injection until Keystone
+answers again, and the `secret` stream fails once Barbican needs a token it has not
+cached. Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-barbican-ks-outage`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos barbican-ks-outage` with `--cr-kind=barbican` and
+`--dep-label=app.kubernetes.io/instance=keystone-barbican-ks-outage`, dumps the
+Keystone CR, the pod logs of the Barbican CR and of the barbican-operator, and every
+`PodChaos`, and dumps the workload.
+
+**Design notes:**
+
+- The Barbican CR runs one replica, where `barbican-openbao-outage` runs two to keep
+  `/healthcheck` served beside a worker that waits on its partition. A request whose
+  token cannot be validated is answered at once.
+- The `PodChaos`, the token the service has never seen and the unbuffered probe
+  follow `glance-keystone-outage`, which gives the reasons.
+
+---
+
+### neutron-keystone-outage
+
+**File:** `tests/e2e-chaos/neutron-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away while Neutron keeps running. The suite pins how Neutron treats a token
+it cannot validate: a token issued before the outage, and never shown to Neutron
+until then, gets 503 on `GET /v2.0/networks`. keystonemiddleware cannot reach
+Keystone to validate it and answers `HTTPServiceUnavailable`. The Keystone CR
+reports `DeploymentReady=False` in the same window, and the Neutron CR stays
+`Ready=True/AllReady`, because no Neutron condition watches Keystone. Once the
+outage is lifted a fresh token gets 200 from the same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-ks-outage` (database `keystone_neutron_ks_outage`) reaches `Ready=True/AllReady` |
+| 2 | Apply the OVN control plane and Neutron | `apply` + `assert` (5m) + `script` (6m) | The broker Secret `neutron-ks-outage-messaging`, `neutron-ks-outage-ovn` and `neutron-ks-outage` (database `neutron_ks_outage`) reach `Ready=True/AllReady`. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `neutron-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `04-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v2.0/networks` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Neutron CR. The step cleanup deletes the `PodChaos` |
+| 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-neutron`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `neutron-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`,
+`02-ovncentral-cr.yaml`, `03-neutron-cr.yaml`, `04-podchaos.yaml`.
+
+**Workload:** the `token` and `network` streams against `keystone-neutron-ks-outage`
+and `neutron-ks-outage`, started in step 2 and judged in step 6 against
+`failures=400 recovery=150s`, an estimate no run has measured yet. The suite runs in
+the `network` matrix entry. The token stream fails from the injection until Keystone
+answers again, and the `network` stream fails once Neutron needs a token it has not
+cached. Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-neutron-ks-outage`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos neutron-ks-outage` with `--cr-kind=neutron` and
+`--dep-label=app.kubernetes.io/instance=keystone-neutron-ks-outage`, dumps the
+Keystone CR, the pod logs of the Neutron CR and of the neutron-operator, and every
+`PodChaos`, and dumps the workload.
+
+**Design notes:**
+
+- The stack is the one of `neutron-mariadb-outage` under new names: a broker Secret
+  whose host never resolves, a single-member OVNCentral and one API replica.
+- The `PodChaos`, the token the service has never seen and the unbuffered probe
+  follow `glance-keystone-outage`, which gives the reasons.
+
+---
+
+### cinder-keystone-outage
+
+**File:** `tests/e2e-chaos/cinder-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away while Cinder keeps running. The suite pins how Cinder treats a token
+it cannot validate: a token issued before the outage, and never shown to Cinder
+until then, gets 503 on `GET /v3/{project_id}/volumes`. keystonemiddleware cannot
+reach Keystone to validate it and answers `HTTPServiceUnavailable`. The probe reads
+the project id off the body of T1. The Keystone CR reports `DeploymentReady=False`
+in the same window, and the Cinder CR stays `Ready=True/AllReady`, because no Cinder
+condition watches Keystone. Once the outage is lifted a fresh token gets 200 from
+the same request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-cinder-ks-outage` (database `keystone_cinder_ks_outage`) reaches `Ready=True/AllReady` |
+| 2 | Give the suite its vhost, apply Cinder | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-ks-outage cinder-ks-outage-messaging openstack`, then `cinder-ks-outage` (database `cinder_ks_outage`, `keystoneEndpoint` and `serviceUser` set) and the NFS backend `ks-outage-nfs1` reach `Ready=True/AllReady`. The step cleanup deletes the vhost. `workload.sh start` then starts the workload and waits for `READY` |
+| 3 | Take Keystone away | `script` (8m) + `assert` (5m) | Pod `cinder-ks-outage-failclosed-probe` on `ghcr.io/c5c3/tempest:2026.1` issues a token T1 and prints `TOKEN-ISSUED`. The script then runs `workload.sh mark fault-start`, applies `03-podchaos.yaml` and waits for `AllInjected`. The probe waits up to 180 s for Keystone to refuse the connection and sends `GET /v3/{project_id}/volumes` with T1 once: 503 prints `FAILCLOSED-OK`, a 2xx fails, and any other answer is retried every 5 s for up to 120 s. The asserts read `DeploymentReady` `False` on the Keystone CR and `Ready=True/AllReady` on the Cinder CR. The step cleanup deletes the `PodChaos` |
+| 4 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-cinder`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`. Pod `cinder-ks-outage-recovery-probe` issues a fresh token and repeats the request, retrying a 401 or a 503 every 5 s for up to 180 s, until a 200 prints `RECOVERY-OK` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-cinder-cr.yaml`,
+`02-cinderbackend-cr.yaml`, `03-podchaos.yaml`.
+
+**Workload:** the `token` and `volume` streams against `keystone-cinder-ks-outage`
+and `cinder-ks-outage`, started in step 2 and judged in step 6 against `failures=400
+recovery=150s`, an estimate no run has measured yet. The suite runs in the `network`
+matrix entry. The token stream fails from the injection until Keystone answers
+again, and the `volume` stream fails once Cinder needs a token it has not cached.
+Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** step 1 calls `../diagnostics.sh baseline
+keystone-cinder-ks-outage`. The later steps share a YAML anchor that calls
+`../diagnostics.sh chaos cinder-ks-outage` with `--cr-kind=cinder` and
+`--dep-label=app.kubernetes.io/instance=keystone-cinder-ks-outage`, dumps the
+Keystone CR, the pod logs of the Cinder CR and of the cinder-operator, and every
+`PodChaos`, and dumps the workload.
+
+**Design notes:**
+
+- This is the first chaos suite with an authenticated Cinder. `keystoneEndpoint` and
+  `serviceUser` are set together, as the pairing rule on the spec requires; without
+  them the API renders `auth_strategy = noauth` and validates nothing the outage
+  could break. With `--keystone` the volume stream uses the `/v3/{project_id}`
+  paths.
+- The `PodChaos`, the token the service has never seen and the unbuffered probe
+  follow `glance-keystone-outage`, which gives the reasons.
+
+---
+
+### nova-keystone-outage
+
+**File:** `tests/e2e-chaos/nova-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` takes the API pods of the suite's own
+Keystone away under a full Nova deployment. A token issued before the outage, and
+never shown to Nova until then, gets 503 on `GET /v2.1/servers`: keystonemiddleware
+cannot reach Keystone to validate it and answers `HTTPServiceUnavailable`. The
+Keystone CR reports `DeploymentReady=False` in the same window, while the Nova CR
+stays `Ready=True/AllReady` with `NovaAPIReady=True/APIHealthy`,
+`SchedulerReady=True` and `ConductorReady=True`. The API's probes send no token, and
+the scheduler and the conductor take their readiness off the broker socket, so the
+outage does not reach the conditions. After the outage a fresh token lists the
+servers with 200, and the workload's verify audits Placement and compares the
+Neutron and OVN databases.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost | `script` (2m) | `../../e2e/cinder/broker-vhost.sh create nova-ks-chaos nova-ks-chaos-messaging openstack`; the step cleanup deletes the vhost |
+| 2 | Bring up Keystone | `apply` + `assert` (8m) | `keystone-nova-ks-chaos` reaches `Ready=True/AllReady` |
+| 3 | Register the four services | `script` (6m) | Job `nova-ks-chaos-catalog-setup` writes the public and internal endpoints of compute, placement, image and network |
+| 4 | Bring up the four services | `apply` + `assert` (8m each) | `nova-ks-chaos-ovn`, `neutron-nova-ks-chaos` (with `spec.ovnDBSync: {syncMode: log, suspend: true}`), `placement-nova-ks-chaos`, `glance-nova-ks-chaos` and `glance-nova-ks-chaos-s3` reach `Ready=True/AllReady` |
+| 5 | Seed the image | `script` (6m) | Job `nova-ks-chaos-image-seed` uploads image `4e0a0000-0000-4000-8000-000000000008` |
+| 6 | Apply the Nova CR | `apply` + `assert` (8m) | `nova-ks-chaos` reaches its conditions and `Ready=True/AllReady` |
+| 7 | Start the fake compute | `apply` + `assert` (5m) + `script` (3m) | `nova-ks-chaos-fake-compute` becomes available and `../../e2e/nova/discover-hosts.sh` maps `fake-1` into cell1 |
+| 8 | Seed the flavor | `script` (6m) | Job `nova-ks-chaos-flavor-seed` creates `m1.nano` and waits for the compute service to report `up` |
+| 9 | Start the workload | `script` (6m) | `workload.sh start` with the `token`, `network`, `server` and `image` streams |
+| 10 | Take Keystone away | `script` (8m) + `assert` (5m) | The probe of `glance-keystone-outage` against `GET /v2.1/servers` with an expected 503, around `workload.sh mark fault-start` and `14-podchaos.yaml`; the asserts read `DeploymentReady` `False` on the Keystone CR and the four conditions above on the Nova CR. The step cleanup deletes the `PodChaos` |
+| 11 | Lift the outage | `delete` + `script` (1m) | Removes `PodChaos/fail-keystone-nova`, then `workload.sh mark fault-end` |
+| 12 | Assert recovery | `assert` (5m) + `script` (7m) | The Keystone CR is back at `Ready=True/AllReady`, and a fresh token gets 200 from `GET /v2.1/servers` within 180 s (`RECOVERY-OK`) |
+| 13 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-ks-chaos --ovn-db-sync neutron-nova-ks-chaos` |
+| 14 | Tear the deployment down | `script` (10m) | Deletes the fake compute and the three Jobs, then the Nova CR, and waits up to 180 s for its pods |
+
+**Fixtures:** `01-keystone-cr.yaml` to `12-fake-compute.yaml`, the stack of
+`nova-placement-outage` with every `nova-placement-chaos` renamed to
+`nova-ks-chaos`, then `13-flavor-seed-job.yaml` and `14-podchaos.yaml`.
+
+**Workload:** the `token`, `network`, `server` and `image` streams against the
+suite's Keystone, Neutron, Nova and Glance, started in step 9 and judged in step 13
+against `failures=500 recovery=180s`, an estimate no run has measured yet. The suite
+runs in the `nova` matrix entry. The token stream fails from the injection until
+Keystone answers again. The other streams fail once a service on their path needs a
+token it has not cached, a build included: the scheduler's Placement call and the
+compute's image download present tokens of their own.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos nova-ks-chaos`
+with `--cr-kind=nova`,
+`--dep-label=app.kubernetes.io/instance=keystone-nova-ks-chaos` and
+`--log-label=app.kubernetes.io/instance=nova-ks-chaos`, dumps every `PodChaos`, the
+Keystone, OVNCentral, Neutron, Placement, Glance and GlanceBackend CRs, the fake
+compute and Job logs, the logs of the six operators and the events, and dumps the
+workload.
+
+**Design notes:**
+
+- The `PodChaos`, the token the service has never seen and the unbuffered probe
+  follow `glance-keystone-outage`, which gives the reasons. The service tokens Nova
+  presents to Placement, Neutron and Glance are cached the same way.
+- The stack has no baseline Job, so step 8 seeds `m1.nano` for the server stream and
+  waits for the compute. The scheduler keeps its one worker and the urllib3
+  connection logs of `nova-placement-outage`; here the logs show when each Nova
+  workload reconnected to Keystone.
 
 ---
 

@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the Keystone outage chaos test.
+#
+# Managed mode throughout: the schema neutron_ks_outage on the openstack-db
+# MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
+# credentials and the pre-seeded keystone-admin service-user password (both
+# from deploy/kind/infrastructure). The broker Secret and the OVN control
+# plane come from the two sibling fixtures.
+#
+# keystoneEndpoint points at the Keystone of 00-keystone-cr.yaml, the Keystone
+# the outage takes away. One API replica and one worker: the suite asserts the
+# answer to one request.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-ks-outage
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_ks_outage
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-ks-outage-messaging
+  ovn:
+    centralRef:
+      name: neutron-ks-outage-ovn
+  keystoneEndpoint: http://keystone-neutron-ks-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

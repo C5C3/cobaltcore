@@ -1959,6 +1959,9 @@ jobs:
               tests/e2e-chaos/glance-operator-pod-kill
               tests/e2e-chaos/placement-operator-pod-kill
               tests/e2e-chaos/barbican-operator-pod-kill
+              tests/e2e-chaos/glance-keystone-outage
+              tests/e2e-chaos/placement-keystone-outage
+              tests/e2e-chaos/barbican-keystone-outage
           - suite: network
             runner: self-hosted
             test_dirs: >-
@@ -1972,6 +1975,8 @@ jobs:
               tests/e2e-chaos/cinder-operator-pod-kill
               tests/e2e-chaos/cinder-broker-outage
               tests/e2e-chaos/cinder-nfs-outage
+              tests/e2e-chaos/neutron-keystone-outage
+              tests/e2e-chaos/cinder-keystone-outage
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -1998,6 +2003,7 @@ jobs:
               tests/e2e-chaos/nova-broker-outage
               tests/e2e-chaos/nova-mariadb-outage
               tests/e2e-chaos/nova-placement-outage
+              tests/e2e-chaos/nova-keystone-outage
     runs-on: ${{ matrix.runner }}
     # 150 minutes for the nova leg, 90 for the other three. This leg loads
     # eighteen images and runs eight operator deploys before its first suite,
