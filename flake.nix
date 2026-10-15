@@ -12,13 +12,35 @@
 #
 # Deliberately NOT provided: Docker (a daemon cannot be nix-provisioned; kind
 # needs a running Docker — see docs/contributing/nix-dev-environment.md).
+#
+# The flake also builds the container images that moved off their Dockerfile
+# (docs/reference/ci-cd/nix-image-build.md). It has two inputs: nixpkgs
+# (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05, the
+# channel the nixpkgs security team backports to) feeds the images. On
+# x86_64-linux and aarch64-linux, the two platforms build-images.yaml builds
+# on, the images input adds these outputs:
+#
+#   packages.<system>.<name>-image   a dockerTools.streamLayeredImage built
+#                                    from images/<name>/image.nix; the name is
+#                                    flat because nix flake check rejects a
+#                                    nested attribute set under packages
+#   checks.<system>.nix-lint         nixfmt, statix and deadnix over flake.nix,
+#                                    nix/lib/ and images/; nix/spike/ is the
+#                                    Phase 0 record and stays outside the set
+#   checks.<system>.fhs-layout       nix/lib/fhs-layout.nix built with a venv
+#                                    and an extraRoots entry
+#   devShells.<system>.image-tools   skopeo and vulnix for the
+#                                    build-nix-image composite action
 {
   description = "cobaltcore development environment mirroring the CI toolchain";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-images.url = "github:NixOS/nixpkgs/nixos-26.05";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    { nixpkgs, nixpkgs-images, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -27,6 +49,41 @@
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+
+      imageSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+      forImageSystems = nixpkgs-images.lib.genAttrs imageSystems;
+      pkgsFor = system: nixpkgs-images.legacyPackages.${system};
+
+      # The Nix files the lint check reads. fileFilter takes a path, not a
+      # file set, so the filter runs over the tree and the intersection keeps
+      # the three roots.
+      lintSource =
+        let
+          inherit (nixpkgs-images.lib) fileset;
+        in
+        fileset.toSource {
+          root = ./.;
+          fileset = fileset.intersection (fileset.fileFilter (f: f.hasExt "nix") ./.) (
+            fileset.unions [
+              ./flake.nix
+              ./nix/lib
+              ./images
+            ]
+          );
+        };
+
+      imageToolsShells = forImageSystems (system: {
+        image-tools = (pkgsFor system).mkShell {
+          name = "cobaltcore-image-tools";
+          packages = [
+            (pkgsFor system).skopeo
+            (pkgsFor system).vulnix
+          ];
+        };
+      });
     in
     {
       devShells = forAllSystems (
@@ -74,6 +131,68 @@
               unset _cobaltcore_root
             '';
           };
+        }
+        // imageToolsShells.${system} or { }
+      );
+
+      packages = forImageSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          backup-shifter-image = import ./images/backup-shifter/image.nix {
+            inherit pkgs;
+            fhsLayout = import ./nix/lib/fhs-layout.nix { inherit pkgs; };
+          };
+        }
+      );
+
+      checks = forImageSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          nix-lint =
+            pkgs.runCommand "nix-lint"
+              {
+                nativeBuildInputs = [
+                  pkgs.nixfmt
+                  pkgs.statix
+                  pkgs.deadnix
+                ];
+              }
+              ''
+                cd ${lintSource}
+                find . -name '*.nix' -print0 | xargs -0 nixfmt --check
+                statix check .
+                deadnix --fail .
+                touch "$out"
+              '';
+
+          # The façade with a Python environment and an extraRoots entry, the
+          # two inputs no image passes yet.
+          fhs-layout =
+            let
+              fhsLayout = import ./nix/lib/fhs-layout.nix { inherit pkgs; };
+              venv = pkgs.runCommand "venv-fixture" { } ''
+                mkdir -p "$out/bin"
+                touch "$out/bin/svc"
+              '';
+              layout = fhsLayout {
+                inherit venv;
+                extraRoots."etc/svc/svc.conf" = pkgs.writeText "svc-conf-fixture" "x";
+              };
+            in
+            pkgs.runCommand "fhs-layout-check" { } ''
+              test -e ${layout}/var/lib/openstack/bin/svc
+              test "$(cat ${layout}/var/lib/openstack/etc/svc/svc.conf)" = x
+              test -x ${layout}/bin/sh
+              test -e ${layout}/usr/bin/env
+              test -s ${layout}/etc/ssl/certs/ca-certificates.crt
+              touch "$out"
+            '';
         }
       );
     };
