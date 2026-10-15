@@ -56,11 +56,57 @@ Every resource name below is one that devstack produces.
 :::
 
 Run the commands from the root of the clone, with `jq` on `PATH` and, for Part
-2, `helm`. The `openstack` calls run on the workstation with the `OS_*`
-variables of the ControlPlane quick start's token-issue step still exported. A
-second kind cluster beside a full devstack fails at `Preparing nodes` while
-`fs.inotify.max_user_instances` is at its default of 128, so raise it before
-Part 2 with `sudo sysctl fs.inotify.max_user_instances=512`.
+2, `helm`. The `openstack` calls run on the workstation and need the shell set
+up as below. A second kind cluster beside a full devstack fails at
+`Preparing nodes` while `fs.inotify.max_user_instances` is at its default of
+128, so raise it before Part 2 with `sudo sysctl fs.inotify.max_user_instances=512`.
+
+### Point the shell at the devstack {#shell}
+
+The `openstack` calls below reach Keystone the way
+[Step 7 of the ControlPlane quick start](./quick-start-controlplane.md#step-7-—-verify)
+does: through the shared Envoy Gateway at `keystone.127-0-0-1.nip.io:8443`,
+with the admin password from the operator-owned Secret. Those settings live in
+the shell that ran that step. A new shell, a second terminal or a workstation
+that reaches a devstack stood up elsewhere starts without them, and every
+`openstack` call then fails with `Missing value auth-url required for auth
+plugin password` or with a refused connection. Set them again before Part 1.
+
+The way to the Gateway depends on where the devstack runs. On the local kind
+devstack of the box above no port-forward is needed: `hack/kind-config.yaml`
+maps the host port 8443 to the Gateway's NodePort, and the hostname resolves to
+the loopback address. On any other cluster, the metal-stack lab among them, the
+Gateway has no host port. Open a port-forward of the local port 8443 to the
+Envoy proxy Service in a second terminal and keep it running for the rest of
+the page. It is the command of the `Access:` line `make deploy-infra` prints
+for such a cluster:
+
+```bash
+kubectl -n envoy-gateway-system port-forward \
+  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
+```
+
+Then, in the shell that runs the page, point `kubectl` at the devstack and
+export the credentials:
+
+```bash
+kubectl config use-context kind-cobaltcore   # the local kind devstack; another cluster: its own context
+export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
+export OS_USERNAME=admin
+export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials -n openstack -o jsonpath='{.data.password}' | base64 -d)
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
+openstack --insecure token issue
+```
+
+The token proves the path end to end. `--insecure` accepts the self-signed
+certificate of the Gateway's Keystone listener, as on the ControlPlane page. A
+local devstack brought up with the default `KIND_HOST_PORT=443` uses
+`https://keystone.127-0-0-1.nip.io/v3` instead. If the hostname does not
+resolve, the ControlPlane page's tip on `*.nip.io` names the cause and the
+`/etc/hosts` workaround. A ControlPlane with another name keeps its password in
+`{name}-keystone-admin-credentials`.
 
 ## Part 1: The management cluster {#same-cluster}
 
