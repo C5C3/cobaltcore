@@ -565,6 +565,30 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "FRR image of the BGP fabric containerlab: every lab node runs it",
+      "managerFilePatterns": [
+        "/tests/lab/bgp-fabric/bgp-fabric\\.clab\\.yml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>quay\\.io/frrouting/frr):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "containerlab image the BGP fabric lab runner deploys and destroys the lab with",
+      "managerFilePatterns": [
+        "/tests/lab/bgp-fabric/run\\.sh$/"
+      ],
+      "matchStrings": [
+        "CLAB_IMAGE_DEFAULT=\"(?<depName>ghcr\\.io/srl-labs/clab):(?<currentValue>[^@\\s\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -1236,6 +1260,23 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "rook-ceph chart"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/lab/bgp-fabric/bgp-fabric.clab.yml", "tests/lab/bgp-fabric/run.sh"],
+      "matchPackageNames": ["quay.io/frrouting/frr", "ghcr.io/srl-labs/clab"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "No CI job runs the BGP fabric lab, so a bump stays unverified until run.sh is run by hand and the contract page's run record is refreshed; nothing automerges",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/lab/bgp-fabric/bgp-fabric.clab.yml", "tests/lab/bgp-fabric/run.sh"],
+      "matchPackageNames": ["quay.io/frrouting/frr", "ghcr.io/srl-labs/clab"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "bgp-fabric lab"
     }
   ]
 }
