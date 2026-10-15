@@ -1321,7 +1321,7 @@ test_tempest_nova_leg_is_wired() {
       "\${{ env.IMAGE_PREFIX }}/${image}"
   done
   # In one call. Each `kind load` is a `docker save` piped into the node's
-  # containerd, and the three service images share their whole python-base while
+  # containerd, and the three service images share their Nix store layers while
   # the four operator images share theirs, so a call per image saves and imports
   # the same layers eight times over on a leg whose wall this budget already
   # spends minutes of on image load.

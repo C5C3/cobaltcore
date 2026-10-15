@@ -10,10 +10,8 @@
 #   - with GITHUB_TOKEN set, every git call carries the token as the
 #     basic-auth header actions/checkout sends, scoped to https://github.com/,
 #     through git's environment config, and the raw token reaches neither
-#     git's argv nor docker's;
-#   - with GITHUB_TOKEN set, docker build receives the token as the
-#     github_token BuildKit secret read from the environment
-#     (--secret id=github_token,env=GITHUB_TOKEN), never as an argument;
+#     git's argv nor docker's; docker build gets no BuildKit secret, since
+#     images/nova-compute/Dockerfile fetches nothing itself;
 #   - a GIT_CONFIG_COUNT the caller set is appended to, not overwritten;
 #   - without a token the clone stays anonymous and no --secret reaches
 #     docker;
@@ -23,9 +21,11 @@
 #     docker runs;
 #   - IMAGE builds a derived image from its service's source: the image names
 #     the extra-packages key, the Dockerfile directory and the tag, the
-#     service the source ref, the clone and the build-context name; an unset
-#     IMAGE renders the service image as before, and a malformed one fails
-#     before anything runs;
+#     service the source ref, the clone and the build-context name, and a
+#     malformed one fails before anything runs;
+#   - an image built by Nix (images/<image>/image.nix, no Dockerfile) is
+#     refused with the nix build command before git runs, and an image
+#     without either fails naming the missing Dockerfile;
 #   - an unset or empty RELEASE builds the 2026.1 tag and a set one wins; a
 #     release without releases/<release>/upper-constraints.txt fails before
 #     docker runs.
@@ -64,8 +64,8 @@ WORK_DIR="$TMP_DIR/work"
 mkdir -p "$WORK_DIR/releases/2026.1"
 : >"$WORK_DIR/releases/2026.1/upper-constraints.txt"
 
-GITHUB_URL="https://github.com/openstack/barbican.git"
-OPENDEV_URL="https://opendev.org/openstack/barbican.git"
+GITHUB_URL="https://github.com/openstack/nova.git"
+OPENDEV_URL="https://opendev.org/openstack/nova.git"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -133,9 +133,10 @@ STUB
 }
 
 # run_build [VAR=value ...]
-# Runs the builder with the stubs first on PATH and fresh logs, for barbican
-# unless an OPERATOR=... argument names another service. GITHUB_TOKEN,
-# GIT_CONFIG_*, GIT_STUB_FAIL, IMAGE and RELEASE start out unset; the
+# Runs the builder with the stubs first on PATH and fresh logs, for
+# nova-compute from nova's source unless OPERATOR=... and IMAGE=... arguments
+# name another image. GITHUB_TOKEN, GIT_CONFIG_*, GIT_STUB_FAIL and RELEASE
+# start out unset; the
 # arguments are exported on top of that. Stores the combined stdout/stderr in OUTPUT, the
 # exit status in RC, and the recorded git, docker and yq calls in GIT_CALLS,
 # DOCKER_CALLS and YQ_CALLS.
@@ -145,7 +146,7 @@ run_build() {
   OUTPUT="$(
     cd "$WORK_DIR" || exit 99
     unset GITHUB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_STUB_FAIL IMAGE RELEASE
-    export OPERATOR=barbican
+    export OPERATOR=nova IMAGE=nova-compute
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -202,7 +203,7 @@ test_anonymous_without_token() {
   assert_contains "no auth header is configured without a token" "$clone" "GIT_CONFIG_COUNT=unset"
   assert_not_contains "no extraheader reaches git without a token" "$GIT_CALLS" "extraheader"
   assert_contains "the service image is built from the clone" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2026.1"
+    "docker build -t ghcr.io/c5c3/nova-compute:2026.1"
   assert_not_contains "no BuildKit secret is mounted without a token" "$DOCKER_CALLS" "--secret"
 }
 
@@ -231,8 +232,7 @@ test_token_becomes_scoped_auth_header() {
     "GIT_CONFIG_VALUE_0=${expected_value}"
   assert_not_contains "the raw token is in no git argument" "$argv_only" "$token"
   assert_not_contains "the raw token is in no docker argument" "$DOCKER_CALLS" "$token"
-  assert_contains "the token is mounted as the github_token BuildKit secret" "$DOCKER_CALLS" \
-    "--secret id=github_token,env=GITHUB_TOKEN"
+  assert_not_contains "no BuildKit secret is mounted with a token either" "$DOCKER_CALLS" "--secret"
   assert_contains "the clone still goes to the GitHub mirror" "$clone" "${GITHUB_URL}"
 }
 
@@ -281,7 +281,7 @@ test_github_rejection_falls_back_to_opendev() {
   assert_contains "the handover is announced" "$OUTPUT" \
     "::warning::${GITHUB_URL} did not serve 21.0.0 after 3 attempts"
   assert_contains "the image is still built" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2026.1"
+    "docker build -t ghcr.io/c5c3/nova-compute:2026.1"
 }
 
 # ---------------------------------------------------------------------------
@@ -294,7 +294,7 @@ test_no_source_fails_before_docker() {
 
   assert_nonzero_exit "builder fails" "$RC"
   assert_contains "the error names the ref and both sources" "$OUTPUT" \
-    "::error::Could not clone openstack/barbican at 21.0.0 from any source: ${GITHUB_URL} ${OPENDEV_URL}"
+    "::error::Could not clone openstack/nova at 21.0.0 from any source: ${GITHUB_URL} ${OPENDEV_URL}"
   assert_eq "every source got its three attempts" "6" "$(clone_calls | count_lines)"
   assert_eq "docker never runs" "" "$DOCKER_CALLS"
 }
@@ -320,20 +320,32 @@ test_image_builds_a_derived_image() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: an unset IMAGE renders the service image as before
+# Test 7: an image built by Nix is refused before anything runs
 # ---------------------------------------------------------------------------
-test_unset_image_keeps_the_operator_command() {
-  echo "Test: without IMAGE the service image is built under the service's name"
+test_a_nix_image_is_refused_before_git() {
+  echo "Test: OPERATOR=barbican without IMAGE is refused with the nix build command"
 
-  run_build
+  run_build OPERATOR=barbican IMAGE=
 
-  local build
-  build="$(printf '%s\n' "$DOCKER_CALLS" | grep '^docker build -t ghcr.io/c5c3/barbican' || true)"
+  assert_eq "builder exits 1" "1" "$RC"
+  assert_contains "the error names the flake attribute" "$OUTPUT" \
+    "ci-build-service-image.sh: images/barbican is built by Nix: nix build .#barbican-2026_1-image"
+  assert_eq "git never runs" "" "$GIT_CALLS"
+  assert_eq "docker never runs" "" "$DOCKER_CALLS"
+}
 
-  assert_eq "builder exits 0" "0" "$RC"
-  assert_contains "the extra packages are the service's" "$YQ_CALLS" '."barbican".pip_packages'
-  assert_contains "the source is the barbican build context" "$build" "--build-context barbican="
-  assert_contains "the Dockerfile is images/barbican/" "$build" "/images/barbican/"
+# ---------------------------------------------------------------------------
+# Test 7b: an image with neither a Dockerfile nor an image.nix fails
+# ---------------------------------------------------------------------------
+test_an_image_without_a_dockerfile_fails() {
+  echo "Test: IMAGE=nosuchimage fails naming the missing Dockerfile before git runs"
+
+  run_build IMAGE=nosuchimage
+
+  assert_eq "builder exits 1" "1" "$RC"
+  assert_contains "the error names the Dockerfile" "$OUTPUT" \
+    "ci-build-service-image.sh: images/nosuchimage/Dockerfile not found"
+  assert_eq "git never runs" "" "$GIT_CALLS"
 }
 
 # ---------------------------------------------------------------------------
@@ -361,7 +373,7 @@ test_release_fallback_and_override() {
 
   assert_eq "builder exits 0 with an empty RELEASE" "0" "$RC"
   assert_contains "an empty RELEASE falls back to 2026.1" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2026.1"
+    "docker build -t ghcr.io/c5c3/nova-compute:2026.1"
 
   mkdir -p "$WORK_DIR/releases/2026.2"
   : >"$WORK_DIR/releases/2026.2/upper-constraints.txt"
@@ -369,8 +381,8 @@ test_release_fallback_and_override() {
 
   assert_eq "builder exits 0 with RELEASE=2026.2" "0" "$RC"
   assert_contains "the release that was set names the tag" "$DOCKER_CALLS" \
-    "docker build -t ghcr.io/c5c3/barbican:2026.2"
-  assert_not_contains "the fallback release is not built" "$DOCKER_CALLS" "barbican:2026.1"
+    "docker build -t ghcr.io/c5c3/nova-compute:2026.2"
+  assert_not_contains "the fallback release is not built" "$DOCKER_CALLS" "nova-compute:2026.1"
   assert_contains "the source ref is read from the release that was set" "$YQ_CALLS" \
     "releases/2026.2/source-refs.yaml"
 }
@@ -398,7 +410,8 @@ test_existing_config_entries_are_kept
 test_github_rejection_falls_back_to_opendev
 test_no_source_fails_before_docker
 test_image_builds_a_derived_image
-test_unset_image_keeps_the_operator_command
+test_a_nix_image_is_refused_before_git
+test_an_image_without_a_dockerfile_fails
 test_bad_image_name_fails
 test_release_fallback_and_override
 test_release_without_constraints_fails

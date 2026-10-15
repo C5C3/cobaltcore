@@ -3,28 +3,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# hack/ci-build-service-image.sh — Build an OpenStack service container image.
+# hack/ci-build-service-image.sh — Build the nova-compute container image.
 #
-# Resolves upstream source refs, clones the project, applies patches and
-# constraint overrides, and builds the full image chain: python-base ->
-# venv-builder -> service image.
+# nova-compute is the one service image still built by Docker; every other
+# service image is a flake attribute (nix build .#<image>-<rel_>-image, see
+# docs/reference/ci-cd/nix-image-build.md), and an image without a Dockerfile
+# is refused before anything is cloned. Resolves upstream source refs, clones
+# the project, applies patches and constraint overrides, and builds the full
+# image chain: python-base -> venv-builder -> nova-compute.
 #
 # Required env vars:
-#   OPERATOR      — OpenStack service name (e.g. keystone)
+#   OPERATOR      — OpenStack service whose source is built (nova)
 #   IMAGE_PREFIX  — Container image prefix (e.g. ghcr.io/c5c3)
 #
 # Optional env vars:
-#   IMAGE         — Image to build (default: OPERATOR). A derived image such
-#                   as nova-compute is built from its service's source:
-#                   OPERATOR names the service (source ref, clone, patches,
-#                   the --build-context name), IMAGE the image (its
-#                   extra-packages key, images/<IMAGE>/ and the tag)
+#   IMAGE         — Image to build (default: OPERATOR); nova-compute, the one
+#                   image this script builds. A derived image is built from
+#                   its service's source: OPERATOR names the service (source
+#                   ref, clone, patches, the --build-context name), IMAGE the
+#                   image (its extra-packages key, images/<IMAGE>/ and the
+#                   tag)
 #   RELEASE       — Release directory name (default: 2026.1)
-#   GITHUB_TOKEN  — Authenticates the clone from github.com, and is mounted
-#                   as the github_token BuildKit secret for a Dockerfile that
-#                   fetches from github.com itself (today
-#                   images/nova/Dockerfile); CI passes the workflow token, a
-#                   run without one clones and fetches anonymously
+#   GITHUB_TOKEN  — Authenticates the clone from github.com; CI passes the
+#                   workflow token, a run without one clones anonymously
 #
 # Reusable service image build script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -37,7 +38,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-OPERATOR="${OPERATOR:?OPERATOR is required (e.g. keystone)}"
+OPERATOR="${OPERATOR:?OPERATOR is required (e.g. nova)}"
 if [[ ! "${OPERATOR}" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "::error::OPERATOR must be lowercase alphanumeric (with hyphens), got '${OPERATOR}'"
   exit 1
@@ -49,6 +50,15 @@ if [[ ! "${IMAGE}" =~ ^[a-z][a-z0-9-]*$ ]]; then
 fi
 IMAGE_PREFIX="${IMAGE_PREFIX:?IMAGE_PREFIX is required (e.g. ghcr.io/c5c3)}"
 RELEASE="${RELEASE:-2026.1}"
+
+if [[ ! -f "${REPO_ROOT}/images/${IMAGE}/Dockerfile" ]]; then
+  if [[ -f "${REPO_ROOT}/images/${IMAGE}/image.nix" ]]; then
+    echo "ci-build-service-image.sh: images/${IMAGE} is built by Nix: nix build .#${IMAGE}-${RELEASE//./_}-image" >&2
+  else
+    echo "ci-build-service-image.sh: images/${IMAGE}/Dockerfile not found" >&2
+  fi
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Resolve upstream source ref
@@ -184,19 +194,8 @@ cache_args=()
 [[ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]] && cache_args+=(--cache-from "${DOCKER_BUILD_CACHE_FROM}")
 [[ -n "${DOCKER_BUILD_CACHE_TO:-}" ]] && cache_args+=(--cache-to "${DOCKER_BUILD_CACHE_TO}")
 
-# The token goes in as a BuildKit secret read from the environment: a
-# Dockerfile that fetches from github.com (images/nova/Dockerfile, for the
-# noVNC tree) mounts it into that one RUN, so it is in no build-arg, no layer
-# and no image metadata. The other service Dockerfiles mount nothing and
-# never see it.
-secret_args=()
-[[ -n "${GITHUB_TOKEN:-}" ]] && secret_args+=(--secret "id=github_token,env=GITHUB_TOKEN")
-
-# ${secret_args[@]+"…"} guards the empty case: bash 3.2, which contributors
-# run `make test-shell` under on macOS, aborts on an empty array under set -u.
 docker build -t "${IMAGE_PREFIX}/${IMAGE}:${RELEASE}" \
   "${cache_args[@]}" \
-  ${secret_args[@]+"${secret_args[@]}"} \
   --build-arg "PIP_EXTRAS=${PIP_EXTRAS}" \
   --build-arg "PIP_PACKAGES=${PIP_PACKAGES}" \
   --build-arg "EXTRA_APT_PACKAGES=${APT_PACKAGES}" \
