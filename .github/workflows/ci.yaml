@@ -1983,6 +1983,8 @@ jobs:
               tests/e2e-chaos/cinder-mariadb-outage
               tests/e2e-chaos/neutron-operator-pod-kill
               tests/e2e-chaos/ovn-operator-pod-kill
+              tests/e2e-chaos/cinder-volume-pod-kill
+              tests/e2e-chaos/cinder-broker-pod-kill
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES

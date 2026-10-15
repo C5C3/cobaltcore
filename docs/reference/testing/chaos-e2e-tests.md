@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 40 chaos test suites validate operator behavior during and after fault
+The 42 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 40 test suites require the infrastructure stack to be deployed and healthy.
+All 42 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -426,6 +426,8 @@ to accommodate serial test execution and longer recovery assertion windows.
 | [neutron-operator-pod-kill](#neutron-operator-pod-kill) | — | `neutron-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=neutron-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `neutron-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
 | [ovn-operator-pod-kill](#ovn-operator-pod-kill) | — | `ovn-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=ovn-chaos-op` and `neutron-ovn-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `ovn-chaos-op-northd` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
 | [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted (`app.kubernetes.io/instance=nova-chaos-op`), `PodChaos mode: one` replaces one operator pod, a missing workload pod UID fails the suite, a replica patch afterwards reaches Deployment `nova-chaos-op` (`availableReplicas: 2`, `updatedReplicas: 2`), `Ready=True/AllReady`, workload budget zero |
+| [cinder-volume-pod-kill](#cinder-volume-pod-kill) | — | `cinder-volume-kill` | Volume-service kill mid-attach (state left behind) | A volume of the stream seen `reserved` or `attaching` (`VOLUME-ATTACHING`) before the `PodChaos`, the volume pod UID replaced and the Deployment available again, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` within 5 minutes, `verify` with `CONSISTENCY-OK volumes` and no failed `sweep-*` record |
+| [cinder-broker-pod-kill](#cinder-broker-pod-kill) | — | `cinder-broker-kill` | Broker pod kill (degrade and recover) | The broker pod UID replaced and the new server pod Ready within 300 s, `SchedulerReady=True/SchedulerReady`, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` within 5 minutes, the API container at `restartCount` 0 (`API-UP-OK`), `verify` with `CONSISTENCY-OK volumes` |
 
 ---
 
@@ -2804,6 +2806,115 @@ path of the streams, so a failed record is a defect to find.
   every exit condition explicitly.
 - The fake compute carries the instance label `nova-chaos-op`, so the snapshot
   counts it. It is outside the operator's reach as well and must not restart either.
+
+---
+
+### cinder-volume-pod-kill
+
+**File:** `tests/e2e-chaos/cinder-volume-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills the volume service of the one backend while the
+workload's volume stream attaches a volume. A volume service lost in the middle of a
+request is the fault that leaves state behind: cinder 28.0.0 `init_host` resets
+`creating` and `downloading` volumes to `error` and resumes `deleting` ones, and it
+leaves a `reserved` volume as it is. The verdict is the harness's. The failed cycle
+and its `cleanup-volume` record fall in the fault window and are budgeted, the sweep
+then deletes the attachments and the volumes the kill left behind, and the `volumes`
+check requires nothing transitional to remain.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Give the suite its vhost, apply the CRs | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-volume-kill cinder-volume-kill-messaging openstack`, then `cinder-volume-kill` (database `cinder_volume_kill`, noauth) and `vol-kill-nfs1` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY`. The step cleanup deletes the vhost |
+| 2 | Kill the volume service while a volume attaches | `script` (8m) | Snapshot the UID of the pod with `app.kubernetes.io/component=volume-vol-kill-nfs1`. `kubectl exec` into the workload pod polls `GET /v3/volumes/detail?all_tenants=1` every second for up to 240 s until a volume named `chaos-wl-cinder-volume-pod-kill-` is `reserved` or `attaching` (`VOLUME-ATTACHING <id>`, or `FAIL: no attach observed in 240s`). Then `workload.sh mark fault-start`, `02-podchaos.yaml`, the old UID gone within 120 s and Deployment `cinder-volume-kill-volume-vol-kill-nfs1` available with a new pod within 300 s. The step cleanup deletes the `PodChaos` |
+| 3 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-cinder-volume`, then `workload.sh mark fault-end` |
+| 4 | The volume service is back | `assert` (5m) | `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify`: the budget, the sweep and `CONSISTENCY-OK volumes` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-podchaos.yaml`.
+
+**Workload:** the noauth `volume` stream against `cinder-volume-kill`, started in
+step 1 and judged in step 5 against `failures=40 recovery=210s`, an estimate no run
+has measured yet. The suite runs in the `network` matrix entry. The cycle the kill
+meets fails, and so does every cycle whose create or attach needs the volume service
+before the new pod has started. Every step from 1 to 5 dumps the workload in its
+catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+cinder-volume-kill` with `--cr-kind=cinder` and
+`--dep-label=app.kubernetes.io/name=cinder-operator`, dumps the `CinderBackend`, the
+Deployments, pods and pod logs of the CR and every `PodChaos`, and dumps the
+workload.
+
+**Design notes:**
+
+- The UID is read before the attach poll, so the `PodChaos` follows the sighting
+  with no read in between. The window of an attach is short, so the kill meets the
+  attach itself or the cycle right after it.
+- A volume that Cinder cannot clear through the attachments API alone fails the
+  sweep outside the window, and the suite with it. That is a finding to file against
+  the operator or upstream, and raising the budget does not fix it.
+- The selector carries the component `volume-vol-kill-nfs1`, so the API and the
+  scheduler stay up and the fault reaches the volume service of one backend.
+
+---
+
+### cinder-broker-pod-kill
+
+**File:** `tests/e2e-chaos/cinder-broker-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills the one pod of the RabbitmqCluster a Cinder uses in
+managed messaging mode. The StatefulSet creates the pod again and the broker comes
+back on its own volume. A killed broker closes its connections, so oslo.messaging in
+the scheduler and the volume service sees the loss at once and reconnects to the new
+pod, where the partition of `cinder-broker-outage` leaves the socket open until the
+heartbeat gives up. The suite pins that the two bus consumers recover on their own,
+so `SchedulerReady` and `VolumeServicesReady` return to `True`, and that the API,
+whose probes never touch the bus, does not restart.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring up the broker | `apply` + `script` (11m) | `RabbitmqCluster/cinder-broker-kill-rabbitmq` (`replicas: 1`) waited on `AllReplicasReady` |
+| 2 | Apply the Cinder CR and its backend | `apply` + `assert` (5m) + `script` (6m) | `cinder-broker-kill` (managed messaging via `messaging.clusterRef`, database `cinder_broker_kill`, noauth) and `broker-kill-nfs1` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 3 | Kill the broker pod | `script` (8m) | Snapshot the UID of `cinder-broker-kill-rabbitmq-server-0`, `workload.sh mark fault-start`, apply `03-podchaos.yaml` (`pod-kill`, `mode: all`, `gracePeriod: 0`), wait up to 120 s for the UID to change and up to 300 s for the new pod to be Ready. The step cleanup deletes the `PodChaos` |
+| 4 | Delete PodChaos | `delete` + `script` (1m) | Removes `PodChaos/kill-cinder-broker`, then `workload.sh mark fault-end` |
+| 5 | The bus consumers reconnect | `assert` (5m) + `script` (2m) | `SchedulerReady=True/SchedulerReady`, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady`; the API container is ready at `restartCount` 0 (`API-UP-OK`) |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` |
+| 7 | Tear the broker down | `script` (8m) | Deletes the Cinder CR and waits for its pods, then deletes the RabbitmqCluster with foreground propagation and waits for its pod |
+
+**Fixtures:** `00-rabbitmqcluster.yaml`, `01-cinder-cr.yaml`,
+`02-cinderbackend-cr.yaml`, `03-podchaos.yaml`.
+
+**Workload:** the noauth `volume` stream against `cinder-broker-kill`, started in
+step 2 and judged in step 6 against `failures=20 recovery=210s`, an estimate no run
+has measured yet. The suite runs in the `network` matrix entry. A create whose cast
+meets the missing broker does not reach `available` within the stream's 120 seconds.
+Every step from 2 to 6 dumps the workload in its catch block.
+
+**Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
+cinder-broker-kill` with `--cr-kind=cinder`, dumps the `CinderBackend`, the
+Deployments, pods and pod logs of the CR, every `PodChaos` and the RabbitmqCluster,
+describes the broker pod, and dumps the workload. Step 1 dumps the RabbitmqCluster,
+the broker pod and the rabbitmq-cluster-operator logs.
+
+**Design notes:**
+
+- The broker is a RabbitmqCluster of its own. Killing the kind-only shared-rabbitmq
+  would take every other suite of the entry down with it.
+- `gracePeriod: 0` matters: the broker pod carries the operator's default
+  `terminationGracePeriodSeconds` of 604800 seconds, and a graceful delete would run
+  its preStop drain instead of losing the broker.
+- The operator renders quorum queues, which are durable, so the queues of the
+  scheduler and the volume service outlive the pod on the broker's volume.
+- Step 7 tears the bus down through the RabbitmqCluster delete with foreground
+  propagation, for the reasons `neutron-broker-outage` gives.
 
 ---
 

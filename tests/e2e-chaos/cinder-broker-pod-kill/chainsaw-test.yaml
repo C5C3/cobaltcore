@@ -1,0 +1,314 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a broker pod kill under a Cinder deployment.
+#
+# The fault is a PodChaos pod-kill of the one pod of the RabbitmqCluster the
+# Cinder uses in managed messaging mode (03-podchaos.yaml). The StatefulSet
+# creates the pod again and the broker comes back on its own volume. The suite
+# pins the recovery: the bus consumers reconnect on their own, and the API is
+# never touched.
+#
+#   - baseline: the broker reports AllReplicasReady, the Cinder is Ready and
+#     the volume stream of the workload is READY
+#   - the kill: the broker pod UID changes and the new server pod is Ready
+#     within five minutes
+#   - after the kill: SchedulerReady=True, VolumeServicesReady=True and
+#     Ready=True/AllReady within five minutes, with no restart and no operator
+#     action. The scheduler and volume readiness probes watch the broker socket
+#     (operators/cinder/internal/controller/reconcile_scheduler.go), so the two
+#     conditions follow the reconnect
+#   - the API container stays at restartCount 0: its readiness and liveness
+#     probes GET /healthcheck, which never touches the bus
+#
+# The difference from ../cinder-broker-outage/ is the way the broker goes. A
+# killed broker closes its connections, so oslo.messaging sees the loss at once
+# and reconnects to the new pod, where a partition leaves the socket open until
+# the heartbeat gives up.
+#
+# Blast radius: the PodChaos selects app.kubernetes.io/name:
+# cinder-broker-kill-rabbitmq, the broker of this suite alone.
+#
+# Workload, on the network leg: the noauth volume stream of ../lib/workload.sh
+# against cinder-broker-kill. A create that reaches the API while the broker is
+# gone has its cast to the scheduler lost or delayed, so the volume does not
+# reach available within the stream's 120 s and the cycle fails. The budget is
+# an estimate of that window: no run has measured it yet.
+# Chaos budget: failures=20 recovery=210s
+# Chaos budget measured: 2026-10-15, estimate, failures 10, recovery 180 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-broker-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Bring up the broker ───────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady. Ten minutes: the broker pulls its own image, binds
+  # a PersistentVolumeClaim and runs its boot sequence before it reports a
+  # ready replica.
+  - try:
+    - apply:
+        file: 00-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=cinder-broker-kill-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=cinder-broker-kill-rabbitmq 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 2: Apply the Cinder CR and its backend, start the workload ───────
+  - try:
+    - apply:
+        file: 01-cinder-cr.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-broker-pod-kill --
+          --streams volume
+          --cinder http://cinder-broker-kill.openstack.svc:8776
+    catch: &broker-kill-dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-broker-kill --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system --log-label=app.kubernetes.io/instance=cinder-broker-kill
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: broker-kill-nfs1
+        namespace: openstack
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Cinder children ==="
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-kill -o wide 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-kill -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - script:
+        timeout: 1m
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=cinder-broker-kill-rabbitmq 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-broker-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-broker-pod-kill
+  # ── Step 3: Kill the broker pod and wait for its replacement ──────────────
+  # Snapshot, mark, apply and both waits live in one script so the UID
+  # snapshot and the polls share state. A new pod under the same name is what
+  # the StatefulSet makes, so the UID, not the name, proves the kill.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -eu
+          POD=cinder-broker-kill-rabbitmq-server-0
+          OLD_UID="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          if [ -z "$OLD_UID" ]; then
+            echo "ERROR: no broker pod $POD before the kill"
+            exit 1
+          fi
+          echo "broker pod UID before the kill: $OLD_UID"
+
+          ../lib/workload.sh mark cinder-broker-pod-kill fault-start
+          kubectl apply -f 03-podchaos.yaml
+
+          # The old pod goes at once: gracePeriod 0. 60 × 2 s = 120 s.
+          GONE=""
+          for _ in $(seq 1 60); do
+            NOW="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ "$NOW" != "$OLD_UID" ]; then
+              GONE=yes
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$GONE" ]; then
+            echo "FAIL: broker pod $POD still carries UID $OLD_UID 120s after the PodChaos"
+            exit 1
+          fi
+          echo "OK: the broker pod $OLD_UID is gone"
+
+          # The StatefulSet creates the pod again on the same volume; the
+          # broker is back once that pod is Ready. 150 × 2 s = 300 s.
+          for _ in $(seq 1 150); do
+            STATE="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o jsonpath='{.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            UID_NOW="${STATE%% *}"
+            READY="${STATE##* }"
+            if [ -n "$UID_NOW" ] && [ "$UID_NOW" != "$OLD_UID" ] && [ "$READY" = "True" ]; then
+              echo "OK: broker pod $POD is Ready again with UID $UID_NOW"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: no Ready broker pod $POD with a new UID within 300s (last: '${STATE:-<none>}')"
+          kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=cinder-broker-kill-rabbitmq" -o wide 2>&1 || true
+          exit 1
+    catch: *broker-kill-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete -f 03-podchaos.yaml --ignore-not-found
+          echo "OK: the broker PodChaos is gone"
+  # ── Step 4: Delete PodChaos ───────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-cinder-broker
+          namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cinder-broker-pod-kill fault-end
+    catch: *broker-kill-dump
+  # ── Step 5: The bus consumers reconnect, the API never restarted ──────────
+  # SchedulerReady and VolumeServicesReady follow the broker socket of their
+  # pods' readiness probes, so the two conditions return once oslo.messaging
+  # reconnected. The API is the contrast: its probes GET /healthcheck, which
+  # never touches the bus, so a restart would mean the broker loss reached
+  # the request path after all.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          api_field() {
+            kubectl get pods -n "$NAMESPACE" \
+              -l 'app.kubernetes.io/instance=cinder-broker-kill,app.kubernetes.io/component=api' \
+              -o "jsonpath={.items[0].status.containerStatuses[0].$1}"
+          }
+          flag="$(api_field ready)"
+          restarts="$(api_field restartCount)"
+          echo "api container: ready=${flag:-<none>} restartCount=${restarts:-<none>}"
+          if [ "${flag}" != "true" ]; then
+            echo "FAIL: the API container is not ready after the broker kill"
+            exit 1
+          fi
+          if [ "${restarts}" != "0" ]; then
+            echo "FAIL: the API container restarted ${restarts} time(s) across the broker kill"
+            exit 1
+          fi
+          echo "API-UP-OK"
+    catch: *broker-kill-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-broker-pod-kill
+    catch: *broker-kill-dump
+  # ── Step 7: Tear the broker down through its own operator ─────────────────
+  # Chainsaw's cleanup deletes what the suite applied, under the 120s the chaos
+  # config allows, and the broker pod carries a seven-day grace period. The
+  # RabbitmqCluster delete is what gets it to exit promptly, so the suite runs
+  # that delete itself, with foreground propagation, after the Cinder that
+  # consumes the bus, as ../cinder-broker-outage/ does for the reasons it gives
+  # (rabbitmq/cluster-operator#1864).
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          BUS=cinder-broker-kill-rabbitmq
+          kubectl delete cinder cinder-broker-kill -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=cinder-broker-kill -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a cinder pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-broker-kill -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Cinder CR and its pods are gone"
+
+          kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+            --ignore-not-found --cascade=foreground --wait=true --timeout=180s
+          BUS_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
+              echo "FAIL: ${BUS}-server-0 outlived its RabbitmqCluster by 180s; chainsaw's cleanup cannot wait it out"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the RabbitmqCluster and its broker pod are gone"
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster,cinder,cinderbackend -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -o wide 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true

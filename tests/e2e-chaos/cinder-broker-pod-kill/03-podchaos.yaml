@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR that kills the broker pod of this suite.
+#
+# action pod-kill with gracePeriod 0: the broker pod carries the RabbitMQ
+# Cluster Operator's default terminationGracePeriodSeconds of 604800 s, so a
+# graceful delete would run its preStop drain instead of losing the broker. A
+# killed broker closes every connection at once, so oslo.messaging in the
+# scheduler and the volume service sees the loss immediately and reconnects to
+# the pod the StatefulSet creates in its place. ../cinder-broker-outage/
+# partitions the broker instead, which leaves the sockets open until the AMQP
+# heartbeat gives up.
+#
+# mode all covers every broker pod: the fixture runs one, and "the broker is
+# gone" holds only when none is left. The selector is the name label the
+# cluster-operator puts on the pods of this RabbitmqCluster alone, so the
+# kind-only shared-rabbitmq and every other broker stay untouched.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-cinder-broker
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: cinder-broker-kill-rabbitmq
+  gracePeriod: 0
