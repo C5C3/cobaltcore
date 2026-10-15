@@ -160,6 +160,29 @@ test_nix_locks_disabled_for_every_manager() {
     "null" "$(jq -r '.matchManagers // "null"' <<<"$rule")"
 }
 
+# The packageRule above applies only once dependencies are looked up, so
+# `renovate --dry-run=extract` would still list the pep621 dependencies of
+# every lock. ignorePaths keeps the files out of extraction. A repository
+# ignorePaths replaces the one config:recommended sets through
+# :ignoreModulesAndTests, so the value has to repeat those paths, or tests/
+# and the vendored trees would be scanned from then on.
+test_nix_locks_ignored_by_extraction() {
+  echo "Test: ignorePaths keeps nix/locks/ out of extraction and keeps the preset's paths"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (9 checks skipped)"
+    SKIP=$((SKIP + 9))
+    return
+  fi
+
+  local path
+  for path in 'nix/locks/**' '**/node_modules/**' '**/bower_components/**' '**/vendor/**' \
+    '**/examples/**' '**/__tests__/**' '**/test/**' '**/tests/**' '**/__fixtures__/**'; do
+    assert_eq "ignorePaths lists $path" "true" \
+      "$(jq --arg p "$path" '(.ignorePaths // []) | index($p) != null' "$RENOVATE_FILE")"
+  done
+}
+
 test_flake_lock_carries_both_inputs() {
   echo "Test: flake.lock carries both nixpkgs inputs as github channel branches and the three pyproject-nix inputs as github inputs"
 
@@ -195,6 +218,7 @@ test_nix_package_rule_present
 test_lock_maintenance_scoped_to_nix_only
 test_spike_disabled_for_every_manager
 test_nix_locks_disabled_for_every_manager
+test_nix_locks_ignored_by_extraction
 test_flake_lock_carries_both_inputs
 
 echo ""

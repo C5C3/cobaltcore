@@ -387,7 +387,9 @@ cannot gate it. A re-lock changes `flake.lock`, which the `shifter` and
 `base` filters of the build-images workflow cover, so its pull request
 rebuilds the images. Separate rules disable every update under
 `nix/spike/**` and under `nix/locks/**`: the locks are derived files that only
-`hack/nix-lock.sh` writes.
+`hack/nix-lock.sh` writes. `ignorePaths` also keeps `nix/locks/**` out of
+extraction, and repeats the paths of the `config:recommended` preset, which a
+repository value replaces.
 
 A Renovate pull request that moves a pin the locks are derived from (under
 `releases/`, `overrides/`, `patches/` or `images/venv-builder/requirements.txt`,

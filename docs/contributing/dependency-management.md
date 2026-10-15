@@ -117,11 +117,12 @@ per release for Tempest, are derived from five kinds of pin:
 `releases/<release>/upper-constraints.txt` and `extra-packages.yaml`,
 `overrides/<release>/constraints.txt`, the patches under `patches/`, and
 `images/venv-builder/requirements.txt`. `hack/nix-lock.sh` writes them, and the noVNC
-hash in `images/nova/novnc.json` with them. A `packageRules` entry with
-`matchFileNames: ["nix/locks/**"]` keeps every manager off the derived files. A
-Renovate PR that moves one of those pins, or the noVNC pin, therefore fails the
-`nix-lock-check` job of the build-images workflow and cannot automerge until the
-locks follow. The fix is one command on the PR branch, committed and pushed:
+hash in `images/nova/novnc.json` with them. `nix/locks/**` in `ignorePaths` keeps
+every manager from reading the derived files, and a `packageRules` entry with
+`matchFileNames: ["nix/locks/**"]` disables any update to them. A Renovate PR that
+moves one of those pins, or the noVNC pin, therefore fails the `nix-lock-check` job
+of the build-images workflow and cannot automerge until the locks follow. The fix is
+one command on the PR branch, committed and pushed:
 
 ```bash
 make nix-lock
