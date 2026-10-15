@@ -1034,7 +1034,7 @@ test_nova_leg_loads_the_tempest_image() {
 }
 
 test_chaos_nova_leg_runs_the_nova_suites() {
-  echo "Test: the e2e-chaos nova leg runs all three nova outage suites"
+  echo "Test: the e2e-chaos nova leg runs all six nova-stack suites"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -1054,6 +1054,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "tests/e2e-chaos/nova-mariadb-outage"
   assert_contains "it runs the placement outage suite" "$entry" \
     "tests/e2e-chaos/nova-placement-outage"
+  assert_contains "it runs the Keystone outage suite" "$entry" \
+    "tests/e2e-chaos/nova-keystone-outage"
+  assert_contains "it runs the operator pod-kill suite" "$entry" \
+    "tests/e2e-chaos/nova-operator-pod-kill"
+  assert_contains "it runs the metadata agent pod-kill suite" "$entry" \
+    "tests/e2e-chaos/neutron-metadata-agent-pod-kill"
 
   # The health check comes first, so a Chaos Mesh that never answers is read
   # off one short suite instead of three that each stand a six-service stack up
@@ -1095,8 +1101,8 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     assert_contains "the leg pulls ${ref}" "$load" \
       "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"
     # ... and handed to the kind node, which the per-leg steps above do not do
-    # for this leg: the placement pair is gated on pod, the neutron pair on
-    # network.
+    # for this leg: the placement pair is gated on pod and network, the
+    # neutron pair on network.
     assert_contains "and ${ref} reaches the kind node" "$kind_load" \
       "kind load docker-image \${{ env.IMAGE_PREFIX }}/${ref}"
   done
@@ -1111,6 +1117,10 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}"
   assert_contains "the NFS export stays network-only" "$setup" \
     "WITH_NFS: \${{ matrix.suite == 'network' && 'true' || '' }}"
+  # neutron-metadata-agent-pod-kill runs an OVNChassis, whose DaemonSets need
+  # the openvswitch and geneve modules on the host, as the ovn leg's do.
+  assert_contains "the nova leg loads the OVN kernel modules beside the ovn leg" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}"
 
   # Three deploys on top of the keystone stack and the ovn-operator the
   # `!= 'pod'` step installs here already. The first two names carry a
@@ -1201,17 +1211,18 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_contains "each pass hands its operator to the dump script" "$dump" \
     'OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh'
 
-  # The wall. The leg loads twenty images, runs eight operator deploys and
-  # then three full-stack suites one after the other (parallel: 1), so 90
-  # minutes — sized for the network leg, which runs ten lighter suites — would
-  # arrive mid-suite: chainsaw is killed outright, no catch block runs and no
-  # JUnit report is written, and a non-blocking leg then reports a cancellation
-  # that names no suite.
-  assert_contains "the nova leg gets a wall of its own" "$job" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || 90 }}"
+  # The walls. The nova leg loads twenty images, runs eight operator deploys
+  # and then six full-stack suites one after the other (parallel: 1), so a
+  # shorter wall would arrive mid-suite: chainsaw is killed outright, no catch
+  # block runs and no JUnit report is written, and a non-blocking leg then
+  # reports a cancellation that names no suite. The whole expression is read:
+  # the network and ovn walls moved with #1389 so that the four still sum to
+  # seven hours (150 + 135 + 45 + 90).
+  assert_contains "each leg gets its wall" "$job" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'ovn' && 45 || 90 }}"
 
-  # And the leg is its own: the network leg, at 78 of its 90 minutes, was not
-  # widened into these suites.
+  # And the leg is its own: the network leg was not widened into these
+  # suites.
   assert_not_contains "the network leg runs no nova suite" \
     "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/nova-"
 }

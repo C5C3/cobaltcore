@@ -251,7 +251,7 @@ test_cinder_leg_opts_into_nfs_and_messaging() {
 }
 
 test_chaos_network_leg_runs_the_cinder_suites() {
-  echo "Test: the e2e-chaos network leg runs the three cinder chaos suites"
+  echo "Test: the e2e-chaos network leg runs the seven cinder chaos suites"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -266,6 +266,14 @@ test_chaos_network_leg_runs_the_cinder_suites() {
     "tests/e2e-chaos/cinder-broker-outage"
   assert_contains "it runs the NFS outage suite" "$entry" \
     "tests/e2e-chaos/cinder-nfs-outage"
+  assert_contains "it runs the MariaDB outage suite" "$entry" \
+    "tests/e2e-chaos/cinder-mariadb-outage"
+  assert_contains "it runs the Keystone outage suite" "$entry" \
+    "tests/e2e-chaos/cinder-keystone-outage"
+  assert_contains "it runs the volume-service pod-kill suite" "$entry" \
+    "tests/e2e-chaos/cinder-volume-pod-kill"
+  assert_contains "it runs the broker pod-kill suite" "$entry" \
+    "tests/e2e-chaos/cinder-broker-pod-kill"
 
   local load
   load=$(job_step e2e-chaos "Load E2E images")
