@@ -96,7 +96,7 @@ Copy `releases/<newest>/` as the template and adjust:
   upstream. Record the first run of each suite in the file header (tag,
   test count, outcome), as `releases/2026.2/test-excludes/*.txt` do. A
   tag that drops the test driver (horizon 27.0.0 removed
-  `tools/unit_tests.sh`) needs a branch in `hack/ci-run-unit-tests.sh`
+  `tools/unit_tests.sh`) needs a branch in `nix/lib/service-tests.nix`
   keyed on the missing file, not on `RELEASE`.
 - **`overrides/<version>/constraints.txt`** (repo root) — carry over:
   the `-horizon` line strips the pin horizon has in its own
@@ -324,7 +324,7 @@ audit for everything this skill sets up; run it as the gate on the PR.
   new release's `extra-packages.yaml` block so older images stay as they
   are.
 - **A tag can drop the unit-test driver** — horizon 27.0.0 removed
-  `tools/unit_tests.sh`; `hack/ci-run-unit-tests.sh` branches on the
+  `tools/unit_tests.sh`; `nix/lib/service-tests.nix` branches on the
   missing file, not on the release.
 - **e2e variants whose names carry no slug** — `<svc>-basic-2026` in four
   2026-1 variants keeps its name through the slug rename and collides with

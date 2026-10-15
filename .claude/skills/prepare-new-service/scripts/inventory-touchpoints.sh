@@ -60,16 +60,22 @@ list_has() {
 header() { printf '\n== %s ==\n' "$1"; }
 
 header "Layer 1: container image"
-check "images/${SERVICE}/Dockerfile" test -f "images/${SERVICE}/Dockerfile"
+check "images/${SERVICE}/image.nix (the Nix-built image; nix/lib/service-image.nix)" \
+  test -f "images/${SERVICE}/image.nix"
 for refs in releases/*/source-refs.yaml; do
   check "${refs}: '${SERVICE}:' key" grep -Eq "^${SERVICE}:" "${refs}"
 done
 for pkgs in releases/*/extra-packages.yaml; do
   check "${pkgs}: '${SERVICE}:' key" grep -Eq "^${SERVICE}:" "${pkgs}"
 done
+for rel_dir in releases/*/; do
+  rel="${rel_dir%/}"
+  rel="${rel##*/}"
+  check "nix/locks/${rel}/${SERVICE}/ lock (make nix-lock)" test -f "nix/locks/${rel}/${SERVICE}/uv.lock"
+done
 check "tests/container-images/verify_${SERVICE}.sh" test -f "tests/container-images/verify_${SERVICE}.sh"
-check "build-images.yaml hadolint matrix entry (static list)" \
-  grep -q "images/${SERVICE}/Dockerfile" "${BUILD_YAML}"
+check "build-images.yaml svc_${SERVICE} filter covers nix/locks/*/${SERVICE}/**" \
+  grep -qF "nix/locks/*/${SERVICE}/**" "${BUILD_YAML}"
 check "build-images.yaml ALL_SERVICES, svc_${SERVICE} filter and FILTER_svc_${SERVICE} (static lists)" \
   bash -c "grep -E '^ +ALL_SERVICES:' '${BUILD_YAML}' | grep -qw '${SERVICE}' && grep -Eq '^ +svc_${SERVICE}:' '${BUILD_YAML}' && grep -q 'FILTER_svc_${SERVICE}:' '${BUILD_YAML}'"
 check "tests/container-images/verify_release_config.sh SERVICES= list" \

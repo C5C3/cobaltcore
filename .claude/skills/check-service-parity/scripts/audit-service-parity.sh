@@ -154,10 +154,13 @@ REFERENCE_HELM_TESTS="$(find operators/keystone/helm/keystone-operator/tests \
 # ---------------------------------------------------------------------------
 # P1 — image layer
 # ---------------------------------------------------------------------------
-hdr "P1: image layer (Dockerfile, verify script, per-release config)"
+hdr "P1: image layer (image.nix or Dockerfile, verify script, per-release config)"
 for svc in ${SERVICES}; do
-  t=0; [[ -f "images/${svc}/Dockerfile" ]] || t=1
-  check "${svc}" P1 "images/${svc}/Dockerfile" "${t}" "images/${svc}/Dockerfile present"
+  # A service image is built by Nix from images/<svc>/image.nix, or from a
+  # Dockerfile; either one is the image layer.
+  t=0; [[ -f "images/${svc}/image.nix" || -f "images/${svc}/Dockerfile" ]] || t=1
+  check "${svc}" P1 "images/${svc}/image.nix" "${t}" \
+    "images/${svc}/image.nix (or a Dockerfile) present"
 
   t=0; [[ -f "tests/container-images/verify_${svc}.sh" ]] || t=1
   check "${svc}" P1 "verify_${svc}.sh" "${t}" \
@@ -172,8 +175,9 @@ for svc in ${SERVICES}; do
     check "${svc}" P1 "releases/${rel}/extra-packages" "${t}" \
       "releases/${rel}/extra-packages.yaml carries the ${svc} block"
 
-    # Optional: hack/ci-run-unit-tests.sh passes --exclude-list only when the
-    # file exists, and verify_release_config.sh treats its absence as fine.
+    # Optional: nix/lib/service-tests.nix passes the file to --exclude-list
+    # only when it exists, and verify_release_config.sh treats its absence as
+    # fine.
     if [[ -f "releases/${rel}/test-excludes/${svc}.txt" ]]; then
       pass "${svc}: releases/${rel}/test-excludes/${svc}.txt present"
     else
@@ -270,9 +274,17 @@ for svc in ${SERVICES}; do
   check "${svc}" P5 "helm-validate" "${t}" \
     "ci.yaml helm-validate loop covers the ${svc} chart"
 
-  t=0; grep -qF "images/${svc}/Dockerfile" .github/workflows/build-images.yaml || t=1
-  check "${svc}" P5 "build-images" "${t}" \
-    "build-images.yaml lints/builds images/${svc}/Dockerfile"
+  # A Nix-built image has no lint-dockerfiles entry: build-service-images
+  # builds every service of the matrix from its flake attribute.
+  if [[ -f "images/${svc}/image.nix" ]]; then
+    t=0; ! grep -qF "images/${svc}/Dockerfile" .github/workflows/build-images.yaml || t=1
+    check "${svc}" P5 "build-images" "${t}" \
+      "build-images.yaml lints no images/${svc}/Dockerfile (built from images/${svc}/image.nix)"
+  else
+    t=0; grep -qF "images/${svc}/Dockerfile" .github/workflows/build-images.yaml || t=1
+    check "${svc}" P5 "build-images" "${t}" \
+      "build-images.yaml lints/builds images/${svc}/Dockerfile"
+  fi
 
   # Both lists are checked on their own, with exact list-item matches: a bare
   # service name must not "match" its <svc>-operator sibling across the hyphen.

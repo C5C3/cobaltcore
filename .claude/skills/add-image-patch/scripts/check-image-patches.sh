@@ -4,8 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # check-image-patches.sh — mechanical checks over the downstream source
-# patches under patches/<svc>/<release>/NNNN-<slug>.patch that both service
-# image build paths apply with `git apply` before installing:
+# patches under patches/<svc>/<release>/NNNN-<slug>.patch. hack/nix-lock.sh
+# lists them in the sources.json of each lock under nix/locks/, and
+# nix/lib/python-env.nix applies them in that order to the fetched source of
+# the image, the unit tests and the e2e image; `make nix-lock` follows adding
+# or retiring one:
 #   P1  layout and naming: patches/<svc>/<release>/<file>, the file name
 #       matches ^[0-9]{4}-[a-z0-9-]+\.patch$ (the build globs *.patch only)
 #   P2  wiring: <release> exists under releases/, <svc> is a key of that

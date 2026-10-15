@@ -35,10 +35,10 @@ breaks structurally. Profile these instead of the Python questions:
   needs its own customManager (github-tags/releases datasource) plus a
   packageRules entry — gate with [[check-renovate-coverage]]. A
   non-OpenStack artefact bundled into an OpenStack image follows the noVNC
-  shape of #1016 (`images/nova/Dockerfile`): `ARG <X>_VERSION` plus
-  `ARG <X>_COMMIT`, fetched by commit with an in-build guard that the tag
-  still matches, and one Renovate github-tags manager capturing tag and
-  digest in a single matchString so a bump cannot move one without the
+  shape of #1016 (`images/nova/novnc.json`, built by `images/nova/image.nix`):
+  a version and a commit, fetched by commit and hash with a build guard that
+  the tag still matches, and one Renovate github-tags manager capturing tag
+  and digest in a single matchString so a bump cannot move one without the
   other.
 - **The Python gotchas don't transfer:** upper-constraints,
   `extra-packages.yaml`, uv/PBR/WSGI, the `python-base`/`venv-builder`
