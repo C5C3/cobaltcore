@@ -36,7 +36,7 @@ threads through five layers:
 
 | Layer | Where it lives | Source of truth |
 |---|---|---|
-| Container image | `images/<svc>/Dockerfile`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
+| Container image | `images/<svc>/image.nix` (or a Dockerfile), `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
 | CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, `internal/controller/builtin_registrations.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`); for the registration, `desiredGlanceRegistration`, since Keystone registers no child for itself |
@@ -69,13 +69,13 @@ bash .claude/skills/check-service-parity/scripts/audit-service-parity.sh
 The script catches the mechanically-checkable gaps and prints an
 inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 
-- **P1** — image layer: `images/<svc>/Dockerfile`, the
-  `verify_<svc>.sh` contract script, and the per-release config
+- **P1** — image layer: `images/<svc>/image.nix` (a Dockerfile is
+  accepted too), the `verify_<svc>.sh` contract script, and the per-release config
   (source-refs key, extra-packages block) in *every* release. A
   missing release entry means the build matrix — which
   auto-discovers from these files — silently skips the
   service×release combination. `releases/<rel>/test-excludes/<svc>.txt`
-  is optional: `hack/ci-run-unit-tests.sh` passes `--exclude-list`
+  is optional: `nix/lib/service-tests.nix` passes `--exclude-list`
   only when the file exists, so its absence is an `[INFO]` (the
   service runs its full upstream unit suite). The reverse direction,
   an excludes file named after no source-refs key, is
@@ -94,7 +94,8 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   to a registered one.
 - **P5** — CI wiring: the paths-filter block, `ALL_OPERATORS`,
   `FILTER_<svc>`, the unit/integration test matrices, the
-  helm-validate chart loop, the build-images coverage, and both GHCR
+  helm-validate chart loop, the build-images coverage (no
+  `lint-dockerfiles` entry for an image with an `image.nix`), and both GHCR
   cleanup package lists (`cleanup-packages` and `cleanup-e2e-packages`,
   each needing `<svc>-operator` and `<svc>`), with exact list-item
   matches so a bare service name cannot satisfy a check by matching

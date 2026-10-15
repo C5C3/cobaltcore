@@ -495,7 +495,7 @@ fi
 # ---------------------------------------------------------------------------
 hdr "R6: each customManager has a regression test under tests/unit/renovate/"
 # A test selects a manager by its file pattern (select(any(.managerFilePatterns[];
-# test("images/nova/Dockerfile")))), its package or dependency name
+# test("images/nova/novnc")))), its package or dependency name
 # (select(.packageNameTemplate == $pkg)), or the variable its regex anchors on
 # (RENOVATE_VALIDATOR_VERSION). Those are the needles. A needle that more than
 # half of the tests mention ("renovate", the renovate.json path) carries no

@@ -40,12 +40,14 @@ run that paid for the lesson; the lesson itself is the part to carry.
   modules inside the published image, and an old release can import
   something the current toolchain dropped (cinder 27.0.0's Windows drivers
   pull `os_win` → `pkg_resources`, gone from setuptools ≥ 81; hence the
-  `setuptools<81` pins in `hack/ci-run-unit-tests.sh` and
-  `images/cinder/Dockerfile`). Some imports also need registration first
+  `setuptools<81` pins the Docker-era unit-test runner and cinder image once
+  carried for it). Some imports also need registration first
   (cinder's NFS driver needs `cinder.objects.register_all()`), so write the
   verify script's import tests against the real module graph.
-- **Building a service image on macOS:** `hack/ci-build-service-image.sh`
-  dies after the clone on `scripts/apply-constraint-overrides.sh`'s GNU
+- **Building nova-compute on macOS:** `hack/ci-build-service-image.sh`, which
+  builds nova-compute alone (the service images are built by Nix from
+  `images/<svc>/image.nix`), dies after the clone on
+  `scripts/apply-constraint-overrides.sh`'s GNU
   `sed -i "/^pkg===/Id"`. Reproduce CI's image by hand instead: run the
   override script in a `python-base` container on copies of
   `releases/<rel>/upper-constraints.txt` and
@@ -74,8 +76,8 @@ run that paid for the lesson; the lesson itself is the part to carry.
   new module still edits that one Dockerfile's COPY lines (no more
   per-operator Dockerfiles, though).
 - **WSGI entry points:** `uv pip install --prefix` skips PBR
-  `wsgi_scripts` generation — service Dockerfiles hand-write their WSGI
-  launcher (see `images/keystone/Dockerfile`). Also verify the stock WSGI
+  `wsgi_scripts` generation — the service images hand-write their WSGI
+  launcher (see `images/keystone/image.nix`). Also verify the stock WSGI
   module actually honors `--config-dir`/`--pyargv`: glance's
   `glance.wsgi.api:application` reads only its default config path and
   needed a hand-shipped shim (`images/glance/glance-wsgi-api`) to load

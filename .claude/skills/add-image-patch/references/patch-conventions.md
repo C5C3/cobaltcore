@@ -100,77 +100,45 @@ docker run --rm --user 0 -v /tmp/cinder-28.0.0/cinder:"$pkg" --entrypoint /bin/s
    /var/lib/openstack/bin/python -m unittest cinder.tests.unit.test_image_utils'
 ```
 
-**The full suite, as `test-service-images` runs it.** Build the base images
-once (`docker build -t python-base images/python-base/`, then
-`docker build -t venv-builder images/venv-builder/`) and point
-`hack/ci-run-unit-tests.sh` at a scratch workspace; it writes only below
-`WORKSPACE_DIR`:
+**The full suite, as `test-service-images` runs it.** `git add` the patch,
+write the lock, and build the test run of the service and release:
 
 ```bash
-ws=$(mktemp -d); rel=2026.1; svc=cinder
-tag=$(yq ".${svc}" releases/$rel/source-refs.yaml)
-git clone --depth 1 --branch "$tag" https://github.com/openstack/$svc.git "$ws/src/$svc"
-git -C "$ws/src/$svc" apply "$PWD"/patches/$svc/$rel/*.patch
-mkdir -p "$ws/releases" && cp -R releases/$rel "$ws/releases/"
-extras=$(yq -r ".${svc}.pip_extras // [] | join(\",\")" releases/$rel/extra-packages.yaml)
-WORKSPACE_DIR="$ws" SERVICE_NAME=$svc SERVICE_VERSION="$tag" RELEASE=$rel \
-  INSTALL_SPEC=".${extras:+[$extras]}" VENV_BUILDER_IMAGE=venv-builder \
-  bash hack/ci-run-unit-tests.sh
+rel=2026.1; svc=cinder
+git add patches/$svc/$rel/
+make nix-lock
+nix build ".#${svc}-${rel//./_}-test-run" && cat result/summary.txt
+cat result/exit-status    # 0 when the suite passed
 ```
 
-The cinder 2026.1 suite counted 18,076 tests on its first 28.0.0 run
-(`releases/2026.1/test-excludes/cinder.txt:10-11`) and runs in roughly six
-minutes on four workers. Order-dependent failures need a single worker,
-because stestr spreads tests over workers in hash order. Some flakes do not
-reproduce at all on demand: the tpool flake behind
+The run uses the source of the lock with every listed patch applied, the
+release exclude list, and MySQL and PostgreSQL inside the build sandbox
+(`nix/lib/service-tests.nix`). `result/testresults.subunit` is the stream CI
+uploads. The cinder 2026.1 suite counted 18,076 tests on its first 28.0.0 run
+(`releases/2026.1/test-excludes/cinder.txt:10-11`). Order-dependent failures
+need a single worker, because stestr spreads tests over workers in hash order.
+Some flakes do not reproduce at all on demand: the tpool flake behind
 `patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch`
 failed one CI run and reproduces only when a garbage collection lands
 between the two assertions.
 
 ## Building the image locally
 
-`hack/ci-build-service-image.sh` applies the patches exactly as CI does:
+The flake builds the image from the same patched source CI uses:
 
 ```bash
-OPERATOR=cinder IMAGE_PREFIX=c5c3 RELEASE=2026.1 bash hack/ci-build-service-image.sh
-bash tests/container-images/verify_cinder.sh c5c3/cinder:2026.1
+nix build .#cinder-2026_1-image && ./result | docker load
+bash tests/container-images/verify_cinder.sh cinder:2026.1
 ```
 
-Two host caveats, both from `scripts/apply-constraint-overrides.sh`, which
-the build script calls after the patches:
-
-- **Linux:** its `sed -i` edits the tracked
-  `releases/<release>/upper-constraints.txt` in place whenever
-  `overrides/<release>/constraints.txt` exists. Restore the file after the
-  build (`git diff --stat releases/` shows it).
-- **macOS:** BSD `sed` rejects the same `sed -i` ("sed: -I or -i may not be
-  used with stdin") and the build stops after the clone. Build by hand:
-
-```bash
-rel=2026.1; svc=cinder; tag=$(yq ".${svc}" releases/$rel/source-refs.yaml)
-ovr=$(mktemp -d); mkdir -p "$ovr/scripts" "$ovr/releases/$rel" "$ovr/overrides/$rel"
-cp scripts/apply-constraint-overrides.sh "$ovr/scripts/"
-cp releases/$rel/upper-constraints.txt "$ovr/releases/$rel/"
-cp overrides/$rel/constraints.txt "$ovr/overrides/$rel/"
-docker run --rm -v "$ovr":/repo -w /repo --user 0 python-base bash scripts/apply-constraint-overrides.sh $rel
-git clone --depth 1 --branch "$tag" https://github.com/openstack/$svc.git "/tmp/$svc-src-$tag"
-git -C "/tmp/$svc-src-$tag" apply "$PWD"/patches/$svc/$rel/*.patch
-docker build -t c5c3/$svc:$rel \
-  --build-arg PIP_EXTRAS="$(yq -r ".${svc}.pip_extras // [] | join(\",\")" releases/$rel/extra-packages.yaml)" \
-  --build-arg PIP_PACKAGES="$(yq -r ".${svc}.pip_packages // [] | join(\" \")" releases/$rel/extra-packages.yaml)" \
-  --build-arg EXTRA_APT_PACKAGES="$(yq -r ".${svc}.apt_packages // [] | join(\" \")" releases/$rel/extra-packages.yaml)" \
-  --build-context $svc="/tmp/$svc-src-$tag" \
-  --build-context upper-constraints="$ovr/releases/$rel" \
-  images/$svc/
-```
-
-The default Docker driver resolves the Dockerfiles' `FROM python-base` and
-`FROM venv-builder` to the local images built above.
+`docker load` names the image `<svc>:<release>`. A patch the lock does not list
+is not in the image, so run `make nix-lock` after adding one.
 
 ## Where the patch shows up in CI
 
 | Job | Proves | Red when |
 |---|---|---|
+| `nix-lock-check` | the lock lists the patch set of the tree | a patch was added, renumbered or retired without `make nix-lock` |
 | `build-service-images (<svc>, <release>)` | the patch applies, the image builds, `verify_<svc>.sh` passes (PR only) | the patch does not apply; a verify assertion fails |
 | `test-service-images (<svc>, <release>)` | the upstream unit suite passes on the patched tree | an upstream test pins the old behaviour and its hunk is missing |
 | `e2e-operator` leg of `<svc>` (`ci.yaml`, `image_<svc>` filter) | the operator runs against the freshly built image | the behaviour change breaks the service at runtime |

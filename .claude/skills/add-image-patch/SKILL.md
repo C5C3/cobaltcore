@@ -29,15 +29,18 @@ lists them.
 
 | Consumer | Where | What it does with `patches/<svc>/<release>/*.patch` |
 |---|---|---|
-| `build-service-images` | `build-images.yaml` via `.github/actions/checkout-service-source` | `git -C src/<svc> apply` all files in glob order, then builds; on a PR it runs `tests/container-images/verify_<svc>.sh` against the fresh image (the `verify-script` input is PR-only) |
-| `test-service-images` | same action, then `hack/ci-run-unit-tests.sh` | runs the **upstream** stestr suite (minus `releases/<release>/test-excludes/<svc>.txt`) against the patched tree |
-| `build-e2e-images` | `ci.yaml` via `hack/ci-build-service-image.sh` step 4 | the same `git apply` glob, so e2e images match the published ones |
+| `hack/nix-lock.sh` | `make nix-lock`; the `nix-lock-check` job | lists the files in glob order in the `patches` array of `nix/locks/<release>/<svc>/sources.json`, and refuses a patch that edits `requirements.txt` or `test-requirements.txt` |
+| `nix/lib/python-env.nix` | every Nix build of the service | `pkgs.applyPatches` applies the listed files in that order to the fetched source, a derivation input of the image, the unit-test run and the e2e image alike |
+| `build-service-images` | `build-images.yaml`, `nix build .#<svc>-<rel_>-image` | builds the image from the patched source; on a PR it runs `tests/container-images/verify_<svc>.sh` against it (the `verify-script` input is PR-only) |
+| `test-service-images` | `nix build .#<svc>-<rel_>-test-run` | runs the **upstream** stestr suite (minus `releases/<release>/test-excludes/<svc>.txt`) against the patched tree |
+| `build-e2e-images` | `ci.yaml` via `hack/ci-nix-build-e2e-images.sh` | the same flake attribute, so e2e images match the published ones |
 | `verify-service-images` | `build-images.yaml`, push to main only | `verify_<svc>.sh` against the published image |
 | `derive-service-tags` | `.github/actions/derive-service-tags` | counts `*.patch` into the composite tag `<version>-p<N>-<branch>-<sha>` |
 
-`git apply` takes the files one after another and stops at the first that
-does not apply (the earlier ones are already written), failing the step and
-with it the build. Paths filters
+`patch` takes the files one after another and stops at the first that does
+not apply, failing the source derivation and with it every build on top.
+Adding, renumbering or retiring a patch changes the lock: run `make nix-lock`
+and commit `sources.json`, or `nix-lock-check` fails. Paths filters
 `patches/<svc>/**` exist in `build-images.yaml` (`changes` job) and
 `ci.yaml` (`image_<svc>`, which runs that service's `e2e-operator` leg with
 a fresh image) for every service.
@@ -180,12 +183,12 @@ hunks, the verify assertion and the docs paragraph travel in one commit.
 
 Renovate bumps `source-refs.yaml` tags in the "OpenStack upstream tags"
 group (minor and patch updates, three-day soak, automerge). When the new tag
-contains the fix, or rewrites the patched lines, the bump PR fails in
-`build-service-images (<svc>, <release>)` and
-`test-service-images (<svc>, <release>)`, step "Checkout service source" →
-"Apply patches", with `error: patch failed: <file>:<line>` and
-`error: <file>: patch does not apply`; nothing builds, and the automerge
-stalls.
+contains the fix, or rewrites the patched lines, the bump PR fails twice:
+`nix-lock-check` until `make nix-lock` writes the new commit into the lock,
+then `build-service-images (<svc>, <release>)` and
+`test-service-images (<svc>, <release>)` in the `<svc>-<tag>-source`
+derivation, with `patch`'s `Hunk #<n> FAILED at <line>`; nothing builds, and
+the automerge stalls.
 
 1. Check out the bump branch and run the checker with
    `--apply --service <svc>`. "already contained … (reverse-applies)" means
@@ -194,19 +197,23 @@ stalls.
    new tag (step 2) and re-run the tests.
 2. Retire on the bump branch itself, since the bump cannot land without it:
    delete the file, renumber the later patches of that directory so the
-   numbering stays gap-free, update the docs paragraph ("fixed upstream in
-   <tag>" or remove it), and keep or drop the `verify_<svc>.sh` assertion
-   (keeping it turns it into a regression check on upstream).
+   numbering stays gap-free, run `make nix-lock` so `sources.json` lists the
+   remaining files, update the docs paragraph ("fixed upstream in <tag>" or
+   remove it), and keep or drop the `verify_<svc>.sh` assertion (keeping it
+   turns it into a regression check on upstream).
 3. The composite image tag drops from `p<N>` to `p<N-1>`; nothing pins it.
 
 ## Gotchas
 
-- **The mail envelope is optional, the diff is not.** `git apply` skips all
-  prose before the first `diff --git`, so the header costs nothing, but a
-  file without a diff fails with "No valid patches in input".
+- **The mail envelope is optional, the diff is not.** `patch` and
+  `git apply` skip all prose before the first diff, so the header costs
+  nothing, but a file without a diff fails.
 - **Only `*.patch` counts.** A README or a `.diff` under
-  `patches/<svc>/<release>/` is ignored by the apply glob and by the `p<N>`
-  count.
+  `patches/<svc>/<release>/` is ignored by the glob of `hack/nix-lock.sh` and
+  by the `p<N>` count.
+- **The lock follows the patch set.** A patch added, renumbered or retired
+  without `make nix-lock` fails `nix-lock-check`, and a patch the lock does
+  not list never reaches the image.
 - **A new service needs its filter lines.** `patches/<svc>/**` must be in the
   `changes` filter of `build-images.yaml` and in `image_<svc>` of `ci.yaml`;
   `docs/contributing/adding-a-new-operator.md` and
@@ -215,16 +222,13 @@ stalls.
 - **Patch order is file-name order.** Two patches touching the same hunk must
   be numbered in the order they were cut; P9 applies them cumulatively the
   way CI does.
-- **`hack/ci-build-service-image.sh` rewrites a tracked file on Linux.**
-  `scripts/apply-constraint-overrides.sh` runs `sed -i` on
-  `releases/<release>/upper-constraints.txt` whenever
-  `overrides/<release>/constraints.txt` exists (it does for 2026.1 and
-  2026.2); restore the file after a local build. On macOS the same `sed -i`
-  aborts the build (BSD sed); use the manual build in the reference.
+- **A flake sees tracked files only.** `nix build` reads the patch through
+  the lock and the git tree: `git add` a new patch before
+  `make nix-lock` and the local builds of the reference.
 - **The runtime image is not the test image.** `verify_<svc>.sh` runs against
-  the service image; `test-service-images` installs the patched tree into the
-  `venv-builder` image with the test requirements. A green verify script
-  says nothing about the upstream suite.
+  the service image; `test-service-images` builds the venv of the lock's test
+  group over the patched tree. A green verify script says nothing about the
+  upstream suite.
 
 ## Notes
 
