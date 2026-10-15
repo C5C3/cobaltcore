@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the neutron-operator pod-kill chaos test.
+#
+# Managed mode throughout: the schema neutron_chaos_op on the openstack-db
+# MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
+# credentials and the pre-seeded keystone-admin service-user password. The
+# broker Secret and the OVN control plane come from the two sibling fixtures.
+#
+# One API replica, so the scale patch of 05-patch-scale.yaml has a rollout to
+# make after the kill, and one worker.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-chaos-op
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_chaos_op
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-chaos-op-messaging
+  ovn:
+    centralRef:
+      name: neutron-chaos-op-ovn
+  keystoneEndpoint: http://keystone-neutron-chaos-op.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

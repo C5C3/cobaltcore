@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-chaos-op CR programs.
+#
+# The Neutron reconciler gates on this CR's status: it needs both
+# internalDbAddress values and the published clientSecretName before it renders
+# ml2_conf.ini. Single-member Raft clusters and a single northd keep the
+# bring-up inside the suite's assert budget. The kill of this suite hits the
+# neutron-operator, so the control plane is scaffolding for the API under
+# test. The backup CronJob is suspended: this suite asserts nothing about it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-chaos-op-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

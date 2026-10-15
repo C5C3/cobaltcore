@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane whose operator this suite kills.
+#
+# Single-member Raft clusters keep the bring-up inside the suite's assert
+# budget. northd runs one replica, so the scale patch of 05-patch-scale.yaml
+# has a rollout to make after the kill. The backup CronJob is suspended: this
+# suite asserts nothing about it, and a Job it started in the window would add
+# a pod the UID comparison does not expect.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-chaos-op
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
