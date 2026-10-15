@@ -323,6 +323,7 @@ export default defineConfig({
               { text: 'CI Workflow', link: '/reference/ci-cd/ci-workflow' },
               { text: 'Build Images Workflow', link: '/reference/ci-cd/build-images-workflow' },
               { text: 'Container Images', link: '/reference/ci-cd/container-images' },
+              { text: 'Nix Image Build', link: '/reference/ci-cd/nix-image-build' },
             ],
           },
           {
