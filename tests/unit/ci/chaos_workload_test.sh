@@ -7,9 +7,11 @@
 # (tests/e2e-chaos/lib/, #1387):
 #   1. workload.py run, against a stub OpenStack it talks HTTP to: every
 #      stream reaches READY and writes parseable records; a 503, a closed port
-#      and a 401 each end up in the record the harness promises; a bad command
-#      line exits 2 before any request; the stop file sweeps, checks and ends
-#      in DONE; stuck resources fail their check after the settle window.
+#      and a 401 each end up in the record the harness promises; a payload
+#      or a provider listing that differs fails its read, and so does a
+#      provider create without a Location; a bad command line exits 2 before
+#      any request; the stop file sweeps, checks and ends in DONE; stuck
+#      resources fail their check after the settle window.
 #   2. workload.py evaluate, on hand-written logs: each violation exits 1,
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
@@ -20,8 +22,9 @@
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
 #      pod runs on, and make shellcheck lints lib/*.sh.
 #
-# The stub serves Keystone, Nova, Neutron, Cinder, Glance and a plain HTTP
-# target on one localhost port, each under a path prefix of its own, and
+# The stub serves Keystone, Nova, Neutron, Cinder, Glance, Placement,
+# Barbican and a plain HTTP target on one localhost port, each under a path
+# prefix of its own, and
 # answers /_control/ requests that steer it and report what it saw. It is
 # written to the scratch directory and run with the runner's python3, which is
 # also the interpreter workload.py is run with.
@@ -75,6 +78,9 @@ PASSWORD = "s3cret"
 PROJECT = "proj1"
 NOAUTH = "admin:admin"
 CONNECTOR_KEYS = {"host", "initiator", "platform", "os_type", "multipath"}
+# Like Barbican, the stub writes secret_ref under its host_href, a host the
+# workload cannot reach.
+SECRET_HREF = "http://barbican.example.invalid:9311/v1/secrets/"
 LOCK = threading.Lock()
 
 
@@ -82,9 +88,12 @@ def fresh():
     return {"tokens": set(), "issued": 0, "requests": [], "fail": {},
             "fail_n": [], "bad_flavors": False,
             "unauthorized_once": [], "hold_build": False, "held_reads": 0,
-            "error_volumes": 0, "most_volumes": 0,
+            "error_volumes": 0, "most_volumes": 0, "bad_payload": False,
+            "rp_dup": False, "rp_no_location": False,
             "servers": {}, "networks": {}, "ports": {}, "volumes": {},
-            "attachments": {}, "images": {}, "ghosts": {}}
+            "attachments": {}, "images": {}, "ghosts": {},
+            "resource_providers": {}, "secrets": {}, "rp_ghosts": {},
+            "secret_ghosts": {}}
 
 
 STATE = fresh()
@@ -135,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         for key, value in headers.items():
             self.send_header(key, value)
-        if data:
+        if data and "Content-Type" not in headers:
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -156,7 +165,13 @@ class Handler(BaseHTTPRequestHandler):
         elif name == "bad-flavors":
             STATE["bad_flavors"] = True
         elif name == "unauthorized-once":
-            STATE["unauthorized_once"].append(q["prefix"])
+            STATE["unauthorized_once"].append((q["prefix"], q.get("method")))
+        elif name == "bad-payload":
+            STATE["bad_payload"] = True
+        elif name == "rp-dup-listing":
+            STATE["rp_dup"] = True
+        elif name == "rp-no-location":
+            STATE["rp_no_location"] = True
         elif name == "hold-build":
             STATE["hold_build"] = True
         elif name == "error-volumes":
@@ -168,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
             STATE["ghosts"]["n-ghost"] = {"id": "n-ghost", "name": f"chaos-wl-{q['id']}-network-ghost"}
             for n in range(1, 13):
                 STATE["ghosts"][f"n-ghost{n}"] = {"id": f"n-ghost{n}", "name": f"chaos-wl-{q['id']}-network-ghost-{n}"}
+            STATE["rp_ghosts"]["rp-ghost"] = {"uuid": "rp-ghost", "name": f"chaos-wl-{q['id']}-placement-ghost"}
+            STATE["secret_ghosts"]["s-ghost"] = {"id": "s-ghost", "name": f"chaos-wl-{q['id']}-secret-ghost"}
         elif name == "seed-leftovers":
             p = f"chaos-wl-{q['id']}-"
             STATE["servers"]["s-left"] = {"id": "s-left", "name": p + "server-99", "status": "ACTIVE"}
@@ -178,11 +195,16 @@ class Handler(BaseHTTPRequestHandler):
             STATE["images"]["i-left"] = {"id": "i-left", "name": p + "image-99", "status": "active"}
             for n in range(1, 4):
                 STATE["images"][f"i-keep{n}"] = {"id": f"i-keep{n}", "name": f"keep-{n}", "status": "active"}
+            STATE["resource_providers"]["rp-left"] = {"uuid": "rp-left", "name": p + "placement-99"}
+            STATE["secrets"]["s-left"] = {"id": "s-left", "name": p + "secret-99", "payload": "x"}
+            for n in range(1, 4):
+                STATE["secrets"][f"s-keep{n}"] = {"id": f"s-keep{n}", "name": f"keep-{n}", "payload": "x"}
         elif name == "requests":
             return 200, STATE["requests"]
         elif name == "state":
             out = {k: sorted(v.get("name") or v["id"] for v in STATE[k].values())
-                   for k in ("servers", "networks", "ports", "volumes", "attachments", "images")}
+                   for k in ("servers", "networks", "ports", "volumes", "attachments", "images",
+                             "resource_providers", "secrets")}
             out["issued"] = STATE["issued"]
             out["most_volumes"] = STATE["most_volumes"]
             out["held_reads"] = STATE["held_reads"]
@@ -213,9 +235,9 @@ class Handler(BaseHTTPRequestHandler):
                 return 401, {"error": "noauth wants admin:admin"}, {}
         elif token not in STATE["tokens"]:
             return 401, {"error": "unknown token"}, {}
-        for prefix in list(STATE["unauthorized_once"]):
-            if path.startswith(prefix):
-                STATE["unauthorized_once"].remove(prefix)
+        for rule in list(STATE["unauthorized_once"]):
+            if path.startswith(rule[0]) and rule[1] in (None, method):
+                STATE["unauthorized_once"].remove(rule)
                 STATE["tokens"].discard(token)
                 return 401, {"error": "token revoked once"}, {}
         body = json.loads(raw) if raw and self.headers.get("Content-Type") == "application/json" else None
@@ -230,6 +252,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.cinder(method, rest, q, body)
         if path.startswith("/image/v2/images"):
             return self.glance(method, path[len("/image/v2/images"):], q, raw)
+        if path.startswith("/placement/resource_providers"):
+            return self.placement(method, path[len("/placement/resource_providers"):], q, body)
+        if path.startswith("/keymanager/v1/secrets"):
+            return self.barbican(method, path[len("/keymanager/v1/secrets"):], q, body)
         return 404, {"error": path}, {}
 
     def keystone(self, method, raw):
@@ -417,6 +443,75 @@ class Handler(BaseHTTPRequestHandler):
             return 204, None, {}
         return 405, None, {}
 
+    def placement(self, method, rest, q, body):
+        rps = STATE["resource_providers"]
+        # Below microversion 1.20 a create answers 201 with no body.
+        if self.headers.get("OpenStack-API-Version"):
+            return 400, {"error": "the stub serves microversion 1.0 only"}, {}
+        if rest == "" and method == "POST":
+            name = (body or {}).get("name")
+            if not name or any(r["name"] == name for r in rps.values()):
+                return 409, {"error": "bad or duplicate name"}, {}
+            rid = new_id()
+            rps[rid] = {"uuid": rid, "name": name}
+            if STATE["rp_no_location"]:
+                return 201, None, {}
+            return 201, None, {"Location": "/placement/resource_providers/" + rid}
+        if rest == "" and method == "GET":
+            listed = list(rps.values()) + list(STATE["rp_ghosts"].values())
+            if "name" in q:
+                listed = [r for r in listed if r["name"] == q["name"]]
+                # A second provider of the name, which Placement must never
+                # list.
+                if STATE["rp_dup"]:
+                    listed.append({"uuid": "rp-dup", "name": q["name"]})
+            return 200, {"resource_providers": listed}, {}
+        rid = rest.lstrip("/")
+        if rid not in rps:
+            return 404, {"error": "no resource provider"}, {}
+        if method == "GET":
+            return 200, rps[rid], {}
+        if method == "DELETE":
+            del rps[rid]
+            return 204, None, {}
+        return 405, None, {}
+
+    def barbican(self, method, rest, q, body):
+        secrets = STATE["secrets"]
+        if rest == "" and method == "POST":
+            b = body or {}
+            if b.get("payload_content_type") != "text/plain" or b.get("secret_type") != "passphrase" \
+                    or not b.get("payload") or not b.get("name"):
+                return 400, {"error": "want a text/plain passphrase with a name"}, {}
+            sid = new_id()
+            secrets[sid] = {"id": sid, "name": b["name"], "payload": b["payload"]}
+            return 201, {"secret_ref": SECRET_HREF + sid}, {}
+        if rest == "" and method == "GET":
+            # Pages of two, as a Barbican whose max_limit_paging is 2 answers
+            # a limit of 100.
+            if q.get("limit") != "100":
+                return 400, {"error": "want limit=100"}, {}
+            listed = sorted(list(secrets.values()) + list(STATE["secret_ghosts"].values()),
+                            key=lambda s: s["id"])
+            offset = int(q.get("offset", "0"))
+            page = [{"secret_ref": SECRET_HREF + s["id"], "name": s["name"]}
+                    for s in listed[offset:offset + 2]]
+            return 200, {"secrets": page, "total": len(listed)}, {}
+        sid, _, sub = rest.lstrip("/").partition("/")
+        if sid not in secrets:
+            return 404, {"error": "no secret"}, {}
+        if sub == "payload" and method == "GET":
+            if self.headers.get("Accept") != "text/plain":
+                return 406, {"error": "want Accept: text/plain"}, {}
+            payload = secrets[sid]["payload"] + ("x" if STATE["bad_payload"] else "")
+            return 200, payload, {"Content-Type": "text/plain"}
+        if sub == "" and method == "GET":
+            return 200, {"secret_ref": SECRET_HREF + sid, "name": secrets[sid]["name"]}, {}
+        if sub == "" and method == "DELETE":
+            del secrets[sid]
+            return 204, None, {}
+        return 405, None, {}
+
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 with open(sys.argv[1] + ".tmp", "w") as handle:
@@ -470,6 +565,8 @@ ENDPOINTS=(
   --flavor m1.nano
   --cinder "$STUB/volume"
   --glance "$STUB/image"
+  --placement "$STUB/placement"
+  --barbican "$STUB/keymanager"
 )
 
 # start_run <name> [VAR=value...] -- <run options> — start workload.py run
@@ -558,16 +655,16 @@ count_lines() {
 
 # --- Test 1 ---------------------------------------------------------------
 test_run_reaches_ready_on_every_stream() {
-  echo "Test: run reaches READY on all six streams and writes a parseable record per operation"
+  echo "Test: run reaches READY on all eight streams and writes a parseable record per operation"
   ctl POST /_control/reset >/dev/null
 
-  start_run ready -- --streams token,http,network,server,volume,image "${ENDPOINTS[@]}"
-  wait_for "six READY lines" 30 ready_on token http network server volume image
+  start_run ready -- --streams token,http,network,server,volume,image,placement,secret "${ENDPOINTS[@]}"
+  wait_for "eight READY lines" 30 ready_on token http network server volume image placement secret
   finish_run
 
   assert_eq "run exits 0" "0" "$RUN_RC"
   local s
-  for s in token http network server volume image; do
+  for s in token http network server volume image placement secret; do
     assert_eq "one READY line for $s" "1" "$(grep -cx "READY $s" "$RUN_OUT")"
   done
 
@@ -597,10 +694,20 @@ print(",".join(bad))
     "volume create" "volume available" "volume attach-create" "volume attach-update" \
     "volume attach-complete" "volume in-use" "volume detach" "volume detached" \
     "volume delete" "volume gone" \
-    "image create" "image upload" "image active" "image delete"; do
+    "image create" "image upload" "image active" "image delete" \
+    "placement create-rp" "placement list-rp" "placement delete-rp" \
+    "secret create-secret" "secret read-payload" "secret delete-secret"; do
     assert_contains "an ok record for $op" "$ops" "$op true"
   done
   assert_eq "no failed record" "" "$(records 'not r["ok"]')"
+  local reqs
+  reqs="$(ctl GET /_control/requests)"
+  assert_contains "the placement stream finds its provider by name" "$reqs" \
+    '"GET", "/placement/resource_providers?name=chaos-wl-t1-placement-1", 200'
+  assert_contains "the secret stream reads the payload at its own root, not at secret_ref's host" "$reqs" \
+    '"GET", "/keymanager/v1/secrets/'
+  assert_eq "every stream-created provider and secret is gone" "[[], []]" \
+    "$(ctl GET /_control/state | jq_py '[d["resource_providers"], d["secrets"]]')"
   assert_contains "the volume stream used the project-scoped path with --keystone" \
     "$(ctl GET /_control/requests)" '"/volume/v3/proj1/volumes"'
 
@@ -637,6 +744,29 @@ test_a_503_fails_one_stream_and_leaves_the_others_ok() {
   assert_contains "the token stream kept writing ok records" "$(records 'r["s"] == "token"')" "token validate true 200"
   assert_contains "the network stream kept writing ok records" "$(records 'r["s"] == "network"')" "network delete-network true 204"
   assert_eq "no token or network record failed" "" "$(records 'r["s"] != "http" and not r["ok"]')"
+}
+
+# --- Test 2b --------------------------------------------------------------
+test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going() {
+  echo "Test: a 503 to POST /resource_providers and POST /v1/secrets fails create-rp and create-secret while the token stream stays ok"
+  ctl POST /_control/reset >/dev/null
+  ctl POST "/_control/fail-n?prefix=/placement/resource_providers&method=POST&code=503&count=3" >/dev/null
+  ctl POST "/_control/fail-n?prefix=/keymanager/v1/secrets&method=POST&code=503&count=3" >/dev/null
+
+  start_run create503 -- --streams token,placement,secret "${ENDPOINTS[@]}"
+  wait_for "READY on all three streams after the failed creates" 30 ready_on token placement secret
+  finish_run
+
+  assert_eq "run exits 0" "0" "$RUN_RC"
+  assert_eq "three create-rp records are ok: false with code 503" \
+    "$(printf 'placement create-rp false 503\nplacement create-rp false 503\nplacement create-rp false 503')" \
+    "$(records 'not r["ok"] and r["s"] == "placement"')"
+  assert_eq "three create-secret records are ok: false with code 503" \
+    "$(printf 'secret create-secret false 503\nsecret create-secret false 503\nsecret create-secret false 503')" \
+    "$(records 'not r["ok"] and r["s"] == "secret"')"
+  assert_contains "the token stream kept writing ok records" "$(records 'r["s"] == "token"')" "token validate true 200"
+  assert_eq "no token record failed" "" "$(records 'r["s"] == "token" and not r["ok"]')"
+  assert_eq "a failed create leaves nothing to clean up" "" "$(records 'r["op"].startswith("cleanup-")')"
 }
 
 # --- Test 3 ---------------------------------------------------------------
@@ -722,6 +852,89 @@ test_a_failed_cycle_deletes_the_newest_resource_first() {
   assert_eq "no attachment is left" "[]" "$(ctl GET /_control/state | jq_py 'd["attachments"]')"
 }
 
+# --- Test 3d --------------------------------------------------------------
+test_a_payload_that_differs_fails_read_payload() {
+  echo "Test: a payload that differs from the one stored fails read-payload and the cycle deletes its secret"
+  ctl POST /_control/reset >/dev/null
+
+  start_run payload -- --streams secret "${ENDPOINTS[@]}"
+  wait_for "READY secret" 30 ready_on secret
+  ctl POST /_control/bad-payload >/dev/null
+  wait_for "a failed read-payload record" 30 grep -q '"op": "read-payload", "ok": false' "$RUN_OUT"
+  finish_run
+
+  assert_contains "read-payload fails on the 200 that carried another payload" \
+    "$(records 'r["op"] == "read-payload" and not r["ok"]')" "secret read-payload false 200"
+  assert_contains "it says the payload differs" "$(grep -m1 '"op": "read-payload", "ok": false' "$RUN_OUT")" \
+    "answered another payload"
+  assert_contains "the failed cycle deletes its secret" "$(records 'r["op"] == "cleanup-secret"')" \
+    "secret cleanup-secret true 204"
+  assert_eq "no secret is left at the stub" "[]" "$(ctl GET /_control/state | jq_py 'd["secrets"]')"
+}
+
+# --- Test 3e --------------------------------------------------------------
+test_a_closed_placement_port_records_a_null_code() {
+  echo "Test: a closed --placement port is a create-rp record with code null and the URLError text"
+  ctl POST /_control/reset >/dev/null
+  local port
+  port="$(closed_port)"
+
+  start_run closed-rp CHAOS_WORKLOAD_SETTLE_SECONDS=1 -- --streams placement --keystone "$STUB/identity/v3" \
+    --placement "http://127.0.0.1:${port}/"
+  wait_for "two placement records" 30 bash -c "[ \"\$(grep -c '\"s\": \"placement\"' '$RUN_OUT')\" -ge 2 ]"
+  finish_run
+
+  local first
+  first="$(grep -m1 '"s": "placement"' "$RUN_OUT")"
+  assert_contains "the first record is create-rp" "$first" '"op": "create-rp"'
+  assert_contains "it is not ok" "$first" '"ok": false'
+  assert_contains "its code is null" "$first" '"code": null'
+  assert_contains "its msg holds the URLError" "$first" 'URLError'
+  assert_eq "the placement stream never printed READY" "0" "$(grep -cx 'READY placement' "$RUN_OUT")"
+  assert_contains "the check reports the unreachable API" "$(cat "$RUN_OUT")" \
+    "CONSISTENCY-FAIL resource-providers: URLError"
+}
+
+# --- Test 3f --------------------------------------------------------------
+test_a_provider_listing_that_differs_fails_list_rp() {
+  echo "Test: a listing by name that holds another provider fails list-rp and the cycle deletes its provider"
+  ctl POST /_control/reset >/dev/null
+
+  start_run listrp -- --streams placement "${ENDPOINTS[@]}"
+  wait_for "READY placement" 30 ready_on placement
+  ctl POST /_control/rp-dup-listing >/dev/null
+  wait_for "a failed list-rp record" 30 grep -q '"op": "list-rp", "ok": false' "$RUN_OUT"
+  finish_run
+
+  assert_contains "list-rp fails on the 200 that lists a second provider" \
+    "$(records 'r["op"] == "list-rp" and not r["ok"]')" "placement list-rp false 200"
+  assert_contains "it names what the listing held" "$(grep -m1 '"op": "list-rp", "ok": false' "$RUN_OUT")" \
+    "rp-dup"
+  assert_contains "the failed cycle deletes its provider" "$(records 'r["op"] == "cleanup-resource-provider"')" \
+    "placement cleanup-resource-provider true 204"
+  assert_eq "no provider is left at the stub" "[]" "$(ctl GET /_control/state | jq_py 'd["resource_providers"]')"
+}
+
+# --- Test 3g --------------------------------------------------------------
+test_a_create_without_a_location_fails_create_rp() {
+  echo "Test: a 201 without a Location fails create-rp, and the sweep deletes the provider it created"
+  ctl POST /_control/reset >/dev/null
+
+  start_run nolocation -- --streams placement "${ENDPOINTS[@]}"
+  wait_for "READY placement" 30 ready_on placement
+  ctl POST /_control/rp-no-location >/dev/null
+  wait_for "a failed create-rp record" 30 grep -q '"op": "create-rp", "ok": false' "$RUN_OUT"
+  finish_run
+
+  assert_contains "create-rp fails on the 201 that names no provider" \
+    "$(records 'r["op"] == "create-rp" and not r["ok"]')" "placement create-rp false 201"
+  assert_contains "it says the Location is missing" "$(grep -m1 '"op": "create-rp", "ok": false' "$RUN_OUT")" \
+    "answered without a Location"
+  assert_eq "the cycle had nothing to delete" "" "$(records 'r["op"] == "cleanup-resource-provider"')"
+  assert_eq "the sweep deletes what the failed creates left" "[]" \
+    "$(ctl GET /_control/state | jq_py 'd["resource_providers"]')"
+}
+
 # --- Test 4 ---------------------------------------------------------------
 test_a_401_reissues_the_token_once_and_retries() {
   echo "Test: a 401 to an authenticated call issues one new token and retries the call"
@@ -749,6 +962,38 @@ print(issue[1], issue[2], issue[3])
 print("same call" if (retry[1], retry[2]) == (refused[1], refused[2]) else "other call", retry[3])')"
   assert_contains "the 401 is followed by a token issue" "$verdict" "POST /identity/v3/auth/tokens 201"
   assert_contains "and by the same call again, which succeeds" "$verdict" "same call 20"
+  assert_eq "two tokens were issued in all" "2" "$(ctl GET /_control/state | jq_py 'd["issued"]')"
+  assert_eq "no record failed" "" "$(records 'not r["ok"]')"
+}
+
+# --- Test 4c --------------------------------------------------------------
+test_a_401_to_the_provider_listing_reissues_the_token() {
+  echo "Test: a 401 to GET /resource_providers?name= issues one new token and the listing succeeds on the retry"
+  ctl POST /_control/reset >/dev/null
+
+  start_run reauth-rp -- --streams placement "${ENDPOINTS[@]}"
+  wait_for "READY placement" 30 ready_on placement
+  ctl POST "/_control/unauthorized-once?prefix=/placement/resource_providers&method=GET" >/dev/null
+  wait_for "a request after the 401" 30 bash -c \
+    "python3 -I '$TMP_DIR/stub_ctl.py' '$STUB' GET /_control/requests | python3 -I -c '
+import json, sys
+r = json.load(sys.stdin)
+i = [n for n, x in enumerate(r) if x[3] == 401]
+sys.exit(0 if i and len(r) > i[0] + 2 else 1)'"
+  finish_run
+
+  local verdict
+  verdict="$(ctl GET /_control/requests | python3 -I -c '
+import json, sys
+r = json.load(sys.stdin)
+i = [n for n, x in enumerate(r) if x[3] == 401][0]
+refused, issue, retry = r[i], r[i + 1], r[i + 2]
+print(refused[1], refused[2].split("=")[0])
+print(issue[1], issue[2], issue[3])
+print("same call" if (retry[1], retry[2]) == (refused[1], refused[2]) else "other call", retry[3])')"
+  assert_contains "the 401 answered the listing by name" "$verdict" "GET /placement/resource_providers?name"
+  assert_contains "the 401 is followed by a token issue" "$verdict" "POST /identity/v3/auth/tokens 201"
+  assert_contains "and by the same listing again, which succeeds" "$verdict" "same call 200"
   assert_eq "two tokens were issued in all" "2" "$(ctl GET /_control/state | jq_py 'd["issued"]')"
   assert_eq "no record failed" "" "$(records 'not r["ok"]')"
 }
@@ -790,6 +1035,29 @@ test_usage_errors_exit_2_before_any_request() {
     assert_eq "streams ${label}: exit 2" "2" "$rc"
     assert_starts_with "streams ${label}: a usage: line" "$out" "usage:"
   done
+  # <label>|<run options>|<the usage line>
+  local missing=(
+    "placement without --placement|--streams=placement --keystone=$STUB/identity/v3|usage: stream placement needs --placement"
+    "secret without --barbican|--streams=secret --keystone=$STUB/identity/v3|usage: stream secret needs --barbican"
+    "placement without --keystone|--streams=placement --placement=$STUB/placement|usage: stream placement needs --keystone"
+    "secret without --keystone|--streams=secret --barbican=$STUB/keymanager|usage: stream secret needs --keystone"
+  )
+  local want
+  for entry in "${missing[@]}"; do
+    label="${entry%%|*}"
+    want="${entry##*|}"
+    args="${entry#*|}"
+    args="${args%|*}"
+    rc=0
+    # shellcheck disable=SC2086 # the case strings are split on purpose
+    out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" $args 2>&1)" || rc=$?
+    assert_eq "${label}: exit 2" "2" "$rc"
+    assert_eq "${label}: the usage line names the option" "$want" "$out"
+  done
+  rc=0
+  out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" --streams=bogus 2>&1)" || rc=$?
+  assert_contains "the usage line lists all eight streams" "$out" \
+    "known streams are token,http,network,server,volume,image,placement,secret"
   rc=0
   out="$(env -u OS_PASSWORD python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" \
     --streams token --keystone "$STUB/identity/v3" 2>&1)" || rc=$?
@@ -812,8 +1080,8 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
   ctl POST /_control/reset >/dev/null
   ctl POST "/_control/seed-leftovers?id=t1" >/dev/null
 
-  start_run sweep -- --streams token,network,server,volume,image "${ENDPOINTS[@]}"
-  wait_for "READY on the four resource streams" 30 ready_on network server volume image
+  start_run sweep -- --streams token,network,server,volume,image,placement,secret "${ENDPOINTS[@]}"
+  wait_for "READY on the six resource streams" 30 ready_on network server volume image placement secret
   # The next server stays in BUILD, so the stop file lands while the server
   # stream waits for ACTIVE.
   ctl POST /_control/hold-build >/dev/null
@@ -824,7 +1092,7 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
   assert_eq "run exits 0" "0" "$RUN_RC"
   assert_eq "DONE is the last line" "DONE" "$(tail -n1 "$RUN_OUT")"
   local check
-  for check in networks servers volumes images; do
+  for check in networks servers volumes images resource-providers secrets; do
     assert_eq "CONSISTENCY-OK ${check}" "1" "$(grep -cx "CONSISTENCY-OK ${check}" "$RUN_OUT")"
   done
   assert_eq "no CONSISTENCY-FAIL" "0" "$(grep -c '^CONSISTENCY-FAIL' "$RUN_OUT")"
@@ -832,13 +1100,16 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
   local state
   state="$(ctl GET /_control/state)"
   assert_eq "no prefixed resource is left at the stub" "[]" \
-    "$(jq_py '[n for k in ("servers", "networks", "ports", "volumes", "images") for n in d[k] if n.startswith("chaos-wl-t1-")]' <<<"$state")"
+    "$(jq_py '[n for k in ("servers", "networks", "ports", "volumes", "images", "resource_providers", "secrets") for n in d[k] if n.startswith("chaos-wl-t1-")]' <<<"$state")"
   assert_eq "the leftover volume's attachment is gone" "[]" "$(jq_py 'd["attachments"]' <<<"$state")"
   assert_eq "the unprefixed images stay" "['keep-1', 'keep-2', 'keep-3']" "$(jq_py 'd["images"]' <<<"$state")"
+  # The leftover secret sits on the second page of two, past the three
+  # unprefixed ones.
+  assert_eq "the unprefixed secrets stay" "['keep-1', 'keep-2', 'keep-3']" "$(jq_py 'd["secrets"]' <<<"$state")"
 
   local sweeps kind
   sweeps="$(records 'r["op"].startswith("sweep-")')"
-  for kind in servers ports networks volumes attachments images; do
+  for kind in servers ports networks volumes attachments images resource-providers secrets; do
     assert_contains "an ok sweep-${kind} record" "$sweeps" "sweep-${kind} true"
   done
   assert_eq "no sweep record failed" "" "$(grep -v ' true ' <<<"$sweeps")"
@@ -849,11 +1120,11 @@ test_the_stop_file_sweeps_checks_and_prints_done() {
 
 # --- Test 7 ---------------------------------------------------------------
 test_stuck_resources_fail_the_checks_after_the_settle_window() {
-  echo "Test: stuck resources fail all four checks, each after re-reading for the settle window"
+  echo "Test: stuck resources fail all six checks, each after re-reading for the settle window"
   ctl POST /_control/reset >/dev/null
 
-  start_run stuck CHAOS_WORKLOAD_SETTLE_SECONDS=2 -- --streams network,server,volume,image "${ENDPOINTS[@]}"
-  wait_for "READY on the four resource streams" 30 ready_on network server volume image
+  start_run stuck CHAOS_WORKLOAD_SETTLE_SECONDS=2 -- --streams network,server,volume,image,placement,secret "${ENDPOINTS[@]}"
+  wait_for "READY on the six resource streams" 30 ready_on network server volume image placement secret
   ctl POST "/_control/seed-stuck?id=t1" >/dev/null
   finish_run
 
@@ -872,6 +1143,10 @@ test_stuck_resources_fail_the_checks_after_the_settle_window() {
   assert_contains "it names ten of the thirteen networks and counts the rest" \
     "$(grep '^CONSISTENCY-FAIL networks' <<<"$out")" \
     "network chaos-wl-t1-network-ghost-9 (n-ghost9) is left over; and 3 more"
+  assert_contains "CONSISTENCY-FAIL resource-providers names the prefixed provider" "$out" \
+    "CONSISTENCY-FAIL resource-providers: resource provider chaos-wl-t1-placement-ghost (rp-ghost) is left over"
+  assert_contains "CONSISTENCY-FAIL secrets names the prefixed secret" "$out" \
+    "CONSISTENCY-FAIL secrets: secret chaos-wl-t1-secret-ghost (s-ghost) is left over"
 
   local spans
   spans="$(ctl GET /_control/requests | python3 -I -c '
@@ -879,7 +1154,9 @@ import json, sys
 r = json.load(sys.stdin)
 for path in ("/compute/v2.1/servers/detail?all_tenants=1",
              "/volume/v3/proj1/volumes/detail?all_tenants=1",
-             "/image/v2/images", "/network/v2.0/networks"):
+             "/image/v2/images", "/network/v2.0/networks",
+             "/placement/resource_providers",
+             "/keymanager/v1/secrets?limit=100&offset=0"):
     t = [x[0] for x in r if x[1] == "GET" and x[2] == path]
     print(path, "re-read" if len(t) >= 2 and t[-1] - t[-2] >= 1.9 else "not re-read")')"
   assert_eq "each check re-read its listing after the 2 s settle window" "0" "$(count_lines 'not re-read' "$spans")"
@@ -1711,11 +1988,17 @@ test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
 # --- Run ---
 test_run_reaches_ready_on_every_stream
 test_a_503_fails_one_stream_and_leaves_the_others_ok
+test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going
 test_a_closed_port_records_a_null_code_and_the_urlerror
 test_a_300_is_an_answer_to_the_http_stream
 test_a_failed_cycle_deletes_what_it_created
 test_a_failed_cycle_deletes_the_newest_resource_first
+test_a_payload_that_differs_fails_read_payload
+test_a_closed_placement_port_records_a_null_code
+test_a_provider_listing_that_differs_fails_list_rp
+test_a_create_without_a_location_fails_create_rp
 test_a_401_reissues_the_token_once_and_retries
+test_a_401_to_the_provider_listing_reissues_the_token
 test_a_stream_defect_ends_the_run_without_done
 test_usage_errors_exit_2_before_any_request
 test_the_stop_file_sweeps_checks_and_prints_done
