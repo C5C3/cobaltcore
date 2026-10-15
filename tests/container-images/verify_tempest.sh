@@ -18,6 +18,8 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
 
 # --- Test 1: tempest --version outputs version and exits 0 ---
 test_tempest_version() {
@@ -54,9 +56,10 @@ test_openstack_cli_available() {
 test_subunit2junitxml_available() {
   echo "Test: subunit2junitxml is available"
   local path_output exit_code=0
-  path_output=$(docker run --rm "$IMAGE" which subunit2junitxml 2>&1) || exit_code=$?
+  # "command" is a shell builtin, so the probe runs in sh.
+  path_output=$(docker run --rm "$IMAGE" sh -c 'command -v subunit2junitxml' 2>&1) || exit_code=$?
 
-  assert_eq "which subunit2junitxml exits 0" "0" "$exit_code"
+  assert_eq "command -v subunit2junitxml exits 0" "0" "$exit_code"
   assert_not_empty "subunit2junitxml path is non-empty" "$path_output"
 }
 
@@ -73,21 +76,7 @@ test_runs_as_openstack_user() {
 # --- Test 6: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 7: osc-placement registers its openstack CLI commands ---

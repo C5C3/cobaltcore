@@ -18,6 +18,10 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: barbican-manage --version outputs version and exits 0 ---
 test_barbican_manage_version() {
@@ -145,33 +149,19 @@ test_runs_as_openstack_user() {
 # --- Test 7: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 8: uwsgi is runnable (serves barbican-api at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
-  # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
-  # uwsgi binary links libpython3.12.so.1.0, which python-base does not ship.
+  # Proves the venv's uwsgi, which links libpython3.12.so.1.0, starts.
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/uwsgi --version 2>&1) || exit_code=$?
 
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
+  assert_uwsgi_imports barbican
 }
 
 # --- Run all tests ---

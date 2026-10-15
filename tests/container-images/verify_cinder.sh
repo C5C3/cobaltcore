@@ -18,8 +18,12 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
 # shellcheck source=tests/lib/ceph_bindings.sh
 source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
+# shellcheck source=tests/lib/uwsgi.sh
+source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
 # --- Test 1: cinder-manage console script runs ---
 test_cinder_manage_version() {
@@ -136,11 +140,11 @@ if all(isinstance(b.value, ast.Constant) and b.value.value is None for b in bind
 test_package_data_files_shipped() {
   echo "Test: the package data files ship in the image"
   # The data files the package declares (setup.cfg data_files at 27.0.0,
-  # pyproject.toml [tool.setuptools.data-files] at 28.0.0). Nothing in the
-  # Dockerfile copies etc/cinder/ by hand, so a tag that drops the data-file
-  # declaration fails here instead of at container start. The cinder-operator
-  # (#987) points api_paste_config, resource_query_filters_file and
-  # rootwrap_config at these absolute paths.
+  # pyproject.toml [tool.setuptools.data-files] at 28.0.0). Nothing in
+  # images/cinder/image.nix copies etc/cinder/ by hand, so a tag that drops
+  # the data-file declaration fails here instead of at container start. The
+  # cinder-operator (#987) points api_paste_config,
+  # resource_query_filters_file and rootwrap_config at these absolute paths.
   local file exit_code
 
   for file in /var/lib/openstack/etc/cinder/api-paste.ini \
@@ -182,18 +186,19 @@ test_companion_scripts_runnable() {
   done
 }
 
-# --- Test 8: the apt-installed helper binaries are wired ---
-test_apt_wiring() {
-  echo "Test: the apt-installed helper binaries are wired"
+# --- Test 8: the runtime helper binaries are wired ---
+test_runtime_tools() {
+  echo "Test: the runtime helper binaries are wired"
   local output exit_code=0
 
-  # nfs-common. NfsDriver.do_setup probes for mount.nfs through the root
-  # helper, so the binary has to exist. mount.nfs without arguments exits
-  # non-zero by design, so the check is on the file rather than on a run.
+  # nfs-utils. NfsDriver.do_setup probes for mount.nfs through the root
+  # helper, so the binary has to exist at the path the probe names.
+  # mount.nfs without arguments exits non-zero by design, so the check is on
+  # the file rather than on a run.
   docker run --rm "$IMAGE" test -x /usr/sbin/mount.nfs || exit_code=$?
   assert_eq "mount.nfs is present and executable" "0" "$exit_code"
 
-  # qemu-utils. cinder/image/image_utils.py (fetch_to_raw, resize_image,
+  # qemu-img. cinder/image/image_utils.py (fetch_to_raw, resize_image,
   # convert_image) and the LUKS qcow2 pre-create shell out to qemu-img.
   exit_code=0
   output=$(docker run --rm "$IMAGE" qemu-img --version 2>&1) || exit_code=$?
@@ -516,33 +521,19 @@ test_runs_as_openstack_user() {
 # --- Test 13: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-
-  # gcc should not be present
-  local gcc_exit=0
-  docker run --rm "$IMAGE" which gcc > /dev/null 2>&1 || gcc_exit=$?
-  assert_nonzero_exit "gcc not found" "$gcc_exit"
-
-  # python3-dev should not be installed
-  local pydev_exit=0
-  docker run --rm "$IMAGE" dpkg -s python3-dev > /dev/null 2>&1 || pydev_exit=$?
-  assert_nonzero_exit "python3-dev not installed" "$pydev_exit"
-
-  # uv should not be present in the final image
-  local uv_exit=0
-  docker run --rm "$IMAGE" which uv > /dev/null 2>&1 || uv_exit=$?
-  assert_nonzero_exit "uv not found" "$uv_exit"
+  assert_no_build_tools
 }
 
 # --- Test 14: uwsgi is runnable (serves the cinder API at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
-  # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
-  # uwsgi binary links libpython3.12.so.1.0, which python-base does not ship.
+  # Proves the venv's uwsgi, which links libpython3.12.so.1.0, starts.
   local version exit_code=0
   version=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/uwsgi --version 2>&1) || exit_code=$?
 
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
+  assert_uwsgi_imports cinder
 }
 
 # --- Test 15: the state directories ship empty and owned by 42424 ---
@@ -554,23 +545,27 @@ test_state_directories() {
   # directory. All five have to exist, be empty and be owned by 42424, the
   # UID the container runs under. The cinder-operator (#987) mounts an
   # emptyDir over the tree, so this is the layout a plain `docker run` gets.
-  local output exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/cinder -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort | tr "\n" " "' 2>&1) || exit_code=$?
+  # One listing of the tree: the entries below /var/lib/cinder, whether any
+  # of them has an entry of its own, and the owning UIDs of /var/lib/cinder
+  # and every entry as a sorted set, so a directory the ownership step missed
+  # shows up here instead of only on the one that is checked.
+  local output exit_code=0 names nested owners
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import os
+root = "/var/lib/cinder"
+names = sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n)))
+print(" ".join(names) + " ")
+print(sum(len(os.listdir(os.path.join(root, n))) for n in os.listdir(root)))
+paths = [root] + [os.path.join(root, n) for n in os.listdir(root)]
+print(" ".join(sorted({str(os.stat(p).st_uid) for p in paths})) + " ")' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  names=$(sed -n 1p <<<"$output")
+  nested=$(sed -n 2p <<<"$output")
+  owners=$(sed -n 3p <<<"$output")
   assert_eq "the five state directories are present" \
-    "backup_mount conversion coordination mnt tmp " "$output"
-
-  exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/cinder -mindepth 2 | wc -l' 2>&1) || exit_code=$?
-  assert_eq "the state directories are empty" "0" "$(echo "$output" | tr -d ' ')"
-
-  # The owning UID of the whole tree as a sorted set, so a directory the
-  # chown -R missed shows up here instead of only on the one that is checked.
-  exit_code=0
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'stat -c %u /var/lib/cinder /var/lib/cinder/* | sort -u | tr "\n" " "' 2>&1) || exit_code=$?
-  assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
+    "backup_mount conversion coordination mnt tmp " "$names"
+  assert_eq "the state directories are empty" "0" "$nested"
+  assert_eq "the state tree is owned by 42424 alone" "42424 " "$owners"
 }
 
 # --- Test 16: the Ceph client libraries and tools are wired ---
@@ -588,7 +583,7 @@ test_ceph_client() {
   # failure so the missing module or binary is named.
   local output exit_code=0 tool subcommand
 
-  assert_ceph_bindings_wired
+  assert_ceph_bindings_wired nix
 
   # The attributes check_for_setup_error reads, so a rename upstream fails
   # here instead of in a cinder-volume pod. register_all() runs first, as in
@@ -661,7 +656,7 @@ test_package_data_files_shipped
 echo ""
 test_companion_scripts_runnable
 echo ""
-test_apt_wiring
+test_runtime_tools
 echo ""
 test_ceph_client
 echo ""
