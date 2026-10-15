@@ -3,7 +3,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify DEVIATION comments are present in Dockerfiles
+# Verify DEVIATION comments are present in the Dockerfiles and the Nix image
+# expressions
 # Usage: bash tests/container-images/verify_deviation_comments.sh
 
 set -euo pipefail
@@ -14,18 +15,22 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PASS=0
 FAIL=0
 
-# Service images that inherit the generic user instead of creating their own.
-# python-base is checked separately: it is where the user is created. ovn
-# creates the user itself because it does not derive from python-base, so it
-# has its own function below. backup-shifter carries the same decision but is
-# built by Nix: its function checks the comment in
+# Service images built by Nix: each images/<svc>/image.nix carries the
+# DEVIATION comment and points at the full paragraph in
+# nix/lib/service-image.nix, which builds them all on the user entry
+# nix/lib/fhs-layout.nix writes. nova-compute still inherits the generic user
+# from python-base through its Dockerfile, and python-base is checked
+# separately: it is where that user is created. ovn creates the user itself
+# because it does not derive from python-base, so it has its own function
+# below. backup-shifter carries the same decision but is built by Nix without
+# service-image.nix: its function checks the comment in
 # images/backup-shifter/image.nix and the user entry nix/lib/fhs-layout.nix
 # writes. libvirt keeps root and creates no user at all, and has its own
 # function too. The openstack-hypervisor-operator image is a static Go binary
 # on distroless that runs as uid 65532 and creates no user either; it has its
 # own function. The kvm-node-agent image is a static Go binary on distroless
 # too, but runs as root, and has its own function as well.
-SERVICES="keystone horizon glance placement barbican neutron cinder nova nova-compute"
+SERVICES="keystone horizon glance placement barbican neutron cinder nova"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
@@ -50,14 +55,36 @@ test_python_base_deviation_comment() {
     "$(deviation_block "$dockerfile")" "openstack"
 }
 
-# --- Test 2: every service image has a DEVIATION comment ---
+# --- Test 2: every Nix-built service image has a DEVIATION comment ---
 test_service_deviation_comment() {
   local service="$1"
-  echo "Test: $service Dockerfile has DEVIATION comment"
+  echo "Test: $service image.nix has DEVIATION comment"
 
-  local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
+  local nix="$PROJECT_ROOT/images/${service}/image.nix"
 
-  assert_file_contains "$service/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "$service/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
+  assert_contains "DEVIATION comment references generic user vs per-service" \
+    "$(deviation_block "$nix")" "openstack"
+}
+
+# --- Test 2b: the library the service images share carries the rationale ---
+test_service_image_library_deviation_comment() {
+  echo "Test: nix/lib/service-image.nix has DEVIATION comment"
+
+  local nix="$PROJECT_ROOT/nix/lib/service-image.nix"
+
+  assert_file_contains "service-image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
+  assert_contains "DEVIATION comment references the generic openstack user" \
+    "$(deviation_block "$nix")" "openstack"
+}
+
+# --- Test 2c: nova-compute inherits the generic user from python-base ---
+test_nova_compute_deviation_comment() {
+  echo "Test: nova-compute Dockerfile has DEVIATION comment"
+
+  local dockerfile="$PROJECT_ROOT/images/nova-compute/Dockerfile"
+
+  assert_file_contains "nova-compute/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
   assert_contains "DEVIATION comment references generic user vs per-service" \
     "$(deviation_block "$dockerfile")" "openstack"
 }
@@ -147,6 +174,10 @@ for service in $SERVICES; do
   echo ""
   test_service_deviation_comment "$service"
 done
+echo ""
+test_service_image_library_deviation_comment
+echo ""
+test_nova_compute_deviation_comment
 echo ""
 test_ovn_deviation_comment
 echo ""

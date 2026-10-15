@@ -10,9 +10,10 @@
 # venv-builder installs git and then runs `uv pip install -r requirements.txt`
 # as root, which builds uwsgi from its sdist: third-party setup code that can
 # replace /usr/bin/git or write a git configuration, and whatever it leaves
-# behind is inherited by every stage built on venv-builder. The build-service-
-# images job hands the stage the workflow token, which carries packages:
-# write. A stage fetching with that token therefore starts from an image that
+# behind is inherited by every stage built on venv-builder. The jobs that
+# build the OVN, openstack-hypervisor-operator and kvm-node-agent images hand
+# the stage the workflow token, which carries packages: write. A stage
+# fetching with that token therefore starts from an image that
 # ran no PyPI code (python-base, ubuntu:noble), takes no files from one that
 # did, and installs git from the noble archive itself. Copied files count as
 # much as inherited ones: python-base puts /var/lib/openstack/bin first on
@@ -92,7 +93,6 @@ test_token_stages_take_no_files_from_venv_builder() {
   done
 
   # A parser that finds no token stage would pass the check below vacuously.
-  assert_contains "the nova fetch stage is found" "$found" "images/nova/Dockerfile"
   assert_contains "the OVN fetch stage is found" "$found" "images/ovn/Dockerfile"
   assert_eq "no github_token stage takes files from venv-builder" "" "$offenders"
 }

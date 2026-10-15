@@ -7,10 +7,11 @@
 # nova-compute:<release> and nova:<release> carry the same nova. The
 # control-plane image of images/nova/ stays without the libvirt binding and
 # without host tooling (#1014 D14); this one adds both. A directory of its own
-# rather than a second stage of images/nova/Dockerfile: the nightly GHCR
-# cleanup derives its package list from images/<name>/, every nova build takes
-# the last stage as its default target, and each contract script describes one
-# Dockerfile.
+# rather than part of images/nova/image.nix: the nightly GHCR cleanup derives
+# its package list from images/<name>/, and each contract script describes one
+# image. nova-compute is the one service image still built from the Docker
+# lineage python-base -> venv-builder until #1407 moves it to Nix; the nova
+# image is built by Nix from the nova lock under nix/locks/.
 
 # ---------- Stage 1: build ----------
 # hadolint ignore=DL3006
@@ -105,10 +106,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/iscsi/initiatorname.iscsi /etc/nvme/hostnqn /etc/nvme/hostid \
         /etc/multipath.conf
 
-# ceph-bindings.pth makes the venv see rados and rbd alone, for the rationale
-# in images/glance/Dockerfile. Here ceph-common also pulls python3-requests,
+# ceph-bindings.pth makes the venv see rados and rbd alone. The venv of
+# images/venv-builder/Dockerfile excludes the system site packages, and the
+# Ceph bindings ship only as noble packages, which install into
+# /usr/lib/python3/dist-packages. That directory also receives every other
+# python3-* package an apt entry pulls in, outside upper-constraints, so the
+# venv must not search it: the step links the two extension modules into
+# /var/lib/openstack/ceph-bindings, and the .pth in the venv's site-packages
+# names that directory. Here ceph-common also pulls python3-requests,
 # python3-yaml and their dependencies (python3-chardet among them) into
-# /usr/lib/python3/dist-packages; the venv imports none of them.
+# dist-packages; the venv imports none of them. The Nix-built cinder and
+# glance images get the same layout from nix/lib/service-image.nix.
 RUN site_packages="$(/var/lib/openstack/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" && \
     mkdir -p /var/lib/openstack/ceph-bindings && \
     for so in /usr/lib/python3/dist-packages/rados.cpython-*.so \
