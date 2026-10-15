@@ -23,7 +23,7 @@ ControlPlane's namespace on the management cluster.
 
 For the control loop see
 [Keystone Orders Reconciler Architecture](./keystone-orders-reconciler.md#application-credential-provisioning).
-The [Order a Service User](../../guides/order-a-service-user.md#order-an-application-credential)
+The [Order Resources from a ControlPlane](../../guides/order-resources-from-a-controlplane.md#order-an-application-credential)
 guide walks the flow on the ControlPlane devstack.
 
 ## API Group and Version

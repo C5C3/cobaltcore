@@ -8,7 +8,7 @@
 # the plane's fixture leaves empty at first, so the suite sees the refusal
 # before it admits the role.
 #
-# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# The orders guide (docs/guides/order-resources-from-a-controlplane.md) imports the
 # region below.
 # region keystoneroleassignment-workflow-member
 apiVersion: c5c3.io/v1alpha1

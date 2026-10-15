@@ -35,7 +35,7 @@ Every step of both parts follows the same path: the ControlPlane's entry admits
 the order, the c5c3-operator writes the order's children beside the
 ControlPlane and provisions against Keystone, MariaDB or the bus, and the
 credentials Secret lands beside the order.
-[What lands where](./guides/order-a-service-user.md#background-what-lands-where)
+[What lands where](./guides/order-resources-from-a-controlplane.md#background-what-lands-where)
 lists the children. On the target cluster only the addresses in that Secret
 change.
 
@@ -112,7 +112,7 @@ resolve, the ControlPlane page's tip on `*.nip.io` names the cause and the
 
 The owner's namespace `workflow` lives on the management cluster, beside the
 ControlPlane in `openstack`. Each step orders one piece, waits for it and uses
-it once. [Order a Service User](./guides/order-a-service-user.md) takes each
+it once. [Order Resources from a ControlPlane](./guides/order-resources-from-a-controlplane.md) takes each
 kind further: rotation, repair, collisions and deletion policies. The Jobs
 below come from the suites under `tests/e2e/c5c3/`, with the namespace
 substituted.
@@ -164,7 +164,7 @@ K-ORC creates the user in Keystone, and ESO backs the password up to OpenBao
 before the Secret is written. The password rotates every 720 hours by default
 and when `spec.passwordGeneration` is raised. There is no grace period: the old
 one stops the moment Keystone holds the new one;
-[Rotate the password](./guides/order-a-service-user.md#rotate-the-password)
+[Rotate the password](./guides/order-resources-from-a-controlplane.md#rotate-the-password)
 shows it. The document's `auth_url` is the Keystone Service
 inside the cluster, `http://controlplane-keystone.openstack.svc:5000/v3`, and
 it carries no project, so a token issued with it is unscoped. Issue one from a
@@ -310,7 +310,7 @@ two minutes more, the grace period, and is then deleted. A consumer that reads
 the Secret again within those two minutes never holds an invalid credential.
 
 The three badges are the three steps
-[the guide lists](./guides/order-a-service-user.md#order-an-application-credential);
+[the guide lists](./guides/order-resources-from-a-controlplane.md#order-an-application-credential);
 the status fields on the strip are the ones the commands below print.
 
 ![Rotation of an ordered credential as a time strip with two generations. Generation N is delivered from its mint. At the mint plus the interval the operator creates generation N+1 beside it, step 1, and the Secret still holds N. Once the backend holds N+1 the order switches to it, step 2: the status names N+1, the Secret is rewritten after the backup holds the new document, and the status names N as the previous credential. Both generations are valid until the grace period ends, step 3, when N is deleted. A credential created with the schedule on also expires in Keystone at its mint plus the interval plus the grace period, so one the operator fails to delete stops on its own. The schedule, a raised generation in the spec, an expired credential or a lost secret start a rotation; none starts while a grace period runs. The defaults are an interval of 720 hours and a grace period of 24 hours for the KeystoneApplicationCredential, where N+1 is a new credential of the same user, and for the RabbitMQVhost, where N+1 is a new broker user. Two kinds rotate differently: the KeystoneUser password rotates on the same default interval, replaces the password of the same user and has no grace period, so the old password stops when Keystone applies the new one, and the MariaDBDatabase credential follows the OpenBao lease on a cadence the order does not expose.](./diagrams/secrets-rotation-orders.svg)
@@ -467,7 +467,7 @@ A consumer reads the Secret again within the grace period, or mounts it as a
 volume and reconnects when it changes. A consumer that read the keys into
 environment variables at start must be restarted within the grace period.
 `spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule;
-[Order an application credential](./guides/order-a-service-user.md#order-an-application-credential)
+[Order an application credential](./guides/order-resources-from-a-controlplane.md#order-an-application-credential)
 covers the rest.
 
 ### Step 8: Order a database {#cp-database}
@@ -1111,7 +1111,7 @@ the walkthrough above uses the devstack's names.
 - [Assigned namespaces](./reference/target-clusters.md#assigned-namespaces):
   what the access chart grants in an owner's namespace on a target, and the
   registration's `assignedNamespaces` key.
-- [Order a Service User](./guides/order-a-service-user.md): each order kind in
+- [Order Resources from a ControlPlane](./guides/order-resources-from-a-controlplane.md): each order kind in
   depth, with rotation, repair and deletion policies.
 - [Deploy to a Target Cluster](./guides/deploy-to-a-target-cluster.md): the
   access chart and the registration for placed services.

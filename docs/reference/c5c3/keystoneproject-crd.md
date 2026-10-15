@@ -22,7 +22,7 @@ ControlPlane's namespace on the management cluster.
 
 For the control loop, the watches and the teardown, see
 [Keystone Orders Reconciler Architecture](./keystone-orders-reconciler.md). The
-[Order a Service User](../../guides/order-a-service-user.md) guide walks the
+[Order Resources from a ControlPlane](../../guides/order-resources-from-a-controlplane.md) guide walks the
 flow on the ControlPlane devstack.
 
 ## API Group and Version

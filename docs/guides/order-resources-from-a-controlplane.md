@@ -1,5 +1,5 @@
 ---
-title: Order a Service User
+title: Order Resources from a ControlPlane
 quadrant: operator
 ---
 
@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# How-to: Order a Service User
+# How-to: Order Resources from a ControlPlane
 
 A service owner whose namespace a ControlPlane assigns can order a Keystone user
 there with a `KeystoneUser` CR. The c5c3-operator creates the user, backs its

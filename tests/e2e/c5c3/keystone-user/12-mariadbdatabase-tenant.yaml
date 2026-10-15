@@ -12,7 +12,7 @@
 # names the plane's namespace explicitly, because the order lives in another
 # one.
 #
-# The service-user guide (docs/guides/order-a-service-user.md) imports the
+# The orders guide (docs/guides/order-resources-from-a-controlplane.md) imports the
 # region below.
 # region mariadbdatabase-workflow-db
 apiVersion: c5c3.io/v1alpha1
