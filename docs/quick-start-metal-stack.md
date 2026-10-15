@@ -999,41 +999,33 @@ of `lab-nfs-bk`, each named `volume-<volume id>.backup.<backup id>`.
 
 ## Teardown
 
-Delete the backups, the servers, the volumes and the network, then the stack:
-
 ```bash
-for backup in lab-bk lab-nfs-bk; do
-  if openstack volume backup show "${backup}" >/dev/null 2>&1; then openstack volume backup delete "${backup}"; fi
-done
-openstack server delete --wait $(openstack server list --name '^lab-[0-9]+$' -f value -c ID)
-for volume in lab-vol lab-restored lab-nfs; do
-  if openstack volume show "${volume}" >/dev/null 2>&1; then
-    timeout 120 bash -c "until [ \"\$(openstack volume show ${volume} -c status -f value)\" = available ]; do sleep 2; done"
-    openstack volume delete "${volume}"
-  fi
-done
-openstack subnet delete lab-subnet
-openstack network delete lab-net
 EXTERNAL_CLUSTER=true make teardown-infra
 ```
 
-The guards skip what the run did not create: a run without
-[Part 3](#nfs) has no NFS backup or volume, and one that stopped before
-[Part 2, Step 10](#hv-backup) has no backup and no `lab-restored`. The volumes
-go after the servers. A run that stopped between Part 2, Steps 7 and 10 left
-`lab-vol` attached to `lab-0`, and after Part 2, Step 11 `lab-restored` and
-`lab-vol` are attached when the servers go. Deleting a server detaches its
-volumes, and each volume delete waits for `available` first, because Cinder
-deletes no attached volume. The RBD images go with Cinder's deletes, and the
-pools with the Ceph teardown at the end of the teardown's step 2.
+The teardown deletes what the run created in OpenStack itself, before the
+stack goes and while Nova and Cinder still answer: the servers of every
+project, then the volume backups, the volume snapshots and the volumes. So
+`lab-bk`, `lab-nfs-bk`, `lab-vol`, `lab-restored` and `lab-nfs` go, whichever
+of them a run created and wherever it stopped: a run without [Part 3](#nfs)
+has no NFS backup or volume, one that stopped before
+[Part 2, Step 10](#hv-backup) has no backup and no `lab-restored`, and one
+that stopped between Part 2, Steps 7 and 10 left `lab-vol` attached to
+`lab-0`. Deleting a server detaches its volumes, and an attachment Cinder
+still records once the server is gone is removed before the volume. The RBD
+images go with Cinder's deletes, and the pools with the Ceph teardown at the
+end of the teardown's step 2. `lab-net` and `lab-subnet` go with Neutron's
+database. Nothing of the run has to be deleted by hand first.
 
 The teardown removes the hypervisors first, node labels included, while the
 ControlPlane and the operators still run, and then the rest of the stack (see
 [`make teardown-infra`](./reference/infrastructure/e2e-deployment.md#make-teardown-infra)).
 A `NovaCompute` pool keeps its finalizer while Nova counts a server on its
-nodes, so the teardown exits 1 with
+nodes, which is why the servers go before it. A server the teardown could not
+delete, or one of a ControlPlane whose admin credential it cannot read, stops
+it with exit 1 and
 `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`
-while a server is left. The Ceph goes at the end of the teardown's step 2:
+The Ceph goes at the end of the teardown's step 2:
 its CephCluster with its claims, whose volumes go too where the class reclaims
 with `Delete`, and its state under `/var/lib/rook` on every node, which Rook's
 cleanup Jobs empty before the teardown goes on. An NFS stack deployed with

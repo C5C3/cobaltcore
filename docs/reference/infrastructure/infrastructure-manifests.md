@@ -5716,7 +5716,7 @@ lab.
 | --- | --- |
 | Namespaces | `openstack` (libvirt, the compute CRs, hvo), `hypervisor-system` (the CA, the node certificates, kna, the migration port reservation), `flux-system` (the chart sources) |
 | Applied | by hand: `migration-ports/`, then the node labels, then `hypervisor-fixtures/`, then `hypervisor/`, after the Lab ControlPlane is `Ready` |
-| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, labels and `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays, and so do the reserved ports in `net.ipv4.ip_local_reserved_ports` until a node reboots |
+| Removed by | `EXTERNAL_CLUSTER=true make teardown-infra`, step 0, the servers and volumes in OpenStack, the labels and the `maint-<node>` objects included. The node state under `/var/lib/nova`, `/var/lib/libvirt` and `/etc/pki` stays, and so do the reserved ports in `net.ipv4.ip_local_reserved_ports` until a node reboots |
 | Pinned by | `tests/unit/deploy/metal_stack_hypervisor_test.sh`; the hvo chart tag follows `hack/ci-resolve-hvo-commit.sh`, and the kna chart tag `hack/ci-resolve-kna-commit.sh` |
 | Dependencies | the Lab ControlPlane with `spec.services.nova.hypervisorOperator`; `/dev/kvm` and `vhost_net` on every node; TCP 16514 and 49152 to 49215 open between the nodes ([Node port check](#node-port-check)) |
 

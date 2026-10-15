@@ -47,12 +47,11 @@
 #  12. the Prerequisites name no value only one shoot has: no class
 #      `premium`, no address of the 10.248. service network, and no row whose
 #      failure shows only later (`nothing checks it`, `already allocated`)
-#  13. the bash block of the Teardown deletes the backups, the servers and the
-#      volumes once each and in this order, each backup and volume behind a
-#      guard that it exists and each volume after a wait for `available`, and
-#      runs `make teardown-infra` after them; its backup and volume loops name
-#      every backup and volume the page's code creates, and the check reads a
-#      name from every such create
+#  13. the bash block of the Teardown is `make teardown-infra` alone, with no
+#      `openstack` command before it, because the teardown deletes the
+#      servers, backups, snapshots and volumes itself; the section's prose
+#      names every backup and volume the page's code creates, and the check
+#      reads a name from every such create
 #  14. no line of the page, nor of the "Checks outside the quick start"
 #      section of infrastructure-manifests.md that builds on Part 2, indexes
 #      a shell array by number or names a node as `nodes[<n>]`: bash counts
@@ -568,59 +567,51 @@ test_prerequisites_name_no_pinned_value() {
   done
 }
 
-# --- Test 13: the teardown deletes the OpenStack objects before the stack ---
-# The page deletes what it created while the APIs still answer: the backups
-# first, then the servers before the volumes, because deleting a server
-# detaches the volumes a run left attached, and Cinder refuses to delete an
-# attached volume, so each volume delete waits for `available`. A run without
-# Part 3 has no Ceph backup or volume and a run with it no lab-bk, so each
-# delete sits behind a guard that its object exists. All of them go before the
-# stack, whose NovaCompute pool keeps its finalizer while a server is left.
-# The names the two loops must hold are read from the creates in the page's
-# code, so a backup or volume a Part adds without a Teardown entry fails the
-# check, and so does a create whose name the check cannot read. A create counts
-# with a global option before `volume`, and a name ends at a space or the line
-# end, so a name with another character is not read as its prefix.
+# --- Test 13: the teardown needs no hand deletes in OpenStack ---
+# hack/teardown-infra.sh deletes the servers, volume backups, snapshots and
+# volumes of every project itself, in step 0 before the NovaComputes, so the
+# Teardown's bash block is the one make command and no `openstack` command
+# precedes it. The section's prose names every backup and volume the page's
+# code creates, so a reader knows what goes. The names are read from the
+# creates in the page's code, so a backup or volume a Part adds without a
+# mention fails the check, and so does a create whose name the check cannot
+# read. A create counts with a global option before `volume`, and a name ends
+# at a space or the line end, so a name with another character is not read as
+# its prefix.
 
-# assert_loop_names_creates <object> <loop> <creates> <regex>
+# assert_prose_names_creates <object> <prose> <creates> <regex>
 # Asserts that <creates> holds a line, that the extended regular expression
-# <regex> reads a name, its last field, from each line, and that <loop>, the
-# names of the Teardown's <object> loop, holds that name.
-assert_loop_names_creates() {
-  local object="$1" loop="$2" creates="$3" regex="$4" create name
+# <regex> reads a name, its last field, from each line, and that <prose>, the
+# Teardown section, names it in backticks.
+assert_prose_names_creates() {
+  local object="$1" prose="$2" creates="$3" regex="$4" create name
   assert_not_empty "the page creates a $object" "$creates"
   while IFS= read -r create; do
     [[ -n "$create" ]] || continue
     name="$(grep -oE -- "$regex" <<<"$create" | awk '{ print $NF }' || true)"
     assert_not_empty "the check reads the $object name of '$create'" "$name"
-    [[ -z "$name" ]] || assert_contains "the Teardown's $object loop names $name" " $loop " " $name "
+    [[ -z "$name" ]] || assert_contains "the Teardown names the $object $name" "$prose" "\`$name\`"
   done <<<"$creates"
 }
 
-# shellcheck disable=SC2016 # the page's literal text, not expanded here
 test_teardown_order() {
-  echo "Test: the Teardown block deletes the backups, the servers and the volumes before the stack"
-  local block
-  block="$(section '^## Teardown$' |
-    awk '/^```bash[[:space:]]*$/ { inside = 1; next } inside && /^```/ { exit } inside { print }')"
-  assert_not_empty "the Teardown section holds a bash block" "$block"
-  assert_once_in_order "the guarded backup, server and volume deletes and the stack teardown" "$block" \
-    'for backup in ' \
-    'if openstack volume backup show "${backup}" >/dev/null 2>&1; then openstack volume backup delete "${backup}"; fi' \
-    "server delete --wait \$(openstack server list --name '^lab-[0-9]+\$'" \
-    'for volume in ' \
-    'if openstack volume show "${volume}" >/dev/null 2>&1; then' \
-    'openstack volume show ${volume} -c status -f value)\" = available ]' \
-    'openstack volume delete "${volume}"' \
-    'make teardown-infra'
+  echo "Test: the Teardown block is the make command alone, and its prose names what the teardown deletes"
+  local prose block
+  prose="$(section '^## Teardown$')"
+  block="$(awk '/^```bash[[:space:]]*$/ { inside = 1; next } inside && /^```/ { exit } inside { print }' <<<"$prose")"
+  assert_eq "the Teardown's bash block is the teardown command alone" \
+    'EXTERNAL_CLUSTER=true make teardown-infra' "$block"
+  assert_not_contains "the section runs no openstack command by hand" \
+    "$(awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } fenced { print }' <<<"$prose")" 'openstack '
+  assert_contains "the prose says the teardown deletes the servers, backups, snapshots and volumes" "$prose" \
+    'the servers of every
+project, then the volume backups, the volume snapshots and the volumes'
 
-  local backups volumes code
-  backups="$(sed -n 's/^for backup in \(.*\); do$/\1/p' <<<"$block")"
-  volumes="$(sed -n 's/^for volume in \(.*\); do$/\1/p' <<<"$block")"
+  local code
   code="$(awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } fenced { print }' "$QUICK_START_DOC")"
-  assert_loop_names_creates backup "$backups" "$(grep -E 'volume backup create( |$)' <<<"$code" || true)" \
+  assert_prose_names_creates backup "$prose" "$(grep -E 'volume backup create( |$)' <<<"$code" || true)" \
     'volume backup create( --[a-z-]+)* --name [a-z0-9][a-z0-9-]*( |$)'
-  assert_loop_names_creates volume "$volumes" "$(grep -E 'volume create( |$)' <<<"$code" || true)" \
+  assert_prose_names_creates volume "$prose" "$(grep -E 'volume create( |$)' <<<"$code" || true)" \
     'volume create( --(size|type|image|snapshot|source|description|availability-zone) [^ ]+| --(bootable|non-bootable|read-only|read-write))* [a-z0-9][a-z0-9-]*( |$)'
 }
 

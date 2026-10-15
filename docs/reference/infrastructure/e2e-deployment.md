@@ -111,16 +111,33 @@ before its delete. Then:
    (see [Lab hypervisors](infrastructure-manifests.md#lab-hypervisors)), while
    the ControlPlane and every operator still run. Each kind is deleted only
    where its CRD exists:
-   1. every `NovaCompute`, `NeutronMetadataAgent` and `OVNChassis` in
+   1. the servers, volume backups, volume snapshots and volumes of every
+      project, while Nova and Cinder still answer. For every `ControlPlane`
+      in `openstack` the teardown reads the Secret
+      `<cp>-admin-password-cloud`, the admin `clouds.yaml` the c5c3-operator
+      keeps current, and the image of the Deployment `<cp>-nova`, the
+      ControlPlane's Nova API, then runs a pod `teardown-openstack-cleanup`
+      in `openstack` from that image, which ships the openstacksdk, with the
+      Secret under `/etc/openstack`, and execs a program into it that deletes
+      the servers, then the backups, the snapshots and the volumes, each
+      forced, an attachment left on a volume removed first, and polls each
+      kind until none is left, within `TEARDOWN_TIMEOUT` for the whole run.
+      Every line the program prints is logged, and the pod goes afterwards.
+      A ControlPlane without the Secret, or without the Deployment because it
+      runs no Nova, is logged and skipped. A read that fails exits 1 before
+      anything is deleted; a pod that does not turn Ready in time exits 1
+      and stays for a look; a run that ends 1 lists what is still present,
+      and the teardown exits 1 once the pod is deleted;
+   2. every `NovaCompute`, `NeutronMetadataAgent` and `OVNChassis` in
       `openstack`. A `NovaCompute` keeps its finalizer
       `nova.openstack.c5c3.io/compute-drain` until every one of its nodes is
       released: no server on it, its pod gone and its compute service deleted,
-      so a pool that still holds servers outlives the wait: the teardown
-      exits 1 with the delete's error and the line
+      so a pool that still holds a server sub-step 1 could not reach outlives
+      the wait: the teardown exits 1 with the delete's error and the line
       `Delete the servers on the lab hypervisors first (openstack server list --all-projects).`;
-   2. the `Hypervisor`, `Eviction` and `Migration` objects of `kvm.cloud.sap`,
+   3. the `Hypervisor`, `Eviction` and `Migration` objects of `kvm.cloud.sap`,
       which Nodes own and garbage collection therefore never reaps;
-   3. the fixtures, when the overlay has `hypervisor-fixtures/`. While the
+   4. the fixtures, when the overlay has `hypervisor-fixtures/`. While the
       K-ORC domain `hvo-cc3test` exists, it is disabled first and the wait
       for K-ORC to apply that is bounded by `TEARDOWN_TIMEOUT`, because
       Keystone refuses to delete an enabled domain. The delete runs either
@@ -128,12 +145,12 @@ before its delete. Then:
       flavor. A read of the domain that fails exits 1 before the delete:
       K-ORC applies no spec change to a domain that is being deleted, so one
       deleted while enabled could never be disabled;
-   4. the hypervisor overlay, with the two operators, the libvirt DaemonSet
+   5. the hypervisor overlay, with the two operators, the libvirt DaemonSet
       and the migration port reservation;
-   5. the `Deployment` and `PodDisruptionBudget` `maint-<node>` the hypervisor
+   6. the `Deployment` and `PodDisruptionBudget` `maint-<node>` the hypervisor
       operator leaves in `kube-system`, for every node. Its lifecycle
-      controller recreates them while it runs, so they go after sub-step 4;
-   6. the labels `openstack.c5c3.io/chassis`,
+      controller recreates them while it runs, so they go after sub-step 5;
+   7. the labels `openstack.c5c3.io/chassis`,
       `openstack.c5c3.io/nova-compute-pool`,
       `nova.openstack.cloud.sap/virt-driver` and
       `cobaltcore.cloud.sap/node-hypervisor-lifecycle`, and the annotations
