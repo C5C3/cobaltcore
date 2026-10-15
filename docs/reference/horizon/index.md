@@ -54,9 +54,10 @@ The v1 operator resolves the onboarding decisions as follows:
   `compress --force` run in the image build against a throwaway settings
   file; uWSGI serves the result via `--static-map`. No runtime init
   container. See [Container Images](../ci-cd/container-images.md#horizon).
-- **WSGI server: uWSGI.** Already pinned in the shared venv-builder image and
-  operationally identical to the keystone deployment; uWSGI loads
-  `openstack_dashboard.wsgi` directly. No per-CR uWSGI knobs in v1.
+- **WSGI server: uWSGI.** Pinned in the horizon lock under `nix/locks/` from
+  the venv-builder pins and operationally identical to the keystone
+  deployment; uWSGI loads `openstack_dashboard.wsgi` directly. No per-CR uWSGI
+  knobs in v1.
 - **Login-page probes.** The readiness and startup probes GET `/auth/login/`
   with a fixed `Host: localhost` header, which satisfies Django's
   `ALLOWED_HOSTS` check without allow-listing the pod IP; rendering the page
