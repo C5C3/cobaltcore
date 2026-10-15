@@ -143,29 +143,42 @@ jobs:
             # ---------------------------------------------------------------
             image_keystone:
               - 'images/keystone/**'
+              - 'nix/locks/*/keystone/**'
               - 'patches/keystone/**'
             image_horizon:
               - 'images/horizon/**'
+              - 'nix/locks/*/horizon/**'
               - 'patches/horizon/**'
             image_glance:
               - 'images/glance/**'
+              - 'nix/locks/*/glance/**'
               - 'patches/glance/**'
             image_placement:
               - 'images/placement/**'
+              - 'nix/locks/*/placement/**'
               - 'patches/placement/**'
             image_barbican:
               - 'images/barbican/**'
+              - 'nix/locks/*/barbican/**'
               - 'patches/barbican/**'
             image_neutron:
               - 'images/neutron/**'
+              - 'nix/locks/*/neutron/**'
               - 'patches/neutron/**'
             image_cinder:
               - 'images/cinder/**'
+              - 'nix/locks/*/cinder/**'
               - 'patches/cinder/**'
             image_nova:
               - 'images/nova/**'
+              - 'nix/locks/*/nova/**'
               - 'images/nova-compute/**'
               - 'patches/nova/**'
+              # nova-compute is the one image still built FROM the base
+              # images, by hack/ci-build-service-image.sh.
+              - 'images/python-base/**'
+              - 'images/venv-builder/**'
+              - 'hack/ci-build-service-image.sh'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
@@ -178,7 +191,7 @@ jobs:
               - 'images/keystone-federation-proxy/**'
             image_tempest:
               - 'images/tempest/**'
-              - 'hack/ci-build-tempest-image.sh'
+              - 'nix/locks/*/tempest/**'
             # ---------------------------------------------------------------
             # Shared code and shared image inputs.
             # ---------------------------------------------------------------
@@ -188,14 +201,18 @@ jobs:
               - 'go.work'
               - 'operators/Dockerfile'
               - '.golangci.yml'
-            # Every service image and both Tempest images are built from this.
+            # Every service image and both Tempest images are built from this:
+            # the flake inputs, the Nix library and packages, the release
+            # pins, and the scripts that build and place the images.
             images_base:
-              - 'images/python-base/**'
-              - 'images/venv-builder/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - 'nix/pkgs/**'
               - 'releases/**'
               - 'scripts/**'
               - 'overrides/**'
-              - 'hack/ci-build-service-image.sh'
+              - 'hack/ci-nix-build-e2e-images.sh'
               - 'hack/ci-service-image-releases.sh'
             # ---------------------------------------------------------------
             # Tempest. tempest_src switches the job on; the per-service filters
@@ -207,7 +224,7 @@ jobs:
               - 'tests/tempest/**'
               - 'hack/tempest/**'
               - 'hack/ci-run-tempest.sh'
-              - 'hack/ci-build-tempest-image.sh'
+              - 'nix/locks/*/tempest/**'
               - 'hack/ci-generate-tempest-matrix.sh'
               # The Tempest and plugin pins. images_base rebuilds the image on
               # a bump; this entry runs the suites against it.
@@ -1176,10 +1193,13 @@ jobs:
     steps:
       # Full history: the resolver checks the revision of every operator image
       # it reuses against the commits in this checkout, and builds an image
-      # whose revision it cannot find here.
+      # whose revision it cannot find here. The checkout persists no token: the
+      # build users of "Build Nix images" could read it in /github/runner_temp,
+      # and no step of this job needs it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Enable BuildKit (required for type=gha cache) as the default builder.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -1207,11 +1227,41 @@ jobs:
           CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
         run: hack/ci-resolve-e2e-images.sh
 
-      # Build base images once — all subsequent service and tempest builds
-      # reuse them via the skip-if-exists guard in ci-build-service-image.sh.
-      # GHA cache scopes are shared across branches; these images rarely change.
-      # Only the service and Tempest images build FROM them, so a run that
-      # reuses both skips this step.
+      # The service and Tempest images are flake attributes. The nixos/nix
+      # container builds them without its sandbox, which an unprivileged
+      # container cannot create, as build users of its own that can neither
+      # open the Docker socket nor write the workspace the runner mounts, and
+      # writes each image stream to .nix-e2e/<name>-<release>.tar; nothing is
+      # installed on the runner.
+      - name: Build Nix images
+        if: env.BUILD_NIX_IMAGES == 'true'
+        uses: docker://nixos/nix:2.35.3@sha256:ff480dbb23511aa1c10710aa068ceea5b93fed9bfce5f5379f3a6b07282cbc7b
+        env:
+          BUILD_SERVICE_IMAGES: ${{ env.BUILD_SERVICE_IMAGES }}
+          BUILD_TEMPEST_RELEASES: ${{ env.BUILD_TEMPEST_RELEASES }}
+        with:
+          entrypoint: bash
+          args: hack/ci-nix-build-e2e-images.sh
+
+      # docker load prints "Loaded image: <name>:<release>", the tag
+      # nix/lib/service-image.nix gives the image; the push step below and
+      # the consumers address it under IMAGE_PREFIX.
+      - name: Load Nix images
+        if: env.BUILD_NIX_IMAGES == 'true'
+        run: |
+          while read -r name release; do
+            [ -n "$name" ] || continue
+            docker load -i ".nix-e2e/${name}-${release}.tar"
+            docker tag "${name}:${release}" "${IMAGE_PREFIX}/${name}:${release}"
+            rm -f ".nix-e2e/${name}-${release}.tar"
+          done < .nix-e2e/images.txt
+
+      # Build base images once for nova-compute, the one image still built
+      # FROM them, through the skip-if-exists guard in
+      # ci-build-service-image.sh. GHA cache scopes are shared across
+      # branches; these images rarely change. The Nix-built images share Nix
+      # store layers instead, so a run that builds no nova-compute skips this
+      # step.
       - name: Build base images
         if: env.NEEDS_BASE_IMAGES == 'true'
         run: |
@@ -1254,8 +1304,10 @@ jobs:
       # ci-service-image-releases.sh (the single source of truth, also used by
       # ci-generate-build-matrix.sh). Orchestration operators without a service
       # image — e.g. c5c3, which deploys K-ORC via an upstream Helm chart —
-      # yield no releases and so never appear here. A line with a third field
-      # builds a derived image (nova-compute) from the service's source.
+      # yield no releases and so never appear here. A line without a third
+      # field is a Nix-built service image, which "Build Nix images" built; a
+      # line with one builds the derived image (nova-compute) from the
+      # service's source here.
       - name: Build service images
         env:
           # Authenticates the source clones from github.com; see the script.
@@ -1263,7 +1315,7 @@ jobs:
         run: |
           while read -r svc release image; do
             [ -n "$svc" ] || continue
-            image="${image:-$svc}"
+            [ -n "$image" ] || continue
             echo "::group::Building ${image}:${release}"
             OPERATOR="${svc}" IMAGE="${image}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
               DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${image}-${release}" \
@@ -1292,18 +1344,6 @@ jobs:
             hack/ci-build-ovn-image.sh
           echo "::endgroup::"
           echo "OVN_VERSION=${OVN_VERSION}" >> "$GITHUB_ENV"
-
-      # Build the Tempest images for the releases the map marked as built.
-      - name: Build Tempest images
-        run: |
-          for release in $BUILD_TEMPEST_RELEASES; do
-            echo "::group::Building tempest:${release}"
-            RELEASE="${release}" TEMPEST_IMAGE="${IMAGE_PREFIX}/tempest:${release}" \
-              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-tempest-${release}" \
-              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-tempest-${release}" \
-              hack/ci-build-tempest-image.sh
-            echo "::endgroup::"
-          done
 
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped
       # tag so consumer jobs can `docker pull` instead of downloading a 355 MB
@@ -1497,9 +1537,10 @@ jobs:
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
         run: |
           # The nova leg loads the resolve step's list as it stands, so the
-          # sibling images are named in one place, and in one call, so the
-          # python-base layers the service images share are saved and imported
-          # once rather than once per image. It runs first because kind saves
+          # sibling images are named in one place, and in one call, so the Nix
+          # store layers the service images share are saved and imported once
+          # rather than once per image (only nova-compute builds from the base
+          # images). It runs first because kind saves
           # every image of a call as soon as one is missing: the per-image
           # loads below then find the leg's own images on the node and skip
           # them.
@@ -3986,8 +4027,9 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
             ${{ env.IMAGE_PREFIX }}/tempest:2026.1
-      # One call, so the python-base layers the service images share are saved
-      # and imported once rather than once per image.
+      # One call, so the Nix store layers the service images share are saved
+      # and imported once rather than once per image; only nova-compute builds
+      # from the base images.
       - name: Load images into kind
         run: |
           kind load docker-image \
@@ -4262,10 +4304,10 @@ jobs:
       # from its own, the nova leg's from the glance one.
       #
       # One call for all eight. Each `kind load` is a `docker save` piped into
-      # the node's containerd, and the three service images end at the same
-      # `FROM python-base` (images/nova/Dockerfile) while the four operator
-      # images share their own base, so eight calls save and import those shared
-      # layers over and over. The nova e2e leg already loads its list this way
+      # the node's containerd, and the three service images share their Nix
+      # store layers (images/nova/image.nix; only nova-compute builds from the
+      # base images) while the four operator images share their own base, so
+      # eight calls save and import those shared layers over and over. The nova e2e leg already loads its list this way
       # ("Load images into kind" above).
       - name: Load compute stack images into kind
         if: matrix.service == 'nova' || matrix.service == 'cinder'

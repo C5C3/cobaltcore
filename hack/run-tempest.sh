@@ -7,7 +7,8 @@
 #
 # Orchestrates Tempest execution for a given OpenStack service:
 #   1. Validate prerequisites (docker, kubectl, yq, service config directory)
-#   2. Build the Tempest container image using the service Dockerfile
+#   2. Build the Tempest container image of the release with Nix
+#      (nix build .#tempest-<rel_>-image) and load it into Docker
 #   3. Extract the admin password from the Kubernetes secret
 #   4. Run Tempest inside the container with the service-specific configuration
 #      in two sequential stestr phases (core tempest.api.* vs
@@ -64,7 +65,7 @@ Optional:
   SERVICE_NAME         Kubernetes service name (default: <SERVICE>-api)
   RELEASE              Release version (default: 2026.1)
   TEMPEST_IMAGE        Docker image tag (default: c5c3/tempest:local)
-  BUILD_IMAGE          Build the image before running (default: true)
+  BUILD_IMAGE          Build the image with Nix before running (default: true)
   OUTPUT_DIR           Directory for test results (default: _output/tempest)
   TEMPEST_TIMEOUT      Timeout for Tempest run in seconds (default: 1800)
   NAMESPACE            Kubernetes namespace for the service (default: openstack)
@@ -127,36 +128,34 @@ preflight_checks() {
 }
 
 # ---------------------------------------------------------------------------
-# build_tempest_image — Build the Tempest container image.
+# build_tempest_image — Build the Tempest image of the release with Nix and
+# load it into Docker. The tempest lock under nix/locks/<release>/ pins tempest
+# and every plugin, so nothing is resolved here. The flake builds images for
+# x86_64-linux and aarch64-linux only; any other host pulls the published
+# image instead.
 # ---------------------------------------------------------------------------
 build_tempest_image() {
   log "Building Tempest image '${TEMPEST_IMAGE}'..."
 
-  local test_refs="${REPO_ROOT}/releases/${RELEASE}/test-refs.yaml"
-  local plugin_key="${SERVICE}-tempest-plugin"
-  local tempest_version
-  local plugin_version
+  if ! command -v nix >/dev/null 2>&1; then
+    echo "run-tempest.sh: nix not found; install Nix or rerun with BUILD_IMAGE=false TEMPEST_IMAGE=ghcr.io/c5c3/tempest:${RELEASE}" >&2
+    exit 1
+  fi
 
-  tempest_version=$("${SCRIPT_DIR}/resolve-test-ref.sh" "${test_refs}" "tempest")
-  plugin_version=$("${SCRIPT_DIR}/resolve-test-ref.sh" "${test_refs}" "${plugin_key}")
+  local system
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) system=x86_64-linux ;;
+    Linux-aarch64) system=aarch64-linux ;;
+    *)
+      echo "run-tempest.sh: the Tempest image is built on x86_64-linux and aarch64-linux only; on $(uname -s)-$(uname -m) rerun with BUILD_IMAGE=false TEMPEST_IMAGE=ghcr.io/c5c3/tempest:${RELEASE}" >&2
+      exit 1
+      ;;
+  esac
 
-  log "  Tempest version: ${tempest_version}"
-  log "  Plugin version (${plugin_key}): ${plugin_version}"
-
-  # The build-arg name is derived from the plugin key (e.g. keystone-tempest-plugin
-  # becomes KEYSTONE_TEMPEST_PLUGIN_VERSION).
-  local build_arg_name
-  build_arg_name=$(echo "${plugin_key}" | tr '[:lower:]-' '[:upper:]_')_VERSION
-
-  docker build \
-    -t "${TEMPEST_IMAGE}" \
-    -f "${REPO_ROOT}/images/tempest/Dockerfile" \
-    --build-arg "TEMPEST_VERSION=${tempest_version}" \
-    --build-arg "${build_arg_name}=${plugin_version}" \
-    --build-context "python-base=docker-image://ghcr.io/c5c3/python-base:latest" \
-    --build-context "venv-builder=docker-image://ghcr.io/c5c3/venv-builder:latest" \
-    --build-context "upper-constraints=${REPO_ROOT}/releases/${RELEASE}" \
-    "${REPO_ROOT}/images/tempest"
+  nix --extra-experimental-features 'nix-command flakes' build \
+    "${REPO_ROOT}#packages.${system}.tempest-${RELEASE//./_}-image" --out-link "${REPO_ROOT}/result-tempest"
+  "${REPO_ROOT}/result-tempest" | docker load
+  docker tag "tempest:${RELEASE}" "${TEMPEST_IMAGE}"
 
   log "Tempest image built successfully."
 }
@@ -389,4 +388,6 @@ main() {
   exit "${rc}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

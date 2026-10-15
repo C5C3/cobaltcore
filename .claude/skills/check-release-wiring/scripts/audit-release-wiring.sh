@@ -582,7 +582,7 @@ check_ref deploy/kind/controlplane/controlplane.yaml "${DEFAULT_RELEASE}" "openS
 v="$(sed -nE 's/.*cp_release="([0-9]{4}\.[12])".*/\1/p' hack/deploy-infra.sh | first)"
 check_ref hack/deploy-infra.sh "${v}" "cp_release preload default"
 
-NAMED_FALLBACKS="hack/ci-build-service-image.sh hack/ci-build-tempest-image.sh hack/run-tempest.sh"
+NAMED_FALLBACKS="hack/ci-build-service-image.sh hack/run-tempest.sh"
 for f in ${NAMED_FALLBACKS}; do
   v="$(sed -nE 's/.*RELEASE:-([0-9]{4}\.[12]).*/\1/p' "${f}" | first)"
   check_ref "${f}" "${v}" "RELEASE fallback"

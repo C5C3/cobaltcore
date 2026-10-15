@@ -42,6 +42,9 @@ docs/.vitepress/dist/
 # repository root for ./nix/spike#<name>): result, result-<output>.
 /result
 /result-*
+# The image streams and out-links hack/ci-nix-build-e2e-images.sh writes in
+# the build-e2e-images job.
+/.nix-e2e/
 
 # Collected CI evidence (debug-e2e-failure log excerpts, downloaded artifacts)
 # and other generated local output.

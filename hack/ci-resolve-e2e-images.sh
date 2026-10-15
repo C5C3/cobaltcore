@@ -55,9 +55,13 @@
 #                            without it builds the service's own image
 #   BUILD_TEMPEST_RELEASES — one release per line
 #   BUILD_PROXY            — true or false
-#   NEEDS_BASE_IMAGES      — true when a service or Tempest image is built. Both
-#                            build FROM python-base and venv-builder; the proxy
-#                            builds FROM ubuntu:noble and needs neither
+#   NEEDS_BASE_IMAGES      — true when a derived image (a BUILD_SERVICE_IMAGES
+#                            line with a third field, today nova-compute) is
+#                            built; it builds FROM python-base and venv-builder
+#   BUILD_NIX_IMAGES       — true when a service image (a BUILD_SERVICE_IMAGES
+#                            line without a third field) or a Tempest image is
+#                            built; Nix builds those from their locks, and the
+#                            proxy builds FROM ubuntu:noble and needs neither
 #
 # Written to GITHUB_OUTPUT:
 #   image-map — JSON object mapping each canonical local reference to the
@@ -376,9 +380,19 @@ fi
 # 4. Emit
 # ---------------------------------------------------------------------------
 needs_base_images=false
-if [[ ${#build_service_images[@]} -gt 0 || ${#build_tempest_releases[@]} -gt 0 ]]; then
-  needs_base_images=true
+build_nix_images=false
+if [[ ${#build_tempest_releases[@]} -gt 0 ]]; then
+  build_nix_images=true
 fi
+for entry in ${build_service_images[@]+"${build_service_images[@]}"}; do
+  read -r _ _ image <<<"${entry}"
+  if [[ -z "${image}" ]]; then
+    build_nix_images=true
+  else
+    # A derived image (nova-compute) builds FROM python-base and venv-builder.
+    needs_base_images=true
+  fi
+done
 
 # emit_block <name> [value...] — a GITHUB_ENV heredoc block, empty when the run
 # builds nothing of that kind.
@@ -400,6 +414,7 @@ emit_block BUILD_TEMPEST_RELEASES "${build_tempest_releases[@]}"
 {
   echo "BUILD_PROXY=${build_proxy}"
   echo "NEEDS_BASE_IMAGES=${needs_base_images}"
+  echo "BUILD_NIX_IMAGES=${build_nix_images}"
 } >>"${GITHUB_ENV}"
 
 image_map=$(printf '%s\n' "${map_lines[@]}" |
