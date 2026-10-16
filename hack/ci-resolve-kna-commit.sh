@@ -5,20 +5,22 @@
 
 # hack/ci-resolve-kna-commit.sh — Resolve the pinned kvm-node-agent commit.
 #
-# Reads the single valued 'ARG KNA_COMMIT=' line of
-# images/kvm-node-agent/Dockerfile and prints the 40-character upstream
-# commit on stdout. A bare 'ARG KNA_COMMIT' re-declaration in a build stage
-# is not a pin and is ignored. This script is the only parser of that
-# line: the image build workflow and tests/container-images/verify_kna.sh call
-# it instead of reading the Dockerfile themselves. Failures print an ::error::
-# annotation on stderr, so stdout carries nothing but the commit.
+# Reads the "rev" key of
+# images/kvm-node-agent/source.json and prints the 40-character
+# upstream commit on stdout. The image build workflow and
+# tests/container-images/verify_kna.sh call this script instead of reading
+# the pin themselves; the Nix build reads the file itself. Failures print
+# an ::error:: annotation on stderr, so stdout carries nothing but the
+# commit.
 #
 # Required env vars:
 #   (none — all have sensible defaults)
 #
 # Optional env vars:
-#   KNA_DOCKERFILE — Dockerfile to parse
-#                    (default: images/kvm-node-agent/Dockerfile)
+#   KNA_SOURCE — pin file to read
+#                (default: images/kvm-node-agent/source.json)
+#
+# Requires jq on PATH.
 #
 # Reusable version resolution script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -28,24 +30,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-KNA_DOCKERFILE="${KNA_DOCKERFILE:-${REPO_ROOT}/images/kvm-node-agent/Dockerfile}"
+KNA_SOURCE="${KNA_SOURCE:-${REPO_ROOT}/images/kvm-node-agent/source.json}"
 
-if [[ ! -f "${KNA_DOCKERFILE}" ]]; then
-  echo "::error::kna Dockerfile not found: ${KNA_DOCKERFILE}" >&2
+if ! command -v jq >/dev/null 2>&1; then
+  echo "::error::jq not found on PATH" >&2
   exit 1
 fi
 
-pin="$(sed -nE 's/^ARG KNA_COMMIT=//p' "${KNA_DOCKERFILE}")"
+if [[ ! -f "${KNA_SOURCE}" ]]; then
+  echo "::error::kna pin not found: ${KNA_SOURCE}" >&2
+  exit 1
+fi
+
+if ! jq empty "${KNA_SOURCE}" >/dev/null 2>&1; then
+  echo "::error::${KNA_SOURCE} is not valid JSON" >&2
+  exit 1
+fi
+
+pin="$(jq -r '.rev // empty' "${KNA_SOURCE}")"
 
 if [[ -z "${pin}" ]]; then
-  echo "::error::no 'ARG KNA_COMMIT=' line in ${KNA_DOCKERFILE}" >&2
+  echo "::error::no \"rev\" in ${KNA_SOURCE}" >&2
   exit 1
 fi
 
-# A second valued ARG line makes pin multi-line, which fails this anchored
-# match too.
 if [[ ! "${pin}" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "::error::ARG KNA_COMMIT in ${KNA_DOCKERFILE} is not a 40-character commit: '${pin}'" >&2
+  echo "::error::\"rev\" in ${KNA_SOURCE} is not a 40-character commit: '${pin}'" >&2
   exit 1
 fi
 

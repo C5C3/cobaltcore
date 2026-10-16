@@ -3,17 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify hack/ci-resolve-hvo-commit.sh parses the
-# images/openstack-hypervisor-operator/Dockerfile pin:
-#   - a well-formed 'ARG HVO_COMMIT=<40 hex>' line prints the commit, and bare
-#     'ARG HVO_COMMIT' re-declarations beside it are ignored;
-#   - a missing line, an empty file, a non-commit value (a tag, a short SHA),
-#     a second 'ARG HVO_COMMIT=' line and a missing Dockerfile each exit
-#     non-zero with an ::error:: annotation and print nothing on stdout;
-#   - the checked-in Dockerfile resolves to a 40-character commit.
+# Verify hack/ci-resolve-hvo-commit.sh reads the rev key of
+# images/openstack-hypervisor-operator/source.json:
+#   - the committed pin resolves to a 40-character commit, and a well-formed fixture
+#     prints the commit;
+#   - a missing file, invalid JSON, a missing "rev" key, a 39-character commit
+#     and a PATH without jq each exit 1 with an ::error:: annotation that
+#     names the fault and print nothing on stdout.
 #
-# Follows the project-native bash test pattern (tests/lib/assertions.sh),
-# mirroring tests/unit/hack/ci_resolve_ovn_version_test.sh.
+# Follows the project-native bash test pattern (tests/lib/assertions.sh).
 #
 # Usage: bash tests/unit/hack/ci_resolve_hvo_commit_test.sh
 
@@ -22,6 +20,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RESOLVE_SH="$PROJECT_ROOT/hack/ci-resolve-hvo-commit.sh"
+PIN="$PROJECT_ROOT/images/openstack-hypervisor-operator/source.json"
 
 PASS=0
 FAIL=0
@@ -33,168 +32,146 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-COMMIT="a2baf3f4002e39ff93f105fae9594b357ba55b21"
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# run_resolve <dockerfile>
-# Runs the resolver against <dockerfile>, or against its own default when
-# <dockerfile> is "-" (HVO_DOCKERFILE left unset). Stores the combined
-# stdout/stderr in OUTPUT, stdout alone in STDOUT and the exit status in RC.
+# run_resolve <pin file>
+# Runs the resolver against <pin file>, or against its own default when
+# <pin file> is "-" (HVO_SOURCE left unset). Stores stdout in STDOUT, stderr in
+# STDERR and the exit status in RC.
 run_resolve() {
   RC=0
   if [ "$1" = "-" ]; then
-    OUTPUT="$(unset HVO_DOCKERFILE; bash "$RESOLVE_SH" 2>&1)" || RC=$?
-    STDOUT="$(unset HVO_DOCKERFILE; bash "$RESOLVE_SH" 2>/dev/null)" || true
+    STDOUT="$(unset HVO_SOURCE; bash "$RESOLVE_SH" 2>"$TMP_DIR/stderr")" || RC=$?
   else
-    OUTPUT="$(HVO_DOCKERFILE="$1" bash "$RESOLVE_SH" 2>&1)" || RC=$?
-    STDOUT="$(HVO_DOCKERFILE="$1" bash "$RESOLVE_SH" 2>/dev/null)" || true
+    STDOUT="$(HVO_SOURCE="$1" bash "$RESOLVE_SH" 2>"$TMP_DIR/stderr")" || RC=$?
+  fi
+  STDERR="$(cat "$TMP_DIR/stderr")"
+}
+
+# fixture <name> <content> writes <content> to a file under TMP_DIR and
+# prints its path.
+fixture() {
+  printf '%s\n' "$2" >"$TMP_DIR/$1"
+  echo "$TMP_DIR/$1"
+}
+
+# assert_fails <description> <expected ::error:: line>
+# Asserts the last run exited 1, printed <expected> on stderr and nothing on
+# stdout.
+assert_fails() {
+  assert_eq "$1 exits 1" "1" "$RC"
+  assert_eq "$1 prints the annotation" "$2" "$STDERR"
+  assert_eq "$1 prints nothing on stdout" "" "$STDOUT"
+}
+
+# ---------------------------------------------------------------------------
+# Test 1: the committed pin resolves
+# ---------------------------------------------------------------------------
+test_committed_pin() {
+  echo "Test: the committed pin resolves to a 40-character commit"
+
+  run_resolve -
+  assert_eq "resolver exits 0 on the committed pin" "0" "$RC"
+  assert_eq "resolver prints the pinned value" "$(jq -r '.rev' "$PIN")" "$STDOUT"
+  if [[ "$STDOUT" =~ ^[0-9a-f]{40}$ ]]; then
+    assert_eq "the value is a 40-character commit" "yes" "yes"
+  else
+    assert_eq "the value is a 40-character commit" "yes" "no: '$STDOUT'"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: a pinned commit prints the commit, bare re-declarations are ignored
+# Test 2: a well-formed fixture prints its value
 # ---------------------------------------------------------------------------
-test_valid_pin() {
-  echo "Test: a valid 'ARG HVO_COMMIT=<commit>' line prints the commit"
+test_valid_fixture() {
+  echo "Test: a well-formed pin prints the commit"
 
-  local fixture="$TMP_DIR/Dockerfile.valid"
-  cat >"$fixture" <<FIXTURE
-# A commit of upstream main.
-ARG HVO_COMMIT=${COMMIT}
-FROM golang:1.27 AS build
-ARG HVO_COMMIT
-RUN echo build
-FROM gcr.io/distroless/static:nonroot
-ARG HVO_COMMIT
-FIXTURE
-
-  run_resolve "$fixture"
-
+  run_resolve "$(fixture valid.json '{"rev": "a2baf3f4002e39ff93f105fae9594b357ba55b21", "hash": "sha256-x", "vendorHash": "sha256-y"}')"
   assert_eq "resolver exits 0 on a valid pin" "0" "$RC"
-  assert_eq "resolver prints the commit and nothing else" "$COMMIT" "$OUTPUT"
+  assert_eq "resolver prints the commit" "a2baf3f4002e39ff93f105fae9594b357ba55b21" "$STDOUT"
+  assert_eq "resolver prints nothing on stderr" "" "$STDERR"
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: a Dockerfile without the valued ARG line fails
+# Test 3: a missing file fails and names the path
 # ---------------------------------------------------------------------------
-test_missing_arg_line() {
-  echo "Test: a Dockerfile with only a bare 'ARG HVO_COMMIT' exits non-zero"
+test_missing_file() {
+  echo "Test: a missing pin file exits 1 and names the path"
 
-  local fixture="$TMP_DIR/Dockerfile.noarg"
-  cat >"$fixture" <<'FIXTURE'
-FROM golang:1.27 AS build
-ARG HVO_COMMIT
-RUN echo build
-FIXTURE
-
-  run_resolve "$fixture"
-
-  assert_nonzero_exit "resolver exits non-zero without the ARG line" "$RC"
-  assert_contains "resolver emits an ::error:: for the missing line" "$OUTPUT" "::error::no 'ARG HVO_COMMIT=' line in $fixture"
-  assert_eq "resolver prints nothing on stdout" "" "$STDOUT"
+  run_resolve "$TMP_DIR/missing.json"
+  assert_fails "a missing file" "::error::hvo pin not found: $TMP_DIR/missing.json"
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: a non-commit value fails and names the offending value
+# Test 4: invalid JSON fails
 # ---------------------------------------------------------------------------
-test_non_commit_value() {
-  echo "Test: a tag or a short SHA instead of a 40-character commit exits non-zero"
+test_invalid_json() {
+  echo "Test: a pin that is not valid JSON exits 1"
 
-  local fixture value
-  for value in v1.2.3 a2baf3f; do
-    fixture="$TMP_DIR/Dockerfile.$value"
-    printf 'ARG HVO_COMMIT=%s\nFROM golang:1.27\n' "$value" >"$fixture"
-
-    run_resolve "$fixture"
-
-    assert_nonzero_exit "resolver exits non-zero on '$value'" "$RC"
-    assert_contains "resolver names '$value' as not a commit" "$OUTPUT" \
-      "::error::ARG HVO_COMMIT in $fixture is not a 40-character commit: '$value'"
-    assert_eq "resolver prints nothing on stdout for '$value'" "" "$STDOUT"
-  done
+  local pin
+  pin="$(fixture invalid.json '{')"
+  run_resolve "$pin"
+  assert_fails "invalid JSON" "::error::$pin is not valid JSON"
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: two valued 'ARG HVO_COMMIT=' lines fail rather than resolving one
+# Test 5: a pin without the key fails
 # ---------------------------------------------------------------------------
-test_duplicate_arg_lines() {
-  echo "Test: a second 'ARG HVO_COMMIT=' line exits non-zero"
+test_missing_key() {
+  echo "Test: a pin without \"rev\" exits 1"
 
-  # sed emits two lines for two valued pins, and the anchored 40-hex match in
-  # the resolver is what rejects the multi-line value. Without this test a
-  # `| head -1` appended to that pipeline would pass CI and start returning
-  # the first of two conflicting pins.
-  local fixture="$TMP_DIR/Dockerfile.dup"
-  printf 'ARG HVO_COMMIT=%s\nFROM golang:1.27 AS build\nARG HVO_COMMIT=%s\n' \
-    "$COMMIT" "0123456789abcdef0123456789abcdef01234567" >"$fixture"
-
-  run_resolve "$fixture"
-
-  assert_nonzero_exit "resolver exits non-zero on two pins" "$RC"
-  assert_contains "resolver emits an ::error:: for the ambiguous pin" "$OUTPUT" \
-    "::error::ARG HVO_COMMIT in $fixture is not a 40-character commit:"
-  assert_eq "resolver prints nothing on stdout on two pins" "" "$STDOUT"
+  local pin
+  pin="$(fixture nokey.json '{"hash": "sha256-x"}')"
+  run_resolve "$pin"
+  assert_fails "a missing key" "::error::no \"rev\" in $pin"
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: a missing Dockerfile fails and names the path
+# Test 6: a malformed value fails and names it
 # ---------------------------------------------------------------------------
-test_missing_dockerfile() {
-  echo "Test: a missing HVO_DOCKERFILE exits non-zero and names the path"
+test_malformed_value() {
+  echo "Test: a 39-character commit exits 1 and names the value"
 
-  run_resolve "/nonexistent"
-
-  assert_nonzero_exit "resolver exits non-zero on a missing Dockerfile" "$RC"
-  assert_eq "resolver emits the not-found ::error::" \
-    "::error::hvo Dockerfile not found: /nonexistent" "$OUTPUT"
-  assert_eq "resolver prints nothing on stdout" "" "$STDOUT"
+  local pin
+  pin="$(fixture malformed.json '{"rev": "0123456789abcdef0123456789abcdef0123456"}')"
+  run_resolve "$pin"
+  assert_fails "a malformed value" \
+    "::error::\"rev\" in $pin is not a 40-character commit: '0123456789abcdef0123456789abcdef0123456'"
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: an empty Dockerfile fails
+# Test 7: a PATH without jq fails and names jq
 # ---------------------------------------------------------------------------
-test_empty_dockerfile() {
-  echo "Test: an empty Dockerfile exits non-zero"
+test_missing_jq() {
+  echo "Test: a PATH without jq exits 1 and names jq"
 
-  local fixture="$TMP_DIR/Dockerfile.empty"
-  : >"$fixture"
-
-  run_resolve "$fixture"
-
-  assert_nonzero_exit "resolver exits non-zero on an empty Dockerfile" "$RC"
-  assert_contains "resolver emits an ::error:: for the empty file" "$OUTPUT" "::error::no 'ARG HVO_COMMIT=' line in $fixture"
-}
-
-# ---------------------------------------------------------------------------
-# Test 7: the checked-in Dockerfile resolves to a 40-character commit
-# ---------------------------------------------------------------------------
-test_checked_in_dockerfile() {
-  echo "Test: the checked-in images/openstack-hypervisor-operator/Dockerfile resolves to a commit"
-
-  run_resolve "-"
-
-  local matches="no"
-  if [[ "$OUTPUT" =~ ^[0-9a-f]{40}$ ]]; then
-    matches="yes"
-  fi
-
-  assert_eq "resolver exits 0 on the checked-in Dockerfile" "0" "$RC"
-  assert_eq "resolved pin is a 40-character commit (got '$OUTPUT')" "yes" "$matches"
+  local stubs bash_bin
+  stubs="$(mktemp -d "$TMP_DIR/stubs.XXXXXX")"
+  ln -s "$(command -v dirname)" "$stubs/dirname"
+  bash_bin="$(command -v bash)"
+  RC=0
+  STDOUT="$(PATH="$stubs" "$bash_bin" "$RESOLVE_SH" 2>"$TMP_DIR/stderr")" || RC=$?
+  STDERR="$(cat "$TMP_DIR/stderr")"
+  assert_fails "a PATH without jq" "::error::jq not found on PATH"
 }
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-test_valid_pin
-test_missing_arg_line
-test_non_commit_value
-test_duplicate_arg_lines
-test_missing_dockerfile
-test_empty_dockerfile
-test_checked_in_dockerfile
+if ! command -v jq >/dev/null 2>&1; then
+  echo "  SKIP: jq not installed (7 tests skipped)"
+  SKIP=$((SKIP + 7))
+else
+  test_committed_pin
+  test_valid_fixture
+  test_missing_file
+  test_invalid_json
+  test_missing_key
+  test_malformed_value
+  test_missing_jq
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

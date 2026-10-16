@@ -5,9 +5,9 @@
 package controller
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,12 +18,6 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
 )
-
-// dockerfileOVNVersionPattern captures the version off the single
-// ARG OVN_VERSION line of images/ovn/Dockerfile. The image records the tag with
-// its upstream "v" prefix, the operator constant without it, so the prefix is
-// matched rather than captured.
-var dockerfileOVNVersionPattern = regexp.MustCompile(`(?m)^ARG OVN_VERSION=v(.+)$`)
 
 func TestEffectiveImage_NilResolvesDefault(t *testing.T) {
 	g := NewWithT(t)
@@ -72,22 +66,25 @@ func TestEffectiveShifterImage_OverrideVerbatim(t *testing.T) {
 // bump that lands in only one of them ships an operator whose default image tag
 // names a tag the build never pushed, so the two are compared here rather than
 // left to a reviewer.
-func TestDefaultOVNVersionMatchesDockerfilePin(t *testing.T) {
+func TestDefaultOVNVersionMatchesSourcePin(t *testing.T) {
 	g := NewWithT(t)
 
 	_, thisFile, _, ok := runtime.Caller(0)
-	g.Expect(ok).To(BeTrue(), "runtime.Caller must resolve this test file to locate the Dockerfile")
-	dockerfile := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", "images", "ovn", "Dockerfile")
+	g.Expect(ok).To(BeTrue(), "runtime.Caller must resolve this test file to locate the pin")
+	pinFile := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", "images", "ovn", "source.json")
 
-	content, err := os.ReadFile(filepath.Clean(dockerfile))
-	g.Expect(err).NotTo(HaveOccurred(), "images/ovn/Dockerfile must be readable at %s", dockerfile)
+	content, err := os.ReadFile(filepath.Clean(pinFile))
+	g.Expect(err).NotTo(HaveOccurred(), "images/ovn/source.json must be readable at %s", pinFile)
 
-	match := dockerfileOVNVersionPattern.FindSubmatch(content)
-	g.Expect(match).NotTo(BeNil(),
-		"images/ovn/Dockerfile carries no line matching %q; defaultOVNVersion has nothing to be checked against",
-		dockerfileOVNVersionPattern.String())
-	g.Expect(string(match[1])).To(Equal(defaultOVNVersion),
-		"defaultOVNVersion and ARG OVN_VERSION in images/ovn/Dockerfile must name the same OVN version")
+	// The pin records the tag with its upstream "v" prefix, the operator
+	// constant without it.
+	var pin struct {
+		Version string `json:"version"`
+	}
+	g.Expect(json.Unmarshal(content, &pin)).To(Succeed(), "images/ovn/source.json at %s must be valid JSON", pinFile)
+	g.Expect(pin.Version).NotTo(BeEmpty(), "images/ovn/source.json carries no \"version\"")
+	g.Expect(strings.TrimPrefix(pin.Version, "v")).To(Equal(defaultOVNVersion),
+		"defaultOVNVersion and \"version\" in images/ovn/source.json must name the same OVN version")
 }
 
 // pullPolicyCase is one row of the OVN pull-policy tables: the image override
