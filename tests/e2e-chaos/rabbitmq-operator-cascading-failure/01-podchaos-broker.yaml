@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding the plane's broker down: the one replica Minimal gives
+# RabbitmqCluster cp-rmq-cascade-rabbitmq, whose pods the RabbitMQ Cluster
+# Operator labels app.kubernetes.io/name: <cluster>. pod-failure keeps the
+# broker down until the suite deletes this CR; duration bounds a run that dies
+# first. @NS@ is replaced with the suite's namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-fail-broker
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - "@NS@"
+    labelSelectors:
+      app.kubernetes.io/name: cp-rmq-cascade-rabbitmq

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two operators of the cascade, killed together with the broker fault:
+# the rabbitmq-cluster-operator, which writes the RabbitmqCluster's status,
+# and the c5c3-operator, which reads AllReplicasReady off it. No other
+# consumer reads a broker's readiness. The messaging-topology-operator in
+# rabbitmq-system carries another app.kubernetes.io/name.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-kill-rmq-operator
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - rabbitmq-system
+    labelSelectors:
+      app.kubernetes.io/name: rabbitmq-cluster-operator
+  gracePeriod: 0
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-kill-c5c3-operator
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - c5c3-system
+    labelSelectors:
+      app.kubernetes.io/name: c5c3-operator
+  gracePeriod: 0

@@ -1,0 +1,217 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a broker outage cascading through two restarted
+# operators.
+#
+# Fault: the plane's broker, RabbitmqCluster cp-rmq-cascade-rabbitmq, is held
+# down with a PodChaos pod-failure while the rabbitmq-cluster-operator and the
+# c5c3-operator are pod-killed together (mode: all, gracePeriod: 0), in one
+# kubectl apply. The plane is the Keystone-only ControlPlane of the leg with
+# a managed messaging block.
+#
+# Claim, phase by phase:
+#   restart  Both operators come back: no pre-kill pod UID is left and both
+#            Deployments are at readyReplicas == spec.replicas
+#            (OPERATORS-BACK <epoch>).
+#   cold     Within 120 s of that the restarted operators report the outage:
+#            the RabbitmqCluster AllReplicasReady=False, the ControlPlane
+#            InfrastructureReady=False/WaitingForMessaging and
+#            Ready=False/NotAllReady. Then for 60 s the ControlPlane never
+#            reads Ready=True (COLD-CACHE-OK).
+#   lifted   AllReplicasReady=True and the ControlPlane Ready=True/AllReady
+#            within 10 minutes.
+#
+# Stale-status limit: the suite kills the rabbitmq-cluster-operator, it does
+# not hold it down. While that operator stays down nothing rewrites the
+# RabbitmqCluster status, and the ControlPlane keeps the last
+# AllReplicasReady the operator wrote: it reads that condition alone
+# (reconcile_infrastructure.go). That fail-open is recorded, not changed.
+#
+# Blast radius: the plane's broker, and no RabbitmqCluster or ControlPlane of
+# the cluster reconciles while its operator restarts. The three PodChaos are
+# the shared state to undo, so steps 2 to 4 delete them in their catch
+# blocks; the cleanup of step 1 deletes the ControlPlane.
+#
+# Leg: controlplane. The suite runs in namespace chaos-rmq-cascade, short for the reason
+# ../lib/controlplane.sh gives.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against cp-rmq-cascade-keystone through the fault. The plane's Keystone runs
+# no service on the broker, and the budget is what the kind runs measured.
+# Chaos budget: failures=0 recovery=30s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: rabbitmq-operator-cascading-failure
+spec:
+  namespace: chaos-rmq-cascade
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Bring the plane up with its broker, start the workload ─────
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_bring_up cp-rmq-cascade 00-controlplane-cr.yaml
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-rmq-cascade-keystone-admin-credentials ../lib/workload.sh start rabbitmq-operator-cascading-failure -- --streams token --keystone "http://cp-rmq-cascade-keystone.${NAMESPACE}.svc:5000/v3"
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-rmq-cascade
+          kubectl get rabbitmqcluster -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl get pods -n rabbitmq-system -o wide 2>&1 || true
+          kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --tail=100 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump rabbitmq-operator-cascading-failure
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_teardown cp-rmq-cascade
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop rabbitmq-operator-cascading-failure
+  # ── Step 2: Hold the broker down, kill both operators ──────────────────
+  # The snapshot, the faults and the waits share one script, so they share
+  # the pre-kill UIDs. The epoch the operators are back at is written onto the
+  # broker PodChaos for step 3.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          . ../lib/pods.sh
+          old_rmq="$(pod_uids rabbitmq-system app.kubernetes.io/name=rabbitmq-cluster-operator)"
+          old_c5c3="$(pod_uids c5c3-system app.kubernetes.io/name=c5c3-operator)"
+          if [ -z "$old_rmq" ] || [ -z "$old_c5c3" ]; then
+            echo "FAIL: an operator has no pod to kill (rabbitmq-cluster-operator: ${old_rmq:-none}; c5c3-operator: ${old_c5c3:-none})"
+            exit 1
+          fi
+          ../lib/workload.sh mark rabbitmq-operator-cascading-failure fault-start
+          { cp_render 01-podchaos-broker.yaml; echo "---"; cp_render 02-podchaos-operators.yaml; } |
+            kubectl apply -n "$NAMESPACE" -f -
+          kubectl wait podchaos/cascade-fail-broker -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched; the broker is gone
+          # once the kubelet has stopped its container.
+          kubectl wait pod -n "$NAMESPACE" -l app.kubernetes.io/name=cp-rmq-cascade-rabbitmq \
+            --for=condition=Ready=false --timeout=120s
+          wait_replaced rabbitmq-system app.kubernetes.io/name=rabbitmq-cluster-operator "$old_rmq" 180
+          wait_replaced c5c3-system app.kubernetes.io/name=c5c3-operator "$old_c5c3" 180
+          back="$(date +%s)"
+          kubectl annotate podchaos cascade-fail-broker -n "$NAMESPACE" chaos.c5c3.io/operators-back="$back" --overwrite
+          echo "OPERATORS-BACK ${back}"
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos-broker.yaml 2>&1 || true
+          cp_delete_file 02-podchaos-operators.yaml 2>&1 || true
+    - *cp-dump
+    - *workload-dump
+  # ── Step 3: The restarted operators report the outage ──────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          back="$(kubectl get podchaos cascade-fail-broker -n "$NAMESPACE" \
+            -o jsonpath='{.metadata.annotations.chaos\.c5c3\.io/operators-back}')"
+          deadline=$((back + 120))
+          while true; do
+            broker="$(cp_status rabbitmqcluster cp-rmq-cascade-rabbitmq AllReplicasReady)"
+            infra="$(cp_status controlplane cp-rmq-cascade InfrastructureReady)/$(cp_reason controlplane cp-rmq-cascade InfrastructureReady)"
+            ready="$(cp_status controlplane cp-rmq-cascade Ready)/$(cp_reason controlplane cp-rmq-cascade Ready)"
+            if [ "$broker" = "False" ] && [ "$infra" = "False/WaitingForMessaging" ] && [ "$ready" = "False/NotAllReady" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120 s after OPERATORS-BACK: AllReplicasReady ${broker:-<none>}, InfrastructureReady ${infra}, Ready ${ready}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: AllReplicasReady=False, InfrastructureReady=False/WaitingForMessaging, Ready=False/NotAllReady, $(( $(date +%s) - back )) s after OPERATORS-BACK"
+          end=$(( $(date +%s) + 60 ))
+          while true; do
+            ready="$(cp_status controlplane cp-rmq-cascade Ready)"
+            if [ "$ready" = "True" ]; then
+              echo "FAIL: the ControlPlane reported Ready=True while its broker was held down"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "COLD-CACHE-OK: the ControlPlane did not report Ready=True for 60 s"
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 4: Lift the faults ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos-broker.yaml
+          cp_delete_file 02-podchaos-operators.yaml
+          ../lib/workload.sh mark rabbitmq-operator-cascading-failure fault-end
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 5: The broker and the plane recover ───────────────────────────
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          # Ten minutes for the two together, inside the 12-minute step.
+          cp_wait_condition rabbitmqcluster cp-rmq-cascade-rabbitmq AllReplicasReady True 420
+          cp_wait_condition controlplane cp-rmq-cascade Ready True 180
+          reason="$(cp_reason controlplane cp-rmq-cascade Ready)"
+          if [ "$reason" != "AllReady" ]; then
+            echo "FAIL: cp-rmq-cascade is Ready with reason '${reason:-<none>}', not AllReady"
+            exit 1
+          fi
+          echo "OK: the broker is back and cp-rmq-cascade is Ready=True/AllReady"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify rabbitmq-operator-cascading-failure
+    catch:
+    - *workload-dump
