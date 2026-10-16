@@ -78,7 +78,7 @@ spec:
     spec:
       chart: csi-driver-nfs
       # Pinned, not a range. Renovate's flux manager bumps it; see the header.
-      version: "4.13.4"
+      version: "4.13.5"
       sourceRef:
         kind: HelmRepository
         name: csi-driver-nfs
