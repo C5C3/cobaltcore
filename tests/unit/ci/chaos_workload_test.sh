@@ -2079,7 +2079,7 @@ neutron-operator-pod-kill nova-keystone-outage nova-operator-pod-kill \
 nova-placement-outage openbao-pod-kill openbao-sealed \
 openbao-tenant-policy-narrowed operator-pod-crash operator-pod-kill \
 ovn-operator-pod-kill placement-keystone-outage placement-mariadb-outage \
-placement-operator-pod-kill"
+placement-operator-pod-kill rabbitmq-operator-cascading-failure"
 BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
 MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
 

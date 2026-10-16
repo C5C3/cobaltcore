@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 53 chaos test suites validate operator behavior during and after fault
+The 54 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 53 test suites require the infrastructure stack to be deployed and healthy.
+All 54 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -467,6 +467,7 @@ with the new suites.
 | [envoy-gateway-outage](#envoy-gateway-outage) | — | `keystone-chaos-eg` | Gateway controller outage (configuration plane) | `UNPROGRAMMED-OK`: for 90 s a route added under the fault carries no `Accepted=True` and `GET /v3` through `placement.127-0-0-1.nip.io` gets no 200; `PROGRAMMED-OK`: `Accepted=True` and a 200 within 180 s of the lift; `Ready=True/AllReady` throughout, workload budget zero |
 | [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `keystone-chaos-proxy` | Gateway proxy pod kill (data plane) | Every pre-kill proxy pod UID gone, the proxy Deployment back at `readyReplicas == spec.replicas`, `Ready=True/AllReady`, the token stream through the listener within its measured budget |
 | [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone-chaos-cascade` | Dependency outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the mariadb-operator and the keystone-operator replaced; within 120 s `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `Ready=True/AllReady` after the lift, the token stream within its measured budget |
+| [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `cp-rmq-cascade` | Broker outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the rabbitmq-cluster-operator and the c5c3-operator replaced; within 120 s the RabbitmqCluster at `AllReplicasReady=False`, the ControlPlane at `InfrastructureReady=False/WaitingForMessaging` and `Ready=False/NotAllReady`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `AllReplicasReady=True` and `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 
 ---
 
@@ -3592,6 +3593,59 @@ pods and logs of both operators, and the workload.
 
 ---
 
+### rabbitmq-operator-cascading-failure
+
+**File:** `tests/e2e-chaos/rabbitmq-operator-cascading-failure/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** The broker of ControlPlane `cp-rmq-cascade`, RabbitmqCluster
+`cp-rmq-cascade-rabbitmq`, is held down with a `PodChaos` `pod-failure` while the
+rabbitmq-cluster-operator and the c5c3-operator are pod-killed together, in one
+`kubectl apply`. The first writes the status of the RabbitmqCluster and the second
+reads `AllReplicasReady` off it for `InfrastructureReady`; no other consumer reads
+a broker's readiness. The suite pins that both restarted operators report the
+outage they come back to. [Status left by a dead dependency
+operator](#status-left-by-a-dead-dependency-operator) gives the limit it records.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring the plane up with its broker, start the workload | `script` (40m) + `script` (6m) | `cp_bring_up` of `lib/controlplane.sh` to `Ready=True/AllReady`; `workload.sh start` against `cp-rmq-cascade-keystone`. The step cleanup deletes the ControlPlane |
+| 2 | Hold the broker down, kill both operators | `script` (6m) | Snapshots the pod UIDs of both operators, runs `workload.sh mark fault-start`, applies the three `PodChaos` in one call, waits for `AllInjected` on `cascade-fail-broker` and the broker pod at `Ready=false`, then until both Deployments have no pre-kill UID and are at `readyReplicas == spec.replicas`. Prints `OPERATORS-BACK <epoch>` and writes it onto the broker `PodChaos` |
+| 3 | The restarted operators report the outage | `script` (5m) | Within 120 s of `OPERATORS-BACK`: `AllReplicasReady=False`, the ControlPlane at `InfrastructureReady=False/WaitingForMessaging` and `Ready=False/NotAllReady`. Then for 60 s the ControlPlane never reads `Ready=True` (`COLD-CACHE-OK`) |
+| 4 | Lift the faults | `script` (2m) | Deletes the three `PodChaos`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `script` (12m) | `AllReplicasReady=True` and the ControlPlane at `Ready=True/AllReady` within 10 minutes |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against the measured budget |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-rmq-cascade` with
+`infrastructure.messaging.clusterRef.name: cp-rmq-cascade-rabbitmq`),
+`01-podchaos-broker.yaml` (`cascade-fail-broker`, `duration: "600s"`),
+`02-podchaos-operators.yaml` (`cascade-kill-rmq-operator` in `rabbitmq-system` and
+`cascade-kill-c5c3-operator` in `c5c3-system`, both `pod-kill`, `mode: all`,
+`gracePeriod: 0`).
+
+**Workload:** the `token` stream against `cp-rmq-cascade-keystone`, with the admin
+password from `cp-rmq-cascade-keystone-admin-credentials`. Started in step 1 and
+judged in step 6 against `failures=0 recovery=30s`: the plane's Keystone runs no
+service on the broker, and the kind runs failed no record. The suite runs in the
+`controlplane` matrix entry, in its own namespace, `chaos-rmq-cascade`.
+
+**Catch blocks:** steps 2 to 4 delete the three `PodChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh`, dumps the RabbitmqCluster, the pods of
+`rabbitmq-system` and the rabbitmq-cluster-operator log, and dumps the workload.
+
+**Design notes:**
+
+- The plane runs no service on the broker. A bus is shared by nature, so a
+  declared `messaging` block provisions it, as in `tests/e2e/c5c3/messaging`. The
+  messaging suite never waits for `Ready`, so step 1 is the first to take such a
+  plane to `Ready=True/AllReady`; it did so in about two minutes on kind.
+- `Minimal` sizes the broker at one replica, so the `pod-failure` takes all of it.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -4175,11 +4229,16 @@ tests/e2e-chaos/
 │   ├── 01-placement-cr.yaml          Placement placement-db-chaos with database socket timeouts
 │   ├── 02-networkchaos.yaml          NetworkChaos severing placement-api↔MariaDB traffic (server-side)
 │   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
-└── placement-operator-pod-kill/      placement-operator pod kill
-    ├── 00-placement-cr.yaml          Placement CR fixture (placement-chaos-op)
-    ├── 01-podchaos.yaml              PodChaos targeting placement-operator in placement-system
-    ├── 02-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
-    └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── placement-operator-pod-kill/      placement-operator pod kill
+│   ├── 00-placement-cr.yaml          Placement CR fixture (placement-chaos-op)
+│   ├── 01-podchaos.yaml              PodChaos targeting placement-operator in placement-system
+│   ├── 02-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
+│   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+└── rabbitmq-operator-cascading-failure/ Broker outage through two restarted operators
+    ├── 00-controlplane-cr.yaml       ControlPlane cp-rmq-cascade with a managed broker
+    ├── 01-podchaos-broker.yaml       PodChaos pod-failure on the plane broker
+    ├── 02-podchaos-operators.yaml    PodChaos pod-kill of the rabbitmq- and c5c3-operator
+    └── chainsaw-test.yaml            Test: the restarted operators report the outage
 ```
 
 ## Adding New Scenarios
