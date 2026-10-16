@@ -16,7 +16,7 @@ require (
 	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/go-logr/logr v1.4.4
-	github.com/k-orc/openstack-resource-controller/v3 v3.0.0-20261014152409-da276e44b40c
+	github.com/k-orc/openstack-resource-controller/v3 v3.0.0-pre1
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.24.1
