@@ -1333,7 +1333,8 @@ the target a developer calls locally.
 
 The job loads 14 images: the six operators at `:dev`, `keystone`, `placement`,
 `glance`, `neutron`, `nova` and `nova-compute` at `2026.1`, the OVN daemon image
-at the tag `hack/ci-resolve-ovn-version.sh` reads, and `tempest:2026.1`, whose
+at the tag `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`,
+and `tempest:2026.1`, whose
 `openstack` client the suite's Jobs run. It loads no libvirt image: the image
 is not in the E2E image map, and the kind node pulls the public
 `ghcr.io/c5c3/libvirt:latest` that `main` published. Diagnostics run with
