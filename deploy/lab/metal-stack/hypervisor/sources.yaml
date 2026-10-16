@@ -7,11 +7,10 @@
 # deploy/flux-system/sources/openbao-operator.yaml pins its chart: ref.digest
 # takes precedence over ref.tag, so a re-pushed tag changes nothing that runs.
 #
-# Each is the chart of a pinned upstream main commit: hvo's is the ARG
-# HVO_COMMIT line of images/openstack-hypervisor-operator/Dockerfile, kna's
-# the ARG KNA_COMMIT line of images/kvm-node-agent/Dockerfile
-# (hack/ci-resolve-hvo-commit.sh and hack/ci-resolve-kna-commit.sh print
-# them). Upstream publishes a chart for every main commit under
+# Each is the chart of a pinned upstream main commit: hvo's is the "rev" key
+# of images/openstack-hypervisor-operator/source.json, kna's the "rev" key of
+# images/kvm-node-agent/source.json (hack/ci-resolve-hvo-commit.sh and
+# hack/ci-resolve-kna-commit.sh print them). Upstream publishes a chart for every main commit under
 # <version>_sha-<first seven characters>, with appVersion sha-<commit>, and
 # the chart renders the image as <repository>:<appVersion>: hvo-release.yaml
 # and kna-release.yaml override the repository with the images #1163 and

@@ -8,8 +8,8 @@
 # Default image: kvm-node-agent
 # Requires: Docker daemon running
 # The expected upstream commit comes from hack/ci-resolve-kna-commit.sh, which
-# reads the single pin in images/kvm-node-agent/Dockerfile. Set
-# KNA_DOCKERFILE to point that resolver at a different Dockerfile.
+# reads the "rev" key of images/kvm-node-agent/source.json. Set
+# KNA_SOURCE to point that resolver at a different pin file.
 
 set -euo pipefail
 
@@ -21,9 +21,11 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/static_image.sh
+source "$SCRIPT_DIR/../lib/static_image.sh"
 
-# The resolver is the only parser of the 'ARG KNA_COMMIT=' pin, so this
-# script never reads the Dockerfile itself.
+# The script reads the pin through the resolver, never
+# images/kvm-node-agent/source.json itself.
 EXPECTED=$("$SCRIPT_DIR/../../hack/ci-resolve-kna-commit.sh")
 
 # --- Test 1: the binary reports the pinned commit ---
@@ -85,6 +87,8 @@ echo ""
 test_user_and_entrypoint
 echo ""
 test_upstream_commit_label
+echo ""
+test_static_image_layout
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

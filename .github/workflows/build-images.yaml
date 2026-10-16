@@ -26,6 +26,7 @@ name: Build Images
       - tests/container-images/**
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
+      - tests/lib/static_image.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
       - flake.nix
@@ -40,7 +41,7 @@ name: Build Images
   # merge-manifest-and-attest), the hack scripts it calls, the flake inputs,
   # shared library, packages and locks the Nix-built images are built from with
   # the generator nix-lock-check runs, and the per-image verify scripts with
-  # the two helpers they source. The four structural scripts under
+  # the helpers they source. The four structural scripts under
   # tests/container-images/ belong to verify-container-images.yaml, which runs
   # them; this workflow never does, so they are excluded. GitHub
   # evaluates the list in order, which is why the negations follow the positive
@@ -88,6 +89,7 @@ name: Build Images
       - "!tests/container-images/verify_spdx_headers.sh"
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
+      - tests/lib/static_image.sh
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
       - flake.nix
@@ -243,7 +245,8 @@ jobs:
               - 'nix/lib/**'
               - '.github/actions/build-nix-image/**'
               - '.github/actions/setup-nix/**'
-            # ovn's verify script also sources the build-tools check.
+            # ovn's verify script also sources the build-tools check, hvo's
+            # and kna's the static-image check.
             ovn:
               - *nix_image_inputs
               - 'images/ovn/**'
@@ -263,10 +266,12 @@ jobs:
               - *nix_image_inputs
               - 'images/openstack-hypervisor-operator/**'
               - 'tests/container-images/verify_hvo.sh'
+              - 'tests/lib/static_image.sh'
             kna:
               - *nix_image_inputs
               - 'images/kvm-node-agent/**'
               - 'tests/container-images/verify_kna.sh'
+              - 'tests/lib/static_image.sh'
             # ---------------------------------------------------------------
             # The workflow itself, and everything any of its jobs may call.
             # ---------------------------------------------------------------

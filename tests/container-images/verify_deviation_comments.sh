@@ -20,16 +20,15 @@ FAIL=0
 # nix/lib/service-image.nix, which builds them all on the user entry
 # nix/lib/fhs-layout.nix writes. nova-compute still inherits the generic user
 # from python-base through its Dockerfile, and python-base is checked
-# separately: it is where that user is created. ovn creates the user itself
-# because it does not derive from python-base, so it has its own function
-# below. backup-shifter carries the same decision but is built by Nix without
-# service-image.nix: its function checks the comment in
-# images/backup-shifter/image.nix and the user entry nix/lib/fhs-layout.nix
-# writes. libvirt keeps root and creates no user at all, and has its own
-# function too. The openstack-hypervisor-operator image is a static Go binary
-# on distroless that runs as uid 65532 and creates no user either; it has its
-# own function. The kvm-node-agent image is a static Go binary on distroless
-# too, but runs as root, and has its own function as well.
+# separately: it is where that user is created. ovn and backup-shifter carry
+# the same decision but are built by Nix without service-image.nix: their
+# functions check the comment in images/<name>/image.nix and the user entry
+# nix/lib/fhs-layout.nix writes. libvirt keeps root and creates no user at
+# all, and has its own function too. The openstack-hypervisor-operator image
+# is a static Go binary that Nix builds on the distroless-equivalent image of
+# nix/lib/static-image.nix; it runs as uid 65532 and creates no user either,
+# and has its own function. The kvm-node-agent image is built the same way
+# but runs as root, and has its own function as well.
 SERVICES="keystone horizon glance placement barbican neutron cinder nova"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -89,17 +88,18 @@ test_nova_compute_deviation_comment() {
     "$(deviation_block "$dockerfile")" "openstack"
 }
 
-# --- Test 3: the ovn image creates the generic user itself ---
+# --- Test 3: the Nix-built ovn image carries the generic user itself ---
 test_ovn_deviation_comment() {
-  echo "Test: ovn Dockerfile has DEVIATION comment (user created locally)"
+  echo "Test: ovn image.nix has DEVIATION comment (user written by the FHS façade)"
 
-  local dockerfile="$PROJECT_ROOT/images/ovn/Dockerfile"
+  local nix="$PROJECT_ROOT/images/ovn/image.nix"
+  local fhs="$PROJECT_ROOT/nix/lib/fhs-layout.nix"
 
-  assert_file_contains "ovn/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "ovn/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment references the generic openstack user" \
-    "$(deviation_block "$dockerfile")" "openstack"
-  assert_file_contains "ovn/Dockerfile creates the user itself (not inherited from python-base)" \
-    "$dockerfile" "useradd -u 42424"
+    "$(deviation_block "$nix")" "openstack"
+  assert_file_contains_fixed "fhs-layout.nix writes the openstack user (not inherited from python-base)" \
+    "$fhs" 'openstack:x:${uid}:${gid}'
 }
 
 # --- Test 4: the Nix-built backup-shifter image carries the generic user itself ---
@@ -132,38 +132,41 @@ test_libvirt_deviation_comment() {
 
 # --- Test 6: the openstack-hypervisor-operator image runs as distroless nonroot ---
 test_hvo_deviation_comment() {
-  echo "Test: openstack-hypervisor-operator Dockerfile has DEVIATION comment (distroless, uid 65532)"
+  echo "Test: openstack-hypervisor-operator image.nix has DEVIATION comment (distroless, uid 65532)"
 
-  local dockerfile="$PROJECT_ROOT/images/openstack-hypervisor-operator/Dockerfile"
+  local nix="$PROJECT_ROOT/images/openstack-hypervisor-operator/image.nix"
 
-  assert_file_contains "openstack-hypervisor-operator/Dockerfile contains DEVIATION comment" \
-    "$dockerfile" "# DEVIATION"
+  assert_file_contains "openstack-hypervisor-operator/image.nix contains DEVIATION comment" \
+    "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment names the distroless base" \
-    "$(deviation_block "$dockerfile")" "distroless"
+    "$(deviation_block "$nix")" "distroless"
   assert_contains "DEVIATION comment names the openstack user it does not create" \
-    "$(deviation_block "$dockerfile")" "openstack"
-  assert_file_contains "openstack-hypervisor-operator/Dockerfile runs as 65532:65532" \
-    "$dockerfile" '^USER 65532:65532$'
+    "$(deviation_block "$nix")" "openstack"
+  # The image takes the default user of static-image.nix, the base's nonroot.
+  assert_file_not_contains "openstack-hypervisor-operator/image.nix sets no user of its own" \
+    "$nix" '^ *user = '
+  assert_file_contains_fixed "static-image.nix names nonroot 65532" \
+    "$PROJECT_ROOT/nix/lib/static-image.nix" 'nonroot = "65532";'
+  assert_file_contains_fixed "static-image.nix runs as nonroot by default" \
+    "$PROJECT_ROOT/nix/lib/static-image.nix" 'user ? "${nonroot}:${nonroot}",'
 }
 
 # --- Test 7: the kvm-node-agent image runs as root on distroless ---
 test_kna_deviation_comment() {
-  echo "Test: kvm-node-agent Dockerfile has DEVIATION comment (distroless, root)"
+  echo "Test: kvm-node-agent image.nix has DEVIATION comment (distroless, root)"
 
-  local dockerfile="$PROJECT_ROOT/images/kvm-node-agent/Dockerfile"
+  local nix="$PROJECT_ROOT/images/kvm-node-agent/image.nix"
 
-  assert_file_contains "kvm-node-agent/Dockerfile contains DEVIATION comment" \
-    "$dockerfile" "# DEVIATION"
+  assert_file_contains "kvm-node-agent/image.nix contains DEVIATION comment" \
+    "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment names the distroless base" \
-    "$(deviation_block "$dockerfile")" "distroless"
+    "$(deviation_block "$nix")" "distroless"
   assert_contains "DEVIATION comment names the openstack user it does not create" \
-    "$(deviation_block "$dockerfile")" "openstack"
+    "$(deviation_block "$nix")" "openstack"
   assert_contains "DEVIATION comment says why the agent runs as root" \
-    "$(deviation_block "$dockerfile")" "root"
-  assert_file_contains "kvm-node-agent/Dockerfile ignores hadolint's root-user rule" \
-    "$dockerfile" '^# hadolint ignore=DL3002$'
-  assert_file_contains "kvm-node-agent/Dockerfile runs as 0:0" \
-    "$dockerfile" '^USER 0:0$'
+    "$(deviation_block "$nix")" "root"
+  assert_file_contains_fixed "kvm-node-agent/image.nix runs as 0:0" \
+    "$nix" 'user = "0:0";'
 }
 
 # --- Run all tests ---

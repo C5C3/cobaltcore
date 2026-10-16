@@ -31,7 +31,7 @@
 #     docker runs.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
-# mirroring tests/unit/hack/ci_build_ovn_image_test.sh.
+# mirroring tests/unit/hack/ci_resolve_ovn_version_test.sh.
 #
 # Usage: bash tests/unit/hack/ci_build_service_image_test.sh
 

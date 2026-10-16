@@ -123,7 +123,7 @@ info "S1 totals: scanned=${go_total} fail=${go_fail}"
 # ---------------------------------------------------------------------------
 # S2 — *.sh
 # ---------------------------------------------------------------------------
-hdr "S2: *.sh under hack/, scripts/, tests/{scripts,unit,lib} has SPDX headers"
+hdr "S2: *.sh under hack/, scripts/, images/, tests/{scripts,unit,lib} has SPDX headers"
 sh_total=0
 sh_fail=0
 while IFS= read -r f; do
@@ -133,7 +133,7 @@ while IFS= read -r f; do
     fail "S2: ${f} missing SPDX header(s)"
     sh_fail=$((sh_fail + 1))
   fi
-done < <(find hack scripts tests/scripts tests/unit tests/lib -type f -name '*.sh' 2>/dev/null)
+done < <(find hack scripts images tests/scripts tests/unit tests/lib -type f -name '*.sh' 2>/dev/null)
 info "S2 totals: scanned=${sh_total} fail=${sh_fail}"
 [[ "${sh_fail}" -eq 0 ]] && pass "S2 clean (${sh_total} files scanned)"
 
