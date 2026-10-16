@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 51 chaos test suites validate operator behavior during and after fault
+The 52 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 51 test suites require the infrastructure stack to be deployed and healthy.
+All 52 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -465,6 +465,7 @@ with the new suites.
 | [openbao-sealed](#openbao-sealed) | — | `keystone-chaos-seal` | OpenBao sealed in place | `openbao-cluster-store` `Ready=False`, the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`, `SEALED-IN-PLACE-OK`: `openbao-0` with its pod UID and `restartCount` unchanged; after `unseal-openbao.sh` the store and the Keystone `Ready=True` within 5 minutes, workload budget zero |
 | [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `403` in its condition or an event, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
 | [envoy-gateway-outage](#envoy-gateway-outage) | — | `keystone-chaos-eg` | Gateway controller outage (configuration plane) | `UNPROGRAMMED-OK`: for 90 s a route added under the fault carries no `Accepted=True` and `GET /v3` through `placement.127-0-0-1.nip.io` gets no 200; `PROGRAMMED-OK`: `Accepted=True` and a 200 within 180 s of the lift; `Ready=True/AllReady` throughout, workload budget zero |
+| [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `keystone-chaos-proxy` | Gateway proxy pod kill (data plane) | Every pre-kill proxy pod UID gone, the proxy Deployment back at `readyReplicas == spec.replicas`, `Ready=True/AllReady`, the token stream through the listener within its measured budget |
 
 ---
 
@@ -3468,6 +3469,52 @@ delete the `PodChaos` first.
 
 ---
 
+### envoy-proxy-pod-kill
+
+**File:** `tests/e2e-chaos/envoy-proxy-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-kill` with `mode: all` kills every Envoy proxy pod
+of Gateway `openstack-gw`, the data plane that `envoy-gateway-outage` leaves
+running. EnvoyProxy `envoy-nodeport` sets no replica count, so the proxy runs the
+upstream default of one replica, and the listener refuses connections until the
+new pod is Ready. The suite measures what that costs the client traffic.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone behind the Gateway, selector guard, workload | `apply` + `assert` (5m) + `script` (1m) + `script` (6m) | `keystone-chaos-proxy` (database `keystone_chaos_proxy`, `spec.gateway` on `openstack-gw`) reaches `HTTPRouteReady=True` and `Ready=True/AllReady`; label `gateway.envoyproxy.io/owning-gateway-name=openstack-gw` selects at least one pod and no pod labelled `control-plane: envoy-gateway`; `workload.sh start` through the listener |
+| 2 | Kill every proxy pod | `script` (5m) | One script, so the snapshot and the wait share state: snapshots the proxy pod UIDs, runs `workload.sh mark fault-start`, applies `01-podchaos.yaml`, then `wait_replaced` of `lib/pods.sh` waits up to 240 s until no pre-kill UID is left and the proxy Deployment (same label) is at `readyReplicas == spec.replicas` |
+| 3 | Lift the fault | `delete` + `script` (1m) | Removes `PodChaos/kill-envoy-proxy`, then `workload.sh mark fault-end` |
+| 4 | Assert the Keystone | `assert` (5m) | `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` against the measured budget |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml` (`kill-envoy-proxy`,
+`mode: all`, `gracePeriod: 0`).
+
+**Workload:** the `token` stream against `keystone-chaos-proxy` through listener
+`https`, with the run options of `cert-manager-outage`. The ClusterIP of the proxy
+Service is not deleted with the pods, so `--resolve` keeps pointing at the new one.
+Started in step 1 and judged in step 5 against `failures=20 recovery=30s`, twice the
+ten failed records each of three kind runs saw while no proxy pod was Ready, all of
+them before the lift. The suite runs in the `pod` matrix entry.
+
+**Catch blocks:** `../diagnostics.sh chaos keystone-chaos-proxy` with
+`--dep-ns=envoy-gateway-system` and
+`--dep-label=gateway.envoyproxy.io/owning-gateway-name=openstack-gw`, and the
+workload dump. Steps 2 and 3 delete the `PodChaos` first.
+
+**Design notes:**
+
+- The proxy Deployment is named after a hash of the Gateway, so step 2 finds it by
+  the label the proxy Service selects on, the selector `hack/deploy-infra.sh` uses.
+- The failed records of the window are connections the listener refused while no
+  proxy pod was Ready; the token issue and the validation fail alike.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3826,6 +3873,10 @@ tests/e2e-chaos/
 │   ├── 02-httproute.yaml             HTTPRoute chaos-eg-late, added under the fault
 │   ├── chainsaw-test.yaml            Test: the late route waits for the controller
 │   └── probe-lib.sh                  Helpers the scripts source: route status, GET through the proxy
+├── envoy-proxy-pod-kill/             Envoy proxy pod kill under Gateway traffic
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-proxy behind openstack-gw
+│   ├── 01-podchaos.yaml              PodChaos pod-kill of every proxy pod of openstack-gw
+│   └── chainsaw-test.yaml            Test: every proxy pod replaced, the stream within its budget
 ├── eso-down/                         ESO controller at zero under a fresh Keystone
 │   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-eso, Ready before the fault
 │   ├── 01-externalsecrets.yaml       ExternalSecrets eso-down-db and eso-down-admin
