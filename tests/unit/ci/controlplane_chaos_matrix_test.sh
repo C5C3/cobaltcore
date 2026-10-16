@@ -61,6 +61,7 @@ test_the_entry_runs_the_controlplane_suites() {
     assert_not_contains "the pod entry does not run ${suite}" "$pod" "tests/e2e-chaos/${suite}"
   done
   for suite in "${POD_SUITES[@]}"; do
+    assert_contains "the pod entry runs ${suite}" "$pod" "tests/e2e-chaos/${suite}"
     assert_not_contains "it does not run the pod suite ${suite}" "$entry" "tests/e2e-chaos/${suite}"
   done
   assert_eq "it runs nothing but the health check and the ControlPlane suites" \

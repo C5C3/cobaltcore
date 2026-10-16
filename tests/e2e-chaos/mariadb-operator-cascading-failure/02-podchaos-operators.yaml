@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two operators of the cascade, killed together with the MariaDB fault:
+# the mariadb-operator, which writes the MariaDB CR's status, and the
+# keystone-operator, which reads it. Their webhooks and cert-controllers are
+# Deployments of their own with other app.kubernetes.io/name values.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-kill-mariadb-operator
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - mariadb-system
+    labelSelectors:
+      app.kubernetes.io/name: mariadb-operator
+  gracePeriod: 0
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-kill-keystone-operator
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - keystone-system
+    labelSelectors:
+      app.kubernetes.io/name: keystone-operator
+  gracePeriod: 0
