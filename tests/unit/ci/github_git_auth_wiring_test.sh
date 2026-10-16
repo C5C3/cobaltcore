@@ -6,14 +6,13 @@
 # Verify every CI step that reaches github.com with the runner's git hands the
 # workflow token to the script it runs.
 #
-# hack/ci-build-service-image.sh and hack/ci-deploy-korc.sh only authenticate
-# when GITHUB_TOKEN is set. A step that forgets the env clones anonymously,
+# hack/ci-deploy-korc.sh only authenticates when GITHUB_TOKEN is set. A step
+# that forgets the env clones anonymously,
 # which the self-hosted runners' git (Ubuntu 24.04's 2.43) cannot rely on
 # since 2026-09-02: GitHub answers the anonymous upload-pack request with a
 # 401 challenge and the clone dies on "could not read Username for
 # 'https://github.com'". The list of steps is derived from ci.yaml itself, so
-# a new caller of one of the scripts is caught the moment it lands without
-# the env.
+# a new caller of the script is caught the moment it lands without the env.
 #
 # Usage: bash tests/unit/ci/github_git_auth_wiring_test.sh
 
@@ -33,7 +32,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 TOKEN_ENV='GITHUB_TOKEN: ${{ github.token }}'
-CLONING_SCRIPTS="hack/ci-build-service-image.sh hack/ci-deploy-korc.sh"
+CLONING_SCRIPTS="hack/ci-deploy-korc.sh"
 
 # steps_running <script>
 #
@@ -79,8 +78,6 @@ test_known_callers_are_found() {
   assert_contains "e2e-operator installs K-ORC for the c5c3 leg" "$korc_steps" \
     "e2e-operator	Install CRDs watched by the c5c3-operator"
   assert_contains "e2e-controlplane deploys K-ORC" "$korc_steps" "e2e-controlplane	Deploy K-ORC"
-  assert_contains "build-e2e-images builds the service images" \
-    "$(steps_running hack/ci-build-service-image.sh)" "build-e2e-images	Build service images"
 }
 
 # ---------------------------------------------------------------------------

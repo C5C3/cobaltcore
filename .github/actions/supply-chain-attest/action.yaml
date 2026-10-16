@@ -4,8 +4,7 @@
 
 # Composite action encapsulating the supply chain security sequence
 # (SBOM generation, vulnerability scanning, SARIF upload, attestation, and
-# cosign signing) repeated across python-base, venv-builder, tempest, and
-# service image build jobs. The SARIF upload runs on push events only; a
+# cosign signing) repeated across the image build and merge jobs. The SARIF upload runs on push events only; a
 # pull request gets the Grype scan and nothing else.
 
 name: Supply chain attest
@@ -16,18 +15,18 @@ description: >
 
 inputs:
   image-name:
-    description: Bare image name without tag/digest (e.g. ghcr.io/c5c3/python-base)
+    description: Bare image name without tag/digest (e.g. ghcr.io/c5c3/keystone-federation-proxy)
     required: true
   image-digest:
     description: Image digest (sha256:...) — required when scan-mode=sbom, unused in image mode
     required: false
     default: ''
   sbom-output-file:
-    description: SBOM output filename (e.g. sbom-python-base.cyclonedx.json) — required when scan-mode=sbom
+    description: SBOM output filename (e.g. sbom-keystone-federation-proxy.cyclonedx.json) — required when scan-mode=sbom
     required: false
     default: ''
   grype-category:
-    description: SARIF category for GitHub Security tab (e.g. grype-python-base); unused on pull_request events, which upload no SARIF
+    description: SARIF category for GitHub Security tab (e.g. grype-keystone-federation-proxy); unused on pull_request events, which upload no SARIF
     required: true
   scan-mode:
     description: "'sbom' for full supply chain (non-PR) or 'image' for scan-only (PR)"

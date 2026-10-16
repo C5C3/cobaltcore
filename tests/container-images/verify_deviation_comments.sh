@@ -3,8 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify DEVIATION comments are present in the Dockerfiles and the Nix image
-# expressions
+# Verify DEVIATION comments are present in the Nix image expressions
 # Usage: bash tests/container-images/verify_deviation_comments.sh
 
 set -euo pipefail
@@ -18,13 +17,13 @@ FAIL=0
 # Service images built by Nix: each images/<svc>/image.nix carries the
 # DEVIATION comment and points at the full paragraph in
 # nix/lib/service-image.nix, which builds them all on the user entry
-# nix/lib/fhs-layout.nix writes. nova-compute still inherits the generic user
-# from python-base through its Dockerfile, and python-base is checked
-# separately: it is where that user is created. ovn and backup-shifter carry
-# the same decision but are built by Nix without service-image.nix: their
-# functions check the comment in images/<name>/image.nix and the user entry
-# nix/lib/fhs-layout.nix writes. libvirt keeps root and creates no user at
-# all, and has its own function too. The openstack-hypervisor-operator image
+# nix/lib/fhs-layout.nix writes. nova-compute is built on the same library
+# without a source-refs.yaml key of its own, so it has its own function. ovn
+# and backup-shifter carry the same decision but are built by Nix without
+# service-image.nix: their functions check the comment in
+# images/<name>/image.nix and the user entry nix/lib/fhs-layout.nix writes.
+# libvirt keeps root and creates no user at all, and has its own function
+# too. The openstack-hypervisor-operator image
 # is a static Go binary that Nix builds on the distroless-equivalent image of
 # nix/lib/static-image.nix; it runs as uid 65532 and creates no user either,
 # and has its own function. The kvm-node-agent image is built the same way
@@ -37,21 +36,10 @@ source "$SCRIPT_DIR/../lib/assertions.sh"
 # Print the DEVIATION comment block: the '# DEVIATION' line plus the comment
 # lines that follow it, stopping at the first non-comment line. Scoping the
 # rationale assertion to this block matters — 'openstack' also appears in
-# /var/lib/openstack paths and USER openstack, so grepping the whole
-# Dockerfile would pass no matter what the comment says.
+# /var/lib/openstack paths and in the user entries, so grepping the whole
+# file would pass no matter what the comment says.
 deviation_block() {
   awk '/^# DEVIATION/{f=1} f&&!/^#/{exit} f' "$1"
-}
-
-# --- Test 1: python-base has DEVIATION comment ---
-test_python_base_deviation_comment() {
-  echo "Test: python-base Dockerfile has DEVIATION comment"
-
-  local dockerfile="$PROJECT_ROOT/images/python-base/Dockerfile"
-
-  assert_file_contains "python-base/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
-  assert_contains "DEVIATION comment references generic openstack user" \
-    "$(deviation_block "$dockerfile")" "openstack"
 }
 
 # --- Test 2: every Nix-built service image has a DEVIATION comment ---
@@ -98,7 +86,7 @@ test_ovn_deviation_comment() {
   assert_file_contains "ovn/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment references the generic openstack user" \
     "$(deviation_block "$nix")" "openstack"
-  assert_file_contains_fixed "fhs-layout.nix writes the openstack user (not inherited from python-base)" \
+  assert_file_contains_fixed "fhs-layout.nix writes the openstack user" \
     "$fhs" 'openstack:x:${uid}:${gid}'
 }
 
@@ -112,7 +100,7 @@ test_backup_shifter_deviation_comment() {
   assert_file_contains "backup-shifter/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment references the generic openstack user" \
     "$(deviation_block "$nix")" "openstack"
-  assert_file_contains_fixed "fhs-layout.nix writes the openstack user (not inherited from python-base)" \
+  assert_file_contains_fixed "fhs-layout.nix writes the openstack user" \
     "$fhs" 'openstack:x:${uid}:${gid}'
 }
 
@@ -172,7 +160,6 @@ test_kna_deviation_comment() {
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
-test_python_base_deviation_comment
 for service in $SERVICES; do
   echo ""
   test_service_deviation_comment "$service"

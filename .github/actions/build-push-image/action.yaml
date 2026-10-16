@@ -14,10 +14,10 @@ description: >
 
 inputs:
   image-name:
-    description: Full image name without tag (e.g. ghcr.io/c5c3/python-base)
+    description: Full image name without tag (e.g. ghcr.io/c5c3/keystone-federation-proxy)
     required: true
   context:
-    description: Build context path (e.g. images/python-base)
+    description: Build context path (e.g. images/keystone-federation-proxy)
     required: true
   file:
     description: Dockerfile path (empty = <context>/Dockerfile)

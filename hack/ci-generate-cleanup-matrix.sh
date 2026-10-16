@@ -22,15 +22,11 @@
 #
 # Outputs written to GITHUB_OUTPUT (printed to stdout when run outside CI):
 #   cleanup-packages     — every published container package
-#   cleanup-e2e-packages — the subset build-e2e-images pushes run-scoped tags
-#                          for; the base images are built inline, never tagged
-#                          per run (see the "Push E2E images to GHCR" step)
+#   cleanup-e2e-packages — the packages build-e2e-images may push run-scoped
+#                          tags for (see the "Push E2E images to GHCR" step):
+#                          every published package
 
 set -euo pipefail
-
-# Base images are consumed as build contexts, not deployed into E2E clusters,
-# so build-e2e-images never gives them an e2e-<run_id>-* tag.
-E2E_EXCLUDED="python-base venv-builder"
 
 shopt -s nullglob
 
@@ -74,29 +70,18 @@ if [[ -n "${CLEANUP_PACKAGES:-}" ]]; then
   packages=("${requested[@]}")
 fi
 
-e2e_packages=()
-for package in "${packages[@]}"; do
-  skip=false
-  for excluded in ${E2E_EXCLUDED}; do
-    [[ "${package}" == "${excluded}" ]] && skip=true
-  done
-  [[ "${skip}" == true ]] && continue
-  e2e_packages+=("${package}")
-done
-
 to_json_array() {
   printf '%s\n' "$@" | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))'
 }
 
 all_json=$(to_json_array "${packages[@]}")
-e2e_json=$(to_json_array "${e2e_packages[@]}")
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "cleanup-packages=${all_json}"
-    echo "cleanup-e2e-packages=${e2e_json}"
+    echo "cleanup-e2e-packages=${all_json}"
   } >> "${GITHUB_OUTPUT}"
 fi
 
 echo "cleanup-packages=${all_json}"
-echo "cleanup-e2e-packages=${e2e_json}"
+echo "cleanup-e2e-packages=${all_json}"

@@ -66,8 +66,7 @@ stage_tree() {
   write_fake_compute "$t" "$1"
   slug="${1/./-}"
   write_tempest_fallbacks "$t" "$slug"
-  for f in hack/ci-generate-tempest-matrix.sh hack/deploy-infra.sh \
-    hack/ci-build-service-image.sh hack/run-tempest.sh \
+  for f in hack/ci-generate-tempest-matrix.sh hack/deploy-infra.sh hack/run-tempest.sh \
     renovate.json .github/workflows/ci.yaml operators/c5c3/api/v1alpha1/controlplane_types.go; do
     : >"$t/$f"
   done
