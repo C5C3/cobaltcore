@@ -75,9 +75,9 @@ on the ControlPlane devstack.
   External Secrets Operator, MariaDB, Memcached, the Envoy Gateway, and the
   RabbitMQ Cluster Operator behind the message bus. See
   [Infrastructure Manifests](./reference/infrastructure/infrastructure-manifests.md).
-- **CI/CD & container images.** GitHub Actions for CI and image builds, Nix
-  builds for the OpenStack service images and Tempest, and the python-base /
-  venv-builder layers nova-compute still builds on. See the
+- **CI/CD & container images.** GitHub Actions for CI and image builds, and
+  Nix builds for the OpenStack service images, nova-compute, libvirt and
+  Tempest. See the
   [CI Workflow](./reference/ci-cd/ci-workflow.md) and
   [Nix Image Build](./reference/ci-cd/nix-image-build.md).
 - **Test suites.** Unit, envtest integration, Chainsaw E2E, Tempest, and Chaos

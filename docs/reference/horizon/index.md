@@ -55,7 +55,7 @@ The v1 operator resolves the onboarding decisions as follows:
   file; uWSGI serves the result via `--static-map`. No runtime init
   container. See [Container Images](../ci-cd/container-images.md#horizon).
 - **WSGI server: uWSGI.** Pinned in the horizon lock under `nix/locks/` from
-  the venv-builder pins and operationally identical to the keystone
+  the base pins of `nix/base-requirements.txt` and operationally identical to the keystone
   deployment; uWSGI loads `openstack_dashboard.wsgi` directly. No per-CR uWSGI
   knobs in v1.
 - **Login-page probes.** The readiness and startup probes GET `/auth/login/`

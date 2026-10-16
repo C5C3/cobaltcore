@@ -5234,14 +5234,20 @@ The libvirt DaemonSet runs `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` (see
 [libvirt](../ci-cd/container-images.md#libvirt)) on the nodes labelled
 `openstack.c5c3.io/nova-compute-pool=lab`, the pool's own label, as uid 0 in
 the host's network, PID and IPC namespaces; `host-prepare` and `libvirtd` run
-privileged, `ceph-secret` does not (below). `<tag>` is the keeper
-tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, which
-`hack/ci-tag-libvirt-keeper.sh` mints once on `main` and never moves (see
-[Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)).
+privileged, `ceph-secret` does not (below). `<tag>` is a keeper tag:
+`<libvirt-version>-r<N>`, such as `12.2.0-r57`, which
+`hack/ci-tag-libvirt-keeper.sh` creates once on `main` and never moves, where
+`N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`,
+`nix/lib/image-defaults.nix` and `flake.lock` (see
+[Release-independent images](../ci-cd/build-images-workflow.md#release-independent-images)),
+or `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r2`, a
+keeper of the Docker-built image the lab ran before #1407 and rolls back to.
 `imagePullPolicy: IfNotPresent` pulls the digest once per node. Renovate
-proposes each new keeper tag as one pull request, never automerged, that moves
-all eight lines naming the image: the three containers here, the load test of
-the [Node probe](#node-probe), both containers of `nfs-client-modules` in the
+proposes each new keeper tag, a libvirt major included, as one pull request,
+never automerged; the lab never pins a branch build, whose `<sha>` tag the
+cleanup removes after 24 hours. The pull request moves all eight lines naming
+the image: the three containers here, the load test of the
+[Node probe](#node-probe), both containers of `nfs-client-modules` in the
 [Lab NFS stack](#lab-nfs-stack), and both containers of `chaos-mesh-modules`
 in the [Lab Chaos Mesh](#lab-chaos-mesh).
 The update
@@ -5384,13 +5390,10 @@ leaves the secret as it is, and the next pod's container defines it again.
 
 A lab deployed before the container existed gets it when its libvirt pods are
 deleted, as with every change to this `OnDelete` DaemonSet. The container
-carries the image pin of the other two. An image built before the Dockerfile
-installed `qemu-block-extra` (see
-[libvirt](../ci-cd/container-images.md#libvirt)) has `bash` and `virsh` for
-the container but no rbd block module, so its QEMU cannot open an RBD volume.
-The pins move to an image with the module by Renovate's group bump once `main`
-has built it, and the bump reaches a node when its libvirt pod is deleted
-again.
+carries the image pin of the other two. The Nix-built image compiles QEMU's
+rbd block driver in (see [libvirt](../ci-cd/container-images.md#libvirt)); a
+Docker-built image from before #1345 has `bash` and `virsh` for the container
+but no rbd block module, so its QEMU cannot open an RBD volume.
 
 A server that holds an attached RBD volume keeps the key its QEMU authenticated
 with until the server is live-migrated or restarted (OSSN-0108), and a rotated
@@ -5439,7 +5442,7 @@ whenever QEMU runs privileged, also under `security_driver = "none"`
 (`qemuSecurityInit` in `src/qemu/qemu_driver.c`). With dynamic ownership on,
 that driver hands every disk of a domain to QEMU's user, `0:0` here
 (`virSecurityDACSetImageLabelInternal` in `src/security/security_dac.c`). Both
-were read at libvirt v9.0.0; the image installs the libvirt of Ubuntu noble.
+were read at libvirt v9.0.0; the image runs libvirt 12.2.0 from nixpkgs.
 Cinder's NFS backends keep each volume file `42424:42424` with mode `660`
 (`nas_secure_file_permissions = true`, see
 [Rendered backend section](../cinder/cinder-backend-crd.md#rendered-backend-section)),
@@ -5844,6 +5847,50 @@ The fake driver of the kind suites reaches none of it:
 | Console log after a libvirt restart | with libvirt's default `stdio_handler = "logd"`, `openstack console log show` stopped at the restart: QEMU's log went through `virtlogd`, which ran in the old pod. The guest and its network kept running. With `file` the log grows across a restart | `stdio_handler = "file"` in `qemu.conf` ([#1174](https://github.com/c5c3/cobaltcore/issues/1174)) |
 | CPU model change under a server | on 2026-10-01 a server booted with `host-passthrough` kept that CPU through a hard reboot after the pool moved to `custom`; the run recorded no time for the reboot. The cpuMode block above ran on 2026-10-02 on the first node. A, after the boot: the pod's file says `cpu_mode = host-passthrough`, the domain `mode='host-passthrough'`. B, before the reboot: a pod started 10 seconds after the patch, its file says `cpu_mode = custom` and `cpu_models = Skylake-Server-IBRS`, the domain is still `host-passthrough`. B, after the reboot: the same pod, and the live and the `--inactive` `<cpu>` say `mode='custom'` with the model `Skylake-Server-IBRS`. C, first reboot: the pod of B with its `custom` file, `DaemonSetReady` `False`, the domain `mode='custom'` while the CR says `host-passthrough`. C, second reboot: a new pod, its file says `cpu_mode = host-passthrough` and no `cpu_models`, the domain `mode='host-passthrough'`. A first pass of the same run sent C's second reboot 3 seconds after the new pods started, before `nova-compute` took requests: it cleared the reboot's task state at start-up, the reboot action ended in `Error`, `--wait` reported success and the domain stayed `custom`. `wait_compute` comes from that pass | [Changing the libvirt settings of a pool with servers](../nova/novacompute-crd.md#changing-the-libvirt-settings-of-a-pool-with-servers) |
 | NFS server restart under an attached volume | on 2026-10-04 a PodChaos `pod-kill` of the NFS server (F4) and its scale-down for 300 seconds (F5) restarted `nfsd`, which logged `Unable to initialize client recovery tracking! (-22)`. The compute node logged `lost 1 locks`, and the guest got `I/O error, dev vdb` on every request to the attached volume until a hard reboot, while Nova, Cinder and the CRs reported nothing (see [Lab fault runs](#lab-fault-runs)) | [#1245](https://github.com/c5c3/cobaltcore/issues/1245): the server is NFS-Ganesha, with its client records on the export claim and a fixed server scope, and `cinder-nfs-outage` checks that a lock outlives a restart; F4 and F5 have not run on it yet |
+
+#### libvirt 12 on the lab
+
+The lab's libvirt image moves from the Docker build, libvirt 10.0.0 and QEMU
+8.2.2 of Ubuntu noble, to the Nix build of #1407, libvirt 12.2.0 and QEMU
+10.2.4 at the pinned `nixpkgs-images`. nova-compute moves with it, so its
+`libvirt-python` talks to both daemons while the lab rolls node by node. The
+roll runs on Renovate's pull request that moves the eight pins from the
+Docker-built keeper to the first Nix keeper, once `main` has minted it:
+
+1. Set `spec.image` of `NovaCompute/lab` to `ghcr.io/c5c3/nova-compute` with
+   the composite tag of the image under test, and wait for its DaemonSet to
+   roll. The new nova-compute then talks to the old libvirt.
+2. Boot a server on each node (Part 2, Step 5 of the
+   [Quick Start (metal-stack)](../../quick-start-metal-stack.md)) and
+   live-migrate one (Step 8).
+3. Apply the overlay with the pull request's pins,
+   `kubectl apply -k deploy/lab/metal-stack/hypervisor`. The DaemonSet is
+   `OnDelete`, so nothing restarts.
+4. On one node, live-migrate its servers away and delete its libvirt pod. Once
+   the pod is Ready, `virsh version` prints libvirt 12.2.0 and QEMU 10.2.4.
+5. On each remaining node, delete the libvirt pod without moving its servers,
+   since QEMU keeps running them while the pod restarts. Once the pod is
+   Ready, run `openstack server reboot --hard --wait` on each server of the
+   node, and compare `virsh dumpxml <uuid> | grep machine=` before and after:
+   `pc-i440fx-noble` before, `pc-i440fx-10.2` after. Then delete the pods of
+   `nfs-client-modules` and `chaos-mesh-modules`, so they run the new pin.
+6. Run Part 2, Steps 5 to 11, and Part 3, Steps 1 to 4.
+7. Once `main` publishes the image, remove `spec.image`, so the pool follows
+   `nova-compute:<release>` again.
+
+A server started on QEMU 8.2.2 cannot be live-migrated to a rolled node.
+Nova asks for the machine type `pc`, which Ubuntu's QEMU 8.2.2 resolves to
+`pc-i440fx-noble` (and `q35` to `pc-q35-noble`). libvirt records the resolved
+name in the domain XML that a live migration sends, and the libvirt of a
+rolled node refuses it: `Emulator '/usr/bin/qemu-system-x86_64' does not
+support machine type 'pc-i440fx-noble'`. A cold migration would write the XML
+anew, but the compute image has no ssh client to reach the other node with.
+A hard reboot writes it anew on the same node, where QEMU 10.2.4 resolves
+`pc` to `pc-i440fx-10.2`. Live migration works again between rolled nodes.
+
+A migration from QEMU 10.2.4 back to 8.2.2 is not part of the roll. The prune
+keeps the Docker-built keeper tags as the rollback target. No lab run of the
+roll is recorded yet.
 
 ### Node port check
 

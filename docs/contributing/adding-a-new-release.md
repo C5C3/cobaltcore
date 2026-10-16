@@ -54,8 +54,8 @@ file:
   state the reason in a comment above the pin, and add a `packageRules` entry
   only when a hold is needed. Major updates are disabled under
   `releases/**/test-refs.yaml`, so older releases keep their tempest major.
-- **`extra-packages.yaml`**: per-service `pip_extras` / `pip_packages` /
-  `apt_packages`; usually carried over unchanged. A new tag can move runtime
+- **`extra-packages.yaml`**: per-service `pip_extras` / `pip_packages`;
+  usually carried over unchanged. A new tag can move runtime
   packages into extras (cinder 29.0.0 moved boto3, google-api-python-client
   and python-swiftclient into the `s3`, `gcs` and `swift` extras) or ship a
   wheel that omits a dependency (os-vif 5.2.1 without pyroute2);
@@ -303,7 +303,7 @@ None of these are mechanical; decide and record each in the PR description:
   `basic-deployment` suites, `deploy/kind/controlplane/controlplane.yaml`
   (`openStackRelease`), the `hack/deploy-infra.sh` image preload, the
   `${VAR:-YYYY.N}` fallbacks in `hack/` (`RELEASE` in
-  `ci-build-service-image.sh` and `run-tempest.sh`; `IMAGE_TAG` in
+  `run-tempest.sh`; `IMAGE_TAG` in
   `perf-reconcile-benchmark.sh`), the
   slug fallbacks of `hack/ci-run-tempest.sh` (`CONFIG_DIR` defaults to
   `tests/tempest/${SERVICE}-<slug>` and `SERVICE_K8S_NAME` to
