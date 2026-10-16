@@ -112,6 +112,11 @@ Each phase is a spec transition on the same `ControlPlane` CR, forward-only,
 and leaves the system in a supported steady state. A brownfield operator can
 stop at any phase indefinitely.
 
+![Four phases of brownfield Keystone adoption: identity-only management is implemented; infrastructure attach, Keystone takeover, and steady state are sketches.](../diagrams/brownfield-keystone-adoption-phases.svg)
+
+For instructions on implementing phase 1, see the
+[Adopt an External Keystone guide](../guides/keystone/adopt-external-keystone.md).
+
 | Phase | Name | Status | Operator manages | Existing installation keeps |
 |-------|------|--------|------------------|------------------------------|
 | 1 | Identity-only (service-less) | **Implemented** | App credentials, service accounts, catalog entries, secret rotation via K-ORC + OpenBao | Keystone API, database, admin password, all data |

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="380" viewBox="0 0 1600 380" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Four phases of brownfield Keystone adoption">
+<title>Brownfield Keystone adoption phases</title>
+<desc>Phase 1 identity-only management is implemented. Phases 2 infrastructure attach, 3 Keystone takeover, and 4 steady state remain sketches. Adoption proceeds forward on the same ControlPlane, and an operator can stop after any phase.</desc>
+<rect width="1600" height="380" fill="#F6F5F1"/>
+<text x="48" y="58" font-size="30" font-weight="700" fill="#2B3440">Brownfield Keystone adoption</text>
+<rect x="48" y="105" width="330" height="190" rx="12" fill="#E4F0E8" stroke="#4F8064" stroke-width="2"/>
+<text x="70" y="142" font-size="18" font-weight="700" fill="#2B3440">PHASE 1 · IMPLEMENTED</text>
+<text x="70" y="180" font-size="25" font-weight="700" fill="#2B3440">Identity-only</text>
+<text x="70" y="215" font-size="18" fill="#55606E">Manage app credentials and</text>
+<text x="70" y="240" font-size="18" fill="#55606E">service accounts; import existing</text>
+<text x="70" y="265" font-size="18" fill="#55606E">identity and catalog objects.</text>
+<rect x="438" y="105" width="330" height="190" rx="12" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="460" y="142" font-size="18" font-weight="700" fill="#55606E">PHASE 2 · SKETCH</text>
+<text x="460" y="180" font-size="25" font-weight="700" fill="#2B3440">Infrastructure attach</text>
+<text x="460" y="215" font-size="18" fill="#55606E">Attach the existing database</text>
+<text x="460" y="240" font-size="18" fill="#55606E">and cache; later replace them</text>
+<text x="460" y="265" font-size="18" fill="#55606E">with managed infrastructure.</text>
+<rect x="828" y="105" width="330" height="190" rx="12" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="850" y="142" font-size="18" font-weight="700" fill="#55606E">PHASE 3 · SKETCH</text>
+<text x="850" y="180" font-size="25" font-weight="700" fill="#2B3440">Keystone takeover</text>
+<text x="850" y="215" font-size="18" fill="#55606E">Import key material, skip</text>
+<text x="850" y="240" font-size="18" fill="#55606E">bootstrap, and cut over the</text>
+<text x="850" y="265" font-size="18" fill="#55606E">Keystone API.</text>
+<rect x="1218" y="105" width="330" height="190" rx="12" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1240" y="142" font-size="18" font-weight="700" fill="#55606E">PHASE 4 · SKETCH</text>
+<text x="1240" y="180" font-size="25" font-weight="700" fill="#2B3440">Steady state</text>
+<text x="1240" y="215" font-size="18" fill="#55606E">Managed infrastructure and</text>
+<text x="1240" y="240" font-size="18" fill="#55606E">Keystone, with the full</text>
+<text x="1240" y="265" font-size="18" fill="#55606E">ControlPlane lifecycle.</text>
+<line x1="380" y1="200" x2="424" y2="200" stroke="#3A4452" stroke-width="3"/>
+<polygon points="438,200 422,192 422,208" fill="#3A4452"/>
+<line x1="770" y1="200" x2="814" y2="200" stroke="#3A4452" stroke-width="3"/>
+<polygon points="828,200 812,192 812,208" fill="#3A4452"/>
+<line x1="1160" y1="200" x2="1204" y2="200" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1218,200 1202,192 1202,208" fill="#3A4452"/>
+<text x="48" y="342" font-size="18" fill="#55606E">Forward-only transitions on the same ControlPlane. Each phase leaves a supported state; adoption can stop after any phase.</text>
+</svg>
