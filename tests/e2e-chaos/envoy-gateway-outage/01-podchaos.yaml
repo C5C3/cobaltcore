@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding the Envoy Gateway controller down: the configuration
+# plane of every Gateway. The proxy pods it rolled out carry other labels and
+# keep serving the configuration they hold. duration bounds a run that dies
+# before the suite deletes this CR.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-envoy-gateway
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - envoy-gateway-system
+    labelSelectors:
+      control-plane: envoy-gateway

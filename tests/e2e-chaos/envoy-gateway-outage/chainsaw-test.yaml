@@ -1,0 +1,207 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the Envoy Gateway controller held down.
+#
+# Fault: a PodChaos pod-failure holds the Envoy Gateway controller
+# (HelmRelease envoy-gateway-system/envoy-gateway, pods labelled
+# control-plane: envoy-gateway) down while an HTTPRoute is added to listener
+# https-placement of Gateway openstack-gw. The controller is the configuration
+# plane; the proxy it rolled out is the data plane, which
+# envoy-proxy-pod-kill kills.
+#
+# Claim, phase by phase:
+#   held    For 90 s the late route carries no Accepted=True, and GET /v3
+#           through the placement hostname gets no 200: a 404 or a failed
+#           handshake both count (UNPROGRAMMED-OK). The proxy keeps serving
+#           its last configuration, so the Keystone route keeps answering.
+#   lifted  The controller is back, and within 180 s the late route carries
+#           Accepted=True and the same GET answers 200 (PROGRAMMED-OK).
+#
+# Blast radius: no Gateway or route change of the cluster is programmed while
+# the controller is down; traffic on the existing routes is not touched. The
+# PodChaos is the only shared state to undo, so steps 2 to 4 delete it in
+# their catch blocks.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-eg through the https listener of openstack-gw, by
+# hostname with --resolve to the proxy's ClusterIP and --insecure-tls for the
+# self-signed leaf. The controller is on no request path, so the budget is
+# zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: envoy-gateway-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone behind the Gateway, workload through the listener ──
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-eg
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          GW_IP="$(gateway_ip)"
+          ../lib/workload.sh start envoy-gateway-outage -- --streams token \
+            --keystone https://keystone.127-0-0-1.nip.io/v3 \
+            --resolve "keystone.127-0-0-1.nip.io:${GW_IP}" --insecure-tls
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-eg --dep-ns=envoy-gateway-system --dep-label=control-plane=envoy-gateway
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump envoy-gateway-outage
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop envoy-gateway-outage
+  # ── Step 2: Hold the controller down, then add a route ─────────────────
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark envoy-gateway-outage fault-start
+    - apply:
+        file: 01-podchaos.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl wait podchaos/fail-envoy-gateway -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched. The kubelet stops
+          # the running controller seconds later, and only then is it gone.
+          kubectl wait pod -n envoy-gateway-system -l control-plane=envoy-gateway \
+            --for=condition=Ready=false --timeout=120s
+    - apply:
+        file: 02-httproute.yaml
+    catch:
+    - &lift
+      script:
+        content: kubectl delete podchaos fail-envoy-gateway -n "$NAMESPACE" --ignore-not-found
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-eg --dep-ns=envoy-gateway-system --dep-label=control-plane=envoy-gateway
+    - &route-dump
+      script:
+        timeout: 1m
+        content: |
+          kubectl get httproute -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl logs -n envoy-gateway-system -l control-plane=envoy-gateway --tail=100 2>&1 || true
+    - *workload-dump
+  # ── Step 3: Nothing programs the late route ────────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          GW_IP="$(gateway_ip)"
+          end=$(( $(date +%s) + 90 ))
+          while true; do
+            accepted="$(route_accepted)"
+            status="$(late_status)"
+            if [ "$accepted" = "True" ]; then
+              echo "FAIL: ${ROUTE} carries Accepted=True while the controller is down"
+              exit 1
+            fi
+            if [ "$status" = "200" ]; then
+              echo "FAIL: GET /v3 through ${LATE_HOST} answered 200 while the controller is down"
+              exit 1
+            fi
+            echo "held: Accepted ${accepted:-<none>}, GET /v3 answered ${status}"
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "UNPROGRAMMED-OK: ${ROUTE} stayed unprogrammed for 90 s"
+    catch:
+    - *lift
+    - *chaos-diagnostics
+    - *route-dump
+    - *workload-dump
+  # ── Step 4: Lift the fault ─────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: fail-envoy-gateway
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark envoy-gateway-outage fault-end
+    catch:
+    - *lift
+    - *workload-dump
+  # ── Step 5: The controller programs the late route ─────────────────────
+  - try:
+    - script:
+        timeout: 7m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system --timeout=180s
+          GW_IP="$(gateway_ip)"
+          deadline=$(( $(date +%s) + 180 ))
+          while true; do
+            accepted="$(route_accepted)"
+            status="$(late_status)"
+            if [ "$accepted" = "True" ] && [ "$status" = "200" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 180 s after the lift ${ROUTE} reads Accepted ${accepted:-<none>} and GET /v3 answered ${status}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "PROGRAMMED-OK: ${ROUTE} is Accepted and GET /v3 through ${LATE_HOST} answers 200"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-eg
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *route-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify envoy-gateway-outage
+    catch:
+    - *workload-dump

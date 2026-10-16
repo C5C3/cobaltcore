@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The route the suite adds while the controller is held down. It attaches to
+# listener https-placement of openstack-gw, which no chaos suite routes
+# otherwise, and sends every path to the suite's Keystone, so a GET /v3
+# through the placement hostname answers 200 once the route is programmed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: chaos-eg-late
+  namespace: openstack
+spec:
+  parentRefs:
+  - name: openstack-gw
+    sectionName: https-placement
+  hostnames:
+  - placement.127-0-0-1.nip.io
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: keystone-chaos-eg
+      port: 5000
