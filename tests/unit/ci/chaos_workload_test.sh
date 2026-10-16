@@ -10,7 +10,9 @@
 #      and a 401 each end up in the record the harness promises; a payload
 #      or a provider listing that differs fails its read, and so does a
 #      provider create without a Location; a bad command line exits 2 before
-#      any request; the stop file sweeps, checks and ends in DONE; stuck
+#      any request; --resolve reaches the stub by a name that resolves
+#      nowhere, and --insecure-tls an HTTPS stub with a self-signed
+#      certificate; the stop file sweeps, checks and ends in DONE; stuck
 #      resources fail their check after the settle window.
 #   2. workload.py evaluate, on hand-written logs: each violation exits 1,
 #      each input error exits 2, and the summary line carries the counts.
@@ -53,10 +55,14 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 TMP_DIR="$(mktemp -d)"
 STUB_PID=""
+TLS_STUB_PID=""
 cleanup() {
-  if [ -n "$STUB_PID" ]; then
-    kill "$STUB_PID" 2>/dev/null || true
-  fi
+  local pid
+  for pid in "$STUB_PID" "$TLS_STUB_PID"; do
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
@@ -134,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 code, body, headers = self.route(method, url.path, query, raw)
                 STATE["requests"].append(
-                    [time.time(), method, self.path, code])
+                    [time.time(), method, self.path, code,
+                     self.headers.get("Host")])
                 return self.reply(code, body, headers)
         self.reply(code, body, {})
 
@@ -516,6 +523,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+# With a certificate and its key the stub serves HTTPS.
+if len(sys.argv) == 4:
+    import ssl
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(sys.argv[2], sys.argv[3])
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
 with open(sys.argv[1] + ".tmp", "w") as handle:
     handle.write(str(server.server_address[1]))
 # The rename makes the port file appear whole.
@@ -769,6 +782,110 @@ test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going() {
   assert_contains "the token stream kept writing ok records" "$(records 'r["s"] == "token"')" "token validate true 200"
   assert_eq "no token record failed" "" "$(records 'r["s"] == "token" and not r["ok"]')"
   assert_eq "a failed create leaves nothing to clean up" "" "$(records 'r["op"].startswith("cleanup-")')"
+}
+
+# --- Test 2c --------------------------------------------------------------
+test_resolve_sends_the_request_to_the_mapped_address() {
+  echo "Test: --resolve reaches the stub by a name that resolves nowhere and keeps that name in the Host header"
+  ctl POST /_control/reset >/dev/null
+  local port name
+  port="$(cat "$TMP_DIR/port")"
+  # The .invalid top-level domain never resolves, so a passing run proves the
+  # mapping.
+  name="chaos-stub.invalid"
+
+  start_run resolve -- --streams token,http --keystone "http://${name}:${port}/identity/v3" \
+    --http "$STUB/http/ok" --resolve "${name}:127.0.0.1"
+  wait_for "READY on token and http" 30 ready_on token http
+  finish_run
+
+  assert_eq "run exits 0" "0" "$RUN_RC"
+  local token
+  token="$(records 'r["s"] == "token"')"
+  assert_contains "an ok issue record" "$token" "token issue true 201"
+  assert_contains "an ok validate record" "$token" "token validate true 200"
+  assert_eq "no failed record" "" "$(records 'not r["ok"]')"
+  local hosts
+  hosts="$(ctl GET /_control/requests | jq_py 'sorted(set(x[4] for x in d))')"
+  assert_contains "the token requests carry the name in the Host header" "$hosts" "'${name}:${port}'"
+  assert_contains "the http stream's address resolves as before" "$hosts" "'127.0.0.1:${port}'"
+
+  ctl POST /_control/reset >/dev/null
+  local closed first
+  closed="$(closed_port)"
+  start_run resolve-closed -- --streams token --keystone "http://${name}:${closed}/identity/v3" \
+    --resolve "${name}:127.0.0.1"
+  wait_for "two token records" 30 bash -c "[ \"\$(grep -c '\"s\": \"token\"' '$RUN_OUT')\" -ge 2 ]"
+  finish_run
+
+  first="$(grep -m1 '"s": "token"' "$RUN_OUT")"
+  assert_contains "a closed port behind the mapping is an issue record" "$first" '"op": "issue"'
+  assert_contains "it is not ok" "$first" '"ok": false'
+  assert_contains "its code is null" "$first" '"code": null'
+  assert_contains "its msg holds the URLError" "$first" 'URLError'
+  assert_eq "the token stream never printed READY" "0" "$(grep -cx 'READY token' "$RUN_OUT")"
+
+  # The value splits on its first colon, so an IPv6 ADDR is accepted. Nothing
+  # listens behind it, which needs no IPv6 stub: the stream still has to start.
+  start_run resolve-v6 -- --streams token --keystone "http://${name}:${closed}/identity/v3" \
+    --resolve "${name}:::1"
+  wait_for "a token record" 30 grep -q '"s": "token"' "$RUN_OUT"
+  finish_run
+
+  assert_not_contains "--resolve ${name}:::1 is no usage error" "$(cat "$RUN_ERR")" \
+    "usage: --resolve wants HOST:ADDR"
+  assert_contains "the token stream writes an issue record behind the IPv6 ADDR" \
+    "$(grep -m1 '"s": "token"' "$RUN_OUT")" '"op": "issue"'
+}
+
+# --- Test 2d --------------------------------------------------------------
+test_insecure_tls_is_needed_against_a_self_signed_stub() {
+  echo "Test: an HTTPS stub with a self-signed certificate answers with --insecure-tls and fails verification without it"
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "  SKIP: openssl not installed (TLS checks skipped)"
+    SKIP=$((SKIP + 1))
+    return 0
+  fi
+  local name="chaos-stub.invalid" port
+  if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=${name}" \
+    -addext "subjectAltName=DNS:${name}" -keyout "$TMP_DIR/tls.key" -out "$TMP_DIR/tls.crt" \
+    >"$TMP_DIR/openssl.log" 2>&1; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: openssl req -x509 could not write a certificate: $(cat "$TMP_DIR/openssl.log")"
+    return 0
+  fi
+  python3 -I "$TMP_DIR/stub_server.py" "$TMP_DIR/tls-port" "$TMP_DIR/tls.crt" "$TMP_DIR/tls.key" &
+  TLS_STUB_PID=$!
+  wait_for "the HTTPS stub's port" 10 test -f "$TMP_DIR/tls-port"
+  port="$(cat "$TMP_DIR/tls-port")"
+
+  start_run tls -- --streams token --keystone "https://${name}:${port}/identity/v3" \
+    --resolve "${name}:127.0.0.1" --insecure-tls
+  wait_for "READY token" 30 ready_on token
+  finish_run
+
+  assert_eq "run with --insecure-tls exits 0" "0" "$RUN_RC"
+  local token
+  token="$(records 'r["s"] == "token"')"
+  assert_contains "an ok issue record over HTTPS" "$token" "token issue true 201"
+  assert_contains "an ok validate record over HTTPS" "$token" "token validate true 200"
+  assert_eq "no failed record" "" "$(records 'not r["ok"]')"
+
+  start_run tls-verify -- --streams token --keystone "https://${name}:${port}/identity/v3" \
+    --resolve "${name}:127.0.0.1"
+  wait_for "two token records" 30 bash -c "[ \"\$(grep -c '\"s\": \"token\"' '$RUN_OUT')\" -ge 2 ]"
+  finish_run
+
+  local first
+  first="$(grep -m1 '"s": "token"' "$RUN_OUT")"
+  assert_contains "without --insecure-tls the issue record is not ok" "$first" '"ok": false'
+  assert_contains "its code is null" "$first" '"code": null'
+  assert_contains "its msg names the failed verification" "$first" 'CERTIFICATE_VERIFY_FAILED'
+  assert_eq "the token stream never printed READY" "0" "$(grep -cx 'READY token' "$RUN_OUT")"
+
+  kill "$TLS_STUB_PID" 2>/dev/null || true
+  wait "$TLS_STUB_PID" 2>/dev/null || true
+  TLS_STUB_PID=""
 }
 
 # --- Test 3 ---------------------------------------------------------------
@@ -1055,6 +1172,14 @@ test_usage_errors_exit_2_before_any_request() {
     out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" $args 2>&1)" || rc=$?
     assert_eq "${label}: exit 2" "2" "$rc"
     assert_eq "${label}: the usage line names the option" "$want" "$out"
+  done
+  local value
+  for value in nocolon :127.0.0.1 chaos-stub.invalid: chaos-stub.invalid:not-an-ip; do
+    rc=0
+    out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" \
+      --streams token --keystone "$STUB/identity/v3" --resolve "$value" 2>&1)" || rc=$?
+    assert_eq "--resolve ${value}: exit 2" "2" "$rc"
+    assert_eq "--resolve ${value}: the usage line" "usage: --resolve wants HOST:ADDR" "$out"
   done
   rc=0
   out="$(OS_PASSWORD=s3cret python3 -I "$WORKLOAD_PY" run --id t1 --stop-file "$TMP_DIR/x.stop" --streams=bogus 2>&1)" || rc=$?
@@ -2061,6 +2186,8 @@ test_ci_runs_placement_on_the_pod_and_network_legs() {
 test_run_reaches_ready_on_every_stream
 test_a_503_fails_one_stream_and_leaves_the_others_ok
 test_a_503_on_create_fails_placement_and_secret_while_token_keeps_going
+test_resolve_sends_the_request_to_the_mapped_address
+test_insecure_tls_is_needed_against_a_self_signed_stub
 test_a_closed_port_records_a_null_code_and_the_urlerror
 test_a_300_is_an_answer_to_the_http_stream
 test_a_failed_cycle_deletes_what_it_created
