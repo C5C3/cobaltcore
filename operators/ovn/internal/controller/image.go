@@ -16,7 +16,7 @@ const (
 	// control plane.
 	defaultOVNRepository = "ghcr.io/c5c3/ovn"
 
-	// Renovate-tracked: the customManager in renovate.json bumps this beside ARG OVN_VERSION in images/ovn/Dockerfile.
+	// Renovate-tracked: the customManager in renovate.json bumps this beside the "version" key of images/ovn/source.json.
 	defaultOVNVersion = "26.03.2"
 
 	// defaultBackupShifterRepository holds the backup-shifter image the backup
