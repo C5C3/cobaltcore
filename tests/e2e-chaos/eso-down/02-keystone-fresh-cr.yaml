@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A Memcached of the fresh Keystone's own. Keystone caches the lookup of a
+# user or a project by name under a key that carries no instance identity, so
+# two live Keystones on one Memcached read each other's entry: once the fresh
+# one bootstraps, keystone-chaos-eso resolves its admin project to the fresh
+# one's id and answers 404 to the workload. The tests/e2e/nova suites keep
+# their Keystones apart the same way.
+apiVersion: memcached.c5c3.io/v1beta1
+kind: Memcached
+metadata:
+  name: eso-down-cache
+  namespace: openstack
+spec:
+  replicas: 1
+  image: memcached:1.6
+---
+# The fresh Keystone, applied while the ESO controller is at zero. Its two
+# credential Secrets come from 01-externalsecrets.yaml, so it has nothing to
+# start from until ESO is back.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-eso-fresh
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_eso_fresh
+    secretRef:
+      name: eso-down-db
+  cache:
+    clusterRef:
+      name: eso-down-cache
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: eso-down-admin
+    region: RegionOne

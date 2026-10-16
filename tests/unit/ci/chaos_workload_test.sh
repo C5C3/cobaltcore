@@ -2068,11 +2068,12 @@ CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
-cinder-volume-pod-kill cronjob-rotation-failure glance-keystone-outage \
-glance-mariadb-outage glance-operator-pod-kill horizon-dashboard-pod-kill \
-horizon-memcached-pod-kill horizon-operator-pod-kill mariadb-network-latency \
-mariadb-network-partition mariadb-pod-kill memcached-network-partition \
-memcached-pod-kill neutron-keystone-outage neutron-metadata-agent-pod-kill \
+cinder-volume-pod-kill cronjob-rotation-failure eso-down \
+glance-keystone-outage glance-mariadb-outage glance-operator-pod-kill \
+horizon-dashboard-pod-kill horizon-memcached-pod-kill \
+horizon-operator-pod-kill mariadb-network-latency mariadb-network-partition \
+mariadb-pod-kill memcached-network-partition memcached-pod-kill \
+neutron-keystone-outage neutron-metadata-agent-pod-kill \
 neutron-operator-pod-kill nova-keystone-outage nova-operator-pod-kill \
 nova-placement-outage openbao-pod-kill operator-pod-crash operator-pod-kill \
 ovn-operator-pod-kill placement-keystone-outage placement-mariadb-outage \

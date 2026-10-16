@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 46 chaos test suites validate operator behavior during and after fault
+The 47 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 46 test suites require the infrastructure stack to be deployed and healthy.
+All 47 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -460,6 +460,7 @@ with the new suites.
 | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon-chaos-dash` | Dashboard pod kill (no-regression) | `Ready=True/AllReady` with two replicas at baseline, one of the two pre-chaos dashboard pod UIDs gone, Deployment `horizon-chaos-dash` back at `readyReplicas: 2`, `Ready=True/AllReady` after the kill |
 | [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `nova-meta-chaos-agent` | Metadata agent pod kill (data path) | `BOOT-OK`, then `METADATA-OK` with the server's uuid from a network namespace on the node, the agent pod UID replaced and no metadata answer before the new agent container started (`METADATA-DOWN-OK`), the agent pod Ready again with the CR at `Ready=True/AllReady` and `numberReady: 1`, the metadata answering with the uuid within 180 s (`METADATA-RECOVERED-OK`), workload budget zero with a passing placement audit and db-sync comparison, no netns, OVS port, server, network or node label left |
 | [cert-manager-outage](#cert-manager-outage) | — | `keystone-chaos-cm` | Controller outage across a forced renewal | `HELD-OK`: Certificate `keystone-nip-io-tls` at its baseline `status.revision` with `Issuing=True`, and the leaf of its Secret and the leaf the listener serves unchanged for 120 s; `RENEWED-OK`: revision `R0 + 1` without `Issuing` within 300 s of the lift and the listener serving the new leaf within 120 s; `Ready=True/AllReady` throughout, workload budget zero |
+| [eso-down](#eso-down) | — | `keystone-chaos-eso-fresh` | ESO controller at zero (fail-closed provisioning) | `FAILCLOSED-OK`: for 90 s with the controller at zero, a fresh Keystone holds `SecretsReady=False/WaitingForDBCredentials`, never reads `Ready=True` and has no Secret `eso-down-db`, while `keystone-chaos-eso` stays `Ready=True`; after the scale-up both ExternalSecrets `Ready=True/SecretSynced` and the fresh Keystone at `Ready=True/AllReady` within 10 minutes, workload budget zero |
 
 ---
 
@@ -3207,6 +3208,66 @@ CertificateRequests as YAML with the controller log, and the workload dump. Step
 
 ---
 
+### eso-down
+
+**File:** `tests/e2e-chaos/eso-down/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** The ESO controller, Deployment `external-secrets`, is scaled to zero,
+and two ExternalSecrets and a Keystone that reads them are applied while it is.
+ESO writes the status of its stores itself, so `openbao-cluster-store` keeps its
+last `Ready=True`, and the credential gate of the keystone-operator
+(`reconcile_secrets.go`) is what has to hold the fresh Keystone. The suite pins
+that this Keystone fails closed with ESO gone and comes up once ESO is back, while
+a Keystone that was Ready before keeps serving.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Baseline, selector guard and workload | `apply` + `assert` (5m) + `script` (1m) + `script` (6m) | `keystone-chaos-eso` (database `keystone_chaos_eso`) reaches `Ready=True/AllReady`; every pod that `app.kubernetes.io/name=external-secrets` selects belongs to a ReplicaSet of Deployment `external-secrets`; `workload.sh start` |
+| 2 | Scale the controller to zero | `script` (3m) | Writes `spec.replicas` into the annotation `chaos.cobaltcore.c5c3.io/orig-replicas`, runs `workload.sh mark fault-start` and `kubectl scale --replicas=0`, and waits for the controller pods to be deleted |
+| 3 | Apply the fresh Keystone | `apply` | `01-externalsecrets.yaml` and `02-keystone-fresh-cr.yaml` |
+| 4 | The fresh Keystone fails closed | `script` (3m) | Waits up to 60 s for the first `SecretsReady=False/WaitingForDBCredentials`. Then for 90 s, every 5 s: no `Ready=True`, that condition unchanged, no Secret `eso-down-db`, and `keystone-chaos-eso` at `Ready=True` (`FAILCLOSED-OK`) |
+| 5 | Scale the controller back | `script` (4m) | The count from the annotation, the annotation removed, `kubectl rollout status`, then `workload.sh mark fault-end` |
+| 6 | Assert recovery | `assert` (5m) + `assert` (10m) + `assert` (5m) | Both ExternalSecrets at `Ready=True/SecretSynced`, `keystone-chaos-eso-fresh` at `Ready=True/AllReady` after its db_sync and bootstrap, `keystone-chaos-eso` at `Ready=True/AllReady` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`; `01-externalsecrets.yaml` with `eso-down-db`
+(the store and the two remote refs of `keystone-db`) and `eso-down-admin` (those
+of `keystone-admin`), each with `refreshInterval: 1h` and `creationPolicy: Owner`;
+`02-keystone-fresh-cr.yaml` with Memcached `eso-down-cache` and Keystone
+`keystone-chaos-eso-fresh` (database `keystone_chaos_eso_fresh`) on the two
+Secrets.
+
+**Workload:** the `token` stream against `keystone-chaos-eso`, started in step 1
+and judged in step 7 against `failures=0 recovery=0s`. The suite runs in the `pod`
+matrix entry. ESO is on no request path of a Keystone that already has its
+Secrets.
+
+**Catch blocks:** steps 2 to 5 scale the controller back to the count in the
+annotation first, the restore `deletion-stuck-finalizer` uses. Every catch calls
+`../diagnostics.sh chaos keystone-chaos-eso-fresh` with
+`--dep-ns=external-secrets`, `--dep-label=app.kubernetes.io/name=external-secrets`
+and `--eso`, and dumps the workload.
+
+**Design notes:**
+
+- The fresh Keystone runs on a Memcached of its own. Keystone caches the lookup of
+  a user or a project by name under a key that carries no instance identity. With
+  both Keystones on `openstack-memcached`, `keystone-chaos-eso` resolved its admin
+  project to the id the fresh Keystone had cached at bootstrap, and answered 404
+  to the workload in a kind run. The `tests/e2e/nova` suites keep their Keystones
+  apart the same way.
+- Step 4 starts its window once the operator has written the condition for the
+  first time. A read before the first reconcile of the new CR finds no condition at
+  all.
+- The webhook and the cert-controller of ESO are Deployments of their own, so the
+  ExternalSecrets of step 3 are admitted while the controller is at zero.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3559,6 +3620,11 @@ tests/e2e-chaos/
 ├── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
 │   └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── eso-down/                         ESO controller at zero under a fresh Keystone
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-eso, Ready before the fault
+│   ├── 01-externalsecrets.yaml       ExternalSecrets eso-down-db and eso-down-admin
+│   ├── 02-keystone-fresh-cr.yaml     Memcached eso-down-cache, Keystone keystone-chaos-eso-fresh
+│   └── chainsaw-test.yaml            Test: the fresh Keystone fails closed, then comes up
 ├── glance-garage-outage/             Garage S3 partition under the Glance API
 │   ├── 00-glance-cr.yaml             Glance CR glance-garage-chaos, API open without a token
 │   ├── 01-glancebackend-cr.yaml      Default S3 store glance-garage-chaos-s3
