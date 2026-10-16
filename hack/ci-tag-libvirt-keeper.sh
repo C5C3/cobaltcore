@@ -5,11 +5,15 @@
 
 # hack/ci-tag-libvirt-keeper.sh — Mint the keeper tag of a merged libvirt image.
 #
-# Tags the merged libvirt index DIGEST as <version>-r<N>, such as
-# 10.0.0-2ubuntu8.19-r1:
-#   <version>  the libvirt-daemon-system package version of the image's
-#              linux/amd64 variant, read with dpkg-query
-#   <N>        the number of commits that touched images/libvirt
+# Tags the merged libvirt index DIGEST as <version>-r<N>, such as 12.2.0-r57:
+#   <version>  the libvirt version of the image's linux/amd64 variant, the
+#              third field of the first line `libvirtd --version` prints
+#   <N>        the number of commits that touched a path of REVISION_PATHS:
+#              the image is built by Nix from images/libvirt/, the libvirt of
+#              nix/pkgs/libvirt.nix and the creation date and labels of
+#              nix/lib/image-defaults.nix, and a re-lock of nixpkgs-images in
+#              flake.lock can rebuild QEMU, Ceph or glibc while libvirt keeps
+#              its version
 # The tag is minted once and never moved: a build whose tag already exists
 # leaves it on the digest it names. The lab manifests under
 # deploy/lab/metal-stack/ pin that digest, and hack/ghcr-prune-stale-versions.py
@@ -40,6 +44,9 @@ DIGEST="${DIGEST:?DIGEST is required (sha256:<64 hex> of the merged index)}"
 LIBVIRT_REPO_DIR="${LIBVIRT_REPO_DIR:-${REPO_ROOT}}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
+
+# The paths whose commits the revision counts.
+REVISION_PATHS=(images/libvirt nix/pkgs/libvirt.nix nix/lib/image-defaults.nix flake.lock)
 
 err_file="$(mktemp)"
 trap 'rm -f "${err_file}"' EXIT
@@ -72,7 +79,7 @@ if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. The image revision: commits under images/libvirt
+# 2. The image revision: commits under REVISION_PATHS
 # ---------------------------------------------------------------------------
 # actions/checkout fetches one commit by default, and a shallow count is 1 on
 # every build.
@@ -80,35 +87,41 @@ if ! shallow="$(git -C "${LIBVIRT_REPO_DIR}" rev-parse --is-shallow-repository 2
   fail "cannot read the git history in ${LIBVIRT_REPO_DIR}: $(cat "${err_file}")"
 fi
 if [[ "${shallow}" == "true" ]]; then
-  fail "hack/ci-tag-libvirt-keeper.sh needs the full history to count the commits under images/libvirt (actions/checkout with fetch-depth: 0)"
+  fail "hack/ci-tag-libvirt-keeper.sh needs the full history to count the commits under ${REVISION_PATHS[*]} (actions/checkout with fetch-depth: 0)"
 fi
 
-if ! revision="$(git -C "${LIBVIRT_REPO_DIR}" rev-list --count HEAD -- images/libvirt 2>"${err_file}")"; then
+if ! revision="$(git -C "${LIBVIRT_REPO_DIR}" rev-list --count HEAD -- "${REVISION_PATHS[@]}" 2>"${err_file}")"; then
   fail "cannot read the git history in ${LIBVIRT_REPO_DIR}: $(cat "${err_file}")"
 fi
 if [[ "${revision}" == "0" ]]; then
-  fail "no commit touches images/libvirt in ${LIBVIRT_REPO_DIR}"
+  fail "no commit touches any of ${REVISION_PATHS[*]} in ${LIBVIRT_REPO_DIR}"
 fi
 
 # ---------------------------------------------------------------------------
-# 3. The libvirt package version of the image
+# 3. The libvirt version of the image
 # ---------------------------------------------------------------------------
-# The image has no entrypoint, so docker run executes dpkg-query directly.
-# '${Version}' is dpkg-query's field name and stays unexpanded.
-if ! version="$(docker run --rm --platform linux/amd64 "${IMAGE}@${DIGEST}" \
-  dpkg-query -W -f='${Version}' libvirt-daemon-system)"; then
-  fail "cannot read the libvirt-daemon-system version from ${IMAGE}@${DIGEST}"
+# The image has no entrypoint, so docker run executes libvirtd directly.
+# libvirtd prints the name it was started by before "(libvirt)", and nixpkgs'
+# wrapper starts it under the wrapper's path, so that name may carry a
+# directory.
+if ! output="$(docker run --rm --platform linux/amd64 "${IMAGE}@${DIGEST}" libvirtd --version)"; then
+  fail "cannot read the libvirtd version from ${IMAGE}@${DIGEST}"
 fi
+first_line="${output%%$'\n'*}"
+if [[ ! "${first_line}" =~ ^(/[^[:space:]]*/)?libvirtd\ \(libvirt\)\ ([^[:space:]]+)$ ]]; then
+  fail "libvirtd --version printed '${first_line}', not 'libvirtd (libvirt) <version>'"
+fi
+version="${BASH_REMATCH[2]}"
 
 # The keeper shape <version>-r<N> has two more copies, which
 # tests/unit/hack/ci_tag_libvirt_keeper_test.sh keeps equal to this one: the
-# libvirt entry of DEFAULT_KEEP_PATTERNS in hack/ghcr-prune-stale-versions.py
-# and allowedVersions of the lab libvirt image in renovate.json. An epoch
-# (1:10.0.0-...) or a suffix (+esm1) fits neither, so such a version stops
-# here.
-version_shape='^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*$'
+# Nix keeper entry of DEFAULT_KEEP_PATTERNS in hack/ghcr-prune-stale-versions.py
+# and allowedVersions of the lab libvirt image in renovate.json. A release
+# candidate (12.2.0-rc1) or any other suffix fits neither, so such a version
+# stops here.
+version_shape='^[0-9]+(\.[0-9]+)+$'
 if [[ ! "${version}" =~ ${version_shape} ]]; then
-  fail "libvirt-daemon-system version '${version}' is not <upstream>-<n>ubuntu<m>; the keep pattern in hack/ghcr-prune-stale-versions.py and allowedVersions in renovate.json assume that shape"
+  fail "libvirt version '${version}' is not <major>.<minor>[.<patch>]; the keep pattern in hack/ghcr-prune-stale-versions.py and allowedVersions in renovate.json assume that shape"
 fi
 
 tag="${version}-r${revision}"

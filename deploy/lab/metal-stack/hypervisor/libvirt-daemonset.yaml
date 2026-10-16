@@ -36,14 +36,19 @@
 # token stays off. No probe of its own: readiness stays libvirtd's, and a lab
 # without WITH_CEPH=true has no Secret and stays Ready.
 #
-# The image is pinned by its keeper tag and digest,
-# <libvirt-package-version>-r<N>@sha256:<digest>. hack/ci-tag-libvirt-keeper.sh
-# mints the tag once on main and never moves it, and the nightly prune keeps
-# every version that carries one. Renovate proposes a new tag as one pull
-# request that moves all eight lines naming the image: the three containers
-# here, the NFS module load test (../probe/nfs-module-load.yaml), the two
-# containers of nfs-client-modules (../nfs/client-modules-daemonset.yaml) and
-# the two of chaos-mesh-modules (../chaos-mesh/modules-daemonset.yaml).
+# The image is pinned by a keeper tag and its digest.
+# hack/ci-tag-libvirt-keeper.sh mints <libvirt-version>-r<N> once on main and
+# never moves it, where N counts the commits under images/libvirt,
+# nix/pkgs/libvirt.nix, nix/lib/image-defaults.nix and flake.lock. The
+# <libvirt-package-version>-r<N> keepers of the Docker-built image the lab ran
+# before #1407 stay as its rollback target. The nightly prune keeps every
+# version that carries a keeper, and removes a branch build's <sha> tag after
+# 24 hours, so no pin names a branch build. Renovate proposes every new
+# keeper, a libvirt major included, as one pull request that moves all eight
+# lines naming the image: the three containers here, the NFS module load test
+# (../probe/nfs-module-load.yaml), the two containers of nfs-client-modules
+# (../nfs/client-modules-daemonset.yaml) and the two of chaos-mesh-modules
+# (../chaos-mesh/modules-daemonset.yaml).
 # IfNotPresent pulls the digest once per node; with OnDelete, a merged bump
 # reaches a node when its pod is deleted. The resources bound this pod's
 # cgroup, which keeps bash and the probes. libvirtd and QEMU run in the host

@@ -9,16 +9,20 @@
 #   - the docker-datasource matchStrings regex captures the depName, the whole
 #     keeper tag (currentValue) and the whole digest (currentDigest) of all
 #     eight image: lines across the four manifests (3, 1, 2, 2), and the
-#     versioning is deb, which compares the -r<N> suffix and the Ubuntu
-#     revision numerically;
-#   - allowedVersions accepts the keeper shape <libvirt-package-version>-r<N>
-#     that hack/ci-tag-libvirt-keeper.sh mints and rejects latest, a commit
-#     SHA and a bare package version, which deb would also parse;
-#   - majors are disabled, and minor, patch and digest bumps are grouped and
-#     never automerged, without a minimumReleaseAge: this repository's own
-#     main builds the image, and the bump is the review the pin exists for;
-#   - the manager and all three rules name the four manifests and no other
-#     file, so one group moves all eight lines and no list names a file that
+#     versioning is deb, which reads 12.2.0-r57 as upstream 12.2.0 and
+#     revision r57 and compares both;
+#   - allowedVersions accepts the keeper shape <libvirt-version>-r<N> that
+#     hack/ci-tag-libvirt-keeper.sh mints for the Nix-built image and rejects
+#     latest, a commit SHA, a bare libvirt version, which deb would also
+#     parse, and the Docker-built keepers the prune still keeps; the pinned
+#     tag is a Nix keeper it accepts, or the Docker-built keeper Renovate
+#     moves off;
+#   - no rule disables an update type: major, minor, patch and digest bumps
+#     are grouped and never automerged, without a minimumReleaseAge. This
+#     repository's own main mints every keeper, the lab never pins a branch
+#     build, and the bump is the review the pin exists for;
+#   - the manager and both rules name the four manifests and no other file,
+#     so one group moves all eight lines and no list names a file that
 #     carries no pin.
 #
 # This is the regression test the check-renovate-coverage skill requires for
@@ -74,8 +78,8 @@ test_custom_manager_captures_every_pin() {
   echo "Test: customManagers regex captures depName, tag and digest of all eight libvirt image lines"
 
   if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: jq or perl not installed (7 checks skipped)"
-    SKIP=$((SKIP + 7))
+    echo "  SKIP: jq or perl not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -134,8 +138,8 @@ test_allowed_versions() {
   echo "Test: allowedVersions accepts the keeper tag shape and rejects what deb would also offer"
 
   if ! command -v jq >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
-    echo "  SKIP: jq or perl not installed (7 checks skipped)"
-    SKIP=$((SKIP + 7))
+    echo "  SKIP: jq or perl not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -143,7 +147,7 @@ test_allowed_versions() {
   rule="$(libvirt_rule 'has("allowedVersions")')"
   if [ -z "$rule" ]; then
     echo "  FAIL: no packageRule sets allowedVersions for $LIBVIRT_PACKAGE"
-    FAIL=$((FAIL + 7))
+    FAIL=$((FAIL + 8))
     return
   fi
   assert_eq "the allowedVersions rule applies to every update type" "false" \
@@ -157,8 +161,10 @@ test_allowed_versions() {
     "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://')"
 
   local version want got
-  for version in "$pinned_tag|0" "10.0.0-2ubuntu8.20-r12|0" "latest|1" \
-    "$(printf '%.0sa' {1..40})|1" "10.0.0-2ubuntu8.19|1"; do
+  # The Docker-built keepers stay in GHCR as the lab's rollback target, but
+  # Renovate proposes the Nix keeper shape alone.
+  for version in "12.2.1-r60|0" "latest|1" \
+    "$(printf '%.0sa' {1..40})|1" "12.2.0|1" "10.0.0-2ubuntu8.19-r2|1"; do
     want="${version##*|}"
     version="${version%|*}"
     got=0
@@ -170,11 +176,25 @@ test_allowed_versions() {
     fi
   done
   assert_not_empty "the DaemonSet carries a pinned tag to test" "$pinned_tag"
+
+  # A Nix keeper pin must be one allowedVersions admits, or Renovate could
+  # never propose its successor. The Docker-built keeper the lab ran before
+  # #1407, and rolls back to, is the one other pin: Renovate moves it to the
+  # newest Nix keeper as a major.
+  got=0
+  RE="$allowed" VALUE="$pinned_tag" perl -e 'exit(($ENV{VALUE} =~ /$ENV{RE}/) ? 0 : 1)' || got=$?
+  if [ "$got" = 0 ] || [[ "$pinned_tag" =~ ^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*-r[0-9]+$ ]]; then
+    echo "  PASS: the pinned tag '$pinned_tag' is a Nix keeper allowedVersions accepts, or the Docker-built keeper"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the pinned tag '$pinned_tag' is neither a Nix keeper allowedVersions accepts nor the Docker-built keeper"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
-# --- Test 3: majors off, the rest grouped and reviewed ---
+# --- Test 3: every update type grouped and reviewed ---
 test_update_rules() {
-  echo "Test: packageRules disable major bumps and group minor/patch/digest without automerge"
+  echo "Test: one packageRule groups major/minor/patch/digest without automerge and none disables an update"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"
@@ -182,49 +202,43 @@ test_update_rules() {
     return
   fi
 
-  local major_rule minor_rule
-  major_rule="$(libvirt_rule '((.matchUpdateTypes // []) | index("major")) != null')"
-  minor_rule="$(libvirt_rule '((.matchUpdateTypes // []) | index("minor")) != null')"
+  # A disabled major would strand the pins on the Docker-built keeper and on
+  # every libvirt major after it, which only a hand-copied digest could move.
+  assert_eq "no packageRule disables a libvirt image update" \
+    "" "$(libvirt_rule '.enabled == false')"
 
-  if [ -z "$major_rule" ]; then
-    echo "  FAIL: no packageRule scoping major updates for $LIBVIRT_PACKAGE"
-    FAIL=$((FAIL + 1))
-  else
-    assert_eq "major libvirt image updates are disabled" \
-      "false" "$(jq -r '.enabled' <<<"$major_rule")"
-  fi
-
-  if [ -z "$minor_rule" ]; then
-    echo "  FAIL: no packageRule scoping minor/patch/digest updates for $LIBVIRT_PACKAGE"
+  local group_rule
+  group_rule="$(libvirt_rule 'has("matchUpdateTypes")')"
+  if [ -z "$group_rule" ]; then
+    echo "  FAIL: no packageRule scoping the update types of $LIBVIRT_PACKAGE"
     FAIL=$((FAIL + 4))
     return
   fi
-  assert_eq "the rule covers minor, patch and digest updates" \
-    '["minor","patch","digest"]' "$(jq -c '.matchUpdateTypes' <<<"$minor_rule")"
+  assert_eq "the rule covers major, minor, patch and digest updates" \
+    '["major","minor","patch","digest"]' "$(jq -c '.matchUpdateTypes' <<<"$group_rule")"
   assert_eq "libvirt image updates are never automerged" \
-    "false" "$(jq -r '.automerge' <<<"$minor_rule")"
+    "false" "$(jq -r '.automerge' <<<"$group_rule")"
   assert_eq "the libvirt image updates are grouped" \
-    "metal-stack lab libvirt image" "$(jq -r '.groupName' <<<"$minor_rule")"
+    "metal-stack lab libvirt image" "$(jq -r '.groupName' <<<"$group_rule")"
   assert_eq "the rule sets no minimumReleaseAge" \
-    "false" "$(jq -r 'has("minimumReleaseAge")' <<<"$minor_rule")"
+    "false" "$(jq -r 'has("minimumReleaseAge")' <<<"$group_rule")"
 }
 
 # --- Test 4: every file in the manager and in every rule ---
 test_every_file_is_covered() {
-  echo "Test: the manager and all three packageRules name the four manifests and no other file"
+  echo "Test: the manager and both packageRules name the four manifests and no other file"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (20 checks skipped)"
-    SKIP=$((SKIP + 20))
+    echo "  SKIP: jq not installed (15 checks skipped)"
+    SKIP=$((SKIP + 15))
     return
   fi
 
-  local entry patterns rule_allowed rule_major rule_minor
+  local entry patterns rule_allowed rule_group
   entry="$(libvirt_manager)"
   patterns="$(jq -r '(.managerFilePatterns // [])[]' <<<"${entry:-{\}}")"
   rule_allowed="$(libvirt_rule 'has("allowedVersions")')"
-  rule_major="$(libvirt_rule '((.matchUpdateTypes // []) | index("major")) != null')"
-  rule_minor="$(libvirt_rule '((.matchUpdateTypes // []) | index("minor")) != null')"
+  rule_group="$(libvirt_rule 'has("matchUpdateTypes")')"
 
   local path count pattern matched name rule
   while read -r path count; do
@@ -240,11 +254,10 @@ test_every_file_is_covered() {
     done <<<"$patterns"
     assert_eq "managerFilePatterns matches $path" "1" "$matched"
 
-    for name in allowed major minor; do
+    for name in allowed group; do
       case "$name" in
         allowed) rule="$rule_allowed" ;;
-        major) rule="$rule_major" ;;
-        minor) rule="$rule_minor" ;;
+        group) rule="$rule_group" ;;
       esac
       assert_eq "the $name rule names $path" "true" \
         "$(jq -r --arg f "$path" '((.matchFileNames // []) | index($f)) != null' <<<"${rule:-{\}}")"
@@ -256,11 +269,10 @@ test_every_file_is_covered() {
   local manifests
   manifests="$(grep -c . <<<"$MANIFESTS")"
   assert_eq "managerFilePatterns names $manifests files" "$manifests" "$(grep -c . <<<"$patterns")"
-  for name in allowed major minor; do
+  for name in allowed group; do
     case "$name" in
       allowed) rule="$rule_allowed" ;;
-      major) rule="$rule_major" ;;
-      minor) rule="$rule_minor" ;;
+      group) rule="$rule_group" ;;
     esac
     assert_eq "the $name rule names $manifests files" "$manifests" \
       "$(jq -r '(.matchFileNames // []) | length' <<<"${rule:-{\}}")"

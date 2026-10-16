@@ -309,14 +309,20 @@ test_libvirt_daemonset() {
   assert_eq "the pod carries the part-of label" "lab-hypervisor" \
     "$(val DaemonSet libvirt '.spec.template.metadata.labels["app.kubernetes.io/part-of"]')"
 
-  # The keeper tag <libvirt-package-version>-r<N> of
-  # hack/ci-tag-libvirt-keeper.sh, pinned by digest, on all containers. The
-  # version shape is the script's version_shape without its anchors.
-  local images shape pinned
+  # A keeper tag pinned by digest, on all containers: the
+  # <libvirt-version>-r<N> that hack/ci-tag-libvirt-keeper.sh mints on main
+  # (the script's version_shape without its anchors), or the Docker-built
+  # keeper the lab ran before #1407 and rolls back to, the libvirt keep
+  # pattern of hack/ghcr-prune-stale-versions.py that names ubuntu. The prune
+  # keeps both for good; Renovate moves the pins from one to the next. A
+  # branch build's <sha> tag is pruned after 24 hours, so no pin names one.
+  local images shape docker_keeper pinned
   shape="$(sed -n "s/^version_shape='^\(.*\)\$'$/\1/p" "$PROJECT_ROOT/hack/ci-tag-libvirt-keeper.sh")"
-  pinned="^ghcr\\.io/c5c3/libvirt:${shape}-r[0-9]+@sha256:[0-9a-f]{64}\$"
+  docker_keeper="$(sed -n 's/^ *r"^\(.*ubuntu.*-r\[0-9\]+\)\$",$/\1/p' "$PROJECT_ROOT/hack/ghcr-prune-stale-versions.py")"
+  pinned="^ghcr\\.io/c5c3/libvirt:(${shape}-r[0-9]+|${docker_keeper})@sha256:[0-9a-f]{64}\$"
   images="$(containers '.image')"
-  if [[ -n "$shape" && "$(sed -n 1p <<<"$images")" =~ $pinned && "$(grep -c . <<<"$images")" -eq 3 &&
+  if [[ -n "$shape" && -n "$docker_keeper" && "$(sed -n 1p <<<"$images")" =~ $pinned &&
+    "$(grep -c . <<<"$images")" -eq 3 &&
     "$(sort -u <<<"$images" | grep -c .)" -eq 1 ]]; then
     echo "  PASS: all three containers run one ghcr.io/c5c3/libvirt:<keeper tag>@sha256:<digest>"
     PASS=$((PASS + 1))

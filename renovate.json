@@ -470,6 +470,7 @@
     },
     {
       "customType": "regex",
+      "description": "Lab libvirt image: the keeper tag <libvirt-version>-r<N> the Nix-built image gets on main (hack/ci-tag-libvirt-keeper.sh) with its digest, in the eight pins of the lab manifests",
       "managerFilePatterns": [
         "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
         "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
@@ -1015,7 +1016,8 @@
         "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
-      "allowedVersions": "/^[0-9]+(\\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\\.[0-9]+)*-r[0-9]+$/"
+      "description": "Lab libvirt image: only the Nix keeper tags <libvirt-version>-r<N>, the shape hack/ci-tag-libvirt-keeper.sh mints",
+      "allowedVersions": "/^[0-9]+(\\.[0-9]+)+-r[0-9]+$/"
     },
     {
       "matchManagers": ["custom.regex"],
@@ -1026,19 +1028,8 @@
         "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
-    },
-    {
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": [
-        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
-        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
-        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
-      ],
-      "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "description": "Lab libvirt image: every Nix keeper tag main mints, a libvirt major and the first move off the Docker-built keeper included, moves the eight pins together, reviewed by hand. The lab never pins a branch build: cleanup-images prunes its <sha> tag after 24 hours",
+      "matchUpdateTypes": ["major", "minor", "patch", "digest"],
       "automerge": false,
       "groupName": "metal-stack lab libvirt image"
     },

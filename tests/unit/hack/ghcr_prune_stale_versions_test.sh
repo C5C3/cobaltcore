@@ -332,21 +332,24 @@ test_composite_only_hvo_build_is_deleted() {
 # --- Test 12: the libvirt keeper tag keeps the build the lab pins ---
 # libvirt as merge-libvirt-image leaves it behind: the current main build
 # carries latest, its <sha40> and the keeper tag hack/ci-tag-libvirt-keeper.sh
-# minted for a newer package version; an older build kept only its <sha40>
-# and the keeper tag the lab manifests pin; the first build kept its <sha40>
-# and a keeper tag whose Ubuntu revision has no dot; a superseded build carries
-# its <sha40> alone. A tag that is the package version without -r<N> is no
-# keeper. The five share one fixture, because a package without any keeper
-# trips the full sweep's refusal of Test 7.
+# minted, <libvirt-version>-r<N>; an older build kept only its <sha40> and the
+# keeper tag the lab manifests pin; two builds of the Docker-built image kept
+# their <sha40> and their <libvirt-package-version>-r<N> keeper, the lab's
+# rollback target, one with a dotted Ubuntu revision and one without; a
+# superseded build carries its <sha40> alone. A tag that has the keeper's -r
+# but no count is no keeper. The six share one fixture, because a package
+# without any keeper trips the full sweep's refusal of Test 7.
 LIBVIRT_CURRENT=$(digest 5)
 LIBVIRT_PINNED=$(digest 6)
 LIBVIRT_SUPERSEDED=$(digest 7)
-LIBVIRT_BARE_VERSION=$(digest 8)
-LIBVIRT_UNDOTTED=$(digest 4)
+LIBVIRT_NO_COUNT=$(digest 8)
+LIBVIRT_DEBIAN=$(digest 4)
+LIBVIRT_DEBIAN_UNDOTTED=$(digest 3)
 SHA_E=$(printf '%.0se' {1..40})
+SHA_F=$(printf '%.0sf' {1..40})
 
 test_libvirt_keeper_tag_keeps_the_pinned_build() {
-  echo "Test: a <libvirt-package-version>-r<N> tag keeps its manifest without latest"
+  echo "Test: a <libvirt-version>-r<N> tag keeps its manifest without latest"
   local fixture="$TMPDIR_BASE/libvirt.json" output mode pinned_tag
   pinned_tag="$(grep -hoE 'image: ghcr\.io/c5c3/libvirt:[^@[:space:]]+' \
     "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://' || true)"
@@ -356,15 +359,17 @@ test_libvirt_keeper_tag_keeps_the_pinned_build() {
   "now": "2026-10-04T00:00:00Z",
   "versions": [
     {"id": 1, "name": "${LIBVIRT_CURRENT}", "created_at": "2026-10-02T00:00:00Z",
-     "metadata": {"container": {"tags": ["latest", "${SHA_D}", "10.0.0-2ubuntu8.20-r1"]}}},
+     "metadata": {"container": {"tags": ["latest", "${SHA_D}", "12.2.0-r57"]}}},
     {"id": 2, "name": "${LIBVIRT_PINNED}", "created_at": "2026-09-01T00:00:00Z",
      "metadata": {"container": {"tags": ["${SHA_B}", "${pinned_tag}"]}}},
     {"id": 3, "name": "${LIBVIRT_SUPERSEDED}", "created_at": "2026-09-15T00:00:00Z",
      "metadata": {"container": {"tags": ["${PIN_A}"]}}},
-    {"id": 4, "name": "${LIBVIRT_BARE_VERSION}", "created_at": "2026-09-20T00:00:00Z",
-     "metadata": {"container": {"tags": ["${PIN_C}", "10.0.0-2ubuntu8.19"]}}},
-    {"id": 5, "name": "${LIBVIRT_UNDOTTED}", "created_at": "2026-08-01T00:00:00Z",
-     "metadata": {"container": {"tags": ["${SHA_E}", "10.0.0-2ubuntu8-r1"]}}}
+    {"id": 4, "name": "${LIBVIRT_NO_COUNT}", "created_at": "2026-09-20T00:00:00Z",
+     "metadata": {"container": {"tags": ["${PIN_C}", "12.2.0-r"]}}},
+    {"id": 5, "name": "${LIBVIRT_DEBIAN}", "created_at": "2026-08-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["${SHA_E}", "10.0.0-2ubuntu8.19-r2"]}}},
+    {"id": 6, "name": "${LIBVIRT_DEBIAN_UNDOTTED}", "created_at": "2026-07-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["${SHA_F}", "10.0.0-2ubuntu8-r1"]}}}
   ],
   "manifests": {}
 }
@@ -384,17 +389,19 @@ EOF
       "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_PINNED"
     assert_not_contains "the pinned build is not deleted ($mode)" \
       "$(echo "$output" | jq -c '[.delete[].digest]')" "$LIBVIRT_PINNED"
-    assert_contains "the build with an undotted Ubuntu revision is kept ($mode)" \
-      "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_UNDOTTED"
+    assert_contains "the Docker-built keeper is kept ($mode)" \
+      "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_DEBIAN"
+    assert_contains "the Docker-built keeper with an undotted Ubuntu revision is kept ($mode)" \
+      "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_DEBIAN_UNDOTTED"
     assert_contains "the superseded build is deleted ($mode)" \
       "$(echo "$output" | jq -c '[.delete[].digest]')" "$LIBVIRT_SUPERSEDED"
   done
 
   output=$(plan "$fixture")
-  assert_not_contains "the package version alone is no keeper" \
-    "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_BARE_VERSION"
-  assert_contains "the full sweep deletes a build tagged with the package version alone" \
-    "$(echo "$output" | jq -c '[.delete[].digest]')" "$LIBVIRT_BARE_VERSION"
+  assert_not_contains "a keeper shape without its count is no keeper" \
+    "$(echo "$output" | jq -c '.keep')" "$LIBVIRT_NO_COUNT"
+  assert_contains "the full sweep deletes a build tagged with -r and no count" \
+    "$(echo "$output" | jq -c '[.delete[].digest]')" "$LIBVIRT_NO_COUNT"
 }
 
 # --- Test 13: an unreadable kept manifest stops the sweep ---
