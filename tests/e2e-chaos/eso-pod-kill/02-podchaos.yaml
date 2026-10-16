@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing every ESO controller pod at once. The webhook and the
+# cert-controller carry other app.kubernetes.io/name values; step 1 of the
+# suite proves the selector reaches the controller alone.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-eso
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - external-secrets
+    labelSelectors:
+      app.kubernetes.io/name: external-secrets
+  gracePeriod: 0

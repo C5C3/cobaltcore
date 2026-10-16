@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 47 chaos test suites validate operator behavior during and after fault
+The 48 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 47 test suites require the infrastructure stack to be deployed and healthy.
+All 48 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -461,6 +461,7 @@ with the new suites.
 | [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `nova-meta-chaos-agent` | Metadata agent pod kill (data path) | `BOOT-OK`, then `METADATA-OK` with the server's uuid from a network namespace on the node, the agent pod UID replaced and no metadata answer before the new agent container started (`METADATA-DOWN-OK`), the agent pod Ready again with the CR at `Ready=True/AllReady` and `numberReady: 1`, the metadata answering with the uuid within 180 s (`METADATA-RECOVERED-OK`), workload budget zero with a passing placement audit and db-sync comparison, no netns, OVS port, server, network or node label left |
 | [cert-manager-outage](#cert-manager-outage) | — | `keystone-chaos-cm` | Controller outage across a forced renewal | `HELD-OK`: Certificate `keystone-nip-io-tls` at its baseline `status.revision` with `Issuing=True`, and the leaf of its Secret and the leaf the listener serves unchanged for 120 s; `RENEWED-OK`: revision `R0 + 1` without `Issuing` within 300 s of the lift and the listener serving the new leaf within 120 s; `Ready=True/AllReady` throughout, workload budget zero |
 | [eso-down](#eso-down) | — | `keystone-chaos-eso-fresh` | ESO controller at zero (fail-closed provisioning) | `FAILCLOSED-OK`: for 90 s with the controller at zero, a fresh Keystone holds `SecretsReady=False/WaitingForDBCredentials`, never reads `Ready=True` and has no Secret `eso-down-db`, while `keystone-chaos-eso` stays `Ready=True`; after the scale-up both ExternalSecrets `Ready=True/SecretSynced` and the fresh Keystone at `Ready=True/AllReady` within 10 minutes, workload budget zero |
+| [eso-pod-kill](#eso-pod-kill) | — | `keystone-chaos-esokill` | ESO controller pod kill | Every pre-kill controller pod UID gone and `readyReplicas` back at `spec.replicas`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady`, `RESYNC-OK`: a forced sync of `eso-kill-probe` with a `refreshTime` at or after the request and `Ready=True/SecretSynced` within 180 s, workload budget zero |
 
 ---
 
@@ -3268,6 +3269,49 @@ and `--eso`, and dumps the workload.
 
 ---
 
+### eso-pod-kill
+
+**File:** `tests/e2e-chaos/eso-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-kill` with `mode: all` kills every pod of the ESO
+controller at once. `eso-down` holds the controller away for a window; this suite
+pins the restart: the new pod has to take the controller's work up again, so a
+forced sync after the kill has to reach OpenBao and write its result.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Baseline, selector guard and workload | `apply` + `assert` (5m) + `script` (1m) + `script` (6m) | `keystone-chaos-esokill` (database `keystone_chaos_esokill`) reaches `Ready=True/AllReady` and ExternalSecret `eso-kill-probe` `Ready=True`; the selector guard of `eso-down`; `workload.sh start` |
+| 2 | Kill every controller pod | `script` (4m) | One script, so the snapshot and the wait share state: reads `spec.replicas`, snapshots the controller pod UIDs, runs `workload.sh mark fault-start`, applies `02-podchaos.yaml`, then `wait_replaced` of `lib/pods.sh` waits up to 180 s until no pre-kill UID is left and `readyReplicas` is back at `spec.replicas` |
+| 3 | Lift the fault | `delete` + `script` (1m) + `assert` (5m) | Removes `PodChaos/kill-eso`, runs `workload.sh mark fault-end`, and asserts the Keystone at `SecretsReady=True` and `Ready=True/AllReady` |
+| 4 | The restarted controller syncs | `script` (4m) | Takes the time `T`, sets `force-sync=T` on `eso-kill-probe`, and within 180 s requires a `status.refreshTime` at or after `T` with `Ready=True/SecretSynced` (`RESYNC-OK`) |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-externalsecret.yaml` (`eso-kill-probe`:
+the store and the remote ref of `keystone-admin`, into a Secret of its own name),
+`02-podchaos.yaml` (`kill-eso`, `mode: all`, `gracePeriod: 0`).
+
+**Workload:** the `token` stream against `keystone-chaos-esokill`, started in step
+1 and judged in step 5 against `failures=0 recovery=0s`. The suite runs in the
+`pod` matrix entry. ESO is on no request path of a Keystone that already has its
+Secrets.
+
+**Catch blocks:** `../diagnostics.sh chaos keystone-chaos-esokill` with
+`--dep-ns=external-secrets`, `--dep-label=app.kubernetes.io/name=external-secrets`
+and `--eso`, and the workload dump. Steps 2 and 3 delete the `PodChaos` first.
+
+**Design notes:**
+
+- `mode: all` replaces every pod, so step 2 waits until no pre-kill UID is left,
+  where the operator kill suites with `mode: one` wait for one UID to go.
+- The probe ExternalSecret writes a Secret no Keystone reads, so the forced sync
+  changes nothing the workload depends on.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3625,6 +3669,11 @@ tests/e2e-chaos/
 │   ├── 01-externalsecrets.yaml       ExternalSecrets eso-down-db and eso-down-admin
 │   ├── 02-keystone-fresh-cr.yaml     Memcached eso-down-cache, Keystone keystone-chaos-eso-fresh
 │   └── chainsaw-test.yaml            Test: the fresh Keystone fails closed, then comes up
+├── eso-pod-kill/                     ESO controller pod kill
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-esokill
+│   ├── 01-externalsecret.yaml        ExternalSecret eso-kill-probe, synced again after the kill
+│   ├── 02-podchaos.yaml              PodChaos pod-kill of every ESO controller pod
+│   └── chainsaw-test.yaml            Test: every controller pod replaced, a forced sync succeeds
 ├── glance-garage-outage/             Garage S3 partition under the Glance API
 │   ├── 00-glance-cr.yaml             Glance CR glance-garage-chaos, API open without a token
 │   ├── 01-glancebackend-cr.yaml      Default S3 store glance-garage-chaos-s3
