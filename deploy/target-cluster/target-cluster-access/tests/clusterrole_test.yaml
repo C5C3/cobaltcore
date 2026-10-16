@@ -129,6 +129,67 @@ tests:
               - list
               - watch
 
+  # The Traits step of a placed NovaCompute reads a node's Hypervisor and patches
+  # its custom traits. patch also carries spec.maintenance and
+  # spec.lifecycleEnabled, so the grant is an opt-in a default install lacks.
+  - it: should grant nothing on hypervisors by default
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups:
+              - kvm.cloud.sap
+
+  - it: should grant exactly get and patch on hypervisors with hypervisorTraits on
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      hypervisorTraits: true
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 5
+      - equal:
+          path: rules[3]
+          value:
+            apiGroups:
+              - kvm.cloud.sap
+            resources:
+              - hypervisors
+            verbs:
+              - get
+              - patch
+      # The opt-in widens no other rule: nodes stay read-only.
+      - equal:
+          path: rules[2]
+          value:
+            apiGroups:
+              - ""
+            resources:
+              - nodes
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should render both opt-ins side by side
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      hypervisorTraits: true
+      authDelegatorBinding: true
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 6
+
   # Every ControlPlane teardown reads the auth-delegator ClusterRoleBinding by
   # name before it releases its finalizer, dedicated OpenBao or not. Without the
   # read the API server answers forbidden rather than not-found, and the teardown

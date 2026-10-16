@@ -63,6 +63,23 @@ createNamespaces: true
 # forbidden read there leaves the ControlPlane in Terminating.
 authDelegatorBinding: false
 
+# Whether to grant get and patch on hypervisors.kvm.cloud.sap, the Hypervisor
+# objects openstack-hypervisor-operator keeps one per compute node. A NovaCompute
+# placed on this cluster that declares spec.traits or spec.hostTraits writes the
+# custom Placement traits of its hosts into each node's Hypervisor
+# spec.customTraits, from where that operator applies them. Without the grant
+# such a pool reports TraitsReady=False with reason HypervisorsForbidden. A pool
+# that neither declares a trait nor records one in status.nodes[].traits reads
+# no Hypervisor. A pool that dropped its traits still clears each node's list,
+# so keep the grant until its TraitsReady reads NoTraitsDeclared.
+#
+# Off by default, because Kubernetes cannot narrow patch to spec.customTraits:
+# the verb carries spec.maintenance and spec.lifecycleEnabled with it, so it
+# lets whoever holds the registration kubeconfig evict and offboard every
+# hypervisor of this cluster. resourceNames cannot narrow it either, since a
+# pool's nodes come and go with its selector.
+hypervisorTraits: false
+
 # The subset of the namespaces above that host node-level workloads. Each entry
 # gets two things: its Namespace is labelled
 # pod-security.kubernetes.io/enforce: privileged, and its Role is the only one

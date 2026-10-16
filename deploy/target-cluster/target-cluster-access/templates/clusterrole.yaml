@@ -3,8 +3,9 @@ The grants that have no namespace to be scoped to. Everything else the operators
 reach on this cluster is in role.yaml, one namespace at a time.
 
 The read-only ones are always rendered. What the auth-delegator binding is
-WRITTEN with is not: no namespace bounds those grants, so they are rendered only
-where the install says they are needed.
+WRITTEN with is not, and neither is the patch on Hypervisors: no namespace
+bounds those grants, so they are rendered only where the install says they are
+needed.
 */}}
 {{- include "target-cluster-access.requireNamespaces" . }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -62,6 +63,22 @@ rules:
       - get
       - list
       - watch
+{{- if .Values.hypervisorTraits }}
+  # kvm.cloud.sap - hypervisors (opt-in, hypervisorTraits)
+  # The Traits step of a placed NovaCompute reads each node's Hypervisor by name
+  # and merge-patches its spec.customTraits. No create, list, watch or delete:
+  # openstack-hypervisor-operator owns the objects. Kubernetes cannot narrow
+  # patch to that one field, and the verb carries spec.maintenance and
+  # spec.lifecycleEnabled with it, so rendered it lets whoever holds the
+  # registration kubeconfig evict and offboard every hypervisor of this cluster.
+  - apiGroups:
+      - kvm.cloud.sap
+    resources:
+      - hypervisors
+    verbs:
+      - get
+      - patch
+{{- end }}
   # rbac.authorization.k8s.io - clusterrolebindings
   # get is unconditional. EVERY ControlPlane teardown reads the auth-delegator
   # binding by exact name before it releases its finalizer, dedicated OpenBao or
