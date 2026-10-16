@@ -5,19 +5,22 @@
 
 # Verify hack/nix-lock.sh refuses bad input before it writes anything, writes
 # the release inputs into pyproject.toml and sources.json, keeps the previous
-# lock when a step fails, writes the noVNC hash, deletes the locks nothing
-# pins, reports stale locks, resolves for the interpreter flake.nix builds
-# the images with, and that the committed locks under nix/locks/ are the set
-# the release files pin.
+# lock when a step fails, writes the noVNC hash and the three image pins,
+# deletes the locks nothing pins, reports stale locks and pins, resolves for
+# the interpreter flake.nix builds the images with, and that the committed
+# locks under nix/locks/ are the set the release files pin and the committed
+# image pins carry commits and hashes.
 #
 # The generator checks the release directory first and the six tools next,
 # so those failures need no tool at all. The other runs use a throwaway git
-# repository with fixture release files for three services and stub commands
-# on PATH: nix answers each prefetch with a fixture upstream tree and logs its
-# arguments, uv logs whether a uv.lock was there when it ran and writes a
-# placeholder uv.lock. They need yq, jq, python3 and git and never reach the
-# network. Every run uses the bash that runs this file. The generator needs
-# Bash 4 or later past the tool check, so those runs skip under an older bash.
+# repository with fixture release files for three services, the image pins,
+# a local OVN repository whose tree has an 'ovs' gitlink, and stub commands
+# on PATH: nix answers each prefetch with a fixture upstream tree, fails each
+# build with the vendor hash it "got" and logs its arguments, uv logs whether
+# a uv.lock was there when it ran and writes a placeholder uv.lock. They need
+# yq, jq, python3 and git and never reach the network. Every run uses the
+# bash that runs this file. The generator needs Bash 4 or later past the
+# tool check, so those runs skip under an older bash.
 #
 # Usage: bash tests/unit/hack/nix_lock_test.sh
 
@@ -37,6 +40,12 @@ GENERATOR="$PROJECT_ROOT/hack/nix-lock.sh"
 LOCKS="$PROJECT_ROOT/nix/locks"
 FIXTURE_REV=0123456789abcdef0123456789abcdef01234567
 NOVNC_REV=63107bd06d9e1f6136ff21aeda8cd62cbf0d433e
+OVS_REV=fedcba9876543210fedcba9876543210fedcba98
+HVO_REV=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+KNA_REV=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+OVN_PIN=images/ovn/source.json
+HVO_PIN=images/openstack-hypervisor-operator/source.json
+KNA_PIN=images/kvm-node-agent/source.json
 
 # can_run prints a SKIP line and returns 1 unless yq, jq, python3 and git are
 # installed and the bash is 4 or later; $1 is the number of skipped checks.
@@ -61,16 +70,22 @@ can_run() {
 # services placement (a setup.cfg naming openstack-placement, a
 # .stestr.conf, a test-requirements.txt and a patch), horizon (no
 # .stestr.conf) and barbican (no test-requirements.txt, a pyproject.toml
-# naming openstack-barbican), the tempest pins, the noVNC pin, and stub nix
-# and uv commands in stubs/. The constraints spell PyMySQL as PyPI does, the
-# venv-builder pin as pymysql. Each run logs to stubs/nix.log and
-# stubs/uv.log; NIX_STUB_FAIL makes every nix call exit 9.
+# naming openstack-barbican), the tempest pins, the noVNC pin, the three
+# image pins, a local OVN repository in upstream/ovn whose tree has the 'ovs'
+# gitlink $OVS_REV, and stub nix and uv commands in stubs/. The OVN pin names
+# that repository's commit and has no ovs object yet; the hvo pin's hash is
+# the one the stub prefetches, the kna pin's is not. The constraints spell
+# PyMySQL as PyPI does, the venv-builder pin as pymysql. Each run logs to
+# stubs/nix.log and stubs/uv.log; NIX_STUB_FAIL makes every nix call exit 9,
+# NIX_STUB_NO_GOT keeps a failing nix build from naming a hash.
 make_tree() {
-  local tree
+  local tree ovn
   tree=$(mktemp -d)
+  ovn="$tree/upstream/ovn"
   mkdir -p "$tree/hack" "$tree/scripts" "$tree/releases/2026.1" "$tree/overrides/2026.1" \
     "$tree/images/venv-builder" "$tree/images/nova" "$tree/patches/placement/2026.1" \
-    "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$tree/stubs"
+    "$tree/images/ovn" "$tree/images/openstack-hypervisor-operator" "$tree/images/kvm-node-agent" \
+    "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$ovn" "$tree/stubs"
   cp "$GENERATOR" "$tree/hack/"
   cp "$PROJECT_ROOT/scripts/apply-constraint-overrides.sh" "$tree/scripts/"
 
@@ -87,6 +102,19 @@ make_tree() {
   printf '%s\n' 'cryptography==48.0.1' 'pymysql==1.2.3' 'uwsgi==2.0.31' \
     >"$tree/images/venv-builder/requirements.txt"
   printf '{\n  "version": "v1.7.0",\n  "rev": "%s"\n}\n' "$NOVNC_REV" >"$tree/images/nova/novnc.json"
+
+  git -C "$ovn" init --quiet
+  git -C "$ovn" config uploadpack.allowFilter true
+  git -C "$ovn" config uploadpack.allowAnySHA1InWant true
+  echo ovn >"$ovn/README.rst"
+  git -C "$ovn" add README.rst
+  git -C "$ovn" update-index --add --cacheinfo "160000,$OVS_REV,ovs"
+  git -C "$ovn" -c user.name=test -c user.email=test@localhost commit --quiet --message ovn
+  jq -n --arg rev "$(git -C "$ovn" rev-parse HEAD)" '{version: "v26.03.2", rev: $rev, hash: "sha256-stale"}' \
+    >"$tree/$OVN_PIN"
+  jq -n --arg rev "$HVO_REV" '{rev: $rev, hash: "sha256-go", vendorHash: "sha256-kept"}' >"$tree/$HVO_PIN"
+  jq -n --arg rev "$KNA_REV" '{rev: $rev, hash: "sha256-old", vendorHash: "sha256-old-vendor"}' \
+    >"$tree/$KNA_PIN"
   printf '%s\n' '--- a/placement/api.py' '+++ b/placement/api.py' \
     >"$tree/patches/placement/2026.1/0001-fix.patch"
 
@@ -103,9 +131,18 @@ make_tree() {
 #!/bin/sh
 echo "\$*" >>"$tree/stubs/nix.log"
 [ -z "\${NIX_STUB_FAIL:-}" ] || exit 9
+case " \$* " in
+  *" build "*)
+    [ -n "\${NIX_STUB_NO_GOT:-}" ] || echo "         got:    sha256-vendor" >&2
+    exit 1
+    ;;
+esac
 for ref; do :; done
 case "\$ref" in
   github:novnc/*) echo '{"locked":{"rev":"$NOVNC_REV"},"hash":"sha256-novnc","storePath":"/nonexistent"}' ;;
+  github:ovn-org/*) echo '{"hash":"sha256-ovn","storePath":"/nonexistent"}' ;;
+  github:openvswitch/*) echo '{"hash":"sha256-ovs","storePath":"/nonexistent"}' ;;
+  github:cobaltcore-dev/*) echo '{"hash":"sha256-go","storePath":"/nonexistent"}' ;;
   github:openstack/*)
     repo=\${ref#github:openstack/}
     echo "{\"locked\":{\"rev\":\"$FIXTURE_REV\"},\"hash\":\"sha256-fixture\",\"storePath\":\"$tree/upstream/\${repo%%/*}\"}"
@@ -127,11 +164,23 @@ EOF
   echo "$tree"
 }
 
-# run_generator runs the generator of a tree with its stubs first on PATH.
+# run_generator runs the generator of a tree with its stubs first on PATH and
+# the tree's OVN repository as the remote of the gitlink fetch.
 run_generator() {
   local tree="$1"
   shift
-  env PATH="$tree/stubs:$PATH" "$BASH" "$tree/hack/nix-lock.sh" "$@"
+  env PATH="$tree/stubs:$PATH" NIX_LOCK_OVN_REMOTE="file://$tree/upstream/ovn" \
+    "$BASH" "$tree/hack/nix-lock.sh" "$@"
+}
+
+# matches prints true when $1 matches the extended regular expression $2.
+matches() {
+  if [[ "$1" =~ $2 ]]; then echo true; else echo false; fi
+}
+
+# pin_state prints a checksum of the three image pins of a tree.
+pin_state() {
+  (cd "$1" && cat "$OVN_PIN" "$HVO_PIN" "$KNA_PIN") | cksum
 }
 
 # lock_state prints a checksum of the names and contents of a lock directory.
@@ -356,6 +405,212 @@ test_check_reports_stale_locks() {
   rm -rf "$tree"
 }
 
+test_all_writes_the_ovn_pin_in_key_order_with_the_gitlink_commit() {
+  echo "Test: --all writes the OVN pin with the hash of each tree and the commit of the ovs gitlink"
+  can_run 7 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the pin holds version, rev, hash and ovs, in that order" '["version","rev","hash","ovs"]' \
+    "$(jq -c keys_unsorted "$tree/$OVN_PIN")"
+  assert_eq "ovs holds rev and hash, in that order" '["rev","hash"]' \
+    "$(jq -c '.ovs | keys_unsorted' "$tree/$OVN_PIN")"
+  assert_eq "ovs.rev is the commit of the gitlink" "$OVS_REV" "$(jq -r .ovs.rev "$tree/$OVN_PIN")"
+  assert_eq "the hashes are the prefetched ones" "sha256-ovn sha256-ovs" \
+    "$(jq -r '"\(.hash) \(.ovs.hash)"' "$tree/$OVN_PIN")"
+  assert_contains "the OVS prefetch names the gitlink commit" "$(cat "$tree/stubs/nix.log")" \
+    "github:openvswitch/ovs/$OVS_REV"
+  rm -rf "$tree"
+}
+
+test_a_tree_without_the_ovs_gitlink_fails_and_leaves_the_pin() {
+  echo "Test: a bad rev, an unfetchable commit and a tree without the ovs gitlink fail and leave the pins"
+  can_run 9 || return
+
+  local tree ovn before output exit_code=0
+  tree=$(make_tree)
+  ovn="$tree/upstream/ovn"
+  git -C "$ovn" rm --cached --quiet ovs
+  git -C "$ovn" -c user.name=test -c user.email=test@localhost commit --quiet --message "no gitlink"
+  jq --arg rev "$(git -C "$ovn" rev-parse HEAD)" '.rev = $rev' "$tree/$OVN_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$OVN_PIN"
+  before=$(pin_state "$tree")
+
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  assert_eq "a commit without the gitlink exits 1" "1" "$exit_code"
+  assert_contains "the message names the commit" "$output" \
+    "nix-lock.sh: ovn-org/ovn at $(git -C "$ovn" rev-parse HEAD) has no ovs gitlink"
+  assert_eq "the pins are unchanged" "$before" "$(pin_state "$tree")"
+
+  jq '.rev = "0000000000000000000000000000000000000000"' "$tree/$OVN_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$OVN_PIN"
+  before=$(pin_state "$tree")
+  exit_code=0
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  assert_nonzero_exit "a commit the remote lacks fails" "$exit_code"
+  assert_contains "the message names the commit" "$output" \
+    "nix-lock.sh: cannot fetch ovn-org/ovn at 0000000000000000000000000000000000000000"
+  assert_eq "the pins are unchanged after the failed fetch" "$before" "$(pin_state "$tree")"
+
+  jq '.rev = "v26.03.2"' "$tree/$OVN_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$OVN_PIN"
+  exit_code=0
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  assert_eq "a tag as rev exits 1" "1" "$exit_code"
+  assert_contains "the message names the pin" "$output" \
+    "nix-lock.sh: images/ovn/source.json: rev is not a 40-character commit"
+  rm -rf "$tree"
+}
+
+test_an_unchanged_go_hash_keeps_the_vendor_hash_without_a_build() {
+  echo "Test: a Go pin whose hash did not move keeps its vendorHash and builds nothing"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the hvo pin is unchanged" \
+    "{\"rev\":\"$HVO_REV\",\"hash\":\"sha256-go\",\"vendorHash\":\"sha256-kept\"}" \
+    "$(jq -c . "$tree/$HVO_PIN")"
+  assert_not_contains "no build ran for hvo" "$(grep ' build ' "$tree/stubs/nix.log")" \
+    "images/openstack-hypervisor-operator/manager.nix"
+  rm -rf "$tree"
+}
+
+test_a_moved_go_hash_writes_the_vendor_hash_nix_printed() {
+  echo "Test: a Go pin whose hash moved gets the new hash and the vendor hash the build printed"
+  can_run 4 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the kna pin holds rev, the new hash and the printed vendor hash, in that order" \
+    "{\"rev\":\"$KNA_REV\",\"hash\":\"sha256-go\",\"vendorHash\":\"sha256-vendor\"}" \
+    "$(jq -c . "$tree/$KNA_PIN")"
+  assert_contains "the build reads the goModules of the kna manager" \
+    "$(grep ' build ' "$tree/stubs/nix.log")" "images/kvm-node-agent/manager.nix"
+  assert_contains "the write is reported" "$output" "nix-lock.sh: wrote $KNA_PIN"
+  rm -rf "$tree"
+}
+
+test_a_build_without_got_fails_and_leaves_the_pin() {
+  echo "Test: a vendor-hash build that names no hash fails and leaves the pin"
+  can_run 3 || return
+
+  local tree before output exit_code=0
+  tree=$(make_tree)
+  before=$(cksum <"$tree/$KNA_PIN")
+  output=$(NIX_STUB_NO_GOT=1 run_generator "$tree" --all 2>&1) || exit_code=$?
+  assert_eq "the run exits 1" "1" "$exit_code"
+  assert_contains "the message names the image" "$output" \
+    "nix-lock.sh: kvm-node-agent: nix build printed no vendor hash"
+  assert_eq "the kna pin is unchanged" "$before" "$(cksum <"$tree/$KNA_PIN")"
+  rm -rf "$tree"
+}
+
+test_check_reports_an_edited_pin_hash() {
+  echo "Test: --check reports a committed pin whose hash differs from the prefetched one"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  run_generator "$tree" --all >/dev/null 2>&1
+  jq '.hash = "sha256-edited"' "$tree/$OVN_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$OVN_PIN"
+  git -C "$tree" add --all
+  git -C "$tree" -c user.name=test -c user.email=test@localhost commit --quiet --message pins
+
+  output=$(run_generator "$tree" --check 2>&1) || exit_code=$?
+  assert_eq "an edited pin exits 1" "1" "$exit_code"
+  assert_contains "the pin is listed" "$output" " M $OVN_PIN"
+  assert_contains "the stale message names make nix-lock" "$output" \
+    "nix-lock.sh: the locks are stale; run make nix-lock and commit the result"
+  rm -rf "$tree"
+}
+
+test_an_empty_vendor_hash_is_recomputed() {
+  echo "Test: a Go pin with an unchanged hash and an empty vendorHash gets the vendor hash the build printed"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  jq '.vendorHash = ""' "$tree/$HVO_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$HVO_PIN"
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_contains "the build reads the goModules of the hvo manager" \
+    "$(grep ' build ' "$tree/stubs/nix.log")" "images/openstack-hypervisor-operator/manager.nix"
+  assert_eq "the hvo pin holds the printed vendor hash" "sha256-vendor" \
+    "$(jq -r .vendorHash "$tree/$HVO_PIN")"
+  rm -rf "$tree"
+}
+
+test_check_reports_an_ovs_rev_that_is_not_the_gitlink() {
+  echo "Test: --check reports an ovs.rev that differs from the gitlink at the pinned OVN commit"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  run_generator "$tree" --all >/dev/null 2>&1
+  jq '.ovs.rev = "1111111111111111111111111111111111111111"' "$tree/$OVN_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$OVN_PIN"
+  git -C "$tree" add --all
+  git -C "$tree" -c user.name=test -c user.email=test@localhost commit --quiet --message pins
+
+  output=$(run_generator "$tree" --check 2>&1) || exit_code=$?
+  assert_eq "a foreign ovs.rev exits 1" "1" "$exit_code"
+  assert_contains "the pin is listed" "$output" " M $OVN_PIN"
+  assert_eq "ovs.rev is the commit of the gitlink again" "$OVS_REV" "$(jq -r .ovs.rev "$tree/$OVN_PIN")"
+  rm -rf "$tree"
+}
+
+test_nix_stub_fail_leaves_every_pin_byte_identical() {
+  echo "Test: a failing nix leaves the three image pins byte-identical"
+  can_run 2 || return
+
+  local tree before exit_code=0
+  tree=$(make_tree)
+  before=$(pin_state "$tree")
+  NIX_STUB_FAIL=1 run_generator "$tree" --all >/dev/null 2>&1 || exit_code=$?
+  assert_eq "a failing nix exits with its status" "9" "$exit_code"
+  assert_eq "the three pins are unchanged" "$before" "$(pin_state "$tree")"
+  rm -rf "$tree"
+}
+
+test_committed_pins_carry_revs_and_sri_hashes() {
+  echo "Test: the committed image pins carry 40-character commits and SRI hashes"
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local commit='^[0-9a-f]{40}$' sri='^sha256-[A-Za-z0-9+/]{43}=$' pin value
+  for value in "$(jq -r .rev "$PROJECT_ROOT/$OVN_PIN")" "$(jq -r .ovs.rev "$PROJECT_ROOT/$OVN_PIN")"; do
+    assert_eq "$OVN_PIN carries the commit $value" true "$(matches "$value" "$commit")"
+  done
+  for value in "$(jq -r .hash "$PROJECT_ROOT/$OVN_PIN")" "$(jq -r .ovs.hash "$PROJECT_ROOT/$OVN_PIN")"; do
+    assert_eq "$OVN_PIN carries the SRI hash $value" true "$(matches "$value" "$sri")"
+  done
+  assert_eq "$OVN_PIN names a vX.Y.Z tag" true \
+    "$(matches "$(jq -r .version "$PROJECT_ROOT/$OVN_PIN")" '^v[0-9]+\.[0-9]+\.[0-9]+$')"
+  for pin in "$HVO_PIN" "$KNA_PIN"; do
+    assert_eq "$pin holds rev, hash and vendorHash, in that order" '["rev","hash","vendorHash"]' \
+      "$(jq -c keys_unsorted "$PROJECT_ROOT/$pin")"
+    assert_eq "$pin carries a commit" true "$(matches "$(jq -r .rev "$PROJECT_ROOT/$pin")" "$commit")"
+    assert_eq "$pin carries an SRI hash" true "$(matches "$(jq -r .hash "$PROJECT_ROOT/$pin")" "$sri")"
+    assert_eq "$pin carries an SRI vendor hash" true "$(matches "$(jq -r .vendorHash "$PROJECT_ROOT/$pin")" "$sri")"
+  done
+}
+
 test_failures_leave_the_lock_untouched() {
   echo "Test: a refused patch, a failing prefetch and a failing uv lock leave the previous lock as it was"
   can_run 9 || return
@@ -464,8 +719,18 @@ test_test_groups
 test_tempest_lock
 test_all_writes_novnc_and_deletes_orphans
 test_check_reports_stale_locks
+test_all_writes_the_ovn_pin_in_key_order_with_the_gitlink_commit
+test_a_tree_without_the_ovs_gitlink_fails_and_leaves_the_pin
+test_an_unchanged_go_hash_keeps_the_vendor_hash_without_a_build
+test_a_moved_go_hash_writes_the_vendor_hash_nix_printed
+test_a_build_without_got_fails_and_leaves_the_pin
+test_check_reports_an_edited_pin_hash
+test_an_empty_vendor_hash_is_recomputed
+test_check_reports_an_ovs_rev_that_is_not_the_gitlink
+test_nix_stub_fail_leaves_every_pin_byte_identical
 test_failures_leave_the_lock_untouched
 test_committed_locks_match_the_pins
+test_committed_pins_carry_revs_and_sri_hashes
 test_python_is_the_flake_interpreter
 test_generator_is_shellcheck_clean
 

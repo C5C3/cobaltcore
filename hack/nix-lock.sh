@@ -8,11 +8,12 @@
 #
 # Usage, from anywhere in the repository:
 #   hack/nix-lock.sh <name> <release>   write one lock
-#   hack/nix-lock.sh --all              write every lock and the noVNC hash,
-#                                       and delete the locks nothing pins
+#   hack/nix-lock.sh --all              write every lock, the noVNC hash and
+#                                       the three image pins, and delete the
+#                                       locks nothing pins
 #   hack/nix-lock.sh --check            run --all, then exit 1 when the tree
-#                                       under nix/locks/ or images/nova/novnc.json
-#                                       changed
+#                                       under nix/locks/, images/nova/novnc.json
+#                                       or an image pin changed
 #
 # `make nix-lock` and `make nix-lock-check` run the last two in the lock-tools
 # dev shell of flake.nix, whose uv wrote the committed locks.
@@ -37,7 +38,24 @@
 #                   writes the same lock
 #
 # --all also prefetches the noVNC commit images/nova/novnc.json names and
-# writes its hash into that file.
+# writes its hash into that file, and writes the pins of the three images
+# built from an upstream commit:
+#   images/ovn/source.json
+#                   the NAR hash of the OVN commit "rev" names, and under
+#                   "ovs" the commit the 'ovs' gitlink names at that commit
+#                   with its NAR hash. The gitlink comes from a shallow,
+#                   blobless fetch of that one commit from
+#                   NIX_LOCK_OVN_REMOTE (default
+#                   https://github.com/ovn-org/ovn.git).
+#   images/openstack-hypervisor-operator/source.json
+#   images/kvm-node-agent/source.json
+#                   the NAR hash of the commit "rev" names and the
+#                   vendorHash of its Go modules. The vendor hash is
+#                   recomputed only when the NAR hash moved or vendorHash is
+#                   empty: the goModules build of images/<name>/manager.nix
+#                   with an empty vendorHash fails and prints the hash it
+#                   got. Empty vendorHash to recompute it after a nixpkgs
+#                   update changed the module fetch.
 #
 # The tracked releases/ and overrides/ files are only read: the constraint
 # overrides are merged into a temporary copy by
@@ -378,6 +396,92 @@ lock_novnc() {
   echo "nix-lock.sh: wrote ${pin}"
 }
 
+# check_rev exits 1 unless $2 is a 40-character commit; $1 is the pin file.
+check_rev() {
+  if [[ ! "$2" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "nix-lock.sh: $1: rev is not a 40-character commit" >&2
+    exit 1
+  fi
+}
+
+# lock_ovn writes images/ovn/source.json in the key order version, rev, hash,
+# ovs: the NAR hash of the OVN commit it names, the commit the 'ovs' gitlink
+# names there and that commit's NAR hash. Every failure exits before the pin
+# is written.
+lock_ovn() {
+  local pin=images/ovn/source.json version rev hash line ovs_rev ovs_hash status=0
+  local gitlink=$'^160000 commit ([0-9a-f]{40})\tovs$'
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  version=$(jq -r '.version' "$pin")
+  rev=$(jq -r '.rev' "$pin")
+  check_rev "$pin" "$rev"
+  hash=$(prefetch "github:ovn-org/ovn/${rev}" | jq -r '.hash')
+
+  git init -q "${TMP}/ovn"
+  GIT_TERMINAL_PROMPT=0 git -C "${TMP}/ovn" fetch -q --depth 1 --filter=blob:none \
+    "${NIX_LOCK_OVN_REMOTE:-https://github.com/ovn-org/ovn.git}" "$rev" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "nix-lock.sh: cannot fetch ovn-org/ovn at ${rev}" >&2
+    exit "$status"
+  fi
+  line=$(git -C "${TMP}/ovn" ls-tree FETCH_HEAD ovs)
+  if [[ ! "$line" =~ $gitlink ]]; then
+    echo "nix-lock.sh: ovn-org/ovn at ${rev} has no ovs gitlink" >&2
+    exit 1
+  fi
+  ovs_rev="${BASH_REMATCH[1]}"
+  ovs_hash=$(prefetch "github:openvswitch/ovs/${ovs_rev}" | jq -r '.hash')
+
+  jq -n --arg version "$version" --arg rev "$rev" --arg hash "$hash" \
+    --arg ovs_rev "$ovs_rev" --arg ovs_hash "$ovs_hash" \
+    '{version: $version, rev: $rev, hash: $hash, ovs: {rev: $ovs_rev, hash: $ovs_hash}}' \
+    >"${TMP}/source.json"
+  cat "${TMP}/source.json" >"$pin"
+  echo "nix-lock.sh: wrote ${pin}"
+}
+
+# lock_go_source <name> <owner/repo> writes images/<name>/source.json in the
+# key order rev, hash, vendorHash: the NAR hash of the commit it names and the
+# vendor hash of its Go modules, built only when the NAR hash moved or
+# vendorHash is empty. Every failure exits before the pin is written.
+lock_go_source() {
+  local name="$1" pin="images/$1/source.json" rev hash vendor_hash new_hash line
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  rev=$(jq -r '.rev' "$pin")
+  hash=$(jq -r '.hash // empty' "$pin")
+  vendor_hash=$(jq -r '.vendorHash // empty' "$pin")
+  check_rev "$pin" "$rev"
+  new_hash=$(prefetch "github:$2/${rev}" | jq -r '.hash')
+
+  if [ "$new_hash" != "$hash" ] || [ -z "$vendor_hash" ]; then
+    vendor_hash=""
+    jq -n --arg rev "$rev" --arg hash "$new_hash" '{rev: $rev, hash: $hash, vendorHash: ""}' \
+      >"${TMP}/source.json"
+    # The fixed-output build of the modules fails on the empty hash and
+    # names the one it got.
+    "${NIX[@]}" build --impure --no-link --expr "let pkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs-images.legacyPackages.\${builtins.currentSystem}; in (import ./images/${name}/manager.nix { inherit pkgs; pin = builtins.fromJSON (builtins.readFile \"${TMP}/source.json\"); }).goModules" \
+      2>"${TMP}/build.err" || true
+    while IFS= read -r line; do
+      if [[ "$line" =~ got:[[:space:]]*([^[:space:]]+) ]]; then
+        vendor_hash="${BASH_REMATCH[1]}"
+        break
+      fi
+    done <"${TMP}/build.err"
+    if [ -z "$vendor_hash" ]; then
+      cat "${TMP}/build.err" >&2
+      echo "nix-lock.sh: ${name}: nix build printed no vendor hash" >&2
+      exit 1
+    fi
+  fi
+
+  jq -n --arg rev "$rev" --arg hash "$new_hash" --arg vendorHash "$vendor_hash" \
+    '{rev: $rev, hash: $hash, vendorHash: $vendorHash}' >"${TMP}/source.json"
+  cat "${TMP}/source.json" >"$pin"
+  echo "nix-lock.sh: wrote ${pin}"
+}
+
 # lock_all writes every lock the release files pin and deletes every
 # directory under nix/locks/ they do not name.
 lock_all() {
@@ -395,6 +499,9 @@ lock_all() {
     (lock tempest "$release")
   done
   (lock_novnc)
+  (lock_ovn)
+  (lock_go_source openstack-hypervisor-operator cobaltcore-dev/openstack-hypervisor-operator)
+  (lock_go_source kvm-node-agent cobaltcore-dev/kvm-node-agent)
 
   shopt -s nullglob
   for dir in nix/locks/*/ nix/locks/*/*/; do
@@ -416,7 +523,7 @@ case "$MODE" in
     ;;
   check)
     lock_all
-    stale=$(git status --porcelain -- nix/locks images/nova/novnc.json)
+    stale=$(git status --porcelain -- nix/locks images/nova/novnc.json 'images/*/source.json')
     if [ -n "$stale" ]; then
       echo "$stale" >&2
       echo "nix-lock.sh: the locks are stale; run make nix-lock and commit the result" >&2

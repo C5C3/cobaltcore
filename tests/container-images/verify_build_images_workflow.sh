@@ -575,6 +575,8 @@ test_nix_lock_check_job() {
   runs=$(yq_raw "$job.steps[].run | select(. != null)" "$WORKFLOW" || true)
   assert_contains "nix-lock-check runs the generator's check" "$runs" "hack/nix-lock.sh --check"
   assert_contains "nix-lock-check runs in the lock-tools shell" "$runs" "nix develop .#lock-tools"
+  assert_contains "a stale lock or image pin is annotated" "$runs" \
+    "::error::the Nix locks or image pins are stale: run make nix-lock and commit the result"
 
   local dependant
   for dependant in build-service-images build-tempest test-service-images; do

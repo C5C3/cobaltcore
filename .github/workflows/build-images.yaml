@@ -369,12 +369,15 @@ jobs:
           nix eval --json .#packages.aarch64-linux --apply 'builtins.mapAttrs (_: p: p.drvPath)'
 
   # The locks under nix/locks/ and the noVNC hash are derived from the release
-  # pins, the constraint overrides, the patches and the venv-builder pins:
-  # hack/nix-lock.sh --check regenerates them with the uv of the lock-tools
-  # shell and fails when the result differs from the committed files. A
-  # Renovate pull request that moves a pin fails here until `make nix-lock`
-  # is pushed to its branch. The GitHub token lifts the API rate limit of the
-  # source prefetches.
+  # pins, the constraint overrides, the patches and the venv-builder pins, and
+  # the hashes in images/ovn/source.json,
+  # images/openstack-hypervisor-operator/source.json and
+  # images/kvm-node-agent/source.json, with the OVS commit of the 'ovs'
+  # gitlink, from the commits those pins name: hack/nix-lock.sh --check
+  # regenerates them with the uv of the lock-tools shell and fails when the
+  # result differs from the committed files. A Renovate pull request that
+  # moves a pin fails here until `make nix-lock` is pushed to its branch. The
+  # GitHub token lifts the API rate limit of the source prefetches.
   nix-lock-check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -390,7 +393,7 @@ jobs:
       - name: Check the locks
         run: |
           nix develop .#lock-tools --command bash hack/nix-lock.sh --check || {
-            echo "::error::nix/locks is stale: run make nix-lock and commit the result"
+            echo "::error::the Nix locks or image pins are stale: run make nix-lock and commit the result"
             exit 1
           }
 
