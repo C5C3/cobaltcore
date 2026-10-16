@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 48 chaos test suites validate operator behavior during and after fault
+The 49 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 48 test suites require the infrastructure stack to be deployed and healthy.
+All 49 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -462,6 +462,7 @@ with the new suites.
 | [cert-manager-outage](#cert-manager-outage) | — | `keystone-chaos-cm` | Controller outage across a forced renewal | `HELD-OK`: Certificate `keystone-nip-io-tls` at its baseline `status.revision` with `Issuing=True`, and the leaf of its Secret and the leaf the listener serves unchanged for 120 s; `RENEWED-OK`: revision `R0 + 1` without `Issuing` within 300 s of the lift and the listener serving the new leaf within 120 s; `Ready=True/AllReady` throughout, workload budget zero |
 | [eso-down](#eso-down) | — | `keystone-chaos-eso-fresh` | ESO controller at zero (fail-closed provisioning) | `FAILCLOSED-OK`: for 90 s with the controller at zero, a fresh Keystone holds `SecretsReady=False/WaitingForDBCredentials`, never reads `Ready=True` and has no Secret `eso-down-db`, while `keystone-chaos-eso` stays `Ready=True`; after the scale-up both ExternalSecrets `Ready=True/SecretSynced` and the fresh Keystone at `Ready=True/AllReady` within 10 minutes, workload budget zero |
 | [eso-pod-kill](#eso-pod-kill) | — | `keystone-chaos-esokill` | ESO controller pod kill | Every pre-kill controller pod UID gone and `readyReplicas` back at `spec.replicas`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady`, `RESYNC-OK`: a forced sync of `eso-kill-probe` with a `refreshTime` at or after the request and `Ready=True/SecretSynced` within 180 s, workload budget zero |
+| [openbao-sealed](#openbao-sealed) | — | `keystone-chaos-seal` | OpenBao sealed in place | `openbao-cluster-store` `Ready=False`, the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`, `SEALED-IN-PLACE-OK`: `openbao-0` with its pod UID and `restartCount` unchanged; after `unseal-openbao.sh` the store and the Keystone `Ready=True` within 5 minutes, workload budget zero |
 
 ---
 
@@ -3312,6 +3313,54 @@ and `--eso`, and the workload dump. Steps 2 and 3 delete the `PodChaos` first.
 
 ---
 
+### openbao-sealed
+
+**File:** `tests/e2e-chaos/openbao-sealed/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** `bao operator seal` seals the shared `openbao-0` in `shared-services`
+where it runs. `openbao-pod-kill` kills that pod, and the new pod starts sealed;
+this suite keeps the pod and changes only its seal, and the pod UID and the
+`restartCount` it records tell the two apart. The suite pins that the seal reaches
+the stores and the Keystone as `SecretStoreNotReady`, and that an unseal brings
+both back.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Baseline and workload | `apply` + `assert` (5m) + `script` (6m) | `keystone-chaos-seal` (database `keystone_chaos_seal`) reaches `SecretsReady=True` and `Ready=True/AllReady`; `workload.sh start` |
+| 2 | Seal in place | `script` (2m) | Records the UID and the `restartCount` of `openbao-0` in ConfigMap `openbao-sealed-state`, runs `workload.sh mark fault-start`, pipes the root token from Secret `openbao-init-keys` into `bao operator seal` on stdin, requires `bao status` to report `sealed: true`, and waits for the pod at `Ready=false` |
+| 3 | The seal is reported | `assert` (6m) + `assert` (5m) + `script` (1m) | `openbao-cluster-store` at `Ready=False`; the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`; the pod UID and `restartCount` of `openbao-0` unchanged (`SEALED-IN-PLACE-OK`) |
+| 4 | Unseal | `script` (6m) + `script` (1m) | `../unseal-openbao.sh`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) | The store at `Ready=True`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`.
+
+**Workload:** the `token` stream against `keystone-chaos-seal`, started in step 1
+and judged in step 6 against `failures=0 recovery=0s`. The suite runs in the `pod`
+matrix entry. The Keystone API keeps serving tokens from its synced Secrets while
+its CR reports `Ready=False`, and the zero budget states that contract.
+
+**Catch blocks:** steps 2 and 3 unseal first, then every catch calls
+`../diagnostics.sh chaos keystone-chaos-seal` with `--dep-ns=shared-services`,
+`--dep-label=app.kubernetes.io/name=openbao` and `--eso`, and dumps the workload.
+
+**Design notes:**
+
+- `unseal-openbao.sh` skips a pod that reads Ready, and the readiness probe of
+  `openbao-0` needs about ten seconds to see a seal. Step 2 therefore waits for
+  `Ready=false`, and the unseal of the catch blocks waits for it too when
+  `bao status` reports the pod sealed.
+- The root token goes to the pod on stdin, as `unseal-openbao.sh` hands over its
+  key shares, so it appears in no argv and no file.
+- ESO validates `openbao-cluster-store` at its controller's own interval, since the
+  store sets none, so the first assert of step 3 may wait for that validation.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3839,6 +3888,9 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
 │   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
 │   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
+├── openbao-sealed/                   OpenBao sealed in place
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-seal
+│   └── chainsaw-test.yaml            Test: SecretStoreNotReady under the seal, recovery after the unseal
 ├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in keystone-system

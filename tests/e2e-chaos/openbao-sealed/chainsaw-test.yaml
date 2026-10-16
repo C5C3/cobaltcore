@@ -1,0 +1,218 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the shared OpenBao sealed in place.
+#
+# Fault: `bao operator seal` on openbao-0 in shared-services, the single
+# Shamir-sealed replica every ESO store of the kind stack reads. The root
+# token reaches the pod on stdin, as unseal-openbao.sh hands over its keys, so
+# it lands in neither a file nor an argv. The openbao-operator instance in
+# openstack is a different OpenBao: its admission policy refuses pod
+# mutations, and barbican-openbao-outage partitions it.
+#
+# Claim, phase by phase:
+#   sealed    ClusterSecretStore openbao-cluster-store turns Ready=False, and
+#             the Keystone reports SecretsReady=False/SecretStoreNotReady
+#             (GateStoreReady) and Ready=False/NotAllReady. openbao-0 keeps
+#             its pod UID and its restartCount: it was sealed in place, which
+#             is what tells this suite from openbao-pod-kill, where a new pod
+#             starts sealed (SEALED-IN-PLACE-OK).
+#   unsealed  After ../unseal-openbao.sh the store and the Keystone return to
+#             Ready=True within 5 minutes.
+#
+# Blast radius: no ExternalSecret of the cluster syncs while OpenBao is
+# sealed; Secrets already materialized stay. The seal is shared platform
+# state, so steps 2 and 3 run ../unseal-openbao.sh in their catch blocks.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-seal through the fault. The API keeps serving tokens
+# from its synced Secrets while the CR reports Ready=False, and the zero
+# budget states exactly that contract.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: openbao-sealed
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Baseline and workload ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-seal
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start openbao-sealed -- --streams token --keystone http://keystone-chaos-seal.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-seal --dep-ns=shared-services --dep-label=app.kubernetes.io/name=openbao
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump openbao-sealed
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop openbao-sealed
+  # ── Step 2: Seal openbao-0 in place ────────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/openbao.sh
+          uid="$(kubectl get pod openbao-0 -n shared-services -o jsonpath='{.metadata.uid}')"
+          restarts="$(kubectl get pod openbao-0 -n shared-services \
+            -o jsonpath='{.status.containerStatuses[?(@.name=="openbao")].restartCount}')"
+          kubectl create configmap openbao-sealed-state -n "$NAMESPACE" \
+            --from-literal=uid="$uid" --from-literal=restarts="$restarts" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "openbao-0: uid ${uid}, restartCount ${restarts}"
+          ../lib/workload.sh mark openbao-sealed fault-start
+          bao_root operator seal </dev/null
+          sealed="$(bao_exec bao status -format=json </dev/null | jq -r .sealed || true)"
+          if [ "$sealed" != "true" ]; then
+            echo "FAIL: bao status reports sealed=${sealed:-<nothing>} after the seal"
+            exit 1
+          fi
+          # The readiness probe runs bao status; unseal-openbao.sh skips a pod
+          # that still reads Ready, so the catch blocks below need it False.
+          kubectl wait pod/openbao-0 -n shared-services --for=condition=Ready=false --timeout=60s
+          echo "OK: openbao-0 reports Sealed true"
+    catch:
+    - &unseal
+      script:
+        timeout: 6m
+        shell: bash
+        content: |
+          # Unseal on failure so the next suite is not left without OpenBao.
+          # A seal that has just landed may not have reached the readiness
+          # probe yet, and unseal-openbao.sh skips a pod that reads Ready.
+          . ../lib/openbao.sh
+          rc=0
+          bao_exec bao status </dev/null >/dev/null 2>&1 || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            kubectl wait pod/openbao-0 -n shared-services --for=condition=Ready=false --timeout=60s 2>&1 || true
+          fi
+          ../unseal-openbao.sh 2>&1 || true
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-seal --dep-ns=shared-services --dep-label=app.kubernetes.io/name=openbao --eso
+    - *workload-dump
+    cleanup:
+    - script:
+        content: kubectl delete configmap openbao-sealed-state -n "$NAMESPACE" --ignore-not-found
+  # ── Step 3: The stores and the Keystone report the seal ────────────────
+  # ESO validates a store again at its controller's own interval
+  # (openbao-cluster-store sets none), so the first assert may wait for it.
+  - try:
+    - assert:
+        timeout: 6m
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ClusterSecretStore
+          metadata:
+            name: openbao-cluster-store
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "False"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-seal
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: SecretStoreNotReady
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          want_uid="$(kubectl get configmap openbao-sealed-state -n "$NAMESPACE" -o jsonpath='{.data.uid}')"
+          want_restarts="$(kubectl get configmap openbao-sealed-state -n "$NAMESPACE" -o jsonpath='{.data.restarts}')"
+          uid="$(kubectl get pod openbao-0 -n shared-services -o jsonpath='{.metadata.uid}')"
+          restarts="$(kubectl get pod openbao-0 -n shared-services \
+            -o jsonpath='{.status.containerStatuses[?(@.name=="openbao")].restartCount}')"
+          if [ "$uid" != "$want_uid" ] || [ "$restarts" != "$want_restarts" ]; then
+            echo "FAIL: openbao-0 is not the pod that was sealed (uid ${uid}, restartCount ${restarts}; was ${want_uid}, ${want_restarts})"
+            exit 1
+          fi
+          echo "SEALED-IN-PLACE-OK: openbao-0 kept uid ${uid} and restartCount ${restarts}"
+    catch:
+    - *unseal
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 4: Unseal ─────────────────────────────────────────────────────
+  # unseal-openbao.sh waits up to about 330 s in the worst case.
+  - try:
+    - script:
+        timeout: 6m
+        content: ../unseal-openbao.sh
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark openbao-sealed fault-end
+    catch:
+    - *unseal
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 5: The store and the Keystone recover ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ClusterSecretStore
+          metadata:
+            name: openbao-cluster-store
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-seal
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify openbao-sealed
+    catch:
+    - *workload-dump
