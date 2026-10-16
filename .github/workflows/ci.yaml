@@ -1998,6 +1998,7 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/rabbitmq-operator-cascading-failure
+              tests/e2e-chaos/korc-provisioning-outage
     runs-on: self-hosted
     # 150 minutes for the nova leg, 135 for network, 120 for pod, 100 for
     # controlplane and 45 for ovn: 550 minutes for the five, which the author
