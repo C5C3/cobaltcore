@@ -121,7 +121,8 @@ PYTHON_MINOR=3.12
 # releases/<release>/extra-packages.yaml becomes a dependency group named
 # after the image in the key's lock, so the image and the key's own image
 # share one resolution. tests/container-images/verify_release_config.sh
-# keeps a copy (DERIVED_IMAGES).
+# (DERIVED_IMAGES, derived_parent) and flake.nix (novaLocks and the
+# nova-compute-<rel_>-image attribute) keep copies.
 declare -A DERIVED_IMAGES=([nova-compute]=nova)
 
 # PEP 503 normalisation, for comparing a requirement name with a constraint.

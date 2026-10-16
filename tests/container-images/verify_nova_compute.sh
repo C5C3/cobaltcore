@@ -5,14 +5,15 @@
 
 # Verify nova-compute container image meets requirements
 # Usage: bash tests/container-images/verify_nova_compute.sh [image_name]
-# Default image: c5c3/nova-compute:33.0.0
+# Default image: nova-compute:2026.1, the name docker load prints for
+#   `nix build .#nova-compute-2026_1-image && ./result | docker load`
 # Optional env: NOVA_COMPUTE_RELEASE, the image's release (CI sets it from
 #   matrix.release); unset, test 2 finds the release from nova's version
 # Requires: Docker daemon running
 
 set -euo pipefail
 
-IMAGE="${1:-c5c3/nova-compute:33.0.0}"
+IMAGE="${1:-nova-compute:2026.1}"
 
 PASS=0
 FAIL=0
@@ -23,6 +24,8 @@ REPO_ROOT="$SCRIPT_DIR/../.."
 source "$SCRIPT_DIR/../lib/assertions.sh"
 # shellcheck source=tests/lib/ceph_bindings.sh
 source "$SCRIPT_DIR/../lib/ceph_bindings.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
 
 # --- Test 1: the console scripts ship and nova-compute runs ---
 test_console_scripts() {
@@ -63,12 +66,14 @@ test_libvirt_binding_pin() {
   assert_eq "import libvirt exits 0" "0" "$exit_code"
 
   # getVersion() is the version of the libvirt library the binding loaded,
-  # as major * 1000000 + minor * 1000 + release; noble ships 10.0.0. A value
-  # that is no integer (a traceback) counts as 0, so it never reaches the
-  # arithmetic of assert_gte.
+  # as major * 1000000 + minor * 1000 + release. The binding links the
+  # libvirt the libvirt image runs, one derivation (nix/pkgs/libvirt.nix,
+  # checked by checks.<system>.libvirt-pairing in flake.nix). A value that is
+  # no integer (a traceback) counts as 0, so it never reaches the arithmetic
+  # of assert_gte.
   version="${output##*$'\n'}"
   [[ "$version" =~ ^[0-9]+$ ]] || version=0
-  assert_gte "libvirt.getVersion() is at least 10000000 (libvirt 10.0.0)" "$version" 10000000
+  assert_gte "libvirt.getVersion() is at least 12000000 (libvirt 12.0.0)" "$version" 12000000
 
   exit_code=0
   versions=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
@@ -108,11 +113,9 @@ test_libvirt_binding_pin() {
     release=$(basename "$(dirname "$matches")")
   fi
 
-  # The override file first, then upper-constraints.txt: on pull requests
-  # checkout-service-source has already applied the overrides to
-  # upper-constraints.txt in the workspace, while the push-side verify job
-  # reads a clean checkout. Reading the override first gives both the pin the
-  # build used.
+  # The override file first, then upper-constraints.txt: hack/nix-lock.sh
+  # merges the overrides into the constraints the nova lock is resolved
+  # against, so reading the override first gives the pin the lock used.
   override="$REPO_ROOT/overrides/$release/constraints.txt"
   if [ -f "$override" ] && grep -qxF -- '-libvirt-python' "$override"; then
     echo "  FAIL: libvirt-python is unpinned for $release: overrides/$release/constraints.txt removes the pin"
@@ -161,8 +164,8 @@ test_driver_imports() {
 test_host_tools() {
   echo "Test: the host tools run"
   # One container and one assertion per tool, so a package that went missing
-  # or moved names itself. The comments in the nova-compute block of
-  # releases/<release>/extra-packages.yaml name the code that runs each tool.
+  # or moved names itself. The comments in images/nova-compute/image.nix name
+  # the code that runs each tool.
   local tool exit_code err
   local -a tools=(
     "qemu-img --version"
@@ -191,12 +194,12 @@ test_host_tools() {
 # --- Test 5: no node identity is baked into the image ---
 test_no_baked_node_identity() {
   echo "Test: no node identity is baked into the image"
-  # The postinst scripts of open-iscsi and nvme-cli write the initiator name,
-  # the host NQN and the host ID at build time, and multipath-tools ships a
-  # multipath.conf. os-brick reports the IQN and the NQN to Cinder as the
-  # node's identity, so a baked file would give every compute node the same
-  # one. The consumer mounts the host's files. One container prints the paths
-  # that exist.
+  # nixpkgs' open-iscsi installs an initiator name it generated at build
+  # time, which images/nova-compute/image.nix removes together with any host
+  # NQN, host ID and multipath.conf. os-brick reports the IQN and the NQN to
+  # Cinder as the node's identity, so a baked file would give every compute
+  # node the same one. The consumer mounts the host's files. One container
+  # prints the paths that exist.
   local path present exit_code=0
   local -a identity=(
     /etc/iscsi/initiatorname.iscsi
@@ -328,23 +331,12 @@ test_runs_as_openstack_user() {
 # --- Test 8: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
-  # The build stage installs libvirt-dev and pkg-config to compile the
-  # binding; the runtime stage copies /var/lib/openstack alone.
-  local check exit_code
-  local -a checks=(
-    "which gcc"
-    "which pkg-config"
-    "which uv"
-    "dpkg -s python3-dev"
-    "dpkg -s libvirt-dev"
-  )
-
-  for check in "${checks[@]}"; do
-    exit_code=0
-    # shellcheck disable=SC2086 # deliberate: split the command and its argument
-    docker run --rm "$IMAGE" $check > /dev/null 2>&1 || exit_code=$?
-    assert_nonzero_exit "$check fails" "$exit_code"
-  done
+  # The binding builds against libvirt with pkg-config in the build sandbox;
+  # neither reaches the image's PATH.
+  local exit_code=0
+  assert_no_build_tools
+  docker run --rm "$IMAGE" sh -c 'command -v pkg-config' > /dev/null 2>&1 || exit_code=$?
+  assert_nonzero_exit "pkg-config is not on PATH" "$exit_code"
 }
 
 # --- Test 9: the state directories ship empty and owned by 42424 ---
@@ -356,22 +348,27 @@ test_state_directories() {
   # to exist, be empty and be owned by 42424, the UID the container runs under.
   # The consumer (#1061) mounts /var/lib/nova from the host, which replaces
   # this layout: only a plain `docker run` gets it, and the ownership of the
-  # host directories is the pod's to set. A failed docker run shows up as the
-  # actual value of each assertion.
-  local output
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/nova -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort | tr "\n" " "' 2>&1) || true
-  assert_eq "the two state directories are present" "instances tmp " "$output"
-
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'find /var/lib/nova -mindepth 2 | wc -l' 2>&1) || true
-  assert_eq "the state directories are empty" "0" "$(echo "$output" | tr -d ' ')"
-
-  # The owning UID of the whole tree as a sorted set, so a directory the
-  # chown -R missed shows up here instead of only on the one that is checked.
-  output=$(docker run --rm "$IMAGE" \
-    sh -c 'stat -c %u /var/lib/nova /var/lib/nova/* | sort -u | tr "\n" " "' 2>&1) || true
-  assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
+  # host directories is the pod's to set.
+  # One listing of the tree: the entries below /var/lib/nova, whether any of
+  # them has an entry of its own, and the owning UIDs of /var/lib/nova and
+  # every entry as a sorted set, so a directory the ownership step missed
+  # shows up here instead of only on the one that is checked.
+  local output exit_code=0 names nested owners
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'import os
+root = "/var/lib/nova"
+names = sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n)))
+print(" ".join(names) + " ")
+print(sum(len(os.listdir(os.path.join(root, n))) for n in os.listdir(root)))
+paths = [root] + [os.path.join(root, n) for n in os.listdir(root)]
+print(" ".join(sorted({str(os.stat(p).st_uid) for p in paths})) + " ")' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+  names=$(sed -n 1p <<<"$output")
+  nested=$(sed -n 2p <<<"$output")
+  owners=$(sed -n 3p <<<"$output")
+  assert_eq "the two state directories are present" "instances tmp " "$names"
+  assert_eq "the state directories are empty" "0" "$nested"
+  assert_eq "the state tree is owned by 42424 alone" "42424 " "$owners"
 }
 
 # --- Test 10: the Ceph client libraries and tools are wired ---
@@ -413,6 +410,41 @@ sys.exit(0 if rbd_utils.rbd is not None and rbd_utils.rados is not None
   assert_starts_with "ceph --version names the Ceph release" "$output" "ceph version "
 }
 
+# --- Test 11: the tools nova and os-brick run as root resolve ---
+test_root_tools_resolve() {
+  echo "Test: the tools nova and os-brick run as root resolve"
+  # nova's privsep and os-brick run these by name; noble's package closure
+  # carried them without any list naming them. One probe per tool, so the
+  # one that went missing names itself.
+  local tool exit_code output path
+  local -a tools=(
+    mount umount blockdev findmnt lsblk blkid losetup mkswap mkfs mkfs.ext4
+    e2fsck resize2fs udevadm kpartx multipathd iscsid dmsetup sg_scan
+    qemu-nbd modprobe nsenter rpc.statd
+  )
+  for tool in "${tools[@]}"; do
+    exit_code=0
+    docker run --rm "$IMAGE" sh -c "command -v $tool" > /dev/null 2>&1 || exit_code=$?
+    assert_eq "$tool is on PATH" "0" "$exit_code"
+  done
+
+  # The root links of images/nova-compute/image.nix. mount(8) and umount(8)
+  # look for the NFS helpers in /sbin, noble had mount.nfs at /usr/sbin,
+  # os-brick reads /sbin/iscsiadm at import, get_scsi_wwn runs
+  # /lib/udev/scsi_id, and os-brick runs udevadm.
+  for path in /sbin/mount.nfs /sbin/mount.nfs4 /sbin/umount.nfs /sbin/umount.nfs4 \
+    /usr/sbin/mount.nfs /sbin/iscsiadm /lib/udev/scsi_id /usr/bin/udevadm; do
+    exit_code=0
+    docker run --rm "$IMAGE" test -x "$path" || exit_code=$?
+    assert_eq "$path is executable" "0" "$exit_code"
+  done
+
+  # The host's modules are compressed; modprobe has to decompress them.
+  output=$(docker run --rm "$IMAGE" modprobe --version 2>&1) || true
+  assert_contains "modprobe reads zstd-compressed modules" "$output" "+ZSTD"
+  assert_contains "modprobe reads xz-compressed modules" "$output" "+XZ"
+}
+
 # --- Run all tests ---
 echo "=== nova-compute container verification tests ==="
 echo "Image: $IMAGE"
@@ -436,6 +468,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_state_directories
+echo ""
+test_root_tools_resolve
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

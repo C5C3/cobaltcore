@@ -39,7 +39,6 @@ test = [
 ]
 nova-compute = [
     "libvirt-python",
-    "pyroute2",
 ]
 
 [tool.uv]

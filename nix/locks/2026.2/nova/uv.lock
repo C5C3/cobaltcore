@@ -830,7 +830,6 @@ dependencies = [
 [package.dev-dependencies]
 nova-compute = [
     { name = "libvirt-python" },
-    { name = "pyroute2" },
 ]
 test = [
     { name = "bandit" },
@@ -863,10 +862,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-nova-compute = [
-    { name = "libvirt-python" },
-    { name = "pyroute2" },
-]
+nova-compute = [{ name = "libvirt-python" }]
 test = [
     { name = "bandit", specifier = ">=1.1.0" },
     { name = "coverage", specifier = ">=4.4.1" },

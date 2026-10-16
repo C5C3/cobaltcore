@@ -77,15 +77,15 @@ test_service_image_library_deviation_comment() {
     "$(deviation_block "$nix")" "openstack"
 }
 
-# --- Test 2c: nova-compute inherits the generic user from python-base ---
+# --- Test 2c: nova-compute is built on the same library ---
 test_nova_compute_deviation_comment() {
-  echo "Test: nova-compute Dockerfile has DEVIATION comment"
+  echo "Test: nova-compute image.nix has DEVIATION comment"
 
-  local dockerfile="$PROJECT_ROOT/images/nova-compute/Dockerfile"
+  local nix="$PROJECT_ROOT/images/nova-compute/image.nix"
 
-  assert_file_contains "nova-compute/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "nova-compute/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment references generic user vs per-service" \
-    "$(deviation_block "$dockerfile")" "openstack"
+    "$(deviation_block "$nix")" "openstack"
 }
 
 # --- Test 3: the Nix-built ovn image carries the generic user itself ---

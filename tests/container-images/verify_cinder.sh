@@ -583,7 +583,7 @@ test_ceph_client() {
   # failure so the missing module or binary is named.
   local output exit_code=0 tool subcommand
 
-  assert_ceph_bindings_wired nix
+  assert_ceph_bindings_wired
 
   # The attributes check_for_setup_error reads, so a rename upstream fails
   # here instead of in a cinder-volume pod. register_all() runs first, as in

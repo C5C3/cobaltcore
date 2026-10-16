@@ -325,7 +325,7 @@ test_rbd_store_bindings() {
   # echoed on failure so the missing module is named.
   local output exit_code=0 tool
 
-  assert_ceph_bindings_wired nix
+  assert_ceph_bindings_wired
 
   # The guard outcome configure_add tests, so a rename upstream fails here
   # instead of in a glance-api pod.
