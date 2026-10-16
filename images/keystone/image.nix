@@ -4,7 +4,7 @@
 #
 # The keystone identity service. The keystone-operator runs it under uWSGI
 # with `--wsgi-file /var/lib/openstack/bin/keystone-wsgi-public`; the venv
-# carries uwsgi from the venv-builder pins and keystone with its ldap extra,
+# carries uwsgi from the base pins and keystone with its ldap extra,
 # whose python-ldap and lxml bring libldap, libsasl and libxml2 in their
 # closure. The image ships no mod_wsgi: nothing loads it.
 #

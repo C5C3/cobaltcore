@@ -15,8 +15,8 @@
 # images it is rebuilt by every build-images run on main, which moves
 # sha-<commit>, upstream-<commit> and latest to that build.
 #
-# DEVIATION from the original build-pipeline design: the image derives from
-# no python-base and creates no 'openstack' user. The agent is a static Go
+# DEVIATION from the original build-pipeline design: the image creates no
+# 'openstack' user. The agent is a static Go
 # binary, so it runs on the image that stands in for the distroless base the
 # CobaltCore operator images use (operators/Dockerfile), but as root instead
 # of that base's nonroot user: kna authenticates to the host's system bus and

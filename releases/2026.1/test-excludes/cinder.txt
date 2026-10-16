@@ -7,7 +7,7 @@
 # One regex pattern per line. Lines starting with # are comments.
 # Blank lines are ignored. Patterns are matched against test IDs.
 #
-# First run of the cinder 28.0.0 suite in the venv-builder container, with
+# First run of the cinder 28.0.0 suite in the Docker build container, with
 # setuptools<81 in the test venv and no exclude list: 18076 tests, 14
 # failures. Thirteen of them were TestFormatInspectors tests that build their
 # fixture images with `qemu-img create` through subprocess.check_output in
@@ -16,8 +16,8 @@
 # tenant-uploaded image and the volume host (the qcow2 external-data-file and
 # backing-file rejection, QED, and the four VMDK descriptor bounds), and this
 # unit-test leg is the only gate in the pipeline that runs them.
-# images/venv-builder/Dockerfile therefore installs qemu-utils and none of the
-# thirteen is excluded. The fourteenth failure is recorded below.
+# The test run of nix/lib/service-tests.nix therefore has qemu-img and none of
+# the thirteen is excluded. The fourteenth failure is recorded below.
 
 # The test sets backup_create_containers=False with override_config after
 # setUp built the driver, but ChunkedBackupDriver.__init__ copies
@@ -26,7 +26,7 @@
 # os.makedirs on the fake container path
 # /fake/mount-point-base/fake/export/path/fake/container_new. Upstream tox
 # runs unprivileged, so that makedirs raises PermissionError, an OSError,
-# and the test passes by accident. As root in the venv-builder container
+# and the test passes by accident. As root in the Docker build container
 # the directory is created. 27.0.0 has no such test (added in 28.0.0).
 cinder\.tests\.unit\.backup\.drivers\.test_backup_posix\.PosixBackupDriverTestCase\.test_put_container_disabled$
 

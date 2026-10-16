@@ -27,10 +27,10 @@ breaks structurally. Profile these instead of the Python questions:
   by Nix like `backup-shifter`, the tag read from the `version` key of
   `images/ovn/source.json` by `hack/ci-resolve-ovn-version.sh`) are two more
   decoupled images.
-- **Source org:** two clone sites hardcode `openstack/<service>` —
-  `.github/actions/checkout-service-source/action.yaml` and
-  `hack/ci-build-service-image.sh:94-95`. Parameterize them or bypass both
-  via the dedicated job.
+- **Source org:** three sites hardcode `openstack/<service>` —
+  `.github/actions/checkout-service-source/action.yaml`, the prefetch in
+  `hack/nix-lock.sh` and the `fetchFromGitHub` of `nix/lib/python-env.nix`.
+  Parameterize them or bypass them via the dedicated job.
 - **Renovate:** the source-refs customManager templates
   `opendev.org/openstack/{{depName}}` (`renovate.json:26`). A decoupled pin
   needs its own customManager (github-tags/releases datasource) plus a
@@ -42,8 +42,8 @@ breaks structurally. Profile these instead of the Python questions:
   and digest in a single matchString so a bump cannot move one without the
   other.
 - **The Python gotchas don't transfer:** upper-constraints,
-  `extra-packages.yaml`, uv/PBR/WSGI, the `python-base`/`venv-builder`
-  lineage, and the `openstack`-user assertion in
+  `extra-packages.yaml`, uv/PBR/WSGI, the uv2nix locks of
+  `hack/nix-lock.sh`, and the `openstack`-user assertion in
   `verify_deviation_comments.sh` are all Python-specific. A non-Python
   image writes its own `verify_<svc>.sh` contract (runtime present, built
   assets present, non-root, no build toolchain in the final image) and its

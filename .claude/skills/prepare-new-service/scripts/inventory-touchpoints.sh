@@ -80,7 +80,7 @@ check "build-images.yaml ALL_SERVICES, svc_${SERVICE} filter and FILTER_svc_${SE
   bash -c "grep -E '^ +ALL_SERVICES:' '${BUILD_YAML}' | grep -qw '${SERVICE}' && grep -Eq '^ +svc_${SERVICE}:' '${BUILD_YAML}' && grep -q 'FILTER_svc_${SERVICE}:' '${BUILD_YAML}'"
 check "tests/container-images/verify_release_config.sh SERVICES= list" \
   list_has tests/container-images/verify_release_config.sh '^SERVICES='
-check "tests/container-images/verify_deviation_comments.sh SERVICES= list (a non-python-base image gets its own function)" \
+check "tests/container-images/verify_deviation_comments.sh SERVICES= list (an image not built on nix/lib/service-image.nix gets its own function)" \
   list_has tests/container-images/verify_deviation_comments.sh '^SERVICES='
 check "hack/gen-option-catalog.sh '${SERVICE})' arm (skip if the config is not oslo)" \
   grep -Eq "^[[:space:]]+${SERVICE}\)" hack/gen-option-catalog.sh

@@ -19,9 +19,9 @@
 # There is no Cmd and no Entrypoint: the operator renders the rclone command
 # onto the CronJob container together with the RCLONE_S3_* environment.
 #
-# DEVIATION from the original build-pipeline design: the image derives from
-# no python-base, so it carries the generic 'openstack' user and group
-# (UID/GID 42424) itself, through the fakeNss entry of the façade. rclone
+# DEVIATION from the original build-pipeline design: the image carries the
+# generic 'openstack' user and group (UID/GID 42424) itself, through the
+# fakeNss entry of the façade. rclone
 # brings no service account of its own, and the same identity across all
 # images lets the CronJob keep one pod security context for the 'backup'
 # init container and this one.

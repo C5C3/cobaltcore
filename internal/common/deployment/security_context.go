@@ -12,9 +12,8 @@ import (
 )
 
 // OpenStackUID is the UID/GID of the "openstack" user that
-// nix/lib/fhs-layout.nix writes into the Nix-built images and
-// images/python-base/Dockerfile creates for nova-compute, shared by all service
-// images.
+// nix/lib/fhs-layout.nix writes into the Nix-built images, shared by all
+// service images.
 const OpenStackUID int64 = 42424
 
 // RestrictedSecurityContext returns a container-level SecurityContext that
