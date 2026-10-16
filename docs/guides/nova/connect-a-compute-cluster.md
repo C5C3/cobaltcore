@@ -139,7 +139,9 @@ with the user, the password and the vhost of the Secret
 store it, and name the Secret in the ControlPlane:
 
 ```bash
-read -rs -p 'external bus URL: ' REMOTE_TRANSPORT_URL; echo
+printf 'external bus URL: '
+IFS= read -r -s REMOTE_TRANSPORT_URL
+printf '\n'
 printf '%s' "$REMOTE_TRANSPORT_URL" | kubectl create secret generic \
   controlplane-nova-remote-transport -n openstack --from-file=transport_url=/dev/stdin
 unset REMOTE_TRANSPORT_URL

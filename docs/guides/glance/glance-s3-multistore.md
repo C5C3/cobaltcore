@@ -303,7 +303,9 @@ openstack endpoint create glance internal http://glance.openstack.svc.cluster.lo
 Store the service user's password in a Secret the Glance CR reads:
 
 ```bash
-read -rs -p 'glance service-user password: ' PW; echo
+printf 'glance service-user password: '
+IFS= read -r -s PW
+printf '\n'
 printf '%s' "$PW" | kubectl create secret generic glance-service-user -n openstack \
   --from-file=password=/dev/stdin
 unset PW

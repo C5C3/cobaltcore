@@ -170,10 +170,14 @@ stdin):
 
 ```bash
 # Inside the OpenBao pod, or with a bao client configured for it.
-read -rs -p 'nova_api DB password: ' PW; echo
+printf 'nova_api DB password: '
+IFS= read -r -s PW
+printf '\n'
 printf '%s' "$PW" | bao kv put kv-v2/openstack/nova/openstack/controlplane/api-db \
   username=controlplane-nova-api password=-
-read -rs -p 'cell DB password: ' PW; echo
+printf 'cell DB password: '
+IFS= read -r -s PW
+printf '\n'
 printf '%s' "$PW" | bao kv put kv-v2/openstack/nova/openstack/controlplane/db \
   username=controlplane-nova password=-
 unset PW

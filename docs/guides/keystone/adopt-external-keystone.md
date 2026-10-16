@@ -27,8 +27,6 @@ remaining phases are sketches. You can stop after any phase. See
 [Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md)
 for details.
 
-![Four phases of brownfield Keystone adoption: identity-only management is implemented; infrastructure attach, Keystone takeover, and steady state are sketches.](../../diagrams/brownfield-keystone-adoption-phases.svg)
-
 ## Prerequisites
 
 ::: info Devstack
