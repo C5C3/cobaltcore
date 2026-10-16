@@ -164,6 +164,7 @@
             serviceTests
             ;
           serviceImage = import ./nix/lib/service-image.nix { inherit pkgs fhsLayout; };
+          staticImage = import ./nix/lib/static-image.nix { inherit pkgs; };
           # horizon's unit tests run under pytest without a database.
           testsFor =
             lock:
