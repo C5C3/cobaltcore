@@ -18,13 +18,12 @@
 # the Nix library and packages, the lock generator, the release
 # configuration). The base class also builds the Tempest image, which Nix
 # builds from its lock with the same flake inputs and library and which reads
-# releases/<release>/. The OVN, federation proxy and libvirt images build FROM
+# releases/<release>/. The federation proxy and libvirt images build FROM
 # ubuntu:noble and read neither, so they come from their own filters only. The
-# backup shifter is built by Nix from flake.lock and reads no release; its
-# filter also covers flake.nix, flake.lock, nix/lib/ and the build-nix-image
-# action. The openstack-hypervisor-operator and kvm-node-agent images build
-# FROM golang and distroless, read neither either, and follow their own
-# filters too.
+# OVN, backup shifter, openstack-hypervisor-operator and kvm-node-agent images
+# are built by Nix from their own pins and flake.lock and read no release;
+# their filters also cover flake.nix, flake.lock, nix/lib/ and the
+# build-nix-image and setup-nix actions.
 #
 # Required env vars:
 #   EVENT_NAME   — github.event_name

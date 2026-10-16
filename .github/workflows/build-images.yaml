@@ -233,29 +233,38 @@ jobs:
               - 'images/tempest/**'
               - 'nix/locks/*/tempest/**'
               - 'tests/container-images/verify_tempest.sh'
-            ovn:
-              - 'images/ovn/**'
-              - 'tests/container-images/verify_ovn.sh'
-            proxy:
-              - 'images/keystone-federation-proxy/**'
-              - 'tests/container-images/verify_keystone_federation_proxy.sh'
-            # A Nix-built image is rebuilt when its flake inputs, the shared
-            # library or the action that builds it move.
-            shifter:
-              - 'images/backup-shifter/**'
-              - 'tests/container-images/verify_backup_shifter.sh'
+            # ovn, shifter, hvo and kna are Nix-built: each is rebuilt when
+            # its flake inputs, the shared library or the actions that build
+            # it move. Their filters include this list through the anchor; on
+            # its own it steers nothing.
+            nix_image_inputs: &nix_image_inputs
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/lib/**'
               - '.github/actions/build-nix-image/**'
               - '.github/actions/setup-nix/**'
+            # ovn's verify script also sources the build-tools check.
+            ovn:
+              - *nix_image_inputs
+              - 'images/ovn/**'
+              - 'tests/container-images/verify_ovn.sh'
+              - 'tests/lib/build_tools.sh'
+            proxy:
+              - 'images/keystone-federation-proxy/**'
+              - 'tests/container-images/verify_keystone_federation_proxy.sh'
+            shifter:
+              - *nix_image_inputs
+              - 'images/backup-shifter/**'
+              - 'tests/container-images/verify_backup_shifter.sh'
             libvirt:
               - 'images/libvirt/**'
               - 'tests/container-images/verify_libvirt.sh'
             hvo:
+              - *nix_image_inputs
               - 'images/openstack-hypervisor-operator/**'
               - 'tests/container-images/verify_hvo.sh'
             kna:
+              - *nix_image_inputs
               - 'images/kvm-node-agent/**'
               - 'tests/container-images/verify_kna.sh'
             # ---------------------------------------------------------------
@@ -322,10 +331,7 @@ jobs:
           - images/venv-builder/Dockerfile
           - images/nova-compute/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
-          - images/ovn/Dockerfile
           - images/libvirt/Dockerfile
-          - images/openstack-hypervisor-operator/Dockerfile
-          - images/kvm-node-agent/Dockerfile
           - operators/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1027,15 +1033,18 @@ jobs:
         run: hack/ci-tag-libvirt-keeper.sh
 
   # Release-independent OVS + OVN daemons compiled from pinned upstream
-  # sources: images/ovn/Dockerfile pins the OVN tag and takes OVS from that
-  # tag's 'ovs' submodule gitlink, so the image has no release axis.
-  # Per-platform builds pushed by digest, verified inline on PRs, tagged
-  # <ovn-version>-<sha> on every push and <ovn-version> + latest on main.
+  # sources, built by Nix from images/ovn/ through build-nix-image
+  # (docs/reference/ci-cd/nix-image-build.md): images/ovn/source.json pins
+  # the OVN tag, its commit and the commit of that commit's 'ovs' gitlink, so
+  # the image has no release axis. Per-platform builds pushed by digest,
+  # verified inline on PRs, tagged <ovn-version>-<sha> on every push and
+  # <ovn-version> + latest on main.
   build-ovn:
-    needs: [changes, lint-dockerfiles, prepare]
+    needs: [changes, nix-flake-check, nix-lock-check, prepare]
     if: needs.changes.outputs.build-ovn == 'true'
     runs-on: ${{ matrix.runner }}
-    # OVS and OVN are compiled from source on a 4-vCPU runner.
+    # OVS and OVN are compiled from source on a 4-vCPU runner when the
+    # Cachix cache holds no build of the pin.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -1068,49 +1077,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - name: Resolve ubuntu:noble digest
-        id: ubuntu-base
-        run: hack/ci-resolve-ubuntu-digest.sh
-
-      - name: Resolve OVN version
-        id: ovn-version
-        run: |
-          version=$(hack/ci-resolve-ovn-version.sh)
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build ovn
         id: build-ovn
         # PR mode loads locally for the inline scan+verify; ARM64 is skipped
         # on PRs because docker load supports a single platform.
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: ovn-image
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn
-          context: images/ovn
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          build-args: |
-            APT_MIRROR=http://azure.archive.ubuntu.com
-          # The Dockerfile fetches OVN and OVS from github.com with the git
-          # noble ships; the token authenticates those fetches (see the
-          # Dockerfile). A secret, not a build-arg: it reaches no layer.
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
-          labels-title: ovn
-          labels-description: OVN and Open vSwitch daemons and client tools built from pinned upstream sources
-          metadata-tags: |
-            type=raw,value=${{ steps.ovn-version.outputs.version }}
-          extra-labels: |
-            org.opencontainers.image.base.name=ubuntu:noble
-            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
-          cache-scope: ovn
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/ovn:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/ovn', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-ovn-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-ovn-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn:pr-verify
           verify-script: tests/container-images/verify_ovn.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn:pr-verify
+          vulnix-artifact-name: vulnix-ovn-${{ steps.platform-pair.outputs.value }}
 
   merge-ovn-image:
     if: github.event_name != 'pull_request'
@@ -1200,12 +1185,13 @@ jobs:
 
   # Release-independent openstack-hypervisor-operator compiled from a pinned
   # commit of its upstream main branch with the patches under
-  # images/openstack-hypervisor-operator/patches/: the image has no release
-  # axis. Per-platform builds pushed by digest, verified inline on PRs, tagged
-  # sha-<hvo-commit>-<sha> on every push and sha-<hvo-commit>,
+  # images/openstack-hypervisor-operator/patches/, built by Nix from
+  # images/openstack-hypervisor-operator/ through build-nix-image: the image
+  # has no release axis. Per-platform builds pushed by digest, verified inline
+  # on PRs, tagged sha-<hvo-commit>-<sha> on every push and sha-<hvo-commit>,
   # upstream-<hvo-commit> + latest on main.
   build-hvo:
-    needs: [changes, lint-dockerfiles, prepare]
+    needs: [changes, nix-flake-check, nix-lock-check, prepare]
     if: needs.changes.outputs.build-hvo == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -1240,40 +1226,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - name: Resolve hvo commit
-        id: hvo-commit
-        run: |
-          commit=$(hack/ci-resolve-hvo-commit.sh)
-          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build openstack-hypervisor-operator
         id: build-hvo
         # PR mode loads locally for the inline scan+verify; ARM64 is skipped
         # on PRs because docker load supports a single platform.
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: openstack-hypervisor-operator-image
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/openstack-hypervisor-operator
-          context: images/openstack-hypervisor-operator
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          # The Dockerfile fetches the upstream source from github.com; the
-          # token authenticates that fetch (see images/ovn/Dockerfile). A
-          # secret, not a build-arg: it reaches no layer.
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
-          labels-title: openstack-hypervisor-operator
-          labels-description: openstack-hypervisor-operator built from a pinned upstream main commit with CobaltCore patches
-          metadata-tags: |
-            type=raw,value=sha-${{ steps.hvo-commit.outputs.commit }}
-          cache-scope: hvo
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/openstack-hypervisor-operator:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/openstack-hypervisor-operator', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-hvo-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-hvo-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/openstack-hypervisor-operator:pr-verify
           verify-script: tests/container-images/verify_hvo.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/openstack-hypervisor-operator:pr-verify
+          vulnix-artifact-name: vulnix-hvo-${{ steps.platform-pair.outputs.value }}
 
   merge-hvo-image:
     if: github.event_name != 'pull_request'
@@ -1365,12 +1336,13 @@ jobs:
           bash tests/container-images/verify_hvo.sh "$HVO_IMAGE"
 
   # Release-independent kvm-node-agent compiled from a pinned commit of its
-  # upstream main branch with the patches under images/kvm-node-agent/patches/:
-  # the image has no release axis. Per-platform builds pushed by digest,
-  # verified inline on PRs, tagged sha-<kna-commit>-<sha> on every push and
-  # sha-<kna-commit>, upstream-<kna-commit> + latest on main.
+  # upstream main branch with the patches under images/kvm-node-agent/patches/,
+  # built by Nix from images/kvm-node-agent/ through build-nix-image: the image
+  # has no release axis. Per-platform builds pushed by digest, verified inline
+  # on PRs, tagged sha-<kna-commit>-<sha> on every push and sha-<kna-commit>,
+  # upstream-<kna-commit> + latest on main.
   build-kna:
-    needs: [changes, lint-dockerfiles, prepare]
+    needs: [changes, nix-flake-check, nix-lock-check, prepare]
     if: needs.changes.outputs.build-kna == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -1405,40 +1377,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - name: Resolve kna commit
-        id: kna-commit
-        run: |
-          commit=$(hack/ci-resolve-kna-commit.sh)
-          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build kvm-node-agent
         id: build-kna
         # PR mode loads locally for the inline scan+verify; ARM64 is skipped
         # on PRs because docker load supports a single platform.
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: kvm-node-agent-image
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent
-          context: images/kvm-node-agent
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          # The Dockerfile fetches the upstream source from github.com; the
-          # token authenticates that fetch (see images/ovn/Dockerfile). A
-          # secret, not a build-arg: it reaches no layer.
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
-          labels-title: kvm-node-agent
-          labels-description: kvm-node-agent built from a pinned upstream main commit with CobaltCore patches
-          metadata-tags: |
-            type=raw,value=sha-${{ steps.kna-commit.outputs.commit }}
-          cache-scope: kna
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/kvm-node-agent:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/kvm-node-agent', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-kna-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-kna-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent:pr-verify
           verify-script: tests/container-images/verify_kna.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/kvm-node-agent:pr-verify
+          vulnix-artifact-name: vulnix-kna-${{ steps.platform-pair.outputs.value }}
 
   merge-kna-image:
     if: github.event_name != 'pull_request'
