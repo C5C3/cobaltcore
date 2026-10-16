@@ -160,8 +160,42 @@ before its delete. Then:
    What the hypervisors left on the nodes, under `/var/lib/nova`,
    `/var/lib/libvirt` and `/etc/pki`, stays, and so do the reserved ports in
    `net.ipv4.ip_local_reserved_ports` until a node reboots.
-1. Every `ControlPlane` in `openstack`, when the `controlplanes.c5c3.io` CRD
-   exists, so the c5c3-operator reaps its children. Then every `OVNCentral` in
+1. When the `controlplanes.c5c3.io` CRD exists, the orders of the
+   c5c3-operator first, in every namespace: every CR of the group `c5c3.io`
+   whose `spec.controlPlaneRef` names a ControlPlane. Those are the eight
+   order kinds the [Quick Start (Orders)](../../quick-start-orders.md) applies
+   in `workflow`. Each keeps children in the ControlPlane's namespace, beside
+   its Secrets, that only the stack can finalize:
+
+   | Order kind | Children its teardown removes through the stack |
+   |---|---|
+   | `KeystoneUser` | K-ORC User, backup PushSecret |
+   | `KeystoneProject` | K-ORC Project |
+   | `KeystoneRoleAssignment` | K-ORC RoleAssignment and Role import |
+   | `KeystoneApplicationCredential` | K-ORC ApplicationCredentials, backup PushSecret |
+   | `KeystoneCatalogEntry` | K-ORC Endpoints, Service and Region import |
+   | `KeystoneService` of a foreign service | K-ORC User, Project, Role, RoleAssignment, Service, Region and Endpoints |
+   | `MariaDBDatabase` | OpenBao database role, ExternalSecret, VaultDynamicSecret, mariadb-operator Database |
+   | `RabbitMQVhost` | backup PushSecret, topology operator Permissions, Users and Vhost |
+
+   The teardown reads every namespaced `c5c3.io` kind but `ControlPlane`, so
+   an order kind added later is covered without a change. Each order is
+   logged as `Order: <namespace>/<kind>.c5c3.io/<name>`, and one delete per
+   namespace, bounded by `TEARDOWN_TIMEOUT`, removes them. The holds of a
+   user, a project and an assignment wait for the orders that use them. None
+   of the children carries an owner reference to the ControlPlane, so its
+   finalizer leaves them. Deleted after the ControlPlane, they could no longer
+   be finalized: Keystone and the `eso-tenant-auth` ServiceAccount are gone,
+   ESO keeps the SecretStore `openbao-tenant-store` while a PushSecret with
+   `deletionPolicy: Delete` names it, the wait of step 2 runs out on that
+   store, and step 2 takes MariaDB, OpenBao and the message bus. A CR the
+   ControlPlane owns or labels with `c5c3.io/controlplane-name`, such as the
+   `KeystoneService` of a service it runs, is its child and is left to its
+   finalizer. A `CredentialRotation` and a `SecretAggregate` name no
+   ControlPlane, carry no finalizer and go with their CRDs in step 8. A read of
+   the CRDs or of the orders that fails exits 1 before any delete. Then every
+   `ControlPlane` in `openstack`, so the c5c3-operator reaps its children.
+   Then every `OVNCentral` in
    `openstack`, when the `ovncentrals.ovn.openstack.c5c3.io` CRD exists: the
    quick start's `controlplane-ovn` is referenced by the ControlPlane, not
    owned by it, carries no finalizer, and its database pods would otherwise

@@ -89,6 +89,17 @@
 #      naming what is left and deleting nothing after it, skips Cinder
 #      without a block-storage service, and refuses a clouds.yaml with two
 #      clouds.
+#   4b. Step 1 deletes the orders before the ControlPlanes: one read of every
+#      namespaced kind of c5c3.io but the ControlPlane in every namespace (the
+#      fixture serves every CRD the c5c3-operator ships), after step 0, then
+#      one delete per namespace of the orders there, one of each of the eight
+#      order kinds, each logged, and none of the KeystoneServices a
+#      ControlPlane owns or labels, nor a CredentialRotation or a
+#      SecretAggregate, which name no ControlPlane.
+#      Without orders it deletes none, without an order kind it reads none,
+#      and it exits 1 before any ControlPlane delete when the CRD scope or the
+#      orders cannot be read (deleting no order) or an order delete runs out
+#      (naming the namespace and kubectl's error).
 #   5. Chaos Mesh goes before step 0. A delete of the experiments that runs
 #      out exits 1 with kubectl's named object and the finalizer hint, and
 #      deletes nothing after it; a CRD scope read that fails exits 1 before
@@ -172,6 +183,17 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 STACK_CRDS="certificates.cert-manager.io
 controlplanes.c5c3.io
+credentialrotations.c5c3.io
+keystoneapplicationcredentials.c5c3.io
+keystonecatalogentries.c5c3.io
+keystoneprojects.c5c3.io
+keystoneroleassignments.c5c3.io
+keystoneservices.c5c3.io
+keystoneusers.c5c3.io
+mariadbdatabases.c5c3.io
+rabbitmqvhosts.c5c3.io
+secretaggregates.c5c3.io
+sizingprofiles.c5c3.io
 helmreleases.helm.toolkit.fluxcd.io
 keystones.keystone.openstack.c5c3.io
 images.openstack.k-orc.cloud
@@ -197,6 +219,11 @@ cephclients.ceph.rook.io
 objectbucketclaims.objectbucket.io
 objectbuckets.objectbucket.io
 cephconnections.csi.ceph.io"
+# The deletes of step 1's orders, one per namespace, for orders.json: one of
+# each order kind; neither the ControlPlane's two KeystoneServices nor the
+# CredentialRotation and the SecretAggregate are among them.
+ORDER_DELETES='kubectl delete keystoneservice.c5c3.io/designate -n dns
+kubectl delete keystoneapplicationcredential.c5c3.io/workflow-appcred keystonecatalogentry.c5c3.io/workflow-dns keystoneproject.c5c3.io/workflow-project keystoneroleassignment.c5c3.io/workflow-member keystoneuser.c5c3.io/workflow mariadbdatabase.c5c3.io/workflow-db rabbitmqvhost.c5c3.io/workflow-bus -n workflow'
 # The arguments of step 0's label removal.
 HYPERVISOR_LABELS_REMOVED="openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- \
 nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle-"
@@ -225,6 +252,14 @@ ippools.crd.projectcalico.org"
 #                          exit code of the OpenBao instance patch (default 0)
 #   KUBECTL_CRD_RC         non-empty: `get crd -o name` fails
 #   KUBECTL_CRD_SCOPE_RC   non-empty: `get crd -o custom-columns=...` fails
+#   KUBECTL_ORDERS_RC      non-empty: the read of the order kinds in every
+#                          namespace fails with Forbidden
+#   KUBECTL_NO_ORDERS      non-empty: that read answers no CR (it answers
+#                          orders.json otherwise)
+#   KUBECTL_ORDER_DELETE_RC
+#                          exit code of the delete of the orders in workflow
+#                          alone, which then times out on the KeystoneUser
+#                          (default 0)
 #   KUBECTL_CR_READ_RC     non-empty: the read of the stack CRs in openstack
 #                          fails
 #   KUBECTL_CR_LEFT        non-empty: that read keeps answering a Keystone of
@@ -376,6 +411,17 @@ make_stubs() {
   cat >"$dir/crd-columns.txt" <<'COLUMNS'
 certificates.cert-manager.io                 Namespaced   Certificate
 controlplanes.c5c3.io                        Namespaced   ControlPlane
+credentialrotations.c5c3.io                  Namespaced   CredentialRotation
+keystoneapplicationcredentials.c5c3.io       Namespaced   KeystoneApplicationCredential
+keystonecatalogentries.c5c3.io               Namespaced   KeystoneCatalogEntry
+keystoneprojects.c5c3.io                     Namespaced   KeystoneProject
+keystoneroleassignments.c5c3.io              Namespaced   KeystoneRoleAssignment
+keystoneservices.c5c3.io                     Namespaced   KeystoneService
+keystoneusers.c5c3.io                        Namespaced   KeystoneUser
+mariadbdatabases.c5c3.io                     Namespaced   MariaDBDatabase
+rabbitmqvhosts.c5c3.io                       Namespaced   RabbitMQVhost
+secretaggregates.c5c3.io                     Namespaced   SecretAggregate
+sizingprofiles.c5c3.io                       Cluster      SizingProfile
 helmreleases.helm.toolkit.fluxcd.io          Namespaced   HelmRelease
 keystones.keystone.openstack.c5c3.io         Namespaced   Keystone
 images.openstack.k-orc.cloud                 Namespaced   Image
@@ -422,6 +468,39 @@ OBJECTS
 {"apiVersion":"cert-manager.io/v1","kind":"Certificate","metadata":{"name":"eso-tenant-client-tls","uid":"uid-eso-cert"}},
 {"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","metadata":{"name":"eso-tenant-client-tls-1","uid":"uid-eso-cr",
  "ownerReferences":[{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"eso-tenant-client-tls","uid":"uid-eso-cert"}]}}
+JSON
+  # What the read of the c5c3.io kinds finds, in kubectl's order (by kind):
+  # one order of each of the eight order kinds, all in workflow but the
+  # foreign service's KeystoneService in dns; a CredentialRotation and a
+  # SecretAggregate, which name no ControlPlane and are no orders; and two
+  # KeystoneServices of the ControlPlane's services, one it owns and one it
+  # labels, which are its children.
+  cat >"$dir/orders.json" <<'JSON'
+{"apiVersion":"c5c3.io/v1alpha1","kind":"CredentialRotation","metadata":{"namespace":"openstack","name":"rotate-admin"},
+ "spec":{"target":"adminApplicationCredential"}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneApplicationCredential","metadata":{"namespace":"workflow","name":"workflow-appcred"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneCatalogEntry","metadata":{"namespace":"workflow","name":"workflow-dns"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneProject","metadata":{"namespace":"workflow","name":"workflow-project"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneRoleAssignment","metadata":{"namespace":"workflow","name":"workflow-member"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneService","metadata":{"namespace":"dns","name":"designate"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneService","metadata":{"namespace":"openstack","name":"controlplane-placement",
+ "ownerReferences":[{"apiVersion":"c5c3.io/v1alpha1","kind":"ControlPlane","name":"controlplane","uid":"uid-controlplane","controller":true}]},
+ "spec":{"controlPlaneRef":{"name":"controlplane"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneService","metadata":{"namespace":"cinder","name":"controlplane-cinder",
+ "labels":{"c5c3.io/controlplane-name":"controlplane","c5c3.io/controlplane-namespace":"openstack"}},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"KeystoneUser","metadata":{"namespace":"workflow","name":"workflow"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"MariaDBDatabase","metadata":{"namespace":"workflow","name":"workflow-db"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"RabbitMQVhost","metadata":{"namespace":"workflow","name":"workflow-bus"},
+ "spec":{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}},
+{"apiVersion":"c5c3.io/v1alpha1","kind":"SecretAggregate","metadata":{"namespace":"openstack","name":"controlplane-secrets"},"spec":{}}
 JSON
   # Two pods that mount no share of csi-driver-nfs: one without volumes, one
   # with a claim and an inline volume of another driver.
@@ -996,6 +1075,17 @@ case "$args" in
     fi
     printf '{"apiVersion":"v1","kind":"List","items":[%s]}\n' "$items"
     ;;
+  "get "*".c5c3.io -A -o json")
+    if [ -n "${KUBECTL_ORDERS_RC:-}" ]; then
+      echo 'Error from server (Forbidden): keystoneusers.c5c3.io is forbidden: User "lab" cannot list resource "keystoneusers" in API group "c5c3.io" at the cluster scope' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_NO_ORDERS:-}" ]; then
+      echo '{"apiVersion":"v1","kind":"List","items":[]}'
+      exit 0
+    fi
+    printf '{"apiVersion":"v1","kind":"List","items":[%s]}\n' "$(cat "$dir/orders.json")"
+    ;;
   "get "*" -n openstack -o json")
     if [ -n "${KUBECTL_CR_READ_RC:-}" ]; then
       echo 'error: You must be logged in to the server (Unauthorized)' >&2
@@ -1174,6 +1264,13 @@ case "$args" in
     ;;
   delete*)
     case "$args" in
+      "delete keystoneapplicationcredential.c5c3.io/"*)
+        if [ "${KUBECTL_ORDER_DELETE_RC:-0}" != "0" ]; then
+          echo 'keystoneapplicationcredential.c5c3.io "workflow-appcred" deleted from workflow namespace'
+          echo "error: timed out waiting for the condition on keystoneusers/workflow" >&2
+          exit "${KUBECTL_ORDER_DELETE_RC}"
+        fi
+        ;;
       "delete ovncentrals.ovn.openstack.c5c3.io "*)
         if [ "${KUBECTL_OVNCENTRAL_DELETE_RC:-0}" != "0" ]; then
           echo "error: timed out waiting for the condition on ovncentrals/controlplane-ovn" >&2
@@ -1427,6 +1524,7 @@ test_external_teardown_order() {
     'kubectl delete deployment,poddisruptionbudget maint-lab-a maint-lab-b -n kube-system' \
     "kubectl label nodes --all ${HYPERVISOR_LABELS_REMOVED}" \
     'kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- nova.openstack.cloud.sap/aggregates-' \
+    "${ORDER_DELETES}" \
     'kubectl delete controlplane --all -n openstack' \
     'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
     'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \
@@ -1517,6 +1615,7 @@ test_external_teardown_order() {
   assert_eq "the one read names every namespaced stack kind and nothing else" \
     "$(grep -vx -e 'gatewayclasses.gateway.networking.k8s.io' -e 'hypervisors.kvm.cloud.sap' \
       -e 'evictions.kvm.cloud.sap' -e 'remoteclusters.chaos-mesh.org' -e 'objectbuckets.objectbucket.io' \
+      -e 'sizingprofiles.c5c3.io' \
       <<<"$STACK_CRDS" | sort)" "$read_kinds"
 
   # The NFS stack goes after that wait, once no pod mounts a share through its
@@ -1991,8 +2090,9 @@ test_hypervisor_step_zero() {
       -e 'domains\.openstack' -e 'delete -k [^ ]*/hypervisor' -e 'maint-' -e '^kubectl (get|label|annotate) nodes' \
       -e 'controlplanes\.c5c3\.io -n openstack' -e 'teardown-openstack-cleanup' -e '^kubectl apply ' \
       <<<"$calls" || true)"
-  assert_eq "the ControlPlane delete still comes first" "kubectl delete controlplane --all -n openstack" \
-    "$(mutations "$CALL_LOG" | head -n 1)"
+  assert_eq "the order deletes and the ControlPlane delete still come first" \
+    "$(printf '%s\n' "$ORDER_DELETES" 'kubectl delete controlplane --all -n openstack')" \
+    "$(mutations "$CALL_LOG" | head -n 3)"
 
   # A step 0 kind whose CRD is absent is skipped without an error.
   : >"$CALL_LOG"
@@ -2409,6 +2509,126 @@ test_openstack_cleanup_step() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 6b: step 1, the orders before the ControlPlanes
+# ---------------------------------------------------------------------------
+test_orders_step() {
+  echo "Test: step 1 deletes the orders in every namespace before the ControlPlanes"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (38 checks skipped)"
+    SKIP=$((SKIP + 38))
+    return
+  fi
+
+  local tmp output rc calls shipped order_read read_line nodes_line cp_line kind
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+
+  # The fixture holds every CRD the c5c3-operator ships, so the read below
+  # names each of its namespaced kinds: a kind added to the operator without
+  # a line in crd-columns.txt fails here.
+  shipped="$(for kind in "$PROJECT_ROOT"/operators/c5c3/config/crd/bases/*.yaml; do
+    yq -r '.metadata.name + " " + .spec.scope' "$kind"
+  done | sort)"
+  assert_eq "the stub serves every CRD of the c5c3-operator with its scope" "$shipped" \
+    "$(awk '$1 ~ /^[^.]+\.c5c3\.io$/ { print $1, $2 }' "$tmp/bin/crd-columns.txt" | sort)"
+  order_read="kubectl get $(awk '$2 == "Namespaced" && $1 != "controlplanes.c5c3.io" { print $1 }' <<<"$shipped" |
+    paste -sd, -) -A -o json"
+
+  # One read of every namespaced c5c3.io kind but the ControlPlane, after step
+  # 0; each order is logged and deleted with the others of its namespace;
+  # neither the ControlPlane's own KeystoneServices nor the CredentialRotation
+  # and the SecretAggregate are.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a teardown with orders exits 0" "0" "$rc"
+  assert_eq "the orders are read once, by every namespaced kind of c5c3.io but the ControlPlane" "1" \
+    "$(grep -cxF "$order_read" <<<"$calls")"
+  read_line="$(grep -nxF "$order_read" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  nodes_line="$(grep -n '^kubectl annotate nodes --all ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  cp_line="$(grep -n '^kubectl delete controlplane --all -n openstack ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "after step 0 and before the ControlPlane delete" "true" \
+    "$([[ -n "$read_line" && -n "$nodes_line" && -n "$cp_line" &&
+      "$read_line" -gt "$nodes_line" && "$read_line" -lt "$cp_line" ]] && echo true || echo false)"
+  assert_eq "the orders are deleted per namespace, right before the ControlPlanes" \
+    "$(printf '%s\n' "$ORDER_DELETES" 'kubectl delete controlplane --all -n openstack')" \
+    "$(mutations "$CALL_LOG" | grep -A2 -m1 -F 'delete keystoneservice.c5c3.io/designate')"
+  for kind in keystoneuser keystoneproject keystoneroleassignment keystoneapplicationcredential \
+    keystonecatalogentry keystoneservice mariadbdatabase rabbitmqvhost; do
+    assert_eq "the ${kind} order is deleted" "1" \
+      "$(grep -cE "^kubectl delete .*${kind}\.c5c3\.io/" <<<"$calls")"
+  done
+  assert_eq "each of the eight orders is logged" "8" "$(grep -c '  Order: ' <<<"$output")"
+  assert_contains "with its namespace" "$output" "Order: workflow/rabbitmqvhost.c5c3.io/workflow-bus"
+  assert_not_contains "the KeystoneService the ControlPlane owns is left to it" "$calls" "controlplane-placement"
+  assert_not_contains "and so is the one it labels" "$calls" "controlplane-cinder"
+  assert_not_contains "a CredentialRotation is no order" "$calls" "rotate-admin"
+  assert_not_contains "nor is a SecretAggregate" "$calls" "controlplane-secrets"
+
+  # No order: nothing of c5c3.io but the ControlPlanes is deleted.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_NO_ORDERS=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a teardown without orders exits 0" "0" "$rc"
+  assert_eq "and deletes no order" "" "$(grep -E '^kubectl delete [a-z]+\.c5c3\.io/' <<<"$calls" || true)"
+  assert_contains "but the ControlPlanes" "$calls" "kubectl delete controlplane --all -n openstack"
+
+  # A cluster whose only namespaced c5c3.io kind is the ControlPlane: no
+  # order read, and none of the cluster-scoped SizingProfiles.
+  awk '!($2 == "Namespaced" && $1 ~ /^[^.]+\.c5c3\.io$/ && $1 != "controlplanes.c5c3.io")' \
+    "$tmp/bin/crd-columns.txt" >"$tmp/columns" && mv "$tmp/columns" "$tmp/bin/crd-columns.txt"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cluster without order kinds tears down" "0" "$rc"
+  assert_eq "without reading orders" "" "$(grep -E '^kubectl get [^ ]*c5c3\.io -A -o json$' <<<"$calls" || true)"
+  assert_contains "and still deletes the ControlPlanes" "$calls" "kubectl delete controlplane --all -n openstack"
+  make_stubs "$tmp/bin"
+
+  # A read of the orders that fails: exit 1 before any order or ControlPlane
+  # delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_ORDERS_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an order read that fails exits 1" "1" "$rc"
+  assert_contains "says the orders cannot be read" "$output" \
+    "ERROR: cannot read the orders of the c5c3-operator (kubectl's error is above)."
+  assert_contains "after kubectl's error" "$output" 'cannot list resource "keystoneusers"'
+  assert_not_contains "and deletes no ControlPlane" "$calls" "delete controlplane"
+  assert_eq "nor an order" "" "$(grep -E '^kubectl delete [a-z]+\.c5c3\.io/' <<<"$calls" || true)"
+
+  # A CRD scope read that fails: exit 1 before the orders are read.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_CRD_SCOPE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a CRD scope read that fails in step 1 exits 1" "1" "$rc"
+  assert_eq "before the orders are read" "" "$(grep -E '^kubectl get [^ ]*c5c3\.io -A -o json$' <<<"$calls" || true)"
+  assert_not_contains "and before the ControlPlanes are deleted" "$calls" "delete controlplane"
+
+  # An order delete that runs out: exit 1 with kubectl's line, after the
+  # namespace before it, and no ControlPlane delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_ORDER_DELETE_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an order delete that runs out exits 1" "1" "$rc"
+  assert_contains "names the namespace" "$output" \
+    "ERROR: deleting the orders in workflow failed or did not finish within 600s:"
+  assert_contains "and kubectl's error" "$output" "timed out waiting for the condition on keystoneusers/workflow"
+  assert_contains "after the orders of the namespace before it" "$calls" "delete keystoneservice.c5c3.io/designate -n dns"
+  assert_not_contains "and deletes no ControlPlane" "$calls" "delete controlplane"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Test 7: Chaos Mesh, before step 0
 # ---------------------------------------------------------------------------
 test_chaos_mesh_step() {
@@ -2511,8 +2731,9 @@ test_chaos_mesh_step() {
   assert_eq "without the CRD scope read of the Chaos Mesh step" "0" "$(grep -cxF "$scope_read" <<<"$calls")"
   assert_eq "without an experiment delete or a chaos-mesh/ render" "" \
     "$(grep -E -e '^kubectl delete [a-z]+\.chaos-mesh\.org' -e '^kubectl kustomize .*/chaos-mesh$' <<<"$calls" || true)"
-  assert_eq "and the ControlPlane delete is still the first mutation" \
-    "kubectl delete controlplane --all -n openstack" "$(mutations "$CALL_LOG" | head -n 1)"
+  assert_eq "and the order deletes and the ControlPlane delete are still the first mutations" \
+    "$(printf '%s\n' "$ORDER_DELETES" 'kubectl delete controlplane --all -n openstack')" \
+    "$(mutations "$CALL_LOG" | head -n 3)"
 
   # A second run: the Chaos Mesh CRDs are gone, and so is the HelmRelease kind.
   : >"$CALL_LOG"
@@ -2685,11 +2906,12 @@ test_dizzy_soak_step() {
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-hypervisor")"
   rc=$?
   assert_eq "an overlay with dizzy-soak/ and without hypervisor/ tears down" "0" "$rc"
-  assert_eq "the soak's deletes are its first mutations, the ControlPlane's next" "$(printf '%s\n' \
+  assert_eq "the soak's deletes are its first mutations, the orders' and the ControlPlane's next" "$(printf '%s\n' \
     'kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground' \
     "kubectl kustomize $tmp/no-hypervisor/dizzy-soak" \
     'kubectl delete -f - [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]' \
-    'kubectl delete controlplane --all -n openstack')" "$(mutations "$CALL_LOG" | head -n 4)"
+    "$ORDER_DELETES" \
+    'kubectl delete controlplane --all -n openstack')" "$(mutations "$CALL_LOG" | head -n 6)"
 
   # An overlay without dizzy-soak/: neither delete nor the render.
   mkdir -p "$tmp/no-soak/base" "$tmp/no-soak/infrastructure"
@@ -2702,8 +2924,9 @@ test_dizzy_soak_step() {
   assert_eq "an overlay without dizzy-soak/ tears down" "0" "$rc"
   assert_not_contains "without the Job and reader pod delete" "$calls" "jobs.batch/dizzy-soak"
   assert_not_contains "without the render" "$calls" "/dizzy-soak"
-  assert_eq "and the ControlPlane delete is the first mutation" \
-    "kubectl delete controlplane --all -n openstack" "$(mutations "$CALL_LOG" | head -n 1)"
+  assert_eq "and the order deletes and the ControlPlane delete are the first mutations" \
+    "$(printf '%s\n' "$ORDER_DELETES" 'kubectl delete controlplane --all -n openstack')" \
+    "$(mutations "$CALL_LOG" | head -n 3)"
 
   # A soak whose teardown outlives the wait: exit 1 with kubectl's line, and
   # nothing after it is deleted, step 0 included.
@@ -3255,6 +3478,7 @@ test_script_names_no_platform_namespace
 test_external_teardown_failures
 test_hypervisor_step_zero
 test_openstack_cleanup_step
+test_orders_step
 test_chaos_mesh_step
 test_dizzy_step
 test_dizzy_soak_step
