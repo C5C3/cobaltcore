@@ -28,7 +28,9 @@
 #                                    release with its dot replaced by _; the
 #                                    names are flat because nix flake check
 #                                    rejects a nested attribute set under
-#                                    packages
+#                                    packages. ovn-image compiles OVS and OVN
+#                                    from images/ovn/source.json; its
+#                                    passthru reaches the inner build: .ovn
 #   packages.<system>.<name>-<rel_>-test-run
 #                                    the unit tests of a service lock, a build
 #                                    that succeeds whenever the suite ran and
@@ -286,6 +288,7 @@
           backup-shifter-image = import ./images/backup-shifter/image.nix {
             inherit pkgs fhsLayout;
           };
+          ovn-image = import ./images/ovn/image.nix { inherit pkgs fhsLayout; };
         }
         // lib.listToAttrs (
           map (

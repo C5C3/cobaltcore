@@ -3,19 +3,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify images/ovn/Dockerfile fetches both halves of its source tree — OVN and
-# Open vSwitch — by pinned commit rather than by mutable ref.
+# Verify images/ovn/ovn.nix fetches both halves of its source tree, OVN and
+# Open vSwitch, by the commit and hash images/ovn/source.json pins rather than
+# by a mutable ref.
 #
-# images/ovn/Dockerfile is the only Dockerfile in the repo that fetches source
-# over the network at build time, and the result is roughly a million lines of
-# C that ends up in every chassis pod. Both refs it starts from are mutable:
-# the OVN tag can be moved by anyone who can push to ovn-org/ovn, and a
-# `git clone --recurse-submodules` would let the gitlink at that tag decide
-# both which OVS commit is compiled and which host it comes from. Nothing
-# downstream notices either substitution: verify_ovn.sh compares two binaries
-# built from the same tree, and the Grype scan does not fail the build. So the
-# pins have to be asserted statically — no runtime check on the built image
-# can see them.
+# The ovn image compiles roughly a million lines of C from two upstream
+# trees, and the result ends up in every chassis pod. Both refs it starts
+# from are mutable: the OVN tag can be moved by anyone who can push to
+# ovn-org/ovn, and a fetch with submodules would let the gitlink at that tag
+# decide both which OVS commit is compiled and which host it comes from.
+# Nothing downstream notices either substitution: verify_ovn.sh compares two
+# binaries built from the same tree, and the Grype scan does not fail the
+# build. So the pins have to be asserted statically, no runtime check on the
+# built image can see them: each tree is a fixed-output fetch by a full
+# commit and an SRI hash, and the OVS commit is the one hack/nix-lock.sh
+# reads from the gitlink at the pinned OVN commit.
 #
 # Usage: bash tests/unit/ci/ovn_ovs_source_pin_test.sh
 
@@ -23,7 +25,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-DOCKERFILE="$PROJECT_ROOT/images/ovn/Dockerfile"
+PIN="$PROJECT_ROOT/images/ovn/source.json"
+DERIVATION="$PROJECT_ROOT/images/ovn/ovn.nix"
+GENERATOR="$PROJECT_ROOT/hack/nix-lock.sh"
 
 PASS=0
 FAIL=0
@@ -32,88 +36,79 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-test_ovn_source_is_content_pinned() {
-  echo "Test: images/ovn/Dockerfile pins the OVN source by commit"
-
-  if [ ! -f "$DOCKERFILE" ]; then
-    echo "  FAIL: $DOCKERFILE missing"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-
-  # ARG OVN_VERSION names a git tag, which upstream can repoint at any commit.
-  # ARG OVN_COMMIT is what makes the OVN half of the tree content-addressed,
-  # exactly as the sha256 digest does for the ubuntu:noble base image.
-  local pin
-  pin="$(sed -nE 's/^ARG OVN_COMMIT=//p' "$DOCKERFILE")"
-  assert_not_empty "Dockerfile carries an 'ARG OVN_COMMIT=' pin" "$pin"
-
-  local well_formed="no"
-  if [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
-    well_formed="yes"
-  fi
-  assert_eq "OVN_COMMIT is a full 40-hex SHA-1 (got '$pin')" "yes" "$well_formed"
-
-  # OVN is fetched by that commit rather than by the tag, so neither a moved
-  # tag (a different tree) nor a deleted one (an unbuildable image) reaches
-  # the build. Verifying the tag would leave both failure modes open.
-  assert_file_contains "OVN is fetched from ovn-org/ovn" \
-    "$DOCKERFILE" 'remote add origin https://github.com/ovn-org/ovn.git'
-  assert_file_contains "OVN is fetched by the pinned commit" \
-    "$DOCKERFILE" 'fetch --depth 1 origin "${OVN_COMMIT}"'
-  # No git command may reach the source through OVN_VERSION at all — not the
-  # original 'clone --branch', not a fetch of the tag either.
-  local tag_refs
-  tag_refs="$(grep -n 'git .*\${OVN_VERSION}' "$DOCKERFILE" || true)"
-  assert_eq "no git command resolves the source through the mutable OVN tag" \
-    "" "$tag_refs"
+# well_formed <value> <regex> prints yes when <value> matches <regex>.
+well_formed() {
+  if [[ "$1" =~ $2 ]]; then echo yes; else echo no; fi
 }
 
-test_ovs_source_is_content_pinned() {
-  echo "Test: images/ovn/Dockerfile pins the Open vSwitch source by commit"
+test_the_pin_holds_commits_and_hashes() {
+  echo "Test: images/ovn/source.json pins both trees by a full commit and an SRI hash"
 
-  if [ ! -f "$DOCKERFILE" ]; then
-    echo "  FAIL: $DOCKERFILE missing"
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  if [ ! -f "$PIN" ]; then
+    echo "  FAIL: $PIN missing"
     FAIL=$((FAIL + 1))
     return
   fi
 
-  # A single 'ARG OVS_COMMIT=' line holding a full 40-hex SHA-1. A short or
-  # abbreviated value would still fetch, but would not be the gitlink that
-  # `git rev-parse HEAD:ovs` prints, so the comparison below could never match.
-  local pin
-  pin="$(sed -nE 's/^ARG OVS_COMMIT=//p' "$DOCKERFILE")"
-  assert_not_empty "Dockerfile carries an 'ARG OVS_COMMIT=' pin" "$pin"
+  # The tag names a commit upstream can repoint; rev is what makes the OVN
+  # half of the tree content-addressed. A short or abbreviated commit would
+  # still fetch, but would not be the gitlink `git ls-tree` prints.
+  local key value
+  for key in .rev .ovs.rev; do
+    value="$(jq -r "$key // empty" "$PIN")"
+    assert_eq "$key is a full 40-hex SHA-1 (got '$value')" "yes" "$(well_formed "$value" '^[0-9a-f]{40}$')"
+  done
+  for key in .hash .ovs.hash; do
+    value="$(jq -r "$key // empty" "$PIN")"
+    assert_eq "$key is an SRI sha256 hash (got '$value')" "yes" \
+      "$(well_formed "$value" '^sha256-[A-Za-z0-9+/]{43}=$')"
+  done
+}
 
-  local well_formed="no"
-  if [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
-    well_formed="yes"
+test_the_derivation_fetches_by_the_pin() {
+  echo "Test: images/ovn/ovn.nix fetches both trees by the pin, without submodules"
+
+  if [ ! -f "$DERIVATION" ]; then
+    echo "  FAIL: $DERIVATION missing"
+    FAIL=$((FAIL + 1))
+    return
   fi
-  assert_eq "OVS_COMMIT is a full 40-hex SHA-1 (got '$pin')" "yes" "$well_formed"
 
-  # The gitlink at the pinned OVN commit is compared against OVS_COMMIT, so a
-  # changed submodule aborts the build.
-  assert_file_contains "the build reads the 'ovs' gitlink" \
-    "$DOCKERFILE" 'rev-parse "HEAD:ovs"'
-  assert_file_contains "the build compares the gitlink against OVS_COMMIT" \
-    "$DOCKERFILE" '"${gitlink}" != "${OVS_COMMIT}"'
-
+  assert_file_contains "OVN is fetched from ovn-org/ovn" "$DERIVATION" 'owner = "ovn-org";'
+  assert_file_contains "the OVN repository is ovn" "$DERIVATION" 'repo = "ovn";'
+  assert_file_contains "OVN is fetched by the pinned commit and hash" "$DERIVATION" \
+    'inherit (pin) rev hash;'
   # OVS comes from openvswitch/ovs by that commit, not from whatever URL
   # upstream's .gitmodules names at the tag.
-  assert_file_contains "OVS is fetched from openvswitch/ovs" \
-    "$DOCKERFILE" 'remote add origin https://github.com/openvswitch/ovs.git'
-  assert_file_contains "OVS is fetched by the pinned commit" \
-    "$DOCKERFILE" 'fetch --depth 1 origin "${OVS_COMMIT}"'
-  assert_file_not_contains "the OVN checkout does not recurse into submodules" \
-    "$DOCKERFILE" "recurse-submodules"
-
-  # OVN builds against that checkout, not against the empty submodule dir.
-  assert_file_contains "OVN builds against the pinned OVS checkout" \
-    "$DOCKERFILE" "with-ovs-source=/src/ovs"
+  assert_file_contains "OVS is fetched from openvswitch/ovs" "$DERIVATION" 'owner = "openvswitch";'
+  assert_file_contains "the OVS repository is ovs" "$DERIVATION" 'repo = "ovs";'
+  assert_file_contains "OVS is fetched by the pinned commit and hash" "$DERIVATION" \
+    'inherit (pin.ovs) rev hash;'
+  assert_eq "both trees are fetchFromGitHub fetches" "2" \
+    "$(grep -c 'fetchFromGitHub {' "$DERIVATION")"
+  assert_file_not_contains "no fetch follows the submodule" "$DERIVATION" "fetchSubmodules"
+  # OVN builds against that tree, not against the empty submodule dir.
+  assert_file_contains_fixed "OVN builds against the pinned OVS tree" "$DERIVATION" \
+    'with-ovs-source="$PWD/ovs"'
 }
 
-test_ovn_source_is_content_pinned
-test_ovs_source_is_content_pinned
+test_the_generator_reads_the_gitlink() {
+  echo "Test: hack/nix-lock.sh derives ovs.rev from the gitlink at the pinned OVN commit"
+
+  assert_file_contains "the generator reads the 'ovs' gitlink of the fetched commit" "$GENERATOR" \
+    'ls-tree FETCH_HEAD ovs'
+  assert_file_contains "the generator fetches the pinned commit, not the tag" "$GENERATOR" \
+    'fetch -q --depth 1 --filter=blob:none'
+}
+
+test_the_pin_holds_commits_and_hashes
+test_the_derivation_fetches_by_the_pin
+test_the_generator_reads_the_gitlink
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
