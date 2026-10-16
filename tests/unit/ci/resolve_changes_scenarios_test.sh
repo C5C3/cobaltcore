@@ -159,6 +159,14 @@ test_federation_proxy_change() {
   expect e2e-operators '{"operator":["keystone"]}'
 }
 
+test_ovn_image_change() {
+  scenario "an ovn image change" refs/heads/main FILTER_image_ovn=true
+  expect changed-ovn true
+  expect e2e-ovn-overlay true
+  expect e2e-operators '{"operator":["ovn"]}'
+  expect changed-proxy false
+}
+
 test_special_suites_run_only_their_own_job() {
   scenario "a chaos suite edit" refs/heads/main FILTER_tests_chaos=true
   expect e2e-chaos true
@@ -312,7 +320,7 @@ test_ci_full_runs_everything() {
     FILTER_glance=true PR_LABELS='["ci:full"]'
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all true $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
-    e2e-operator-upgrade actionlint changed-tempest changed-proxy build-e2e-images \
+    e2e-operator-upgrade actionlint changed-tempest changed-proxy changed-ovn build-e2e-images \
     has-e2e-operators
   expect noop false
   expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
@@ -496,7 +504,7 @@ test_no_filters_at_all() {
   scenario "no filter matched" refs/heads/main
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all false $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
-    e2e-operator-upgrade actionlint changed-tempest changed-proxy \
+    e2e-operator-upgrade actionlint changed-tempest changed-proxy changed-ovn \
     build-e2e-images has-e2e-operators noop
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
@@ -541,7 +549,7 @@ test_outputs_are_complete() {
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
     e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
     actionlint changed-tempest
-    changed-proxy build-e2e-images has-e2e-operators changed-operators
+    changed-proxy changed-ovn build-e2e-images has-e2e-operators changed-operators
     changed-services tempest-services test-targets e2e-operators"
   for key in $expected; do
     assert_not_empty "the resolver emits $key" \
@@ -569,6 +577,7 @@ test_suite_edit_runs_one_leg
 test_service_image_change
 test_base_image_change_covers_every_service
 test_federation_proxy_change
+test_ovn_image_change
 test_special_suites_run_only_their_own_job
 test_shared_substrate_runs_the_canary
 test_openbao_change_adds_barbican

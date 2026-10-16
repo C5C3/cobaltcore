@@ -78,6 +78,11 @@ test_ovn_filter_is_wired() {
   block=$(filter_block image_ovn)
   assert_contains "the OVN image is covered" "$block" "images/ovn/**"
   assert_contains "the backup-shifter image is covered" "$block" "images/backup-shifter/**"
+  # build-e2e-images builds the OVN image from the flake, so a re-lock or a
+  # change to the shared Nix library rebuilds it and runs the leg on it.
+  assert_contains "the flake lock is covered" "$block" "flake.lock"
+  assert_contains "the flake is covered" "$block" "flake.nix"
+  assert_contains "the Nix library is covered" "$block" "nix/lib/**"
 }
 
 test_ovn_change_produces_an_e2e_leg() {
@@ -191,32 +196,36 @@ test_build_e2e_images_builds_the_ovn_images() {
   assert_eq "the ovn operator is one of the tree-derived image keys" "yes" \
     "$([ -f "$PROJECT_ROOT/operators/ovn/go.mod" ] && echo yes || echo no)"
 
-  # The daemon image carries no OpenStack release and no go.mod, so nothing
-  # derives it and the map never names it. It keeps a build step of its own,
-  # which runs on every run of this job; load-e2e-images falls back to the
-  # run-scoped tag for a reference the map does not carry.
-  assert_contains "the daemon image has its own build step" "$job" \
+  # The daemon image is a map key of its own too: the resolver builds it
+  # through the Nix step when changed-ovn is set and maps it to the digest main
+  # published otherwise, so no step builds it outside that path.
+  assert_not_contains "no Docker build step builds the daemon image" "$job" \
     "name: Build OVN image"
-  assert_contains "the step resolves the pin instead of repeating it" "$job" \
-    "hack/ci-resolve-ovn-version.sh"
+  assert_not_contains "the Docker build script is gone" "$job" "hack/ci-build-ovn-image.sh"
+  assert_contains "the resolver learns whether the ovn inputs changed" \
+    "$(job_step build-e2e-images "Resolve images")" \
+    'CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}'
+  local nix_step
+  nix_step=$(job_step build-e2e-images "Build Nix images")
+  assert_contains "the Nix step learns whether to build the ovn image" "$nix_step" \
+    'BUILD_OVN: ${{ env.BUILD_OVN }}'
+  assert_contains "the Nix step learns the tag of the ovn image" "$nix_step" \
+    'OVN_VERSION: ${{ env.OVN_VERSION }}'
 
-  # The OVN build compiles Open vSwitch and OVN from source, which build-ovn in
-  # build-images.yaml budgets 60 minutes for on its own, and this job's cache
-  # scope (e2e-ovn) has no default-branch entry to warm the first run of a pull
-  # request. Under a budget sized for the job before the OVN build joined it,
-  # the run is killed before the Tempest images are pushed and every E2E job,
-  # which gates on this one succeeding, is skipped.
+  # The OVN build compiles Open vSwitch and OVN from source when the Cachix
+  # cache holds no build of the pin, which build-ovn in build-images.yaml
+  # budgets 60 minutes for on its own. Under a budget sized for the job
+  # without it, the run is killed before the Tempest images are pushed and
+  # every E2E job, which gates on this one succeeding, is skipped.
   local budget
   budget=$(echo "$job" | sed -n 's/^ *timeout-minutes: //p' | head -1)
   assert_eq "the budget covers the uncached OVN build on top of the rest" \
     "120" "$budget"
-  assert_contains "the step builds through the shared script" "$job" \
-    "hack/ci-build-ovn-image.sh"
-  assert_contains "the daemon image is pushed under the run tag" "$job" \
-    'push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
+  assert_contains "the daemon image is pushed under the run tag only when built" "$job" \
+    "$(printf '%s\n%s' 'if [ "$BUILD_OVN" = "true" ]; then' '            push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"')"
 
-  # images/ovn/Dockerfile holds the pin. A copy in the workflow would keep
-  # pointing at the old tag the next time the Dockerfile is bumped.
+  # images/ovn/source.json holds the pin. A copy in the workflow would keep
+  # pointing at the old tag the next time the pin is bumped.
   local pin
   pin=$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")
   assert_eq "the workflow never spells the pinned version" "0" \

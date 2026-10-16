@@ -170,7 +170,7 @@ test_job_deploys_the_network_operators() {
   assert_contains "ovn-operator lands in its own namespace" "$job" "NAMESPACE: ovn-system"
   assert_contains "the job deploys neutron-operator" "$job" "OPERATOR: neutron"
   assert_contains "neutron-operator lands in its own namespace" "$job" "NAMESPACE: neutron-system"
-  # The OVN daemon image is tag-pinned in images/ovn/Dockerfile and resolved
+  # The OVN daemon image is tag-pinned in images/ovn/source.json and resolved
   # into OVN_VERSION by a step of its own. A hard-coded tag here would drift
   # away from that pin without anything noticing.
   assert_contains "the OVN daemon image is loaded at the resolved version" \

@@ -8,8 +8,10 @@
 # and that it hands both to the job in the shapes the workflow reads:
 #   - the key set covers every image a consumer can name, derived from the tree
 #     rather than listed in the workflow;
-#   - a changed operator, service, Tempest or proxy source lands in the build
-#     set and maps to the run-scoped tag the push step writes;
+#   - a changed operator, service, Tempest, proxy or OVN source lands in the
+#     build set and maps to the run-scoped tag the push step writes;
+#   - an OVN pin the resolver cannot read fails the step before any output is
+#     written;
 #   - everything else maps to the index digest behind its published tag;
 #   - a source that has never been published is built instead of failing the
 #     run, which is what a new operator looks like before its first merge;
@@ -31,6 +33,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RESOLVE_SH="$PROJECT_ROOT/hack/ci-resolve-e2e-images.sh"
+OVN_VERSION="$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")"
+OVN_KEY="ghcr.io/c5c3/ovn:${OVN_VERSION}"
 
 PASS=0
 FAIL=0
@@ -141,13 +145,16 @@ run_resolve() {
 
 # make_fixture_repo <dir>
 # A git repository with one commit that holds a copy of the resolver, the files
-# it reads, and two operators, c5c3 and keystone, with no release. The revision
+# it reads, the OVN pin with its resolver, and two operators, c5c3 and
+# keystone, with no release. The revision
 # tests move its history on with fixture_commit and hand the stub the revisions
 # they left behind.
 make_fixture_repo() {
   local dir="$1" op
-  mkdir -p "$dir/hack" "$dir/.github/workflows"
-  cp "$RESOLVE_SH" "$PROJECT_ROOT/hack/ci-service-image-releases.sh" "$dir/hack/"
+  mkdir -p "$dir/hack" "$dir/.github/workflows" "$dir/images/ovn"
+  cp "$RESOLVE_SH" "$PROJECT_ROOT/hack/ci-service-image-releases.sh" \
+    "$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh" "$dir/hack/"
+  cp "$PROJECT_ROOT/images/ovn/source.json" "$dir/images/ovn/"
   cp "$PROJECT_ROOT/.github/workflows/ci.yaml" "$dir/.github/workflows/"
   for op in c5c3 keystone; do
     mkdir -p "$dir/operators/$op"
@@ -215,6 +222,7 @@ expected_keys() {
     echo "ghcr.io/c5c3/tempest:$(basename "$dir")"
   done
   echo "ghcr.io/c5c3/keystone-federation-proxy:dev"
+  echo "$OVN_KEY"
 }
 
 # ---------------------------------------------------------------------------
@@ -239,6 +247,8 @@ test_empty_inputs_reuse_every_image() {
     assert_eq "form $label: no service image is built" "" "$(env_block BUILD_SERVICE_IMAGES)"
     assert_eq "form $label: no Tempest image is built" "" "$(env_block BUILD_TEMPEST_RELEASES)"
     assert_eq "form $label: the proxy is not built" "false" "$(env_value BUILD_PROXY)"
+    assert_eq "form $label: the ovn image is not built" "false" "$(env_value BUILD_OVN)"
+    assert_eq "form $label: the OVN version is written" "$OVN_VERSION" "$(env_value OVN_VERSION)"
     assert_eq "form $label: the base images are not needed" "false" \
       "$(env_value NEEDS_BASE_IMAGES)"
     assert_eq "form $label: no Nix image is built" "false" \
@@ -260,9 +270,10 @@ test_the_key_set_covers_every_image_in_the_tree() {
     "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
 
   # Ten operators, eight services across two releases, nova-compute for
-  # every nova release, two Tempest images and the federation proxy. The
-  # number moves with the tree; the equality above is what keeps it honest.
-  assert_eq "the tree yields 31 images today" "31" "$(jq -r 'length' <<<"$MAP")"
+  # every nova release, two Tempest images, the federation proxy and the ovn
+  # image. The number moves with the tree; the equality above is what keeps
+  # it honest.
+  assert_eq "the tree yields 32 images today" "32" "$(jq -r 'length' <<<"$MAP")"
 
   assert_eq "an operator image is keyed by its dev tag" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-operator:dev")' <<<"$MAP")"
@@ -435,6 +446,52 @@ test_a_changed_proxy_builds_only_the_proxy() {
   assert_eq "no operator image is built" "" "$(env_block BUILD_OPERATORS)"
 }
 
+test_a_changed_ovn_builds_the_ovn_image() {
+  echo "Test: a changed ovn source builds the ovn image through the Nix step"
+
+  run_resolve CHANGED_OVN=true
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "the ovn image is built" "true" "$(env_value BUILD_OVN)"
+  assert_eq "the Nix step runs" "true" "$(env_value BUILD_NIX_IMAGES)"
+  assert_eq "the OVN version is the one the pin resolver prints" "$OVN_VERSION" "$(env_value OVN_VERSION)"
+  assert_eq "the ovn image carries the run-scoped tag" \
+    "ghcr.io/c5c3/ovn:e2e-test-${OVN_VERSION}" "$(map_value "$OVN_KEY")"
+  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  assert_eq "no service image is built" "" "$(env_block BUILD_SERVICE_IMAGES)"
+}
+
+test_an_unchanged_ovn_reuses_the_published_image() {
+  echo "Test: an unchanged ovn source reuses the image main published, unless it is missing"
+
+  run_resolve
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "the ovn image is not built" "false" "$(env_value BUILD_OVN)"
+  assert_eq "the ovn image resolves to a digest" "true" \
+    "$(jq -r --arg re "$DIGEST_RE" --arg key "$OVN_KEY" '.[$key] | test($re)' <<<"$MAP")"
+  assert_contains "the reuse is logged" "$OUTPUT" "$OVN_KEY -> ghcr.io/c5c3/ovn@sha256:"
+
+  run_resolve STUB_MISSING="$OVN_KEY"
+  assert_eq "an unpublished tag exits 0" "0" "$RC"
+  assert_contains "it says why the image is being built" "$OUTPUT" \
+    "::notice::$OVN_KEY is not published yet; building $OVN_KEY"
+  assert_eq "an unpublished tag builds the ovn image" "true" "$(env_value BUILD_OVN)"
+  assert_eq "the Nix step runs for it" "true" "$(env_value BUILD_NIX_IMAGES)"
+}
+
+test_an_unreadable_ovn_pin_is_fatal() {
+  echo "Test: an OVN pin the resolver cannot read fails the step and writes no map"
+
+  local pin="$TMP_DIR/ovn-source.json"
+  echo '{"rev": "3facc3b5e99ba2c863ec5f47f37466397f735802"}' >"$pin"
+  run_resolve OVN_SOURCE="$pin"
+
+  assert_nonzero_exit "the resolver fails the step" "$RC"
+  assert_contains "the pin resolver's annotation reaches the log" "$OUTPUT" \
+    "::error::no \"version\" in $pin"
+  assert_eq "no image-map output is written" "" "$(grep '^image-map=' "$OUT_FILE")"
+}
+
 # ---------------------------------------------------------------------------
 # Test 7: a source that main has never published
 # ---------------------------------------------------------------------------
@@ -572,6 +629,10 @@ test_the_outputs_have_the_shapes_the_workflow_reads() {
   done
   assert_file_contains "BUILD_PROXY is written as a plain assignment" "$ENV_FILE" \
     "^BUILD_PROXY=false$"
+  assert_file_contains "BUILD_OVN is written as a plain assignment" "$ENV_FILE" \
+    "^BUILD_OVN=false$"
+  assert_file_contains "OVN_VERSION is written as a plain assignment" "$ENV_FILE" \
+    "^OVN_VERSION=${OVN_VERSION}$"
   assert_file_contains "NEEDS_BASE_IMAGES is written as a plain assignment" "$ENV_FILE" \
     "^NEEDS_BASE_IMAGES=false$"
   assert_file_contains "BUILD_NIX_IMAGES is written as a plain assignment" "$ENV_FILE" \
@@ -704,6 +765,9 @@ test_an_unpublished_nova_builds_the_compute_image_too
 test_an_unpublished_nova_compute_needs_only_the_base_images
 test_changed_tempest_builds_every_release
 test_a_changed_proxy_builds_only_the_proxy
+test_a_changed_ovn_builds_the_ovn_image
+test_an_unchanged_ovn_reuses_the_published_image
+test_an_unreadable_ovn_pin_is_fatal
 test_an_unpublished_source_is_built_instead
 test_a_failing_registry_is_retried_then_fatal
 test_a_non_digest_answer_is_fatal
