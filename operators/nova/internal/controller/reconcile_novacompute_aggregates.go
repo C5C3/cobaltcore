@@ -80,17 +80,10 @@ func (r *NovaComputeReconciler) reconcileNovaComputeAggregates(ctx context.Conte
 	}
 	slices.Sort(zones)
 
-	// The Nodes step hands the siblings over. A deleting pool that holds no node
-	// skips that step (see teardownSteps) and lists them here: without them no
-	// other pool would seem to need an aggregate.
-	siblings := pass.siblings
-	if siblings == nil {
-		listed, err := novaComputesOfNova(ctx, r.Client, cr.Namespace, cr.Spec.NovaRef.Name)
-		if err != nil {
-			novaComputeSkeleton.MarkFailed(cr, conditionTypeAggregatesReady, conditionReasonNovaComputeListError, err)
-			return ctrl.Result{}, err
-		}
-		siblings = listed
+	// Without the siblings no other pool would seem to need an aggregate.
+	siblings, err := r.siblingsOf(ctx, cr, pass, conditionTypeAggregatesReady)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	required := requiredAggregateNames(cr, siblings)
 

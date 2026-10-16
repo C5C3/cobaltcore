@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -63,7 +64,58 @@ func TestNovaComputePipelineSteps_OrderAndNames(t *testing.T) {
 		names = append(names, step.Name)
 	}
 
-	g.Expect(names).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services"}))
+	g.Expect(names).To(Equal([]string{
+		"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services", "Traits",
+	}))
+}
+
+// TestNovaComputePipelineSteps_TraitsReturnsTheServicesPoll pins that the
+// Services step's poll does not end the pipeline before the Traits step, and
+// that the shorter of the two requeues is returned.
+func TestNovaComputePipelineSteps_TraitsReturnsTheServicesPoll(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		traits      []string
+		objs        []client.Object
+		wantRequeue time.Duration
+		wantReason  string
+	}{
+		{
+			name:        "a pool without traits returns the poll",
+			wantRequeue: RequeueComputeServicePolling,
+			wantReason:  conditionReasonNoTraitsDeclared,
+		},
+		{
+			name:        "a pool waiting on the hypervisor operator returns its shorter poll",
+			traits:      []string{"CUSTOM_A"},
+			objs:        []client.Object{hypervisor(testNodeName, hvSpec("CUSTOM_A"), map[string]any{})},
+			wantRequeue: RequeueComputeDrainPolling,
+			wantReason:  conditionReasonWaitingForHypervisorOperator,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			api := computeapitest.New()
+			api.AddService(testNodeName, "enabled", "up")
+			cr := activePool(activeIn(testNodeName, testZone))
+			cr.Status.Nodes[0].ServiceID = api.Services()[0].ID
+			cr.Spec.Traits = tc.traits
+			r := newNovaComputeTestReconciler(api, append(tc.objs, cr)...)
+			pass := apiPass(api)
+			pass.nova = readyNovaForCompute()
+
+			steps := r.pipelineSteps(r.Client, cr, pass)
+			services, traits := steps[len(steps)-2], steps[len(steps)-1]
+
+			result, err := services.Fn(context.Background())
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.IsZero()).To(BeTrue(), "the poll is handed on")
+			result, err = traits.Fn(context.Background())
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.RequeueAfter).To(Equal(tc.wantRequeue))
+			g.Expect(novaComputeCondition(cr, conditionTypeTraitsReady).Reason).To(Equal(tc.wantReason))
+		})
+	}
 }
 
 func TestNovaComputeReconcile_AddsTheDrainFinalizerOnly(t *testing.T) {
@@ -126,6 +178,12 @@ func TestNovaComputeReconcile_ReachesReady(t *testing.T) {
 	ready := novaComputeCondition(got, "Ready")
 	g.Expect(ready).NotTo(BeNil())
 	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "conditions: %+v", got.Status.Conditions)
+	g.Expect(ready.Reason).To(Equal("AllReady"))
+	traits := novaComputeCondition(got, conditionTypeTraitsReady)
+	g.Expect(traits).NotTo(BeNil())
+	g.Expect(traits.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(traits.Reason).To(Equal(conditionReasonNoTraitsDeclared))
+	g.Expect(api.CallsTo(http.MethodPut, "/traits/")).To(BeEmpty())
 	g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
 	g.Expect(got.Status.Nodes).To(ConsistOf(HaveField("Phase", novav1alpha1.NovaComputeNodeActive)))
 	g.Expect(got.Status.InstalledImage).To(Equal("ghcr.io/c5c3/nova-compute:2026.1"))
@@ -275,6 +333,67 @@ func TestNovaComputeTeardown_ReleasingTheLastNodeCleansItsAggregates(t *testing.
 	reconcilePool(t, r)
 	g.Expect(api.Aggregates()).To(BeEmpty())
 	g.Expect(apierrors.IsNotFound(r.Get(context.Background(), testPoolKey, &novav1alpha1.NovaCompute{}))).To(BeTrue())
+}
+
+// TestNovaComputeTeardown_Traits pins the traits a deleting pool that holds no
+// node created: it deletes them before it releases its drain finalizer, keeps
+// the finalizer while a delete fails, and leaves one a non-deleting sibling
+// declares to that sibling.
+func TestNovaComputeTeardown_Traits(t *testing.T) {
+	ctx := context.Background()
+	deletingWithTrait := func() *novav1alpha1.NovaCompute {
+		cr := deletingPool(novaComputeDrainFinalizer)
+		cr.Status.CreatedTraits = []string{"CUSTOM_A"}
+		return cr
+	}
+
+	t.Run("the trait it created is deleted and the finalizer released", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddTrait("CUSTOM_A")
+		r := newNovaComputeTestReconciler(api, append(controlPlaneObjects(), deletingWithTrait())...)
+
+		reconcilePool(t, r)
+
+		g.Expect(api.Traits()).To(BeEmpty())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, testPoolKey, &novav1alpha1.NovaCompute{}))).To(BeTrue())
+	})
+
+	t.Run("a failed delete holds the finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddTrait("CUSTOM_A")
+		api.FailNext(http.MethodDelete, "/traits/CUSTOM_A", http.StatusInternalServerError)
+		r := newNovaComputeTestReconciler(api, append(controlPlaneObjects(), deletingWithTrait())...)
+
+		result := reconcilePool(t, r)
+
+		g.Expect(result.RequeueAfter).To(Equal(RequeueComputeDrainPolling))
+		got := getPool(t, r)
+		g.Expect(got.Finalizers).To(ContainElement(novaComputeDrainFinalizer))
+		g.Expect(got.Status.CreatedTraits).To(Equal([]string{"CUSTOM_A"}))
+		cond := novaComputeCondition(got, conditionTypeTraitsReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonPlacementAPIError))
+		g.Expect(api.Traits()).To(Equal([]string{"CUSTOM_A"}))
+	})
+
+	t.Run("a trait a non-deleting sibling declares is kept and the finalizer released", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddTrait("CUSTOM_A")
+		sibling := rivalPool("pool-b", time.Hour, testPoolLabel, "b")
+		sibling.Spec.Traits = []string{"CUSTOM_A"}
+		r := newNovaComputeTestReconciler(api, append(controlPlaneObjects(), deletingWithTrait(), sibling)...)
+
+		reconcilePool(t, r)
+
+		g.Expect(api.Traits()).To(Equal([]string{"CUSTOM_A"}))
+		g.Expect(api.CallsTo(http.MethodDelete, "/traits/")).To(BeEmpty())
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, testPoolKey, &novav1alpha1.NovaCompute{}))).To(BeTrue())
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ContainElement(And(
+			ContainSubstring("Normal TraitKept"), ContainSubstring("NovaCompute pool-b of Nova "+testNovaName))))
+	})
 }
 
 func TestNovaComputeTeardown_UnreachableTargetHolds(t *testing.T) {
@@ -568,6 +687,8 @@ func TestNovaComputeTeardownSteps(t *testing.T) {
 
 	holding := deletingPool(novaComputeDrainFinalizer)
 	holding.Status.Nodes = []novav1alpha1.NovaComputeNodeStatus{entry(testNodeName, novav1alpha1.NovaComputeNodeDraining)}
-	g.Expect(names(holding)).To(Equal([]string{"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services"}))
-	g.Expect(names(deletingPool(novaComputeDrainFinalizer))).To(Equal([]string{"NovaRef", "Aggregates"}))
+	g.Expect(names(holding)).To(Equal([]string{
+		"NovaRef", "Nodes", "PoolConfig", "DaemonSet", "ComputeVPA", "Aggregates", "Services", "Traits",
+	}))
+	g.Expect(names(deletingPool(novaComputeDrainFinalizer))).To(Equal([]string{"NovaRef", "Aggregates", "Traits"}))
 }

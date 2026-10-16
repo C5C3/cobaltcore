@@ -44,6 +44,21 @@ tests:
               - list
               - watch
 
+  # The Traits step reads a node's Hypervisor and patches its custom traits;
+  # it never creates, lists or deletes one.
+  - it: should grant get and patch on hypervisors for the Traits step
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - kvm.cloud.sap
+            resources:
+              - hypervisors
+            verbs:
+              - get
+              - patch
+
   # The nova-compute pods of a node pool run in a DaemonSet the operator owns.
   - it: should grant full CRUD on daemonsets and deployments
     asserts:

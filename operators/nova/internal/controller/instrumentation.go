@@ -65,6 +65,7 @@ var subReconcilerConditionTypes = map[string]string{
 	stepDaemonSet:  conditionTypeDaemonSetReady,
 	stepAggregates: conditionTypeAggregatesReady,
 	stepServices:   conditionTypeServicesReady,
+	stepTraits:     conditionTypeTraitsReady,
 	stepVPA:        "VPAReady",
 }
 
