@@ -193,7 +193,10 @@ process prints `DONE` last.
 
 `workload.py evaluate` judges the log on the runner. The fault window runs from
 the `fault-start` mark to the `fault-end` mark plus the recovery time of the
-budget. The run fails in five cases:
+budget. A failed record falls inside it when its operation ended (`t` plus `ms`)
+at or after `fault-start` and began at or before the deadline, so an operation
+the fault caught in flight counts against the budget. The run fails in five
+cases:
 
 - a failed record falls outside the window, which every failed sweep record
   does;

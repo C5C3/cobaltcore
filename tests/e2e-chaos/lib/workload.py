@@ -1149,7 +1149,8 @@ def read_log(path: str) -> tuple[list[dict], bool, list[str]]:
                     and isinstance(record.get("s"), str)
                     and isinstance(record.get("op"), str)
                     and isinstance(record.get("ok"), bool)
-                    and isinstance(record.get("t"), (int, float))):
+                    and isinstance(record.get("t"), (int, float))
+                    and isinstance(record.get("ms"), (int, float))):
                 input_error(f"line {lineno} of {path} is not a workload "
                             "record")
             record["warmup"] = (not record["ok"]
@@ -1179,9 +1180,12 @@ def evaluate(args: argparse.Namespace) -> int:
 
     def in_window(record: dict) -> bool:
         # A sweep runs after the stop file, so its failures are never part of
-        # what the fault may cost.
+        # what the fault may cost. An operation still in flight when the fault
+        # starts can fail because of it, so the lower edge reads the end of the
+        # operation and the upper edge its start.
+        end = record["t"] + record["ms"] / 1000
         return (deadline is not None and not record["op"].startswith("sweep-")
-                and marks[0] <= record["t"] <= deadline)
+                and marks[0] <= end and record["t"] <= deadline)
 
     violations = []
     offending: list[dict] = []
