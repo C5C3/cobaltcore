@@ -10,13 +10,17 @@
 #     without the sandbox, one job per CPU, as the build users of the group
 #     e2ebld; each image is streamed to .nix-e2e/<name>-<release>.tar and
 #     listed in .nix-e2e/images.txt; a nova-compute line is skipped;
+#   - BUILD_OVN adds the attribute ovn-image to that invocation, streamed to
+#     .nix-e2e/ovn-<OVN_VERSION>.tar and listed as "ovn <OVN_VERSION>"; a
+#     BUILD_OVN without OVN_VERSION exits 1 and builds nothing;
 #   - the group e2ebld (gid 40000) and one user per CPU (uids 40001 and up)
 #     are written to the account files before nix runs;
 #   - git is told to trust the workspace before anything else runs;
 #   - a line with four fields exits 1 with the line named, builds nothing and
 #     writes no build user; an attribute nix cannot build exits with nix's
 #     status and writes no image;
-#   - an empty image set prints "nothing to build" and exits 0.
+#   - an empty image set, BUILD_OVN=false included, prints "nothing to build"
+#     and exits 0.
 #
 # The build-e2e-images job of .github/workflows/ci.yaml runs the script in the
 # nixos/nix container; this test checks what the script does with its input,
@@ -100,7 +104,8 @@ run_script() {
   echo "root:x:0:" >"$ETC_DIR/group"
   RC=0
   OUTPUT=$(cd "$workspace" && env PATH="$STUB_DIR:$PATH" GITHUB_WORKSPACE="$workspace" \
-    NIX_E2E_ETC="$ETC_DIR" BUILD_SERVICE_IMAGES="" BUILD_TEMPEST_RELEASES="" "$@" bash "$SCRIPT" 2>&1) || RC=$?
+    NIX_E2E_ETC="$ETC_DIR" BUILD_SERVICE_IMAGES="" BUILD_TEMPEST_RELEASES="" BUILD_OVN=false OVN_VERSION="" \
+    "$@" bash "$SCRIPT" 2>&1) || RC=$?
 }
 
 test_builds_service_and_tempest_images() {
@@ -157,10 +162,48 @@ test_missing_attribute_fails() {
   assert_eq "images.txt is empty" "" "$(cat "$ws/.nix-e2e/images.txt")"
 }
 
+test_builds_the_ovn_image() {
+  echo "Test: BUILD_OVN builds ovn-image and lists it under OVN_VERSION"
+
+  local ws="$TMP_DIR/ws-ovn"
+  run_script "$ws" BUILD_OVN=true OVN_VERSION=26.03.2
+
+  assert_eq "the script exits 0" "0" "$RC"
+  assert_eq "nix builds the attribute ovn-image" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#ovn-image --print-build-logs --out-link .nix-e2e/result" \
+    "$(cat "$NIX_LOG")"
+  assert_eq "images.txt lists the ovn image under its version" "ovn 26.03.2" \
+    "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the ovn stream is written to its tar" "stream of ovn-image" \
+    "$(cat "$ws/.nix-e2e/ovn-26.03.2.tar")"
+
+  run_script "$ws" BUILD_SERVICE_IMAGES=$'keystone 2026.1\n' BUILD_OVN=true OVN_VERSION=26.03.2
+  assert_eq "a service image and the ovn image build in one nix call" "1" \
+    "$(wc -l <"$NIX_LOG" | tr -d ' ')"
+  assert_contains "that call names both attributes in order" "$(cat "$NIX_LOG")" \
+    ".#keystone-2026_1-image .#ovn-image --print-build-logs"
+  assert_eq "images.txt lists both images in order" $'keystone 2026.1\novn 26.03.2' \
+    "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the second result is the ovn stream" "stream of ovn-image" \
+    "$(cat "$ws/.nix-e2e/ovn-26.03.2.tar")"
+}
+
+test_ovn_without_a_version_fails() {
+  echo "Test: BUILD_OVN without OVN_VERSION exits 1 and builds nothing"
+
+  run_script "$TMP_DIR/ws-ovn-noversion" BUILD_SERVICE_IMAGES=$'keystone 2026.1\n' BUILD_OVN=true
+
+  assert_eq "the script exits 1" "1" "$RC"
+  assert_contains "the message names both variables" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is empty"
+  assert_eq "nix was not called" "" "$(cat "$NIX_LOG" 2>/dev/null)"
+  assert_not_contains "no build user is written" "$(cat "$ETC_DIR/passwd" "$ETC_DIR/group")" "e2ebld"
+}
+
 test_nothing_to_build() {
   echo "Test: an empty image set builds nothing and exits 0"
 
-  run_script "$TMP_DIR/ws-empty" BUILD_SERVICE_IMAGES=$'nova 2026.1 nova-compute\n'
+  run_script "$TMP_DIR/ws-empty" BUILD_SERVICE_IMAGES=$'nova 2026.1 nova-compute\n' BUILD_OVN=false OVN_VERSION=26.03.2
 
   assert_eq "the script exits 0" "0" "$RC"
   assert_contains "it says so" "$OUTPUT" "ci-nix-build-e2e-images.sh: nothing to build"
@@ -201,6 +244,8 @@ test_script_is_shellcheck_clean() {
 test_builds_service_and_tempest_images
 test_malformed_line_fails
 test_missing_attribute_fails
+test_builds_the_ovn_image
+test_ovn_without_a_version_fails
 test_nothing_to_build
 test_checkout_persists_no_token
 test_script_is_shellcheck_clean

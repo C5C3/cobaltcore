@@ -172,7 +172,7 @@ if [[ "${noop}" == "true" ]]; then
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
-    changed-proxy build-e2e-images actionlint; do
+    changed-proxy changed-ovn build-e2e-images actionlint; do
     emit "$out" false
   done
   for out in changed-operators changed-services tempest-services; do
@@ -372,6 +372,10 @@ if filter_on image_proxy; then cond=true; fi
 changed_proxy=$(or_force "$cond")
 
 cond=false
+if filter_on image_ovn; then cond=true; fi
+changed_ovn=$(or_force "$cond")
+
+cond=false
 if filter_on actionlint; then cond=true; fi
 actionlint=$(or_force "$cond")
 
@@ -513,6 +517,7 @@ emit actionlint "$actionlint"
 
 emit changed-tempest "$changed_tempest"
 emit changed-proxy "$changed_proxy"
+emit changed-ovn "$changed_ovn"
 emit build-e2e-images "$build_e2e_images"
 emit has-e2e-operators "$has_e2e_operators"
 

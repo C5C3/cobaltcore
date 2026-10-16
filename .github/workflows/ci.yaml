@@ -99,6 +99,7 @@ jobs:
       changed-services: ${{ steps.result.outputs.changed-services }}
       changed-tempest: ${{ steps.result.outputs.changed-tempest }}
       changed-proxy: ${{ steps.result.outputs.changed-proxy }}
+      changed-ovn: ${{ steps.result.outputs.changed-ovn }}
       build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
@@ -182,10 +183,17 @@ jobs:
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
-            # than changed-services.
+            # than changed-services. build-e2e-images builds the ovn image
+            # from the flake (images/ovn/, flake.nix, flake.lock, nix/lib/)
+            # with hack/ci-nix-build-e2e-images.sh when this filter matches,
+            # and pulls the image main published otherwise.
             image_ovn:
               - 'images/ovn/**'
               - 'images/backup-shifter/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - 'hack/ci-nix-build-e2e-images.sh'
             # The keystone oidc-federation suite projects this sidecar.
             image_proxy:
               - 'images/keystone-federation-proxy/**'
@@ -1173,15 +1181,12 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    # 120 minutes: the 45 the job needed before the OVN build was added, plus
-    # the 60 the build-ovn job of .github/workflows/build-images.yaml budgets
-    # for an uncached compile of Open vSwitch and OVN from source, plus slack.
-    # The cache does not shorten the first run of a PR: this job writes the
-    # scope e2e-ovn, which nothing on the default branch populates (build-ovn
-    # writes ovn-<platform-pair> from a different builder and build-args), and
-    # Actions caches are isolated per PR ref. Under the previous 60 the job was
-    # killed before the Tempest images were built, and every E2E job gates on
-    # its success, so the PR would have shipped with no E2E coverage at all.
+    # 120 minutes: the 45 the job needs without the ovn image, plus the 60 the
+    # build-ovn job of .github/workflows/build-images.yaml budgets for an
+    # uncached Nix compile of Open vSwitch and OVN from source when this run
+    # builds the ovn image, plus slack. Under 60 the job was killed before the
+    # Tempest images were built, and every E2E job gates on its success, so
+    # the PR would have shipped with no E2E coverage at all.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -1225,9 +1230,10 @@ jobs:
           CHANGED_SERVICES: ${{ needs.changes.outputs.changed-services }}
           CHANGED_TEMPEST: ${{ needs.changes.outputs.changed-tempest }}
           CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
+          CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}
         run: hack/ci-resolve-e2e-images.sh
 
-      # The service and Tempest images are flake attributes. The nixos/nix
+      # The service, Tempest and ovn images are flake attributes. The nixos/nix
       # container builds them without its sandbox, which an unprivileged
       # container cannot create, as build users of its own that can neither
       # open the Docker socket nor write the workspace the runner mounts, and
@@ -1239,6 +1245,8 @@ jobs:
         env:
           BUILD_SERVICE_IMAGES: ${{ env.BUILD_SERVICE_IMAGES }}
           BUILD_TEMPEST_RELEASES: ${{ env.BUILD_TEMPEST_RELEASES }}
+          BUILD_OVN: ${{ env.BUILD_OVN }}
+          OVN_VERSION: ${{ env.OVN_VERSION }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
@@ -1324,27 +1332,6 @@ jobs:
             echo "::endgroup::"
           done <<<"$BUILD_SERVICE_IMAGES"
 
-      # The OVN daemon image carries no OpenStack release: its version is
-      # pinned in images/ovn/Dockerfile and resolved by
-      # hack/ci-resolve-ovn-version.sh, so the loop above never builds it.
-      # OVN_VERSION goes to $GITHUB_ENV because the push step below and the
-      # consumer jobs address the image by that tag and the workflow must not
-      # carry a second copy of the pin.
-      - name: Build OVN image
-        env:
-          # Authenticates the source fetches from github.com inside the
-          # build; the script mounts it as a BuildKit secret.
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"
-          echo "::group::Building ovn:${OVN_VERSION}"
-          OVN_IMAGE="${IMAGE_PREFIX}/ovn:${OVN_VERSION}" \
-            DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-ovn" \
-            DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-ovn" \
-            hack/ci-build-ovn-image.sh
-          echo "::endgroup::"
-          echo "OVN_VERSION=${OVN_VERSION}" >> "$GITHUB_ENV"
-
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped
       # tag so consumer jobs can `docker pull` instead of downloading a 355 MB
       # single-blob artifact (which intermittently times out at the 5-minute
@@ -1399,7 +1386,9 @@ jobs:
           for release in $BUILD_TEMPEST_RELEASES; do
             push_image "${IMAGE_PREFIX}/tempest:${release}"
           done
-          push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          if [ "$BUILD_OVN" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
 
   # End-to-end operator tests using kind cluster and Chainsaw.
   # Loads pre-built images from the build-e2e-images artifact, deploys via Helm,
@@ -1481,7 +1470,7 @@ jobs:
           fi
           # ovn ships no per-release service image: its DaemonSets and Pods all
           # run the one OVN daemon image the operator hard-codes at the pin
-          # hack/ci-resolve-ovn-version.sh reads from images/ovn/Dockerfile.
+          # hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json.
           if [ "${OPERATOR}" = "ovn" ]; then
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
           fi
@@ -2051,7 +2040,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -2572,7 +2561,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -3068,7 +3057,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -3433,7 +3422,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.TARGET_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -3902,7 +3891,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config-multinode.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -4000,7 +3989,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
@@ -4178,9 +4167,9 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
-      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag out
+      # images/ovn/source.json holds the pin; resolving it here keeps the tag out
       # of this workflow. The step runs on every leg because only the neutron,
-      # nova and cinder ones read OVN_VERSION, and a grep costs nothing on the
+      # nova and cinder ones read OVN_VERSION, and a jq read costs nothing on the
       # others.
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"

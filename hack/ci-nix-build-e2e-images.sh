@@ -15,13 +15,17 @@
 #                           Nix builds, a line with one (nova-compute) is
 #                           built by hack/ci-build-service-image.sh and skipped
 #   BUILD_TEMPEST_RELEASES  the releases whose Tempest image is built
+#   BUILD_OVN               true when the ovn image is built
+#   OVN_VERSION             the pinned OVN version, the tag docker load
+#                           prints for the ovn image; required with BUILD_OVN
 #
 # It builds the flake attributes <name>-<rel_>-image, <rel_> the release with
-# its dot replaced by _, in one nix invocation that runs one job per CPU, so
-# the derivations of every image build side by side. It then writes each
-# image stream to .nix-e2e/<name>-<release>.tar and appends
-# "<name> <release>" to .nix-e2e/images.txt, which the "Load Nix images" step
-# reads to load and tag the images on the runner.
+# its dot replaced by _, and ovn-image, which carries no release, in one nix
+# invocation that runs one job per CPU, so the derivations of every image
+# build side by side. It then writes each image stream to
+# .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
+# .nix-e2e/images.txt, which the "Load Nix images" step reads to load and tag
+# the images on the runner; for the ovn image the release is OVN_VERSION.
 #
 # The container is unprivileged and cannot create the namespaces of the Nix
 # sandbox, so the builds run without it. The builders, which run the setup
@@ -43,7 +47,8 @@
 # the files the container's root wrote.
 #
 # Exit codes: 0 when every image is built or there is nothing to build; 1 on a
-# malformed line; nix's status when an attribute is missing or a build fails.
+# malformed line or a BUILD_OVN without OVN_VERSION; nix's status when an
+# attribute is missing or a build fails.
 
 set -euo pipefail
 
@@ -64,12 +69,18 @@ mkdir -p "$OUT"
 : >"$OUT/images.txt"
 trap 'chown -R "$(stat -c %u:%g "$GITHUB_WORKSPACE")" "$OUT"' EXIT
 
+# images holds "<name> <release>" and attrs the flake attribute of each, at
+# the same index.
 images=()
+attrs=()
 while IFS= read -r line; do
   read -r -a fields <<<"$line"
   case "${#fields[@]}" in
     0 | 3) ;;
-    2) images+=("${fields[0]} ${fields[1]}") ;;
+    2)
+      images+=("${fields[0]} ${fields[1]}")
+      attrs+=(".#${fields[0]}-${fields[1]//./_}-image")
+      ;;
     *)
       echo "ci-nix-build-e2e-images.sh: malformed line '${line}'" >&2
       exit 1
@@ -78,7 +89,16 @@ while IFS= read -r line; do
 done <<<"${BUILD_SERVICE_IMAGES:-}"
 for release in ${BUILD_TEMPEST_RELEASES:-}; do
   images+=("tempest ${release}")
+  attrs+=(".#tempest-${release//./_}-image")
 done
+if [ "${BUILD_OVN:-}" = "true" ]; then
+  if [ -z "${OVN_VERSION:-}" ]; then
+    echo "ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is empty" >&2
+    exit 1
+  fi
+  images+=("ovn ${OVN_VERSION}")
+  attrs+=(".#ovn-image")
+fi
 
 if [ "${#images[@]}" -eq 0 ]; then
   echo "ci-nix-build-e2e-images.sh: nothing to build"
@@ -98,13 +118,6 @@ for i in $(seq 1 "$jobs"); do
   echo "e2ebld${i}:x:$((40000 + i)):40000:e2e build user ${i}:/var/empty:/bin/false" >>"$ETC/passwd"
 done
 (IFS=,; echo "e2ebld:x:40000:${members[*]}") >>"$ETC/group"
-
-attrs=()
-for image in "${images[@]}"; do
-  name="${image% *}"
-  release="${image#* }"
-  attrs+=(".#${name}-${release//./_}-image")
-done
 
 echo "::group::Building ${attrs[*]}"
 "${NIX[@]}" build --option sandbox false --option build-users-group e2ebld --max-jobs "$jobs" \

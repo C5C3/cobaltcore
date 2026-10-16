@@ -10,8 +10,11 @@
 # operators/<op>/ that has a go.mod, one service image per (operator, release)
 # pair in releases/*/source-refs.yaml, one derived image per release of the
 # service it is built from (nova-compute from nova), one Tempest image per
-# releases/<release>/, and the release-independent federation proxy. Deriving it from the tree means a
-# new operator or release directory extends the set with no workflow edit.
+# releases/<release>/, and the release-independent federation proxy and OVN
+# image; the OVN key is <IMAGE_PREFIX>/ovn:<version>, the version
+# hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json. Deriving it
+# from the tree means a new operator or release directory extends the set with
+# no workflow edit.
 #
 # An image whose sources this pull request changed is built in this job and
 # pushed under the run-scoped tag. Every other image resolves to the digest
@@ -41,6 +44,8 @@
 #                         same empty forms
 #   CHANGED_TEMPEST     — "true" when the Tempest image sources changed
 #   CHANGED_PROXY       — "true" when the federation proxy sources changed
+#   CHANGED_OVN         — "true" when the OVN image sources or the flake
+#                         inputs it is built from changed
 #   IMAGE_INSPECT_CMD   — Registry inspect command, default
 #                         "docker buildx imagetools inspect". The unit test
 #                         points it at a stub
@@ -55,13 +60,16 @@
 #                            without it builds the service's own image
 #   BUILD_TEMPEST_RELEASES — one release per line
 #   BUILD_PROXY            — true or false
+#   BUILD_OVN              — true or false
+#   OVN_VERSION            — the pinned OVN version, the tag of the ovn image
 #   NEEDS_BASE_IMAGES      — true when a derived image (a BUILD_SERVICE_IMAGES
 #                            line with a third field, today nova-compute) is
 #                            built; it builds FROM python-base and venv-builder
 #   BUILD_NIX_IMAGES       — true when a service image (a BUILD_SERVICE_IMAGES
-#                            line without a third field) or a Tempest image is
-#                            built; Nix builds those from their locks, and the
-#                            proxy builds FROM ubuntu:noble and needs neither
+#                            line without a third field), a Tempest image or
+#                            the ovn image is built; Nix builds those from their
+#                            locks and pins, and the proxy builds FROM
+#                            ubuntu:noble and needs neither
 #
 # Written to GITHUB_OUTPUT:
 #   image-map — JSON object mapping each canonical local reference to the
@@ -120,6 +128,13 @@ changed_proxy=false
 if [[ "${CHANGED_PROXY:-}" == "true" ]]; then
   changed_proxy=true
 fi
+changed_ovn=false
+if [[ "${CHANGED_OVN:-}" == "true" ]]; then
+  changed_ovn=true
+fi
+
+# A pin the resolver cannot read ends the step with its ::error:: line.
+ovn_version=$("${REPO_ROOT}/hack/ci-resolve-ovn-version.sh")
 
 # has_line <newline-separated list> <name>
 has_line() {
@@ -317,6 +332,7 @@ build_operators=()
 build_service_images=()
 build_tempest_releases=()
 build_proxy=false
+build_ovn=false
 
 for operator in "${operators[@]}"; do
   built=false
@@ -376,12 +392,20 @@ if [[ "${ENTRY_BUILT}" == "true" ]]; then
   build_proxy=true
 fi
 
+# The ovn image main published carries the pinned version as its tag, so a
+# run that changed none of its inputs pulls that digest instead of compiling
+# Open vSwitch and OVN.
+add_entry "${IMAGE_PREFIX}/ovn:${ovn_version}" "${IMAGE_PREFIX}/ovn:${ovn_version}" "${changed_ovn}"
+if [[ "${ENTRY_BUILT}" == "true" ]]; then
+  build_ovn=true
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Emit
 # ---------------------------------------------------------------------------
 needs_base_images=false
 build_nix_images=false
-if [[ ${#build_tempest_releases[@]} -gt 0 ]]; then
+if [[ ${#build_tempest_releases[@]} -gt 0 || "${build_ovn}" == "true" ]]; then
   build_nix_images=true
 fi
 for entry in ${build_service_images[@]+"${build_service_images[@]}"}; do
@@ -413,6 +437,8 @@ emit_block BUILD_SERVICE_IMAGES "${build_service_images[@]}"
 emit_block BUILD_TEMPEST_RELEASES "${build_tempest_releases[@]}"
 {
   echo "BUILD_PROXY=${build_proxy}"
+  echo "BUILD_OVN=${build_ovn}"
+  echo "OVN_VERSION=${ovn_version}"
   echo "NEEDS_BASE_IMAGES=${needs_base_images}"
   echo "BUILD_NIX_IMAGES=${build_nix_images}"
 } >>"${GITHUB_ENV}"
