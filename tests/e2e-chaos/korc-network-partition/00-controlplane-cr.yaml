@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture of korc-network-partition: the Keystone-only managed
+# plane of tests/e2e/c5c3/keystone-service/00-controlplane-cr.yaml under the
+# suite's own name. The CR carries no metadata.namespace: the suite applies it
+# into its namespace chaos-korc-part, and the webhook admits one ControlPlane
+# per namespace. The Minimal sizing profile runs the managed MariaDB and
+# Memcached at one replica each, and spec.secretStoreRef stays unset, so the
+# plane uses the per-tenant store the operator provisions in that namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-korc-part
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone: {}
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

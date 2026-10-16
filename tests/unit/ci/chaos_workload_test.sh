@@ -2072,7 +2072,7 @@ cinder-volume-pod-kill controlplane-keystone-degraded \
 cronjob-rotation-failure envoy-gateway-outage envoy-proxy-pod-kill eso-down \
 eso-pod-kill glance-keystone-outage glance-mariadb-outage \
 glance-operator-pod-kill horizon-dashboard-pod-kill \
-horizon-memcached-pod-kill horizon-operator-pod-kill \
+horizon-memcached-pod-kill horizon-operator-pod-kill korc-network-partition \
 korc-provisioning-outage mariadb-network-latency mariadb-network-partition \
 mariadb-operator-cascading-failure mariadb-pod-kill \
 memcached-network-partition memcached-pod-kill neutron-keystone-outage \

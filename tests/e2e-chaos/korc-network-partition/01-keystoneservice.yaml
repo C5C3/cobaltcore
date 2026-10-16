@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The registration the suite applies while K-ORC cannot reach the plane's
+# Keystone, in the shape of
+# tests/e2e/c5c3/keystone-service/01-keystoneservice-workflow.yaml: one project
+# created for it, a user, a role assignment, a service and two endpoints, each
+# a K-ORC child. The role is "service", the role keystone-manage bootstrap
+# creates. The endpoints point at a Service that does not have to exist, since
+# registering a catalog row never connects to it. @NS@ is replaced with the
+# suite's namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: korc-part
+spec:
+  controlPlaneRef:
+    name: cp-korc-part
+  catalog:
+    serviceType: korcpart
+    endpoints:
+    - interface: public
+      url: "http://korcpart-api.@NS@.svc.cluster.local:8989/v2"
+    - interface: internal
+      url: "http://korcpart-api.@NS@.svc.cluster.local:8989/v2"
+  account:
+    project:
+      name: service-korc-part
+      create: true
+    roles:
+    - service
