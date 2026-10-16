@@ -1,0 +1,166 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: every c5c3-operator pod killed in the middle of a
+# ControlPlane's provisioning.
+#
+# Fault: a PodChaos pod-kill with mode: all and gracePeriod: 0 on the
+# c5c3-operator pods in c5c3-system, while the ControlPlane cp-c5c3-kill
+# stands at InfrastructureReady=True and its blocking prefix waits at
+# DBCredentialsReady: the suite runs setup-database-tenant.sh only after the
+# kill, so the Keystone child does not exist yet when the operator dies.
+#
+# Claim, phase by phase:
+#   kill     The kill lands before DBCredentialsReady, with no Keystone CR in
+#            the namespace. Every pre-kill operator pod UID is gone and the
+#            Deployment is back at readyReplicas == spec.replicas.
+#   resume   The new leader carries the provisioning on from the objects
+#            alone: once the database tenant is onboarded the plane reaches
+#            Ready=True/AllReady.
+#   intact   The managed MariaDB and Memcached keep the UIDs they had before
+#            the kill, and the namespace holds exactly one Keystone, one
+#            MariaDB, one Memcached and one ApplicationCredential, each owned
+#            by cp-c5c3-kill (OWNED-ONCE-OK): the restart created nothing
+#            twice.
+#
+# Blast radius: no ControlPlane of the cluster reconciles while no operator
+# pod runs, and the webhooks of the ControlPlane, KeystoneService and
+# SizingProfile kinds are failurePolicy: Fail, so writes to those kinds are
+# refused in that window. The PodChaos is the shared state to undo; the
+# Deployment brings its pods back by itself. The cleanup of step 1 deletes
+# the ControlPlane.
+#
+# Leg: controlplane. The suite runs in namespace chaos-c5c3-kill, short for the reason
+# ../lib/controlplane.sh gives.
+#
+# Chaos workload: none (the kill lands while the ControlPlane is still provisioning, before its Keystone serves a token)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-operator-pod-kill
+spec:
+  namespace: chaos-c5c3-kill
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Seed, apply, wait for the infrastructure ───────────────────
+  - try:
+    - script:
+        timeout: 25m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_seed cp-c5c3-kill
+          kubectl apply -n "$NAMESPACE" -f 00-controlplane-cr.yaml
+          cp_wait_infrastructure cp-c5c3-kill
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-c5c3-kill
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          kubectl delete configmap c5c3-kill-state -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+          cp_teardown cp-c5c3-kill
+  # ── Step 2: Kill every operator pod before the Keystone exists ─────────
+  # The UIDs the restart must keep go into ConfigMap c5c3-kill-state, so
+  # step 4 reads them without a temp file.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          . ../lib/pods.sh
+          db_credentials="$(cp_status controlplane cp-c5c3-kill DBCredentialsReady)"
+          keystones="$(kubectl get keystone -n "$NAMESPACE" -o name)"
+          if [ "$db_credentials" = "True" ] || [ -n "$keystones" ]; then
+            echo "FAIL: the ControlPlane got past DBCredentials before the kill (DBCredentialsReady ${db_credentials:-<none>}, Keystone CRs: ${keystones:-none})"
+            exit 1
+          fi
+          mariadb="$(kubectl get mariadb openstack-db -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          memcached="$(kubectl get memcacheds.memcached.c5c3.io openstack-memcached -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          kubectl create configmap c5c3-kill-state -n "$NAMESPACE" \
+            --from-literal=mariadb="$mariadb" --from-literal=memcached="$memcached" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          desired="$(kubectl get deploy -n c5c3-system -l app.kubernetes.io/name=c5c3-operator -o jsonpath='{.items[0].spec.replicas}')"
+          deploy="$(kubectl get deploy -n c5c3-system -l app.kubernetes.io/name=c5c3-operator -o jsonpath='{.items[0].metadata.name}')"
+          old="$(pod_uids c5c3-system app.kubernetes.io/name=c5c3-operator)"
+          if [ -z "$old" ] || [ "${desired:-0}" -lt 1 ]; then
+            echo "FAIL: no c5c3-operator pod to kill (spec.replicas ${desired:-<none>})"
+            exit 1
+          fi
+          echo "pre-kill: MariaDB ${mariadb}, Memcached ${memcached}, ${deploy} pods ${old}"
+          cp_apply_file 01-podchaos.yaml
+          wait_replaced c5c3-system app.kubernetes.io/name=c5c3-operator "$old" 240
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+    - *cp-dump
+  # ── Step 3: The new leader carries the provisioning on ─────────────────
+  - try:
+    - script:
+        timeout: 35m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml
+          cp_onboard_database cp-c5c3-kill
+          cp_wait_keystone cp-c5c3-kill
+          cp_wait_tail cp-c5c3-kill
+    catch:
+    - *lift
+    - *cp-dump
+  # ── Step 4: Nothing was created twice ──────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          for kind in mariadb memcached; do
+            want="$(kubectl get configmap c5c3-kill-state -n "$NAMESPACE" -o "jsonpath={.data.${kind}}")"
+            res="mariadb/openstack-db"
+            if [ "$kind" = memcached ]; then
+              res="memcacheds.memcached.c5c3.io/openstack-memcached"
+            fi
+            got="$(kubectl get "$res" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+            if [ "$got" != "$want" ]; then
+              echo "FAIL: ${res} has uid ${got:-<none>}, not the pre-kill ${want}"
+              exit 1
+            fi
+          done
+          for kind in keystones.keystone.openstack.c5c3.io mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io applicationcredentials.openstack.k-orc.cloud; do
+            owned="$(kubectl get "$kind" -n "$NAMESPACE" -o json | jq -r '.items[]
+              | "\(.metadata.name) \([.metadata.ownerReferences[]? | select(.kind == "ControlPlane" and .name == "cp-c5c3-kill")] | length)"')"
+            count="$(grep -c . <<<"$owned" || true)"
+            if [ "$count" -ne 1 ]; then
+              echo "FAIL: ${NAMESPACE} holds ${count} ${kind}, want one: ${owned}"
+              exit 1
+            fi
+            if [ "${owned##* }" -lt 1 ]; then
+              echo "FAIL: ${kind} ${owned% *} carries no ownerReference to ControlPlane cp-c5c3-kill"
+              exit 1
+            fi
+          done
+          echo "OWNED-ONCE-OK: MariaDB and Memcached kept their UIDs; one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by cp-c5c3-kill"
+    catch:
+    - *cp-dump

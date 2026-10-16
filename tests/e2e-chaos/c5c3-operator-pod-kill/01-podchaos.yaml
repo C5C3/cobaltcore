@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing every c5c3-operator pod at once. The leg deploys the
+# operator at the chart default of two replicas
+# (operators/c5c3/helm/c5c3-operator/values.yaml), and mode: all kills both,
+# so no standby carries the reconcile through: a new leader starts from the
+# objects alone. The suite applies it into its own namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-c5c3-operator
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - c5c3-system
+    labelSelectors:
+      app.kubernetes.io/name: c5c3-operator
+  gracePeriod: 0
