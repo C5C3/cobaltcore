@@ -54,7 +54,8 @@ rename. TestUpdateTLSCertificateKeyGroupNotPermitted runs as a user
 other than root and proves that a group the process does not belong
 to fails the update and leaves every file of the previous Secret in
 place and no temporary file behind; the CobaltCore image build runs it
-as uid 65534.
+as a Nix build user, in a sandbox whose user namespace maps the build
+group only, where chown fails with "invalid argument".
 
 Applies-to: cobaltcore-dev/kvm-node-agent main @ 1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700
 
@@ -216,10 +217,10 @@ index f9c12e4..c38abf2 100644
  	// handle symlinks
 diff --git a/internal/certificates/manage_libvirt_test.go b/internal/certificates/manage_libvirt_test.go
 new file mode 100644
-index 0000000..412f286
+index 0000000..4df9c15
 --- /dev/null
 +++ b/internal/certificates/manage_libvirt_test.go
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,308 @@
 +/*
 +SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company and cobaltcore-dev contributors
 +SPDX-License-Identifier: Apache-2.0
@@ -241,6 +242,7 @@ index 0000000..412f286
 +
 +import (
 +	"bytes"
++	"errors"
 +	"io/fs"
 +	"os"
 +	"path/filepath"
@@ -507,10 +509,15 @@ index 0000000..412f286
 +	}
 +	keyGroup = strconv.Itoa(gid)
 +
++	// chown answers EPERM for a group the process does not belong to, and
++	// EINVAL for one that has no mapping in its user namespace, as in a Nix
++	// build sandbox, which maps the build group only.
 +	err = UpdateTLSCertificate(t.Context(), testSecretData())
++	var pathErr *fs.PathError
 +	if err == nil || !strings.Contains(err.Error(), "failed to write targetFile ") ||
-+		!strings.Contains(err.Error(), "operation not permitted") {
-+		t.Errorf("got error %v, want a failed write that is not permitted", err)
++		!errors.As(err, &pathErr) || pathErr.Op != "chown" ||
++		!(errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL)) {
++		t.Errorf("got error %v, want a failed chown that is not permitted", err)
 +	}
 +	for source, targets := range secretToFileMap {
 +		for _, target := range targets {
