@@ -56,7 +56,8 @@
 #                                    build-nix-image composite action
 #
 # On all four systems, devShells.<system>.lock-tools carries the uv, yq, jq,
-# git and Python hack/nix-lock.sh runs (make nix-lock).
+# git and Python hack/nix-lock.sh runs (make nix-lock), and the pkg-config
+# and libvirt that libvirt-python's setup.py asks for.
 {
   description = "cobaltcore development environment mirroring the CI toolchain";
 
@@ -208,7 +209,10 @@
 
       # The tools hack/nix-lock.sh runs, from the images input: its uv wrote
       # the committed locks, and its bash 5 runs the generator's associative
-      # arrays on macOS too.
+      # arrays on macOS too. libvirt-python ships an sdist only, whose
+      # setup.py runs pkg-config against libvirt before uv can read its
+      # metadata; any libvirt.pc does, so nixpkgs' libvirt serves all four
+      # systems.
       lockToolsShells = forAllSystems (system: {
         lock-tools = nixpkgs-images.legacyPackages.${system}.mkShell {
           name = "cobaltcore-lock-tools";
@@ -219,6 +223,8 @@
             jq
             git
             (pythonFor nixpkgs-images.legacyPackages.${system})
+            pkg-config
+            libvirt
           ];
         };
       });

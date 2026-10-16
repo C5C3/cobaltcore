@@ -37,6 +37,9 @@ test = [
     "gabbi>=1.35.0",
     "wsgi-intercept>=1.7.0",
 ]
+nova-compute = [
+    "libvirt-python",
+]
 
 [tool.uv]
 package = false

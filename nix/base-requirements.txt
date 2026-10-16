@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The release-independent pins hack/nix-lock.sh adds to every service and
+# tempest lock under nix/locks/, so every image's venv carries them.
+#
+# The file is deliberately NOT taken from any single release's
+# upper-constraints.txt. The OpenStack-dependency subset (cryptography,
+# pymemcache, pymysql, python-memcached) is re-pinned by each lock: a package
+# the release's constraints pin enters the lock by name only, and the
+# constraints fix its version. uwsgi is not an OpenStack dependency and is
+# absent from upper-constraints, so its version is fixed here.
+#
+# Renovate keeps these current via the native pip_requirements manager (see
+# renovate.json: minor/patch automerged after 3 days, majors gated for
+# review). A bump fails nix-lock-check until make nix-lock runs on its branch.
+cryptography==48.0.1
+pymemcache==4.0.0
+pymysql==1.2.3
+python-memcached==1.62
+uwsgi==2.0.31

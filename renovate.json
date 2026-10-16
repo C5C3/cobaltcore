@@ -847,17 +847,17 @@
     },
     {
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["images/venv-builder/requirements.txt"],
+      "matchFileNames": ["nix/base-requirements.txt"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["images/venv-builder/requirements.txt"],
+      "matchFileNames": ["nix/base-requirements.txt"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
       "minimumReleaseAge": "3 days",
-      "groupName": "venv-builder base packages"
+      "groupName": "Nix lock base packages"
     },
     {
       "matchManagers": ["custom.regex"],

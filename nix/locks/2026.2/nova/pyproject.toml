@@ -37,6 +37,10 @@ test = [
     "bandit>=1.1.0",
     "wsgi-intercept>=1.7.0",
 ]
+nova-compute = [
+    "libvirt-python",
+    "pyroute2",
+]
 
 [tool.uv]
 package = false
