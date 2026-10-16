@@ -673,9 +673,10 @@ func integrationNovaCompute(name, namespace string) *NovaCompute {
 	}
 }
 
-// TestIntegration_NovaCompute_CRD_CELOnly_Defaults pins the two schema defaults
-// the controller reads without a webhook to fill them: virtType kvm and the
-// RollingUpdate strategy.
+// TestIntegration_NovaCompute_CRD_CELOnly_Defaults pins the schema defaults the
+// controller reads without a webhook to fill them: virtType kvm, the
+// RollingUpdate strategy and the Append mode of a hostTraits entry. It also
+// admits the one hostTraits entry without traits the CEL rule allows.
 func TestIntegration_NovaCompute_CRD_CELOnly_Defaults(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -690,11 +691,46 @@ func TestIntegration_NovaCompute_CRD_CELOnly_Defaults(t *testing.T) {
 	g.Expect(got.Spec.Libvirt.VirtType).To(Equal("kvm"))
 	g.Expect(got.Spec.UpdateStrategy.Type).To(Equal("RollingUpdate"))
 	g.Expect(got.Spec.UpdateStrategy.MaxUnavailable).To(BeNil())
+
+	t.Run("a hostTraits entry without a mode appends", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nc := integrationNovaCompute("traits", ns)
+		nc.Spec.Traits = []string{"CUSTOM_GPU"}
+		nc.Spec.HostTraits = []NovaComputeHostTraits{{NodeName: "n1", Traits: []string{"CUSTOM_A"}}}
+		g.Expect(c.Create(ctx, nc)).To(Succeed())
+
+		got := &NovaCompute{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: "traits", Namespace: ns}, got)).To(Succeed())
+		g.Expect(got.Spec.Traits).To(Equal([]string{"CUSTOM_GPU"}))
+		g.Expect(got.Spec.HostTraits).To(Equal([]NovaComputeHostTraits{
+			{NodeName: "n1", Traits: []string{"CUSTOM_A"}, Mode: NovaComputeHostTraitsAppend},
+		}))
+	})
+
+	// A typed client drops an empty list, so the manifest is sent
+	// unstructured to put a literal [] in front of the rule.
+	t.Run("a Replace entry with an empty list is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nc := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": GroupVersion.String(),
+			"kind":       "NovaCompute",
+			"metadata":   map[string]any{"name": "cleared", "namespace": ns},
+			"spec": map[string]any{
+				"novaRef":      map[string]any{"name": "nova"},
+				"nodeSelector": map[string]any{"openstack.c5c3.io/nova-compute-pool": "a"},
+				"hostTraits": []any{
+					map[string]any{"nodeName": "n1", "mode": "Replace", "traits": []any{}},
+				},
+			},
+		}}
+		g.Expect(c.Create(ctx, nc)).To(Succeed())
+	})
 }
 
 // TestIntegration_NovaCompute_CRD_CELOnly_RejectsInvalidSpecs pins the create-time
-// schema rules: the one-label selector minimum, the two enums, and the
-// cpuMode/cpuModels pairing in both directions.
+// schema rules: the one-label selector minimum, the two enums, the
+// cpuMode/cpuModels pairing in both directions, and the bounds of the custom
+// traits, which are Placement's own.
 func TestIntegration_NovaCompute_CRD_CELOnly_RejectsInvalidSpecs(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -745,6 +781,58 @@ func TestIntegration_NovaCompute_CRD_CELOnly_RejectsInvalidSpecs(t *testing.T) {
 				nc.Spec.Libvirt.CPUModels = []string{"Haswell noTSX"}
 			},
 			want: "spec.libvirt.cpuModels[0]",
+		},
+		{
+			name: "a standard trait in spec.traits",
+			edit: func(nc *NovaCompute) { nc.Spec.Traits = []string{"HW_CPU_X86_AVX2"} },
+			want: "spec.traits[0] in body should match '^CUSTOM_[A-Z0-9_]+$'",
+		},
+		{
+			name: "a lower-case trait in hostTraits",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.HostTraits = []NovaComputeHostTraits{{NodeName: "n1", Traits: []string{"custom_gpu"}}}
+			},
+			want: "spec.hostTraits[0].traits[0] in body should match '^CUSTOM_[A-Z0-9_]+$'",
+		},
+		{
+			name: "a hostTraits entry with neither traits nor mode",
+			edit: func(nc *NovaCompute) { nc.Spec.HostTraits = []NovaComputeHostTraits{{NodeName: "n1"}} },
+			want: "traits must not be empty unless mode is Replace",
+		},
+		{
+			name: "an Append hostTraits entry with an empty list",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.HostTraits = []NovaComputeHostTraits{
+					{NodeName: "n1", Traits: []string{}, Mode: NovaComputeHostTraitsAppend},
+				}
+			},
+			want: "traits must not be empty unless mode is Replace",
+		},
+		{
+			name: "two hostTraits entries for one node",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.HostTraits = []NovaComputeHostTraits{
+					{NodeName: "n1", Traits: []string{"CUSTOM_A"}},
+					{NodeName: "n1", Traits: []string{"CUSTOM_B"}},
+				}
+			},
+			want: "Duplicate value",
+		},
+		{
+			name: "65 traits",
+			edit: func(nc *NovaCompute) {
+				for i := range 65 {
+					nc.Spec.Traits = append(nc.Spec.Traits, fmt.Sprintf("CUSTOM_T%d", i))
+				}
+			},
+			want: "spec.traits: Too many: 65: must have at most 64 items",
+		},
+		{
+			name: "a trait of 256 characters",
+			edit: func(nc *NovaCompute) {
+				nc.Spec.Traits = []string{"CUSTOM_" + strings.Repeat("X", 256-len("CUSTOM_"))}
+			},
+			want: "spec.traits[0]: Too long: may not be more than 255 bytes",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

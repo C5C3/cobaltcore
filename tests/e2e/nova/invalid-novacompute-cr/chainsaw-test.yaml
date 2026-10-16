@@ -202,3 +202,34 @@ spec:
             ($error != null): true
             (contains($error, 'spec.verticalAutoscaling.minReplicas')): true
             (contains($error, 'should be greater than or equal to 1')): true
+  # A standard trait in spec.traits must be rejected by the items Pattern
+  # marker, Placement's own pattern for a custom trait.
+  - try:
+    - apply:
+        file: 17-traits-not-custom.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.traits[0]')): true
+            (contains($error, 'should match')): true
+            (contains($error, '^CUSTOM_[A-Z0-9_]+$')): true
+  # An Append hostTraits entry without traits must be rejected by the CEL rule
+  # on NovaComputeHostTraits.
+  - try:
+    - apply:
+        file: 18-hosttraits-append-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.hostTraits[0]')): true
+            (contains($error, 'traits must not be empty unless mode is Replace')): true
+  # Two hostTraits entries for one node must be rejected by the list-map key
+  # nodeName.
+  - try:
+    - apply:
+        file: 19-hosttraits-duplicate-node.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.hostTraits[1]')): true
+            (contains($error, 'Duplicate value')): true
