@@ -1510,6 +1510,7 @@ mkdir -p "$KSTUB/bin"
 #   clock        the pod clock `exec ... date +%s` reads; each read adds 10
 #   ann-<mark>   the annotations `annotate` wrote
 # and reads these switches: STUB_PHASE (Running), STUB_POD_MISSING,
+# STUB_EMPTY_SECRET (the Secret holds no password),
 # STUB_EXEC_FAIL (the date exec fails with it), STUB_TOUCH_FAIL,
 # STUB_AUDIT_RC and STUB_AUDIT_OUT, STUB_CRONJOB (the sync mode the CronJob's
 # command carries; unset, there is no CronJob), STUB_JOB_STATE, STUB_JOB_LOG.
@@ -1582,7 +1583,9 @@ case "$1" in
     ;;
   get)
     case "$2" in
-      secret) printf '%s' "$(printf 's3cret' | base64)" ;;
+      secret)
+        if [ -z "${STUB_EMPTY_SECRET:-}" ]; then printf '%s' "$(printf 's3cret' | base64)"; fi
+        ;;
       cronjob)
         if [ -z "${STUB_CRONJOB:-}" ]; then missing cronjobs.batch "$3"; fi
         printf '["neutron-ovn-db-sync-util","--config-file","/etc/neutron/neutron.conf","--ovn-neutron_sync_mode","%s"]' "$STUB_CRONJOB"
@@ -1688,6 +1691,29 @@ test_start_runs_the_pod_as_specified() {
   assert_not_contains "no password without --keystone" "$c" "OS_PASSWORD"
   assert_not_contains "and no Secret read" "$c" "get secret"
   assert_contains "CHAOS_WORKLOAD_IMAGE sets the image" "$c" "--image=registry.example/tempest:x "
+
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" -- start t-three -- --streams token --keystone http://k:5000/v3
+  assert_contains "the admin password comes from keystone-admin by default" "$(calls)" \
+    "get secret keystone-admin -n openstack -o jsonpath={.data.password}"
+
+  new_stub
+  printf 'READY token\n' >"$KSTUB/state/log"
+  wl "$TMP_DIR" CHAOS_WORKLOAD_ADMIN_SECRET=cp-x-keystone-admin-credentials -- \
+    start t-four -- --streams token --keystone http://k:5000/v3
+  assert_eq "start with CHAOS_WORKLOAD_ADMIN_SECRET exits 0" "0" "$WL_RC"
+  assert_contains "CHAOS_WORKLOAD_ADMIN_SECRET names the Secret start reads" "$(calls)" \
+    "get secret cp-x-keystone-admin-credentials -n openstack -o jsonpath={.data.password}"
+  assert_not_contains "and keystone-admin is not read" "$(calls)" "get secret keystone-admin"
+
+  new_stub
+  wl "$TMP_DIR" STUB_EMPTY_SECRET=1 CHAOS_WORKLOAD_ADMIN_SECRET=cp-x-keystone-admin-credentials -- \
+    start t-five -- --streams token --keystone http://k:5000/v3
+  assert_eq "a Secret without a password fails start" "1" "$WL_RC"
+  assert_contains "the failure names the Secret" "$WL_OUT" \
+    "FAIL: start t-five: Secret cp-x-keystone-admin-credentials holds no password"
+  assert_not_contains "and no pod is started" "$(calls)" "run chaos-wl-t-five"
 }
 
 # --- Test 14 --------------------------------------------------------------
