@@ -399,14 +399,14 @@ reference, so Kubernetes garbage collection reclaims it.
 
 A [NovaCompute](./novacompute-crd.md) runs `nova-compute` on one node pool. Its
 controller (`novacompute_controller.go`, recorder `novacompute-controller`)
-runs seven sequential steps under the same `nova_operator` instrumenter. Each
-owns one condition, and the aggregate `Ready` is True only when all seven are.
+runs eight sequential steps under the same `nova_operator` instrumenter. Each
+owns one condition, and the aggregate `Ready` is True only when all eight are.
 `ExtraConfigHealthy` stays out of it, as it does for the Nova.
 
 ### NovaCompute pipeline
 
 ```text
-NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► ComputeVPA ──► Aggregates ──► Services
+NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► ComputeVPA ──► Aggregates ──► Services ──► Traits
 ```
 
 | Step | Function | Condition |
@@ -418,14 +418,18 @@ NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► Compu
 | `ComputeVPA` | `reconcileVPA` | `VPAReady` |
 | `Aggregates` | `reconcileNovaComputeAggregates` | `AggregatesReady` |
 | `Services` | `reconcileNovaComputeServices` | `ServicesReady` |
+| `Traits` | `reconcileNovaComputeTraits` | `TraitsReady` |
 
 A step that sets its condition False for a reason that is not a wait on an input
 returns a zero result, so the later steps still run: `NoMatchingNodes`,
 `NodeConflict`, `DaemonSetProgressing`, `NodesWithoutZone` and
 `AggregateZoneMismatch`. An empty selection therefore still drains the nodes the
-pool held, and so does a rollout one NotReady node keeps from finishing. The `computeapi`
-client the last two steps call Keystone and Nova through is built once per pass,
-so a pass requests one token.
+pool held, and so does a rollout one NotReady node keeps from finishing. The
+Services step always returns its periodic poll of Nova, which would end the
+pipeline, so it hands the poll to the Traits step: `Traits` runs after it and
+returns the shorter of the two requeues. The `computeapi` client the last three
+steps call Keystone, Nova and Placement through is built once per pass, so a
+pass requests one token.
 
 Every CR carries the finalizer `nova.openstack.c5c3.io/compute-drain`, and a CR
 naming a target cluster carries the remote-children finalizer too. Both go on
@@ -522,6 +526,44 @@ the error and requeues without it, so the other nodes keep their poll instead of
 the controller's growing backoff. Its requeue is the
 periodic poll of Nova: the shortest interval any node needs at entry or at exit.
 
+### reconcileNovaComputeTraits
+
+Keeps the custom Placement traits of the pool's hosts
+(`reconcile_novacompute_traits.go`). A `Pending` or `Active` node is managed
+while its desired list (`spec.traits` merged with its `spec.hostTraits` entry)
+or its `status.nodes[].traits` record is not empty; a deleting pool manages
+none. With no managed node and no `status.createdTraits` the step sets
+`NoTraitsDeclared` and makes no call. Otherwise, in order:
+
+1. A managed node whose Node carries `nova.openstack.cloud.sap/custom-traits`,
+   which the Nodes step reads from the Node metadata it lists, is neither read
+   nor written.
+2. The step gets each other managed node's `kvm.cloud.sap/v1` `Hypervisor` by
+   name through the uncached reader of the pool's cluster, unstructured. A
+   cluster without the kind reports `HypervisorOperatorNotInstalled`, a 403
+   `HypervisorsForbidden`, and a missing Hypervisor puts the node under
+   `NodesWithoutHypervisor` while the others go on.
+3. Every trait a read node desires but its `status.traits` does not list yet
+   gets `PUT /traits/{name}` at Placement microversion 1.6. A 201 adds it to
+   `status.createdTraits` with a Normal event `TraitCreated`. A failed create
+   writes no Hypervisor in that pass.
+4. A Hypervisor whose `spec.customTraits` differs from the desired list gets a
+   JSON merge patch with the list, sorted, under the field owner
+   `cobaltcore-operator`. The node's record becomes the `CUSTOM_` subset of
+   `status.traits` together with the list written.
+5. A created trait that no NovaCompute of the Nova that is not being deleted
+   declares is deleted once no NovaCompute of the Nova records it on a node
+   (`TraitDeleted`). A 409 from Placement drops it from the list with
+   `TraitKept`. A deleting pool drops a trait another pool still declares
+   with `TraitKept`, so its teardown does not wait on that pool. The
+   NovaComputes come from the Nodes step, or on a pass that skipped it from
+   the one list the Aggregates and Traits steps share
+   (`NovaComputeListError`).
+
+The step polls every 30 seconds while a node waits on the hypervisor operator,
+while a created trait waits for its last carrier, and after any `False` reason:
+the Node watch misses annotation edits, and nothing watches Hypervisors.
+
 ### Requeue and teardown
 
 | Interval | Constant | Used by |
@@ -531,15 +573,18 @@ periodic poll of Nova: the shortest interval any node needs at entry or at exit.
 | 10s | `RequeueDeploymentPolling` | An aggregate created concurrently |
 | 10s | `RequeueHostDiscoveryPolling` | A registered node whose host is not mapped yet |
 | 15s | `RequeueSecretPolling` | The waits of `NovaReady`, `ConfigReady`, `NodesForbidden`, and an unresolvable target |
-| 30s | `RequeueComputeDrainPolling` | A `Draining` or `Pending` node, and the retry after a failed Keystone or Nova call |
+| 30s | `RequeueComputeDrainPolling` | A `Draining` or `Pending` node, the retry after a failed Keystone, Nova or Placement call, and the Traits step's polls |
 | 60s | `RequeueComputeServicePolling` | A pool whose nodes are all settled |
 
 A deleting pool runs the pipeline with every held node leaving until a pass
-that began with no node held completed the aggregates step. The pass that
+that began with no node held completed the aggregates step and left no created
+trait. The pass that
 releases the last node therefore keeps the finalizers: deleting the service
 empties the aggregates the host sat in after its Aggregates step ran. Once the
-pool holds no node, only the `NovaRef` and `Aggregates` steps run, so a pass
-from a stale copy of the CR cannot recreate what the sweep removed. When the
+pool holds no node, only the `NovaRef`, `Aggregates` and `Traits` steps run, so
+a pass from a stale copy of the CR cannot recreate what the sweep removed. A
+Placement call that keeps failing holds the finalizer the way a failed Nova
+call does. When the
 Nova is gone, or the target cluster was abandoned, that part is skipped. Then
 the ControlPlane's contract mirror and the hypervisor operator's auth mirror are
 reaped when no other pool of the Nova on the cluster is live or still drains a

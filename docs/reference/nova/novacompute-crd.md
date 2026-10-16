@@ -20,8 +20,9 @@ every node the selector matches, so nodes with different settings get a CR of
 their own.
 
 The CR also looks after what the node's life in Nova needs. It keeps the host
-aggregates openstack-hypervisor-operator onboards a hypervisor into, and a node
-that leaves the pool is drained before its pod goes: its compute service is
+aggregates openstack-hypervisor-operator onboards a hypervisor into and the
+custom Placement traits the pool declares for its hosts, and a node that leaves
+the pool is drained before its pod goes: its compute service is
 disabled, the pod stays until Nova reports no instance on the host, and the
 compute service is deleted after the pod is gone.
 
@@ -42,6 +43,8 @@ compute service is deleted after the pod is gone.
 | `resources` | `*corev1.ResourceRequirements` | no | `150m` CPU request; `768Mi` memory request and limit | Requests and limits of the `nova-compute` container, applied to both init containers too. The operator resolves them per resource when it renders the pod and never writes them into the field: a CPU the block names neither as request nor as limit gets a `150m` request and no limit, and a memory it names neither way gets `768Mi` as both request and limit. A resource the block names is used as written, and anything else it sets is kept; see [Resources](#resources). Before this default a nil block rendered none and a set block was used whole, so a pool whose block names no CPU or no memory changes its pod template on the operator upgrade |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](../keystone/keystone-crd.md#verticalautoscalingspec) | no | `nil` | Opts the pool DaemonSet (`{name}-nova-compute`) for as long as the operator renders it into a VerticalPodAutoscaler that controls the requests of its containers; see [VerticalAutoscalingSpec](../keystone/keystone-crd.md#verticalautoscalingspec). On a cluster without the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 | `extraConfig` | `map[string]map[string]string` | no | none | INI sections merged over the rendered `compute-pool.conf`. It is the per-pool override surface. The keys the pod takes from its environment or its mounts, and the keys that select the live-migration transport, are rejected at admission (see [NovaComputeOwnedConfigKeys](#owned-keys)) |
+| `traits` | `[]string` (set, at most 64, items `^CUSTOM_[A-Z0-9_]+$` and at most 255 characters) | no | none | The custom Placement traits every `Pending` and `Active` node of the pool carries. The operator creates a missing trait in Placement and writes each node's list into its Hypervisor, from where openstack-hypervisor-operator applies it; see [The traits](#the-traits). Standard traits stay with the virt driver |
+| `hostTraits` | [`[]NovaComputeHostTraits`](#novacomputehosttraits) (list-map keyed by `nodeName`, at most 1000) | no | none | Adjusts the traits of single nodes. A node without an entry carries `traits` |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the DaemonSet and its ConfigMaps are created on. The CR, its status and its finalizers stay on the management cluster. Immutable. See [Target Clusters](../target-clusters.md) |
 
 ### NovaRef
@@ -164,6 +167,14 @@ node's libvirt, but a live migration in flight through a restarting
 `nova-compute` fails. A pool that must not restart `nova-compute` on its own
 takes `type: OnDelete`.
 
+### NovaComputeHostTraits
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `nodeName` | `string` (1 to 253 characters) | yes | none | The node, which is also the name of its Hypervisor. It may name a node the pool does not hold yet; `TraitsApplied` names such entries |
+| `traits` | `[]string` (the bounds of `spec.traits`) | no | none | The node's custom traits. Required unless `mode` is `Replace` |
+| `mode` | `string` (Enum `Append`, `Replace`) | no | `Append` | `Append` gives the node `spec.traits` and these traits. `Replace` gives it these traits alone, and an entry without traits clears the node |
+
 ## Defaulting and validation
 
 The mutating webhook leaves the object untouched. Every default is a
@@ -184,11 +195,17 @@ These hold even when the webhook is down.
 | `novaRef is immutable` | A third transition rule. A pool moved to another Nova leaves its compute services registered with the first one |
 | `cpuModels is required when cpuMode is custom and must be empty otherwise` | A CEL rule on `NovaComputeLibvirtSpec` |
 | `exactly one of image.tag or image.digest must be set` | Inherited from `commonv1.ImageSpec` on `spec.image` |
+| `traits must not be empty unless mode is Replace` | A CEL rule on `NovaComputeHostTraits`: an `Append` entry without traits would change nothing |
 
 Beside them the schema carries `MinLength=1` on `spec.novaRef.name`,
 `MinProperties=1` on `spec.nodeSelector`, the three `spec.libvirt` enums, the
 item pattern on `spec.libvirt.cpuModels`, and the `RollingUpdate`/`OnDelete`
-enum on `spec.updateStrategy.type`.
+enum on `spec.updateStrategy.type`. `spec.traits` and every
+`spec.hostTraits[].traits` take at most 64 distinct items, each matching
+`^CUSTOM_[A-Z0-9_]+$` and at most 255 characters long, which is Placement's own
+schema for a custom trait, so admission refuses what Placement would. A second
+`spec.hostTraits` entry for one `nodeName` answers `Duplicate value`, and the
+list takes at most 1000 entries. None of these rules has a webhook twin.
 
 ### Webhook rules
 
@@ -268,6 +285,7 @@ console on every interface of the node.
 | `desiredNumberScheduled` | `int32` | How many nodes the DaemonSet should run on, mirrored from it |
 | `numberReady` | `int32` | How many of those nodes run a ready pod |
 | `nodes` | [`[]NovaComputeNodeStatus`](#novacomputenodestatus) | The per-node ledger of the pool, list-map keyed by `name` |
+| `createdTraits` | `[]string` | The custom traits this pool created in Placement (the create answered 201) and has not deleted yet; see [The traits](#the-traits) |
 
 ### NovaComputeNodeStatus
 
@@ -285,6 +303,7 @@ deleted, so the record of a drain outlives the selection.
 | `disabledReason` | `string` | The reason Nova records for a disabled service |
 | `instances` | `*int32` | How many servers Nova counts on a Draining node |
 | `conflictsWith` | `string` | The NovaCompute that holds a node in `Conflict` |
+| `traits` | `[]string` | While the pool manages the node's traits: the `CUSTOM_` traits openstack-hypervisor-operator last reported on the node's resource provider (the `CUSTOM_` subset of its Hypervisor's `status.traits`), and the list the pool wrote into `spec.customTraits` for it to apply. No pool deletes a trait it records |
 
 ### Node phases
 
@@ -327,8 +346,8 @@ Pools of different Novas, or on different clusters, never conflict.
 
 ### Conditions
 
-Seven steps each own one condition type. The aggregate `Ready` is `True` only when
-all seven are. `ExtraConfigHealthy` reports on the overlay the owner writes and
+Eight steps each own one condition type. The aggregate `Ready` is `True` only when
+all eight are. `ExtraConfigHealthy` reports on the overlay the owner writes and
 stays out of the aggregate. For the pipeline see
 [Reconciler Architecture](./nova-reconciler.md#novacompute).
 
@@ -368,7 +387,22 @@ stays out of the aggregate. For the pipeline see
 | `ServicesReady` | False | `ServicesDown` | Nova reports an Active node's service down |
 | `ServicesReady` | False | `ComputeAPIError` | A Keystone or Nova call failed, or a cell did not answer the service list. Retried after 30 seconds at most: a failed hypervisor list keeps a `Releasing` node's 10-second poll |
 | `ServicesReady` | False | `PodListError` | Listing the pods on a Releasing node failed |
-| `Ready` | True | `AllReady` | All seven sub-conditions are True |
+| `TraitsReady` | True | `NoTraitsDeclared` | No node desires a trait, no node records one and the pool holds no created trait. The step makes no call |
+| `TraitsReady` | True | `TraitsApplied` | Every managed node's Hypervisor reports its desired list. The message counts the nodes, names the created traits that wait for their last carrier before deletion, and names the `hostTraits` entries that match no node the pool holds |
+| `TraitsReady` | True | `WaitingForHypervisorOperator` | A Hypervisor carries the desired list in `spec.customTraits`, and openstack-hypervisor-operator has not applied it yet. Retried after 30 seconds. See [The traits](#the-traits) |
+| `TraitsReady` | False | `NodesWithCustomTraitsAnnotation` | A managed node carries the annotation `nova.openstack.cloud.sap/custom-traits`, from which the hypervisor operator overwrites the pool's list. The pool leaves the node alone; past 20 nodes the message names the first 20 and counts the rest |
+| `TraitsReady` | False | `NodesWithoutHypervisor` | A managed node has no Hypervisor. The other nodes are still written |
+| `TraitsReady` | False | `HypervisorLifecycleDisabled` | A Hypervisor has `spec.lifecycleEnabled: false`, so the hypervisor operator applies no trait to it |
+| `TraitsReady` | False | `HypervisorTraitsFailed` | A Hypervisor reports `TraitsUpdated=False`; the message carries the hypervisor operator's message of the first such node |
+| `TraitsReady` | False | `HypervisorOperatorNotInstalled` | The pool's cluster serves no `hypervisors.kvm.cloud.sap` |
+| `TraitsReady` | False | `HypervisorsForbidden` | Reading or patching a Hypervisor answered 403. A placed pool needs `hypervisorTraits: true` in the target-cluster-access chart; a local one gets the grant from the nova-operator chart's ClusterRole, which `rbac.namespaceScoped=true` does not install |
+| `TraitsReady` | False | `HypervisorError` | Reading or patching a Hypervisor failed otherwise; returned as an error |
+| `TraitsReady` | False | `PlacementEndpointNotFound` | `spec.endpoints.placement.override` of the Nova is empty, and the token's catalog lists no internal Placement endpoint in the Nova's `spec.region` |
+| `TraitsReady` | False | `PlacementAPIError` | Creating or deleting a trait failed; the message names the trait. A failed create writes no Hypervisor in that pass |
+| `TraitsReady` | False | `ComputeAPIError` | The Keystone token request failed |
+| `TraitsReady` | False | `NovaComputeListError` | Listing the other NovaComputes of the Nova failed, on a pass that did not run the Nodes step |
+| `TraitsReady` | False | `TargetClusterUnavailable` | The pool's target cluster does not resolve |
+| `Ready` | True | `AllReady` | All eight sub-conditions are True |
 | `Ready` | False | `NotAllReady` | At least one is not |
 | `VPAReady` | True | `VPAReady` | The VerticalPodAutoscaler of every opted-in workload is applied; the message names them. See [VerticalAutoscalingSpec](../keystone/keystone-crd.md#vpaready-condition) |
 | `VPAReady` | True | `VPANotRequired` | No workload opts in (`spec.verticalAutoscaling` unset); a VPA the CR created before is deleted |
@@ -582,6 +616,17 @@ local Nova at its Service URL and a placed one through the target cluster's
 service proxy, so a NetworkPolicy in front of Keystone or Nova has to admit the
 nova-operator.
 
+A pool that declares traits also calls Placement: `PUT` and `DELETE
+/traits/{name}` at Placement microversion 1.6, with the same token. The address
+is the one the Nova's own `[placement]` section resolves: the Nova's
+`spec.endpoints.placement.override` when set, else the internal endpoint the
+token's catalog lists for the `placement` service in the Nova's `spec.region`.
+For a placed Nova the call goes through the service proxy, which reaches only a
+`<service>.<namespace>.svc` host. The ControlPlane registers its catalog rows in
+that shape. Placement's `placement:traits:update` and `placement:traits:delete`
+policies admit the `admin` role the service user already has. A NetworkPolicy in
+front of Placement has to admit the nova-operator as well.
+
 Nova 32.0.0 and 33.0.0 leave the compute node of a host without a host mapping
 out of `GET /os-hypervisors/detail`, so a registered host missing from that
 list is not mapped into its cell yet. The pool reads the list, page by page
@@ -659,6 +704,95 @@ such as the `filter_tenant_id` of a tenant isolation, is kept instead, with a
 Warning event `AggregateKept` naming the keys: deleting it would drop them, and
 the aggregate the zone gets back would come without them. An unmarked aggregate
 is never deleted.
+
+### The traits
+
+A pool declares custom Placement traits for its hosts. Nova then schedules a
+flavor asking for `trait:CUSTOM_GPU=required` onto them and keeps one asking for
+`trait:CUSTOM_GPU=forbidden` off them. Each `Pending` and `Active` node gets one
+desired list:
+
+| The node's `hostTraits` entry | Desired list |
+| --- | --- |
+| none | `spec.traits` |
+| `mode: Append` (the default) | `spec.traits` and the entry's `traits` |
+| `mode: Replace` | the entry's `traits` alone; without traits, none |
+
+The list is deduplicated and sorted ascending in byte order. An entry naming a
+node the pool does not hold changes nothing, and `TraitsApplied` names it, so a
+typo shows without failing the pool. Only `CUSTOM_` traits are managed.
+
+The pool never writes the traits of a resource provider itself. It writes each
+node's list into `spec.customTraits` of the node's Hypervisor
+(`kvm.cloud.sap/v1`, cluster-scoped, named after the Node), and
+openstack-hypervisor-operator (hvo) applies it. The statements about hvo are as
+read at `a2baf3f`:
+
+1. hvo creates one Hypervisor per Node labelled
+   `nova.openstack.cloud.sap/virt-driver`. Its traits controller acts only while
+   `spec.lifecycleEnabled` is true, `spec.maintenance` is not `termination`, and
+   onboarding has reached `Handover` or finished. A node that joins a pool
+   carries the pool's traits from `Handover` on.
+2. It compares `spec.customTraits` in order with the `CUSTOM_` subset of
+   `status.traits`. It adds the missing traits and removes the extra ones in one
+   `PUT /resource_providers/{uuid}/traits`, writes the provider's sorted trait
+   list to `status.traits`, and sets `TraitsUpdated`: `True` with reason
+   `Succeeded`, or `False` with reason `Failed` and Placement's error. The pool
+   writes the list in the order hvo stores, so an applied list compares equal
+   and hvo calls Placement no more. A custom trait the list does not name is
+   removed, which is why no second writer of provider traits can coexist with
+   hvo.
+3. hvo creates no trait, and Placement refuses an unknown one with a 400 that
+   holds onboarding at `Handover`. The pool therefore creates every trait a node
+   desires and does not carry yet before it writes the list, and writes no list
+   in a pass whose create failed.
+4. On every Node reconcile hvo overwrites `spec.customTraits` from the Node
+   annotation `nova.openstack.cloud.sap/custom-traits` while the annotation
+   exists, whatever its value. The pool neither reads nor writes the Hypervisor
+   of a node carrying it and reports `TraitsReady=False` with reason
+   `NodesWithCustomTraitsAnnotation`; removing the annotation hands the node to
+   the pool. The pool never writes the annotation, since the target-cluster-access
+   chart grants no `patch` on Nodes.
+
+While hvo applies a list, `TraitsReady` stays `True` under
+`WaitingForHypervisorOperator`, as `AggregatesReady` does for the aggregate
+membership, so `Ready` does not flap while hvo onboards a node. The pool looks
+again every 30 seconds: nothing watches Hypervisors, and the Node watch misses
+annotation edits. `Draining` and `Releasing` nodes are not written. The drain
+empties the host, and deleting its compute service removes the resource
+provider with every trait on it.
+
+The pool creates a trait with `PUT /traits/{name}` and records it in
+`status.createdTraits` when Placement answers 201, with a Normal event
+`TraitCreated`. A trait that existed already (204) is not recorded, and the pool
+never deletes it. A recorded trait is deleted (`TraitDeleted`) once no
+NovaCompute of the Nova that is not being deleted declares it in `spec.traits`
+or `spec.hostTraits`, and no NovaCompute of the Nova records it in
+`status.nodes[].traits`. A node's record lists the `CUSTOM_` traits of its
+Hypervisor's `status.traits` and the list the pool wrote, so a trait waits while
+hvo has yet to apply or remove it. When Placement answers 409, a resource
+provider no pool of the Nova manages carries the trait: the pool drops it from
+`createdTraits` with the event `TraitKept` and leaves it in Placement.
+
+A deleting pool deletes the traits it created before its drain finalizer goes,
+so a Placement call that keeps failing holds the deletion. A trait another pool
+of the Nova still declares is dropped with `TraitKept` instead and stays in
+Placement, also after that pool drops it, because only its creator records it.
+Such a trait matches no host, and `openstack trait delete` removes it.
+
+A placed pool patches the Hypervisors on its compute cluster, which needs
+`hypervisorTraits: true` in the target-cluster-access chart (see
+[Target Clusters](../target-clusters.md#prerequisites-on-the-target-cluster)).
+Without it the pool reports `HypervisorsForbidden`. A local pool gets `get` and
+`patch` on `hypervisors.kvm.cloud.sap` from the nova-operator chart's
+ClusterRole. A pool on a cluster without hvo, such as the kind clusters of CI,
+reports `HypervisorOperatorNotInstalled` once it declares a trait.
+
+Before a downgrade to an operator release without these fields, remove
+`traits` and `hostTraits` from every pool and wait for
+`TraitsReady=True/NoTraitsDeclared`. The older operator does not know the
+fields, and once the CRD is rolled back they are pruned the next time each CR is
+written. The last list stays on each Hypervisor, where hvo keeps applying it.
 
 ### Live migration
 
@@ -884,6 +1018,8 @@ spec:
     name: nova-pool
   nodeSelector:
     openstack.c5c3.io/nova-compute-pool: a
+  traits:
+    - CUSTOM_C5C3_E2E_POOL
   resources:
     requests:
       cpu: 50m
@@ -898,7 +1034,8 @@ spec:
 ```
 
 This is the pool the `compute-node-pool` suite applies
-(`tests/e2e/nova/compute-node-pool/12-novacompute-pool-a.yaml`). The
+(`tests/e2e/nova/compute-node-pool/12-novacompute-pool-a.yaml`), with the
+`traits` its traits step adds later against a stand-in Hypervisor CRD. The
 `extraConfig` switches to the fake driver, because kind has no KVM; a pool on
 real hypervisors leaves `compute_driver` at its default and sets
 `spec.libvirt` instead.

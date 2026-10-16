@@ -473,6 +473,40 @@ kubectl --context "$COMPUTE_CONTEXT" label node <node> \
 kubectl --context "$COMPUTE_CONTEXT" annotate node <node> nova.openstack.cloud.sap/aggregates=
 ```
 
+Custom Placement traits, the ones a flavor asks for with
+`trait:CUSTOM_GPU=required`, go on the pool. The pool creates them in Placement
+and writes each node's list into the node's `Hypervisor`, and hvo applies it
+from `Handover` on (see
+[The traits](../../reference/nova/novacompute-crd.md#the-traits)). Writing a
+Hypervisor on the compute cluster needs the access chart's opt-in
+`hypervisorTraits`, which also lets the registration kubeconfig evict and
+offboard every hypervisor there (see
+[Target Clusters](../../reference/target-clusters.md#prerequisites-on-the-target-cluster)).
+Turn it on, then declare the traits, for the pool and for one GPU node:
+
+```bash
+helm upgrade --kube-context "$COMPUTE_CONTEXT" --reuse-values \
+  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access \
+  --set hypervisorTraits=true
+kubectl patch novacompute controlplane-compute-a -n openstack --type=merge -p '{"spec":{
+  "traits":["CUSTOM_POOL_A"],
+  "hostTraits":[{"nodeName":"<node>","traits":["CUSTOM_GPU"]}]}}'
+kubectl get novacompute controlplane-compute-a -n openstack \
+  -o jsonpath='{.status.conditions[?(@.type=="TraitsReady")].reason}{"\n"}'
+```
+
+The reason reads `WaitingForHypervisorOperator` until hvo has applied every
+node's list, then `TraitsApplied`. A `hostTraits` entry with `mode: Replace`
+gives its node the entry's traits instead of the pool's. The pool's nodes carry
+no `nova.openstack.cloud.sap/custom-traits` annotation: hvo overwrites the list
+from it on every Node reconcile, and the pool leaves an annotated node alone and
+reports it under `NodesWithCustomTraitsAnnotation`. Remove the annotation from a
+node that carries one by hand:
+
+```bash
+kubectl --context "$COMPUTE_CONTEXT" annotate node <node> nova.openstack.cloud.sap/custom-traits-
+```
+
 hvo authenticates a second time at start, scoped to a project `test` in the
 domain `cc3test`, and exits when that fails, `skip-tests` or not. The smoke
 test that `skip-tests` skips also boots flavor ID `1` from the image
@@ -775,7 +809,8 @@ this guide puts together:
   (`full-controlplane-keystone`);
 - the content of the remote contract (`remote-compute-contract`);
 - a pool that consumes the contract on the management cluster
-  (`compute-node-pool`);
+  (`compute-node-pool`), whose step 5 declares a pool trait and a node trait
+  against a stand-in Hypervisor CRD and checks them in Placement;
 - the agent's https configuration and its CA mount (`metadata-agent`, steps 6
   to 8);
 - a chassis and an agent on one cluster attached to a central on another

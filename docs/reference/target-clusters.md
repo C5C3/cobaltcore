@@ -126,7 +126,7 @@ Four grants therefore need locking down on the management cluster:
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
 | `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `cinders`, `novas`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
-| `create` on `novacomputes` | Root on every node the author's `spec.nodeSelector` and `spec.tolerations` reach: the pool runs a privileged, host-network `nova-compute` as uid 0, with `/dev` and `/var/lib/nova` mounted, from the image `spec.image` names. That holds on any registered cluster, and on the management cluster when `targetClusterRef` is unset. A pool of a ControlPlane's Nova naming a cluster also makes the ControlPlane copy the compute contract there, the bus `transport_url` with the RabbitMQ password and the service password among it, whether or not the pool selects a node |
+| `create` on `novacomputes` | Root on every node the author's `spec.nodeSelector` and `spec.tolerations` reach: the pool runs a privileged, host-network `nova-compute` as uid 0, with `/dev` and `/var/lib/nova` mounted, from the image `spec.image` names. That holds on any registered cluster, and on the management cluster when `targetClusterRef` is unset. A pool of a ControlPlane's Nova naming a cluster also makes the ControlPlane copy the compute contract there, the bus `transport_url` with the RabbitMQ password and the service password among it, whether or not the pool selects a node. With `hypervisorTraits` on, the pool also sets the custom Placement traits of every host it holds |
 | `create`/`update` on `neutronmetadataagents` in a ControlPlane's OVN central namespace | Root on the chassis's nodes: the agent runs privileged on their host network. An agent that names a target cluster and `{controlplane.Name}-nova-metadata-agent-secret` in `spec.novaMetadata.sharedSecretRef` also makes the ControlPlane copy the metadata shared secret onto the cluster it names, into the same namespace there |
 
 An install that needs no target clusters carries none of the cross-cluster
@@ -309,6 +309,27 @@ finalizer, because it is the one child no namespace sweep and no owner-reference
 cascade can reach. Without the grant the API server answers forbidden rather
 than not-found, and the teardown retries the error instead of releasing, so a
 placed ControlPlane would never leave `Terminating`.
+
+A second grant is off by default. `hypervisorTraits` adds `get` and `patch` on
+`hypervisors.kvm.cloud.sap`, the Hypervisor objects
+openstack-hypervisor-operator keeps one per compute node. A NovaCompute placed
+on the cluster that declares `spec.traits` or `spec.hostTraits` writes each
+node's custom traits into the `spec.customTraits` of its Hypervisor (see
+[The traits](./nova/novacompute-crd.md#the-traits)). Without the grant such a
+pool reports `TraitsReady=False` with reason `HypervisorsForbidden`. A pool that
+neither declares a trait nor records one in `status.nodes[].traits` reads no
+Hypervisor. A pool that dropped its traits still clears each node's list, so
+keep the grant until its `TraitsReady` reads `NoTraitsDeclared`. Kubernetes
+cannot narrow `patch` to that one field. The verb carries `spec.maintenance` and
+`spec.lifecycleEnabled` with it, so it lets whoever holds the registration
+kubeconfig evict and offboard every hypervisor of the cluster. Turn it on for a
+compute cluster whose pools declare traits:
+
+```bash
+helm upgrade --kube-context "$TARGET" --reuse-values \
+  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access \
+  --set hypervisorTraits=true
+```
 
 The same holds for `passwords` in `generators.external-secrets.io`, which the
 chart gained with the compute service. Every placed ControlPlane needs it, not
@@ -576,7 +597,9 @@ namespaced. That is what the access chart's per-namespace Roles are enough for,
 scoped to: `namespaces` themselves, `clustersecretstores`, `nodes`, and the
 auth-delegator `ClusterRoleBinding` a dedicated OpenBao instance is bound
 through — read-only always, writable behind `authDelegatorBinding`. `nodes` are
-read-only with no writable half at all. That set is the chart's ClusterRole.
+read-only with no writable half at all. `hypervisors.kvm.cloud.sap` appears only
+behind `hypervisorTraits`, with `get` and `patch`. That set is the chart's
+ClusterRole.
 
 Omit the key and the cluster is engaged with a cluster-wide cache, which is what
 every registration written before the key existed still gets. Each operator then
