@@ -275,11 +275,11 @@ a labelled namespace of its own.
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `nova-isolation` | A live db-archive pod is never an address of the API, metadata or console Service, and none of the three is left without backends |
 | [db-archive](#db-archive) | `nova-archive` | The archive CronJob fires on a minute schedule and moves the deleted server into the shadow tables, with no `DBArchiveJobFailed` event on the CR |
 | [release-upgrade](#release-upgrade) | `nova-upgrade` | Cross-release upgrade 2026.1 to 2026.2: phase progression, the three phase Jobs, the five Deployments, the cell mappings and the API on the new release |
-| [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, the instances directory on the node, both aggregates marked, a conflicting second pool, the drain of a node with a server on it, the release, and the teardown of the last pool |
+| [compute-node-pool](#compute-node-pool) | `nova-pool`, pools `pool-a` and `pool-b` | A NovaCompute on the fake driver: Ready, the node Active with its service up, the wait-for-chassis gate, the instances directory on the node, both aggregates marked, a conflicting second pool, custom traits created in Placement and written into a stand-in Hypervisor, the drain of a node with a server on it, the release, and the teardown of the last pool |
 | [console-proxy](#console-proxy) | `nova-vnc` | The console URL the API publishes carries the gateway hostname, the token handshake through it reaches the instance console, and an invalid token is turned down |
 | [remote-compute-contract](#remote-compute-contract) | `nova-rc` | The remote compute contract `spec.remoteCompute` publishes: both status refs, the six keys, the external transport URL, a fragment addressed at the public Keystone URL and the public catalog rows, the in-cluster contract unchanged, and the Secret gone once the block is removed |
 | [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern and the release floor, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields, the console gateway path and the two `spec.remoteCompute` rules. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
-| [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete and the image pin. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
+| [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete, the image pin and the custom-trait rules. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
 | [metrics](#metrics) | — (operator-level) | nova-operator chart renders and removes the ServiceMonitor |
 
 ---
@@ -698,16 +698,18 @@ for the gate the pod waits on.
 | 2 | Bring up the stack and the chassis | `script` (25m) | The vhost, `keystone-nova-pool`, the catalog Job, the four sibling CRs, the image seed, `nova-pool` up to `Ready`, and `nova-pool-chassis` up to `Ready`. The step cleanup tears the stack down |
 | 3 | Apply pool-a | `script`, `assert`, `script` | `17-state-dir-owner-job.yaml` hands `/var/lib/nova` on the node to `42424:42424` before the pool is applied. `Ready=True/AllReady`; `AggregatesReady` reads `True` under `NodesOutsideZoneAggregate` and its message names the node as `<node> (nova-pool-az1)`, because no hypervisor operator adds the host to the zone aggregate; `status.nodes[0]` is `Active` in `nova-pool-az1` with the service `enabled`/`up`; `installedImage` is `ghcr.io/c5c3/nova-compute:2026.1`; the pod runs that image privileged as uid 0 and its `wait-for-chassis` init container exited 0; `create-instances-dir` exited 0 and `/var/lib/nova/instances` is a `root:root` 0755 directory, which root creates below another user's directory only with `DAC_OVERRIDE`; the Job `nova-pool-discover-hosts` completed and its log shows it created the node's host mapping; the verify Job (`registered`) finds the service and both aggregates with the marker `c5c3.io:nova=openstack/nova-pool`. The step cleanup deletes the pools, strips the drain finalizer from a survivor and hands `/var/lib/nova` back to `root:root` |
 | 4 | A second pool on the same node | `script`, `assert` | `pool-b` selects the chassis label: `NodesReady=False/NodeConflict`, `status.nodes[0]` in `Conflict` with `pool-a`, no pod scheduled while the DaemonSet template gives `nova-compute` and both init containers the operator's resource default (`150m` CPU request and no CPU limit, `768Mi` memory request and limit), and `pool-a` still Active. `pool-b` is then deleted, so `pool-a` is the last pool of the Nova |
-| 5, 6 | Boot a server | `script` (10m) | No helper: the pool's `Ready` in step 3 means Nova mapped the host. `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
-| 7 | Remove the pool label | `script`, `assert` | `status.nodes[0]` goes `Draining` with `instances: 1`, the service `disabled` with the reason `c5c3.io: leaving NovaCompute openstack/pool-a`, `ServicesReady=True/Draining`, and the pod still runs |
-| 8 | Delete the server | `script`, `assert`, `script` | `16-delete-server-job.yaml` stands in for the hypervisor operator's eviction. `status.nodes` empties, and the verify Job (`released`) finds the service and `nova-pool-az1` gone and `tenant_filter_tests` still in place |
-| 9 | Delete pool-a | `script`, `assert` | The pool leaves etcd, the verify Job (`torndown`) finds `tenant_filter_tests` gone, and `nova-pool-compute-config` stays, because it carries no mirror label |
+| 5 | Custom traits | `script`, `assert`, `script` | `18-hypervisor-crd.yaml` stands in for openstack-hypervisor-operator's Hypervisor CRD, and the suite creates the node's Hypervisor with an empty `spec.customTraits`. `pool-a` gets `traits: [CUSTOM_C5C3_E2E_POOL]` and a `hostTraits` entry `[CUSTOM_C5C3_E2E_HOST]` for the node: the Hypervisor's `spec.customTraits` reads both, sorted, `status.createdTraits` lists both, `TraitsReady=True/WaitingForHypervisorOperator` and `Ready=True`, and the traits verify Job (`present`) shows both with `trait show`. The suite then writes the Hypervisor's status as the hypervisor operator would: `TraitsReady=True/TraitsApplied` and `status.nodes[0].traits` lists both. Once the pool drops both and the status lists neither, `spec.customTraits` is `[]`, `createdTraits` is gone, `TraitsReady=True/NoTraitsDeclared`, and the verify Job (`absent`) finds neither. The pool then declares `CUSTOM_C5C3_E2E_POOL` once more and reads `TraitsApplied` with `createdTraits` listing it, which it keeps to step 10. The step cleanup deletes the Hypervisor and the CRD |
+| 6, 7 | Boot a server | `script` (10m) | No helper: the pool's `Ready` in step 3 means Nova mapped the host. `15-boot-server-job.yaml` boots `s1` with no availability zone (the hypervisor operator does not run on kind, so the host never joins `nova-pool-az1`) and checks it landed on the node. Sentinel `NOVA-POOL-BOOT-OK` |
+| 8 | Remove the pool label | `script`, `assert` | `status.nodes[0]` goes `Draining` with `instances: 1`, the service `disabled` with the reason `c5c3.io: leaving NovaCompute openstack/pool-a`, `ServicesReady=True/Draining`, and the pod still runs |
+| 9 | Delete the server | `script`, `assert`, `script` | `16-delete-server-job.yaml` stands in for the hypervisor operator's eviction. `status.nodes` empties, and the verify Job (`released`) finds the service and `nova-pool-az1` gone and `tenant_filter_tests` still in place |
+| 10 | Delete pool-a | `assert`, `script`, `assert`, `script` | `createdTraits` still lists `CUSTOM_C5C3_E2E_POOL`. The pool leaves etcd, the verify Job (`torndown`) finds `tenant_filter_tests` gone, `nova-pool-compute-config` stays, because it carries no mirror label, and the traits verify Job (`absent`) finds the trait gone from Placement |
 
 **Fixtures:** `00`–`10` as in `basic-deployment` under the `nova-pool` names,
 except that `10-nova-cr.yaml` sets `[scheduler]
 discover_hosts_in_cells_interval` to `-1`, `11-ovnchassis-cr.yaml`, `12-novacompute-pool-a.yaml`,
 `13-novacompute-pool-b.yaml`, `14-verify-job.yaml`, `15-boot-server-job.yaml`,
-`16-delete-server-job.yaml`, `17-state-dir-owner-job.yaml`
+`16-delete-server-job.yaml`, `17-state-dir-owner-job.yaml`,
+`18-hypervisor-crd.yaml`, `19-traits-verify-job.yaml`
 
 **Design notes:**
 
@@ -887,8 +889,11 @@ warning, so it never competes with the rule a fixture pins.
 | 15 | `14-vertical-autoscaling-min-above-max.yaml` | `spec.verticalAutoscaling.minAllowed[cpu]` … `must not exceed maxAllowed` |
 | 16 | `15-vertical-autoscaling-update-mode.yaml` | `spec.verticalAutoscaling.updateMode` … `Unsupported value` |
 | 17 | `16-vertical-autoscaling-min-replicas-zero.yaml` | `spec.verticalAutoscaling.minReplicas` … `should be greater than or equal to 1` |
+| 18 | `17-traits-not-custom.yaml` | `spec.traits[0]` … `should match` `^CUSTOM_[A-Z0-9_]+$` |
+| 19 | `18-hosttraits-append-empty.yaml` | `spec.hostTraits[0]` … `traits must not be empty unless mode is Replace` |
+| 20 | `19-hosttraits-duplicate-node.yaml` | `spec.hostTraits[1]` … `Duplicate value` |
 
-**Fixtures:** `_generate.py` and the 17 numbered fixtures above, checked by
+**Fixtures:** `_generate.py` and the 20 numbered fixtures above, checked by
 `make verify-invalid-cr-fixtures`.
 
 ---
@@ -1087,7 +1092,9 @@ tests/e2e/nova/
 │   ├── 13-novacompute-pool-b.yaml     NovaCompute pool-b selecting the same node
 │   ├── 14-verify-job.yaml             The service and the aggregates (NOVA-POOL-VERIFY-OK)
 │   ├── 15-boot-server-job.yaml        Boot s1 onto the pool's node (NOVA-POOL-BOOT-OK)
-│   └── 16-delete-server-job.yaml      Delete s1 (NOVA-POOL-DELETE-OK)
+│   ├── 16-delete-server-job.yaml      Delete s1 (NOVA-POOL-DELETE-OK)
+│   ├── 18-hypervisor-crd.yaml         Stand-in for the hypervisor operator's Hypervisor CRD
+│   └── 19-traits-verify-job.yaml      The custom traits in Placement (NOVA-POOL-TRAITS-OK)
 ├── console-proxy/
 │   ├── chainsaw-test.yaml             Console URL, token handshake and rejection
 │   ├── 00-keystone-cr.yaml            Keystone keystone-nova-vnc
@@ -1147,7 +1154,7 @@ tests/e2e/nova/
 │   ├── chainsaw-test.yaml             NovaCompute rejection corpus
 │   ├── _generate.py                   Generator for the fixtures below
 │   ├── test_generate.py               Unit test of the generator
-│   └── 00-…-12-….yaml                 Thirteen rejection fixtures
+│   └── 00-…-19-….yaml                 Twenty rejection fixtures
 ├── maintenance-endpoint-isolation/
 │   ├── chainsaw-test.yaml             The archive pod stays out of the three EndpointSlices
 │   ├── 00-metadata-secret.yaml        The metadata shared secret

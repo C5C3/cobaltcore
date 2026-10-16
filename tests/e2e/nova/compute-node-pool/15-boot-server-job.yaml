@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Boots the server s1 the drain in step 7 has to wait for, with the boot of
+# Boots the server s1 the drain in step 8 has to wait for, with the boot of
 # ../basic-deployment/12-verify-job.yaml. No --availability-zone: the
 # hypervisor operator does not run on kind, so the host never joins
 # nova-pool-az1 and sits in the default zone. The server has to land on the
