@@ -89,7 +89,7 @@ let
   run =
     pkgs.runCommand "${attr}-test-run"
       {
-        # The test tools of the venv-builder container the suites ran in before:
+        # The test tools of the Docker build container the suites ran in before:
         # git, which, qemu-img (cinder's TestFormatInspectors build their
         # fixture images with it) and openssl (nova's keypair and crypto tests
         # run it), which that container had through ca-certificates.

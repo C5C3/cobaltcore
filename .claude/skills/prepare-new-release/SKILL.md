@@ -83,7 +83,7 @@ Copy `releases/<newest>/` as the template and adjust:
   under `releases/**/test-refs.yaml`, so older releases keep their
   tempest major.
 - **`extra-packages.yaml`** — usually carried over; per-service
-  `pip_extras`/`pip_packages`/`apt_packages`. A new tag can move runtime
+  `pip_extras`/`pip_packages`. A new tag can move runtime
   packages into extras (cinder 29.0.0: boto3, google-api-python-client,
   python-swiftclient into `s3`/`gcs`/`swift`) or ship a wheel without a
   dependency (os-vif 5.2.1 without pyroute2); `verify_<svc>.sh` and

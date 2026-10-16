@@ -44,23 +44,17 @@ run that paid for the lesson; the lesson itself is the part to carry.
   carried for it). Some imports also need registration first
   (cinder's NFS driver needs `cinder.objects.register_all()`), so write the
   verify script's import tests against the real module graph.
-- **Building nova-compute on macOS:** `hack/ci-build-service-image.sh`, which
-  builds nova-compute alone (the service images are built by Nix from
-  `images/<svc>/image.nix`), dies after the clone on
-  `scripts/apply-constraint-overrides.sh`'s GNU
-  `sed -i "/^pkg===/Id"`. Reproduce CI's image by hand instead: run the
-  override script in a `python-base` container on copies of
-  `releases/<rel>/upper-constraints.txt` and
-  `overrides/<rel>/constraints.txt`, clone the tag from
-  `releases/<rel>/source-refs.yaml` (apply `patches/<svc>/<rel>/*.patch`),
-  then `docker build --build-arg EXTRA_APT_PACKAGES=<from
-  extra-packages.yaml> --build-context <svc>=<src> --build-context
-  upper-constraints=<dir> images/<svc>/`; `--target <stage>` builds one
-  stage without the named contexts.
+- **Building an image locally:** every service image, nova-compute
+  included, is a flake attribute: `nix build .#<svc>-<rel_>-image &&
+  ./result | docker load` (`.#nova-compute-<rel_>-image` for the compute
+  image, `<rel_>` the release with `.` replaced by `_`). The flake defines
+  the images for `x86_64-linux` and `aarch64-linux` only, so on macOS name
+  the system (`.#packages.aarch64-linux.<attr>`) and give Nix a Linux
+  builder.
 - **Hand-maintained per-service lists in the verify/matrix scripts:**
   `tests/container-images/verify_release_config.sh` (`SERVICES=` list),
   `verify_deviation_comments.sh` (`SERVICES=` list, plus an own function
-  for an image not built on `python-base`),
+  for an image not built on `nix/lib/service-image.nix`),
   `hack/ci-generate-tempest-matrix.sh` (`ALL_TEMPEST_SERVICES`, mirrored by
   `TEMPEST_ALL_SERVICES` in `hack/ci-resolve-changes.sh`), and the
   chaos CI job's image-load lists in `ci.yaml` are all generalized now but

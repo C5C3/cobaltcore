@@ -7,7 +7,7 @@
 # One regex pattern per line. Lines starting with # are comments.
 # Blank lines are ignored. Patterns are matched against test IDs.
 #
-# No pattern: the first run of the nova 33.0.0 suite in the venv-builder
+# No pattern: the first run of the nova 33.0.0 suite in the Docker build
 # container, with OS_NOVA_DISABLE_EVENTLET_PATCHING=False the way nova's own
 # tox py3 env runs it (nix/lib/service-tests.nix sets it), counted 16803
 # tests and passed with no environment-dependent failure. The 63 skips and
