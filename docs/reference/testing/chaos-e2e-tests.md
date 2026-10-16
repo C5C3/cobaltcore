@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 57 chaos test suites validate operator behavior during and after fault
+The 58 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 57 test suites require the infrastructure stack to be deployed and healthy.
+All 58 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -471,6 +471,7 @@ with the new suites.
 | [korc-provisioning-outage](#korc-provisioning-outage) | — | `cp-korc-out` | K-ORC outage across a ControlPlane's provisioning | `INJECTED` at `DBCredentialsReady`, `AC-SEEN` while K-ORC is down, `BLIND-OK`: `KORCReady=False/WaitingForApplicationCredential` with neither `Ready` nor `CatalogReady` `True` for 90 s; after the lift `KORCReady=True/ApplicationCredentialMinted`, `CatalogReady=True/CatalogRegistered` and `Ready=True/AllReady`, `NO-DUPLICATE-OK`: one application credential of the reported name in Keystone, every K-ORC CR `Available=True` with a `status.id`, workload budget zero |
 | [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `cp-ks-degraded` | ControlPlane over a degraded Keystone | Within 300 s the Keystone CR `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady` with `status.services` keystone `ready: false`; `NO-MASK-OK`: 60 s without the ControlPlane at `Ready=True` over a Keystone that is not; `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
+| [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `cp-c5c3-kill` | c5c3-operator pod kill during provisioning | The kill before `DBCredentialsReady` with no Keystone CR yet, every pre-kill operator pod UID gone and `readyReplicas` back, the plane at `Ready=True/AllReady` after the database tenant is onboarded, `OWNED-ONCE-OK`: MariaDB and Memcached with their pre-kill UIDs and exactly one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-c5c3-kill` |
 
 ---
 
@@ -3815,6 +3816,51 @@ traffic.
 
 ---
 
+### c5c3-operator-pod-kill
+
+**File:** `tests/e2e-chaos/c5c3-operator-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-kill` with `mode: all` kills every c5c3-operator
+pod while ControlPlane `cp-c5c3-kill` provisions: its infrastructure is up and its
+blocking prefix waits at `DBCredentialsReady`, which stays `False` until the suite
+runs `setup-database-tenant.sh` after the kill. The Keystone child does not exist
+yet. The suite pins that the new leader carries the provisioning on from the
+objects alone and creates nothing twice.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Seed, apply, infrastructure | `script` (25m) | `lib/controlplane.sh`: seed, apply `cp-c5c3-kill`, wait for `InfrastructureReady` and `mariadb/openstack-db`. The step cleanup deletes the ControlPlane |
+| 2 | Kill every operator pod | `script` (6m) | Requires `DBCredentialsReady` not `True` and no Keystone CR, records the UIDs of `mariadb/openstack-db` and `memcacheds.memcached.c5c3.io/openstack-memcached` in ConfigMap `c5c3-kill-state`, snapshots the operator pod UIDs, applies `01-podchaos.yaml`, and waits up to 240 s until no pre-kill UID is left and `readyReplicas == spec.replicas` |
+| 3 | The new leader carries on | `script` (35m) | Deletes the `PodChaos`, onboards the database tenant, then waits for the Keystone and the tail to `Ready=True/AllReady` |
+| 4 | Nothing was created twice | `script` (2m) | The MariaDB and Memcached UIDs equal the recorded ones; the namespace holds one Keystone, one MariaDB, one Memcached and one ApplicationCredential, each with an ownerReference to ControlPlane `cp-c5c3-kill` (`OWNED-ONCE-OK`) |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-c5c3-kill`), `01-podchaos.yaml`
+(`kill-c5c3-operator`, `mode: all`, `gracePeriod: 0`).
+
+**Workload:** none. The kill comes while the ControlPlane provisions, before its
+Keystone serves a token, which the suite header records in its
+`# Chaos workload: none` line. The suite runs in the `controlplane` matrix entry,
+in its own namespace, `chaos-c5c3-kill`.
+
+**Catch blocks:** steps 2 and 3 delete the `PodChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh`.
+
+**Design notes:**
+
+- The matrix entry deploys the c5c3-operator at the chart default of two replicas
+  (`operators/c5c3/helm/c5c3-operator/values.yaml`), and `mode: all` kills both,
+  so no standby carries the reconcile through.
+- The webhooks of the ControlPlane, KeystoneService and SizingProfile kinds are
+  `failurePolicy: Fail`, so writes to those kinds are refused while no operator pod
+  runs. The suite writes none in that window: the state it carries between steps
+  goes into a ConfigMap.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -4116,6 +4162,10 @@ tests/e2e-chaos/
 │   ├── 02-podchaos.yaml              PodChaos targeting barbican-operator in barbican-system
 │   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── c5c3-operator-pod-kill/           c5c3-operator pod kill during a provisioning
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-c5c3-kill, Keystone only
+│   ├── 01-podchaos.yaml              PodChaos pod-kill of every c5c3-operator pod
+│   └── chainsaw-test.yaml            Test: the plane converges, nothing created twice
 ├── cert-manager-outage/              cert-manager controller outage across a forced renewal
 │   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-cm behind openstack-gw
 │   ├── 01-podchaos.yaml              PodChaos pod-failure on the cert-manager controller
