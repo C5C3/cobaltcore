@@ -41,13 +41,23 @@ require_pass() {
 
 main() {
   refuse_root
+  local status=0
 
+  # require_pass names a test that failed, skipped or is missing: each leaves
+  # its PASS line out of the log. The status catches a package that fails
+  # after its tests printed PASS, such as a panic in a goroutine a test left
+  # behind or a TestMain that fails after m.Run().
   go test -count=1 -v \
     -run '^(TestUpdateTLSCertificateKeyMode|TestUpdateTLSCertificateKeyGroupNotPermitted)$' \
-    ./internal/certificates/ | tee "$TMPDIR/patch-0001.log"
+    ./internal/certificates/ 2>&1 | tee "$TMPDIR/patch-0001.log" || status=1
 
   require_pass "$TMPDIR/patch-0001.log" TestUpdateTLSCertificateKeyMode
   require_pass "$TMPDIR/patch-0001.log" TestUpdateTLSCertificateKeyGroupNotPermitted
+
+  if [ "$status" -ne 0 ]; then
+    echo "patch-checks: go test exited non-zero after its tests passed (see $TMPDIR/patch-0001.log)" >&2
+    return 1
+  fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
