@@ -1252,6 +1252,14 @@ test_evaluate_passes_a_clean_log_and_fails_each_violation() {
   assert_eq "a failure before fault_start: exit 1" "1" "$EVAL_RC"
   assert_contains "it is outside the window" "$EVAL_OUT" "FAIL: stream token: 1 failed record(s) outside the fault window"
 
+  # An operation still in flight when the fault starts fails because of it,
+  # so the lower edge reads its end: begun at 999.4, failed 17 s later (the
+  # volume stream's gone poll in a local run of cinder-mariadb-outage).
+  evaluate_log straddle "${base}"'{"t": 999.4, "s": "volume", "op": "gone", "ok": false, "code": null, "ms": 17027, "msg": ""}'$'\n'"$(rec 1200 volume get true)"$'\n'"DONE"$'\n' \
+    --budget-failures 1 "${MARKS[@]}"
+  assert_eq "a failure begun before fault_start and ended after it: exit 0" "0" "$EVAL_RC"
+  assert_contains "it counts against the budget" "$EVAL_OUT" "stream volume: 1 ok, 1 failed in window (budget 1), 0 outside"
+
   evaluate_log after "${base}$(rec 1160.1 token issue false 503)"$'\n'"DONE"$'\n' --budget-failures 9 "${MARKS[@]}"
   assert_eq "a failure after fault_end + recovery: exit 1" "1" "$EVAL_RC"
   assert_contains "the record is printed" "$EVAL_OUT" 'offending: {"t": 1160.1'
