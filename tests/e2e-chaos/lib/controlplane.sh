@@ -6,16 +6,24 @@
 # ControlPlane bring-up of the chaos suites on the controlplane leg, sourced by
 # their scripts as `. ../lib/controlplane.sh` with NAMESPACE set by Chainsaw.
 #
-# Each suite brings up a Keystone-only ControlPlane of its own in chainsaw's
-# ephemeral namespace, with the commands and wait budgets of
-# tests/e2e/c5c3/keystone-service: seed the per-CR OpenBao paths, apply the CR,
-# wait for its infrastructure, onboard the database tenant, then wait for the
-# Keystone and the tail of the pipeline. Every function works in NAMESPACE,
+# Each suite brings up a Keystone-only ControlPlane of its own in a namespace of
+# its own, with the commands of tests/e2e/c5c3/keystone-service: seed the
+# per-CR OpenBao paths, apply the CR, wait for its infrastructure, onboard the
+# database tenant, then wait for the Keystone and the tail of the pipeline. The
+# waits are shorter than keystone-service's, so that together they fit the
+# 40-minute step that runs cp_bring_up. Every function works in NAMESPACE,
 # prints OK: or ERROR: lines and returns non-zero when a wait runs out;
 # set -euo pipefail is the caller's.
 #
-# Fixtures that name the namespace carry @NS@, which cp_apply_file and
-# cp_delete_file replace.
+# The namespaces are short fixed names in spec.namespace (chaos-korc-out and its
+# siblings), which chainsaw creates and deletes. The c5c3-operator names the
+# plane's DB-credential client certificate
+# <cp>-keystone-db-openbao-client.<namespace>.svc, and cert-manager refuses a
+# commonName over 64 bytes: the plane name and the namespace share 32
+# characters, which a namespace chainsaw generates leaves no room for.
+#
+# Fixtures that name the namespace carry @NS@, which cp_render replaces for
+# cp_apply_file and cp_delete_file.
 
 CP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CP_BOOTSTRAP_DIR="${CP_LIB_DIR}/../../../deploy/openbao/bootstrap"
@@ -70,7 +78,7 @@ cp_export_bao_token() {
 }
 
 # cp_seed <cp>: seed the per-CR OpenBao paths of NAMESPACE/<cp>. deploy-infra
-# seeds only the identity it was given, so an ephemeral plane seeds its own.
+# seeds only the identity it was given, so a suite's plane seeds its own.
 cp_seed() {
   cp_export_bao_token || return 1
   KORC_CONTROLPLANES="${NAMESPACE}/$1" "${CP_BOOTSTRAP_DIR}/write-bootstrap-secrets.sh" || return 1
