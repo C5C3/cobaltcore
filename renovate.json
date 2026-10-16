@@ -497,11 +497,12 @@
     },
     {
       "customType": "regex",
+      "description": "OVN image: the OVN tag and the commit it names in images/ovn/source.json, moved together; make nix-lock then writes their hashes and the ovs gitlink with its hash",
       "managerFilePatterns": [
-        "/images/ovn/Dockerfile$/"
+        "/images/ovn/source\\.json$/"
       ],
       "matchStrings": [
-        "(?m)^ARG OVN_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\s*$"
+        "\"version\":\\s*\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\",\\s*\"rev\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
       ],
       "depNameTemplate": "ovn-org/ovn",
       "datasourceTemplate": "github-tags",
@@ -510,12 +511,12 @@
     },
     {
       "customType": "regex",
-      "description": "openstack-hypervisor-operator image: a commit of upstream main, tracked as a digest of the branch",
+      "description": "openstack-hypervisor-operator image: a commit of upstream main in images/openstack-hypervisor-operator/source.json, tracked as a digest of the branch; make nix-lock then writes its hash and vendorHash",
       "managerFilePatterns": [
-        "/images/openstack-hypervisor-operator/Dockerfile$/"
+        "/images/openstack-hypervisor-operator/source\\.json$/"
       ],
       "matchStrings": [
-        "(?m)^ARG HVO_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+        "\"rev\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
       ],
       "currentValueTemplate": "main",
       "depNameTemplate": "https://github.com/cobaltcore-dev/openstack-hypervisor-operator",
@@ -524,12 +525,12 @@
     },
     {
       "customType": "regex",
-      "description": "kvm-node-agent image: a commit of upstream main, tracked as a digest of the branch",
+      "description": "kvm-node-agent image: a commit of upstream main in images/kvm-node-agent/source.json, tracked as a digest of the branch; make nix-lock then writes its hash and vendorHash",
       "managerFilePatterns": [
-        "/images/kvm-node-agent/Dockerfile$/"
+        "/images/kvm-node-agent/source\\.json$/"
       ],
       "matchStrings": [
-        "(?m)^ARG KNA_COMMIT=(?<currentDigest>[a-f0-9]{40})\\s*$"
+        "\"rev\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
       ],
       "currentValueTemplate": "main",
       "depNameTemplate": "https://github.com/cobaltcore-dev/kvm-node-agent",
@@ -1081,7 +1082,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "images/ovn/Dockerfile",
+        "images/ovn/source.json",
         "operators/ovn/internal/controller/image.go"
       ],
       "matchPackageNames": ["ovn-org/ovn"],
@@ -1091,7 +1092,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "images/ovn/Dockerfile",
+        "images/ovn/source.json",
         "operators/ovn/internal/controller/image.go"
       ],
       "matchPackageNames": ["ovn-org/ovn"],
@@ -1102,7 +1103,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/openstack-hypervisor-operator/Dockerfile"],
+      "matchFileNames": ["images/ovn/source.json"],
+      "matchPackageNames": ["ovn-org/ovn"],
+      "matchUpdateTypes": ["digest"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/openstack-hypervisor-operator/source.json"],
       "matchPackageNames": ["https://github.com/cobaltcore-dev/openstack-hypervisor-operator"],
       "matchUpdateTypes": ["digest"],
       "automerge": false,
@@ -1112,7 +1120,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/kvm-node-agent/Dockerfile"],
+      "matchFileNames": ["images/kvm-node-agent/source.json"],
       "matchPackageNames": ["https://github.com/cobaltcore-dev/kvm-node-agent"],
       "matchUpdateTypes": ["digest"],
       "automerge": false,

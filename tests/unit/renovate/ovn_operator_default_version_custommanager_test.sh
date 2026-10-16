@@ -5,11 +5,11 @@
 
 # Verify renovate.json tracks the defaultOVNVersion pin in
 # operators/ovn/internal/controller/image.go and moves it together with the
-# ARG OVN_VERSION pin in images/ovn/Dockerfile.
+# "version" pin in images/ovn/source.json.
 #
 # The constant is the tag every OVNCentral and OVNChassis CR that leaves
 # spec.image unset runs. It is a Go string literal, so no native manager sees
-# it, and left untracked it drifts away from the image images/ovn/Dockerfile
+# it, and left untracked it drifts away from the image images/ovn/image.nix
 # builds until the operator asks for a tag the registry never received.
 #
 # Asserts:
@@ -18,7 +18,7 @@
 #     no GitHub releases
 #   - it strips the leading 'v' of those tags, and its versioningTemplate regex
 #     carries no 'v' either: the Go constant holds the bare version, where the
-#     Dockerfile pin keeps the prefix of the upstream tag
+#     source.json pin keeps the prefix of the upstream tag
 #   - that versioning regex parses the pin the source currently holds into
 #     major, minor and patch
 #   - its matchStrings regex captures that pin from the real source file
@@ -28,7 +28,7 @@
 #     leave the 26.03 LTS line
 #   - the paired patch rule waits a 3-day cooldown, never automerges, and
 #     groups both pins under one name so they arrive in a single PR.
-#     TestDefaultOVNVersionMatchesDockerfilePin in
+#     TestDefaultOVNVersionMatchesSourcePin in
 #     operators/ovn/internal/controller/ fails on a PR that moves only one
 #
 # Usage: bash tests/unit/renovate/ovn_operator_default_version_custommanager_test.sh
@@ -50,7 +50,7 @@ IMAGE_FILE="$PROJECT_ROOT/operators/ovn/internal/controller/image.go"
 
 PKG_NAME="ovn-org/ovn"
 IMAGE_PATH="operators/ovn/internal/controller/image.go"
-DOCKERFILE_PATH="images/ovn/Dockerfile"
+PIN_PATH="images/ovn/source.json"
 
 test_manager_exists_and_regex_matches() {
   echo "Test: the defaultOVNVersion pin has a customManager whose regex matches"
@@ -125,7 +125,7 @@ test_manager_exists_and_regex_matches() {
   local versioning versioning_re parsed
   versioning="$(jq -r '.versioningTemplate' <<<"$entry")"
   # 26.03 carries a leading zero strict semver rejects, so the pin needs a
-  # regex versioning — one without the 'v' the Dockerfile manager matches.
+  # regex versioning — one without the 'v' the source.json manager matches.
   assert_starts_with "manager parses the captured pin with a regex versioning" \
     "$versioning" "regex:"
   versioning_re="${versioning#regex:}"
@@ -140,7 +140,7 @@ test_manager_exists_and_regex_matches() {
 }
 
 test_package_rules() {
-  echo "Test: paired packageRules move the controller pin with the Dockerfile pin"
+  echo "Test: paired packageRules move the controller pin with the source.json pin"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (6 checks skipped)"
@@ -171,8 +171,8 @@ test_package_rules() {
       "false" "$(jq -r '.enabled' <<<"$held_rule")"
     assert_eq "the same rule also disables minors (26.09 leaves the LTS line)" \
       "true" "$(jq '(.matchUpdateTypes | index("minor")) != null' <<<"$held_rule")"
-    assert_contains "the held rule also covers the Dockerfile pin" \
-      "$(jq -r '.matchFileNames | join(" ")' <<<"$held_rule")" "$DOCKERFILE_PATH"
+    assert_contains "the held rule also covers the source.json pin" \
+      "$(jq -r '.matchFileNames | join(" ")' <<<"$held_rule")" "$PIN_PATH"
   fi
 
   if [ -z "$patch_rule" ]; then
@@ -181,10 +181,9 @@ test_package_rules() {
     return
   fi
 
-  # Not automerged on purpose: the same bump has to carry the ARG OVN_COMMIT
-  # and ARG OVS_COMMIT content pins in the Dockerfile, which no Renovate
-  # datasource can rewrite.
-  assert_eq "patch controller-pin updates are not automerged (the content pins need a human)" \
+  # Not automerged on purpose: the same bump fails nix-lock-check until make
+  # nix-lock writes the hashes and the ovs gitlink into images/ovn/source.json.
+  assert_eq "patch controller-pin updates are not automerged (make nix-lock needs a human)" \
     "false" "$(jq -r '.automerge' <<<"$patch_rule")"
   assert_eq "patch controller-pin rule waits minimumReleaseAge=3 days" \
     "3 days" "$(jq -r '.minimumReleaseAge' <<<"$patch_rule")"
@@ -192,8 +191,8 @@ test_package_rules() {
   # never received resolves to a tag no registry serves.
   assert_eq "the patch rule groups both pins under one PR" \
     "OVN LTS patch releases" "$(jq -r '.groupName' <<<"$patch_rule")"
-  assert_contains "the patch rule also covers the Dockerfile pin" \
-    "$(jq -r '.matchFileNames | join(" ")' <<<"$patch_rule")" "$DOCKERFILE_PATH"
+  assert_contains "the patch rule also covers the source.json pin" \
+    "$(jq -r '.matchFileNames | join(" ")' <<<"$patch_rule")" "$PIN_PATH"
 }
 
 test_manager_exists_and_regex_matches
