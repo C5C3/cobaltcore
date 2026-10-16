@@ -33,10 +33,6 @@ inputs:
     description: Build arguments (multiline)
     required: false
     default: ''
-  build-contexts:
-    description: Additional build contexts (multiline)
-    required: false
-    default: ''
   secrets:
     description: >
       BuildKit secrets for docker/build-push-action (multiline, id=value). A
@@ -53,10 +49,6 @@ inputs:
     required: true
   extra-labels:
     description: Additional labels appended after standard OCI labels (multiline)
-    required: false
-    default: ''
-  metadata-tags:
-    description: Tags configuration for docker/metadata-action (multiline)
     required: false
     default: ''
   cache-scope:
@@ -111,7 +103,6 @@ runs:
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
       with:
         images: ${{ inputs.image-name }}
-        tags: ${{ inputs.metadata-tags }}
         labels: |
           org.opencontainers.image.title=${{ inputs.labels-title }}
           org.opencontainers.image.description=${{ inputs.labels-description }}
@@ -125,7 +116,6 @@ runs:
         context: ${{ inputs.context }}
         file: ${{ inputs.file || format('{0}/Dockerfile', inputs.context) }}
         build-args: ${{ inputs.build-args }}
-        build-contexts: ${{ inputs.build-contexts }}
         secrets: ${{ inputs.secrets }}
         platforms: ${{ inputs.platform }}
         load: ${{ inputs.push-by-digest == 'false' }}
