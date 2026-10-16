@@ -1927,6 +1927,7 @@ jobs:
               tests/e2e-chaos/barbican-keystone-outage
               tests/e2e-chaos/horizon-dashboard-pod-kill
               tests/e2e-chaos/cert-manager-outage
+              tests/e2e-chaos/eso-down
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health

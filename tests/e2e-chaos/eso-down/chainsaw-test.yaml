@@ -1,0 +1,263 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the ESO controller at zero replicas.
+#
+# Fault: Deployment external-secrets in external-secrets is scaled to zero,
+# and two ExternalSecrets plus a Keystone that reads them are applied while it
+# is. ESO's webhook and cert-controller are Deployments of their own, so the
+# ExternalSecrets are still admitted.
+#
+# Claim, phase by phase:
+#   down    The fresh Keystone fails closed. For 90 s it carries no
+#           Ready=True, its SecretsReady reads False/WaitingForDBCredentials,
+#           and no Secret eso-down-db exists (FAILCLOSED-OK). ESO writes the
+#           store status itself, so with ESO at zero openbao-cluster-store
+#           keeps its last Ready=True and the credential gate of the
+#           keystone-operator is what holds (reconcile_secrets.go). The
+#           Keystone that was Ready before stays Ready.
+#   up      ESO comes back at its stashed replica count, both ExternalSecrets
+#           sync, and the fresh Keystone reaches Ready=True/AllReady within
+#           10 minutes, after its db_sync and bootstrap.
+#
+# Blast radius: no ExternalSecret of the cluster syncs while ESO is at zero.
+# Secrets already materialized stay. The scale-down is shared platform state,
+# so steps 2 to 5 restore the stashed replica count in their catch blocks.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-eso, the Keystone that was Ready before the fault.
+# ESO is on no request path of a running Keystone, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: eso-down
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: A Ready Keystone, the workload, the selector guard ─────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-eso
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # The upstream chart sets the name label; no file in this repository pins
+    # it. Every pod it selects has to belong to Deployment external-secrets,
+    # so the scale-down below takes the controller and nothing else.
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          pods="$(kubectl get pods -n external-secrets -l app.kubernetes.io/name=external-secrets \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.ownerReferences[0].kind} {.metadata.ownerReferences[0].name}{"\n"}{end}')"
+          if [ -z "$pods" ]; then
+            echo "FAIL: no pod in external-secrets carries app.kubernetes.io/name=external-secrets"
+            exit 1
+          fi
+          while read -r pod kind rs; do
+            deploy="$(kubectl get replicaset "$rs" -n external-secrets -o jsonpath='{.metadata.ownerReferences[0].name}')"
+            if [ "$kind" != "ReplicaSet" ] || [ "$deploy" != "external-secrets" ]; then
+              echo "FAIL: the selector reaches a pod outside Deployment external-secrets: ${pod} (${kind}/${rs} of ${deploy:-nothing})"
+              exit 1
+            fi
+          done <<<"$pods"
+          echo "OK: the selector reaches the controller pods of Deployment external-secrets alone"
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start eso-down -- --streams token --keystone http://keystone-chaos-eso.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-eso --dep-ns=external-secrets --dep-label=app.kubernetes.io/name=external-secrets
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump eso-down
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop eso-down
+  # ── Step 2: Scale the ESO controller to zero ───────────────────────────
+  # The replica count is stashed on the Deployment itself, so every catch
+  # block below can restore it without a temp file.
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          orig="$(kubectl get deploy external-secrets -n external-secrets -o jsonpath='{.spec.replicas}')"
+          kubectl annotate deploy external-secrets -n external-secrets \
+            chaos.cobaltcore.c5c3.io/orig-replicas="${orig:-1}" --overwrite
+          ../lib/workload.sh mark eso-down fault-start
+          kubectl scale deploy external-secrets -n external-secrets --replicas=0
+          kubectl wait --for=delete pod -l app.kubernetes.io/name=external-secrets -n external-secrets --timeout=120s
+          echo "OK: the ESO controller is at zero (was ${orig:-1})"
+    catch:
+    - &restore-eso
+      script:
+        timeout: 4m
+        shell: bash
+        content: |
+          # Restore on failure so the next suite is not left without ESO.
+          orig="$(kubectl get deploy external-secrets -n external-secrets \
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}' 2>/dev/null || true)"
+          kubectl scale deploy external-secrets -n external-secrets --replicas="${orig:-1}" 2>&1 || true
+          kubectl annotate deploy external-secrets -n external-secrets chaos.cobaltcore.c5c3.io/orig-replicas- 2>&1 || true
+          kubectl rollout status deploy/external-secrets -n external-secrets --timeout=180s 2>&1 || true
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-eso-fresh --dep-ns=external-secrets --dep-label=app.kubernetes.io/name=external-secrets --eso
+    - *workload-dump
+  # ── Step 3: The fresh Keystone and its credentials arrive ──────────────
+  - try:
+    - apply:
+        file: 01-externalsecrets.yaml
+    - apply:
+        file: 02-keystone-fresh-cr.yaml
+    catch:
+    - *restore-eso
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 4: The fresh Keystone fails closed ────────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          cond() { # <keystone> <type> <field>
+            kubectl get keystone "$1" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type==\"$2\")].$3}"
+          }
+          # The operator writes SecretsReady on its first pass over the new
+          # CR; the 90 s window starts once it has.
+          deadline=$(( $(date +%s) + 60 ))
+          until [ "$(cond keystone-chaos-eso-fresh SecretsReady reason)" = "WaitingForDBCredentials" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: keystone-chaos-eso-fresh reported no SecretsReady=False/WaitingForDBCredentials within 60 s (Ready $(cond keystone-chaos-eso-fresh Ready status))"
+              exit 1
+            fi
+            sleep 2
+          done
+          end=$(( $(date +%s) + 90 ))
+          while true; do
+            ready="$(cond keystone-chaos-eso-fresh Ready status)"
+            secrets="$(cond keystone-chaos-eso-fresh SecretsReady status)"
+            reason="$(cond keystone-chaos-eso-fresh SecretsReady reason)"
+            if [ "$ready" = "True" ]; then
+              echo "FAIL: keystone-chaos-eso-fresh turned Ready while ESO was down"
+              exit 1
+            fi
+            if [ "$secrets" != "False" ] || [ "$reason" != "WaitingForDBCredentials" ]; then
+              echo "FAIL: keystone-chaos-eso-fresh SecretsReady reads ${secrets:-<none>}/${reason:-<none>}, not False/WaitingForDBCredentials"
+              exit 1
+            fi
+            if kubectl get secret eso-down-db -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "FAIL: Secret eso-down-db exists while ESO was down"
+              exit 1
+            fi
+            if [ "$(cond keystone-chaos-eso Ready status)" != "True" ]; then
+              echo "FAIL: keystone-chaos-eso lost Ready=True while ESO was down"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "FAILCLOSED-OK: keystone-chaos-eso-fresh held SecretsReady=False/WaitingForDBCredentials for 90 s"
+    catch:
+    - *restore-eso
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 5: Bring the ESO controller back ──────────────────────────────
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          orig="$(kubectl get deploy external-secrets -n external-secrets \
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}')"
+          kubectl scale deploy external-secrets -n external-secrets --replicas="${orig:-1}"
+          kubectl annotate deploy external-secrets -n external-secrets chaos.cobaltcore.c5c3.io/orig-replicas-
+          kubectl rollout status deploy/external-secrets -n external-secrets --timeout=180s
+          ../lib/workload.sh mark eso-down fault-end
+    catch:
+    - *restore-eso
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 6: Both credentials sync, the fresh Keystone comes up ─────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: eso-down-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: eso-down-admin
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    # db_sync and bootstrap run before the fresh Keystone can be Ready.
+    - assert:
+        timeout: 10m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-eso-fresh
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-eso
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify eso-down
+    catch:
+    - *workload-dump
