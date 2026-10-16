@@ -141,11 +141,15 @@
           pkgs = pkgsFor system;
           python = pythonFor pkgs;
           fhsLayout = import ./nix/lib/fhs-layout.nix { inherit pkgs; };
+          # The one libvirt of the libvirt image and of nova-compute's
+          # libvirt-python.
+          libvirt = pkgs.callPackage ./nix/pkgs/libvirt.nix { };
           mkPythonEnv = import ./nix/lib/python-env.nix {
             inherit
               pkgs
               lib
               python
+              libvirt
               uv2nix
               pyproject-nix
               pyproject-build-systems
@@ -168,6 +172,7 @@
             fhsLayout
             envFor
             serviceTests
+            libvirt
             ;
           serviceImage = import ./nix/lib/service-image.nix { inherit pkgs fhsLayout; };
           staticImage = import ./nix/lib/static-image.nix { inherit pkgs; };

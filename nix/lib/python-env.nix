@@ -7,7 +7,15 @@
 #
 # Returns:
 #   venv       the project with its default dependencies
-#   testVenv   the same plus the test dependency group
+#   venvWith   a function from a list of dependency group names to the venv
+#              of the default dependencies plus those groups; the group
+#              names of the lock's pyproject.toml (test, and the image name
+#              of a group hack/nix-lock.sh writes for a derived image)
+#   testVenv   venvWith [ "test" ]
+#   libvirtPython
+#              the lock's libvirt-python package, or null; the nova locks
+#              carry it in their nova-compute group, and flake.nix checks
+#              what it builds against (checks.<system>.libvirt-pairing)
 #   src        the project source, fetched by the commit and NAR hash in
 #              sources.json with the release patches applied; null for a lock
 #              without a source (tempest, which installs from PyPI)
@@ -26,6 +34,7 @@
   pkgs,
   lib,
   python,
+  libvirt,
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
@@ -116,6 +125,15 @@ let
       setuptools = [ ];
     };
     uwsgi.buildSystem.setuptools = [ ];
+    # The nova locks' nova-compute group: PyPI ships no wheel. setup.py finds
+    # libvirt through pkg-config and generates the binding from the
+    # libvirt-api.xml that `pkg-config --variable=libvirt_api libvirt` names.
+    # libvirt is nix/pkgs/libvirt.nix, the one the libvirt image runs.
+    libvirt-python = {
+      buildSystem.setuptools = [ ];
+      nativeBuildInputs = [ pkgs.pkg-config ];
+      buildInputs = [ libvirt ];
+    };
   }
   // lib.optionalAttrs hasSource {
     # pbr reads the version from git metadata, which the fetched tree lacks:
@@ -193,6 +211,14 @@ let
       fixups
     ]
   );
+
+  # The default dependencies of the lock's one workspace member with the
+  # named groups enabled.
+  venvWith =
+    groups:
+    pythonSet.mkVirtualEnv "cobaltcore-${name}-${release}-${lib.concatStringsSep "-" groups}-env" (
+      lib.mapAttrs (_: _: groups) workspace.deps.default
+    );
 in
 {
   inherit
@@ -204,6 +230,8 @@ in
     ;
   inherit (sources) project;
   version = sources.ref;
+  inherit venvWith;
   venv = pythonSet.mkVirtualEnv "cobaltcore-${name}-${release}-env" workspace.deps.default;
-  testVenv = pythonSet.mkVirtualEnv "cobaltcore-${name}-${release}-test-env" workspace.deps.groups;
+  testVenv = venvWith [ "test" ];
+  libvirtPython = pythonSet.libvirt-python or null;
 }
