@@ -813,11 +813,10 @@ test_nova_leg_narrows_parallelism_and_budget() {
   assert_not_contains "no flat wall is left beside the expression" "$job" \
     "timeout-minutes: 68"
 
-  # runs-on on the line above already branches on the same matrix key, which is
-  # the precedent this one follows. Asserting it here breaks both together if
-  # the axis is ever renamed.
-  assert_contains "runs-on branches on the same matrix key" "$job" \
-    "runs-on: \${{ matrix.operator == 'keystone'"
+  # Only the wall differs per leg: every leg, the two nova shards included,
+  # runs on the self-hosted runners.
+  assert_contains "every leg runs on the self-hosted runners" "$job" \
+    "runs-on: self-hosted"
 }
 
 test_nova_leg_runs_as_two_shards() {
@@ -1042,12 +1041,13 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # and the three operator deploys are the rest of what the suites need: kind
   # pulls nothing the run did not load, and a CR whose operator never deployed
   # sits without status until the suite times out.
-  local entry
+  local job entry
+  job=$(job_block e2e-chaos)
   entry=$(e2e_chaos_matrix_entry nova)
 
   assert_not_empty "the matrix carries a nova leg" "$entry"
-  assert_contains "it runs on the self-hosted runners" "$entry" \
-    "runner: self-hosted"
+  assert_contains "it runs on the self-hosted runners" "$job" \
+    "runs-on: self-hosted"
   assert_contains "it runs the broker outage suite" "$entry" \
     "tests/e2e-chaos/nova-broker-outage"
   assert_contains "it runs the MariaDB outage suite" "$entry" \
@@ -1077,8 +1077,6 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # sch_netem/ip_set dependency that keeps the network leg non-blocking. The
   # whole expression is read, not the nova arm alone: the other two legs stay
   # where they were.
-  local job
-  job=$(job_block e2e-chaos)
   assert_contains "the nova leg is named non-blocking beside the other two" \
     "$job" \
     "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}"

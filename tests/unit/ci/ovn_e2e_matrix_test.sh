@@ -350,8 +350,8 @@ test_chaos_ovn_leg_is_wired() {
   entry=$(e2e_chaos_matrix_entry ovn)
 
   assert_not_empty "the matrix carries an ovn leg" "$entry"
-  assert_contains "it runs on the self-hosted runners" "$entry" \
-    "runner: self-hosted"
+  assert_contains "it runs on the self-hosted runners" "$job" \
+    "runs-on: self-hosted"
   assert_contains "it runs the southbound-outage suite" "$entry" \
     "tests/e2e-chaos/ovn-southbound-outage"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \

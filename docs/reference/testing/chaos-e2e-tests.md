@@ -369,8 +369,8 @@ inject a `PodChaos` kill, the class the blocking entry exists for,
 no chaos-mesh CR at all. Each is the only automated check on the invariant it
 pins, and a regression in one goes red in an entry that reports green. Moving
 them to the `pod` entry means taking the Cinder stack, the NFS export and the
-broker there with them, which the blocking entry's `blacksmith-4vcpu-ubuntu-2404`
-runner has not been sized for; that move is tracked as a follow-up. The same
+broker there with them, which the blocking entry's stack and its 90-minute wall
+have not been sized for; that move is tracked as a follow-up. The same
 holds for the PodChaos suites of the entry that need the neutron-operator or the
 ovn-operator. A `Dump diagnostic info (network leg)` step dumps the seven operator
 namespaces of the entry with `OPERATOR_ONLY=1`, so a failed operator kill there

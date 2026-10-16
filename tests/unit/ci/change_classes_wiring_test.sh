@@ -327,11 +327,20 @@ test_actionlint_job_is_pinned() {
   sha=$(grep -oE 'ACTIONLINT_SHA256: [0-9a-f]+' "$CI_YAML" | awk '{print $2}')
   assert_eq "the checksum is a full sha256" "64" "${#sha}"
 
-  # actionlint validates runs-on against GitHub's own label list, so every
-  # self-hosted pool the workflows use has to be declared or the lint fails on a
-  # runner that exists.
-  assert_file_contains "the Blacksmith runner label is declared" \
-    "$ACTIONLINT_CONFIG" "blacksmith-4vcpu-ubuntu-2404"
+  # actionlint validates runs-on against GitHub's own label list plus the
+  # built-in `self-hosted`. Every workflow uses only those, so no custom pool
+  # is declared, and a job on any other pool fails the lint: a stale
+  # .github/actionlint.yaml would keep a label lintable after the pool behind
+  # it is gone.
+  local config=absent
+  [ -e "$ACTIONLINT_CONFIG" ] && config=present
+  assert_eq "no custom runner pool is declared" "absent" "$config"
+
+  # The Blacksmith pool is retired. actionlint catches its runner labels, not
+  # its useblacksmith/* actions, so neither may appear under .github/.
+  local hits
+  hits=$(grep -rilE 'blacksmith' "$PROJECT_ROOT/.github" || true)
+  assert_eq "nothing under .github/ uses Blacksmith" "" "$hits"
 }
 
 test_no_job_reads_an_unexported_output() {
