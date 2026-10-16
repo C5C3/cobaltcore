@@ -106,15 +106,17 @@ test_setup_docker_registry_usage() {
 
 # --- Test 6: checkout-service-source composite action usage ---
 test_checkout_service_source_usage() {
-  echo "Test: checkout-service-source composite action used >= 2 times"
+  echo "Test: checkout-service-source composite action used >= 1 time"
 
+  # build-service-images checks out the source for the option catalog check;
+  # the Nix-built nova-compute image reads its source from the nova lock.
   local count
   count=$(grep -c '\./.github/actions/checkout-service-source' "$WORKFLOW" || true)
-  if [[ "$count" -ge 2 ]]; then
-    echo "  PASS: checkout-service-source used $count times (>= 2)"
+  if [[ "$count" -ge 1 ]]; then
+    echo "  PASS: checkout-service-source used $count times (>= 1)"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: checkout-service-source used $count times (expected >= 2)"
+    echo "  FAIL: checkout-service-source used $count times (expected >= 1)"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -198,15 +200,17 @@ test_no_inline_scripts_over_5_lines() {
 
 # --- Test 11: build-push-image composite action usage ---
 test_build_push_image_usage() {
-  echo "Test: build-push-image composite action used >= 4 times"
+  echo "Test: build-push-image composite action used >= 1 time"
 
+  # keystone-federation-proxy is the one image left on a Dockerfile in this
+  # workflow; every other image builds through build-nix-image.
   local count
   count=$(grep -c '\./.github/actions/build-push-image' "$WORKFLOW" || true)
-  if [[ "$count" -ge 4 ]]; then
-    echo "  PASS: build-push-image used $count times (>= 4)"
+  if [[ "$count" -ge 1 ]]; then
+    echo "  PASS: build-push-image used $count times (>= 1)"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: build-push-image used $count times (expected >= 4)"
+    echo "  FAIL: build-push-image used $count times (expected >= 1)"
     FAIL=$((FAIL + 1))
   fi
 }

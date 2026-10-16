@@ -95,21 +95,17 @@ test_permissions_block() {
 test_job_permissions_scoping() {
   echo "Test: job-level permissions scoping"
 
-  # build-base-images and build-service-images need packages: write
-  local base_perms service_perms verify_service_perms
-  base_perms=$(yq_raw '.jobs["build-base-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  # build-service-images needs packages: write
+  local service_perms verify_service_perms
   service_perms=$(yq_raw '.jobs["build-service-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
   verify_service_perms=$(yq_raw '.jobs["verify-service-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
 
-  assert_eq "build-base-images has packages: write" "write" "$base_perms"
   assert_eq "build-service-images has packages: write" "write" "$service_perms"
   assert_eq "verify-service-images has packages: read (least privilege)" "read" "$verify_service_perms"
 
-  local merge_base_perms merge_service_perms
-  merge_base_perms=$(yq_raw '.jobs["merge-base-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  local merge_service_perms
   merge_service_perms=$(yq_raw '.jobs["merge-service-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
 
-  assert_eq "merge-base-images has packages: write" "write" "$merge_base_perms"
   assert_eq "merge-service-images has packages: write" "write" "$merge_service_perms"
 
   # verify-service-images also needs contents: read for checkout (source-refs.yaml + patch counting)
@@ -145,9 +141,6 @@ test_all_jobs_defined() {
   echo "Test: every build-images job is defined"
 
   assert_file_contains "changes job defined" "$WORKFLOW" "changes:"
-  assert_file_contains "build-base-images job defined" "$WORKFLOW" "build-base-images:"
-  assert_file_contains "merge-base-images job defined" "$WORKFLOW" "merge-base-images:"
-  assert_file_contains "verify-base-images job defined" "$WORKFLOW" "verify-base-images:"
   assert_file_contains "build-service-images job defined" "$WORKFLOW" "build-service-images:"
   assert_file_contains "merge-service-images job defined" "$WORKFLOW" "merge-service-images:"
   assert_file_contains "test-service-images job defined" "$WORKFLOW" "test-service-images:"
@@ -170,63 +163,12 @@ test_all_jobs_defined() {
   assert_file_contains "build-nova-compute-image job defined" "$WORKFLOW" "build-nova-compute-image:"
   assert_file_contains "merge-nova-compute-image job defined" "$WORKFLOW" "merge-nova-compute-image:"
   assert_file_contains "verify-nova-compute-image job defined" "$WORKFLOW" "verify-nova-compute-image:"
-}
 
-# --- verify-base-images job depends on build-base-images ---
-test_verify_base_images_job() {
-  echo "Test: verify-base-images job structure"
-
-  local needs
-  needs=$(yq_raw '.jobs["verify-base-images"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "verify-base-images needs merge-base-images" "$needs" "merge-base-images"
-
-  local timeout
-  timeout=$(yq_raw '.jobs["verify-base-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  if [ "$timeout" != "null" ] && [ -n "$timeout" ]; then
-    echo "  PASS: verify-base-images has timeout-minutes: $timeout"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: verify-base-images missing timeout-minutes"
-    FAIL=$((FAIL + 1))
-  fi
-
-  local runner
-  runner=$(yq_raw '.jobs["verify-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
-  assert_eq "verify-base-images uses ubuntu-latest" "ubuntu-latest" "$runner"
-
-  local pkg_perms
-  pkg_perms=$(yq_raw '.jobs["verify-base-images"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
-  assert_eq "verify-base-images has packages: read" "read" "$pkg_perms"
-
-  local contents_perms
-  contents_perms=$(yq_raw '.jobs["verify-base-images"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
-  assert_eq "verify-base-images has contents: read (for checkout)" "read" "$contents_perms"
-}
-
-# --- Base images build with multi-arch platforms ---
-test_base_images_multi_arch() {
-  echo "Test: base images use multi-arch platforms"
-
-  local matrix_platforms
-  matrix_platforms=$(yq_raw '.jobs["build-base-images"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
-  assert_contains "build-base-images matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
-  assert_contains "build-base-images matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
-}
-
-# --- Base image outputs contain digest references ---
-test_base_image_digest_outputs() {
-  echo "Test: base image outputs contain digest references"
-
-  local python_output venv_output python_name_output python_digest_output
-  python_output=$(yq_raw '.jobs["merge-base-images"]["outputs"]["python-base-image"]' "$WORKFLOW" || true)
-  venv_output=$(yq_raw '.jobs["merge-base-images"]["outputs"]["venv-builder-image"]' "$WORKFLOW" || true)
-  python_name_output=$(yq_raw '.jobs["merge-base-images"]["outputs"]["python-base-name"]' "$WORKFLOW" || true)
-  python_digest_output=$(yq_raw '.jobs["merge-base-images"]["outputs"]["python-base-digest"]' "$WORKFLOW" || true)
-
-  assert_contains "python-base-image output references digest" "$python_output" "outputs.digest"
-  assert_contains "venv-builder-image output references digest" "$venv_output" "outputs.digest"
-  assert_contains "python-base-name output is non-empty" "$python_name_output" "python-base"
-  assert_contains "python-base-digest output references merge-python-base digest" "$python_digest_output" "merge-python-base.outputs.digest"
+  # No image is built from a base image any more.
+  local job
+  for job in build-base-images merge-base-images verify-base-images; do
+    assert_eq "$job is gone" "null" "$(yq_raw ".jobs[\"$job\"]" "$WORKFLOW" || true)"
+  done
 }
 
 # --- distro-package image build/merge job structure ---
@@ -321,6 +263,30 @@ test_libvirt_keeper_tag() {
     "$(grep -cx 'hack/ci-tag-libvirt-keeper.sh' <<<"$pr_paths" || true)"
 }
 
+# --- libvirt build/merge job structure (Nix-built, no lock) ---
+test_libvirt_jobs() {
+  # latest is main-only: the e2e-nova-libvirt leg runs the image it names.
+  test_nix_image_jobs libvirt tests/container-images/verify_libvirt.sh libvirt-image libvirt-tags
+
+  # No lock pin feeds the image, so it does not wait for nix-lock-check, and
+  # the first build per nixpkgs-images revision compiles libvirt and QEMU.
+  assert_not_contains "build-libvirt does not need nix-lock-check" \
+    "$(yq_raw '.jobs["build-libvirt"].needs[]' "$WORKFLOW" || true)" "nix-lock-check"
+  assert_eq "build-libvirt has 60 minutes for the first compile" "60" \
+    "$(yq_raw '.jobs["build-libvirt"]["timeout-minutes"]' "$WORKFLOW" || true)"
+  assert_contains "build-libvirt uploads a vulnix report per platform" \
+    "$(yq_raw '.jobs["build-libvirt"].steps[] | select(.id == "build-libvirt") | .with["vulnix-artifact-name"]' "$WORKFLOW" || true)" \
+    "vulnix-libvirt-"
+
+  # The libvirt filter rebuilds the image when its Nix inputs move.
+  local libvirt_globs glob
+  libvirt_globs=$(path_filters | yq_raw '.libvirt[]' - || true)
+  for glob in flake.nix flake.lock 'nix/lib/**' '.github/actions/build-nix-image/**' \
+    '.github/actions/setup-nix/**' 'nix/pkgs/libvirt.nix' 'tests/lib/build_tools.sh'; do
+    assert_eq "the libvirt filter names $glob" "1" "$(grep -cxF "$glob" <<<"$libvirt_globs" || true)"
+  done
+}
+
 # assert_cachix_step <job> — the job installs Nix and reads the cobaltcore
 # cache through the setup-nix action (test_setup_nix_action), once, and hands
 # it CACHIX_AUTH_TOKEN to push with.
@@ -364,13 +330,14 @@ test_setup_nix_action() {
 }
 
 # --- Nix-built image build/merge job structure ---
-# test_nix_image_jobs <image> <verify-script> <attribute>
+# test_nix_image_jobs <image> <verify-script> <attribute> [<tags-step>]
 # A release-independent image built by Nix: build-<image> builds the flake
 # attribute through build-nix-image behind nix-flake-check instead of
 # lint-dockerfiles, and merge-<image>-image has the shape of the merge job of
-# every distro-package image.
+# every distro-package image. With <tags-step>, the merge step takes its tags
+# from that step, which tags <sha> on every branch and latest on main only.
 test_nix_image_jobs() {
-  local img="$1" script="$2" attribute="$3"
+  local img="$1" script="$2" attribute="$3" tags_step="${4:-}"
   echo "Test: $img job structure (Nix-built)"
 
   local job=".jobs[\"build-$img\"]"
@@ -421,8 +388,22 @@ test_nix_image_jobs() {
 
   local merge_tags
   merge_tags=$(yq_raw ".jobs[\"merge-$img-image\"][\"steps\"][] | select(.id == \"merge-$img\") | .with[\"tags\"]" "$WORKFLOW" || echo "null")
-  assert_contains "merge tags include :latest" "$merge_tags" "$img:latest"
-  assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
+  if [ -n "$tags_step" ]; then
+    # The first line of the step is the unconditional one, the line with the
+    # main check adds latest.
+    local tags_run first_line main_line
+    assert_eq "merge tags come from the $tags_step step" "\${{ steps.$tags_step.outputs.tags }}" "$merge_tags"
+    tags_run=$(yq_raw ".jobs[\"merge-$img-image\"][\"steps\"][] | select(.id == \"$tags_step\") | .run" "$WORKFLOW" || echo "null")
+    first_line="${tags_run%%$'\n'*}"
+    main_line=$(grep -F '"${GITHUB_REF_NAME}" == "main"' <<<"$tags_run" || true)
+    assert_contains "merge tags include the commit SHA" "$first_line" '${IMAGE}:${GITHUB_SHA}'
+    assert_not_contains "the commit SHA tag line is not gated on main" "$first_line" "GITHUB_REF_NAME"
+    assert_not_contains "the commit SHA tag line carries no latest" "$first_line" "latest"
+    assert_contains "the latest tag is main-only" "$main_line" '${IMAGE}:latest'
+  else
+    assert_contains "merge tags include :latest" "$merge_tags" "$img:latest"
+    assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
+  fi
   assert_eq "merge job collects digests-$img-*" "digests-$img-*" \
     "$(yq_raw ".jobs[\"merge-$img-image\"].steps[] | select(.id == \"merge-$img\") | .with[\"artifact-pattern\"]" "$WORKFLOW" || true)"
 }
@@ -598,7 +579,8 @@ test_nix_lock_check_job() {
     "::error::the Nix locks or image pins are stale: run make nix-lock and commit the result"
 
   local dependant
-  for dependant in build-service-images build-tempest test-service-images build-ovn build-hvo build-kna; do
+  for dependant in build-service-images build-tempest test-service-images build-ovn build-hvo build-kna \
+    build-nova-compute-image; do
     assert_contains "$dependant needs nix-lock-check" \
       "$(yq_raw ".jobs[\"$dependant\"].needs[]" "$WORKFLOW" || true)" "nix-lock-check"
   done
@@ -832,11 +814,16 @@ test_kna_jobs() {
 test_nova_compute_jobs() {
   echo "Test: nova-compute job structure"
 
-  local needs
+  local needs job_needed
   needs=$(yq_raw '.jobs["build-nova-compute-image"]["needs"][]' "$WORKFLOW" || true)
-  assert_contains "build-nova-compute-image needs generate-matrix" "$needs" "generate-matrix"
-  assert_contains "build-nova-compute-image needs merge-base-images" "$needs" "merge-base-images"
-  assert_contains "build-nova-compute-image needs verify-base-images" "$needs" "verify-base-images"
+  for job_needed in changes generate-matrix nix-flake-check nix-lock-check prepare; do
+    assert_contains "build-nova-compute-image needs $job_needed" "$needs" "$job_needed"
+  done
+  # The image is built from the nova lock, not from a base image.
+  assert_not_contains "build-nova-compute-image does not need merge-base-images" "$needs" "merge-base-images"
+  assert_not_contains "build-nova-compute-image does not need verify-base-images" "$needs" "verify-base-images"
+  assert_eq "build-nova-compute-image has 60 minutes for the first libvirt compile" "60" \
+    "$(yq_raw '.jobs["build-nova-compute-image"]["timeout-minutes"]' "$WORKFLOW" || true)"
 
   # The legs are the nova pairs that survived SERVICES; an empty release list
   # skips the job instead of failing it on an empty matrix.
@@ -846,17 +833,34 @@ test_nova_compute_jobs() {
   build_matrix=$(yq_raw '.jobs["build-nova-compute-image"]["strategy"]["matrix"]' "$WORKFLOW" || echo "null")
   assert_contains "build job matrix is nova-compute-build-matrix" "$build_matrix" "nova-compute-build-matrix"
 
-  local step='.jobs["build-nova-compute-image"]["steps"][] | select(.id == "build-nova-compute")'
-  local context build_contexts verify_script
-  context=$(yq_raw "$step | .with[\"context\"]" "$WORKFLOW" || echo "null")
-  assert_eq "build step builds images/nova-compute" "images/nova-compute" "$context"
-  build_contexts=$(yq_raw "$step | .with[\"build-contexts\"]" "$WORKFLOW" || echo "null")
-  assert_contains "build step takes nova's source tree" "$build_contexts" "nova=src/nova"
+  local job_path='.jobs["build-nova-compute-image"]'
+  local step="$job_path.steps[] | select(.id == \"build-nova-compute\")"
+  local verify_script
+  assert_eq "build step uses build-nix-image" "./.github/actions/build-nix-image" \
+    "$(yq_raw "$step | .uses" "$WORKFLOW" || true)"
+  assert_eq "build step builds the attribute the attr step resolves" '${{ steps.attr.outputs.attribute }}' \
+    "$(yq_raw "$step | .with.attribute" "$WORKFLOW" || true)"
+  assert_contains "the attr step names nova-compute-<release with _>-image" \
+    "$(yq_raw "$job_path.steps[] | select(.id == \"attr\") | .run" "$WORKFLOW" || true)" \
+    'nova-compute-${MATRIX_RELEASE//./_}-image'
+  assert_eq "build step verifies under the composite tag" '${{ steps.tags.outputs.composite }}' \
+    "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)"
+  assert_contains "build step uploads a vulnix report per release and platform" \
+    "$(yq_raw "$step | .with[\"vulnix-artifact-name\"]" "$WORKFLOW" || true)" 'vulnix-nova-compute-${{ matrix.release }}-'
   verify_script=$(yq_raw "$step | .with[\"verify-script\"]" "$WORKFLOW" || echo "null")
   assert_contains "build step wires the compute verify script" \
     "$verify_script" "tests/container-images/verify_nova_compute.sh"
+  assert_cachix_step build-nova-compute-image
+  # The lock carries the source; neither the source checkout nor the build
+  # args of the Docker build remain, so the job runs these seven steps alone.
+  assert_eq "build-nova-compute-image checks out no service source" "0" \
+    "$(yq_raw "[$job_path.steps[] | select(.id == \"checkout-source\")] | length" "$WORKFLOW" || true)"
+  assert_eq "build-nova-compute-image runs the seven steps of a Nix build and nothing else" \
+    "$(printf '%s\n' checkout 'Derive tags' 'Prepare platform pair' 'Setup Docker registry' \
+      ./.github/actions/setup-nix 'Resolve flake attribute' 'Build compute image')" \
+    "$(yq_raw "$job_path.steps[] | (.name // .uses) | sub(\"^actions/checkout@.*\", \"checkout\")" "$WORKFLOW" || true)"
   # The contract script's test 2 cannot find the release from a nova built
-  # from a branch or SHA pin, so both jobs name it. build-push-image runs the
+  # from a branch or SHA pin, so both jobs name it. build-nix-image runs the
   # script with the job's environment.
   local build_release verify_release
   build_release=$(yq_raw '.jobs["build-nova-compute-image"]["env"]["NOVA_COMPUTE_RELEASE"]' "$WORKFLOW" || echo "null")
@@ -888,10 +892,12 @@ test_nova_compute_jobs() {
   assert_file_contains "derive-service-tags falls back to the service name" \
     "$ACTION_DERIVE_TAGS" 'IMAGE_NAME:-${MATRIX_SERVICE}'
 
+  # The image has no Dockerfile; the proxy and the operators are what hadolint
+  # still lints.
   local lint_matrix
   lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_contains "lint-dockerfiles covers the nova-compute Dockerfile" \
-    "$lint_matrix" "images/nova-compute/Dockerfile"
+  assert_eq "lint-dockerfiles lists the two Dockerfiles left" \
+    "$(printf '%s\n' images/keystone-federation-proxy/Dockerfile operators/Dockerfile)" "$lint_matrix"
 
   # Merge job: PR-skipped, needs the build, merges only compute digests.
   local merge_if merge_needs merge_pattern merge_tags_run
@@ -954,8 +960,8 @@ test_service_images_depend_on_base() {
   done
   assert_not_contains "build-service-images does not need merge-base-images" "$needs" "merge-base-images"
   assert_not_contains "build-service-images does not need verify-base-images" "$needs" "verify-base-images"
-  # A python-base or venv-builder failure concerns nova-compute alone, which
-  # merges in a job of its own.
+  # No image is built from a base image, and nova-compute merges in a job of
+  # its own.
   assert_not_contains "merge-service-images does not need merge-base-images" \
     "$(yq_raw '.jobs["merge-service-images"]["needs"][]' "$WORKFLOW" || true)" "merge-base-images"
 }
@@ -1020,9 +1026,11 @@ test_changes_job_gates_matrix_jobs() {
   # the globs are read from the libvirt key, not from anywhere in the block.
   local libvirt_globs
   libvirt_globs=$(path_filters | yq_raw '.libvirt[]' - || true)
-  assert_contains "the libvirt filter covers the image sources" "$libvirt_globs" "images/libvirt/**"
-  assert_contains "the libvirt filter covers its verify script" \
-    "$libvirt_globs" "tests/container-images/verify_libvirt.sh"
+  local glob
+  for glob in 'images/libvirt/**' 'nix/pkgs/libvirt.nix' 'tests/container-images/verify_libvirt.sh' \
+    flake.nix flake.lock 'nix/lib/**' '.github/actions/build-nix-image/**' '.github/actions/setup-nix/**'; do
+    assert_eq "the libvirt filter names $glob" "1" "$(grep -cxF "$glob" <<<"$libvirt_globs" || true)"
+  done
 
   local filters hvo_globs kna_globs plumbing_globs
   filters=$(path_filters || true)
@@ -1114,6 +1122,13 @@ test_changes_job_gates_matrix_jobs() {
     "$pr_paths" "hack/ci-*"
   assert_contains "the push trigger keeps .github/actions/**" "$push_paths" ".github/actions/**"
   assert_contains "the push trigger keeps hack/ci-*" "$push_paths" "hack/ci-*"
+
+  # A Renovate pull request that moves the base pins alone must still run
+  # nix-lock-check.
+  assert_eq "the pull-request trigger names nix/base-requirements.txt" "1" \
+    "$(grep -cxF 'nix/base-requirements.txt' <<<"$pr_paths" || true)"
+  assert_eq "the push trigger names nix/base-requirements.txt" "1" \
+    "$(grep -cxF 'nix/base-requirements.txt' <<<"$push_paths" || true)"
 }
 
 # --- Source ref resolution step exists (now in checkout-service-source composite) ---
@@ -1307,15 +1322,19 @@ test_gha_caching_present() {
   echo "Test: GHA caching present"
 
   # cache-from / cache-to live in the build-push-image composite, which
-  # derives the scope from the cache-scope input. The service images build
-  # from Nix and cache through Cachix instead.
+  # derives the scope from the cache-scope input. The Nix-built images cache
+  # through Cachix instead, so only the proxy names a GHA cache scope.
   assert_file_contains "cache-from: type=gha present" "$ACTION_BUILD_PUSH" "cache-from: type=gha"
   assert_file_contains "cache-to: type=gha present" "$ACTION_BUILD_PUSH" "cache-to: type=gha"
 
-  local base_scopes
-  base_scopes=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .with["cache-scope"]' "$WORKFLOW" || true)
-  assert_contains "build-base-images passes cache-scope for python-base" "$base_scopes" "python-base"
-  assert_contains "build-base-images passes cache-scope for venv-builder" "$base_scopes" "venv-builder"
+  local proxy_scope scopes
+  proxy_scope=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["cache-scope"]' "$WORKFLOW" || true)
+  assert_eq "build-keystone-federation-proxy passes cache-scope keystone-federation-proxy" \
+    "keystone-federation-proxy" "$proxy_scope"
+  # The libvirt and nova-compute builds left BuildKit with their
+  # Dockerfiles, and so did the base images they were built from.
+  scopes=$(yq_raw '.jobs[].steps[] | select(.with["cache-scope"] != null) | .with["cache-scope"]' "$WORKFLOW" || true)
+  assert_eq "the proxy is the one build step with a GHA cache scope" "keystone-federation-proxy" "$scopes"
 }
 
 # --- All jobs have timeout-minutes ---
@@ -1336,24 +1355,18 @@ test_timeout_minutes_on_all_jobs() {
 test_runs_on_ubuntu_latest() {
   echo "Test: all jobs use runs-on: ubuntu-latest"
 
-  local verify_base_runner merge_base_runner merge_service_runner test_service_runner verify_service_runner
-  verify_base_runner=$(yq_raw '.jobs["verify-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
-  merge_base_runner=$(yq_raw '.jobs["merge-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
+  local merge_service_runner test_service_runner verify_service_runner
   merge_service_runner=$(yq_raw '.jobs["merge-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
   test_service_runner=$(yq_raw '.jobs["test-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
   verify_service_runner=$(yq_raw '.jobs["verify-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
 
-  assert_eq "verify-base-images uses ubuntu-latest" "ubuntu-latest" "$verify_base_runner"
-  assert_eq "merge-base-images uses ubuntu-latest" "ubuntu-latest" "$merge_base_runner"
   assert_eq "merge-service-images uses ubuntu-latest" "ubuntu-latest" "$merge_service_runner"
   assert_eq "test-service-images uses ubuntu-latest" "ubuntu-latest" "$test_service_runner"
   assert_eq "verify-service-images uses ubuntu-latest" "ubuntu-latest" "$verify_service_runner"
 
-  local base_runner service_runner
-  base_runner=$(yq_raw '.jobs["build-base-images"]["runs-on"]' "$WORKFLOW" || echo "null")
+  local service_runner
   service_runner=$(yq_raw '.jobs["build-service-images"]["runs-on"]' "$WORKFLOW" || echo "null")
 
-  assert_contains "build-base-images uses matrix runner expression" "$base_runner" "matrix.runner"
   assert_contains "build-service-images uses matrix runner expression" "$service_runner" "matrix.runner"
 
   local fedproxy_runner fedproxy_merge_runner
@@ -1405,49 +1418,17 @@ test_runs_on_ubuntu_latest() {
   assert_contains "verify-kna-image uses matrix runner expression" "$kna_verify_runner" "matrix.runner"
 }
 
-# --- Base images always push unconditionally ---
-test_base_images_always_push() {
-  echo "Test: base images always push unconditionally"
-
-  # The actual docker/build-push-action outputs= line lives inside the
-  # build-push-image composite, gated on the push-by-digest input. Base image
-  # build calls do NOT pass push-by-digest, so they inherit the default 'true'.
-  assert_file_contains "build-push-image emits push-by-digest=true output" "$ACTION_BUILD_PUSH" "push-by-digest=true"
-  assert_file_contains "build-push-image emits push=true output" "$ACTION_BUILD_PUSH" "push=true"
-
-  local python_pbd venv_pbd
-  python_pbd=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["push-by-digest"]' "$WORKFLOW" || echo "null")
-  venv_pbd=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["push-by-digest"]' "$WORKFLOW" || echo "null")
-  # null = default (true) = unconditional push.
-  assert_eq "python-base build does not override push-by-digest" "null" "$python_pbd"
-  assert_eq "venv-builder build does not override push-by-digest" "null" "$venv_pbd"
-}
-
-# --- Fork PRs rejected in build-base-images ---
+# --- Fork PRs rejected in build-libvirt ---
 test_fork_pr_rejection_step_exists() {
-  echo "Test: fork PR rejection step exists in build-base-images"
+  echo "Test: fork PR rejection step exists in build-libvirt"
 
   # step name is "Reject fork PRs".
   local reject_step_if
-  reject_step_if=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.name == "Reject fork PRs") | .if' "$WORKFLOW" || true)
+  reject_step_if=$(yq_raw '.jobs["build-libvirt"]["steps"][] | select(.name == "Reject fork PRs") | .if' "$WORKFLOW" || true)
 
   assert_contains "Reject fork PRs step exists with pull_request condition" "$reject_step_if" "pull_request"
   assert_contains "Reject fork PRs step checks head repo full_name" "$reject_step_if" "github.event.pull_request.head.repo.full_name"
   assert_contains "Reject fork PRs step compares against github.repository" "$reject_step_if" "github.repository"
-}
-
-# --- Base images have immutable SHA tags alongside :latest ---
-test_base_images_have_sha_tags() {
-  echo "Test: base images have SHA tags for commit traceability"
-
-  # merge-base-images now calls merge-manifest-and-attest and passes
-  # a space-separated `tags:` input that includes :latest and :${{ github.sha }}.
-  local python_tags venv_tags
-  python_tags=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with.tags' "$WORKFLOW" || true)
-  venv_tags=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with.tags' "$WORKFLOW" || true)
-
-  assert_contains "python-base tags include github.sha" "$python_tags" 'github.sha'
-  assert_contains "venv-builder tags include github.sha" "$venv_tags" 'github.sha'
 }
 
 # --- Version-only tag restricted to main branch ---
@@ -1636,18 +1617,6 @@ test_run_blocks_use_env_vars() {
   assert_file_not_contains "apply overrides run uses env vars (no direct matrix interpolation)" "$WORKFLOW" 'apply-constraint-overrides.sh \${{ matrix'
 }
 
-# --- SBOM permissions on merge-base-images ---
-test_sbom_permissions_on_build_base_images() {
-  echo "Test: SBOM permissions on merge-base-images"
-
-  local id_token attestations
-  id_token=$(yq_raw '.jobs["merge-base-images"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
-  attestations=$(yq_raw '.jobs["merge-base-images"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
-
-  assert_eq "merge-base-images has id-token: write" "write" "$id_token"
-  assert_eq "merge-base-images has attestations: write" "write" "$attestations"
-}
-
 # --- SBOM permissions on merge-service-images ---
 test_sbom_permissions_on_build_service_images() {
   echo "Test: SBOM permissions on merge-service-images"
@@ -1663,13 +1632,6 @@ test_sbom_permissions_on_build_service_images() {
 # --- Verify jobs do NOT have SBOM permissions ---
 test_verify_jobs_no_sbom_permissions() {
   echo "Test: verify jobs do not have SBOM permissions"
-
-  local verify_base_id_token verify_base_attestations
-  verify_base_id_token=$(yq_raw '.jobs["verify-base-images"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
-  verify_base_attestations=$(yq_raw '.jobs["verify-base-images"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
-
-  assert_eq "verify-base-images has no id-token permission" "null" "$verify_base_id_token"
-  assert_eq "verify-base-images has no attestations permission" "null" "$verify_base_attestations"
 
   local verify_service_id_token verify_service_attestations
   verify_service_id_token=$(yq_raw '.jobs["verify-service-images"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
@@ -1705,6 +1667,13 @@ test_verify_jobs_no_sbom_permissions() {
 
   assert_eq "verify-kna-image has no id-token permission" "null" "$verify_kna_id_token"
   assert_eq "verify-kna-image has no attestations permission" "null" "$verify_kna_attestations"
+
+  local verify_compute_id_token verify_compute_attestations
+  verify_compute_id_token=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  verify_compute_attestations=$(yq_raw '.jobs["verify-nova-compute-image"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "verify-nova-compute-image has no id-token permission" "null" "$verify_compute_id_token"
+  assert_eq "verify-nova-compute-image has no attestations permission" "null" "$verify_compute_attestations"
 }
 
 # --- SBOM generation steps exist ---
@@ -1718,10 +1687,10 @@ test_sbom_generation_steps_exist() {
   sbom_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .uses' "$ACTION_SUPPLY_CHAIN")
   assert_eq "supply-chain-attest has 1 anchore/sbom-action step" "1" "$sbom_count"
 
-  # merge-base-images invokes merge-manifest-and-attest twice (python-base + venv-builder).
-  local base_merge_count
-  base_merge_count=$(yq_count '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/merge-manifest-and-attest"))) | .uses' "$WORKFLOW")
-  assert_eq "merge-base-images invokes merge-manifest-and-attest twice" "2" "$base_merge_count"
+  # merge-libvirt-image invokes merge-manifest-and-attest once.
+  local libvirt_merge_count
+  libvirt_merge_count=$(yq_count '.jobs["merge-libvirt-image"]["steps"][] | select(.uses and (.uses | test("./.github/actions/merge-manifest-and-attest"))) | .uses' "$WORKFLOW")
+  assert_eq "merge-libvirt-image invokes merge-manifest-and-attest once" "1" "$libvirt_merge_count"
 
   # merge-service-images invokes merge-manifest-and-attest once.
   local service_merge_count
@@ -1764,13 +1733,11 @@ test_sbom_generation_references_digest() {
   forwarded_digest=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .with["image-digest"]' "$ACTION_MERGE_MANIFEST" || true)
   assert_contains "merge-manifest-and-attest forwards merge digest" "$forwarded_digest" "steps.merge.outputs.digest"
 
-  # The workflow labels the python-base / venv-builder / service call sites with the right image input.
-  local python_image venv_image service_image
-  python_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with.image' "$WORKFLOW" || true)
-  venv_image=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with.image' "$WORKFLOW" || true)
+  # The workflow labels the libvirt and service call sites with the right image input.
+  local libvirt_image service_image
+  libvirt_image=$(yq_raw '.jobs["merge-libvirt-image"]["steps"][] | select(.id == "merge-libvirt") | .with.image' "$WORKFLOW" || true)
   service_image=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with.image' "$WORKFLOW" || true)
-  assert_contains "python-base merge call passes python-base image" "$python_image" "python-base"
-  assert_contains "venv-builder merge call passes venv-builder image" "$venv_image" "venv-builder"
+  assert_contains "libvirt merge call passes the libvirt image" "$libvirt_image" "/libvirt"
   assert_contains "service merge call passes tags.outputs.image" "$service_image" "steps.tags.outputs.image"
 }
 
@@ -1801,27 +1768,21 @@ test_sbom_steps_pr_skip_guard() {
   echo "Test: SBOM/attestation steps have PR-skip guard"
 
   # supply-chain-attest SBOM generation + actions/attest + provenance
-  # + cosign sign are all gated on scan-mode == 'sbom'. On PR the workflow
-  # passes scan-mode=image (for merge-base-images) or skips entirely
-  # (merge-service-images has a job-level PR guard), so the SBOM primitives
-  # never run on PR.
+  # + cosign sign are all gated on scan-mode == 'sbom'. On PR the merge jobs
+  # are skipped entirely (each has a job-level PR guard), so the SBOM
+  # primitives never run on PR.
   local sbom_if attest_if
   sbom_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("anchore/sbom-action"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
   attest_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("actions/attest@"))) | .if' "$ACTION_SUPPLY_CHAIN" || true)
   assert_contains "supply-chain-attest SBOM step guarded by scan-mode sbom" "$sbom_if" "scan-mode == 'sbom'"
   assert_contains "supply-chain-attest attest step guarded by scan-mode sbom" "$attest_if" "scan-mode == 'sbom'"
 
-  # merge-base-images passes scan-mode=image on PR for python-base and venv-builder.
-  local python_scan_mode venv_scan_mode
-  python_scan_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["scan-mode"]' "$WORKFLOW" || true)
-  venv_scan_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["scan-mode"]' "$WORKFLOW" || true)
-  assert_contains "python-base merge picks scan-mode from event_name" "$python_scan_mode" "pull_request"
-  assert_contains "venv-builder merge picks scan-mode from event_name" "$venv_scan_mode" "pull_request"
-
   # merge-service-images has job-level PR guard.
   local merge_service_job_if
   merge_service_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "merge-service-images job has PR-skip guard" "$merge_service_job_if" "event_name != 'pull_request'"
+  assert_contains "merge-libvirt-image job has PR-skip guard" \
+    "$(yq_raw '.jobs["merge-libvirt-image"]["if"]' "$WORKFLOW" || true)" "event_name != 'pull_request'"
 }
 
 # --- build provenance attestation steps exist (SLSA Level 2+) ---
@@ -1858,56 +1819,13 @@ test_build_provenance_push_to_registry() {
   assert_eq "supply-chain-attest provenance push-to-registry is true" "true" "$push"
 }
 
-# --- metadata-action step lives inside build-push-image composite ---
-test_metadata_action_steps_exist_in_build_base_images() {
-  echo "Test: metadata-action wired through build-push-image"
-
-  # there is one docker/metadata-action step in the build-push-image
-  # composite, exercised once per image build (python-base + venv-builder
-  # + service + tempest).
-  local meta_count
-  meta_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("docker/metadata-action"))) | .uses' "$ACTION_BUILD_PUSH")
-  assert_eq "build-push-image has 1 docker/metadata-action step" "1" "$meta_count"
-
-  local meta_id
-  meta_id=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("docker/metadata-action"))) | .id' "$ACTION_BUILD_PUSH" || true)
-  assert_eq "build-push-image metadata step id is 'meta'" "meta" "$meta_id"
-
-  # Verify build-base-images calls build-push-image twice.
-  local base_build_count
-  base_build_count=$(yq_count '.jobs["build-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/build-push-image"))) | .uses' "$WORKFLOW")
-  assert_eq "build-base-images invokes build-push-image twice" "2" "$base_build_count"
-}
-
-# --- base metadata calls pass no metadata-tags (empty string default) ---
-test_base_metadata_steps_have_no_tags_override() {
-  echo "Test: base build-push-image calls pass empty metadata-tags"
-
-  local python_meta_tags venv_meta_tags
-  python_meta_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["metadata-tags"]' "$WORKFLOW" || echo "null")
-  venv_meta_tags=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["metadata-tags"]' "$WORKFLOW" || echo "null")
-  assert_eq "build-python-base does not override metadata-tags" "null" "$python_meta_tags"
-  assert_eq "build-venv-builder does not override metadata-tags" "null" "$venv_meta_tags"
-}
-
-# --- python-base build-push-action forwards generated labels ---
-test_python_base_build_push_has_labels_input() {
+# --- build-push-image forwards the generated labels ---
+test_build_push_image_has_labels_input() {
   echo "Test: build-push-image forwards meta.outputs.labels to docker/build-push-action"
 
   local labels
   labels=$(yq_raw '.runs.steps[] | select(.id == "build") | .with.labels' "$ACTION_BUILD_PUSH" || true)
   assert_contains "docker/build-push-action labels references steps.meta.outputs.labels" "$labels" "steps.meta.outputs.labels"
-}
-
-# --- venv-builder build-push labels input (already covered by previous) ---
-test_venv_builder_build_push_has_labels_input() {
-  echo "Test: build-push-image passes labels for venv-builder build"
-
-  # Each build-push-image invocation receives labels-title / labels-description
-  # inputs which are injected into meta.with.labels template.
-  local title
-  title=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-title"]' "$WORKFLOW" || true)
-  assert_eq "build-venv-builder passes labels-title=venv-builder" "venv-builder" "$title"
 }
 
 # --- OCI base image labels present via extra-labels input ---
@@ -1916,14 +1834,11 @@ test_oci_base_labels_in_build_steps() {
 
   # build-push-image exposes an extra-labels input, used to inject
   # org.opencontainers.image.base.{name,digest} per call site.
-  local python_extra venv_extra
-  python_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["extra-labels"]' "$WORKFLOW" || true)
-  venv_extra=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["extra-labels"]' "$WORKFLOW" || true)
+  local proxy_extra
+  proxy_extra=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["extra-labels"]' "$WORKFLOW" || true)
 
-  assert_contains "build-python-base extra-labels include base.name" "$python_extra" "org.opencontainers.image.base.name"
-  assert_contains "build-python-base extra-labels include base.digest" "$python_extra" "org.opencontainers.image.base.digest"
-  assert_contains "build-venv-builder extra-labels include base.name" "$venv_extra" "org.opencontainers.image.base.name"
-  assert_contains "build-venv-builder extra-labels include base.digest" "$venv_extra" "org.opencontainers.image.base.digest"
+  assert_contains "build-keystone-federation-proxy extra-labels include base.name" "$proxy_extra" "org.opencontainers.image.base.name"
+  assert_contains "build-keystone-federation-proxy extra-labels include base.digest" "$proxy_extra" "org.opencontainers.image.base.digest"
 
   # build-push-image forwards extra-labels into docker/build-push-action labels input.
   assert_file_contains "build-push-image forwards extra-labels" "$ACTION_BUILD_PUSH" "inputs.extra-labels"
@@ -1937,13 +1852,11 @@ test_metadata_action_labels_include_oci_title() {
   labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
   assert_contains "build-push-image meta labels include OCI title" "$labels" "org.opencontainers.image.title"
 
-  # Each base-image caller must pass a labels-title input so metadata-action
-  # can render it.
-  local python venv
-  python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-title"]' "$WORKFLOW" || true)
-  venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-title"]' "$WORKFLOW" || true)
-  assert_not_empty "build-python-base passes labels-title" "$python"
-  assert_not_empty "build-venv-builder passes labels-title" "$venv"
+  # The build-push-image caller must pass a labels-title input so
+  # metadata-action can render it.
+  local proxy
+  proxy=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["labels-title"]' "$WORKFLOW" || true)
+  assert_eq "build-keystone-federation-proxy passes labels-title" "keystone-federation-proxy" "$proxy"
 }
 
 # --- metadata-action labels include OCI description ---
@@ -1954,11 +1867,9 @@ test_metadata_action_labels_include_oci_description() {
   labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
   assert_contains "build-push-image meta labels include OCI description" "$labels" "org.opencontainers.image.description"
 
-  local python venv
-  python=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-python-base") | .with["labels-description"]' "$WORKFLOW" || true)
-  venv=$(yq_raw '.jobs["build-base-images"]["steps"][] | select(.id == "build-venv-builder") | .with["labels-description"]' "$WORKFLOW" || true)
-  assert_not_empty "build-python-base passes labels-description" "$python"
-  assert_not_empty "build-venv-builder passes labels-description" "$venv"
+  local proxy
+  proxy=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["labels-description"]' "$WORKFLOW" || true)
+  assert_not_empty "build-keystone-federation-proxy passes labels-description" "$proxy"
 }
 
 # --- metadata-action labels include OCI licenses ---
@@ -1979,49 +1890,15 @@ test_metadata_action_labels_include_oci_vendor() {
   assert_contains "build-push-image meta labels include vendor" "$labels" "org.opencontainers.image.vendor"
 }
 
-# --- static OCI labels in python-base Dockerfile ---
-test_dockerfile_static_labels_python_base() {
-  echo "Test: python-base Dockerfile has static OCI labels"
-
-  local dockerfile="$PROJECT_ROOT/images/python-base/Dockerfile"
-
-  assert_file_contains "python-base has org.opencontainers.image.title" "$dockerfile" 'org.opencontainers.image.title='
-  assert_file_contains "python-base has org.opencontainers.image.description" "$dockerfile" 'org.opencontainers.image.description='
-  assert_file_contains "python-base has org.opencontainers.image.licenses" "$dockerfile" 'org.opencontainers.image.licenses='
-  assert_file_contains "python-base has org.opencontainers.image.vendor" "$dockerfile" 'org.opencontainers.image.vendor='
-}
-
-# --- static OCI labels in venv-builder Dockerfile ---
-test_dockerfile_static_labels_venv_builder() {
-  echo "Test: venv-builder Dockerfile has static OCI labels"
-
-  local dockerfile="$PROJECT_ROOT/images/venv-builder/Dockerfile"
-
-  assert_file_contains "venv-builder has org.opencontainers.image.title" "$dockerfile" 'org.opencontainers.image.title='
-  assert_file_contains "venv-builder has org.opencontainers.image.description" "$dockerfile" 'org.opencontainers.image.description='
-  assert_file_contains "venv-builder has org.opencontainers.image.licenses" "$dockerfile" 'org.opencontainers.image.licenses='
-  assert_file_contains "venv-builder has org.opencontainers.image.vendor" "$dockerfile" 'org.opencontainers.image.vendor='
-}
-
-# --- cosign-installer step in setup-docker-registry composite ---
-test_cosign_installer_in_build_base_images() {
-  echo "Test: cosign-installer lives in setup-docker-registry composite"
-
-  # cosign installer moved into the setup-docker-registry composite,
-  # gated on the install-cosign input. merge-base-images omits install-cosign,
-  # inheriting the default 'true'.
-  local installer_count
-  installer_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$ACTION_SETUP_REGISTRY")
-  assert_eq "setup-docker-registry has 1 cosign-installer step" "1" "$installer_count"
-
-  local merge_base_install
-  merge_base_install=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/setup-docker-registry"))) | .with["install-cosign"]' "$WORKFLOW" || echo "null")
-  assert_eq "merge-base-images does not override install-cosign (default true)" "null" "$merge_base_install"
-}
-
 # --- cosign-installer gate for merge-service-images ---
 test_cosign_installer_in_build_service_images() {
   echo "Test: merge-service-images installs cosign via setup-docker-registry"
+
+  # The cosign installer lives in the setup-docker-registry composite, gated
+  # on the install-cosign input.
+  local installer_count
+  installer_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("sigstore/cosign-installer"))) | .uses' "$ACTION_SETUP_REGISTRY")
+  assert_eq "setup-docker-registry has 1 cosign-installer step" "1" "$installer_count"
 
   local merge_service_install
   merge_service_install=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.uses and (.uses | test("./.github/actions/setup-docker-registry"))) | .with["install-cosign"]' "$WORKFLOW" || echo "null")
@@ -2081,12 +1958,12 @@ test_cosign_sign_uses_yes_flag() {
 # =====================================================================
 
 # --- Grype scan primitive lives in supply-chain-attest ---
-test_grype_scan_steps_in_build_base_images() {
+test_grype_scan_steps_in_supply_chain_attest() {
   echo "Test: Grype scan primitives live in supply-chain-attest"
 
   # supply-chain-attest has two Grype scan steps, one for sbom mode
-  # and one for image mode. Both merge-base-images and merge-service-images
-  # reach them via merge-manifest-and-attest.
+  # and one for image mode. Every merge job reaches them via
+  # merge-manifest-and-attest.
   local scan_count
   scan_count=$(yq_count '.runs.steps[] | select(.uses and (.uses | test("anchore/scan-action"))) | .uses' "$ACTION_SUPPLY_CHAIN")
   assert_eq "supply-chain-attest has 2 Grype scan steps (sbom + image)" "2" "$scan_count"
@@ -2153,13 +2030,6 @@ test_grype_scan_steps_cover_both_contexts() {
   assert_contains "grype-sbom step guarded by scan-mode sbom" "$sbom_if" "scan-mode == 'sbom'"
   assert_contains "grype-image step guarded by scan-mode image" "$image_if" "scan-mode == 'image'"
 
-  # merge-base-images selects scan-mode based on event_name.
-  local python_mode venv_mode
-  python_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["scan-mode"]' "$WORKFLOW" || true)
-  venv_mode=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["scan-mode"]' "$WORKFLOW" || true)
-  assert_contains "python-base merge toggles scan-mode on event_name" "$python_mode" "event_name"
-  assert_contains "venv-builder merge toggles scan-mode on event_name" "$venv_mode" "event_name"
-
   # merge-service-images is PR-gated at the job level; build-push-image
   # handles service-image PR scans in image mode.
   local service_merge_job_if
@@ -2183,13 +2053,11 @@ test_grype_sbom_input_wiring() {
   assert_contains "grype-sbom reads sbom-output-file input" "$sbom_input" "inputs.sbom-output-file"
 
   # Each call site provides the right per-image filename.
-  local python_sbom venv_sbom service_sbom
-  python_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["sbom-output-file"]' "$WORKFLOW" || true)
-  venv_sbom=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["sbom-output-file"]' "$WORKFLOW" || true)
+  local libvirt_sbom service_sbom
+  libvirt_sbom=$(yq_raw '.jobs["merge-libvirt-image"]["steps"][] | select(.id == "merge-libvirt") | .with["sbom-output-file"]' "$WORKFLOW" || true)
   service_sbom=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with["sbom-output-file"]' "$WORKFLOW" || true)
 
-  assert_contains "python-base call passes sbom-python-base.cyclonedx.json" "$python_sbom" "sbom-python-base.cyclonedx.json"
-  assert_contains "venv-builder call passes sbom-venv-builder.cyclonedx.json" "$venv_sbom" "sbom-venv-builder.cyclonedx.json"
+  assert_eq "libvirt call passes sbom-libvirt.cyclonedx.json" "sbom-libvirt.cyclonedx.json" "$libvirt_sbom"
   assert_contains "service call passes sbom-<service>.cyclonedx.json" "$service_sbom" "matrix.service"
   assert_contains "service call SBOM filename is cyclonedx.json" "$service_sbom" "cyclonedx.json"
 
@@ -2266,14 +2134,12 @@ test_sarif_upload_categories() {
   assert_contains "supply-chain-attest upload-sarif category forwards input" "$category" "inputs.grype-category"
 
   # Each merge call site sets the right category.
-  local python_cat venv_cat service_cat service_pr_cat
-  python_cat=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest python-base") | .with["grype-category"]' "$WORKFLOW" || true)
-  venv_cat=$(yq_raw '.jobs["merge-base-images"]["steps"][] | select(.name == "Merge and attest venv-builder") | .with["grype-category"]' "$WORKFLOW" || true)
+  local libvirt_cat service_cat service_pr_cat
+  libvirt_cat=$(yq_raw '.jobs["merge-libvirt-image"]["steps"][] | select(.id == "merge-libvirt") | .with["grype-category"]' "$WORKFLOW" || true)
   service_cat=$(yq_raw '.jobs["merge-service-images"]["steps"][] | select(.name == "Merge and attest service image") | .with["grype-category"]' "$WORKFLOW" || true)
   service_pr_cat=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["grype-category"]' "$WORKFLOW" || true)
 
-  assert_eq "python-base SARIF category is grype-python-base" "grype-python-base" "$python_cat"
-  assert_eq "venv-builder SARIF category is grype-venv-builder" "grype-venv-builder" "$venv_cat"
+  assert_eq "libvirt SARIF category is grype-libvirt" "grype-libvirt" "$libvirt_cat"
   assert_contains "service merge SARIF category references matrix.service" "$service_cat" "matrix.service"
   assert_contains "service PR SARIF category references matrix.service" "$service_pr_cat" "matrix.service"
 }
@@ -2304,7 +2170,7 @@ test_security_events_permission_scoped_to_merge_jobs() {
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has no security-events permission" "null" "$perm"
   done
-  for job in merge-base-images merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-libvirt-image merge-ovn-image merge-hvo-image merge-kna-image merge-service-images merge-nova-compute-image; do
+  for job in merge-tempest-image merge-keystone-federation-proxy-image merge-backup-shifter-image merge-libvirt-image merge-ovn-image merge-hvo-image merge-kna-image merge-service-images merge-nova-compute-image; do
     perm=$(yq_raw ".jobs[\"$job\"][\"permissions\"][\"security-events\"]" "$WORKFLOW" || echo "null")
     assert_eq "$job has security-events: write" "write" "$perm"
   done
@@ -2332,15 +2198,6 @@ test_sarif_upload_action_sha_pinned() {
   assert_file_contains "upload-sarif pin has # v4 version comment" "$ACTION_SUPPLY_CHAIN" "codeql-action/upload-sarif@[0-9a-f]\{40\}[[:space:]]*# v4"
 }
 
-# --- security-events permission on merge-base-images ---
-test_security_events_permission_build_base_images() {
-  echo "Test: merge-base-images has security-events: write permission"
-
-  local perm
-  perm=$(yq_raw '.jobs["merge-base-images"]["permissions"]["security-events"]' "$WORKFLOW" || true)
-  assert_eq "merge-base-images security-events permission is write" "write" "$perm"
-}
-
 # --- security-events permission on merge-service-images ---
 test_security_events_permission_build_service_images() {
   echo "Test: merge-service-images has security-events: write permission"
@@ -2353,10 +2210,6 @@ test_security_events_permission_build_service_images() {
 # --- verify jobs do NOT have security-events permission ---
 test_verify_jobs_no_security_events_permission() {
   echo "Test: verify jobs do not have security-events permission"
-
-  local verify_base_perm
-  verify_base_perm=$(yq_raw '.jobs["verify-base-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
-  assert_eq "verify-base-images has no security-events permission" "null" "$verify_base_perm"
 
   local verify_service_perm
   verify_service_perm=$(yq_raw '.jobs["verify-service-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
@@ -2425,17 +2278,11 @@ test_pull_request_trigger
 echo ""
 test_all_jobs_defined
 echo ""
-test_verify_base_images_job
-echo ""
-test_base_images_multi_arch
-echo ""
-test_base_image_digest_outputs
-echo ""
 test_distro_image_jobs keystone-federation-proxy tests/container-images/verify_keystone_federation_proxy.sh
 echo ""
 test_nix_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh backup-shifter-image
 echo ""
-test_distro_image_jobs libvirt tests/container-images/verify_libvirt.sh
+test_libvirt_jobs
 echo ""
 test_libvirt_keeper_tag
 echo ""
@@ -2500,13 +2347,9 @@ test_timeout_minutes_on_all_jobs
 echo ""
 test_runs_on_ubuntu_latest
 echo ""
-test_base_images_always_push
-echo ""
 test_run_blocks_use_env_vars
 echo ""
 test_fork_pr_rejection_step_exists
-echo ""
-test_base_images_have_sha_tags
 echo ""
 test_version_tag_restricted_to_main
 echo ""
@@ -2532,8 +2375,6 @@ test_test_service_images_artifact_name
 echo ""
 test_test_service_images_env_vars
 echo ""
-test_sbom_permissions_on_build_base_images
-echo ""
 test_sbom_permissions_on_build_service_images
 echo ""
 test_verify_jobs_no_sbom_permissions
@@ -2558,13 +2399,7 @@ test_build_provenance_steps_pr_skip_guard
 echo ""
 test_build_provenance_push_to_registry
 echo ""
-test_metadata_action_steps_exist_in_build_base_images
-echo ""
-test_base_metadata_steps_have_no_tags_override
-echo ""
-test_python_base_build_push_has_labels_input
-echo ""
-test_venv_builder_build_push_has_labels_input
+test_build_push_image_has_labels_input
 echo ""
 test_oci_base_labels_in_build_steps
 echo ""
@@ -2576,12 +2411,6 @@ test_metadata_action_labels_include_oci_licenses
 echo ""
 test_metadata_action_labels_include_oci_vendor
 echo ""
-test_dockerfile_static_labels_python_base
-echo ""
-test_dockerfile_static_labels_venv_builder
-echo ""
-test_cosign_installer_in_build_base_images
-echo ""
 test_cosign_installer_in_build_service_images
 echo ""
 test_cosign_sign_steps_count
@@ -2592,7 +2421,7 @@ test_cosign_sign_steps_reference_digest
 echo ""
 test_cosign_sign_uses_yes_flag
 echo ""
-test_grype_scan_steps_in_build_base_images
+test_grype_scan_steps_in_supply_chain_attest
 echo ""
 test_grype_scan_step_in_build_service_images
 echo ""
@@ -2616,8 +2445,6 @@ test_sarif_upload_always_condition
 test_security_events_permission_scoped_to_merge_jobs
 echo ""
 test_sarif_upload_action_sha_pinned
-echo ""
-test_security_events_permission_build_base_images
 echo ""
 test_security_events_permission_build_service_images
 echo ""
