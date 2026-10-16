@@ -17,6 +17,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 
 | Diagram | Shows | Embedded in |
 | --- | --- | --- |
+| `brownfield-keystone-adoption-phases` | The four adoption phases: implemented identity-only management, followed by sketches for infrastructure attach, Keystone takeover, and steady state | [Brownfield Keystone Adoption phase model](../future/brownfield-keystone-adoption.md#phase-model) |
 | `cobaltcore-overview` | What CobaltCore does, as a layer stack from bare metal to the OpenStack clouds, and why it matters | [Overview](../index.md) |
 | `cobaltcore-management-cluster` | The implemented management cluster, from one `ControlPlane` CR to the running OpenStack services, with optional target clusters | [Implemented topology](../architecture/index.md#implemented-topology), [Quick Start (ControlPlane)](../quick-start-controlplane.md), [Core Components](../architecture/core-components.md), [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md), [ControlPlane CRD API Reference](../reference/c5c3/controlplane-crd.md), [Target Clusters](../reference/target-clusters.md), [Architecture Overview](../reference/infrastructure/e2e-deployment.md#architecture-overview) |
 | `cobaltcore-stack` | The stack layer by layer, with the project behind each layer (IronCore, Garden Linux, Gardener, CobaltCore, OpenStack) | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
