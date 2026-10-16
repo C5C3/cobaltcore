@@ -57,9 +57,9 @@ The custom managers cover:
 - **K-ORC Flux source** — the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
-- **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
-- **openstack-hypervisor-operator image pin** — the `ARG HVO_COMMIT` line in `images/openstack-hypervisor-operator/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source). The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed `git apply` step in `build-hvo` (`patch does not apply: /patches/<file>`) means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
-- **kvm-node-agent image pin** — the `ARG KNA_COMMIT` line in `images/kvm-node-agent/Dockerfile` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed `git apply` step in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
+- **OVN image pin** — the `version` and `rev` keys of `images/ovn/source.json` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the hashes and the OVS commit of the `ovs` gitlink (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Digest updates are disabled, as for noVNC. A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesSourcePin` fails when they diverge.
+- **openstack-hypervisor-operator image pin** — the `rev` key of `images/openstack-hypervisor-operator/source.json` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source); `make nix-lock` then writes its `hash` and `vendorHash`. The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed patch phase in `build-hvo` means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
+- **kvm-node-agent image pin** — the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets** — the `version` and `rev` keys of `images/nova/novnc.json` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Nix locks](#nix-locks)). Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 - **Lab libvirt image** — the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is the keeper tag `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1`, that `hack/ci-tag-libvirt-keeper.sh` mints once on `main`. `deb` compares the Ubuntu revision and the `-r<N>` suffix numerically; `docker` versioning would read `-2ubuntu8.19-r1` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `10.x`, so `allowedVersions` admits the keeper shape alone. Majors are disabled, because `tests/container-images/verify_libvirt.sh` pins libvirt 10, the `libvirt0` that `images/nova-compute/Dockerfile` links. Minor, patch and digest updates move all eight lines in one PR (`metal-stack lab libvirt image`) without a cooldown, since this repository's own `main` builds the image from a reviewed commit. They are **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump is what the pin is for.
 - **Lab Ceph image** — the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
@@ -116,11 +116,12 @@ per release for Tempest, are derived from five kinds of pin:
 `releases/<release>/source-refs.yaml` and `test-refs.yaml`,
 `releases/<release>/upper-constraints.txt` and `extra-packages.yaml`,
 `overrides/<release>/constraints.txt`, the patches under `patches/`, and
-`images/venv-builder/requirements.txt`. `hack/nix-lock.sh` writes them, and the noVNC
-hash in `images/nova/novnc.json` with them. `nix/locks/**` in `ignorePaths` keeps
+`images/venv-builder/requirements.txt`. `hack/nix-lock.sh` writes them, and with them
+the noVNC hash in `images/nova/novnc.json` and the derived keys of the three image
+pins `images/<name>/source.json`. `nix/locks/**` in `ignorePaths` keeps
 every manager from reading the derived files, and a `packageRules` entry with
 `matchFileNames: ["nix/locks/**"]` disables any update to them. A Renovate PR that
-moves one of those pins, or the noVNC pin, therefore fails the `nix-lock-check` job
+moves one of those pins, the noVNC pin or an image pin, therefore fails the `nix-lock-check` job
 of the build-images workflow and cannot automerge until the locks follow. The fix is
 one command on the PR branch, committed and pushed:
 
@@ -272,31 +273,31 @@ nothing while a floor equals the newest release: lower the floor in the copy, fo
 example to `>=1.9.0 <2.0.0` in `deploy/kind/base/envoy-gateway.yaml`, to see
 `>=1.9.2 <2.0.0` proposed for the `renovate/envoy-gateway` branch.
 
-### Pins with no datasource: the OVN image content pins
+### Derived keys of the image pins
 
-`images/ovn/Dockerfile` carries two pins Renovate deliberately does **not** track:
+Renovate moves the keys of the three image pins a datasource can name: `version` and
+`rev` of `images/ovn/source.json`, and `rev` of
+`images/openstack-hypervisor-operator/source.json` and
+`images/kvm-node-agent/source.json`. `make nix-lock` writes the rest:
 
-| Pin | What it names |
+| Pin | Derived keys |
 | --- | --- |
-| `ARG OVN_COMMIT` | The commit `ARG OVN_VERSION` resolves to today, and the ref the build fetches |
-| `ARG OVS_COMMIT` | The commit the `ovs` submodule gitlink names at that commit |
+| `images/ovn/source.json` | `hash`, the NAR hash of the OVN tree at `rev`; `ovs.rev`, the commit the `ovs` submodule gitlink names at `rev`; `ovs.hash`, the NAR hash of that OVS tree |
+| `images/openstack-hypervisor-operator/source.json`, `images/kvm-node-agent/source.json` | `hash`, the NAR hash of the tree at `rev`; `vendorHash`, the hash of its Go module download |
 
-Both are content pins, standing to `OVN_VERSION` as the `sha256` digest stands to
-`ubuntu:noble`, and no Renovate datasource can express "the commit at tag X" or "the
-`ovs` gitlink at tag X". So a tag bump moves `OVN_VERSION` and leaves both behind. The
-build fetches `OVN_COMMIT` rather than the tag, so it still compiles the old release and
-CI fails one step later, in `tests/container-images/verify_ovn.sh`: the version the
-binaries report no longer matches the bumped pin. **Owner: the reviewer of the Renovate
-PR** — they clone the new tag, read both SHAs with
-`git -C <ovn-clone-at-tag> rev-parse HEAD` and `rev-parse HEAD:ovs`, and commit them
-onto the branch. That step is why the OVN patch rule does not automerge: an automerged
-PR would leave nobody to carry the pins across, and the group would stall red until
-someone noticed OVN security patches had stopped landing.
+No Renovate datasource can express "the `ovs` gitlink at tag X" or a NAR hash, so a
+Renovate PR on one of these pins fails `nix-lock-check` until someone runs
+`make nix-lock` on its branch and pushes the result. `hack/nix-lock.sh` reads the
+gitlink from a shallow, blobless fetch of the pinned OVN commit and recomputes a
+`vendorHash` only when `hash` moved or `vendorHash` is empty. The build fetches each
+tree by commit and hash, never through the tag, so a moved tag or a changed gitlink
+cannot change the image without a change in this repository. That step is also why
+the OVN patch rule does not automerge: an automerged PR would leave nobody to run it,
+and the group would stall red until someone noticed OVN security patches had stopped
+landing ([Source-built images](../reference/ci-cd/nix-image-build.md#source-built-images)).
 
-The `rev` of `images/nova/novnc.json` is the exception to that split.
-Renovate tracks it as the `currentDigest` of the noVNC manager: a plain tag
-has no second gitlink to carry across, and the github-tags datasource resolves
-the tag to the commit it names.
+The noVNC pin `images/nova/novnc.json` follows the same flow: Renovate moves `version`
+and `rev`, and `make nix-lock` writes `hash`.
 
 ### Re-cutting the openstack-hypervisor-operator patch
 
@@ -310,16 +311,15 @@ against the pinned upstream commit, each as one commit on top of the ones before
 | `0003-traits-report-traitsupdated-when-nothing-differs.patch` | `Traits: report TraitsUpdated when no custom trait differs` | `go test -count=1 -run '^TestTraitsInSyncSetsTraitsUpdated$' ./internal/controller/` |
 | `0004-openstack-select-the-catalog-interface-with-os-interface.patch` | `openstack: select the catalog interface with OS_INTERFACE` | `go test -count=1 -run '^TestServiceClientInterface$' ./internal/openstack/` |
 
-When a Renovate PR moves `ARG HVO_COMMIT` to a commit on which one of them no
-longer applies, `build-hvo` fails at the `git apply` step and nothing is
-published. If upstream now carries a patch's change, delete that patch on the
-Renovate branch together with its checks in the Dockerfile's build step: for 0001
-the `servers.LiveMigrateOpts` grep and the `TestLiveMigrateAutoBody` run, for
-0002 and 0003 the test's name in the controller `go test` run and the `grep` for
-its `--- PASS:` line, for 0004 the `TestServiceClientInterface` run and its
-`grep`. Each test passes only while upstream ships it. With no patch
-left, the `COPY patches/` and `git apply` steps fail as well, so drop them in the
-same change. Otherwise re-cut the patches in order in a scratch clone that holds
+When a Renovate PR moves the `rev` of `images/openstack-hypervisor-operator/source.json`
+to a commit on which one of them no longer applies, `build-hvo` fails in the patch
+phase of the Nix build and nothing is published. If upstream now carries a patch's
+change, delete that patch on the Renovate branch together with its checks in
+`images/openstack-hypervisor-operator/patch-checks.sh`: for 0001
+`check_live_migrate_opts` and the `TestLiveMigrateAutoBody` run, for 0002 and 0003
+the test's name in the controller `go test` run and its `require_pass`, for 0004 the
+`TestServiceClientInterface` run and its `require_pass`. Each test passes only while
+upstream ships it. With no patch left, `patches/` can go too. Otherwise re-cut the patches in order in a scratch clone that holds
 both the old and the new commit, so a three-way apply finds the blobs each patch
 was cut from:
 
@@ -341,19 +341,19 @@ of a mail envelope, and `git am` stops at the missing author. Turn each
 `git format-patch` output back into the house header (the SPDX pair, the bare subject,
 the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
 diffstat; see `patches/cinder/2026.1/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
-for the form), commit the files onto the Renovate branch and let `build-hvo` prove
-them.
+for the form), run `make nix-lock` for `hash` and `vendorHash`, commit the files onto
+the Renovate branch and let `build-hvo` prove them.
 
 ### Re-cutting the kvm-node-agent patch
 
 `images/kvm-node-agent/patches/0001-certificates-restrict-private-key-file-modes.patch`
 is cut against the pinned upstream commit, and the recipe is the one above with the
-kna names. When a Renovate PR moves `ARG KNA_COMMIT` to a commit on which the patch
-no longer applies, `build-kna` fails at the `git apply` step and nothing is
-published. If upstream now carries the change, delete the patch on the Renovate
-branch together with its two test runs in the Dockerfile's build step, and with the
-last patch the `COPY patches/` and `git apply` steps. Otherwise re-cut it in a
-scratch clone that holds both commits:
+kna names. When a Renovate PR moves the `rev` of `images/kvm-node-agent/source.json`
+to a commit on which the patch no longer applies, `build-kna` fails in the patch phase
+of the Nix build and nothing is published. If upstream now carries the change, delete
+the patch on the Renovate branch together with its two test runs in
+`images/kvm-node-agent/patch-checks.sh`, and with the last patch `patches/`.
+Otherwise re-cut it in a scratch clone that holds both commits:
 
 ```bash
 old=<commit before the move>; new=<commit the Renovate PR pins>
@@ -369,13 +369,13 @@ git format-patch -1 --no-signature --stdout > /tmp/0001.patch
 ```
 
 Run the second test as a user other than root: it skips as root, because a root
-process may give a file any group. The image build runs the first test as root and
-the second as uid 65534, and fails unless both print their `--- PASS:` line. Turn
-the `git format-patch` output into the house header as for the hvo patch (the SPDX
-pair, the bare subject, the rationale, `Applies-to:` naming the new commit,
-`Upstream status:`, and no diffstat), move the chart ref in
-`deploy/lab/metal-stack/hypervisor/sources.yaml` to the chart of the new commit,
-commit both onto the Renovate branch and let `build-kna` prove the patch.
+process may give a file any group. The image build runs both tests as a Nix build
+user and fails unless both print their `--- PASS:` line. Turn the `git format-patch`
+output into the house header as for the hvo patch (the SPDX pair, the bare subject,
+the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
+diffstat), move the chart ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` to
+the chart of the new commit, run `make nix-lock`, commit the result onto the Renovate
+branch and let `build-kna` prove the patch.
 
 ---
 

@@ -324,6 +324,7 @@ four to `hack/ci-resolve-e2e-images.sh`:
 | `changed-services` | JSON array of the operators whose service image sources changed. Passed as `CHANGED_SERVICES` |
 | `changed-tempest` | `true` when the `image_tempest` or `images_base` class changed. Passed as `CHANGED_TEMPEST` |
 | `changed-proxy` | `true` when the `image_proxy` class changed. Passed as `CHANGED_PROXY` |
+| `changed-ovn` | `true` when the `image_ovn` class changed: the ovn and backup-shifter image sources, `flake.nix`, `flake.lock`, `nix/lib/**` or `hack/ci-nix-build-e2e-images.sh`. Passed as `CHANGED_OVN` |
 | `build-e2e-images` | `true` when `has-e2e-operators`, `tempest` or an `e2e-*` flag other than `e2e-infra` is `true`. Gates `build-e2e-images` |
 | `has-e2e-operators` | `true` when `e2e-operators` holds at least one operator. Gates `e2e-operator`, `build-and-push` and `helm-push` |
 
@@ -863,24 +864,26 @@ guard.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads, and with `persist-credentials: false`, so no token lies in `/github/runner_temp` for the build users of step 5 to read |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest` and `changed-proxy`; writes the `BUILD_*` variables, `NEEDS_BASE_IMAGES` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` and `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` |
+| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy` and `changed-ovn`; writes the `BUILD_*` variables, `NEEDS_BASE_IMAGES`, `OVN_VERSION` and the `image-map` output |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES`, `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES` and `ovn-image` when `BUILD_OVN` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn) |
 | 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>`, then the tar is removed |
 | 7 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true (a nova-compute line is built) |
 | 8 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 9 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
 | 10 | Build service images | Builds `<IMAGE_PREFIX>/<image>:<release>` from the service's source for each line of `BUILD_SERVICE_IMAGES` carrying a third field (`nova 2026.1 nova-compute`) and skips the other lines, which step 5 built; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
-| 11 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh`; passes `GITHUB_TOKEN` as the `github_token` BuildKit secret for the fetches inside the build |
-| 12 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
+| 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`; `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
 `releases/*/source-refs.yaml`, a derived image per release of the service it is built
 from (`nova-compute` from `nova`, built whenever that `nova` image is), a Tempest image
-per `releases/<release>/`, and the federation proxy. An image whose sources this pull request changed is built here and
-mapped to its run-scoped tag. Every other image is mapped to the index digest behind
-its published tag (`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>`,
-`keystone-federation-proxy:latest`), which the run pulls instead of rebuilding.
+per `releases/<release>/`, the federation proxy, and the OVN daemon image under the
+version `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`. An image
+whose sources this pull request changed is built here and mapped to its run-scoped tag.
+Every other image is mapped to the index digest behind its published tag
+(`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>`,
+`keystone-federation-proxy:latest`, `ovn:<version>`), which the run pulls instead of
+rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
 
@@ -894,15 +897,15 @@ leg fails on `main`, `merge-operator-images` publishes nothing, and every
 instead. It does the same for an image without a revision label and for a revision the
 checkout does not have, and a notice in the job log names the reason.
 
-The OVN daemon image is the one image outside that set: it carries no OpenStack
-release and no `go.mod`, so nothing derives it from the tree. Its own step builds it
-on every run of this job and pushes it under the run-scoped tag, and the consumers
-reach it through `load-e2e-images`, which falls back to that tag for a reference the
-map does not carry.
+The OVN daemon image carries no OpenStack release and no `go.mod`; its key comes
+from the pin. The resolver builds it when `changed-ovn` is set or main has not
+published the pinned version yet: it writes `BUILD_OVN=true`, and step 5 builds
+`ovn-image` beside the other Nix images. A pin the resolver cannot read fails the step
+before the map is written.
 
 Only nova-compute builds `FROM python-base` and `venv-builder`, so a run that builds
-no nova-compute skips the base-image step. The service and Tempest images are flake
-attributes that share their Nix store layers. The `nixos/nix` container runs as root
+no nova-compute skips the base-image step. The service, Tempest and ovn images are
+flake attributes that share their Nix store layers. The `nixos/nix` container runs as root
 in the runner's workspace and builds without the Nix sandbox, which an unprivileged
 container cannot create, so its builders run as build users of their own that can
 neither open the runner's Docker socket nor write the workspace, and the job's checkout
@@ -919,13 +922,11 @@ GHCR push/pull because the 355 MB single-blob artifact intermittently timed out 
 the 5-minute `actions/download-artifact` window. Layer-level pull retries plus the
 GHCR CDN dramatically reduce the failure rate.
 
-Timeout: 120 minutes. The job needed 45 before the OVN build joined it, and an
-uncached OVN build compiles Open vSwitch and OVN from source, which is what the
-`build-ovn` job of `build-images.yaml` budgets 60 minutes for. The GHA cache
-does not shorten the first run of a pull request: this job writes the scope
-`e2e-ovn`, which nothing on the default branch populates, and Actions caches are
-isolated per PR ref. Every E2E job gates on `build-e2e-images` succeeding, so a
-job killed at its timeout costs the pull request its whole E2E coverage.
+Timeout: 120 minutes. The job needs 45 without the ovn image, and a run that builds
+the ovn image without a cached build of the pin compiles Open vSwitch and OVN from
+source, which is what the `build-ovn` job of `build-images.yaml` budgets 60 minutes
+for. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
+timeout costs the pull request its whole E2E coverage.
 
 ### e2e-operator
 
@@ -977,7 +978,7 @@ request's build. Timeout: 68 minutes, 150 for each `nova` shard.
 
 **The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
 run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
-`hack/ci-resolve-ovn-version.sh` reads out of `images/ovn/Dockerfile`. The
+`hack/ci-resolve-ovn-version.sh` reads out of `images/ovn/source.json`. The
 `Resolve E2E images` step appends that ref and `Load images into kind` loads it.
 
 The `neutron` leg loads the same image plus `ovn-operator:dev`, and deploys the
@@ -1155,7 +1156,7 @@ because it is the blocking leg and has not been stable on the self-hosted
 runners. The split keeps the legs independently gated and lets them run in
 parallel. Each matrix entry lists its per-suite test directories explicitly.
 
-A `Resolve OVN version` step reads the pin from `images/ovn/Dockerfile` through
+A `Resolve OVN version` step reads the pin from `images/ovn/source.json` through
 `hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
 the tag itself never appears in the workflow. The `network`, `ovn` and `nova`
 legs load `ovn-operator:dev` and `ovn:$OVN_VERSION` into kind, the `network` leg
@@ -1189,7 +1190,7 @@ estimate — confirm it against the first green run of the leg.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/Dockerfile` pin to `$GITHUB_ENV` as `OVN_VERSION` |
+| 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod`), the OVN images (all but `pod`), the neutron and cinder images (`network`), and the seven nova-leg images (`nova`) |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` leg |
@@ -1287,7 +1288,7 @@ kernel-module rule above, and creates its cluster from
 ovn-operator into `ovn-system`, and the suite runs through
 `make e2e-ovn-overlay`, the same target a developer calls locally. The OVN
 daemon image is loaded at the tag `hack/ci-resolve-ovn-version.sh` reads from
-`images/ovn/Dockerfile`, so the workflow spells no version of its own.
+`images/ovn/source.json`, so the workflow spells no version of its own.
 Diagnostics run with `OPERATOR: ovn`, and `_output/reports/` is uploaded as the
 `e2e-ovn-overlay-junit-report` artifact (14-day retention). `cleanup-e2e-tags`
 lists the job in its `needs`, so the run-scoped image tags survive until it
@@ -1619,7 +1620,7 @@ are estimates to confirm against the first green run.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/Dockerfile` |
+| 3 | `hack/ci-resolve-ovn-version.sh` | Exports `OVN_VERSION` from the pin in `images/ovn/source.json` |
 | 4 | `load-e2e-images` composite | Restores the ten operator `:dev` images, the `keystone`, `glance`, `placement`, `barbican`, `neutron`, `cinder` and `nova` images at `2026.1`, `ovn:${OVN_VERSION}` and `tempest:2026.1` |
 | 5 | `kind load docker-image` | Loads the nineteen images into kind |
 | 6 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=cp-autoscaling WITH_CONTROLPLANE_CR=false WITH_NFS=true WITH_MESSAGING=true WITH_METRICS_SERVER=true WITH_VPA=true` |
@@ -1714,7 +1715,7 @@ its `needs`.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `Create target kind cluster` | `create-kind-cluster` composite action with `version: ${{ env.KIND_VERSION }}`, `config: hack/kind-config.yaml` and `cluster-name: ${{ env.TARGET_CLUSTER }}`. Only the target takes the kind config with its host ports |
-| 3 | `Resolve OVN version` | Writes `OVN_VERSION` to `$GITHUB_ENV` from `hack/ci-resolve-ovn-version.sh`, which reads the pin in `images/ovn/Dockerfile` |
+| 3 | `Resolve OVN version` | Writes `OVN_VERSION` to `$GITHUB_ENV` from `hack/ci-resolve-ovn-version.sh`, which reads the pin in `images/ovn/source.json` |
 | 4 | `Load E2E images` | `load-e2e-images` composite action with the `image-map` output of `build-e2e-images`. Pulls eight images: `keystone-operator`, `barbican-operator`, `ovn-operator` and `neutron-operator` at `:dev`, `keystone`, `barbican` and `neutron` at `2026.1`, and `ovn:${{ env.OVN_VERSION }}` |
 | 5 | `Load service images into the target cluster` | `kind load docker-image` for `keystone:2026.1`, `barbican:2026.1`, `neutron:2026.1` and the OVN image into `cobaltcore-target`. The OVN image is a service image here: the databases and northd of the placed `OVNCentral` run on the target |
 | 6 | `Setup target-cluster infrastructure` | `setup-e2e-infra` composite action with `INFRA_ONLY: "true"`, `CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}` and `WITH_OVN_KERNEL_MODULES: "true"`. With `INFRA_ONLY=true`, `hack/deploy-infra.sh` suspends every CobaltCore operator HelmRelease and scales its Deployment to zero. The chassis runs on the management cluster, but the `openvswitch` and `geneve` modules load into the host kernel that both kind clusters share |
@@ -1858,7 +1859,7 @@ with, see
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/Dockerfile` holds the pin |
+| 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/source.json` holds the pin |
 | 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
@@ -2232,19 +2233,23 @@ image set `hack/ci-resolve-e2e-images.sh` wrote.
 | --- | --- | --- | --- |
 | `BUILD_SERVICE_IMAGES` | No | (empty) | One `<service> <release> [<image>]` line per image; a line without a third field is built here, a line with one (`nova-compute`) is skipped |
 | `BUILD_TEMPEST_RELEASES` | No | (empty) | The releases whose Tempest image is built |
+| `BUILD_OVN` | No | (empty) | `true` builds the ovn image, the flake attribute `ovn-image` |
+| `OVN_VERSION` | With `BUILD_OVN` | (empty) | The pinned OVN version, the tag `docker load` prints for the ovn image; `hack/ci-resolve-e2e-images.sh` writes it |
 | `GITHUB_WORKSPACE` | Yes | - | The checkout the flake is evaluated in; set by the runner |
 
 The script writes the group `e2ebld` (gid 40000) and one build user per CPU (uids
 from 40001) to the container's account files (`NIX_E2E_ETC`, `/etc` by default), then
-builds the flake attributes `<name>-<rel_>-image` of every image in one `nix build`
-with `--option sandbox false`, `--option build-users-group e2ebld` and one job per
-CPU. The builders, which run the setup code of every sdist the locks build, run as
+builds the flake attributes `<name>-<rel_>-image` of every image, and `ovn-image` with
+`BUILD_OVN`, in one `nix build` with `--option sandbox false`,
+`--option build-users-group e2ebld` and one job per CPU. The builders, which run the setup code of every sdist the locks build, run as
 those users: the runner mounts its Docker socket and the workspace into the container,
 and a build user can neither open the socket nor write the workspace. Their uids are not
 those of a host Nix daemon's build users. It then writes each image stream to
-`.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`.
-A line with four fields exits 1
-with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, and a missing attribute or a
+`.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`;
+the ovn image is listed as `ovn <OVN_VERSION>`. A line with four fields exits 1
+with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, a `BUILD_OVN` without
+`OVN_VERSION` with `ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is
+empty`, both before nix runs, and a missing attribute or a
 failed build with nix's exit status; an empty image set prints
 `ci-nix-build-e2e-images.sh: nothing to build` and exits 0. Nix substitutes from `cache.nixos.org` and, once the script's
 `CACHIX_PUBLIC_KEY` constant names the key of the `cobaltcore` cache, from that cache.
@@ -2255,57 +2260,29 @@ stub `nix`, `git` and `nproc` binaries and scratch account files.
 
 ### hack/ci-resolve-ovn-version.sh
 
-Prints the OVN version pinned in `images/ovn/Dockerfile`. It reads the single
-`ARG OVN_VERSION=` line and writes the tag without its leading `v` to stdout,
-so `v26.03.2` becomes `26.03.2`. The script is the only parser of that line:
-the `build-ovn` and `merge-ovn-image` jobs in `build-images.yaml`,
-`hack/ci-build-ovn-image.sh` and `tests/container-images/verify_ovn.sh` all
-call it.
+Prints the OVN version pinned in `images/ovn/source.json`. It reads the
+`"version"` key with `jq` and writes the tag without its leading `v` to stdout,
+so `v26.03.2` becomes `26.03.2`. The Nix build and `hack/nix-lock.sh` read the
+file themselves; everywhere else in CI the script parses that key: the
+`merge-ovn-image` job in `build-images.yaml`, the e2e jobs of this workflow,
+`hack/ci-resolve-e2e-images.sh` and `tests/container-images/verify_ovn.sh` call
+it.
 
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `OVN_DOCKERFILE` | No | `images/ovn/Dockerfile` | Dockerfile whose `ARG OVN_VERSION` line is parsed |
+| `OVN_SOURCE` | No | `images/ovn/source.json` | Pin file whose `"version"` key is read |
 
-Three cases make the script print an `::error::` annotation on stderr and exit
-1: the Dockerfile does not exist, it holds no `ARG OVN_VERSION=` line, or the
-value is not a `vX.Y.Z` tag (a second `ARG OVN_VERSION=` line fails that
-anchored match too). Annotations go to stderr, so stdout carries the version
-and nothing else.
+Five cases make the script print an `::error::` annotation on stderr and exit
+1: `jq` is not on `PATH`, the pin file does not exist, it is not valid JSON, it
+has no `"version"`, or the value is not a `vX.Y.Z` tag. Annotations go to
+stderr, so stdout carries the version and nothing else.
 
 Usage:
 
 ```bash
 hack/ci-resolve-ovn-version.sh
-OVN_DOCKERFILE=path/to/Dockerfile hack/ci-resolve-ovn-version.sh
+OVN_SOURCE=path/to/source.json hack/ci-resolve-ovn-version.sh
 ```
-
-### hack/ci-build-ovn-image.sh
-
-Builds the OVN container image. It resolves the pin with
-`hack/ci-resolve-ovn-version.sh`, then runs `docker build` on
-`images/ovn/Dockerfile` with `images/ovn/` as the build context. The Dockerfile
-clones OVN at the pinned tag and takes Open vSwitch from that tag's `ovs`
-submodule gitlink, so the build needs no host checkout and no `--build-arg`.
-`OVN_DOCKERFILE` moves both halves at once — the resolver reads the pin from
-that file and `docker build` builds it, with its directory as the context — so
-the tag can never claim a version the image was not built from.
-
-| Environment Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `OVN_IMAGE` | No | `c5c3/ovn:<version>` | Target image name:tag |
-| `OVN_DOCKERFILE` | No | `images/ovn/Dockerfile` | Dockerfile to resolve the pin from and to build; its directory is the build context |
-| `DOCKER_BUILD_CACHE_FROM` | No | (unset) | buildx `--cache-from` spec |
-| `DOCKER_BUILD_CACHE_TO` | No | (unset) | buildx `--cache-to` spec |
-| `GITHUB_TOKEN` | No | (unset) | Authenticates the source fetches from `github.com` inside the build; mounted as the `github_token` BuildKit secret, never a build-arg, so it reaches no layer. The `Build OVN image` step passes the workflow token |
-
-Usage:
-
-```bash
-hack/ci-build-ovn-image.sh
-OVN_IMAGE=ghcr.io/c5c3/ovn:$(hack/ci-resolve-ovn-version.sh) hack/ci-build-ovn-image.sh
-```
-
-The `build-e2e-images` job wires the script into its `Build OVN image` step.
 
 ### hack/ci-run-tempest.sh
 

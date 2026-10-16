@@ -127,7 +127,8 @@ For an `OVNChassis` named `{name}`:
 - [Reconciler Architecture](./ovn-reconciler.md): the two pipelines, their
   conditions, and requeue semantics
 
-The OVN image is release-independent and built from `images/ovn/Dockerfile`; see
+The OVN image is release-independent and built by Nix from the pin in
+`images/ovn/source.json`; see
 [build-ovn / merge-ovn-image / verify-ovn-image](../ci-cd/build-images-workflow.md#build-ovn-merge-ovn-image-verify-ovn-image).
 The `ovn` e2e leg and the multi-node overlay leg are documented in
 [e2e-operator](../ci-cd/ci-workflow.md#e2e-operator) and

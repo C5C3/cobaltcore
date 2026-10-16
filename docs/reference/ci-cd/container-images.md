@@ -40,31 +40,22 @@ the runtime stage extends `python-base` and copies only the virtualenv from
 it. This ensures the final image contains no build tools.
 
 The release-independent images sit outside that lineage. They carry no
-OpenStack code, and three of them build straight on `ubuntu:noble`:
+OpenStack code, and two of them build straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
-├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
-├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
 ├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
 └── libvirt                    Single stage: distro libvirt + QEMU + OVMF
 ```
 
-`backup-shifter`, the eight Python service images and `tempest` have no
-Dockerfile: the root flake builds them from `images/<name>/image.nix`
-([Nix Image Build](./nix-image-build.md)).
-
-`openstack-hypervisor-operator` and `kvm-node-agent` compile Go programs and
-build on the two images the CobaltCore operator images use:
-
-```text
-golang:1.27
-├── openstack-hypervisor-operator  Stage 1 (build): fetch the pinned upstream commit, apply the patches, go test + go build
-└── kvm-node-agent                 Stage 1 (build): fetch the pinned upstream commit, apply the patches, two test runs + go build
-gcr.io/distroless/static:nonroot
-├── openstack-hypervisor-operator  Stage 2 (runtime): copy the manager binary
-└── kvm-node-agent                 Stage 2 (runtime): copy the manager binary, run as 0:0
-```
+`backup-shifter`, `ovn`, `openstack-hypervisor-operator`, `kvm-node-agent`,
+the eight Python service images and `tempest` have no Dockerfile: the root
+flake builds them from `images/<name>/image.nix`
+([Nix Image Build](./nix-image-build.md)). `ovn` compiles Open vSwitch and OVN
+from pinned upstream commits; `openstack-hypervisor-operator` and
+`kvm-node-agent` compile a Go program from a pinned upstream commit with the
+patches under `images/<name>/patches/` and run it on the distroless-equivalent
+image of `nix/lib/static-image.nix`.
 
 Each is described under [Release-independent images](#release-independent-images).
 
@@ -1296,70 +1287,71 @@ instead of once per release.
 
 ### ovn
 
-**Location:** `images/ovn/Dockerfile`
+**Location:** `images/ovn/source.json` (the pin), `images/ovn/ovn.nix` (the
+build), `images/ovn/image.nix` (the image)
 
-OVN and Open vSwitch daemons and client tools, compiled from upstream git in a
-two-stage build. Both stages start from the same digest-pinned `ubuntu:noble`.
+OVN and Open vSwitch daemons and client tools, compiled by Nix from pinned
+upstream commits and shipped on the FHS façade of `nix/lib/fhs-layout.nix`
+([Nix Image Build](./nix-image-build.md#source-built-images)).
 
 | Property | Value |
 | --- | --- |
-| Base image | `ubuntu:noble` (Ubuntu 24.04 LTS), both stages, pinned by digest |
-| Version pin | `ARG OVN_VERSION=v26.03.2`, the only version input, content-pinned by `ARG OVN_COMMIT` |
-| Open vSwitch | The commit the `ovs` submodule gitlink names at that OVN commit, pinned by `ARG OVS_COMMIT` |
-| User | `openstack` (UID 42424, GID 42424), created in this Dockerfile |
+| Base image | none; the root flake builds the image from `nixpkgs-images` |
+| Version pin | `"version": "v26.03.2"` in `images/ovn/source.json`, content-pinned by `rev` and `hash` |
+| Open vSwitch | The commit the `ovs` submodule gitlink names at that OVN commit, `ovs.rev` with `ovs.hash` |
+| User | `openstack` (UID 42424, GID 42424), the `fakeNss` entry of the façade |
 | Entrypoint | None; every workload names the daemon it runs |
 
-**Stage 1 (`build`):**
+**Build (`images/ovn/ovn.nix`):**
 
-- Installs the build requirements from OVN's
+- Fetches OVN at `rev` and OVS at `ovs.rev` with `fetchFromGitHub`, each by
+  commit and NAR hash, and puts the OVS tree where the empty submodule
+  directory was
+- Builds with the requirements of OVN's
   `Documentation/intro/install/general.rst`: `autoconf`, `automake`,
-  `build-essential`, `libtool`, `libssl-dev`, `libunbound-dev`,
-  `libcap-ng-dev` and `pkg-config`, plus `git`, `ca-certificates` and the
-  `python3` that the OVS code generation needs
-- Fetches `$OVN_COMMIT` from `https://github.com/ovn-org/ovn.git` — the
-  commit, not the tag — reads the OVS commit out of that checkout with
-  `git -C /src/ovn rev-parse HEAD:ovs`, aborts the build when it differs from
-  `$OVS_COMMIT`, and fetches that commit from
-  `https://github.com/openvswitch/ovs.git`
+  `libtool`, `pkg-config`, OpenSSL, unbound and `libcap_ng`, plus the
+  `python3` the OVS code generation needs
 - Builds OVS, then OVN against the OVS source tree
-  (`--with-ovs-source=/src/ovs`). Both configure with
-  `--prefix=/usr --localstatedir=/var --sysconfdir=/etc` and stage their
-  install into `/out` via `make install DESTDIR=/out`
+  (`--with-ovs-source`). Both configure with
+  `--prefix=$out --localstatedir=/var --sysconfdir=/etc`
+- Drops the headers, the static libraries, the man pages, `$out/etc`, the OVS
+  Python package, the bugtool plugins and every script whose first line names
+  python3; `disallowedRequisites` keeps python3 out of the closure
+- Fails in its `installCheckPhase` when `ovn-northd --version` names another
+  version than the pin
 
-**Stage 2 (runtime):**
+**Image (`images/ovn/image.nix`):**
 
-- Installs the runtime packages listed below
-- Creates the `openstack` user and group
-- Copies `/out/usr/bin`, `/out/usr/sbin`, `/out/usr/share/openvswitch` and
-  `/out/usr/share/ovn`. Headers, static libraries and man pages stay in the
-  build stage
-- Creates `/var/run/openvswitch`, `/var/run/ovn`, `/var/lib/openvswitch`,
-  `/var/lib/ovn`, `/var/log/openvswitch`, `/var/log/ovn`, `/etc/openvswitch`
-  and `/etc/ovn`, all owned by `openstack`
-- Sets the OCI labels (title `ovn`, description "OVN and Open vSwitch daemons
-  and client tools built from pinned upstream sources", licenses `Apache-2.0`,
-  vendor `SAP SE`) and `USER openstack`
+- The façade with `/usr/share/ovn` and `/usr/share/openvswitch` linked into
+  the store path of the build, the build itself, and the packages listed below
+- `/var/run` links to `/run`. `/run/openvswitch`, `/run/ovn`,
+  `/var/lib/openvswitch`, `/var/lib/ovn`, `/var/log/openvswitch`,
+  `/var/log/ovn`, `/etc/openvswitch` and `/etc/ovn` exist, all owned by 42424
+- The OCI labels title `ovn`, description "OVN and Open vSwitch daemons and
+  client tools built from pinned upstream sources", licenses `Apache-2.0`,
+  vendor `SAP SE` and version `26.03.2`; `User` `42424:42424`
 
 **Installed paths:**
 
 | Path | Contents |
 | --- | --- |
-| `/usr/bin` | `ovn-northd`, `ovn-controller`, `ovn-nbctl`, `ovn-sbctl`, `ovn-appctl`, `ovsdb-tool`, `ovsdb-client`, `ovs-vsctl`, `ovs-appctl`, `ovs-ofctl` |
-| `/usr/sbin` | `ovs-vswitchd`, `ovsdb-server` |
-| `/usr/share/ovn` | OVN's OVSDB schemas and `scripts/ovn-ctl` |
-| `/usr/share/openvswitch` | The OVS OVSDB schemas and `scripts/ovs-ctl` |
+| `/bin` | `ovn-northd`, `ovn-controller`, `ovn-nbctl`, `ovn-sbctl`, `ovn-appctl`, `ovsdb-tool`, `ovsdb-client`, `ovsdb-server`, `ovs-vswitchd`, `ovs-vsctl`, `ovs-appctl`, `ovs-ofctl`, and the commands of the packages below |
+| `/usr/share/ovn` | OVN's OVSDB schemas and `scripts/ovn-ctl`, a link into the store |
+| `/usr/share/openvswitch` | The OVS OVSDB schemas and `scripts/ovs-ctl`, a link into the store |
 
-**Runtime packages:**
+**Runtime packages (nixpkgs):**
 
 | Package | Purpose |
 | --- | --- |
-| `ca-certificates` | TLS trust store |
+| `coreutils`, `findutils`, `gnugrep`, `gnused`, `gawk` | The commands `ovn-ctl`, `ovs-ctl` and the operator's scripts run (`id`, `install`, `date`, `seq`, `find`, `grep`, `sed`, `awk`) |
+| `hostname` | `hostname -f`, which the database reconciler runs |
 | `iproute2` | `ip`, which the chassis DaemonSets of issue #903 use to inspect interfaces |
-| `iputils-ping` | `ping`, which the OVN datapath e2e probes send across the Geneve tunnel |
-| `kmod` | `modprobe`, which those DaemonSets use to load host kernel modules |
-| `libcap-ng0` | Privilege-drop library the daemons link against |
-| `libssl3t64` | OpenSSL 3 runtime for the TLS-protected OVSDB connections |
-| `libunbound8` | DNS resolution |
+| `iputils` | `ping`, which the OVN datapath e2e probes send across the Geneve tunnel; they run as root, since a store path carries no file capability |
+| `kmod` | `modprobe`, which those DaemonSets use to load host kernel modules from the `/lib/modules` they mount |
+| `glibc` | `ldd`, which `verify_ovn.sh` runs on the daemons |
+
+OpenSSL, unbound and `libcap_ng` are in the image as the libraries the
+daemons link against.
 
 **Version output:** OVN programs print `<prog> 26.03.2` on `--version`,
 followed by `Open vSwitch Library 3.7.0`, the OVS revision they were built
@@ -1378,25 +1370,23 @@ under Build Requirements that the submodule is "not recommended to be used as a
 source for OVS build"; ovn-kubernetes builds its OVS from that gitlink in
 `dist/images/Dockerfile.fedora`, and this image does the same.
 
-`ARG OVN_VERSION` names a git tag, which is a mutable ref: upstream can move or
-delete it, and no check on the built image would notice. So each half of the
-source tree carries a content pin next to it, standing to `OVN_VERSION` as the
-`sha256` digest stands to `ubuntu:noble` — `ARG OVN_COMMIT` for the commit the
-tag resolves to, `ARG OVS_COMMIT` for the SHA the `ovs` gitlink names at that
-commit. Like a digest, both are what the build fetches: it never resolves the
-tag, and it fails when the gitlink at `$OVN_COMMIT` disagrees with
-`$OVS_COMMIT`. Neither a moved OVN tag nor a changed gitlink can alter the image
-without a change in this repository. Bump both together with `OVN_VERSION`; an
-`OVN_COMMIT` left behind by a tag bump surfaces in the version
-`tests/container-images/verify_ovn.sh` reads off the binaries, and a stale
-`OVS_COMMIT` in the build error.
+`version` names a git tag, which is a mutable ref: upstream can move or delete
+it. The build therefore never resolves the tag. It fetches `rev`, the commit
+the tag names, and `ovs.rev`, the commit the `ovs` gitlink names at `rev`,
+each by its NAR hash. `make nix-lock` reads the gitlink out of a shallow,
+blobless fetch of `rev` and writes `ovs.rev` and both hashes, and the
+`nix-lock-check` job fails while the committed pin differs from what it
+writes. Neither a moved OVN tag nor a changed gitlink can alter the image
+without a change in this repository, and a `rev` that does not build the
+tagged version fails the build's version guard.
 
-A Renovate `customManager` tracks `ovn-org/ovn` github-tags on the
-`ARG OVN_VERSION` line. Major and minor bumps are disabled to hold the image on
-the 26.03 LTS line; patch bumps wait a three-day cooldown and are **not**
-automerged, because no datasource can rewrite the two content pins and the
-reviewer of the Renovate PR carries them across. See
-[Dependency Management](../../contributing/dependency-management.md).
+A Renovate `customManager` tracks `ovn-org/ovn` github-tags on the `version`
+and `rev` keys of `images/ovn/source.json`, so a tag pull request moves both.
+Major and minor bumps are disabled to hold the image on the 26.03 LTS line,
+and digest updates are disabled too. Patch bumps wait a three-day cooldown and
+are **not** automerged: the pull request fails `nix-lock-check` until someone
+runs `make nix-lock` on its branch, which writes the hashes and the OVS
+commit. See [Dependency Management](../../contributing/dependency-management.md).
 
 **Image contract check:** `tests/container-images/verify_ovn.sh` runs nine
 tests against a built image. Five cover the software: the pinned OVN version on
@@ -1407,9 +1397,10 @@ create` building a database from each of `ovn-nb.ovsschema`, `ovn-sb.ovsschema`
 and `vswitch.ovsschema` — the schemas are the runtime artifact this image
 exists to serve, and no other assertion here reads them. The other four cover
 the packaging: `ldd` free of unresolved libraries with `libssl.so.3` linked
-into the TLS-speaking daemons, no build toolchain and no development headers,
-UID 42424 with writable state directories, and `modprobe`, `ip` and `ping` on
-`PATH`.
+into the TLS-speaking daemons, no build toolchain and no development headers
+(`assert_no_build_tools` of `tests/lib/build_tools.sh` lists the store too),
+UID 42424 with writable state directories, and `modprobe`, `ip`, `ping`,
+`hostname` and `find` on `PATH`, with `hostname -f` exiting 0.
 
 ### keystone-federation-proxy
 
@@ -1550,10 +1541,11 @@ Its build, verification and tag scheme are described in
 
 ### openstack-hypervisor-operator
 
-**Location:** `images/openstack-hypervisor-operator/Dockerfile`
+**Location:** `images/openstack-hypervisor-operator/source.json` (the pin),
+`manager.nix` and `patch-checks.sh` (the build), `image.nix` (the image)
 
-openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled from a
-pinned commit of its upstream `main` branch with the patches under
+openstack-hypervisor-operator (hvo) from `cobaltcore-dev`, compiled by Nix from
+a pinned commit of its upstream `main` branch with the patches under
 `images/openstack-hypervisor-operator/patches/` applied. The hypervisor package
 of issue #1142 deploys it with the upstream Helm chart of the same commit:
 `deploy/lab/metal-stack/hypervisor/hvo-release.yaml` runs it on the
@@ -1562,37 +1554,35 @@ metal-stack lab (see
 
 | Property | Value |
 | --- | --- |
-| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
-| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
-| Version pin | `ARG HVO_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-hvo-commit.sh` prints it) |
+| Build | `buildGo127Module` of `nixpkgs-images` ([Nix Image Build](./nix-image-build.md#source-built-images)) |
+| Runtime base | none; `nix/lib/static-image.nix`, the stand-in for `gcr.io/distroless/static:nonroot` |
+| Version pin | `rev` in `images/openstack-hypervisor-operator/source.json`, a 40-character commit of upstream `main` (`hack/ci-resolve-hvo-commit.sh` prints it), with `hash` and `vendorHash` |
 | User | `65532:65532`, the `nonroot` user of the distroless base |
 | Entrypoint | `/usr/bin/manager` |
 | Label | `io.c5c3.upstream-commit`, set to the pinned commit |
 
-**Build stage:**
+**Build (`manager.nix`):**
 
-- Fetches `$HVO_COMMIT` from
-  `https://github.com/cobaltcore-dev/openstack-hypervisor-operator.git` by its
-  SHA, so no branch or tag decides what is compiled. The workflow token reaches
-  the fetch as the optional `github_token` secret, as for [ovn](#ovn)
-- Downloads the Go modules in a layer of their own before the patches, so CI's
-  layer cache keeps them when only a patch or a later step changes
-- Refreshes the git index, then applies every `*.patch` under `patches/` with
-  `git apply --index`. A patch that does not apply fails the build with
-  `patch does not apply: /patches/<file>`. The refresh is for a checkout layer
-  that CI restores from the build cache: its files have new inodes and change
-  times, and `git apply --index` would reject each one with
-  `does not match index`
-- Fails when Go code outside the tests still names gophercloud's
+- Fetches the pinned commit of
+  `https://github.com/cobaltcore-dev/openstack-hypervisor-operator` by commit
+  and NAR hash, so no branch or tag decides what is compiled, and downloads
+  the Go modules into a fixed-output derivation checked against `vendorHash`
+- Applies every `*.patch` under `patches/`, in name order, to the module
+  download and the build alike. A patch that does not apply fails the patch
+  phase
+- Runs `patch-checks.sh` in its `checkPhase`, in the patched tree with the
+  vendored modules. `check_live_migrate_opts` fails when Go code outside the
+  tests and outside `vendor/` still names gophercloud's
   `servers.LiveMigrateOpts`, whose `BlockMigration` cannot carry `"auto"`.
   The grep matches the bare type name, so a literal, a `var`, `new()`, a
   pointer and an aliased import all fail. Only a `//` outside a double-quoted
   string before the name lets the line pass, so a comment passes while a `/`
   in a string or a division does not. That catches a live migration a pin
-  move adds or reshapes, and a re-cut patch that lost its `controller.go` hunk
+  move adds or reshapes, and a re-cut patch that lost its `controller.go`
+  hunk; a grep error fails the build too
 - Runs `TestLiveMigrateAutoBody`, the test patch 0001 brings, and fails unless
   the log shows `--- PASS: TestLiveMigrateAutoBody`. `go test -run` exits 0
-  with `[no tests to run]` when the test is missing, so the grep is what
+  with `[no tests to run]` when the test is missing, so `require_pass` is what
   catches a patch that lost its test hunk
 - Runs `TestHypervisorCreatedWithDefaultHighAvailability` and
   `TestTraitsInSyncSetsTraitsUpdated`, the tests of patches 0002 and 0003, in
@@ -1606,11 +1596,14 @@ metal-stack lab (see
   `--- PASS: TestServiceClientInterface ` with the same trailing space. The
   `-run` expression does not match that package's Ginkgo entry point,
   `TestOpenstack` in `suite_test.go`, so the suite does not run
-- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
-  ldflags, with the version set to `sha-<commit>`, the tag the image is
-  published under. `manager --version` therefore prints
+- Builds `./cmd` with `CGO_ENABLED=0` and upstream's ldflags, with the version
+  set to `sha-<commit>`, the tag the image is published under, and installs it
+  as `bin/manager`. `manager --version` therefore prints
   `manager sha-<commit> (linux/<arch>) <commit>`. Upstream's `generate` step
   is skipped: the generated files are committed
+
+`nix log .#openstack-hypervisor-operator-image.manager` shows the `--- PASS:`
+lines of a build.
 
 **Why `main`:** `main` has the required `--agent-namespaces` flag, the
 offboarding taint and parallel migrations in an Eviction
@@ -1689,27 +1682,29 @@ newer pin holds `latest`, while a chart of the older pin still names it.
 `upstream-<hvo-commit>` sits on the same manifest and is a keeper tag, so every
 pin that reached `main` stays pullable under both tags.
 
-**Pin moves:** Renovate tracks the `ARG HVO_COMMIT` line as a git-refs digest
-of upstream `main`, weekly and without automerge (see
-[Dependency Management](../../contributing/dependency-management.md)).
-`hack/ci-resolve-hvo-commit.sh` is the only parser of the line. A new commit
-on which a patch no longer applies fails the build at the `git apply` step;
+**Pin moves:** Renovate tracks the `rev` key of
+`images/openstack-hypervisor-operator/source.json` as a git-refs digest of
+upstream `main`, weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)). The pull
+request fails `nix-lock-check` until `make nix-lock` writes `hash` and
+`vendorHash` for the new commit. Outside the Nix build and `hack/nix-lock.sh`,
+`hack/ci-resolve-hvo-commit.sh` is the only parser of the pin in CI. A new
+commit on which a patch no longer applies fails the build in the patch phase;
 that patch is then re-cut against the new commit. Once upstream carries a
-patch's change, the patch is dropped together with its checks in the build
-step: for 0001 the `servers.LiveMigrateOpts` grep and the
+patch's change, the patch is dropped together with its checks in
+`patch-checks.sh`: for 0001 `check_live_migrate_opts` and the
 `TestLiveMigrateAutoBody` run, for 0002 and 0003 the test's name in the
-controller `go test` run and the `grep` for its `--- PASS:` line, and that run
-itself once neither test is left; for 0004 the `TestServiceClientInterface` run
-and its `grep`. With the last patch gone, the
-`COPY patches/` and `git apply` steps go too, because both fail without a
-patch. A pin move also checks what
+controller `go test` run and its `require_pass`, and that run itself once
+neither test is left; for 0004 the `TestServiceClientInterface` run and its
+`require_pass`. With the last patch gone, `patches/` can go too.
+A pin move also checks what
 [Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md),
 [Drain a Compute Node](../../guides/nova/drain-a-compute-node.md) and the
 table [Namespaces on a compute cluster](../target-clusters.md#namespaces-on-a-compute-cluster)
 say about hvo against the new commit, and updates the commit the two guides
 name.
 
-**Image contract check:** `tests/container-images/verify_hvo.sh` runs four
+**Image contract check:** `tests/container-images/verify_hvo.sh` runs five
 tests against a built image. `manager --version` names `sha-<pin>` and ends
 with the pin. `manager --help` lists `-agent-namespaces` and
 `-eviction-concurrency`, which v1.2.3 does not have, and
@@ -1717,17 +1712,21 @@ with the pin. `manager --help` lists `-agent-namespaces` and
 `/usr/bin/manager` as `65532:65532`, and its `io.c5c3.upstream-commit` label
 equals the pin. The script reads the usage text instead of starting the binary
 without flags: upstream logs its `--agent-namespaces is required` error before
-it installs a logger, so that message never reaches the output.
+it installs a logger, so that message never reaches the output. The fifth test,
+`test_static_image_layout` of `tests/lib/static_image.sh`, checks the files and
+the configuration of the distroless base that `nix/lib/static-image.nix` stands
+in for.
 
 Its build, verification and tag scheme are described in
 [build-hvo / merge-hvo-image / verify-hvo-image](./build-images-workflow.md#build-hvo-merge-hvo-image-verify-hvo-image).
 
 ### kvm-node-agent
 
-**Location:** `images/kvm-node-agent/Dockerfile`
+**Location:** `images/kvm-node-agent/source.json` (the pin), `manager.nix` and
+`patch-checks.sh` (the build), `image.nix` (the image)
 
-kvm-node-agent (kna) from `cobaltcore-dev`, compiled from a pinned commit of
-its upstream `main` branch with the patches under
+kvm-node-agent (kna) from `cobaltcore-dev`, compiled by Nix from a pinned
+commit of its upstream `main` branch with the patches under
 `images/kvm-node-agent/patches/` applied. The agent runs on every hypervisor
 node: it reports libvirt's state into the node's `Hypervisor` and installs the
 node's libvirt TLS files under the host's `/etc/pki`.
@@ -1737,43 +1736,38 @@ Helm chart of the same commit (see
 
 | Property | Value |
 | --- | --- |
-| Build stage | `golang:1.27`, pinned by the digest `operators/Dockerfile` carries |
-| Runtime base | `gcr.io/distroless/static:nonroot`, pinned by the digest `operators/Dockerfile` carries |
-| Version pin | `ARG KNA_COMMIT`, a 40-character commit of upstream `main` (`hack/ci-resolve-kna-commit.sh` prints it) |
+| Build | `buildGo127Module` of `nixpkgs-images` ([Nix Image Build](./nix-image-build.md#source-built-images)) |
+| Runtime base | none; `nix/lib/static-image.nix`, the stand-in for `gcr.io/distroless/static:nonroot` |
+| Version pin | `rev` in `images/kvm-node-agent/source.json`, a 40-character commit of upstream `main` (`hack/ci-resolve-kna-commit.sh` prints it), with `hash` and `vendorHash` |
 | User | `0:0` (see [Design Deviations](#design-deviations)) |
 | Entrypoint | `/usr/bin/manager` |
 | Label | `io.c5c3.upstream-commit`, set to the pinned commit |
 
-**Build stage:**
+**Build (`manager.nix`):**
 
-- Fetches `$KNA_COMMIT` from
-  `https://github.com/cobaltcore-dev/kvm-node-agent.git` by its SHA, with the
-  optional `github_token` secret, as for
+- Fetches the pinned commit of
+  `https://github.com/cobaltcore-dev/kvm-node-agent` by commit and NAR hash,
+  downloads the Go modules against `vendorHash` and applies every `*.patch`
+  under `patches/`, as for
   [openstack-hypervisor-operator](#openstack-hypervisor-operator)
-- Downloads the Go modules in a layer of their own, then refreshes the git
-  index and applies every `*.patch` under `patches/` with `git apply --index`,
-  as for [openstack-hypervisor-operator](#openstack-hypervisor-operator). A
-  patch that does not apply fails the build with
-  `patch does not apply: /patches/<file>`
-- Compiles the test binary of `internal/certificates` once, with `-trimpath`
-  as in the build below, so that the build reuses the packages compiled for
-  the test, and runs the two tests patch 0001 brings from it:
-  `TestUpdateTLSCertificateKeyMode` as root, then
-  `TestUpdateTLSCertificateKeyGroupNotPermitted` as uid 65534 through
-  `setpriv --reuid=65534 --regid=65534 --clear-groups`. The build fails unless
-  each log shows the test's `--- PASS:` line followed by a space, which a
+- Runs `patch-checks.sh` in its `checkPhase`. The script refuses to run as
+  root and runs the two tests patch 0001 brings in one `go test` of
+  `./internal/certificates/`: `TestUpdateTLSCertificateKeyMode` and
+  `TestUpdateTLSCertificateKeyGroupNotPermitted`. The build fails unless the
+  log shows each test's `--- PASS:` line followed by a space, which a
   subtest's line does not match. A test binary exits 0 with
-  `testing: warning: no tests to run` when a test is missing, so the greps are
-  what catch a patch that lost its test file. The second test skips as root
-  and prints `--- SKIP`, so its grep also fails when that run is not
-  unprivileged. `tests/unit/images/kna_patch_test_guard_test.sh` runs both
-  greps against such logs
-- Builds `./cmd` with `CGO_ENABLED=0`, `GOTOOLCHAIN=local` and upstream's
-  ldflags without the build date, with the version set to `sha-<commit>`, the
-  tag the image is published under. `manager --version` therefore prints
-  `manager version sha-<commit> ()`; the parentheses hold the unset build
-  date. Upstream's `generate` step is skipped: the generated files are
-  committed
+  `testing: warning: no tests to run` when a test is missing, so
+  `require_pass` is what catches a patch that lost its test file. The second
+  test skips as root and prints `--- SKIP`; Nix builds as a build user, and
+  `refuse_root` fails a build that runs as root before any test.
+  `tests/unit/images/kna_patch_test_guard_test.sh` runs both functions
+  against such logs and a stubbed `id`
+- Builds `./cmd` with `CGO_ENABLED=0` and upstream's ldflags without the
+  build date, with the version set to `sha-<commit>`, the tag the image is
+  published under, and installs it as `bin/manager`. `manager --version`
+  therefore prints `manager version sha-<commit> ()`; the parentheses hold
+  the unset build date. Upstream's `generate` step is skipped: the generated
+  files are committed
 
 **Why `main`:** upstream publishes a chart for every `main` commit, version
 `0.2.0+sha-<short>` with `appVersion` `sha-<full commit>`, and that chart
@@ -1823,8 +1817,8 @@ file with another mode or group, and for any other file whose mode is not
 0644. `TestUpdateTLSCertificateKeyGroupNotPermitted` sets a group the process
 does not belong to and expects a failed update that leaves every file of the
 previous Secret in place and no temporary file behind. A root process may give
-a file any group, so that test skips as root, and the build runs it a second
-time as uid 65534.
+a file any group, so that test skips as root, and the build runs it as a Nix
+build user.
 The patch header records `Upstream status: not submitted`. Its author submits
 it upstream; #1175 stays open until upstream `main` carries the change, and
 issue #1066 tracks it.
@@ -1837,25 +1831,28 @@ upstream chart resolves `sha-<kna-commit>`, and `upstream-<kna-commit>` keeps
 that manifest through [Retention](./build-images-workflow.md#retention), as
 for openstack-hypervisor-operator.
 
-**Pin moves:** Renovate tracks the `ARG KNA_COMMIT` line as a git-refs digest
-of upstream `main`, weekly and without automerge (see
-[Dependency Management](../../contributing/dependency-management.md)).
-`hack/ci-resolve-kna-commit.sh` is the only parser of the line. The lab's chart
-ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` moves with the pin by
-hand, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the
+**Pin moves:** Renovate tracks the `rev` key of
+`images/kvm-node-agent/source.json` as a git-refs digest of upstream `main`,
+weekly and without automerge (see
+[Dependency Management](../../contributing/dependency-management.md)). The pull
+request fails `nix-lock-check` until `make nix-lock` writes `hash` and
+`vendorHash` for the new commit. Outside the Nix build and `hack/nix-lock.sh`,
+`hack/ci-resolve-kna-commit.sh` is the only parser of the pin in CI. The lab's
+chart ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` moves with the pin
+by hand, and `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while the
 chart's short SHA differs from it. A new commit on which the patch no longer
-applies fails the build at the `git apply` step; the patch is then re-cut
-against the new commit. Once upstream carries the change, the patch goes
-together with its two test runs in the build step, and with the last patch
-the `COPY patches/` and `git apply` steps go too.
+applies fails the build in the patch phase; the patch is then re-cut against the
+new commit. Once upstream carries the change, the patch goes together with its
+two test runs in `patch-checks.sh`, and with the last patch `patches/` can go
+too.
 
-**Image contract check:** `tests/container-images/verify_kna.sh` runs four
+**Image contract check:** `tests/container-images/verify_kna.sh` runs five
 tests against a built image. The first line of `manager --version` is
 `manager version sha-<pin> ()`. `manager --help` exits 0 and lists
 `-health-probe-bind-address`, the flag the chart passes; a binary that needed
 a C library would not start on the static base at all. The image runs
 `/usr/bin/manager` as `0:0`, and its `io.c5c3.upstream-commit` label equals
-the pin.
+the pin. The fifth test is the static-image check of `verify_hvo.sh`.
 
 Its build, verification and tag scheme are described in
 [build-kna / merge-kna-image / verify-kna-image](./build-images-workflow.md#build-kna-merge-kna-image-verify-kna-image).
@@ -2123,81 +2120,63 @@ binding nor the host tools, and the contract script then fails tests 2 and 4.
 
 ### Building ovn locally
 
-The ovn build needs no source checkout and no build args: the Dockerfile fetches OVN at
-the pinned commit (`OVN_COMMIT`) and Open vSwitch at the pinned commit (`OVS_COMMIT`)
-itself, and fails when the `ovs` gitlink of the OVN checkout names a different commit.
-One script covers it. Set `GITHUB_TOKEN` when the anonymous fetch inside the build fails
-with `could not read Username for 'https://github.com'`; the script mounts it as a
-BuildKit secret and the fetch is authenticated (CI always does).
+The build needs no source checkout and no token: the root flake fetches OVN at
+the pinned `rev` and Open vSwitch at the pinned `ovs.rev` by their hashes
+([Nix Image Build](./nix-image-build.md#source-built-images)).
 
 ```bash
-# Builds c5c3/ovn:<pinned version>
-hack/ci-build-ovn-image.sh
-
-# Same build under a different name
-OVN_IMAGE=ghcr.io/c5c3/ovn:dev hack/ci-build-ovn-image.sh
+nix build .#ovn-image && ./result | docker load   # Loaded image: ovn:26.03.2
 
 # Print the pin the build used (26.03.2, without the leading v)
 hack/ci-resolve-ovn-version.sh
 
 # Run the full image contract check
-bash tests/container-images/verify_ovn.sh c5c3/ovn:$(hack/ci-resolve-ovn-version.sh)
+bash tests/container-images/verify_ovn.sh ovn:$(hack/ci-resolve-ovn-version.sh)
 ```
 
-Both projects are compiled from source, so the first build takes a while. The
-Dockerfile's BuildKit cache mounts keep the apt steps of a rebuild short, but
-the two `make -j"$(nproc)"` runs dominate either way.
+Both projects are compiled from source, so the first build takes a while
+unless the Cachix cache or the local store holds the build of the pin.
+`nix build .#ovn-image.ovn` builds OVS and OVN without the image.
 
 ### Building openstack-hypervisor-operator locally
 
-The build needs no source checkout and no build args: the Dockerfile fetches
-the pinned commit, applies the patches and runs their tests itself. Pass
-`GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the build
-fails; CI always does.
+The build needs no source checkout and no token: the root flake fetches the
+pinned commit, applies the patches and runs their checks itself.
 
 ```bash
-docker build images/openstack-hypervisor-operator -t openstack-hypervisor-operator
-
-# The same build with an authenticated fetch
-docker build --secret id=github_token,env=GITHUB_TOKEN \
-  images/openstack-hypervisor-operator -t openstack-hypervisor-operator
+nix build .#openstack-hypervisor-operator-image && ./result | docker load
 
 # Print the pinned upstream commit
 hack/ci-resolve-hvo-commit.sh
 
-# Run the full image contract check against openstack-hypervisor-operator
-bash tests/container-images/verify_hvo.sh
+# Run the full image contract check
+bash tests/container-images/verify_hvo.sh \
+  openstack-hypervisor-operator:sha-$(hack/ci-resolve-hvo-commit.sh)
 ```
 
-`--progress=plain` keeps the `--- PASS:` lines of `TestLiveMigrateAutoBody`,
+`nix log .#openstack-hypervisor-operator-image.manager` prints the
+`--- PASS:` lines of `TestLiveMigrateAutoBody`,
 `TestHypervisorCreatedWithDefaultHighAvailability`,
-`TestTraitsInSyncSetsTraitsUpdated` and `TestServiceClientInterface` in the
-build output.
+`TestTraitsInSyncSetsTraitsUpdated` and `TestServiceClientInterface`.
 
 ### Building kvm-node-agent locally
 
-The build needs no source checkout and no build args: the Dockerfile fetches
-the pinned commit, applies the patches and runs the patch's two tests itself.
-Pass `GITHUB_TOKEN` as a BuildKit secret when the anonymous fetch inside the
-build fails; CI always does.
+The build needs no source checkout and no token: the root flake fetches the
+pinned commit, applies the patch and runs its two tests itself.
 
 ```bash
-docker build images/kvm-node-agent -t kvm-node-agent
-
-# The same build with an authenticated fetch
-docker build --secret id=github_token,env=GITHUB_TOKEN \
-  images/kvm-node-agent -t kvm-node-agent
+nix build .#kvm-node-agent-image && ./result | docker load
 
 # Print the pinned upstream commit
 hack/ci-resolve-kna-commit.sh
 
-# Run the full image contract check against kvm-node-agent
-bash tests/container-images/verify_kna.sh
+# Run the full image contract check
+bash tests/container-images/verify_kna.sh kvm-node-agent:sha-$(hack/ci-resolve-kna-commit.sh)
 ```
 
-`--progress=plain` keeps the `--- PASS: TestUpdateTLSCertificateKeyMode` and
-`--- PASS: TestUpdateTLSCertificateKeyGroupNotPermitted` lines in the build
-output.
+`nix log .#kvm-node-agent-image.manager` prints the
+`--- PASS: TestUpdateTLSCertificateKeyMode` and
+`--- PASS: TestUpdateTLSCertificateKeyGroupNotPermitted` lines.
 
 ## Design Deviations
 
@@ -2224,14 +2203,13 @@ Nix-built service and Tempest images run as the user that
 the user is created) and `images/nova-compute/Dockerfile` carry the comment
 too.
 
-`images/ovn/Dockerfile` carries the comment for the other half of the same
-decision. It does not derive from `python-base`, so it creates the `openstack`
-user and group itself: the distro packages would install separate
-`openvswitch` and `ovn` users, and the source build carries no such packaging.
-The Nix-built `backup-shifter` image states the same decision in the header
-comment of `images/backup-shifter/image.nix`. It writes the `openstack` user and
-group through the `fakeNss` entry of the FHS façade, because rclone brings no
-service account at all. One identity across all non-root images keeps the pod
+`images/ovn/image.nix` carries the comment for the other half of the same
+decision. It does not derive from `python-base`, so it carries the `openstack`
+user and group itself, through the `fakeNss` entry of the FHS façade: the
+distro packages would install separate `openvswitch` and `ovn` users, and the
+source build carries no such packaging. The `backup-shifter` image states the
+same decision in the header comment of `images/backup-shifter/image.nix`, also
+through the façade, because rclone brings no service account at all. One identity across all non-root images keeps the pod
 security contexts uniform, and in the `OVNCentral` backup CronJob it lets the
 `backup` init container and the `shifter` container share a single pod
 security context.
@@ -2245,25 +2223,25 @@ create the `libvirt-qemu` user that QEMU runs guests as.
 
 **Distroless and UID 65532 instead of `python-base` (openstack-hypervisor-operator):**
 
-`images/openstack-hypervisor-operator/Dockerfile` does not derive from
+`images/openstack-hypervisor-operator/image.nix` does not derive from
 `python-base` and creates no `openstack` user, and carries a `# DEVIATION`
-comment saying so. The operator is a static Go binary, so it runs on the
+comment saying so. The operator is a static Go binary, so it runs on
+`nix/lib/static-image.nix`, the stand-in for the
 `gcr.io/distroless/static:nonroot` base the CobaltCore operator images use
 (`operators/Dockerfile`), as that base's `nonroot` user, UID 65532. Upstream's
 own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
-no command, which any non-root user and the image's `ENTRYPOINT` satisfy.
+no command, which any non-root user and the image's `Entrypoint` satisfy.
 
 **Distroless and UID 0 instead of `python-base` (kvm-node-agent):**
 
-`images/kvm-node-agent/Dockerfile` does not derive from `python-base` and
+`images/kvm-node-agent/image.nix` does not derive from `python-base` and
 creates no `openstack` user, and carries a `# DEVIATION` comment saying so.
-The agent is a static Go binary on the same `gcr.io/distroless/static:nonroot`
-base, but it runs as root (`USER 0:0`) instead of that base's `nonroot` user.
+The agent is a static Go binary on the same stand-in for the
+`gcr.io/distroless/static:nonroot` base, but it runs as root (`User 0:0`)
+instead of that base's `nonroot` user.
 kna authenticates to the host's system bus and starts units there, and a
 Debian host's dbus-daemon drops the connection of a UID it cannot resolve
 (#1167). Upstream's own image is Alpine with `USER 42438:42438`, a user that
 exists on SAP's hosts only. Every consumer of the image therefore runs the
 agent as root unless its pod sets `runAsUser`: the upstream chart sets none
-for the manager, and `runAsNonRoot: true` rejects the image. hadolint reports
-`DL3002` for a root `USER`, so the line above it carries
-`# hadolint ignore=DL3002`.
+for the manager, and `runAsNonRoot: true` rejects the image.

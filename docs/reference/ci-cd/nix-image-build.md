@@ -44,7 +44,7 @@ on, the images input adds these outputs:
 
 | Output | Content |
 | --- | --- |
-| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`) |
+| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`) |
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
 | `checks.<system>.<name>-<rel_>-tests` | fails unless that run passed |
@@ -54,7 +54,11 @@ on, the images input adds these outputs:
 | `devShells.<system>.image-tools` | skopeo and vulnix at the versions of `flake.lock`, for the `build-nix-image` action |
 
 The package names are flat because `nix flake check` rejects a nested
-attribute set under `packages`. `<rel_>` is the release with its dot replaced
+attribute set under `packages`. The three images built from an upstream commit
+pass their inner build through `passthru`: `nix build .#ovn-image.ovn` builds
+OVS and OVN, and `nix build .#openstack-hypervisor-operator-image.manager` or
+`.#kvm-node-agent-image.manager` the manager binary
+([Source-built images](#source-built-images)). `<rel_>` is the release with its dot replaced
 by `_`, since an unquoted flake attribute cannot contain a dot. The
 directories under `nix/locks/` are the inventory of the Python images: one
 output per `<release>/<name>/` directory.
@@ -71,11 +75,16 @@ uv, yq, jq, git, Python 3.12 and bash 5 of `nixpkgs-images` that
 | `nix/lib/fhs-layout.nix` | the FHS façade: `/var/lib/openstack`, `/bin/sh` and `/bin/bash` (bash), `/usr/bin/env`, the CA bundle at `/etc/ssl/certs/ca-certificates.crt`, and `/etc/passwd` and `/etc/group` with the `openstack` user. The Python environment is optional; without one, `/var/lib/openstack` is an empty directory. `extraRoots` adds store paths below `/var/lib/openstack`, `rootLinks` below the image root (`usr/share/novnc`) |
 | `nix/lib/python-env.nix` | the uv2nix environment of one lock: the venv, the venv with the test group, and the patched source |
 | `nix/lib/service-image.nix` | the image of a Python service or of tempest around that venv ([Service images](#service-images)) |
+| `nix/lib/static-image.nix` | the image of a static Go binary, the stand-in for the distroless base of the Docker builds ([Source-built images](#source-built-images)) |
 | `nix/lib/service-tests.nix` | the unit-test run and check of a lock |
 | `nix/lib/subunit-crc.py` | recomputes the packet checksums of a subunit stream after `nuke-refs` |
 | `nix/pkgs/ceph-bindings.nix` | the `rados` and `rbd` modules for Python 3.12, built from the ceph source of `nixpkgs-images` |
 | `nix/locks/<release>/<name>/` | the lock of one service or tempest release, written by `hack/nix-lock.sh` |
-| `images/<name>/image.nix` | the image; backup-shifter's is a function of `pkgs` and `fhsLayout`, a Python image's of `serviceImage`, its environment `env` and what else it names |
+| `images/<name>/image.nix` | the image; backup-shifter's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, a Python image's of `serviceImage`, its environment `env` and what else it names |
+| `images/<name>/source.json` | the pin of an image built from an upstream commit (ovn, openstack-hypervisor-operator, kvm-node-agent), written by `hack/nix-lock.sh` |
+| `images/ovn/ovn.nix` | OVS and OVN compiled from the commits of `images/ovn/source.json` |
+| `images/<name>/manager.nix` | the manager binary of hvo or kna, built with `buildGo127Module` from the commit of its `source.json` with the patches under `images/<name>/patches/` |
+| `images/<name>/patch-checks.sh` | the checks of those patches, which the `checkPhase` of `manager.nix` runs |
 
 The expression of an image lives beside the image's other files, at
 `images/<name>/image.nix`. `hack/ci-generate-cleanup-matrix.sh` lists every
@@ -115,12 +124,14 @@ hack/nix-lock.sh keystone 2026.1
 ```
 
 `--all` writes every lock the release files pin, writes the hash of the noVNC
-commit into `images/nova/novnc.json`, and deletes every directory under
-`nix/locks/` the release files do not name. `--check` runs `--all` and fails
-with `nix-lock.sh: the locks are stale; run make nix-lock and commit the
-result` when `git status` reports a change under `nix/locks/` or in
-`novnc.json`. The `nix-lock-check` job of the build-images workflow runs it on
-every run.
+commit into `images/nova/novnc.json` and the hashes of the three image pins
+`images/<name>/source.json`, including the OVS commit the `ovs` gitlink names
+at the pinned OVN commit ([Source-built images](#source-built-images)), and
+deletes every directory under `nix/locks/` the release files do not name.
+`--check` runs `--all` and fails with `nix-lock.sh: the locks are stale; run
+make nix-lock and commit the result` when `git status` reports a change under
+`nix/locks/`, in `novnc.json` or in one of the three pins. The
+`nix-lock-check` job of the build-images workflow runs it on every run.
 
 The committed `uv.lock` seeds `uv lock`, so uv keeps every locked version the
 inputs still allow. A rerun with unchanged inputs therefore writes the same
@@ -158,6 +169,91 @@ packages its processes run, the state directories, the `rados` and `rbd`
 modules of `nix/pkgs/ceph-bindings.nix` through a `ceph-bindings.pth` in the
 venv, or a link outside `/var/lib/openstack`. [Container Images](./container-images.md)
 lists them per service. `docker load` names the image `<name>:<release>`.
+
+## Source-built images
+
+Three images compile upstream code at a pinned commit: `ovn` (Open vSwitch and
+OVN), `openstack-hypervisor-operator` (hvo) and `kvm-node-agent` (kna). Each
+pin is `images/<name>/source.json`, and `make nix-lock` writes every hash in
+it:
+
+| Pin | Keys | Written by `make nix-lock` |
+| --- | --- | --- |
+| `images/ovn/source.json` | `version`, `rev`, `hash`, `ovs.rev`, `ovs.hash` | `hash`, `ovs.rev` and `ovs.hash` |
+| `images/openstack-hypervisor-operator/source.json` | `rev`, `hash`, `vendorHash` | `hash` and `vendorHash` |
+| `images/kvm-node-agent/source.json` | `rev`, `hash`, `vendorHash` | `hash` and `vendorHash` |
+
+`hash` is the NAR hash of the tree at `rev`, and the build fetches by commit
+and hash with `fetchFromGitHub`, never through a tag, so no token enters the
+build. `hack/nix-lock.sh` reads `ovs.rev` from the `ovs` gitlink at the pinned
+OVN commit, through a shallow, blobless fetch of that one commit. The vendor
+hash of a Go pin is the hash of its module download; the generator recomputes
+it only when `hash` moved or `vendorHash` is empty, from the hash mismatch the
+`goModules` build prints for an empty one. A nixpkgs update that changes the
+module download fails `build-hvo` or `build-kna` with a hash mismatch; empty
+`vendorHash` and run `make nix-lock` to recover.
+
+`images/ovn/ovn.nix` compiles OVS and then OVN against the OVS tree, with
+`--prefix=$out --localstatedir=/var --sysconfdir=/etc`. The binaries and the
+`ovs-ctl` and `ovn-ctl` scripts run from the store, while the compiled-in
+runtime paths stay `/var/run/ovn`, `/var/run/openvswitch`,
+`/var/log/openvswitch` and `/etc`. `images/ovn/image.nix` links
+`/usr/share/ovn` and `/usr/share/openvswitch` into the store path through
+`rootLinks`: `ovn-ctl` rewrites its own path to find `ovs-lib`, so both trees
+sit side by side under `/usr/share`. The install drops the headers, the static
+libraries, the man pages, `$out/etc` (a read-only `/etc/openvswitch` in the
+image otherwise), the OVS Python package, the bugtool plugins and every script
+whose first line names python3. The Docker image shipped those scripts without
+a Python to run them, and `disallowedRequisites` fails the build on a
+reference to python3 a later version adds. When `ovn-northd --version` names
+another version than the pin, the `installCheckPhase` fails with this message,
+the guard that the tag and the commit still agree:
+
+```text
+ovn.nix: images/ovn/source.json names <version>, but the tree at <rev> builds ovn-northd <built version>
+```
+
+The OVS and OVN testsuites do not run in the build; `verify_ovn.sh` is the
+contract of the image.
+
+`images/<name>/manager.nix` builds the manager of hvo or kna with
+`buildGo127Module`, since both upstream `go.mod` files name Go 1.27. The
+patches under `images/<name>/patches/` apply to the module download and the
+build alike, with `--fuzz=0`, so a hunk whose context changed fails the patch
+phase. The ldflags are upstream's with the version set to `sha-<commit>`. The
+`checkPhase` runs `images/<name>/patch-checks.sh` in the patched tree: hvo greps
+for `servers.LiveMigrateOpts` outside the tests and the `vendor/` directory and
+runs the tests of its four patches, kna runs the two tests of its patch. Each
+check requires the test's top-level `--- PASS:` line, because a missing test
+passes `go test` with no tests to run. kna's script refuses to run as root,
+because `TestUpdateTLSCertificateKeyGroupNotPermitted` skips as root; Nix builds
+as a build user. The unit tests under `tests/unit/images/` source the two
+scripts.
+
+`nix/lib/static-image.nix` builds the image both managers run in, a stand-in
+for `gcr.io/distroless/static:nonroot`. It has the base's `/etc/passwd` and
+`/etc/group`, with `root` (home `/root`), `nobody` and `nonroot` (65532), the
+CA bundle, `/etc/services` and `/etc/protocols`, `/usr/share/zoneinfo`, `/tmp`
+with mode 1777, `/root` with mode 0700 and `/home/nonroot`, and repeats the
+base's configuration: `WorkingDir /home/nonroot` and `Env` with `PATH` and
+`SSL_CERT_FILE`, plus the `Entrypoint` `/usr/bin/manager`. hvo runs as
+`65532:65532`, the default, kna as `0:0`. `tests/lib/static_image.sh`, which
+both verify scripts source, checks these files and the configuration.
+
+```bash
+nix build .#ovn-image && ./result | docker load
+bash tests/container-images/verify_ovn.sh ovn:26.03.2
+
+nix build .#openstack-hypervisor-operator-image && ./result | docker load
+bash tests/container-images/verify_hvo.sh openstack-hypervisor-operator:sha-<commit>
+
+nix build .#kvm-node-agent-image && ./result | docker load
+bash tests/container-images/verify_kna.sh kvm-node-agent:sha-<commit>
+
+nix log .#openstack-hypervisor-operator-image.manager   # the PASS lines of the patch checks
+```
+
+`<commit>` is the `rev` of the image's `source.json`.
 
 ## Unit tests
 
@@ -210,6 +306,12 @@ Tempest images on its self-hosted runner without installing Nix there. Its
 `<name>-<rel_>-image` attributes of every image in one `nix build` with one job
 per CPU, then writes each stream to `.nix-e2e/<name>-<release>.tar`; the next
 step loads and tags the tars on the runner.
+
+The same call builds `ovn-image` when the `changed-ovn` output of the
+`changes` job is set, that is when the `image_ovn` filter matches (the ovn and
+backup-shifter sources, the flake inputs, `nix/lib/` and the build script), or
+when main has not published the pinned version yet. Otherwise the image map of `hack/ci-resolve-e2e-images.sh` names the
+digest behind `ghcr.io/c5c3/ovn:<version>`, and the e2e jobs pull that image.
 
 The container is unprivileged and cannot create the namespaces of the build
 sandbox, so the builds run with `--option sandbox false`. The builders, which
@@ -364,7 +466,10 @@ A Nix-built image carries four static labels:
 `org.opencontainers.image.licenses` (`Apache-2.0`) and
 `org.opencontainers.image.vendor` (`SAP SE`). A service or tempest image adds
 `org.opencontainers.image.version`, the ref its lock pins (`29.0.0` for
-keystone 2026.1), which changes only with the lock. The five labels
+keystone 2026.1), which changes only with the lock. The ovn, hvo and kna
+images add it too, fixed per pin: the OVN version (`26.03.2`) or
+`sha-<commit>`. hvo and kna also carry `io.c5c3.upstream-commit`, the commit
+of their pin, which `verify_hvo.sh` and `verify_kna.sh` check. The five labels
 `docker/metadata-action` adds to a Docker-built image (`created`, `revision`,
 `source`, `url`, `version`) and the `base.name` and `base.digest` pair are
 absent. A label that changes with every commit would change the digest with
@@ -383,9 +488,9 @@ Renovate's `nix` manager re-locks the five inputs of `flake.lock` through
 `lockFileMaintenance`. The `nix flake inputs` package rule opens the re-lock
 as one pull request on the Monday schedule of the ubuntu digest bump, never
 automerged; the re-lock is not a version bump, so the three-day release age
-cannot gate it. A re-lock changes `flake.lock`, which the `shifter` and
-`base` filters of the build-images workflow cover, so its pull request
-rebuilds the images. Separate rules disable every update under
+cannot gate it. A re-lock changes `flake.lock`, which the `base`, `ovn`,
+`shifter`, `hvo` and `kna` filters of the build-images workflow cover, so its
+pull request rebuilds the images. Separate rules disable every update under
 `nix/spike/**` and under `nix/locks/**`: the locks are derived files that only
 `hack/nix-lock.sh` writes. `ignorePaths` also keeps `nix/locks/**` out of
 extraction, and repeats the paths of the `config:recommended` preset, which a
@@ -393,8 +498,12 @@ repository value replaces.
 
 A Renovate pull request that moves a pin the locks are derived from (under
 `releases/`, `overrides/`, `patches/` or `images/venv-builder/requirements.txt`,
-or the noVNC pin in `images/nova/novnc.json`) fails `nix-lock-check` until
-someone runs `make nix-lock` on its branch and pushes the result.
+the noVNC pin in `images/nova/novnc.json`, or one of the three
+`images/<name>/source.json` pins) fails `nix-lock-check` until someone runs
+`make nix-lock` on its branch and pushes the result. The OVN manager moves
+`version` and `rev` together; a rule disables its digest updates, so a tag
+moved upstream does not arrive as an ungrouped digest pull request. The hvo
+and kna managers move `rev` as a digest of upstream main.
 [Dependency Management](../../contributing/dependency-management.md) has the
 details.
 
@@ -421,9 +530,9 @@ exist and read Nix or Docker.
 | `cinder` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
 | `nova` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
 | `tempest` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `ovn` | Docker | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `openstack-hypervisor-operator` | Docker | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `kvm-node-agent` | Docker | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
+| `ovn` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
+| `openstack-hypervisor-operator` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
+| `kvm-node-agent` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
 | `nova-compute` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `libvirt` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `keystone-federation-proxy` | Docker | Phase 5 | [#1408](https://github.com/C5C3/cobaltcore/issues/1408) |

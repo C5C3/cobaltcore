@@ -82,6 +82,6 @@
 <text x="1400" y="1009.2" font-size="20" font-weight="400" fill="#55606E">and the aggregate membership</text>
 <text x="220" y="1107.2" font-size="20" font-weight="400" fill="#55606E">Point of no return: after the delete the node comes back only as a new entry.</text>
 <text x="40" y="1171.2" font-size="20" font-weight="400" fill="#55606E">{node}: the Kubernetes node and the Nova host of the same name. {id}: the id of its compute service.</text>
-<text x="40" y="1197.2" font-size="20" font-weight="400" fill="#55606E">The statements about the hypervisor operator are as read at commit a2baf3f, the one images/openstack-hypervisor-operator/Dockerfile pins.</text>
+<text x="40" y="1197.2" font-size="20" font-weight="400" fill="#55606E">The statements about the hypervisor operator are as read at commit a2baf3f, the one images/openstack-hypervisor-operator/source.json pins.</text>
 <text x="40" y="1223.2" font-size="20" font-weight="400" fill="#55606E">Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.</text>
 </svg>

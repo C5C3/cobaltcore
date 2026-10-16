@@ -23,9 +23,10 @@ breaks structurally. Profile these instead of the Python questions:
   build/merge jobs outside the matrix, the verify script run inside the
   build job (`build-images.yaml:592-695`),
   image tagged with the service's own version. `backup-shifter`
-  (`:696-799`) and `ovn` (`:800-967`, its own `verify-ovn-image` job, the
-  tag read from `ARG OVN_VERSION` by `hack/ci-resolve-ovn-version.sh`) are
-  two more decoupled images.
+  (`:696-799`) and `ovn` (`:800-967`, its own `verify-ovn-image` job, built
+  by Nix like `backup-shifter`, the tag read from the `version` key of
+  `images/ovn/source.json` by `hack/ci-resolve-ovn-version.sh`) are two more
+  decoupled images.
 - **Source org:** two clone sites hardcode `openstack/<service>` —
   `.github/actions/checkout-service-source/action.yaml` and
   `hack/ci-build-service-image.sh:94-95`. Parameterize them or bypass both
@@ -47,7 +48,9 @@ breaks structurally. Profile these instead of the Python questions:
   image writes its own `verify_<svc>.sh` contract (runtime present, built
   assets present, non-root, no build toolchain in the final image) and its
   own deviation-comment function (`test_ovn_deviation_comment` and
-  `test_backup_shifter_deviation_comment` are the shape). No shared base
+  `test_backup_shifter_deviation_comment` are the shape: the `# DEVIATION`
+  block of `images/<svc>/image.nix` and the `openstack` entry of
+  `nix/lib/fhs-layout.nix`). No shared base
   image for a new language
   before the rule of three.
 - **e2e inversion:** instead of one service version per OpenStack release,

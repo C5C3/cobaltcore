@@ -37,7 +37,6 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Resolve image changes script | `hack/ci-resolve-image-changes.sh` |
 | Generate build matrix script | `hack/ci-generate-build-matrix.sh` |
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
-| Build OVN image script | `hack/ci-build-ovn-image.sh` |
 | Resolve hvo commit script | `hack/ci-resolve-hvo-commit.sh` |
 | Resolve kna commit script | `hack/ci-resolve-kna-commit.sh` |
 | Mint libvirt keeper tag script | `hack/ci-tag-libvirt-keeper.sh` |
@@ -81,7 +80,9 @@ the positive `tests/container-images/**` entry it carves out of. Both lists also
 scripts source, and so do the `svc_glance`, `svc_cinder` and `svc_nova` filters of the
 [`changes`](#changes) job. They name `tests/lib/build_tools.sh` too, the build-tools
 check every service and Tempest verify script sources, which the `base` filter names
-because it rebuilds exactly those images.
+because it rebuilds exactly those images, and `tests/lib/static_image.sh`, the
+static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
+filters name.
 
 > **Fork PRs are not supported.** Base images must be pushed to GHCR on every run
 > (because the nova-compute build reads them through `docker-image://` URIs, which
@@ -312,8 +313,12 @@ composite action calls this script via `run:` with env vars passed through the s
 ### hack/nix-lock.sh
 
 Writes the locks under `nix/locks/` the Python images are built from, one per
-service and release plus one per release for Tempest, and the noVNC hash of
-`images/nova/novnc.json`. `--check` regenerates every lock and exits 1 with
+service and release plus one per release for Tempest, the noVNC hash of
+`images/nova/novnc.json`, and the hashes of the three pins
+`images/ovn/source.json`, `images/openstack-hypervisor-operator/source.json` and
+`images/kvm-node-agent/source.json`, with the OVS commit of the `ovs` gitlink
+([Source-built images](./nix-image-build.md#source-built-images)). `--check`
+regenerates every lock and pin and exits 1 with
 `nix-lock.sh: the locks are stale; run make nix-lock and commit the result`
 when the result differs from the committed files. The lock format, the
 seeding and the Renovate flow are documented under
@@ -407,21 +412,21 @@ The workflow's jobs form this dependency graph:
 changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
 lint-dockerfiles ─┤      └──> merge-keystone-federation-proxy-image (push only)
 prepare ──────────┤
-                  ├──> build-libvirt (matrix: amd64 + arm64)
-                  │      └──> merge-libvirt-image (push only)
-                  │
-                  ├──> build-ovn (matrix: amd64 + arm64)
-                  │      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
-                  │
-                  ├──> build-hvo (matrix: amd64 + arm64)
-                  │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
-                  │
-                  └──> build-kna (matrix: amd64 + arm64)
-                         └──> merge-kna-image (push only) ──> verify-kna-image (push only)
+                  └──> build-libvirt (matrix: amd64 + arm64)
+                         └──> merge-libvirt-image (push only)
 
 changes ──────────┬──> build-backup-shifter (matrix: amd64 + arm64)
 nix-flake-check ──┤      └──> merge-backup-shifter-image (push only)
 prepare ──────────┘
+
+changes ──────────┬──> build-ovn (matrix: amd64 + arm64)
+nix-flake-check ──┤      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
+nix-lock-check ───┤
+prepare ──────────┼──> build-hvo (matrix: amd64 + arm64)
+                  │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
+                  │
+                  └──> build-kna (matrix: amd64 + arm64)
+                         └──> merge-kna-image (push only) ──> verify-kna-image (push only)
 
 changes ──> generate-matrix ──┬──> build-tempest (matrix: release × platform)
 nix-flake-check ──────────────┤      └──> merge-tempest-image (push only)
@@ -531,8 +536,8 @@ no build (`continue-on-error: true`), as described under
 
 ### nix-lock-check
 
-Fails when the locks under `nix/locks/` or the noVNC hash differ from what the release
-pins produce.
+Fails when the locks under `nix/locks/`, the noVNC hash or the hashes of the three
+`images/<name>/source.json` pins differ from what the pins produce.
 
 | Property | Value |
 | --- | --- |
@@ -548,9 +553,10 @@ and runs:
 nix develop .#lock-tools --command bash hack/nix-lock.sh --check
 ```
 
-A failure adds the annotation `nix/locks is stale: run make nix-lock and commit the
-result`. `build-service-images`, `build-tempest` and `test-service-images` need the job,
-so no image and no unit test is built from a stale lock. A Renovate pull request that
+A failure adds the annotation `the Nix locks or image pins are stale: run make nix-lock
+and commit the result`. `build-service-images`, `build-tempest`, `test-service-images`,
+`build-ovn`, `build-hvo` and `build-kna` need the job, so no image and no unit test is
+built from a stale lock or pin. A Renovate pull request that
 moves a pin the locks are derived from fails here until `make nix-lock` is pushed to
 its branch ([Renovate](./nix-image-build.md#renovate)).
 
@@ -629,43 +635,39 @@ build job runs when `images/libvirt/**` or
 
 ### build-ovn / merge-ovn-image / verify-ovn-image
 
-OVN and Open vSwitch daemons and client tools, compiled from upstream git
-(`images/ovn/Dockerfile`, two stages on the same digest-pinned `ubuntu:noble`).
-The single `ARG OVN_VERSION` line in that Dockerfile is the whole version
-input. `hack/ci-resolve-ovn-version.sh` parses it, and every job that needs the
-number calls the script instead of reading the file. Open vSwitch comes from
-the `ovs` submodule gitlink at the pinned OVN tag, so one bump moves both
-projects (decision D1 of issue #898). Because a tag is a mutable ref,
-`ARG OVN_COMMIT` records the commit that tag resolves to and `ARG OVS_COMMIT`
-the SHA the gitlink names there; the build fetches `ARG OVN_COMMIT` instead of
-the tag and aborts when the gitlink there disagrees with `ARG OVS_COMMIT`.
-OVN's `Documentation/intro/install/general.rst` notes under Build Requirements
-that the submodule is "not recommended to be used as a source for OVS build";
+OVN and Open vSwitch daemons and client tools, compiled from upstream source by
+Nix: the root flake builds `ovn-image` from `images/ovn/`
+([Source-built images](./nix-image-build.md#source-built-images)). The
+`version` key of `images/ovn/source.json` is the whole version input.
+`hack/ci-resolve-ovn-version.sh` reads it, and every job that needs the number
+calls the script instead of reading the file. Open vSwitch comes from the `ovs`
+submodule gitlink at the pinned OVN commit, so one bump moves both projects
+(decision D1 of issue #898). Because a tag is a mutable ref, the pin records
+`rev`, the commit the tag names, and `ovs.rev`, the commit the gitlink names
+there, each with its NAR hash; `make nix-lock` derives `ovs.rev` from the
+gitlink, and `nix-lock-check` fails while the committed pin differs. OVN's
+`Documentation/intro/install/general.rst` notes under Build Requirements that
+the submodule is "not recommended to be used as a source for OVS build";
 ovn-kubernetes builds its OVS from that gitlink in
-`dist/images/Dockerfile.fedora`, and this image does the same.
+`dist/images/Dockerfile.fedora`, and this image does the same. Both trees are
+fixed-output fetches by hash, so no token enters the build.
 
-Both fetches run inside the build with the git `ubuntu:noble` ships, and
-GitHub does not reliably serve unauthenticated `upload-pack` requests to that
-version. The job therefore passes the workflow token to `build-push-image`
-as the `github_token` secret (`secrets: github_token=...`), which the
-Dockerfile mounts into the one `RUN` that fetches and turns into the
-basic-auth header `actions/checkout` sends. A secret reaches no layer; a build
-without it, such as a local `docker build`, fetches anonymously. No service image
-fetches from github.com inside its build: the nova image takes its noVNC assets
-through a fixed-output Nix fetch, which needs no token.
-
-`build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
-`if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
-`images/ovn/**` or `tests/container-images/verify_ovn.sh` changed, and on a push it
-always runs. Its `linux/amd64` +
-`linux/arm64` include matrix is written out in the workflow, because the image
-has no `source-refs.yaml` key for `generate-matrix` to discover and no release
-axis. Both projects are compiled from source on a four-vCPU runner, so the job
-carries `timeout-minutes: 60`, the longest allowance of any build job here. On
-pull requests it builds amd64 only, loads the result locally as `:pr-verify`,
-and runs the inline Grype scan and `tests/container-images/verify_ovn.sh`
-against that tag.
-On push events it pushes per-platform digests for the merge job.
+`build-ovn` needs `changes`, `nix-flake-check`, `nix-lock-check` and `prepare`,
+and carries `if: needs.changes.outputs.build-ovn == 'true'`: on a pull request
+it runs when `images/ovn/**`, `tests/container-images/verify_ovn.sh`,
+`tests/lib/build_tools.sh`, `flake.nix`, `flake.lock`, `nix/lib/**`,
+`.github/actions/build-nix-image/**` or `.github/actions/setup-nix/**` changed,
+and on a push it always runs. Its `linux/amd64` + `linux/arm64` include matrix
+is written out in the workflow, because the image has no `source-refs.yaml` key
+for `generate-matrix` to discover and no release axis. The job reads the Cachix
+cache through `setup-nix` and calls [`build-nix-image`](#build-nix-image) with
+the attribute `ovn-image` and the vulnix artifact `vulnix-ovn-<pair>`. Without a
+cached build of the pin both projects are compiled from source on a four-vCPU
+runner, so the job carries `timeout-minutes: 60`, the longest allowance of any
+build job here. On pull requests it builds amd64 only, loads the result locally
+as `:pr-verify`, and runs the inline Grype scan and
+`tests/container-images/verify_ovn.sh` against that tag. On push events it
+pushes per-platform digests for the merge job.
 
 `merge-ovn-image` (push only) assembles the manifest through
 `merge-manifest-and-attest`: SBOM `sbom-ovn.cyclonedx.json`, Grype scan,
@@ -684,27 +686,32 @@ nothing else, so the post-merge check cannot write to the registry.
 
 ### build-hvo / merge-hvo-image / verify-hvo-image
 
-openstack-hypervisor-operator, compiled from a pinned commit of its upstream
-`main` branch with the patches under `images/openstack-hypervisor-operator/patches/`
-(`images/openstack-hypervisor-operator/Dockerfile`, a `golang` build stage and a
-`gcr.io/distroless/static:nonroot` runtime, both pinned by digest). The single
-`ARG HVO_COMMIT` line is the whole version input, and
-`hack/ci-resolve-hvo-commit.sh` is its only parser: it prints the 40-character
-commit, and every job that needs it calls the script. The build fetches that
-commit from github.com, so the job passes the workflow token as the
-`github_token` secret, as `build-ovn` does. See
+openstack-hypervisor-operator, compiled by Nix from a pinned commit of its
+upstream `main` branch with the patches under
+`images/openstack-hypervisor-operator/patches/`: the root flake builds
+`openstack-hypervisor-operator-image` from
+`images/openstack-hypervisor-operator/`, the manager with `buildGo127Module` and
+the image on `nix/lib/static-image.nix`. The `rev` key of
+`images/openstack-hypervisor-operator/source.json` is the whole version input.
+The Nix build and `hack/nix-lock.sh` read it themselves; every other job calls
+`hack/ci-resolve-hvo-commit.sh`, which prints the 40-character commit. See
 [openstack-hypervisor-operator](./container-images.md#openstack-hypervisor-operator)
-for the patch and why the pin is a `main` commit.
+for the patches and why the pin is a `main` commit.
 
-`build-hvo` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
-`if: needs.changes.outputs.build-hvo == 'true'`: on a pull request it runs when
-`images/openstack-hypervisor-operator/**` or `tests/container-images/verify_hvo.sh`
-changed, and on a push it always runs. Its `linux/amd64` + `linux/arm64` include
-matrix is written out in the workflow, and it carries `timeout-minutes: 30`. On
-pull requests it builds amd64 only, loads the result locally as `:pr-verify`,
-and runs the inline Grype scan and `tests/container-images/verify_hvo.sh`
-against that tag. On push events it pushes per-platform digests for the merge
-job.
+`build-hvo` needs `changes`, `nix-flake-check`, `nix-lock-check` and `prepare`,
+and carries `if: needs.changes.outputs.build-hvo == 'true'`: on a pull request
+it runs when `images/openstack-hypervisor-operator/**`,
+`tests/container-images/verify_hvo.sh`, `tests/lib/static_image.sh`, the flake
+inputs, `nix/lib/**` or the `build-nix-image` and `setup-nix` actions changed,
+and on a push it always
+runs. Its `linux/amd64` + `linux/arm64` include matrix is written out in the
+workflow, and it carries `timeout-minutes: 30`. It reads the Cachix cache
+through `setup-nix` and calls [`build-nix-image`](#build-nix-image) with the
+attribute `openstack-hypervisor-operator-image` and the vulnix artifact
+`vulnix-hvo-<pair>`. The patch checks run inside the build. On pull requests it
+builds amd64 only, loads the result locally as `:pr-verify`, and runs the
+inline Grype scan and `tests/container-images/verify_hvo.sh` against that tag.
+On push events it pushes per-platform digests for the merge job.
 
 `merge-hvo-image` (push only) assembles the manifest through
 `merge-manifest-and-attest`: SBOM `sbom-hvo.cyclonedx.json`, Grype scan,
@@ -722,24 +729,28 @@ pull requests never build, runs here first. It holds `contents: read` and
 
 ### build-kna / merge-kna-image / verify-kna-image
 
-kvm-node-agent, compiled from a pinned commit of its upstream `main` branch
-with the patches under `images/kvm-node-agent/patches/`
-(`images/kvm-node-agent/Dockerfile`, the same digest-pinned `golang` build
-stage and `gcr.io/distroless/static:nonroot` runtime). The jobs are copies of
-the hvo jobs above with the short name `kna`. The single `ARG KNA_COMMIT` line
-is the whole version input, and `hack/ci-resolve-kna-commit.sh` is its only
-parser. The build fetches that commit from github.com with the workflow token
-as the `github_token` secret, and runs the patch's two tests, the second as
-uid 65534. See [kvm-node-agent](./container-images.md#kvm-node-agent) for the
-patch and why the pin is a `main` commit.
+kvm-node-agent, compiled by Nix from a pinned commit of its upstream `main`
+branch with the patches under `images/kvm-node-agent/patches/`: the root flake
+builds `kvm-node-agent-image` from `images/kvm-node-agent/`, the same way as
+`openstack-hypervisor-operator-image`. The jobs are copies of the hvo jobs
+above with the short name `kna`. The `rev` key of
+`images/kvm-node-agent/source.json` is the whole version input. The Nix build
+and `hack/nix-lock.sh` read it themselves; every other job calls
+`hack/ci-resolve-kna-commit.sh`. The build runs the
+patch's two tests as a Nix build user. See
+[kvm-node-agent](./container-images.md#kvm-node-agent) for the patch and why
+the pin is a `main` commit.
 
-`build-kna` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
-`if: needs.changes.outputs.build-kna == 'true'`: on a pull request it runs when
-`images/kvm-node-agent/**`, `tests/container-images/verify_kna.sh` or the
-plumbing changed, and on a push it always runs. It builds the
-`linux/amd64` + `linux/arm64` include matrix with `timeout-minutes: 30` and
-`cache-scope: kna`. On pull requests it builds amd64 only, loads the result
-locally as `:pr-verify`, and runs the inline Grype scan and
+`build-kna` needs `changes`, `nix-flake-check`, `nix-lock-check` and `prepare`,
+and carries `if: needs.changes.outputs.build-kna == 'true'`: on a pull request
+it runs when `images/kvm-node-agent/**`, `tests/container-images/verify_kna.sh`,
+`tests/lib/static_image.sh`, the flake inputs, `nix/lib/**`, the
+`build-nix-image` and `setup-nix` actions or the plumbing changed, and on a push
+it always runs. It builds the
+`linux/amd64` + `linux/arm64` include matrix with `timeout-minutes: 30`,
+through `build-nix-image` with the attribute `kvm-node-agent-image` and the
+vulnix artifact `vulnix-kna-<pair>`. On pull requests it builds amd64 only,
+loads the result locally as `:pr-verify`, and runs the inline Grype scan and
 `tests/container-images/verify_kna.sh` against that tag. On push events it
 pushes per-platform digests as `digests-kna-<pair>` for the merge job.
 
@@ -1217,7 +1228,7 @@ reason as the service version tag above: when two branches build the same
 upstream version, a shared tag would be silently overwritten. The same holds
 for the three `main`-only tags of `openstack-hypervisor-operator` and
 `kvm-node-agent`, where `<hvo-commit>` and `<kna-commit>` are the full upstream
-commits the Dockerfiles pin. `sha-<hvo-commit>` and `sha-<kna-commit>` are the
+commits their `source.json` pins. `sha-<hvo-commit>` and `sha-<kna-commit>` are the
 tags the upstream chart of that commit renders from its `appVersion`.
 
 `libvirt:<libvirt-package-version>-r<N>`, such as `libvirt:10.0.0-2ubuntu8.19-r1`,
@@ -1340,8 +1351,8 @@ Each image has a unique cache scope per platform to prevent cross-arch cache col
 
 The `mode=max` setting caches all intermediate layers, not just the final image layer.
 
-A Nix-built image, the service and Tempest images among them, uses no `type=gha` scope:
-its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
+A Nix-built image, the service, Tempest, ovn, hvo and kna images among them, uses no
+`type=gha` scope: its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
 ([Binary cache](./nix-image-build.md#binary-cache)).
 
 ## Action Pinning
@@ -1763,7 +1774,8 @@ A Nix-built image carries four static labels, set in its Nix expression, and no
 metadata-action step runs for it. A service or Tempest image adds
 `org.opencontainers.image.version`, the upstream ref its lock pins (`29.0.0` for
 keystone 2026.1, the tempest version for Tempest); that label changes only with the
-lock. Without the per-build labels (`created`, `revision`, `source`, `url`) and the
+lock. The ovn, hvo and kna images add it from their pin, and hvo and kna also carry
+`io.c5c3.upstream-commit`. Without the per-build labels (`created`, `revision`, `source`, `url`) and the
 `base.name` / `base.digest` pair, the digest of a Nix-built image moves only when an
 input of the flake moves; the build-provenance attestation of the merge job records the
 commit. See
@@ -1904,16 +1916,19 @@ steps in `build-service-images` and `verify-service-images`.
 
 Not every image tracks an OpenStack release. `keystone-federation-proxy`
 installs Apache and its two auth modules from the `ubuntu:noble` archive, and
-`ovn` compiles a family of C daemons from upstream git. Images on this path
-have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
+`ovn` compiles a family of C daemons from pinned upstream commits. Images on
+this path have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
 `generate-matrix` never sees them. What they need in place of that wiring:
 
-- The upstream version pinned in the Dockerfile as an `ARG`, for example
-  `ARG OVN_VERSION=v26.03.2`.
-- `hack/ci-resolve-<image>-version.sh` as the only parser of that line. The
-  workflow, the local builder and the verify script all call it.
-- `hack/ci-build-<image>-image.sh`, so a contributor reproduces the CI build
-  with one command.
+- The upstream version pinned beside the image. A Nix-built image keeps it in
+  `images/<image>/source.json` with the commit and its hash, for example the
+  `version` and `rev` keys of `images/ovn/source.json`, and `hack/nix-lock.sh`
+  writes the hashes (`make nix-lock`).
+- `hack/ci-resolve-<image>-version.sh` as the parser of that pin in CI
+  outside the Nix build and `hack/nix-lock.sh`, which read the file
+  themselves. The workflow and the verify script call it.
+- A build a contributor reproduces with one command: `nix build
+  .#<image>-image` for a Nix-built image.
 - A `build-<image>` job that needs `changes`, `lint-dockerfiles` and `prepare` with its
   platform include matrix written out, a PR-skipped `merge-<image>-image` job,
   and a `verify-<image>-image` job when the merged manifest is checked after
@@ -1937,20 +1952,21 @@ have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
   recording why the image is absent from its `SERVICES` list, and a check in
   `verify_deviation_comments.sh` when the image deviates from the `python-base`
   user, by creating the `openstack` user itself or by keeping root.
-- A Renovate `customManager` for the `ARG` line, `packageRules` for the update
+- A Renovate `customManager` for the pin, `packageRules` for the update
   types the image accepts, and a regression test under `tests/unit/renovate/`.
+  A pin with a hash fails `nix-lock-check` after a Renovate move until
+  `make nix-lock` is pushed.
 
 An image pinned to an upstream commit instead of a version names its resolver
-`hack/ci-resolve-<image>-commit.sh` and may skip the build script when a plain
-`docker build` of its directory reproduces the CI build. `<image>` is the short
-name the jobs and test files use: `openstack-hypervisor-operator` has
-`hack/ci-resolve-hvo-commit.sh`, `build-hvo` and `verify_hvo.sh`, and
-`kvm-node-agent` has `hack/ci-resolve-kna-commit.sh`, `build-kna` and
-`verify_kna.sh`.
+`hack/ci-resolve-<image>-commit.sh` and reads the `rev` key of its
+`source.json`. `<image>` is the short name the jobs and test files use:
+`openstack-hypervisor-operator` has `hack/ci-resolve-hvo-commit.sh`,
+`build-hvo` and `verify_hvo.sh`, and `kvm-node-agent` has
+`hack/ci-resolve-kna-commit.sh`, `build-kna` and `verify_kna.sh`.
 
 An image built from distro packages alone (`keystone-federation-proxy`,
-`libvirt`) has no `ARG` pin and therefore skips the resolver script, the build
-script and the Renovate `customManager`.
+`libvirt`) has no upstream pin and therefore skips the resolver script and the
+Renovate `customManager`.
 
 ## Adding a New Release
 
@@ -2119,6 +2135,7 @@ The build-images workflow depends on the following artifacts:
 | `images/<service>/image.nix` | `build-service-images` | Service image (Nix expression over `nix/lib/service-image.nix`) |
 | `nix/locks/<release>/<service>/` | `build-service-images`, `test-service-images`, `nix-lock-check` | The lock of the service release: source pin, patches, resolved dependencies |
 | `flake.nix`, `flake.lock` | every Nix job | The flake inputs and outputs |
+| `images/<name>/source.json` | `build-ovn`, `build-hvo`, `build-kna`, `nix-lock-check` | The pin of an image built from an upstream commit |
 | `releases/2026.1/source-refs.yaml` | `nix-lock-check`, `build-nova-compute-image` | Upstream version resolution |
 | `releases/2026.1/upper-constraints.txt` | `nix-lock-check`, `build-nova-compute-image` | Python dependency pins |
 | `scripts/apply-constraint-overrides.sh` | `nix-lock-check`, `build-nova-compute-image` | Constraint override application |
