@@ -245,6 +245,88 @@ read_stack_chart_objects() {
 }
 
 # ---------------------------------------------------------------------------
+# teardown_orders — Delete the orders of the c5c3-operator in every namespace,
+# one delete per namespace, each bounded by TEARDOWN_TIMEOUT.
+#
+# Run in step 1, before the ControlPlanes. An order is a CR of the group
+# c5c3.io whose spec names a ControlPlane (spec.controlPlaneRef, required on
+# every order kind), applied by a service owner in an assigned namespace as
+# the Quick Start (Orders) does. The eight order kinds and the children each
+# leaves in the ControlPlane's namespace:
+#   - KeystoneUser, KeystoneProject, KeystoneRoleAssignment,
+#     KeystoneApplicationCredential, KeystoneCatalogEntry and the
+#     KeystoneService of a foreign service: K-ORC CRs, whose finalizers delete
+#     them in Keystone, and, for a user and a credential, a backup PushSecret
+#     with deletionPolicy Delete, whose finalizer purges it from OpenBao
+#     through the tenant SecretStore;
+#   - MariaDBDatabase: an OpenBao database role, an ExternalSecret, a
+#     VaultDynamicSecret and the mariadb-operator's Database CR;
+#   - RabbitMQVhost: a backup PushSecret and the topology operator's Vhost,
+#     User and Permission CRs.
+# None carries an owner reference to the ControlPlane, so its finalizer
+# leaves them. Once it has deleted Keystone and the eso-tenant-auth
+# ServiceAccount nothing can finalize them: ESO holds the SecretStore while a
+# PushSecret with deletionPolicy Delete names it, and wait_for_stack_crs_gone
+# runs out on that store. Step 2 then takes MariaDB, OpenBao and the message
+# bus the other children need. While the ControlPlane is there, an order's
+# finalizer waits until its children are gone, and the holds of a user, a
+# project and an assignment wait for the orders that use them, so the orders
+# of a namespace go in one delete.
+#
+# Every namespaced kind of c5c3.io but ControlPlane is read, so an order kind
+# added later is covered without a change here. A CredentialRotation and a
+# SecretAggregate name no ControlPlane, carry no finalizer and go with their
+# CRDs in step 8. A CR a ControlPlane owns or labels with
+# c5c3.io/controlplane-name is its child, such as the KeystoneService of a
+# service it runs, and is left to its finalizer: the ControlPlane would create
+# it again. A read of the CRDs or of the orders that fails exits 1 before any
+# delete; a delete that runs out exits 1 (delete_and_wait).
+# ---------------------------------------------------------------------------
+teardown_orders() {
+  local crds kinds json orders line namespace
+  if ! crds="$(kubectl get crd -o custom-columns=NAME:.metadata.name,SCOPE:.spec.scope,KIND:.spec.names.kind --no-headers)"; then
+    log "ERROR: cannot read the scope of the cluster's CRDs (kubectl's error is above)."
+    exit 1
+  fi
+  kinds="$(awk '$2 == "Namespaced" && $1 ~ /^[^.]+\.c5c3\.io$/ && $1 != "controlplanes.c5c3.io" { print $1 }' \
+    <<<"${crds}" | paste -sd, -)"
+  if [[ -z "${kinds}" ]]; then
+    return 0
+  fi
+  if ! json="$(kubectl get "${kinds}" -A -o json)"; then
+    log "ERROR: cannot read the orders of the c5c3-operator (kubectl's error is above)."
+    exit 1
+  fi
+  # "<namespace> <kind>.<group>/<name>", one order per line.
+  if ! orders="$(yq -r '.items[] |
+      select(.spec.controlPlaneRef != null) |
+      select([(.metadata.ownerReferences // [])[] |
+        select(.kind == "ControlPlane" and (.apiVersion | sub("/[^/]*$"; "")) == "c5c3.io")] | length == 0) |
+      select(.metadata.labels["c5c3.io/controlplane-name"] == null) |
+      .metadata.namespace + " " + (.kind | downcase) + "." + (.apiVersion | sub("/[^/]*$"; "")) + "/" + .metadata.name' \
+    <<<"${json}")"; then
+    log "ERROR: cannot read the orders of the c5c3-operator (yq's error is above)."
+    exit 1
+  fi
+  if [[ -z "${orders}" ]]; then
+    return 0
+  fi
+
+  local namespaces=() objects=()
+  while IFS= read -r line; do
+    namespaces+=("${line}")
+  done < <(cut -d' ' -f1 <<<"${orders}" | sort -u)
+  for namespace in "${namespaces[@]}"; do
+    objects=()
+    while IFS= read -r line; do
+      log "  Order: ${namespace}/${line}"
+      objects+=("${line}")
+    done < <(awk -v ns="${namespace}" '$1 == ns { print $2 }' <<<"${orders}")
+    delete_and_wait "the orders in ${namespace}" "${objects[@]}" -n "${namespace}"
+  done
+}
+
+# ---------------------------------------------------------------------------
 # wait_for_stack_crs_gone <namespace> — Wait until no CR of the stack's
 # namespaced CRDs (STACK_CRD_GROUPS) in <namespace> is still being reaped,
 # bounded by TEARDOWN_TIMEOUT.
@@ -1252,7 +1334,10 @@ teardown_dizzy() {
 #      through each ControlPlane's admin credential from a pod in openstack
 #      (teardown_openstack_workloads), then the node layer, the hypervisor
 #      objects, the fixtures, the overlay and the node labels;
-#   1. every ControlPlane in openstack, while the c5c3-operator runs, so it
+#   1. the orders of the c5c3-operator in every namespace (teardown_orders),
+#      while the ControlPlane they name still runs the Keystone and the
+#      tenant SecretStore their children are finalized through, then every
+#      ControlPlane in openstack, while the c5c3-operator runs, so it
 #      reaps its children, then every OVNCentral there: the quick start's
 #      central is referenced, not owned, and its database pods would hold
 #      their PVCs through step 4;
@@ -1359,8 +1444,10 @@ teardown_external_cluster() {
   # 0. The lab hypervisors.
   teardown_hypervisors
 
-  # 1. The ControlPlanes, only where the c5c3 CRD was ever installed.
+  # 1. The orders, then the ControlPlanes, only where the c5c3 CRD was ever
+  # installed.
   if kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1; then
+    teardown_orders
     delete_and_wait "the ControlPlanes in openstack" controlplane --all -n openstack
   fi
   # The standalone OVNCentral the quick start applies beside the ControlPlane
