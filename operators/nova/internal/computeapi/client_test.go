@@ -53,13 +53,20 @@ func (d *stubDoer) Do(req *http.Request) (*http.Response, error) {
 // tokenThen answers the token request with a token and every later request
 // with compute.
 func tokenThen(compute http.HandlerFunc) *stubDoer {
+	return tokenWithBodyThen(`{"token":{}}`, compute)
+}
+
+// tokenWithBodyThen answers the token request with a token and body, and every
+// later request with next.
+func tokenWithBodyThen(body string, next http.HandlerFunc) *stubDoer {
 	return &stubDoer{handler: func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/auth/tokens") {
 			w.Header().Set("X-Subject-Token", "tok")
 			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, body)
 			return
 		}
-		compute(w, r)
+		next(w, r)
 	}}
 }
 
@@ -118,6 +125,17 @@ func TestNew_CreatedWithoutSubjectTokenFails(t *testing.T) {
 	doer := &stubDoer{handler: status(http.StatusCreated, "{}")}
 	_, err := New(context.Background(), doer, testKeystoneURL, testComputeURL, testCreds)
 	g.Expect(err).To(MatchError("keystone returned no X-Subject-Token"))
+}
+
+// TestNew_BodyThatIsNotJSONFails pins that the token body is decoded: the
+// client keeps its catalog for UsePlacement.
+func TestNew_BodyThatIsNotJSONFails(t *testing.T) {
+	g := NewGomegaWithT(t)
+	for _, body := range []string{"nope", ""} {
+		_, err := New(context.Background(), tokenWithBodyThen(body, status(http.StatusOK, "{}")),
+			testKeystoneURL, testComputeURL, testCreds)
+		g.Expect(err).To(MatchError(ContainSubstring("decoding token response")), "body %q", body)
+	}
 }
 
 func TestNew_UnauthorizedIsAnAPIError(t *testing.T) {
@@ -526,7 +544,7 @@ func TestRequestTimeout(t *testing.T) {
 		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
 	})
 
-	t.Run("compute request", func(t *testing.T) {
+	t.Run("compute and placement requests", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		authenticated := false
 		doer := doerFunc(func(req *http.Request) (*http.Response, error) {
@@ -535,6 +553,7 @@ func TestRequestTimeout(t *testing.T) {
 				rec := httptest.NewRecorder()
 				rec.Header().Set("X-Subject-Token", "tok")
 				rec.WriteHeader(http.StatusCreated)
+				_, _ = io.WriteString(rec, `{"token":{}}`)
 				return rec.Result(), nil
 			}
 			return blocking(req)
@@ -547,6 +566,163 @@ func TestRequestTimeout(t *testing.T) {
 		_, err = c.ListMappedHosts(context.Background())
 		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
 		g.Expect(err.Error()).To(HavePrefix("GET /v2.1/os-hypervisors/detail?limit=500: "))
+
+		g.Expect(c.UsePlacement(testPlacementURL, "")).To(Succeed())
+		_, err = c.EnsureTrait(context.Background(), "CUSTOM_A")
+		g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+		g.Expect(err.Error()).To(HavePrefix("PUT /traits/CUSTOM_A: "))
+	})
+}
+
+// testPlacementURL is a Placement override, outside any catalog.
+const testPlacementURL = "http://p.example:8778"
+
+// fakeCatalogToken is a token body in the shape Keystone sends, with
+// placement in two regions and one public endpoint the client must not pick.
+const fakeCatalogToken = `{"token":{"catalog":[` +
+	`{"type":"compute","endpoints":[{"interface":"internal","region":"RegionOne","url":"http://nova:8774"}]},` +
+	`{"type":"placement","endpoints":[` +
+	`{"interface":"public","region":"RegionOne","url":"https://placement.example.com"},` +
+	`{"interface":"internal","region":"RegionTwo","url":"http://placement.two.svc:8778/"},` +
+	`{"interface":"internal","region":"RegionOne","url":"http://placement.openstack.svc:8778"}]}]}}`
+
+func TestNew_DecodesTheCatalog(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c := newClient(t, computeapitest.New())
+	g.Expect(c.UsePlacement("", "RegionOne")).To(Succeed())
+	g.Expect(c.placementURL).To(Equal(computeapitest.PlacementURL))
+}
+
+func TestUsePlacement(t *testing.T) {
+	for _, tc := range []struct {
+		name, override, region, want string
+	}{
+		{name: "the override wins", override: testPlacementURL, region: "RegionOne", want: testPlacementURL},
+		{name: "the internal endpoint of the region", region: "RegionOne", want: "http://placement.openstack.svc:8778"},
+		{name: "a trailing slash is trimmed", region: "RegionTwo", want: "http://placement.two.svc:8778"},
+		{name: "any region when none is named", want: "http://placement.two.svc:8778"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			c := newClient(t, tokenWithBodyThen(fakeCatalogToken, status(http.StatusOK, "{}")))
+			g.Expect(c.UsePlacement(tc.override, tc.region)).To(Succeed())
+			g.Expect(c.placementURL).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("a region without placement is ErrPlacementEndpointNotFound", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c := newClient(t, tokenWithBodyThen(fakeCatalogToken, status(http.StatusOK, "{}")))
+		err := c.UsePlacement("", "RegionThree")
+		g.Expect(errors.Is(err, ErrPlacementEndpointNotFound)).To(BeTrue(), "got %v", err)
+		g.Expect(err.Error()).To(ContainSubstring("RegionThree"))
+	})
+
+	t.Run("a catalog without placement is ErrPlacementEndpointNotFound", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		fake := computeapitest.New()
+		fake.OmitPlacementFromCatalog = true
+		c := newClient(t, fake)
+		g.Expect(c.UsePlacement("", "")).To(MatchError(ErrPlacementEndpointNotFound))
+	})
+}
+
+// placementClient is a client pointed at testPlacementURL that answers the
+// Placement requests with next.
+func placementClient(t *testing.T, next http.HandlerFunc) (*Client, *stubDoer) {
+	t.Helper()
+	doer := tokenThen(next)
+	c := newClient(t, doer)
+	NewGomegaWithT(t).Expect(c.UsePlacement(testPlacementURL, "")).To(Succeed())
+	return c, doer
+}
+
+func TestEnsureTrait(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		code        int
+		wantCreated bool
+	}{
+		{name: "201 is created", code: http.StatusCreated, wantCreated: true},
+		{name: "204 is an existing trait", code: http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			c, doer := placementClient(t, status(tc.code, ""))
+			created, err := c.EnsureTrait(context.Background(), "CUSTOM_GPU")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(created).To(Equal(tc.wantCreated))
+
+			req := doer.requests[1]
+			g.Expect(req.Method).To(Equal(http.MethodPut))
+			g.Expect(req.URL.String()).To(Equal(testPlacementURL + "/traits/CUSTOM_GPU"))
+			g.Expect(req.Header.Get("OpenStack-API-Version")).To(Equal("placement 1.6"))
+			g.Expect(req.Header.Get("X-Auth-Token")).To(Equal("tok"))
+			g.Expect(req.Header.Get("X-OpenStack-Nova-API-Version")).To(BeEmpty())
+		})
+	}
+
+	t.Run("400 is an APIError", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c, _ := placementClient(t, status(http.StatusBadRequest, "not a custom trait"))
+		created, err := c.EnsureTrait(context.Background(), "HW_CPU_X86_AVX2")
+		g.Expect(created).To(BeFalse())
+		var apiErr *APIError
+		g.Expect(errors.As(err, &apiErr)).To(BeTrue(), "got %v", err)
+		g.Expect(apiErr.StatusCode).To(Equal(http.StatusBadRequest))
+		g.Expect(apiErr.Path).To(Equal("/traits/HW_CPU_X86_AVX2"))
+	})
+
+	t.Run("a 2xx other than 201 and 204 is an APIError", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c, _ := placementClient(t, status(http.StatusOK, ""))
+		_, err := c.EnsureTrait(context.Background(), "CUSTOM_GPU")
+		g.Expect(err).To(MatchError("PUT /traits/CUSTOM_GPU: HTTP 200: "))
+	})
+
+	t.Run("before UsePlacement nothing is sent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		doer := tokenThen(status(http.StatusCreated, ""))
+		c := newClient(t, doer)
+		_, err := c.EnsureTrait(context.Background(), "CUSTOM_GPU")
+		g.Expect(err).To(MatchError(ErrPlacementEndpointNotFound))
+		g.Expect(c.DeleteTrait(context.Background(), "CUSTOM_GPU")).To(MatchError(ErrPlacementEndpointNotFound))
+		g.Expect(doer.requests).To(HaveLen(1), "the token request alone")
+	})
+}
+
+func TestDeleteTrait(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		code    int
+		wantErr error
+	}{
+		{name: "204 is success", code: http.StatusNoContent},
+		{name: "404 is success", code: http.StatusNotFound},
+		{name: "409 is ErrTraitInUse", code: http.StatusConflict, wantErr: ErrTraitInUse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			c, doer := placementClient(t, status(tc.code, ""))
+			err := c.DeleteTrait(context.Background(), "CUSTOM_GPU")
+			if tc.wantErr == nil {
+				g.Expect(err).NotTo(HaveOccurred())
+			} else {
+				g.Expect(errors.Is(err, tc.wantErr)).To(BeTrue(), "got %v", err)
+			}
+			g.Expect(doer.requests[1].Method).To(Equal(http.MethodDelete))
+			g.Expect(doer.requests[1].Header.Get("OpenStack-API-Version")).To(Equal("placement 1.6"))
+		})
+	}
+
+	t.Run("500 is an APIError", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		c, _ := placementClient(t, status(http.StatusInternalServerError, "boom"))
+		err := c.DeleteTrait(context.Background(), "CUSTOM_GPU")
+		var apiErr *APIError
+		g.Expect(errors.As(err, &apiErr)).To(BeTrue(), "got %v", err)
+		g.Expect(apiErr.StatusCode).To(Equal(http.StatusInternalServerError))
+		g.Expect(errors.Is(err, ErrTraitInUse)).To(BeFalse())
 	})
 }
 
@@ -604,6 +780,24 @@ func TestAgainstTheFake(t *testing.T) {
 	g.Expect(aggregates[0].Metadata).To(HaveKeyWithValue("c5c3.io:nova", "ns/nova"))
 	g.Expect(c.DeleteAggregate(ctx, agg.ID)).To(Succeed())
 	g.Expect(c.DeleteAggregate(ctx, agg.ID)).To(Succeed())
+
+	g.Expect(c.UsePlacement("", "RegionOne")).To(Succeed())
+	created, err := c.EnsureTrait(ctx, "CUSTOM_GPU")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(created).To(BeTrue())
+	created, err = c.EnsureTrait(ctx, "CUSTOM_GPU")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(created).To(BeFalse(), "a second create is a 204")
+	g.Expect(fake.Traits()).To(Equal([]string{"CUSTOM_GPU"}))
+	fake.SetTraitInUse("CUSTOM_GPU", true)
+	g.Expect(errors.Is(c.DeleteTrait(ctx, "CUSTOM_GPU"), ErrTraitInUse)).To(BeTrue())
+	fake.SetTraitInUse("CUSTOM_GPU", false)
+	g.Expect(c.DeleteTrait(ctx, "CUSTOM_GPU")).To(Succeed())
+	g.Expect(c.DeleteTrait(ctx, "CUSTOM_GPU")).To(Succeed(), "a second delete is a 404, which is success")
+	g.Expect(fake.Traits()).To(BeEmpty())
+	g.Expect(fake.CallsTo(http.MethodPut, "/traits/")).To(HaveLen(2))
+	_, err = c.send(ctx, computeapitest.PlacementURL, http.MethodPut, "/traits/CUSTOM_OLD", nil, nil, nil)
+	g.Expect(statusOf(err)).To(Equal(http.StatusNotFound), "below 1.6 Placement serves no /traits")
 
 	fake.RejectAuth = true
 	_, err = New(ctx, fake, testKeystoneURL, testComputeURL, testCreds)
