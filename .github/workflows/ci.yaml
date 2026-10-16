@@ -1930,6 +1930,7 @@ jobs:
               tests/e2e-chaos/eso-down
               tests/e2e-chaos/eso-pod-kill
               tests/e2e-chaos/openbao-sealed
+              tests/e2e-chaos/openbao-tenant-policy-narrowed
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health

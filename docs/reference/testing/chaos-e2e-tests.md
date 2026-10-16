@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 49 chaos test suites validate operator behavior during and after fault
+The 50 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 49 test suites require the infrastructure stack to be deployed and healthy.
+All 50 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -463,6 +463,7 @@ with the new suites.
 | [eso-down](#eso-down) | — | `keystone-chaos-eso-fresh` | ESO controller at zero (fail-closed provisioning) | `FAILCLOSED-OK`: for 90 s with the controller at zero, a fresh Keystone holds `SecretsReady=False/WaitingForDBCredentials`, never reads `Ready=True` and has no Secret `eso-down-db`, while `keystone-chaos-eso` stays `Ready=True`; after the scale-up both ExternalSecrets `Ready=True/SecretSynced` and the fresh Keystone at `Ready=True/AllReady` within 10 minutes, workload budget zero |
 | [eso-pod-kill](#eso-pod-kill) | — | `keystone-chaos-esokill` | ESO controller pod kill | Every pre-kill controller pod UID gone and `readyReplicas` back at `spec.replicas`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady`, `RESYNC-OK`: a forced sync of `eso-kill-probe` with a `refreshTime` at or after the request and `Ready=True/SecretSynced` within 180 s, workload budget zero |
 | [openbao-sealed](#openbao-sealed) | — | `keystone-chaos-seal` | OpenBao sealed in place | `openbao-cluster-store` `Ready=False`, the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`, `SEALED-IN-PLACE-OK`: `openbao-0` with its pod UID and `restartCount` unchanged; after `unseal-openbao.sh` the store and the Keystone `Ready=True` within 5 minutes, workload budget zero |
+| [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `403` in its condition or an event, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
 
 ---
 
@@ -3361,6 +3362,59 @@ its CR reports `Ready=False`, and the zero budget states that contract.
 
 ---
 
+### openbao-tenant-policy-narrowed
+
+**File:** `tests/e2e-chaos/openbao-tenant-policy-narrowed/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** OpenBao policy `eso-tenant`, the identity every per-tenant SecretStore
+authenticates as since #605, loses the one stanza that grants read on the caller's
+own Keystone subtree, `kv-v2/data/openstack/keystone/<namespace>/*`. The suite
+pins that a sync under the narrowed policy fails closed: ESO reports the denial,
+keeps the Secret it wrote before, and the Keystone that reads it keeps running.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | A synced credential, a Keystone on it, the workload | `apply` + `assert` (5m) + `apply` + `assert` (5m) + `script` (6m) | `policy-narrowed-db` at `Ready=True/SecretSynced`; `keystone-chaos-policy` (database `keystone_chaos_policy`) on it at `Ready=True/AllReady`; `workload.sh start` |
+| 2 | Capture, then narrow | `script` (3m) | Reads `bao policy read eso-tenant` into ConfigMap `policy-narrowed-orig` (key `policy.hcl`), drops the one stanza whose `path` line starts `kv-v2/data/openstack/keystone/{{` and ends `/*" {` (any other count fails the step), runs `workload.sh mark fault-start`, writes the narrowed text and requires the policy to read back as that text |
+| 3 | A sync is denied | `script` (4m) | Sets `force-sync` on `policy-narrowed-db`. Within 120 s its `Ready` reads `False/SecretSyncedError` with `permission denied` or `403` in the condition or an event; on every read of the 120 s Secret `policy-narrowed-db` keeps its `resourceVersion` and the Keystone `Ready=True` (`DENIED-OK`) |
+| 4 | Restore the capture | `script` (2m) | Writes the captured text back, compares `bao policy read` with it byte for byte, then `workload.sh mark fault-end` |
+| 5 | Both credentials sync again | `script` (4m) | Sets `force-sync` on `policy-narrowed-db` and on the kind stack's `keystone-db`; both reach `Ready=True/SecretSynced` with a `refreshTime` at or after the request within 120 s |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-externalsecret.yaml` (`policy-narrowed-db`: the tenant store and
+the two remote refs of `keystone-db`), `01-keystone-cr.yaml`, and `probe-lib.sh`
+with the narrowing and the restore, on the root-token call into `openbao-0` of
+`lib/openbao.sh`.
+
+**Workload:** the `token` stream against `keystone-chaos-policy`, started in step 1
+and judged in step 6 against `failures=0 recovery=0s`. The suite runs in the `pod`
+matrix entry. The credentials of the Keystone are already in its Secrets.
+
+**Catch blocks:** steps 2 to 4 write the capture back first when the ConfigMap
+exists. Every catch calls `../diagnostics.sh chaos keystone-chaos-policy` with
+`--dep-ns=shared-services`, `--dep-label=app.kubernetes.io/name=openbao` and
+`--eso`; steps 3 and 5 dump both ExternalSecrets and their events. The cleanup of
+step 2 runs at the end of the test: it compares the live policy with the capture,
+writes the capture back when they differ, and deletes the ConfigMap only once
+the policy reads back as the capture. Otherwise it fails and keeps the ConfigMap.
+
+**Design notes:**
+
+- `setup-policies.sh` substitutes the accessor of the auth mount when it writes the
+  policy, so the file in `deploy/openbao/policies/` differs from what OpenBao
+  holds. The suite captures the live text and writes that back.
+- The root token is the first line of the stdin of each `bao` call into
+  `openbao-0`, and the policy text follows it. The token appears in no argv and no
+  file, and no token is staged in the pod.
+- ESO's default `deletionPolicy`, `Retain`, keeps the Secret when a sync fails. The
+  step 3 check on `resourceVersion` pins that the denied sync wrote nothing.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3891,6 +3945,11 @@ tests/e2e-chaos/
 ├── openbao-sealed/                   OpenBao sealed in place
 │   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-seal
 │   └── chainsaw-test.yaml            Test: SecretStoreNotReady under the seal, recovery after the unseal
+├── openbao-tenant-policy-narrowed/   OpenBao policy eso-tenant narrowed
+│   ├── 00-externalsecret.yaml        ExternalSecret policy-narrowed-db on the tenant store
+│   ├── 01-keystone-cr.yaml           Keystone keystone-chaos-policy on that Secret
+│   ├── chainsaw-test.yaml            Test: the sync is denied, the Secret and the Keystone stay
+│   └── probe-lib.sh                  Helpers the scripts source: bao as root, narrow, restore
 ├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator in keystone-system
