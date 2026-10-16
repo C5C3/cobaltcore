@@ -1886,9 +1886,10 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The split into four matrix entries is kept so PodChaos, NetworkChaos, the
-    # OVN datapath suite and the nova-stack suites stay independently gated
-    # (see continue-on-error below) and so the suites run in parallel.
+    # The split into five matrix entries is kept so PodChaos, NetworkChaos, the
+    # OVN datapath suite, the Nova stack and the ControlPlane suites stay
+    # independently gated (see continue-on-error below) and so the suites run
+    # in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -1984,22 +1985,35 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
+          # The suites of #1390 that bring up a ControlPlane of their own in
+          # chainsaw's ephemeral namespace: K-ORC, the c5c3-operator and a
+          # Keystone-only plane per suite. They get an entry of their own so
+          # the pod entry keeps the standalone stack its suites assume.
+          # Non-blocking (see continue-on-error below): korc-network-partition
+          # is a NetworkChaos partition on the sch_netem/ip_set dependency the
+          # network entry carries.
+          - suite: controlplane
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
     runs-on: self-hosted
-    # 150 minutes for the nova leg, 135 for network, 45 for ovn and 90 for pod:
-    # 420 minutes for the four, the seven hours D6 of #1386 allows. Run
-    # 38626068128 (PR #1411) took 48 minutes on pod, 54 on network, 12 on ovn
-    # and 69 on nova, before the suites of #1389. Its JUnit reports put a
-    # network suite at 80 to 370 seconds and a nova-stack suite at 11 to 21
-    # minutes. The network leg gains eleven suites of the first kind, at most
-    # 68 minutes, and the nova leg three of the second, at most 63 minutes,
-    # which puts them at about 122 and 132 minutes; the pod leg gains four
-    # suites of the network kind and the ovn leg none. Every suite runs one
-    # after the other: tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1,
-    # where the e2e-operator nova leg fits comparable suites into 90 minutes
-    # only because it runs them two at a time. The nova leg loads eighteen
-    # images and runs eight operator deploys before its first suite, and each
-    # of its six suites stands up a Keystone, an OVNCentral, a Neutron, a
-    # Placement, a Glance and a five-workload Nova.
+    # 150 minutes for the nova leg, 135 for network, 120 for pod, 100 for
+    # controlplane and 45 for ovn: 550 minutes for the five, which the author
+    # of #1390 accepted on 2026-10-16 against the seven hours D6 of #1386 gave
+    # the four legs before it. Run 38903206716 (PR #1420) took 62 minutes on
+    # pod, 125 on network, 11 on ovn and 130 on nova. The pod leg gains the
+    # eight suites of #1390 that need only the standalone stack, at about 5
+    # minutes each: a kind run took 105 to 334 seconds per suite, most of it
+    # in fixed hold and observe windows. The controlplane leg brings up the
+    # keystone stack, K-ORC and the c5c3-operator, and each of its five suites
+    # a Keystone-only ControlPlane: about 15 minutes for the bring-up and 8 to
+    # 12 per suite, the 7 min 45 s the keystone-service suite took in run
+    # 38788542824 plus the fault and a teardown of up to 12 minutes. Every
+    # suite runs one after the other: tests/e2e-chaos/chainsaw-config.yaml
+    # sets parallel: 1, where the e2e-operator nova leg fits comparable suites
+    # into 90 minutes only because it runs them two at a time. The nova leg
+    # loads eighteen images and runs eight operator deploys before its first
+    # suite, and each of its six suites stands up a Keystone, an OVNCentral, a
+    # Neutron, a Placement, a Glance and a five-workload Nova.
     #
     # The wall has to outlast that bring-up plus the suites that pass plus the
     # step a stalling suite times out in and the catch block after it —
@@ -2012,20 +2026,21 @@ jobs:
     # times of the new suites are the estimate in these sums; read each leg's
     # duration off the first green run with them and re-derive if one
     # overruns.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'ovn' && 45 || 90 }}
+    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}
     # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
     # (their kernel-module dependency keeps them flakiness-prone). See the
     # gating note above the job. The nova leg is the third of them because
     # three of its suites are NetworkChaos partitions on the sch_netem and
     # ip_set modules, the same dependency the network leg's suites have, and
     # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
-    # needs.
+    # needs. The controlplane leg is the fourth: korc-network-partition is a
+    # NetworkChaos partition on the same sch_netem and ip_set modules.
     #
-    # The three non-blocking legs are named, rather than negating the blocking
-    # one: a fifth leg added to the matrix above then gates merges by default
+    # The four non-blocking legs are named, rather than negating the blocking
+    # one: a sixth leg added to the matrix above then gates merges by default
     # and has to be argued out of it here, instead of arriving silently
     # non-blocking and passing green while it fails.
-    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}
+    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}
     permissions:
       contents: read
       packages: read
@@ -2106,6 +2121,9 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
+            # The controlplane leg's own operator; its Keystone children run
+            # the keystone image the keystone stack above already loads.
+            ${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -2161,6 +2179,13 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+      # The controlplane leg's c5c3-operator. The keystone stack step above
+      # covers its Keystone children and the Tempest image of the workload
+      # and the admin Jobs.
+      - name: Load controlplane images into kind
+        if: matrix.suite == 'controlplane'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The chassis DaemonSets of the ovn leg's ovn-southbound-outage and of
@@ -2185,6 +2210,13 @@ jobs:
           # keeps its default of installing neither.
           WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
           WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}
+          # The controlplane leg prepares the ControlPlane path the way the
+          # e2e-controlplane job does: the infrastructure overlay without the
+          # standalone MariaDB, Memcached and shim ExternalSecrets, and the
+          # Flux ControlPlane stack suspended for the operators deployed
+          # below. Each suite seeds and provisions a plane of its own.
+          WITH_CONTROLPLANE: ${{ matrix.suite == 'controlplane' && 'true' || '' }}
+          CONTROLPLANE_OPERATORS: ${{ matrix.suite == 'controlplane' && 'external' || '' }}
       # Use shared operator deployment script. The ovn leg skips it along with
       # the rest of the keystone stack: no suite there creates a Keystone.
       - name: Deploy operator
@@ -2271,6 +2303,30 @@ jobs:
           OPERATOR: ovn
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
           NAMESPACE: ovn-system
+      # The controlplane leg's planes need K-ORC for their admin credential
+      # and registrations, installed from the upstream installer at the pin
+      # of deploy/flux-system/sources/k-orc.yaml as in e2e-controlplane. The
+      # c5c3-operator's cache needs the Placement CRD; the `!= 'ovn'` steps
+      # above already deploy the keystone, horizon, glance and barbican
+      # operators here, and the `!= 'pod'` one the ovn-operator.
+      - name: Deploy K-ORC (controlplane leg)
+        if: matrix.suite == 'controlplane'
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          kubectl apply -f operators/placement/helm/placement-operator/crds/
+          hack/ci-deploy-korc.sh
+      # Last of the controlplane leg's deploys, at the chart default of two
+      # replicas: c5c3-operator-pod-kill and
+      # rabbitmq-operator-cascading-failure kill both with mode: all.
+      - name: Deploy c5c3 operator
+        if: matrix.suite == 'controlplane'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
       # The neutron suites of the network leg (four, and the Neutron of
       # ovn-operator-pod-kill) need the neutron-operator there; the nova leg
       # deploys it in its own step below. It follows the keystone and ovn
@@ -2364,6 +2420,14 @@ jobs:
           for op in neutron ovn cinder placement glance barbican horizon; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # The controlplane leg's two operators beyond keystone: the c5c3-operator
+      # in c5c3-system, and K-ORC at 500 lines, where the dump above keeps the
+      # last 200.
+      - name: Dump diagnostic info (controlplane leg)
+        if: always() && matrix.suite == 'controlplane'
+        run: |
+          OPERATOR=c5c3 OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

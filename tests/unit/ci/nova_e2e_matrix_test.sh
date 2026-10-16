@@ -1076,11 +1076,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
 
   # All three faults are NetworkChaos partitions, so the leg carries the same
   # sch_netem/ip_set dependency that keeps the network leg non-blocking. The
-  # whole expression is read, not the nova arm alone: the other two legs stay
-  # where they were.
-  assert_contains "the nova leg is named non-blocking beside the other two" \
+  # whole expression is read, not the nova arm alone: the other legs stay
+  # where they were, and the controlplane leg of #1390 joined them for its
+  # korc-network-partition.
+  assert_contains "the nova leg is named non-blocking beside the other three" \
     "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}"
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}"
 
   # Six refs on top of the keystone stack every non-ovn leg loads and the OVN
   # pair the `!= 'pod'` entries already cover here. The tempest image the
@@ -1215,10 +1216,11 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # shorter wall would arrive mid-suite: chainsaw is killed outright, no catch
   # block runs and no JUnit report is written, and a non-blocking leg then
   # reports a cancellation that names no suite. The whole expression is read:
-  # the network and ovn walls moved with #1389 so that the four still sum to
-  # seven hours (150 + 135 + 45 + 90).
+  # the network and ovn walls moved with #1389, and #1390 added the
+  # controlplane leg and moved the pod wall, so the five sum to the 550
+  # minutes its author accepted (150 + 135 + 100 + 45 + 120).
   assert_contains "each leg gets its wall" "$job" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'ovn' && 45 || 90 }}"
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}"
 
   # And the leg is its own: the network leg was not widened into these
   # suites.

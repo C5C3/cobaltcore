@@ -356,11 +356,13 @@ test_chaos_ovn_leg_is_wired() {
     "tests/e2e-chaos/ovn-southbound-outage"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
-  # The expression names the three non-blocking legs instead of negating the
-  # blocking one, so a fifth leg gates merges until someone argues it out of
-  # that here rather than arriving silently non-blocking.
+  # The expression names the four non-blocking legs instead of negating the
+  # blocking one. The fifth leg, controlplane, was argued out of gating by
+  # #1390 for the NetworkChaos partition of korc-network-partition, so a
+  # sixth gates merges until someone argues it out of that here rather than
+  # arriving silently non-blocking.
   assert_contains "the non-blocking legs are named, not derived" "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}"
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}"
   assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
     "continue-on-error: \${{ matrix.suite != 'pod' }}"
 
