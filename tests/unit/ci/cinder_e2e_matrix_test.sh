@@ -159,8 +159,9 @@ test_cinder_image_filter_is_wired() {
   # image edit missing from it leaves the cinder leg loading whatever main
   # last published, so the suites pass against the old image and the change
   # under review is never run. patches/cinder/ belongs in the same filter:
-  # hack/ci-build-service-image.sh applies patches/<op>/<release>/*.patch into
-  # the source it builds, so a patch edited on its own changes that image.
+  # the lock's sources.json lists patches/<op>/<release>/*.patch, which the
+  # Nix build applies to the source, so a patch edited on its own changes that
+  # image.
   assert_filter_is_wired image_cinder changed-services
 
   local block

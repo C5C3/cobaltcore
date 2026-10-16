@@ -8,8 +8,8 @@
 # and that it hands both to the job in the shapes the workflow reads:
 #   - the key set covers every image a consumer can name, derived from the tree
 #     rather than listed in the workflow;
-#   - a changed operator, service, Tempest, proxy or OVN source lands in the
-#     build set and maps to the run-scoped tag the push step writes;
+#   - a changed operator, service, Tempest, proxy, OVN or libvirt source lands
+#     in the build set and maps to the run-scoped tag the push step writes;
 #   - an OVN pin the resolver cannot read fails the step before any output is
 #     written;
 #   - everything else maps to the index digest behind its published tag;
@@ -35,6 +35,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RESOLVE_SH="$PROJECT_ROOT/hack/ci-resolve-e2e-images.sh"
 OVN_VERSION="$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")"
 OVN_KEY="ghcr.io/c5c3/ovn:${OVN_VERSION}"
+LIBVIRT_KEY="ghcr.io/c5c3/libvirt:latest"
 
 PASS=0
 FAIL=0
@@ -223,6 +224,7 @@ expected_keys() {
   done
   echo "ghcr.io/c5c3/keystone-federation-proxy:dev"
   echo "$OVN_KEY"
+  echo "$LIBVIRT_KEY"
 }
 
 # ---------------------------------------------------------------------------
@@ -249,8 +251,7 @@ test_empty_inputs_reuse_every_image() {
     assert_eq "form $label: the proxy is not built" "false" "$(env_value BUILD_PROXY)"
     assert_eq "form $label: the ovn image is not built" "false" "$(env_value BUILD_OVN)"
     assert_eq "form $label: the OVN version is written" "$OVN_VERSION" "$(env_value OVN_VERSION)"
-    assert_eq "form $label: the base images are not needed" "false" \
-      "$(env_value NEEDS_BASE_IMAGES)"
+    assert_eq "form $label: the libvirt image is not built" "false" "$(env_value BUILD_LIBVIRT)"
     assert_eq "form $label: no Nix image is built" "false" \
       "$(env_value BUILD_NIX_IMAGES)"
     assert_eq "form $label: every image resolves to a digest" "true" \
@@ -270,10 +271,10 @@ test_the_key_set_covers_every_image_in_the_tree() {
     "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
 
   # Ten operators, eight services across two releases, nova-compute for
-  # every nova release, two Tempest images, the federation proxy and the ovn
-  # image. The number moves with the tree; the equality above is what keeps
-  # it honest.
-  assert_eq "the tree yields 32 images today" "32" "$(jq -r 'length' <<<"$MAP")"
+  # every nova release, two Tempest images, the federation proxy, the ovn
+  # image and the libvirt image. The number moves with the tree; the equality
+  # above is what keeps it honest.
+  assert_eq "the tree yields 33 images today" "33" "$(jq -r 'length' <<<"$MAP")"
 
   assert_eq "an operator image is keyed by its dev tag" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-operator:dev")' <<<"$MAP")"
@@ -283,13 +284,15 @@ test_the_key_set_covers_every_image_in_the_tree() {
     "$(jq 'has("ghcr.io/c5c3/tempest:2026.1")' <<<"$MAP")"
   assert_eq "the federation proxy is in the map" "true" \
     "$(jq 'has("ghcr.io/c5c3/keystone-federation-proxy:dev")' <<<"$MAP")"
+  assert_eq "the libvirt image is keyed by latest" "true" \
+    "$(jq --arg key "$LIBVIRT_KEY" 'has($key)' <<<"$MAP")"
 
   # c5c3 and ovn ship no service image, so they contribute an operator image and
   # nothing else.
   assert_eq "an operator without a service image contributes no service key" "0" \
     "$(jq -r '[keys[] | select(startswith("ghcr.io/c5c3/c5c3:"))] | length' <<<"$MAP")"
 
-  # One lookup per image, and no image looked up twice: 31 round trips to the
+  # One lookup per image, and no image looked up twice: 33 round trips to the
   # registry is already the bulk of this step's runtime on a no-build run.
   assert_eq "every image is looked up" "$(jq -r 'length' <<<"$MAP")" \
     "$(grep -c . "$INSPECT_LOG")"
@@ -320,14 +323,14 @@ test_a_changed_operator_builds_only_its_own_image() {
     "$(env_block BUILD_SERVICE_IMAGES)"
   assert_contains "the glance service image is pulled by digest" \
     "$(map_value ghcr.io/c5c3/glance:2026.1)" "ghcr.io/c5c3/glance@sha256:"
-  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  assert_eq "no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
 }
 
 # ---------------------------------------------------------------------------
 # Test 4: a changed service builds every release of it
 # ---------------------------------------------------------------------------
 test_a_changed_service_builds_all_its_releases() {
-  echo "Test: a changed service image builds every release with Nix, without the base images"
+  echo "Test: a changed service image builds every release with Nix"
 
   run_resolve CHANGED_SERVICES='["glance"]'
 
@@ -340,9 +343,7 @@ test_a_changed_service_builds_all_its_releases() {
     "ghcr.io/c5c3/glance:e2e-test-2026.1" "$(map_value ghcr.io/c5c3/glance:2026.1)"
   assert_eq "the 2026.2 image carries the run-scoped tag" \
     "ghcr.io/c5c3/glance:e2e-test-2026.2" "$(map_value ghcr.io/c5c3/glance:2026.2)"
-  # Nix builds the service images from their locks; only nova-compute builds
-  # FROM venv-builder and python-base.
-  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  # Nix builds the service images from their locks.
   assert_eq "the Nix images are built" "true" "$(env_value BUILD_NIX_IMAGES)"
   assert_eq "the glance operator image is not built" "" "$(env_block BUILD_OPERATORS)"
 }
@@ -365,15 +366,13 @@ test_a_changed_nova_builds_the_compute_image() {
     "ghcr.io/c5c3/nova-compute:e2e-test-2026.2" "$(map_value ghcr.io/c5c3/nova-compute:2026.2)"
 }
 
-test_a_changed_nova_needs_both_builds() {
-  echo "Test: a changed nova needs the base images for nova-compute and Nix for nova"
+test_a_changed_nova_builds_through_nix() {
+  echo "Test: a changed nova builds nova and nova-compute through the Nix step"
 
   run_resolve CHANGED_SERVICES='["nova"]'
 
   assert_eq "the resolver exits 0" "0" "$RC"
-  # nova-compute is the one image still built FROM venv-builder and
-  # python-base; the nova image itself is built by Nix.
-  assert_eq "the base images are needed" "true" "$(env_value NEEDS_BASE_IMAGES)"
+  # Both images are built by Nix from the nova lock.
   assert_eq "the Nix images are built" "true" "$(env_value BUILD_NIX_IMAGES)"
 }
 
@@ -400,16 +399,15 @@ test_an_unpublished_nova_builds_the_compute_image_too() {
     "$(map_value ghcr.io/c5c3/nova-compute:2026.2)" "ghcr.io/c5c3/nova-compute@sha256:"
 }
 
-test_an_unpublished_nova_compute_needs_only_the_base_images() {
-  echo "Test: an unpublished nova-compute alone builds from the base images without Nix"
+test_an_unpublished_nova_compute_builds_through_nix() {
+  echo "Test: an unpublished nova-compute alone builds through the Nix step"
 
   run_resolve STUB_MISSING="ghcr.io/c5c3/nova-compute:2026.1"
 
   assert_eq "the resolver exits 0" "0" "$RC"
   assert_eq "only nova-compute 2026.1 is built" "nova 2026.1 nova-compute" \
     "$(env_block BUILD_SERVICE_IMAGES)"
-  assert_eq "the base images are needed" "true" "$(env_value NEEDS_BASE_IMAGES)"
-  assert_eq "no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
+  assert_eq "the Nix step builds it" "true" "$(env_value BUILD_NIX_IMAGES)"
 }
 
 # ---------------------------------------------------------------------------
@@ -425,14 +423,13 @@ test_changed_tempest_builds_every_release() {
     "$(env_block BUILD_TEMPEST_RELEASES)"
   assert_eq "the 2026.1 Tempest image carries the run-scoped tag" \
     "ghcr.io/c5c3/tempest:e2e-test-2026.1" "$(map_value ghcr.io/c5c3/tempest:2026.1)"
-  # images/tempest/image.nix builds from the tempest lock, so no base image
-  # is needed and the Nix step builds it.
-  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  # images/tempest/image.nix builds from the tempest lock, so the Nix step
+  # builds it.
   assert_eq "the Nix images are built" "true" "$(env_value BUILD_NIX_IMAGES)"
 }
 
 test_a_changed_proxy_builds_only_the_proxy() {
-  echo "Test: a changed federation proxy builds the proxy and needs no base image"
+  echo "Test: a changed federation proxy builds the proxy and nothing through Nix"
 
   run_resolve CHANGED_PROXY=true
 
@@ -442,7 +439,7 @@ test_a_changed_proxy_builds_only_the_proxy() {
     "ghcr.io/c5c3/keystone-federation-proxy:e2e-test-dev" \
     "$(map_value ghcr.io/c5c3/keystone-federation-proxy:dev)"
   # The proxy builds FROM ubuntu:noble, so nothing else has to be built for it.
-  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  assert_eq "no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
   assert_eq "no operator image is built" "" "$(env_block BUILD_OPERATORS)"
 }
 
@@ -457,7 +454,7 @@ test_a_changed_ovn_builds_the_ovn_image() {
   assert_eq "the OVN version is the one the pin resolver prints" "$OVN_VERSION" "$(env_value OVN_VERSION)"
   assert_eq "the ovn image carries the run-scoped tag" \
     "ghcr.io/c5c3/ovn:e2e-test-${OVN_VERSION}" "$(map_value "$OVN_KEY")"
-  assert_eq "the base images are not needed" "false" "$(env_value NEEDS_BASE_IMAGES)"
+  assert_eq "the libvirt image is not built" "false" "$(env_value BUILD_LIBVIRT)"
   assert_eq "no service image is built" "" "$(env_block BUILD_SERVICE_IMAGES)"
 }
 
@@ -476,6 +473,38 @@ test_an_unchanged_ovn_reuses_the_published_image() {
   assert_contains "it says why the image is being built" "$OUTPUT" \
     "::notice::$OVN_KEY is not published yet; building $OVN_KEY"
   assert_eq "an unpublished tag builds the ovn image" "true" "$(env_value BUILD_OVN)"
+  assert_eq "the Nix step runs for it" "true" "$(env_value BUILD_NIX_IMAGES)"
+}
+
+test_a_changed_libvirt_builds_the_libvirt_image() {
+  echo "Test: a changed libvirt source builds the libvirt image through the Nix step"
+
+  run_resolve CHANGED_LIBVIRT=true
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "the libvirt image is built" "true" "$(env_value BUILD_LIBVIRT)"
+  assert_eq "the Nix step runs" "true" "$(env_value BUILD_NIX_IMAGES)"
+  assert_eq "the libvirt image carries the run-scoped tag" \
+    "ghcr.io/c5c3/libvirt:e2e-test-latest" "$(map_value "$LIBVIRT_KEY")"
+  assert_eq "the ovn image is not built" "false" "$(env_value BUILD_OVN)"
+  assert_eq "no service image is built" "" "$(env_block BUILD_SERVICE_IMAGES)"
+}
+
+test_an_unchanged_libvirt_reuses_the_published_image() {
+  echo "Test: an unchanged libvirt source reuses the image main published, unless it is missing"
+
+  run_resolve CHANGED_LIBVIRT=false
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "the libvirt image is not built" "false" "$(env_value BUILD_LIBVIRT)"
+  assert_contains "the libvirt image is pulled by digest" \
+    "$(map_value "$LIBVIRT_KEY")" "ghcr.io/c5c3/libvirt@sha256:"
+  assert_contains "the reuse is logged" "$OUTPUT" "$LIBVIRT_KEY -> ghcr.io/c5c3/libvirt@sha256:"
+
+  run_resolve STUB_MISSING="$LIBVIRT_KEY"
+  assert_eq "an unpublished tag exits 0" "0" "$RC"
+  assert_contains "it says why the image is being built" "$OUTPUT" \
+    "::notice::$LIBVIRT_KEY is not published yet; building $LIBVIRT_KEY"
+  assert_eq "an unpublished tag builds the libvirt image" "true" "$(env_value BUILD_LIBVIRT)"
   assert_eq "the Nix step runs for it" "true" "$(env_value BUILD_NIX_IMAGES)"
 }
 
@@ -633,8 +662,9 @@ test_the_outputs_have_the_shapes_the_workflow_reads() {
     "^BUILD_OVN=false$"
   assert_file_contains "OVN_VERSION is written as a plain assignment" "$ENV_FILE" \
     "^OVN_VERSION=${OVN_VERSION}$"
-  assert_file_contains "NEEDS_BASE_IMAGES is written as a plain assignment" "$ENV_FILE" \
-    "^NEEDS_BASE_IMAGES=false$"
+  assert_file_contains "BUILD_LIBVIRT is written as a plain assignment" "$ENV_FILE" \
+    "^BUILD_LIBVIRT=false$"
+  assert_file_not_contains "no base-image switch is written" "$ENV_FILE" "BASE_IMAGES"
   assert_file_contains "BUILD_NIX_IMAGES is written as a plain assignment" "$ENV_FILE" \
     "^BUILD_NIX_IMAGES=true$"
 
@@ -759,14 +789,16 @@ test_the_key_set_covers_every_image_in_the_tree
 test_a_changed_operator_builds_only_its_own_image
 test_a_changed_service_builds_all_its_releases
 test_a_changed_nova_builds_the_compute_image
-test_a_changed_nova_needs_both_builds
+test_a_changed_nova_builds_through_nix
 test_an_unchanged_nova_reuses_the_compute_image
 test_an_unpublished_nova_builds_the_compute_image_too
-test_an_unpublished_nova_compute_needs_only_the_base_images
+test_an_unpublished_nova_compute_builds_through_nix
 test_changed_tempest_builds_every_release
 test_a_changed_proxy_builds_only_the_proxy
 test_a_changed_ovn_builds_the_ovn_image
 test_an_unchanged_ovn_reuses_the_published_image
+test_a_changed_libvirt_builds_the_libvirt_image
+test_an_unchanged_libvirt_reuses_the_published_image
 test_an_unreadable_ovn_pin_is_fatal
 test_an_unpublished_source_is_built_instead
 test_a_failing_registry_is_retried_then_fatal

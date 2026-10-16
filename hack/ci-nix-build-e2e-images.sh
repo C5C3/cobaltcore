@@ -11,21 +11,24 @@
 # wrote:
 #
 #   BUILD_SERVICE_IMAGES    one "<service> <release> [<image>]" line per image;
-#                           a line without a third field is a service image
-#                           Nix builds, a line with one (nova-compute) is
-#                           built by hack/ci-build-service-image.sh and skipped
+#                           a line without a third field is the service's own
+#                           image, a line with one (nova-compute) the derived
+#                           image of that name built from the service's lock
 #   BUILD_TEMPEST_RELEASES  the releases whose Tempest image is built
 #   BUILD_OVN               true when the ovn image is built
 #   OVN_VERSION             the pinned OVN version, the tag docker load
 #                           prints for the ovn image; required with BUILD_OVN
+#   BUILD_LIBVIRT           true when the libvirt image is built
 #
 # It builds the flake attributes <name>-<rel_>-image, <rel_> the release with
-# its dot replaced by _, and ovn-image, which carries no release, in one nix
-# invocation that runs one job per CPU, so the derivations of every image
-# build side by side. It then writes each image stream to
+# its dot replaced by _ and <name> the service or, on a three-field line, the
+# derived image, and ovn-image and libvirt-image, which carry no release, in
+# one nix invocation that runs one job per CPU, so the derivations of every
+# image build side by side. It then writes each image stream to
 # .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
 # .nix-e2e/images.txt, which the "Load Nix images" step reads to load and tag
-# the images on the runner; for the ovn image the release is OVN_VERSION.
+# the images on the runner; for the ovn image the release is OVN_VERSION, for
+# the libvirt image latest, the tags docker load prints for them.
 #
 # The container is unprivileged and cannot create the namespaces of the Nix
 # sandbox, so the builds run without it. The builders, which run the setup
@@ -76,10 +79,14 @@ attrs=()
 while IFS= read -r line; do
   read -r -a fields <<<"$line"
   case "${#fields[@]}" in
-    0 | 3) ;;
+    0) ;;
     2)
       images+=("${fields[0]} ${fields[1]}")
       attrs+=(".#${fields[0]}-${fields[1]//./_}-image")
+      ;;
+    3)
+      images+=("${fields[2]} ${fields[1]}")
+      attrs+=(".#${fields[2]}-${fields[1]//./_}-image")
       ;;
     *)
       echo "ci-nix-build-e2e-images.sh: malformed line '${line}'" >&2
@@ -98,6 +105,10 @@ if [ "${BUILD_OVN:-}" = "true" ]; then
   fi
   images+=("ovn ${OVN_VERSION}")
   attrs+=(".#ovn-image")
+fi
+if [ "${BUILD_LIBVIRT:-}" = "true" ]; then
+  images+=("libvirt latest")
+  attrs+=(".#libvirt-image")
 fi
 
 if [ "${#images[@]}" -eq 0 ]; then
