@@ -14,7 +14,7 @@ description: >
 
 inputs:
   image:
-    description: Full image name without tag (e.g. ghcr.io/c5c3/python-base)
+    description: Full image name without tag (e.g. ghcr.io/c5c3/keystone-federation-proxy)
     required: true
   artifact-pattern:
     description: Glob pattern for digest artifact download

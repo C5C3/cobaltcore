@@ -456,7 +456,7 @@ test_e2e_chaos_builds_keystone() {
   assert_contains \
     "e2e-chaos builds service image" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "hack/ci-build-service-image.sh"
+    "hack/ci-nix-build-e2e-images.sh"
 
   assert_contains \
     "e2e-chaos loads images into kind" \

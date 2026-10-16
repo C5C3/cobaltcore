@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Composite action encapsulating the digest export + artifact upload
-# pattern shared across base image, tempest, and service image build jobs.
+# pattern shared across the image build jobs.
 
 name: Export digest
 description: >

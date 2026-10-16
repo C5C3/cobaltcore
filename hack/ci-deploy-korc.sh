@@ -156,9 +156,8 @@ export GIT_TERMINAL_PROMPT=0
 # actions/checkout does, as a basic-auth header scoped to https://github.com/,
 # through git's environment config so it lands in no file and no argument
 # list. The blob-less clone below fetches on demand during the checkout, so
-# the header has to cover every git command here, not only the clone.
-# hack/ci-build-service-image.sh carries the same block. A run without a
-# token stays anonymous.
+# the header has to cover every git command here, not only the clone. A run
+# without a token stays anonymous.
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
   auth_index="${GIT_CONFIG_COUNT:-0}"
   export "GIT_CONFIG_KEY_${auth_index}=http.https://github.com/.extraheader"

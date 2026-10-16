@@ -9,7 +9,7 @@
 # manifest using docker buildx imagetools, and outputs the merged digest.
 #
 # Required env vars:
-#   IMAGE       — Full image name without tag (e.g. ghcr.io/c5c3/python-base)
+#   IMAGE       — Full image name without tag (e.g. ghcr.io/c5c3/keystone-federation-proxy)
 #   DIGEST_DIR  — Path to directory containing digest files (filenames are hex digests)
 #   TAGS        — Space-separated list of full tag references to apply
 #
@@ -21,7 +21,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Validate required env vars
 # ---------------------------------------------------------------------------
-IMAGE="${IMAGE:?IMAGE is required (e.g. ghcr.io/c5c3/python-base)}"
+IMAGE="${IMAGE:?IMAGE is required (e.g. ghcr.io/c5c3/keystone-federation-proxy)}"
 DIGEST_DIR="${DIGEST_DIR:?DIGEST_DIR is required (path to digest directory)}"
 TAGS="${TAGS:?TAGS is required (space-separated list of full tag references)}"
 
