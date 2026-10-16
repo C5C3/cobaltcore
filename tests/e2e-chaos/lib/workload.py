@@ -10,7 +10,10 @@
 only and keeps to Python 3.10 syntax. It runs one thread per stream and writes
 one JSON record per operation to stdout. Once the stop file exists it deletes
 every resource it named, checks the state of each service it used and prints
-DONE.
+DONE. ``--resolve HOST:ADDR`` connects every URL that names HOST to ADDR and
+keeps HOST in the Host header and the TLS server name, so a stream can reach a
+Gateway listener by its hostname; ``--insecure-tls`` skips the certificate
+check of HTTPS endpoints.
 
 ``evaluate`` runs on the CI runner. It reads the log of a ``run`` together with
 the fault marks and the error budget of the suite, prints one summary line per
@@ -24,8 +27,11 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import ipaddress
 import json
 import os
+import socket
+import ssl
 import sys
 import threading
 import time
@@ -184,13 +190,19 @@ def token_body(password: str) -> dict:
 class Client:
     """Send HTTP requests with a 15 s timeout and an optional token."""
 
+    # The TLS context of every HTTPS request, set once by --insecure-tls
+    # before the first stream starts. None verifies against the system store.
+    tls: ssl.SSLContext | None = None
+
     def __init__(self, tokens: TokenSource | None = None,
                  static_token: str | None = None) -> None:
         """Use tokens from a TokenSource, a fixed token, or none at all."""
         # In-cluster Service names never go through a proxy, and a proxy
         # variable on the runner would otherwise reroute the unit test.
-        self._opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}))
+        handlers: list[Any] = [urllib.request.ProxyHandler({})]
+        if Client.tls is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=Client.tls))
+        self._opener = urllib.request.build_opener(*handlers)
         self.tokens = tokens
         self._static = static_token
 
@@ -1019,6 +1031,50 @@ def parse_streams(args: argparse.Namespace) -> list[str]:
     return names
 
 
+def parse_resolve(values: list[str]) -> dict[str, str]:
+    """Map the HOST of every --resolve HOST:ADDR to its ADDR.
+
+    The value splits on its first colon, so ADDR may be an IPv6 address. An
+    empty HOST and an ADDR that is no IP address exit 2.
+    """
+    mapping = {}
+    for value in values:
+        host, _, addr = value.partition(":")
+        try:
+            ipaddress.ip_address(addr)
+        except ValueError:
+            usage("--resolve wants HOST:ADDR")
+        if not host:
+            usage("--resolve wants HOST:ADDR")
+        mapping[host] = addr
+    return mapping
+
+
+def install_resolver(mapping: dict[str, str]) -> None:
+    """Resolve each mapped host to its address; other names resolve as before.
+
+    urllib still sends the host of the URL in the Host header and as the TLS
+    server name, so a Gateway listener that matches that hostname routes the
+    request.
+    """
+    if not mapping:
+        return
+    original = socket.getaddrinfo
+
+    def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        return original(mapping.get(host, host), *args, **kwargs)
+
+    socket.getaddrinfo = getaddrinfo
+
+
+def unverified_tls() -> ssl.SSLContext:
+    """Return a TLS context that checks neither the certificate nor its name."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def settle_seconds() -> float:
     """Read CHAOS_WORKLOAD_SETTLE_SECONDS, the re-read window of a check."""
     raw = os.environ.get("CHAOS_WORKLOAD_SETTLE_SECONDS", "")
@@ -1060,6 +1116,7 @@ def consistency(rec: Recorder, name: str, read: Callable[[], list[str]],
 def run(args: argparse.Namespace) -> int:
     """Run the streams until the stop file exists, then sweep and check."""
     names = parse_streams(args)
+    resolve = parse_resolve(args.resolve)
     password = ""
     if args.keystone:
         password = os.environ.get("OS_PASSWORD", "")
@@ -1072,6 +1129,9 @@ def run(args: argparse.Namespace) -> int:
                    "placement", "barbican"):
         if getattr(args, option):
             setattr(args, option, getattr(args, option).rstrip("/"))
+    install_resolver(resolve)
+    if args.insecure_tls:
+        Client.tls = unverified_tls()
 
     ctx = Context(args, password)
     streams = [STREAM_CLASSES[name](ctx) for name in names]
@@ -1266,6 +1326,13 @@ def main(argv: list[str] | None = None) -> int:
                             help="the Placement API root, no version path")
     run_parser.add_argument("--barbican",
                             help="the Barbican API root, no version path")
+    run_parser.add_argument("--resolve", action="append", default=[],
+                            metavar="HOST:ADDR",
+                            help="connect to ADDR for every URL that names "
+                            "HOST; repeatable")
+    run_parser.add_argument("--insecure-tls", action="store_true",
+                            help="skip the certificate check of HTTPS "
+                            "endpoints")
 
     eval_parser = sub.add_parser("evaluate", help="judge a workload log")
     eval_parser.add_argument("--log", required=True)
