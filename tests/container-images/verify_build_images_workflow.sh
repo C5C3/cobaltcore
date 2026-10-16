@@ -1036,6 +1036,11 @@ test_changes_job_gates_matrix_jobs() {
     "$kna_globs" "images/kvm-node-agent/**"
   assert_contains "the kna filter covers its verify script" \
     "$kna_globs" "tests/container-images/verify_kna.sh"
+  # Both verify scripts source the static-image check.
+  assert_contains "the hvo filter covers the static-image check" \
+    "$hvo_globs" "tests/lib/static_image.sh"
+  assert_contains "the kna filter covers the static-image check" \
+    "$kna_globs" "tests/lib/static_image.sh"
   # The resolver is the only parser of the pin, so a change to it rebuilds
   # every image like any other script the workflow calls.
   plumbing_globs=$(yq_raw '.plumbing[]' - <<<"$filters" || true)
@@ -1096,6 +1101,10 @@ test_changes_job_gates_matrix_jobs() {
     "$pr_paths" ".github/actions/setup-nix/**"
   assert_contains "the pull-request trigger names the build-tools helper" \
     "$pr_paths" "tests/lib/build_tools.sh"
+  assert_contains "the pull-request trigger names the static-image helper" \
+    "$pr_paths" "tests/lib/static_image.sh"
+  assert_contains "the push trigger names the static-image helper" \
+    "$push_paths" "tests/lib/static_image.sh"
   assert_contains "the base filter rebuilds every image whose verify script sources the build-tools helper" \
     "$(path_filters | yq_raw '.base[]' - || true)" \
     "tests/lib/build_tools.sh"

@@ -8,8 +8,8 @@
 # Default image: ovn
 # Requires: Docker daemon running
 # The expected OVN version comes from hack/ci-resolve-ovn-version.sh, which
-# reads the single pin in images/ovn/Dockerfile. Set OVN_DOCKERFILE to point
-# that resolver at a different Dockerfile.
+# reads the "version" key of images/ovn/source.json. Set OVN_SOURCE to point
+# that resolver at a different pin file.
 
 set -euo pipefail
 
@@ -21,9 +21,11 @@ FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+# shellcheck source=tests/lib/build_tools.sh
+source "$SCRIPT_DIR/../lib/build_tools.sh"
 
-# The resolver is the only parser of the 'ARG OVN_VERSION=' pin, so this
-# script never reads the Dockerfile itself.
+# The script reads the pin through the resolver, never
+# images/ovn/source.json itself.
 EXPECTED=$("$SCRIPT_DIR/../../hack/ci-resolve-ovn-version.sh")
 
 # --- Test 1: the OVN binaries report the pinned version ---
@@ -169,9 +171,7 @@ test_no_toolchain() {
     assert_nonzero_exit "$tool not found" "$exit_code"
   done
 
-  exit_code=0
-  docker run --rm "$IMAGE" dpkg -s build-essential > /dev/null 2>&1 || exit_code=$?
-  assert_nonzero_exit "build-essential not installed" "$exit_code"
+  assert_no_build_tools
 
   exit_code=0
   docker run --rm "$IMAGE" test -d /usr/include/openvswitch || exit_code=$?
@@ -195,20 +195,26 @@ test_user_posture() {
   done
 }
 
-# --- Test 8: the helpers the chassis DaemonSets and datapath probes call ---
+# --- Test 8: the helpers the operators, chassis DaemonSets and datapath probes call ---
 test_chassis_helpers() {
-  echo "Test: modprobe, ip and ping are available"
+  echo "Test: modprobe, ip, ping, hostname and find are available"
   # The chassis DaemonSets of #903 load host kernel modules with modprobe
   # (kmod) and inspect interfaces with ip (iproute2) from inside this image.
   # The datapath probes of the OVN overlay and southbound-outage e2e suites
-  # ping across the Geneve tunnel with ping (iputils-ping).
+  # ping across the Geneve tunnel with ping (iputils-ping). ovn-operator's
+  # database reconciler names the cluster member by hostname -f, and its
+  # backup reconciler prunes stale backups with find (findutils).
   local tool exit_code
 
-  for tool in modprobe ip ping; do
+  for tool in modprobe ip ping hostname find; do
     exit_code=0
     docker run --rm "$IMAGE" sh -c "command -v $tool" > /dev/null 2>&1 || exit_code=$?
     assert_eq "$tool resolves on PATH" "0" "$exit_code"
   done
+
+  exit_code=0
+  docker run --rm "$IMAGE" hostname -f > /dev/null 2>&1 || exit_code=$?
+  assert_eq "hostname -f exits 0" "0" "$exit_code"
 }
 
 # --- Test 9: the OVSDB schemas ship and a database can be created from them ---

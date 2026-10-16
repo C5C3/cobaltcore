@@ -86,7 +86,8 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   `// Code generated … DO NOT EDIT.` banner in the first 10 lines) are
   exempt; controller-gen's `zz_generated.deepcopy.go` carries the pair
   anyway, below its `//go:build` line.
-- **S2** — every `*.sh` under `hack/`, `scripts/`, `tests/scripts/`,
+- **S2** — every `*.sh` under `hack/`, `scripts/`, `images/` (the
+  `patch-checks.sh` of the Nix-built Go images), `tests/scripts/`,
   `tests/unit/`, `tests/lib/` has both headers.
 - **S3** — every hand-authored YAML / TOML under `deploy/`,
   `operators/<op>/config/`, `releases/`, `.github/` has both headers.

@@ -201,7 +201,7 @@ test_build_e2e_images_builds_the_ovn_images() {
   # published otherwise, so no step builds it outside that path.
   assert_not_contains "no Docker build step builds the daemon image" "$job" \
     "name: Build OVN image"
-  assert_not_contains "the Docker build script is gone" "$job" "hack/ci-build-ovn-image.sh"
+  assert_not_contains "no Docker build script builds the daemon image" "$job" "build-ovn-image.sh"
   assert_contains "the resolver learns whether the ovn inputs changed" \
     "$(job_step build-e2e-images "Resolve images")" \
     'CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}'
@@ -320,7 +320,7 @@ test_tempest_neutron_leg_loads_the_ovn_image() {
   echo "Test: the tempest neutron leg pulls the OVN daemon image at the pin"
 
   # The leg's Neutron only reconciles behind an OVNCentral, whose Pods run
-  # ghcr.io/c5c3/ovn:<pin>. images/ovn/Dockerfile holds that pin, so the job
+  # ghcr.io/c5c3/ovn:<pin>. images/ovn/source.json holds that pin, so the job
   # resolves it into the env instead of repeating the tag (asserted globally in
   # test_build_e2e_images_builds_the_ovn_images).
   local job load
@@ -364,7 +364,7 @@ test_chaos_ovn_leg_is_wired() {
   assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
     "continue-on-error: \${{ matrix.suite != 'pod' }}"
 
-  # images/ovn/Dockerfile holds the pin, so the leg resolves it at runtime
+  # images/ovn/source.json holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).
   local load
   load=$(job_step e2e-chaos "Load E2E images")
