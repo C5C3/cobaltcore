@@ -37,6 +37,12 @@ const (
 // operator puts every host into the aggregate named after it.
 const zoneLabel = "topology.kubernetes.io/zone"
 
+// customTraitsAnnotation is the Node annotation from which
+// openstack-hypervisor-operator overwrites the node's Hypervisor
+// spec.customTraits on every Node reconcile, whatever its value. The Traits
+// step leaves a node carrying it alone.
+const customTraitsAnnotation = "nova.openstack.cloud.sap/custom-traits"
+
 // reconcileNovaComputeNodes resolves which nodes the pool holds and in which
 // phase, and sets NodesReady.
 //
@@ -44,8 +50,10 @@ const zoneLabel = "topology.kubernetes.io/zone"
 // placed CR, the management cluster's API reader for a local one. A cached
 // Node read would start a cluster-wide Node informer, which cannot sync on an
 // install whose RBAC is namespace-scoped. Only a node's name and labels count,
-// so the reads fetch its metadata, not its status. A deleting CR selects
-// nothing, so it lists nothing and only reads back the nodes it still holds.
+// so the reads fetch its metadata, not its status. That metadata also tells
+// the Traits step which selected nodes carry customTraitsAnnotation. A
+// deleting CR selects nothing, so it lists nothing and only reads back the
+// nodes it still holds.
 //
 // The rivals are the other NovaComputes of the same Nova on the same cluster.
 // The rules are planNovaComputeNodes'.
@@ -72,8 +80,12 @@ func (r *NovaComputeReconciler) reconcileNovaComputeNodes(ctx context.Context, c
 		selected = list.Items
 	}
 	selectedNames := make(map[string]bool, len(selected))
+	pass.customTraitsAnnotated = make(map[string]bool, len(selected))
 	for i := range selected {
 		selectedNames[selected[i].Name] = true
+		if _, ok := selected[i].Annotations[customTraitsAnnotation]; ok {
+			pass.customTraitsAnnotated[selected[i].Name] = true
+		}
 	}
 
 	// A held node the selection no longer returns is read back on its own: it
