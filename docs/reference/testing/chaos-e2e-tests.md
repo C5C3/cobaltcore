@@ -23,10 +23,12 @@ re-election verification. Phase 4 adds network chaos scenarios (partition and
 latency). The suites added since cover the other service operators and their
 dependencies. Each suite deploys the resources of the service under test,
 asserts a healthy baseline, injects a fault, asserts the expected degradation
-(or stability), removes the fault, and asserts full recovery. Every suite
-except `deletion-stuck-finalizer` and `cinder-nfs-outage` injects with a
-[Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`. Those two
-scale a Deployment to zero with `kubectl scale` instead. Tests use
+(or stability), removes the fault, and asserts full recovery. Most suites inject
+with a [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`.
+`deletion-stuck-finalizer`, `cinder-nfs-outage` and `eso-down` scale a
+Deployment to zero with `kubectl scale` instead, `openbao-sealed` seals OpenBao
+with `bao operator seal`, and `openbao-tenant-policy-narrowed` writes a narrowed
+policy with `bao policy write`. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion
 lifecycle.
 
@@ -42,16 +44,20 @@ step under its number.
    `AllReady`.
 2. **Apply the chaos resource.** A `PodChaos` or a `NetworkChaos`. It lives in
    `openstack`, or in the namespace of the operator it kills in the eight
-   operator suites of the other services. Its `selector` names the victims by
-   namespace and label. `chaos-controller-manager` picks them and calls the
+   operator suites of the other services. The suites of the `controlplane` matrix
+   entry apply theirs into their own namespace. Its `selector` names the victims
+   by namespace and label. `chaos-controller-manager` picks them and calls the
    `chaos-daemon` on their node, which kills the pod or a container, or sets
    rules in the network namespace of the pod.
 3. **Wait for the injection.** The `NetworkChaos` suites, the six Keystone
    outage suites, `ovn-southbound-outage` and `keystone-federation` run
-   `kubectl wait --for=condition=AllInjected` on the chaos resource. The other
-   `PodChaos` suites prove the kill on the victim, by a pod UID that is gone
-   or a ready replica count that drops, or read it from the condition of
-   step 4.
+   `kubectl wait --for=condition=AllInjected` on the chaos resource. So do the
+   suites that hold a component down with `pod-failure` across an event, and
+   they wait for the victim pods at `Ready=false` after it: Chaos Mesh sets the
+   condition when it patches the pod spec, seconds before the kubelet stops the
+   running container. The other `PodChaos` suites prove the kill on the victim,
+   by a pod UID that is gone or a ready replica count that drops, or read it
+   from the condition of step 4.
 4. **Assert under the fault.** Either the degradation the suite expects (a
    condition turns `False`, a write fails closed) or that nothing regresses
    (`Ready=True` holds, no container restarts).
@@ -62,9 +68,17 @@ step under its number.
 6. **Assert recovery.** The conditions return to `True`, and where a write
    failed, a fresh write succeeds.
 
-`deletion-stuck-finalizer` and `cinder-nfs-outage` take the same steps without a
-chaos resource: step 2 scales a Deployment to zero, and step 5 scales it back.
-Every suite runs in the namespace `openstack`.
+`deletion-stuck-finalizer`, `cinder-nfs-outage` and `eso-down` take the same
+steps without a chaos resource: step 2 scales a Deployment to zero, and step 5
+scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
+5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
+one back. The suites of the first four matrix entries run in the namespace
+`openstack`. The five of the `controlplane` entry each bring up a ControlPlane in a
+short namespace of their own, `chaos-korc-out` and its siblings. The c5c3-operator
+names the DB-credential client certificate of a plane
+`<cp>-keystone-db-openbao-client.<namespace>.svc`, and cert-manager refuses a
+`commonName` over 64 bytes, so a plane name and a namespace that chainsaw
+generates do not fit together.
 [Test Suite Inventory](#test-suite-inventory) lists every suite with its
 scenario, its service resource and its assertions.
 
@@ -93,6 +107,7 @@ the metal-stack lab is described in
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` namespace |
 | OpenBao instance | Running in `shared-services` namespace |
+| ControlPlane stack | For the `controlplane` matrix entry: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external` on the infrastructure bring-up, K-ORC from `hack/ci-deploy-korc.sh` and the c5c3-operator in `c5c3-system` |
 
 ## Running the Tests
 
@@ -135,12 +150,16 @@ overrides the image), marks the fault window on the pod clock, and judges the
 records against the error budget in the suite header. The directory holds no
 `chainsaw-test.yaml`, so `make e2e-chaos` does not run it as a suite.
 
-Thirty-four suites start a workload: the fifteen pod and network suites that send
+Forty-six suites start a workload: the fifteen pod and network suites that send
 no OpenStack traffic of their own, `nova-placement-outage`, which runs it after its
-partition as the proof run of the server, network and image streams, and the
-eighteen dependency-fault suites of #1389, from `glance-keystone-outage` to
-`neutron-metadata-agent-pod-kill`, which run it through their fault. The
-`Workload` line of each suite section below names its streams and its budget.
+partition as the proof run of the server, network and image streams, the eighteen
+dependency-fault suites of #1389, from `glance-keystone-outage` to
+`neutron-metadata-agent-pod-kill`, and twelve of the thirteen platform suites of
+#1390, from `cert-manager-outage` to `rabbitmq-operator-cascading-failure`. The
+last two groups run it through their fault. `deletion-stuck-finalizer` and
+`c5c3-operator-pod-kill` start none and say why in a `# Chaos workload: none`
+line. The `Workload` line of each suite section below names its streams and its
+budget.
 
 ### Streams
 
@@ -148,7 +167,10 @@ Each stream is one thread that runs cycles one second apart until the stop file
 exists. Every HTTP call has a 15-second timeout. The streams that need a token
 issue a project-scoped token for the bootstrap admin, whose password `start`
 reads from the `keystone-admin` Secret, and issue a new one once when a call
-answers 401.
+answers 401. `CHAOS_WORKLOAD_ADMIN_SECRET` names another Secret in the suite's
+namespace: a managed ControlPlane creates the admin password as
+`<cp>-keystone-admin-credentials`, and the suites of the `controlplane` matrix
+entry read that one.
 
 | Stream | Options | Operations of one cycle |
 | --- | --- | --- |
@@ -171,6 +193,20 @@ cycle created, newest first, with one `cleanup-<kind>` record per resource, so a
 fault cannot fill a quota of the admin project. Resources are named
 `chaos-wl-<id>-<stream>-<n>`, and a stream prints `READY <stream>` after its
 first cycle in which every operation succeeded.
+
+Two run options apply to every stream. `--resolve HOST:ADDR`, which may repeat,
+makes a lookup of `HOST` return the address `ADDR` with the port of the URL;
+every other name resolves as before. urllib still sends `HOST` in the `Host`
+header and as the TLS server name, so a Gateway listener that matches the
+hostname routes the request. The suites behind Gateway `openstack-gw` pass
+`--keystone https://keystone.127-0-0-1.nip.io/v3 --resolve
+keystone.127-0-0-1.nip.io:<ClusterIP of the proxy Service>`. The value splits on
+its first colon; an empty `HOST`, an empty `ADDR` or an `ADDR` that is no IP
+address exits 2 with `usage: --resolve wants HOST:ADDR` before any request.
+`--insecure-tls` skips the certificate check of HTTPS endpoints. The kind
+listener certificates come from `selfsigned-cluster-issuer`, so without it every
+record through a listener reads `ok: false` and `code: null`, with
+`CERTIFICATE_VERIFY_FAILED` in `msg`.
 
 ### Records
 
@@ -242,8 +278,11 @@ reads `estimate` carries an estimate of the fault window that no run has measure
 yet, which is where the eighteen suites of #1389 start; three runs replace it. The
 budget is zero where the fault does not touch the request path of the stream: the
 ten operator pod kills, `cronjob-rotation-failure`, `openbao-pod-kill`,
-`nova-placement-outage` and `neutron-metadata-agent-pod-kill`. A failure in one of
-them is a defect to find, and raising the budget does not fix it.
+`nova-placement-outage`, `neutron-metadata-agent-pod-kill`, and eight platform
+suites of #1390: `cert-manager-outage`, `eso-down`, `eso-pod-kill`,
+`openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`,
+`korc-provisioning-outage` and `korc-network-partition`. A failure in one of them
+is a defect to find, and raising the budget does not fix it.
 
 ### Consistency checks
 
@@ -307,10 +346,10 @@ always exit 0. A local run pulls the Tempest image from GHCR unless
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered, and its four matrix entries gate differently. The
-`pod` entry is blocking; the `network`, `ovn` and `nova` entries are not (see
-below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full
-job documentation.
+The job is path-filtered, and its five matrix entries gate differently. The
+`pod` entry is blocking; the `network`, `ovn`, `nova` and `controlplane` entries
+are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
+for full job documentation.
 
 **Path filter (`tests_chaos`):** Only changes under `tests/e2e-chaos/**` trigger the job.
 
@@ -332,20 +371,24 @@ a pull request that changes something else.
 `e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
 cancelled.
 
-**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' }}</code>):**
+**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}</code>):**
 The `pod` entry is **blocking**: a failure in any PodChaos suite (operator
-restart, PDB, rotation) fails the build. The `network`, `ovn` and `nova` entries
-stay **non-blocking**, because the `ip_set`/`sch_netem` kernel-module dependency
-their NetworkChaos partitions carry remains prone to environment flakiness; their
-failures are visible but do not block merges. The expression names the three
-non-blocking entries instead of negating the blocking one, so a fifth entry gates
-merges until it is argued out of that. The `ci:chaos` PR label runs every entry
-on demand for pre-validation. `run-chaos` still works as an alias for it.
+restart, PDB, rotation) fails the build. The `network`, `ovn`, `nova` and
+`controlplane` entries stay **non-blocking**, because the `ip_set`/`sch_netem`
+kernel-module dependency their NetworkChaos partitions carry remains prone to
+environment flakiness; their failures are visible but do not block merges. In
+the `controlplane` entry that partition is `korc-network-partition`. The
+expression names the four non-blocking entries instead of negating the blocking
+one, so a sixth entry gates merges until it is argued out of that. The `ci:chaos`
+PR label runs every entry on demand for pre-validation. `run-chaos` still works as
+an alias for it.
 
 **Matrix entries and what they carry:** the `pod` entry runs the PodChaos suites
 of the keystone stack, the Keystone outage suites of Glance, Placement and
-Barbican, and `horizon-dashboard-pod-kill`, and deploys the horizon, glance,
-placement and barbican operators beside keystone. The `network` entry runs the
+Barbican, `horizon-dashboard-pod-kill`, and the eight platform suites of #1390
+that need only the standalone stack, from `cert-manager-outage` to
+`mariadb-operator-cascading-failure`. It deploys the horizon, glance, placement
+and barbican operators beside keystone. The `network` entry runs the
 NetworkChaos suites and every suite that needs the neutron, cinder or ovn
 operators: the four Neutron suites (`neutron-mariadb-outage`,
 `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`),
@@ -369,7 +412,7 @@ inject a `PodChaos` kill, the class the blocking entry exists for,
 no chaos-mesh CR at all. Each is the only automated check on the invariant it
 pins, and a regression in one goes red in an entry that reports green. Moving
 them to the `pod` entry means taking the Cinder stack, the NFS export and the
-broker there with them, which the blocking entry's stack and its 90-minute wall
+broker there with them, which the blocking entry's stack and its 120-minute wall
 have not been sized for; that move is tracked as a follow-up. The same
 holds for the PodChaos suites of the entry that need the neutron-operator or the
 ovn-operator. A `Dump diagnostic info (network leg)` step dumps the seven operator
@@ -399,16 +442,32 @@ OVNChassis and a metadata agent on the node, and the chassis DaemonSets need the
 `openvswitch` and `geneve` modules. The suites run in a matrix entry of their own
 because their stack does not fit beside the suites of the `network` entry.
 
+The `controlplane` entry is the fifth, on the `self-hosted` runners and
+`continue-on-error` like the other three. Its five suites
+(`korc-provisioning-outage`, `korc-network-partition`,
+`controlplane-keystone-degraded`, `c5c3-operator-pod-kill`,
+`rabbitmq-operator-cascading-failure`) each bring up a Keystone-only ControlPlane
+in a namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
+The entry sets `WITH_CONTROLPLANE=true` and `CONTROLPLANE_OPERATORS=external` on
+the infrastructure bring-up, the environment of the `e2e-controlplane` job: the
+infrastructure overlay comes without the standalone MariaDB, Memcached and shim
+ExternalSecrets, and the Flux ControlPlane stack is suspended. On top of the
+keystone stack it loads `c5c3-operator:dev`, deploys K-ORC with
+`hack/ci-deploy-korc.sh` after the Placement CRD the c5c3-operator's cache needs,
+and deploys the c5c3-operator into `c5c3-system` at the chart default of two
+replicas. A `Dump diagnostic info (controlplane leg)` step dumps the
+c5c3-operator and 500 lines of the K-ORC log.
+
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 150 minutes for the `nova` entry, 135 for `network`, 90 for `pod` and 45 for
-`ovn`, seven hours in all, to accommodate serial test execution and longer recovery
-assertion windows. The last green run before the suites of #1389 (run 38626068128)
-took 48, 54, 12 and 69 minutes on `pod`, `network`, `ovn` and `nova`. A
-`network` suite took 80 to 370 seconds there and a suite on the Nova stack 11 to 21
-minutes, which puts the `network` and `nova` entries at about 122 and 132 minutes
-with the new suites.
+**Timeout:** 150 minutes for the `nova` entry, 135 for `network`, 120 for `pod`,
+100 for `controlplane` and 45 for `ovn`, 550 minutes in all, to accommodate serial
+test execution and longer recovery assertion windows. The author of #1390
+accepted that sum on 2026-10-16. Run 38903206716 took 62, 125, 11 and 130 minutes
+on `pod`, `network`, `ovn` and `nova`. The eight platform suites of #1390 add
+about 5 minutes each to `pod`, and the `controlplane` entry needs about 15
+minutes for its bring-up and 8 to 12 for each of its five suites.
 
 ## Test Suite Inventory
 
@@ -476,6 +535,18 @@ with the new suites.
 ---
 
 ## Coverage Notes
+
+### Components without a fault suite
+
+Every platform component under the OpenStack services has a fault suite except
+Flux. The FluxInstance has no `spec.sync` (`deploy/flux-system/fluxinstance.yaml`),
+and the operators under test are installed by `helm` with their HelmReleases
+suspended (`deploy/kind/base/kustomization.yaml`). No HelmRelease enables drift
+detection, so a killed Flux is on no request path and leaves no state for a suite
+to judge. A restarted helm-controller, on the other hand, reconciles every
+HelmRelease and can upgrade a platform chart within its semver range in the
+middle of a run, which would turn the fault of the next suite into a chart
+upgrade.
 
 ### Status left by a dead dependency operator
 
@@ -3408,7 +3479,7 @@ keeps the Secret it wrote before, and the Keystone that reads it keeps running.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | A synced credential, a Keystone on it, the workload | `apply` + `assert` (5m) + `apply` + `assert` (5m) + `script` (6m) | `policy-narrowed-db` at `Ready=True/SecretSynced`; `keystone-chaos-policy` (database `keystone_chaos_policy`) on it at `Ready=True/AllReady`; `workload.sh start` |
-| 2 | Capture, then narrow | `script` (3m) | Reads `bao policy read eso-tenant` into ConfigMap `policy-narrowed-orig` (key `policy.hcl`), drops the one stanza whose `path` line starts `kv-v2/data/openstack/keystone/{{` and ends `/*" {` (any other count fails the step), runs `workload.sh mark fault-start`, writes the narrowed text and requires the policy to read back as that text |
+| 2 | Capture, then narrow | `script` (3m) | Reads `bao policy read eso-tenant` into ConfigMap `policy-narrowed-orig` (key `policy.hcl`), drops the one stanza whose `path` line names `kv-v2/data/openstack/keystone/` with the namespace template and ends `/*" {` (any other count fails the step), runs `workload.sh mark fault-start`, writes the narrowed text and requires the policy to read back as that text |
 | 3 | A sync is denied | `script` (4m) | Sets `force-sync` on `policy-narrowed-db`. Within 120 s its `Ready` reads `False/SecretSyncedError` with `permission denied` or `403` in the condition or an event; on every read of the 120 s Secret `policy-narrowed-db` keeps its `resourceVersion` and the Keystone `Ready=True` (`DENIED-OK`) |
 | 4 | Restore the capture | `script` (2m) | Writes the captured text back, compares `bao policy read` with it byte for byte, then `workload.sh mark fault-end` |
 | 5 | Both credentials sync again | `script` (4m) | Sets `force-sync` on `policy-narrowed-db` and on the kind stack's `keystone-db`; both reach `Ready=True/SecretSynced` with a `refreshTime` at or after the request within 120 s |
@@ -4122,7 +4193,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The thirty-four suites that start a workload also call `../lib/workload.sh dump <id>`
+The forty-six suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -4294,7 +4365,11 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos pod-failure on K-ORC
 │   ├── 02-admin-job.yaml             The admin application credentials (NO-DUPLICATE-OK)
 │   └── chainsaw-test.yaml            Test: the blind window, then one credential in Keystone
-├── lib/                              Workload and consistency harness, no suite
+├── lib/                              Shared helpers of the suites, no suite
+│   ├── controlplane.sh               ControlPlane bring-up, waits, @NS@ fixtures, teardown and dump (controlplane entry)
+│   ├── gateway.sh                    The ClusterIP of the proxy of Gateway openstack-gw
+│   ├── openbao.sh                    The root token and the bao calls into openbao-0
+│   ├── pods.sh                       The UID-gated wait for the replaced pods of a Deployment
 │   ├── workload.py                   The workload streams (run) and the verdict (evaluate)
 │   └── workload.sh                   start, mark, verify, dump and stop, called by the suites
 ├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
@@ -4485,7 +4560,15 @@ tests/e2e-chaos/
 6. To send OpenStack traffic through the fault, call `../lib/workload.sh` as
    [Adopting the harness](#adopting-the-harness) describes, put the measured
    `# Chaos budget:` line in the header, and add `dump` to the catch blocks
-7. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+7. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
+   in place of the Keystone CR and set a short fixed `spec.namespace`: the plane
+   name and the namespace share 32 characters, because cert-manager caps the
+   commonName of the plane's DB client certificate at 64 bytes. Source
+   `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
+   the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
+   and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
+   and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
+8. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests

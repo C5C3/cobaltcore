@@ -30,18 +30,19 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `.github/workflows/ci.yaml` enumerates `test_dirs` explicitly per
   matrix leg (chainsaw's include/exclude-regex flags match the test name
   `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
-  suite **must** be added to the `pod`, `network`, `ovn` or `nova` leg
-  there, or it never runs in CI.
-- **Runners:** all four legs run on the `self-hosted` runners. The
+  suite **must** be added to the `pod`, `network`, `ovn`, `nova` or
+  `controlplane` leg there, or it never runs in CI.
+- **Runners:** all five legs run on the `self-hosted` runners. The
   NetworkChaos suites (`mariadb-network-latency`, `-partition`,
   `glance-garage-outage`, `barbican-openbao-outage`,
   `neutron-mariadb-outage`, `neutron-broker-outage`, `cinder-broker-outage`,
   `glance-mariadb-outage`, `placement-mariadb-outage`,
   `barbican-mariadb-outage`, `cinder-mariadb-outage`,
   `memcached-network-partition`, `nova-broker-outage`,
-  `nova-mariadb-outage`, `nova-placement-outage`) need the
-  `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
-  (installing `linux-modules-extra-$(uname -r)` on demand); the `network`
+  `nova-mariadb-outage`, `nova-placement-outage`,
+  `korc-network-partition`) need the `sch_netem`/`ip_set` kernel modules,
+  which `hack/deploy-infra.sh` loads (installing
+  `linux-modules-extra-$(uname -r)` on demand); the `network`
   leg stays `continue-on-error`. It runs every suite that needs the neutron,
   cinder or ovn operators, the placement-operator for
   `placement-mariadb-outage`, and a diagnostics step that dumps all seven
@@ -59,8 +60,26 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   a `RabbitmqCluster` of its own) and `WITH_OVN_KERNEL_MODULES=true` for the
   OVNChassis of `neutron-metadata-agent-pod-kill`, within a wall of 150
   minutes. That leg stays `continue-on-error` as well, because three of its
-  suites are NetworkChaos partitions on the same kernel modules. The `pod`
-  leg keeps its 90 minutes; the four walls sum to seven hours.
+  suites are NetworkChaos partitions on the same kernel modules. The
+  `controlplane` leg runs the five suites that bring up a ControlPlane of
+  their own in a short namespace of their own (`korc-provisioning-outage`,
+  `korc-network-partition`, `controlplane-keystone-degraded`,
+  `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`) on the
+  `self-hosted` runners, with `WITH_CONTROLPLANE=true` and
+  `CONTROLPLANE_OPERATORS=external`, K-ORC and the c5c3-operator deployed
+  beside the keystone stack, within a wall of 100 minutes. It stays
+  `continue-on-error` too, for the NetworkChaos partition of
+  `korc-network-partition`. The `pod` leg runs the eight platform suites of
+  #1390 that need only the standalone stack on top of its own, within 120
+  minutes; the five walls sum to 550 minutes.
+- **Shared state is restored in every catch.** A step that changes shared
+  platform state (a scale-down, a narrowed policy, a sealed OpenBao, a chaos
+  object) undoes it in its own `catch:`, and so does every later step up to
+  the one that lifts the fault. The legs run `parallel: 1`, so a leftover
+  fails every later suite of the leg.
+- **Flux has no suite.** A killed Flux is on no request path, and a restarted
+  helm-controller can upgrade a platform chart in the middle of a run; the
+  reference page gives the full reason under Components without a fault suite.
 - **Recovery assertions are UID-gated** where the contract is "a new pod
   recovered" (compare the pod UID before/after the kill), and
   restart-count-gated where the contract is "survived without restart".
@@ -84,6 +103,15 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   GHCR unless `kind load docker-image` put it on the node. See
   `docs/reference/testing/chaos-e2e-tests.md` (Workload and Consistency
   Harness).
+- `lib/controlplane.sh` — the ControlPlane bring-up of the `controlplane`
+  leg, sourced by its suites' scripts: seed the per-CR OpenBao paths, apply,
+  wait for each stage within budgets that fit the 40-minute bring-up step,
+  put the suite's namespace into `@NS@` fixtures, tear the plane down within
+  12 minutes, and dump it for a `catch:` block.
+- `lib/gateway.sh`, `lib/openbao.sh`, `lib/pods.sh` — sourced helpers: the
+  ClusterIP of the proxy of Gateway `openstack-gw`; the root token and `bao`
+  calls into `openbao-0`, with the token on stdin; and the UID-gated wait for
+  the pods of a Deployment a suite killed.
 - `unseal-openbao.sh` — OpenBao runs single-replica with Shamir sealing
   in kind; after a pod-kill the new pod starts **sealed** and stays 0/1
   forever. This helper re-unseals it (idempotent); production HA Raft
