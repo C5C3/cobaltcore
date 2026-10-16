@@ -301,6 +301,7 @@
             staticImage
             testsFor
             cephBindings
+            libvirt
             ;
         in
         {
@@ -312,6 +313,7 @@
             inherit pkgs staticImage;
           };
           kvm-node-agent-image = import ./images/kvm-node-agent/image.nix { inherit pkgs staticImage; };
+          libvirt-image = import ./images/libvirt/image.nix { inherit pkgs libvirt; };
         }
         // lib.listToAttrs (
           map (

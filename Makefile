@@ -875,9 +875,9 @@ e2e-ovn-overlay:
 #
 # The three preflights are kept separate so each failure names its own cause:
 # no reachable cluster, the operators missing, a cluster that is not one amd64
-# node. The third exists because images/libvirt/Dockerfile installs
-# qemu-system-x86 only: on an arm64 node Nova asks for an aarch64 guest that
-# image cannot run.
+# node. The third exists because images/libvirt/qemu.nix builds the
+# x86_64-softmmu target only: on an arm64 node Nova asks for an aarch64 guest
+# that image cannot run.
 #
 # The suite labels and unlabels the node and starts libvirtd itself. It asks
 # of the cluster the stack's infrastructure (`WITH_OVN_KERNEL_MODULES=true

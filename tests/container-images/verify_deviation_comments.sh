@@ -118,16 +118,16 @@ test_backup_shifter_deviation_comment() {
 
 # --- Test 5: the libvirt image keeps root and creates no user ---
 test_libvirt_deviation_comment() {
-  echo "Test: libvirt Dockerfile has DEVIATION comment (root, no openstack user)"
+  echo "Test: libvirt image.nix has DEVIATION comment (root, no openstack user)"
 
-  local dockerfile="$PROJECT_ROOT/images/libvirt/Dockerfile"
+  local nix="$PROJECT_ROOT/images/libvirt/image.nix"
 
-  assert_file_contains "libvirt/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "libvirt/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
   assert_contains "DEVIATION comment says the image keeps root" \
-    "$(deviation_block "$dockerfile")" "root"
+    "$(deviation_block "$nix")" "root"
   assert_contains "DEVIATION comment names the openstack user it does not create" \
-    "$(deviation_block "$dockerfile")" "openstack"
-  assert_file_not_contains "libvirt/Dockerfile has no USER instruction" "$dockerfile" '^USER '
+    "$(deviation_block "$nix")" "openstack"
+  assert_file_not_contains "libvirt/image.nix sets no User" "$nix" '^ *User = '
 }
 
 # --- Test 6: the openstack-hypervisor-operator image runs as distroless nonroot ---
