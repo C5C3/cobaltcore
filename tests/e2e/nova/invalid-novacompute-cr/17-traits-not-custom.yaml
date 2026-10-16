@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.traits naming a standard trait violates the items Pattern marker,
+# which is Placement's own pattern for a custom trait. The virt driver
+# reports the standard traits, and openstack-hypervisor-operator applies
+# only CUSTOM_ ones. The schema is the sole gate.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  traits:
+  - HW_CPU_X86_AVX2

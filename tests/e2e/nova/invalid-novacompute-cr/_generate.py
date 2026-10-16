@@ -325,6 +325,50 @@ FIXTURES: tuple[Fixture, ...] = (
             "    minReplicas: 0\n"
         ),
     ),
+    Fixture(
+        filename="17-traits-not-custom.yaml",
+        comment=(
+            "spec.traits naming a standard trait violates the items Pattern marker,\n"
+            "which is Placement's own pattern for a custom trait. The virt driver\n"
+            "reports the standard traits, and openstack-hypervisor-operator applies\n"
+            "only CUSTOM_ ones. The schema is the sole gate."
+        ),
+        extra=(
+            "  traits:\n"
+            "  - HW_CPU_X86_AVX2\n"
+        ),
+    ),
+    Fixture(
+        filename="18-hosttraits-append-empty.yaml",
+        comment=(
+            "A spec.hostTraits entry with mode Append and no traits violates the CEL\n"
+            "rule on NovaComputeHostTraits: it would change nothing. Only a Replace\n"
+            "entry may leave the list empty, which clears the node. The schema is the\n"
+            "sole gate."
+        ),
+        extra=(
+            "  hostTraits:\n"
+            "  - nodeName: n1\n"
+            "    mode: Append\n"
+            "    traits: []\n"
+        ),
+    ),
+    Fixture(
+        filename="19-hosttraits-duplicate-node.yaml",
+        comment=(
+            "Two spec.hostTraits entries for one node violate the list-map key\n"
+            "nodeName: one node has one list of traits. The schema is the sole gate."
+        ),
+        extra=(
+            "  hostTraits:\n"
+            "  - nodeName: n1\n"
+            "    traits:\n"
+            "    - CUSTOM_A\n"
+            "  - nodeName: n1\n"
+            "    traits:\n"
+            "    - CUSTOM_B\n"
+        ),
+    ),
 )
 
 

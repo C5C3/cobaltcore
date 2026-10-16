@@ -82,6 +82,55 @@ spec:
                   take from their environment or their mounts, and the keys that select the
                   live-migration transport, are rejected at admission.
                 type: object
+              hostTraits:
+                description: |-
+                  HostTraits adjusts the traits of single nodes, keyed by node name. A node
+                  without an entry carries spec.traits. An entry may name a node the pool
+                  does not hold yet; TraitsReady names such entries.
+                items:
+                  description: |-
+                    NovaComputeHostTraits adjusts the custom Placement traits of one node of the
+                    pool. An Append entry without traits would change nothing, so only a
+                    Replace entry may leave them out.
+                  properties:
+                    mode:
+                      default: Append
+                      description: |-
+                        Mode is how the entry combines with spec.traits: Append adds its traits
+                        to the pool's, Replace puts them in place of the pool's.
+                      enum:
+                      - Append
+                      - Replace
+                      type: string
+                    nodeName:
+                      description: NodeName is the name of the node, which is also
+                        its Hypervisor's name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    traits:
+                      description: |-
+                        Traits are the custom Placement traits of the node, under the bounds of
+                        spec.traits.
+                      items:
+                        maxLength: 255
+                        pattern: ^CUSTOM_[A-Z0-9_]+$
+                        type: string
+                      maxItems: 64
+                      type: array
+                      x-kubernetes-list-type: set
+                  required:
+                  - nodeName
+                  type: object
+                  x-kubernetes-validations:
+                  - message: traits must not be empty unless mode is Replace
+                    rule: (has(self.mode) && self.mode == 'Replace') || (has(self.traits)
+                      && size(self.traits) > 0)
+                maxItems: 1000
+                type: array
+                x-kubernetes-list-map-keys:
+                - nodeName
+                x-kubernetes-list-type: map
               image:
                 description: |-
                   Image is the nova-compute image. When nil the operator runs
@@ -340,6 +389,21 @@ spec:
                       type: string
                   type: object
                 type: array
+              traits:
+                description: |-
+                  Traits are the custom Placement traits every Pending and Active node of
+                  the pool carries. The operator creates a trait in Placement when it is
+                  missing and hands each node's list to openstack-hypervisor-operator
+                  through the node's Hypervisor, which applies it to the node's resource
+                  provider. The pattern and the length bound are Placement's own for a
+                  custom trait.
+                items:
+                  maxLength: 255
+                  pattern: ^CUSTOM_[A-Z0-9_]+$
+                  type: string
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: set
               updateStrategy:
                 default: {}
                 description: UpdateStrategy paces the DaemonSet rollout.
@@ -505,6 +569,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              createdTraits:
+                description: |-
+                  CreatedTraits are the custom traits this pool created in Placement (the
+                  create answered 201) and has not deleted yet. The pool deletes a trait it
+                  created once no NovaCompute of the Nova declares it or records it on a
+                  node, and never one that existed before.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               desiredNumberScheduled:
                 description: |-
                   DesiredNumberScheduled is how many nodes the DaemonSet should run on,
@@ -565,6 +639,18 @@ spec:
                         ServiceStatus is the service's administrative status as Nova reports it:
                         enabled or disabled.
                       type: string
+                    traits:
+                      description: |-
+                        Traits are the custom traits on the node's Hypervisor, recorded while
+                        the pool manages the node's traits: the CUSTOM_ traits
+                        openstack-hypervisor-operator last reported on the node's resource
+                        provider (the CUSTOM_ subset of the Hypervisor's status.traits), and the
+                        ones its spec.customTraits still lists for the operator to apply. A
+                        trait recorded here is not deleted from Placement.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
                     zone:
                       description: |-
                         Zone is the node's topology.kubernetes.io/zone label, read from the Node

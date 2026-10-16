@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.hostTraits entry with mode Append and no traits violates the CEL
+# rule on NovaComputeHostTraits: it would change nothing. Only a Replace
+# entry may leave the list empty, which clears the node. The schema is the
+# sole gate.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: pool
+spec:
+  novaRef:
+    name: nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: a
+  hostTraits:
+  - nodeName: n1
+    mode: Append
+    traits: []

@@ -179,6 +179,28 @@ type NovaComputeSpec struct {
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 
+	// Traits are the custom Placement traits every Pending and Active node of
+	// the pool carries. The operator creates a trait in Placement when it is
+	// missing and hands each node's list to openstack-hypervisor-operator
+	// through the node's Hypervisor, which applies it to the node's resource
+	// provider. The pattern and the length bound are Placement's own for a
+	// custom trait.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=255
+	// +kubebuilder:validation:items:Pattern=`^CUSTOM_[A-Z0-9_]+$`
+	Traits []string `json:"traits,omitempty"`
+
+	// HostTraits adjusts the traits of single nodes, keyed by node name. A node
+	// without an entry carries spec.traits. An entry may name a node the pool
+	// does not hold yet; TraitsReady names such entries.
+	// +optional
+	// +listType=map
+	// +listMapKey=nodeName
+	// +kubebuilder:validation:MaxItems=1000
+	HostTraits []NovaComputeHostTraits `json:"hostTraits,omitempty"`
+
 	// TargetClusterRef selects the registered target cluster the DaemonSet is
 	// created on. When nil it is created on the cluster the operator runs in.
 	// The ref is immutable once set.
@@ -246,6 +268,47 @@ type NovaComputeUpdateStrategy struct {
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
+// NovaComputeHostTraitsMode is how a hostTraits entry combines with
+// spec.traits.
+// +kubebuilder:validation:Enum=Append;Replace
+type NovaComputeHostTraitsMode string
+
+// The hostTraits modes.
+const (
+	// NovaComputeHostTraitsAppend gives the node spec.traits and the entry's
+	// traits.
+	NovaComputeHostTraitsAppend NovaComputeHostTraitsMode = "Append"
+	// NovaComputeHostTraitsReplace gives the node the entry's traits alone. An
+	// entry without traits clears the node.
+	NovaComputeHostTraitsReplace NovaComputeHostTraitsMode = "Replace"
+)
+
+// NovaComputeHostTraits adjusts the custom Placement traits of one node of the
+// pool. An Append entry without traits would change nothing, so only a
+// Replace entry may leave them out.
+// +kubebuilder:validation:XValidation:rule="(has(self.mode) && self.mode == 'Replace') || (has(self.traits) && size(self.traits) > 0)",message="traits must not be empty unless mode is Replace"
+type NovaComputeHostTraits struct {
+	// NodeName is the name of the node, which is also its Hypervisor's name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	NodeName string `json:"nodeName"`
+
+	// Traits are the custom Placement traits of the node, under the bounds of
+	// spec.traits.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=255
+	// +kubebuilder:validation:items:Pattern=`^CUSTOM_[A-Z0-9_]+$`
+	Traits []string `json:"traits,omitempty"`
+
+	// Mode is how the entry combines with spec.traits: Append adds its traits
+	// to the pool's, Replace puts them in place of the pool's.
+	// +optional
+	// +kubebuilder:default=Append
+	Mode NovaComputeHostTraitsMode `json:"mode,omitempty"`
+}
+
 // NovaComputeStatus defines the observed state of NovaCompute.
 type NovaComputeStatus struct {
 	// Conditions represent the latest available observations of the NovaCompute
@@ -285,6 +348,14 @@ type NovaComputeStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Nodes []NovaComputeNodeStatus `json:"nodes,omitempty"`
+
+	// CreatedTraits are the custom traits this pool created in Placement (the
+	// create answered 201) and has not deleted yet. The pool deletes a trait it
+	// created once no NovaCompute of the Nova declares it or records it on a
+	// node, and never one that existed before.
+	// +optional
+	// +listType=set
+	CreatedTraits []string `json:"createdTraits,omitempty"`
 }
 
 // NovaComputeNodeStatus is the state of one node of the pool.
@@ -328,6 +399,16 @@ type NovaComputeNodeStatus struct {
 	// ConflictsWith names the NovaCompute that holds a node in Conflict.
 	// +optional
 	ConflictsWith string `json:"conflictsWith,omitempty"`
+
+	// Traits are the custom traits on the node's Hypervisor, recorded while
+	// the pool manages the node's traits: the CUSTOM_ traits
+	// openstack-hypervisor-operator last reported on the node's resource
+	// provider (the CUSTOM_ subset of the Hypervisor's status.traits), and the
+	// ones its spec.customTraits still lists for the operator to apply. A
+	// trait recorded here is not deleted from Placement.
+	// +optional
+	// +listType=set
+	Traits []string `json:"traits,omitempty"`
 }
 
 func init() {
