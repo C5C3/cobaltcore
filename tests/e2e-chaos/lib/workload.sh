@@ -21,7 +21,7 @@
 # start   Starts `workload.py run` in a pod on the Tempest image and waits
 #         until every stream of --streams printed READY. The pod carries the
 #         label app.kubernetes.io/name=chaos-workload, which no chaos selector
-#         matches. OS_PASSWORD is set from the keystone-admin Secret when the
+#         matches. OS_PASSWORD is set from the admin password Secret when the
 #         run options carry --keystone.
 # mark    Writes the pod clock to the pod annotation chaos.c5c3.io/<mark>, so
 #         the marks and the records are read off one clock.
@@ -39,6 +39,10 @@
 #   CHAOS_WORKLOAD_READY_SECONDS    how long start waits for READY (300)
 #   CHAOS_WORKLOAD_DONE_SECONDS     how long verify waits for DONE (420)
 #   CHAOS_WORKLOAD_DB_SYNC_SECONDS  how long --ovn-db-sync waits for its Job (600)
+#   CHAOS_WORKLOAD_ADMIN_SECRET     the Secret in NAMESPACE that start reads the
+#                                   admin password from (keystone-admin); a
+#                                   managed ControlPlane materializes it as
+#                                   <cp>-keystone-admin-credentials
 #
 # docs/reference/testing/chaos-e2e-tests.md describes the harness.
 
@@ -159,11 +163,11 @@ cmd_start() {
 
   kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=60s
 
-  local env_args=() password
+  local env_args=() password admin_secret="${CHAOS_WORKLOAD_ADMIN_SECRET:-keystone-admin}"
   if [ "$keystone" = true ]; then
-    password="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+    password="$(kubectl get secret "$admin_secret" -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
     if [ -z "$password" ]; then
-      echo "FAIL: start ${id}: Secret keystone-admin holds no password"
+      echo "FAIL: start ${id}: Secret ${admin_secret} holds no password"
       exit 1
     fi
     env_args=(--env "OS_PASSWORD=${password}")
