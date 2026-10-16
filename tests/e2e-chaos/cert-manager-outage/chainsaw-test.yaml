@@ -1,0 +1,302 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: cert-manager held down across a forced renewal.
+#
+# Fault: a PodChaos pod-failure holds the cert-manager controller (Deployment
+# cert-manager in cert-manager) down while a renewal of Certificate
+# openstack/keystone-nip-io-tls is requested. That Certificate backs the https
+# listener of Gateway openstack-gw. The renewal is requested the way
+# `cmctl renew` requests it: an Issuing=True condition with reason
+# ManuallyTriggered, written through the status subresource. No runner has
+# cmctl (hack/install-test-deps.sh).
+#
+# Claim, phase by phase:
+#   held    For 120 s nothing moves. status.revision stays at its baseline R0,
+#           Issuing=True stands, the Secret and the listener keep the
+#           baseline leaf, and the Keystone behind the listener stays Ready.
+#   lifted  The controller finishes the renewal within 300 s: revision R0 + 1,
+#           no Issuing condition, a new leaf in the Secret, and within 120 s of
+#           the revision change the listener serves that leaf (RENEWED-OK).
+#
+# Blast radius: the cert-manager controller alone. cainjector and the webhook
+# are Deployments of their own, so admission and CA injection keep working.
+# Every Certificate of the cluster that falls due in the window waits; none
+# does on a fresh kind cluster. The renewal itself changes the shared
+# listener certificate, which no other suite pins.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-cm through the https listener of openstack-gw, by
+# hostname with --resolve to the proxy's ClusterIP and --insecure-tls for the
+# self-signed leaf. cert-manager is on no request path, and the listener keeps
+# serving the leaf it holds, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cert-manager-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone behind the Gateway, workload through the listener ──
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cm
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # The PodChaos selector has to reach the controller and nothing else.
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          pods="$(kubectl get pods -n cert-manager \
+            -l app.kubernetes.io/name=cert-manager,app.kubernetes.io/component=controller \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+          count="$(grep -c . <<<"$pods" || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "FAIL: the PodChaos selector matches ${count} pods, want the one controller pod: ${pods}"
+            exit 1
+          fi
+          echo "OK: the selector matches the controller pod ${pods}"
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          GW_IP="$(gateway_ip)"
+          ../lib/workload.sh start cert-manager-outage -- --streams token \
+            --keystone https://keystone.127-0-0-1.nip.io/v3 \
+            --resolve "keystone.127-0-0-1.nip.io:${GW_IP}" --insecure-tls
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-cm --dep-ns=cert-manager --dep-label=app.kubernetes.io/name=cert-manager
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cert-manager-outage
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cert-manager-outage
+  # ── Step 2: Record the baseline revision and leaves ────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          revision="$(cert_field '{.status.revision}')"
+          secret="$(secret_leaf)"
+          served="$(served_leaf)"
+          echo "baseline: revision ${revision}, Secret leaf ${secret}, served leaf ${served}"
+          if [ -z "$revision" ] || [ -z "$secret" ]; then
+            echo "FAIL: certificate/${CERT} has no revision or its Secret no leaf"
+            exit 1
+          fi
+          if [ "$secret" != "$served" ]; then
+            echo "FAIL: the listener serves ${served:-nothing}, not the leaf of Secret ${CERT}"
+            exit 1
+          fi
+          kubectl create configmap "$STATE" -n "$NAMESPACE" \
+            --from-literal=revision="$revision" \
+            --from-literal=secret-leaf="$secret" \
+            --from-literal=served-leaf="$served" \
+            --dry-run=client -o yaml | kubectl apply -f -
+    catch:
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-cm --dep-ns=cert-manager --dep-label=app.kubernetes.io/name=cert-manager
+    - &cert-dump
+      script:
+        timeout: 1m
+        content: |
+          kubectl get certificate keystone-nip-io-tls -n "$NAMESPACE" -o yaml 2>&1 || true
+          for cr in $(kubectl get certificaterequest -n "$NAMESPACE" -o name 2>/dev/null | grep '/keystone-nip-io-tls-'); do
+            kubectl get "$cr" -n "$NAMESPACE" -o yaml 2>&1 || true
+          done
+          kubectl logs -n cert-manager -l app.kubernetes.io/component=controller --tail=100 2>&1 || true
+    - *workload-dump
+    cleanup:
+    - script:
+        content: kubectl delete configmap cert-manager-outage-state -n "$NAMESPACE" --ignore-not-found
+  # ── Step 3: Hold cert-manager down, then request the renewal ───────────
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cert-manager-outage fault-start
+    - apply:
+        file: 01-podchaos.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl wait podchaos/fail-cert-manager -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched. The kubelet stops
+          # the running controller seconds later, and only then is it gone.
+          kubectl wait pod -n cert-manager \
+            -l app.kubernetes.io/name=cert-manager,app.kubernetes.io/component=controller \
+            --for=condition=Ready=false --timeout=120s
+          gen="$(kubectl get certificate keystone-nip-io-tls -n "$NAMESPACE" -o jsonpath='{.metadata.generation}')"
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          kubectl patch certificate keystone-nip-io-tls -n "$NAMESPACE" --subresource=status --type=json \
+            -p "[{\"op\": \"add\", \"path\": \"/status/conditions/-\", \"value\": {\"type\": \"Issuing\", \"status\": \"True\", \"reason\": \"ManuallyTriggered\", \"message\": \"re-issue requested by the cert-manager-outage chaos suite\", \"lastTransitionTime\": \"${now}\", \"observedGeneration\": ${gen}}}]"
+          echo "OK: Issuing=True requested on certificate/keystone-nip-io-tls at ${now}"
+    catch:
+    - &lift
+      script:
+        content: kubectl delete podchaos fail-cert-manager -n "$NAMESPACE" --ignore-not-found
+    - *chaos-diagnostics
+    - *cert-dump
+    - *workload-dump
+  # ── Step 4: Nothing renews while the controller is down ────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          r0="$(baseline revision)"
+          secret0="$(baseline secret-leaf)"
+          served0="$(baseline served-leaf)"
+          GW_IP="$(gateway_ip)"
+          end=$(( $(date +%s) + 120 ))
+          while true; do
+            fields="$(cert_field '{.status.revision}|{.status.conditions[?(@.type=="Issuing")].status}')"
+            IFS='|' read -r revision issuing <<<"$fields"
+            secret="$(secret_leaf)"
+            served="$(served_leaf)"
+            ready="$(kubectl get keystone keystone-chaos-cm -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$revision" != "$r0" ]; then
+              echo "FAIL: status.revision moved from ${r0} to ${revision} while cert-manager was down"
+              exit 1
+            fi
+            if [ "$issuing" != "True" ]; then
+              echo "FAIL: the Issuing condition reads '${issuing:-<none>}', not True"
+              exit 1
+            fi
+            if [ "$secret" != "$secret0" ]; then
+              echo "FAIL: Secret ${CERT} holds the leaf ${secret:-<none>}, not the baseline ${secret0}"
+              exit 1
+            fi
+            if [ "$served" != "$served0" ]; then
+              echo "FAIL: the listener serves ${served:-nothing}, not the baseline leaf ${served0}"
+              exit 1
+            fi
+            if [ "$ready" != "True" ]; then
+              echo "FAIL: keystone-chaos-cm reads Ready=${ready:-<none>}"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "HELD-OK: revision ${r0}, Issuing=True and both leaves unchanged for 120 s"
+    catch:
+    - *lift
+    - *chaos-diagnostics
+    - *cert-dump
+    - *workload-dump
+  # ── Step 5: Lift the fault ─────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: fail-cert-manager
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark cert-manager-outage fault-end
+    catch:
+    - *lift
+    - *workload-dump
+  # ── Step 6: The controller finishes the renewal ────────────────────────
+  - try:
+    - script:
+        timeout: 7m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          r0="$(baseline revision)"
+          secret0="$(baseline secret-leaf)"
+          GW_IP="$(gateway_ip)"
+          want=$((r0 + 1))
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            revision="$(cert_field '{.status.revision}')"
+            ready="$(cert_field '{.status.conditions[?(@.type=="Ready")].status}')"
+            issuing="$(cert_field '{.status.conditions[?(@.type=="Issuing")].status}')"
+            if [ "$revision" = "$want" ] && [ "$ready" = "True" ] && [ -z "$issuing" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no renewal within 300 s of the lift (revision ${revision:-<none>}, want ${want}; Ready ${ready:-<none>}; Issuing ${issuing:-<none>})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: certificate/${CERT} is Ready at revision ${want} with no Issuing condition"
+          secret="$(secret_leaf)"
+          if [ "$secret" = "$secret0" ]; then
+            echo "FAIL: Secret ${CERT} still holds the baseline leaf at revision ${want}"
+            exit 1
+          fi
+          deadline=$(( $(date +%s) + 120 ))
+          while true; do
+            served="$(served_leaf)"
+            if [ "$served" = "$secret" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120 s after the renewal the listener serves ${served:-nothing}, not the renewed leaf ${secret}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "RENEWED-OK: revision ${want}, the listener serves the renewed leaf ${secret}"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cm
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *cert-dump
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cert-manager-outage
+    catch:
+    - *workload-dump
