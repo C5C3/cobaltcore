@@ -1987,9 +1987,9 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
-          # The suites of #1390 that bring up a ControlPlane of their own in
-          # chainsaw's ephemeral namespace: K-ORC, the c5c3-operator and a
-          # Keystone-only plane per suite. They get an entry of their own so
+          # The suites of #1390 that bring up a ControlPlane of their own in a
+          # namespace of their own: K-ORC, the c5c3-operator and a Keystone-only
+          # plane per suite. They get an entry of their own so
           # the pod entry keeps the standalone stack its suites assume.
           # Non-blocking (see continue-on-error below): korc-network-partition
           # is a NetworkChaos partition on the sch_netem/ip_set dependency the
