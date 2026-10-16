@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 56 chaos test suites validate operator behavior during and after fault
+The 57 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 56 test suites require the infrastructure stack to be deployed and healthy.
+All 57 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -470,6 +470,7 @@ with the new suites.
 | [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `cp-rmq-cascade` | Broker outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the rabbitmq-cluster-operator and the c5c3-operator replaced; within 120 s the RabbitmqCluster at `AllReplicasReady=False`, the ControlPlane at `InfrastructureReady=False/WaitingForMessaging` and `Ready=False/NotAllReady`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `AllReplicasReady=True` and `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [korc-provisioning-outage](#korc-provisioning-outage) | — | `cp-korc-out` | K-ORC outage across a ControlPlane's provisioning | `INJECTED` at `DBCredentialsReady`, `AC-SEEN` while K-ORC is down, `BLIND-OK`: `KORCReady=False/WaitingForApplicationCredential` with neither `Ready` nor `CatalogReady` `True` for 90 s; after the lift `KORCReady=True/ApplicationCredentialMinted`, `CatalogReady=True/CatalogRegistered` and `Ready=True/AllReady`, `NO-DUPLICATE-OK`: one application credential of the reported name in Keystone, every K-ORC CR `Available=True` with a `status.id`, workload budget zero |
 | [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `cp-ks-degraded` | ControlPlane over a degraded Keystone | Within 300 s the Keystone CR `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady` with `status.services` keystone `ready: false`; `NO-MASK-OK`: 60 s without the ControlPlane at `Ready=True` over a Keystone that is not; `Ready=True/AllReady` after the lift, the token stream within its measured budget |
+| [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
 
 ---
 
@@ -3753,6 +3754,67 @@ in its own namespace, `chaos-ks-degraded`.
 
 ---
 
+### korc-network-partition
+
+**File:** `tests/e2e-chaos/korc-network-partition/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `NetworkChaos` partition severs K-ORC from the Keystone API pods of
+ControlPlane `cp-korc-part`, and a KeystoneService is applied under it: one
+project created for it, a user, a role assignment, a service and two endpoints,
+each a K-ORC child. The suite pins that the registration reports nothing K-ORC
+could not create, converges once the partition is lifted, and leaves each row
+once in Keystone.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring the plane up, start the workload | `script` (40m) + `script` (6m) | `cp_bring_up` of `lib/controlplane.sh` to `Ready=True/AllReady`; `workload.sh start` against `cp-korc-part-keystone`. The step cleanup deletes the registration, then the ControlPlane |
+| 2 | Partition K-ORC, register a service | `script` (3m) | `workload.sh mark fault-start`, `02-networkchaos.yaml`, `kubectl wait --for=condition=AllInjected`, then `01-keystoneservice.yaml` |
+| 3 | Nothing reports a row K-ORC could not create | `script` (4m) | For 120 s, every 10 s: `korc-part` not `Ready=True`, and the Project child whose `spec.resource.name` is `service-korc-part` without `Available=True` (`PARTITIONED-OK`) |
+| 4 | Lift the partition | `script` (2m) | Deletes the `NetworkChaos`, then `workload.sh mark fault-end` |
+| 5 | The registration converges | `script` (20m) | `korc-part` at `Ready=True` within 900 s, then `korc-part` and `cp-korc-part` at `Ready=True/AllReady` |
+| 6 | One row each in Keystone | `script` (6m) | `03-admin-job.yaml` through Secret `cp-korc-part-admin-password-cloud`: one project `service-korc-part`, one service of type `korcpart`, two endpoints of it, one public and one internal (`NO-DUPLICATE-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-korc-part`),
+`01-keystoneservice.yaml` (`korc-part`, service type `korcpart`, project
+`service-korc-part` with `create: true`, role `service`),
+`02-networkchaos.yaml` (`partition-korc`, `direction: both`, `duration: "600s"`),
+`03-admin-job.yaml`.
+
+**Workload:** the `token` stream against `cp-korc-part-keystone`, with the admin
+password from `cp-korc-part-keystone-admin-credentials`. Started in step 1 and
+judged in step 7 against `failures=0 recovery=0s`. The suite runs in the
+`controlplane` matrix entry, in its own namespace, `chaos-korc-part`. The partition
+matches the source address of the K-ORC pods, so the workload pod keeps its
+traffic.
+
+**Catch blocks:** steps 2 to 4 delete the `NetworkChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh` and dumps the KeystoneService and the workload.
+
+**Design notes:**
+
+- The partition sits on the Keystone (server) side for the reason
+  `mariadb-network-partition` gives: by the time a packet reaches a Keystone pod it
+  carries the K-ORC pod's own address, while a rule in the K-ORC pod would match
+  pod addresses on packets that still carry the Service ClusterIP.
+- Under the partition the registration waits at `ProbingForCollision` in the kind
+  runs: the c5c3-operator first imports the project and the service by name to
+  see whether they exist, and K-ORC cannot answer that without Keystone. The
+  managed children come after the lift, and the duplicate check of step 6 counts
+  what they created.
+- The c5c3-operator clears a K-ORC `Progressing/InvalidConfiguration` latch whose
+  message names a connection failure, on a 30-s jittered backoff
+  (`korc_unlatch.go`). The `keystone-service` suite drives that latch with a
+  status patch only, and this suite drives the K-ORC traffic itself.
+- The partition is a `NetworkChaos` on the `sch_netem` and `ip_set` kernel modules,
+  which keeps the `controlplane` matrix entry non-blocking.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -4171,6 +4233,12 @@ tests/e2e-chaos/
 │   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
 │   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
 │   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── korc-network-partition/           K-ORC partitioned from a ControlPlane Keystone
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-korc-part, Keystone only
+│   ├── 01-keystoneservice.yaml       KeystoneService korc-part, applied under the partition
+│   ├── 02-networkchaos.yaml          NetworkChaos severing K-ORC from the Keystone API pods
+│   ├── 03-admin-job.yaml             One project, service and endpoint pair (NO-DUPLICATE-OK)
+│   └── chainsaw-test.yaml            Test: nothing reported under the partition, one row each after
 ├── korc-provisioning-outage/         K-ORC outage across a ControlPlane provisioning
 │   ├── 00-controlplane-cr.yaml       ControlPlane cp-korc-out, Keystone only
 │   ├── 01-podchaos.yaml              PodChaos pod-failure on K-ORC

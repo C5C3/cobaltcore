@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The duplicate check after the partition: the registration's rows as the
+# cloud admin sees them, in the shape of
+# tests/e2e/c5c3/keystone-service/04-openstack-admin-job.yaml. It
+# authenticates with the password cloud the c5c3-operator keeps in Secret
+# cp-korc-part-admin-password-cloud (korc_secrets.go), which tracks the
+# current admin password. A K-ORC that lost an answer under the partition and
+# created a row again would leave two.
+#
+# Every list is captured first and checked for failure: the container runs
+# /bin/sh, where a pipeline's status is the last command's, and a count of an
+# empty capture would read a failed call as "no row".
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: korc-part-admin
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          count() { # <want> <what> <list>
+            got="$(printf '%s\n' "$3" | grep -c . || true)"
+            echo "${2}: ${got}"
+            if [ "$got" != "$1" ]; then
+              echo "ERROR: want ${1} ${2}, Keystone holds ${got}: $(printf '%s' "$3" | tr '\n' ' ')"
+              exit 1
+            fi
+          }
+          projects="$(openstack --os-cloud admin project list -f value -c Name)"
+          count 1 "projects named service-korc-part" "$(printf '%s\n' "$projects" | grep -x service-korc-part || true)"
+          services="$(openstack --os-cloud admin service list -f value -c ID -c Type)"
+          service="$(printf '%s\n' "$services" | awk '$2 == "korcpart" { print $1 }')"
+          count 1 "services of type korcpart" "$service"
+          endpoints="$(openstack --os-cloud admin endpoint list --service "$service" -f value -c Interface)"
+          count 2 "endpoints of korcpart" "$endpoints"
+          interfaces="$(printf '%s\n' "$endpoints" | sort | tr '\n' ' ')"
+          if [ "$interfaces" != "internal public " ]; then
+            echo "ERROR: the endpoints of korcpart are '${interfaces}', not one internal and one public"
+            exit 1
+          fi
+          echo "NO-DUPLICATE-OK"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: cp-korc-part-admin-password-cloud

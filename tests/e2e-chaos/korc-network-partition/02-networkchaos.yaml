@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos severing K-ORC from the Keystone API pods of the suite's
+# ControlPlane.
+#
+# K-ORC reaches that Keystone at its Service and at the catalog's internal
+# URL, both on the API pods (operators/c5c3/internal/controller/
+# korc_cloudsyaml.go). The partition is enforced on the Keystone (server)
+# side, for the reason ../mariadb-network-partition/01-networkchaos.yaml
+# gives: a rule in the client pod would match pod IPs on packets that still
+# carry the Service ClusterIP, while by the time a packet reaches a Keystone
+# pod it carries the K-ORC pod's own source IP. direction: both severs the
+# link either way.
+#
+# Blast radius: the K-ORC controller pods alone lose that Keystone. The
+# workload pod, the c5c3-operator and the Keystone of every other plane keep
+# their traffic. duration bounds a run that dies before the suite deletes
+# this CR. @NS@ is replaced with the suite's namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-korc
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+    - "@NS@"
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: cp-korc-part-keystone
+      app.kubernetes.io/component: api
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+      - orc-system
+      labelSelectors:
+        control-plane: controller-manager
+  duration: "600s"

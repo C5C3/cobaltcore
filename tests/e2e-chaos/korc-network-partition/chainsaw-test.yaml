@@ -1,0 +1,214 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: K-ORC partitioned from a ControlPlane's Keystone
+# while a service registration lands.
+#
+# Fault: a NetworkChaos partition between the Keystone API pods of
+# cp-korc-part and the K-ORC controller pods, enforced on the Keystone side.
+# A KeystoneService is applied under it: one project created for it, a user,
+# a role assignment, a service and two endpoints, each a K-ORC child.
+#
+# Claim, phase by phase:
+#   partitioned  For 120 s the registration is not Ready=True and the Project
+#                child named service-korc-part carries no Available=True
+#                (PARTITIONED-OK): nothing reports a row K-ORC could not
+#                create.
+#   lifted       The registration reaches Ready=True/AllReady within 900 s,
+#                and the plane stays Ready=True/AllReady.
+#   unique       Keystone holds exactly one project service-korc-part, one
+#                service of type korcpart and two endpoints for it, one public
+#                and one internal (NO-DUPLICATE-OK). A K-ORC that sent a create
+#                and lost the answer to the partition must not leave a second
+#                row behind.
+#
+# The c5c3-operator clears a K-ORC Progressing/InvalidConfiguration latch
+# whose message names a connection failure, on a 30-s jittered backoff
+# (korc_unlatch.go); the keystone-service suite drives that latch with a
+# status patch only, and this suite drives the K-ORC traffic itself.
+#
+# Blast radius: K-ORC reaches no other Keystone through the partition, since
+# the rule sits on the API pods of this plane alone. The workload pod and the
+# c5c3-operator keep their traffic. The NetworkChaos is the shared state to
+# undo, so steps 2 to 4 delete it in their catch blocks; the cleanup of step 1
+# deletes the registration and the ControlPlane.
+#
+# Leg: controlplane. The partition is a NetworkChaos on the sch_netem and
+# ip_set kernel modules. The suite runs in namespace chaos-korc-part, short for the
+# reason ../lib/controlplane.sh gives.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against cp-korc-part-keystone through the fault. Its own traffic is not
+# partitioned, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: korc-network-partition
+spec:
+  namespace: chaos-korc-part
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Bring the plane up, start the workload ─────────────────────
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_bring_up cp-korc-part 00-controlplane-cr.yaml
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-korc-part-keystone-admin-credentials ../lib/workload.sh start korc-network-partition -- --streams token --keystone "http://cp-korc-part-keystone.${NAMESPACE}.svc:5000/v3"
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-korc-part
+          kubectl get keystoneservice korc-part -n "$NAMESPACE" -o yaml 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump korc-network-partition
+    cleanup:
+    # The registration goes first: K-ORC releases its finalizers only by
+    # taking the rows out of a Keystone that still serves.
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          kubectl delete job korc-part-admin -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+          kubectl delete keystoneservice korc-part -n "$NAMESPACE" --ignore-not-found --wait --timeout=2m 2>&1 || true
+          cp_teardown cp-korc-part
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop korc-network-partition
+  # ── Step 2: Partition K-ORC, then register a service ───────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          ../lib/workload.sh mark korc-network-partition fault-start
+          cp_apply_file 02-networkchaos.yaml
+          kubectl wait networkchaos/partition-korc -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          cp_apply_file 01-keystoneservice.yaml
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 02-networkchaos.yaml 2>&1 || true
+    - *cp-dump
+    - *workload-dump
+  # ── Step 3: Nothing reports a row K-ORC could not create ───────────────
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          end=$(( $(date +%s) + 120 ))
+          while true; do
+            ready="$(cp_status keystoneservice korc-part Ready)"
+            if [ "$ready" = "True" ]; then
+              echo "FAIL: keystoneservice/korc-part reads Ready=True while K-ORC is partitioned"
+              exit 1
+            fi
+            available="$(kubectl get projects.openstack.k-orc.cloud -n "$NAMESPACE" -o json | jq -r '.items[]
+              | select(.spec.resource.name == "service-korc-part")
+              | "\(.metadata.name)=\([.status.conditions[]? | select(.type == "Available") | .status] | join(""))"')"
+            case "$available" in
+              *=True*)
+                echo "FAIL: a Project child of service-korc-part reads Available=True while K-ORC is partitioned: ${available}"
+                exit 1
+                ;;
+            esac
+            echo "partitioned: Ready ${ready:-<none>}, Project ${available:-<not created yet>}"
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "PARTITIONED-OK: korc-part not Ready and its Project not Available for 120 s"
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 4: Lift the partition ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_delete_file 02-networkchaos.yaml
+          ../lib/workload.sh mark korc-network-partition fault-end
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 5: The registration converges ─────────────────────────────────
+  - try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          # 900 s for the registration, then 120 s each for the two re-reads:
+          # 1140 s inside the 20-minute step.
+          cp_wait_condition keystoneservice korc-part Ready True 900
+          for res in keystoneservice/korc-part controlplane/cp-korc-part; do
+            cp_wait_condition "${res%%/*}" "${res##*/}" Ready True 120
+            reason="$(cp_reason "${res%%/*}" "${res##*/}" Ready)"
+            if [ "$reason" != "AllReady" ]; then
+              echo "FAIL: ${res} is Ready with reason '${reason:-<none>}', not AllReady"
+              exit 1
+            fi
+          done
+          echo "OK: korc-part and cp-korc-part are Ready=True/AllReady"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 6: One project, one service, two endpoints in Keystone ────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl apply -n "$NAMESPACE" -f 03-admin-job.yaml
+          if ! kubectl wait --for=condition=complete job/korc-part-admin -n "$NAMESPACE" --timeout=5m; then
+            kubectl logs -n "$NAMESPACE" job/korc-part-admin 2>&1 || true
+            echo "FAIL: job/korc-part-admin did not complete"
+            exit 1
+          fi
+          logs="$(kubectl logs -n "$NAMESPACE" job/korc-part-admin)"
+          echo "$logs"
+          grep -qx NO-DUPLICATE-OK <<<"$logs"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify korc-network-partition
+    catch:
+    - *workload-dump
