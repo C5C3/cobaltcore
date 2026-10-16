@@ -10,19 +10,24 @@ SPDX-License-Identifier: Apache-2.0
 
 # Adopt an External Keystone
 
-This guide walks a platform owner through putting an **existing** Keystone
-installation under operator management without deploying anything into it.
+This guide shows how to connect a ControlPlane to a Keystone installation that
+already exists.
 
-A ControlPlane in **External mode** is service-less: it projects no MariaDB, no
-Memcached, and no Keystone workload. It manages the *identity plane* against the
-Keystone API you already run — minting and rotating the admin **application
-credential**, provisioning declarative **service accounts**, and importing your
-existing **service catalog** rather than writing to it. Your installation keeps
-serving tokens throughout, and deleting the ControlPlane leaves it untouched.
+External mode does not deploy Keystone, MariaDB, or Memcached. The c5c3 operator
+configures K-ORC to create and rotate the admin application credential and to
+manage service accounts declared as `KeystoneService` resources. It also asks
+K-ORC to import the existing admin identity, domain, identity service, and
+endpoints as unmanaged resources; those imports are not changed or deleted by
+the ControlPlane. When the ControlPlane is deleted, it removes resources it
+managed, including the generated credential and managed service accounts, while
+the existing Keystone installation and imported objects remain.
 
-This is the first step of a staged adoption. Taking over the database and the
-Keystone deployment itself are later, separate phases — see
-[Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md).
+Adoption has four phases. This guide covers the implemented first phase; the
+remaining phases are sketches. You can stop after any phase. See
+[Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md)
+for details.
+
+![Four phases of brownfield Keystone adoption: identity-only management is implemented; infrastructure attach, Keystone takeover, and steady state are sketches.](../../diagrams/brownfield-keystone-adoption-phases.svg)
 
 ## Prerequisites
 
@@ -34,32 +39,31 @@ This guide is written against the
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow it through its final **Verify** step, so the operators and the shared
+Follow it through its final Verify step, so the operators and the shared
 infrastructure (OpenBao, External Secrets, K-ORC) are running. This guide adds a
-**second, External-mode** ControlPlane in its own namespace; the managed
+second, External-mode ControlPlane in its own namespace. The managed
 `controlplane` the tutorial creates in `openstack` stays as it is.
 :::
 
 Beyond the devstack, adopting a real installation needs:
 
-- **A reachable Keystone API.** K-ORC dials it from inside the cluster. Nothing
-  restricts the operator's egress by default, but on a cluster that enforces a
-  restrictive egress policy you must explicitly allow traffic from the K-ORC
-  namespace to the endpoint and port.
-- **The admin password, as a Secret** in the ControlPlane's namespace. The
-  operator never invents it and never rotates it — you supply it and rotate it at
-  the installation (see [step 6](#_6-rotating-the-admin-password-out-of-band)).
-- **A CA bundle Secret**, if the endpoint uses a private CA. The key defaults to
+- A Keystone API reachable from the cluster. K-ORC connects from inside the
+  cluster. If egress policy restricts traffic, allow the K-ORC namespace to
+  reach the endpoint and port.
+- The existing admin password, stored in a Secret in the ControlPlane namespace.
+  The operator does not create or rotate this password. Rotate it at the
+  installation, then update the Secret as described in
+  [step 6](#_6-rotating-the-admin-password-out-of-band).
+- A CA bundle Secret when the endpoint uses a private CA. Its key defaults to
   `ca.crt`. An IP-based `authURL` needs an IP SAN in the certificate; a hostname
-  resolves through cluster DNS.
-- **A `spec.region` that matches your catalog.** The region and the selected
-  interface must both exist in the external catalog, or the control plane fails
-  loudly rather than importing nothing.
+  must resolve through cluster DNS.
+- A `spec.region` that exists in the external catalog. The selected interface
+  must also exist there; otherwise the ControlPlane reports the catalog error.
 
 ### Standing in a brownfield Keystone on kind
 
 On kind there is no pre-existing installation to adopt, so create one. These are
-the same fixtures the e2e suite uses: a plain, operator-free Keystone in
+the fixtures the e2e suite uses: a plain, operator-free Keystone in
 namespace `brownfield-keystone`, serving
 `http://keystone.brownfield-keystone.svc:5000/v3`.
 
@@ -72,15 +76,14 @@ kubectl -n brownfield-keystone wait --for=condition=Complete \
   job/keystone-fixture-setup --timeout=5m
 ```
 
-The setup Job makes this look like a real installation rather than
-a fresh bootstrap:
+The setup Job adds objects that are already present in a brownfield
+installation:
 
-- a **non-default admin identity** — user `brownfield-admin`, project
-  `platform-admin`, domain `heimdall` — so nothing relies on the `admin`/`Default`
-  names a bootstrap would leave behind;
-- a **duplicate identity-type service** (`keystone-legacy` alongside `keystone`),
-  which is what forces the catalog disambiguation in
-  [step 2](#_2-apply-the-external-mode-controlplane).
+- a non-default admin identity: user `brownfield-admin`, project
+  `platform-admin`, and domain `heimdall`;
+- two catalog services with type `identity`: `keystone` and
+  `keystone-legacy`. In [step 2](#_2-apply-the-external-mode-controlplane),
+  select the one to import by its service name.
 
 Against a real installation, skip this section entirely.
 
@@ -88,8 +91,8 @@ Against a real installation, skip this section entirely.
 
 ### 1. Create the namespace and the admin-password Secret
 
-The ControlPlane needs its own namespace (one ControlPlane per namespace), and
-the admin password of the existing installation as a Secret in it.
+The ControlPlane needs its own namespace (one ControlPlane per namespace). Store
+the existing installation's admin password in a Secret there.
 
 ```bash
 kubectl create namespace brownfield
@@ -97,7 +100,9 @@ kubectl create namespace brownfield
 # Prompt without echo, then pipe the value in on stdin so the admin password
 # never appears on argv (visible in /proc/<pid>/cmdline for the life of the
 # process) or in your shell history file.
-read -rs -p 'Keystone admin password: ' PW; echo
+printf 'Keystone admin password: '
+IFS= read -r -s PW
+printf '\n'
 printf '%s' "$PW" | kubectl -n brownfield create secret generic brownfield-admin-password \
   --from-file=password=/dev/stdin
 unset PW
@@ -107,22 +112,21 @@ Type your installation's real admin password at the prompt. On the kind devstack
 it is the fixture password `brownfield_admin_fixture_pw_0`, which the setup Job
 of the previous section gave `brownfield-admin`.
 
-Nothing else in this guide reads the password directly — everything downstream
-authenticates with the application credential the operator mints from it.
+Later requests authenticate with the application credential created from this
+password; no other step reads the password.
 
 ### 2. Apply the External-mode ControlPlane
 
 This is the manifest the e2e suite applies, imported from the suite itself. The
-walkthrough and the suite share the namespace `brownfield`, the ControlPlane name
-`controlplane-external`, and the admin-password Secret from step 1, so there is one
-manifest here rather than a hand-kept copy of one — see [Tested by](#tested-by).
+walkthrough and suite use the same namespace (`brownfield`), ControlPlane name
+(`controlplane-external`), and admin-password Secret. See
+[Tested by](#tested-by).
 
 <<< @/../tests/e2e/c5c3/external-keystone/02-controlplane-external.yaml#controlplane-external
 
-That ControlPlane is the only thing in the file — the suite keeps its fixture
-admin-password Secret in a sibling file so applying this one cannot
-overwrite the Secret you filled in step 1 — so on the devstack apply it as it
-stands:
+The file contains only the ControlPlane. The suite keeps its fixture
+admin-password Secret in a separate file, so this apply will not overwrite the
+Secret from step 1. On the devstack, apply the manifest as provided:
 
 ```bash
 kubectl apply -f tests/e2e/c5c3/external-keystone/02-controlplane-external.yaml
@@ -137,54 +141,49 @@ Field by field:
 | --- | --- |
 | `mode: External` | Selects the service-less path. No Keystone workload is deployed and no child CR is projected. |
 | `external.authURL` | The identity endpoint the operator manages against. |
-| `external.endpointType` | Which catalog interface to authenticate against. Omitted here, so it defaults to `public` — the interface that is normally reachable from outside the installation. |
-| `external.caBundleSecretRef` | The private-CA bundle, when the endpoint needs one. Omitted here: the kind fixture is plain HTTP — devstack only, see the warning below. |
-| `external.catalog.identityServiceName` | Disambiguates the identity-service import. Only needed when your catalog holds **more than one** `identity`-type service — as the fixture does. |
-| `korc.adminCredential.cloudCredentialsRef` | Where the minted credential is materialized — the `clouds.yaml` Secret and cloud entry read back in [step 4](#_4-verify). Spelled out here, but `k-orc-clouds-yaml` / `admin` are the defaults. |
+| `external.endpointType` | Catalog interface K-ORC authenticates against. Omitted here, so it defaults to `public`, usually reachable from outside the installation. |
+| `external.caBundleSecretRef` | Private-CA bundle for the endpoint. Omitted here because the kind fixture uses plain HTTP; see the warning below. |
+| `external.catalog.identityServiceName` | Exact name of the `identity` service to import. Set this when the catalog has multiple services of type `identity`; the fixture selects `keystone` from `keystone` and `keystone-legacy`. |
+| `korc.adminCredential.cloudCredentialsRef` | Secret and cloud entry where K-ORC writes the generated credential. Step 4 reads the `clouds.yaml` from this Secret. The defaults are `k-orc-clouds-yaml` and `admin`. |
 | `korc.adminCredential.passwordSecretRef` | The Secret from step 1. |
 | `userName` / `projectName` / `domainName` | The admin identity to authenticate as. They default to `admin` / `admin` / `Default`; the fixture uses a non-default identity, so all three are set. |
-| `applicationCredential.restricted` | Keeps the minted credential least-privilege — it cannot mint further application credentials. Spelled out here, but `true` is the default. |
-| `applicationCredential.rotation.mode` | `PasswordDriven` keys the re-mint on a hash of the admin password — see [step 6](#_6-rotating-the-admin-password-out-of-band). Spelled out here, but it is the default. |
+| `applicationCredential.restricted` | Prevents the generated credential from creating additional application credentials. `true` is the default. |
+| `applicationCredential.rotation.mode` | `PasswordDriven` uses a hash of the admin password to trigger credential replacement. This is also the default; see [step 6](#_6-rotating-the-admin-password-out-of-band). |
 
-`spec.openStackRelease` stays required but is **advisory** in this mode: no images
-are deployed, so it only has to match your installation at a future managed
-takeover.
+`spec.openStackRelease` remains required but is advisory in this mode. No images
+are deployed; the value must match your installation only during a future
+managed takeover.
 
 ::: danger `authURL` must be `https://` against a real installation
-The CRD admits `http://` so the kind fixture can run without certificates. It is
-the *only* reason. Over plain HTTP the admin password travels in the clear on
-every mint — and the minted application credential's id and secret come back in
-the clear — to anything on the path between K-ORC and the endpoint. There is no
-handshake to fail, so `TLSVerificationFailed` never fires: the failure mode is a
-silent success.
+The CRD admits `http://` so the kind fixture can run without certificates. This
+is the only reason to use HTTP. Over plain HTTP, the admin password and the
+generated application credential travel in clear text between K-ORC and the
+endpoint. TLS verification cannot detect an interception because there is no
+TLS handshake to fail.
 
-Against anything but a throwaway devstack, use `https://` and supply the private
-CA via `external.caBundleSecretRef`. Pairing that ref with an `http://` authURL is
-rejected at admission — a CA bundle a plaintext endpoint never consults would only
-manufacture false confidence.
+For any real installation, use `https://` and supply the private CA through
+`external.caBundleSecretRef`. Admission rejects a CA bundle reference paired
+with an `http://` authURL because a plaintext endpoint does not use that bundle.
 :::
 
-::: warning Adoption means a *new* CR, never a flipped one
-The webhook **forbids** `spec.infrastructure`, `services.horizon`, and every
-managed-only Keystone knob in External mode — it names the offending field. It
-also rejects `mode` transitions **in both directions**: `Managed → External` is
-refused, and `External → Managed` is reserved for the phase-3 takeover. So you
-adopt an installation by creating a *new* External-mode ControlPlane, never by
-flipping an existing managed one.
-:::
+Create a new External-mode ControlPlane for adoption. The webhook rejects
+`spec.infrastructure`, `services.horizon`, and managed-only Keystone fields in
+External mode, and it rejects mode changes in either direction. The later
+Managed-mode takeover is a separate phase; it does not change an existing CR.
 
 ### 3. What `Ready` means in this mode
 
-Nothing is deployed, so the sub-reconcilers that would deploy something report
-`Status=True` with reason `ExternallyManaged` — `InfrastructureReady`,
-`DBCredentialsReady`, `AdminPasswordReady`, and `KeystoneReady`. They are *not*
-evidence that anything converged.
+Nothing is deployed, so the sub-reconcilers that would deploy resources report
+`Status=True` with reason `ExternallyManaged`: `InfrastructureReady`,
+`DBCredentialsReady`, `AdminPasswordReady`, and `KeystoneReady`. These conditions
+show that the sub-reconcilers skipped those resources; they do not show that
+anything converged.
 
-The conditions that carry real signal are `KORCReady`, `AdminCredentialReady`,
-and `CatalogReady`. All three are proxied through K-ORC: the operator holds no
+The conditions that report useful progress are `KORCReady`, `AdminCredentialReady`,
+and `CatalogReady`. All three are proxied through K-ORC. The operator holds no
 OpenStack client of its own, so "can we reach and authenticate against your
-Keystone?" is answered by whether the imports and the application-credential mint
-succeed. `ServiceAccountsReady` is **not** among them here: it folds the
+Keystone?" is answered by whether imports and application-credential creation
+succeed. `ServiceAccountsReady` is not among them here. It folds the
 registrations the ControlPlane projects for its own built-in services, and an
 External-mode plane manages none, so it reads `True` with reason
 `NoServiceRegistrationsProjected` whatever your registrations are doing. Their
@@ -201,14 +200,15 @@ When something is wrong, `KORCReady` names the failure class:
 | Reason | What it means | What to do |
 | --- | --- | --- |
 | `AuthenticationFailed` | Keystone rejected the admin credential (HTTP 401). | The password in the Secret is not (or is no longer) the installation's admin password. |
-| `EndpointUnreachable` | `authURL` could not be dialled — DNS, connection refused, timeout. | Check the URL, cluster DNS, and your egress policy. |
-| `TLSVerificationFailed` | The endpoint's certificate did not verify. | Supply the private CA via `external.caBundleSecretRef`. A **rotated** bundle only takes effect after K-ORC's provider cache expires (roughly half the token lifetime). |
-| `CatalogEndpointMismatch` | Authentication worked, but the requested interface/region is absent from the catalog. | Correct `external.endpointType` or `spec.region`. |
-| `ImportStalled` | An import is waiting for a resource that "will be created externally" — but in this mode every import target already exists, so it never resolves. | The operator is looking in the wrong place; the message names `endpoint_type` and `region`. |
-| `CredentialDrift` | The installation changed underneath the CR. | Reconcile the CR with reality. Drift is **surfaced, never remediated** — the operator does not write to your installation. |
+| `EndpointUnreachable` | K-ORC could not connect to `authURL` because of DNS, connection refusal, or timeout. | Check the URL, cluster DNS, and egress policy. |
+| `TLSVerificationFailed` | The endpoint certificate did not verify. | Supply the private CA through `external.caBundleSecretRef`. A rotated bundle takes effect after K-ORC's provider cache expires (roughly half the token lifetime). |
+| `CatalogEndpointMismatch` | Authentication worked, but the catalog lacks the requested interface or region. | Correct `external.endpointType` or `spec.region`. |
+| `ImportStalled` | An import is waiting for a resource marked "will be created externally." In External mode, each import target must already exist, so this import will not complete. | Check the message's `endpoint_type` and `region`; verify that the named resource exists in Keystone. |
+| `CredentialDrift` | The installation changed after the CR was created. | Reconcile the CR with the installation. The operator reports drift and does not write to the installation. |
 
-Imports resolve **once**. If an imported object is later replaced in Keystone, that
-surfaces as drift rather than the operator silently re-pointing at the new one.
+The operator resolves each import once. If an imported object is later replaced
+in Keystone, the change appears as drift; the operator does not select a
+replacement automatically.
 
 The full reason vocabulary for every condition is in the
 [ControlPlane CRD reference](../../reference/c5c3/controlplane-crd.md#status-conditions).
@@ -222,17 +222,16 @@ kubectl -n brownfield wait --for=condition=Ready \
   controlplane/controlplane-external --timeout=10m
 ```
 
-Then prove the ControlPlane deployed **nothing** — this is the whole point of the
-mode:
+Then verify that the ControlPlane deployed no workloads:
 
 ```bash
 kubectl -n brownfield get mariadbs,memcacheds,keystones,deployments
 # No resources found in brownfield namespace.
 ```
 
-Finally, prove the minted credential actually authenticates against your
-installation — not merely that the operator called itself Ready. Read it from the
-materialized Secret:
+Finally, verify that the generated credential authenticates against your
+installation. Read it from the Kubernetes Secret that External Secrets
+populates:
 
 ```bash
 kubectl -n brownfield get secret k-orc-clouds-yaml \
@@ -243,10 +242,8 @@ Use that `clouds.yaml` with an OpenStack client (`openstack token issue`,
 `openstack catalog list`). The e2e suite does this in a Job; see
 [Tested by](#tested-by).
 
-::: tip Read the credential from Kubernetes, not the OpenBao UI
-On kind, OpenBao enforces mTLS, so browsing to it or using the `bao` CLI needs a
-client certificate. The materialized Secret above is the supported handle.
-:::
+On kind, OpenBao enforces mTLS. Browsing to it or using the `bao` CLI requires a
+client certificate; use the Kubernetes Secret shown above to read the credential.
 
 ### 5. Register a service account
 
@@ -262,14 +259,14 @@ namespace, declaring a catalog entry and an account:
 
 The semantics that matter:
 
-- **The CR's own metadata keys everything.** `metadata.name` names the child
+- The CR's metadata names its child
   resources and the consumer Secret, and `metadata.namespace` is the delivery
   namespace. `account.userName` defaults to `metadata.name`.
-- **`account.project.create: true`** makes the registration create
+- `account.project.create: true` makes the registration create
   `service-nova` and own it, so the project is deleted again at teardown. Set
   `create: false` to reference a project that already exists: it is then
   imported unmanaged, never created and never deleted.
-- **Neither `adopt` flag is set.** Both default to the fail-loudly posture, so a
+- Neither `adopt` flag is set. Both default to rejecting conflicts, so a
   pre-existing Keystone user of the same name surfaces
   `ServiceAccountCollision` and a pre-existing catalog row of the same type and
   name surfaces `ServiceCollision`, instead of either being taken over
@@ -277,32 +274,30 @@ The semantics that matter:
   collides with nothing.
 
   Setting `account.adopt: true` is explicit consent to take over such a user.
-  An adopted user becomes operator-owned, so it *is* deleted at teardown. The
-  one identity `adopt` does **not** unlock is the ControlPlane's own admin
-  identity, which the reconciler refuses outright.
+  The operator then owns and deletes that user at teardown. The ControlPlane's
+  admin identity cannot be adopted; the reconciler rejects it.
 
-  ::: warning Adoption does not apply the new password on the first pass
-  With the currently pinned K-ORC, a newly adopted user keeps its pre-existing
-  password even though the registration reports `AccountReady=True` and the
-  consumer Secret carries the operator's generated one. Rotate the account once
-  with a `CredentialRotation` to force the first real write. Tracked in
+  With the currently pinned K-ORC, a newly adopted user keeps its existing
+  password on the first pass, even though the registration reports
+  `AccountReady=True` and its consumer Secret contains the generated password.
+  Rotate the account once with a `CredentialRotation` to write the new password.
+  This is tracked in
   [#920](https://github.com/C5C3/cobaltcore/issues/920).
-  :::
-- **`account.roles`** are projected — each becomes an unmanaged K-ORC `Role`
+- `account.roles` are projected. Each becomes an unmanaged K-ORC `Role`
   import plus a managed `RoleAssignment` binding the role to the user on the
-  project, and the account is not Ready until every assignment lands in Keystone.
+  project,   and the account is not Ready until Keystone confirms every assignment.
 
-A registration in the ControlPlane's own namespace, or in one of its dedicated
-service namespaces, is admitted as it stands; anywhere else the namespace has to
-be listed in `spec.korc.serviceRegistrations.allowedNamespaces` on the
-ControlPlane first.
+A registration in the ControlPlane's namespace or in one of its dedicated
+service namespaces is admitted. To register one in another namespace, first add
+that namespace to `spec.korc.serviceRegistrations.allowedNamespaces` on the
+ControlPlane.
 [Register a Service the ControlPlane Does Not Manage](../register-a-foreign-service.md)
 walks that flow.
 
-The password is generated into OpenBao at
-`openstack/keystone/{namespace}/{name}/service-accounts/credentials` — keyed on
-the **KeystoneService** CR — and materialized as a stable consumer Secret named
-after it:
+The operator stores the generated password in OpenBao at
+`openstack/keystone/{namespace}/{name}/service-accounts/credentials`. The path is
+keyed by the `KeystoneService` CR, and External Secrets writes the value to a
+consumer Secret with the same name:
 
 ```bash
 kubectl -n brownfield get secret nova-credentials \
@@ -315,68 +310,105 @@ without decoding the ControlPlane's aggregate condition.
 
 ### 6. Rotating the admin password, out-of-band
 
-The admin password belongs to your installation, so it rotates **there** — the
-operator has no database access and no rotation job in this mode.
+The admin password belongs to your installation. Rotate it there; the operator
+has no database access and does not run a password-rotation job in this mode.
 
-After rotating it at the installation, **update the referenced Secret** — again
-off the command line, since this one carries the *fresh* production password.
+After rotating the password at the installation, update the referenced Secret.
+The following command reads the new password without echoing it or putting it
+in shell history.
 
-Writing that Secret is not bookkeeping: it *is* the trigger. The operator keys the
-mint on a hash of the admin password, so the write re-mints the application
-credential — and a re-mint is **destructive-first**: K-ORC deletes and revokes the
-credential that is currently working *before* it tries the fresh one. So the value
-has to be proven against Keystone **before** it is written. Type it twice, then
-issue a token with it; the Secret is only written if both readings agree *and* your
-installation accepts the password.
+Updating that Secret triggers credential replacement because the operator
+compares a hash of its password with the hash used for the current application
+credential. K-ORC deletes and revokes the current credential before creating its
+replacement. Verify the new password against Keystone before writing the Secret.
+The command below requires both password readings to match and the token request
+to succeed.
+
+::: details Verify the new password and update the Secret
 
 ```bash
-read -rs -p 'new Keystone admin password: ' PW; echo
-read -rs -p 'confirm: ' PW2; echo
+(
+  printf 'new Keystone admin password: '
+  IFS= read -r -s PW
+  printf '\n'
+  printf 'confirm: '
+  IFS= read -r -s PW2
+  printf '\n'
+  set -o pipefail
 
-# The admin identity the ControlPlane authenticates as (spec.korc.adminCredential).
-export OS_IDENTITY_API_VERSION=3
-export OS_AUTH_URL=http://keystone.brownfield-keystone.svc:5000/v3
-export OS_USERNAME=brownfield-admin
-export OS_PROJECT_NAME=platform-admin
-export OS_USER_DOMAIN_NAME=heimdall OS_PROJECT_DOMAIN_NAME=heimdall
-
-if [ "$PW" != "$PW2" ]; then
-  echo 'passwords do not match — Secret left untouched, nothing rotated' >&2
-elif ! OS_PASSWORD="$PW" openstack token issue >/dev/null 2>&1; then
-  echo 'password does not authenticate — Secret left untouched, credential intact' >&2
-else
-  printf '%s' "$PW" | kubectl -n brownfield create secret generic brownfield-admin-password \
+  if [ "$PW" != "$PW2" ]; then
+    echo 'The entries differ. The Secret was not changed.' >&2
+    exit 1
+  elif ! token_output=$(
+    printf '%s\n' "$PW" | kubectl run --rm -i --restart=Never \
+      --namespace=brownfield \
+      --image=ghcr.io/c5c3/tempest:2026.1 \
+      --env=OS_IDENTITY_API_VERSION=3 \
+      --env=OS_AUTH_URL=http://keystone.brownfield-keystone.svc:5000/v3 \
+      --env=OS_USERNAME=brownfield-admin \
+      --env=OS_PROJECT_NAME=platform-admin \
+      --env=OS_USER_DOMAIN_NAME=heimdall \
+      --env=OS_PROJECT_DOMAIN_NAME=heimdall \
+      --command -- /bin/sh -c \
+      'IFS= read -r OS_PASSWORD; export OS_PASSWORD; openstack token issue >/dev/null' \
+      2>&1
+  ); then
+    printf '%s\n' "$token_output" >&2
+    case "$token_output" in
+      *401*|*Unauthorized*|*'requires authentication'*)
+        echo 'Keystone rejected the password. The Secret was not changed.' >&2
+        ;;
+      *NameResolutionError*|*'Failed to resolve'*|*'no such host'*|*'Connection refused'*|*ConnectTimeout*|*'Connection timed out'*|*'Max retries exceeded'*|*'Unable to establish connection'*)
+        echo 'The token check could not reach Keystone. Check the endpoint and cluster networking; the Secret was not changed.' >&2
+        ;;
+      *)
+        echo 'The token check failed for another reason. Review the error above; the Secret was not changed.' >&2
+        ;;
+    esac
+    exit 1
+  else
+    printf '%s' "$PW" | kubectl -n brownfield create secret generic brownfield-admin-password \
     --from-file=password=/dev/stdin --dry-run=client -o yaml | kubectl -n brownfield replace -f -
-fi
-unset PW PW2
+  fi
+  rotation_status=$?
+  if [ "$rotation_status" -eq 0 ]; then
+    echo 'Keystone accepted the password. The Secret was updated.'
+  else
+    echo 'The Secret update failed. Check the Secret and ControlPlane status before retrying.' >&2
+    exit "$rotation_status"
+  fi
+  unset PW PW2
+)
 ```
+:::
 
-Run the token check from wherever `authURL` is reachable — that is the network
-position K-ORC dials from, so a pass there answers the same question the operator
-is about to ask. On the kind devstack the endpoint is a cluster-internal Service,
-so run it in a pod (`kubectl run --rm -i --image=… -- openstack token issue`), as
-the suite does.
+The example runs `openstack token issue` in the cluster, where the fixture's
+cluster-internal `authURL` resolves. It uses the same `ghcr.io/c5c3/tempest:2026.1`
+image as the e2e verification Job. For a real installation, use the namespace,
+endpoint, and admin identity from your ControlPlane in the command, and ensure
+the pod can reach that endpoint.
+The command pipes the password to the pod through standard input; it never
+appears in command arguments.
 
-**Neither gate is ceremony, and equality alone is not enough.** Comparing two
-readings catches a *divergent* typo and nothing else. It passes just as happily
-when you mistype the same thing twice, when you type the old password from muscle
-memory, and when you update the Secret before you actually rotated at the
-installation. Each of those changes the hash, so the re-mint fires all the same —
-revoking the working credential and then failing `401` against a password Keystone
-never accepted. You are left with no valid admin credential at all, `KORCReady` on
-`AuthenticationFailed`, and every import and service-account projection driven by
-it broken until a human notices and redoes the step. Asking Keystone first is the
-difference between a rotation and an outage.
+Matching entries catch a typo entered differently twice. They do not detect the
+same typo entered twice, an old password, or a password that was not yet changed
+at the installation. Each value changes the hash and triggers replacement. If
+Keystone rejects it, K-ORC has already revoked the old credential and cannot
+create a working replacement. `KORCReady` reports `AuthenticationFailed`, and
+imports and service-account projections that depend on the credential stop
+working until the password is corrected. The in-pod token check prevents this
+failure before the Secret changes.
 
-**Forgetting the Secret update is the classic drift.** The old password stops
-authenticating, `KORCReady` goes to `AuthenticationFailed`, and the operator
-reports it — it will not go hunting for the new password.
+If you rotate the password at the installation but do not update the Secret, the
+old password stops authenticating. `KORCReady` reports `AuthenticationFailed`.
+The operator does not discover the new password automatically.
 
-To force a re-mint without a password change, request one. `reMint: true` is what
-makes it a rotation: without it the reconciler falls back to the password-hash
-check, finds the hash unchanged, and reports `Ready=True` with reason
-`NoRotationNeeded` having rotated nothing. The CR binds to the ControlPlane by
-**namespace** — one ControlPlane per namespace — so there is no reference field:
+To replace the credential without changing the admin password, create a
+`CredentialRotation` with `reMint: true`. The field forces a fresh credential.
+Without it, an unchanged password hash produces `Ready=True` with reason
+`NoRotationNeeded`. The rotation request targets the ControlPlane in its own
+namespace; the one-ControlPlane-per-namespace rule means it needs no reference
+field:
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -389,72 +421,65 @@ spec:
   reMint: true
 ```
 
-The nudge is one-shot per spec generation, so a `reMint: true` left in the spec
-fires once per edit rather than on every resync.
+The request acts once per spec generation. Leaving `reMint: true` in the spec
+does not trigger another rotation during resync.
 
 A service-account password rotates the same way, with
 `target: serviceAccountPassword` and `keystoneService: <name>` naming the
-`KeystoneService` registration in the CredentialRotation's namespace — and there
-`reMint` is not merely advisable but **required**: that path has no password-hash
-auto-detect at all, so without it the request is a guaranteed no-op.
+`KeystoneService` registration in the `CredentialRotation` namespace. Set
+`reMint: true` for this target. The reconciler has no password-hash detection for
+service-account passwords.
 
-::: warning `spec.serviceAccount` was replaced by `spec.keystoneService`
-The field named an account declared on the ControlPlane; it now names a
-`KeystoneService` CR. `CredentialRotation` is `v1alpha1`, so the rename is
-applied in place and there is no conversion: an existing CR carrying
-`serviceAccount` loses the value on the next write and reports `Ready=False`
-reason `MissingKeystoneService`. **Re-create it** against a `KeystoneService`
-registration.
-:::
+The `CredentialRotation` field `spec.serviceAccount` was replaced by
+`spec.keystoneService`, which names a `KeystoneService` CR. Because the resource
+is `v1alpha1`, no conversion preserves the old value. Re-create a rotation
+request that still has `serviceAccount`; otherwise it reports `Ready=False` with
+reason `MissingKeystoneService`.
 
-::: warning The minted credential must never be copied
-A re-mint is **delete + recreate**, and the previous credential is revoked at the
-Keystone level the moment it happens — any client still holding it starts getting
-`404 Could not find Application Credential`, with no grace period.
-
-So every consumer must read the credential from the materialized Secret (or its
-OpenBao path) **at use time**. A copy pasted into another Secret, a config file, or
-an environment variable dies without warning on the next rotation.
-:::
+Never copy the generated application credential into another Secret, a config
+file, or an environment variable. K-ORC deletes and revokes the previous
+credential before creating its replacement, with no grace period. Consumers
+must read the current value from the Kubernetes Secret or its OpenBao path when
+they use it.
 
 ### 7. OpenBao paths in this mode
 
-External mode **never seeds** a bootstrap path: there is no operator-generated
-admin password to seed. Only the application-credential and service-account paths
-exist, and both are created on first push — there is no per-ControlPlane OpenBao
-preparation to do, because the operator provisions the per-tenant store itself.
+External mode does not seed a bootstrap path because the operator does not create
+the admin password. The application-credential and service-account paths are
+created on first push. The operator provisions the per-tenant OpenBao store, so
+no separate preparation is needed for each ControlPlane.
 
 The full per-mode path catalog is in
 [OpenBao paths per ControlPlane mode](../../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
 
-### 8. Deletion — zero blast radius
+### 8. Deletion
 
-Deleting the ControlPlane tears down **only what it created or adopted**:
+Deleting the ControlPlane removes resources it created or adopted:
 
 ```bash
 kubectl -n brownfield delete controlplane controlplane-external
 ```
 
-- The admin **application credential is revoked** (K-ORC's finalizer), and the
+- K-ORC's finalizer revokes the admin application credential, and the
   OpenBao-backed Secrets are removed.
-- **Managed** service-account users and projects are deleted from Keystone —
-  including any you marked `adopt: true`.
-- **Every unmanaged import is untouched**: the admin user, the domain, the catalog
+- Managed service-account users and projects are deleted from Keystone,
+  including users marked `adopt: true`.
+- Unmanaged imports remain: the admin user, the domain, the catalog
   services and endpoints, and any project referenced with `project.create: false`.
 - Your Keystone keeps serving tokens throughout.
 
-Ordering is held by the `c5c3.io/orc-teardown` finalizer, so the credential is
-revoked against a still-reachable Keystone before the CR leaves etcd.
+The `c5c3.io/orc-teardown` finalizer keeps the ControlPlane until K-ORC revokes
+the credential against the reachable Keystone.
 
 ## See also
 
-- [ControlPlane CRD reference](../../reference/c5c3/controlplane-crd.md#externalkeystonespec) —
+- [ControlPlane CRD reference](../../reference/c5c3/controlplane-crd.md#externalkeystonespec):
   `ExternalKeystoneSpec` and the full [status-condition catalog](../../reference/c5c3/controlplane-crd.md#status-conditions).
-- [ControlPlane reconciler reference](../../reference/c5c3/controlplane-reconciler.md) —
+- [ControlPlane reconciler reference](../../reference/c5c3/controlplane-reconciler.md):
   what each sub-reconciler does in External mode.
-- [OpenBao bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode) —
+- [OpenBao bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode):
   which paths exist per mode.
-- [Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md) —
+- [Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md):
   the later phases (infrastructure attach, service takeover).
 
 ## Tested by
@@ -465,9 +490,10 @@ chainsaw test --test-dir tests/e2e/c5c3/external-keystone
 
 or `make e2e-external-keystone`. The suite stands up the brownfield Keystone,
 adopts it with an External-mode ControlPlane, authenticates an OpenStack client
-with the minted credential, rotates it, and asserts the imports survive deletion.
+with the generated credential, rotates it, and asserts the imports remain after
+deletion.
 
 The suite runs in namespace `brownfield` with the ControlPlane
-`controlplane-external` — the names this walkthrough uses — so
+`controlplane-external`, the names used in this walkthrough. This lets
 [step 2](#_2-apply-the-external-mode-controlplane) imports the suite's own
-manifest rather than restating it.
+manifest instead of keeping a second copy.
