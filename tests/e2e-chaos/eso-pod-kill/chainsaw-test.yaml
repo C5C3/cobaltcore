@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: every ESO controller pod killed at once.
+#
+# Fault: a PodChaos pod-kill with mode: all and gracePeriod: 0 on the pods of
+# Deployment external-secrets in external-secrets.
+#
+# Claim, phase by phase:
+#   kill      Every pre-kill controller pod UID is gone and the Deployment is
+#             back at readyReplicas == spec.replicas.
+#   after     The Keystone keeps SecretsReady=True and Ready=True/AllReady, and
+#             the restarted controller syncs again: a force-sync of
+#             ExternalSecret eso-kill-probe yields a status.refreshTime at or
+#             after the request and Ready=True/SecretSynced within 180 s
+#             (RESYNC-OK).
+#
+# Blast radius: no ExternalSecret syncs until the new controller pod holds its
+# leader lease. Secrets already materialized stay. The Deployment brings its
+# pods back by itself, so the PodChaos is the only shared state to undo.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-esokill through the fault. ESO is on no request path
+# of a running Keystone, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: eso-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Baseline, selector guard, workload ─────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - apply:
+        file: 01-externalsecret.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-esokill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: eso-kill-probe
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    # The upstream chart sets the name label; no file in this repository pins
+    # it. Every pod it selects has to belong to Deployment external-secrets,
+    # so the kill takes the controller and nothing else.
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          pods="$(kubectl get pods -n external-secrets -l app.kubernetes.io/name=external-secrets \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.ownerReferences[0].kind} {.metadata.ownerReferences[0].name}{"\n"}{end}')"
+          if [ -z "$pods" ]; then
+            echo "FAIL: no pod in external-secrets carries app.kubernetes.io/name=external-secrets"
+            exit 1
+          fi
+          while read -r pod kind rs; do
+            deploy="$(kubectl get replicaset "$rs" -n external-secrets -o jsonpath='{.metadata.ownerReferences[0].name}')"
+            if [ "$kind" != "ReplicaSet" ] || [ "$deploy" != "external-secrets" ]; then
+              echo "FAIL: the selector reaches a pod outside Deployment external-secrets: ${pod} (${kind}/${rs} of ${deploy:-nothing})"
+              exit 1
+            fi
+          done <<<"$pods"
+          echo "OK: the selector reaches the controller pods of Deployment external-secrets alone"
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start eso-pod-kill -- --streams token --keystone http://keystone-chaos-esokill.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-esokill --dep-ns=external-secrets --dep-label=app.kubernetes.io/name=external-secrets
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump eso-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop eso-pod-kill
+  # ── Step 2: Kill every controller pod and wait for the new ones ────────
+  # The snapshot, the kill and the wait share one script, so they share the
+  # pre-kill UIDs. mode: all replaces every pod, so every old UID has to go.
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/pods.sh
+          desired="$(kubectl get deploy external-secrets -n external-secrets -o jsonpath='{.spec.replicas}')"
+          old="$(pod_uids external-secrets app.kubernetes.io/name=external-secrets)"
+          if [ -z "$old" ] || [ "${desired:-0}" -lt 1 ]; then
+            echo "FAIL: no controller pod to kill (spec.replicas ${desired:-<none>})"
+            exit 1
+          fi
+          echo "pre-kill controller pod UIDs: ${old}"
+          ../lib/workload.sh mark eso-pod-kill fault-start
+          kubectl apply -f 02-podchaos.yaml
+          wait_replaced external-secrets app.kubernetes.io/name=external-secrets "$old" 180
+    catch:
+    - &lift
+      script:
+        content: kubectl delete podchaos kill-eso -n "$NAMESPACE" --ignore-not-found
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-esokill --dep-ns=external-secrets --dep-label=app.kubernetes.io/name=external-secrets --eso
+    - *workload-dump
+  # ── Step 3: Lift the fault; the Keystone kept its secrets ──────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-eso
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark eso-pod-kill fault-end
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-esokill
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *lift
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 4: The restarted controller syncs again ───────────────────────
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          requested="$(date -u +%s)"
+          kubectl annotate externalsecret eso-kill-probe -n "$NAMESPACE" force-sync="$requested" --overwrite
+          deadline=$((requested + 180))
+          while true; do
+            refreshed="$(kubectl get externalsecret eso-kill-probe -n "$NAMESPACE" -o jsonpath='{.status.refreshTime}')"
+            status="$(kubectl get externalsecret eso-kill-probe -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}')"
+            at=0
+            if [ -n "$refreshed" ]; then
+              at="$(date -u -d "$refreshed" +%s)"
+            fi
+            if [ "$at" -ge "$requested" ] && [ "$status" = "True/SecretSynced" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no sync of eso-kill-probe within 180 s of the force-sync (refreshTime ${refreshed:-<none>}, Ready ${status})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "RESYNC-OK: eso-kill-probe refreshed at ${refreshed}, at or after the force-sync at $(date -u -d "@${requested}" +%FT%TZ)"
+    catch:
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 5: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify eso-pod-kill
+    catch:
+    - *workload-dump
