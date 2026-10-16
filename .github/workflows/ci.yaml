@@ -1929,6 +1929,7 @@ jobs:
               tests/e2e-chaos/cert-manager-outage
               tests/e2e-chaos/eso-down
               tests/e2e-chaos/eso-pod-kill
+              tests/e2e-chaos/openbao-sealed
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
