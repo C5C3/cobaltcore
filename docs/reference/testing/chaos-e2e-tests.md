@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 55 chaos test suites validate operator behavior during and after fault
+The 56 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 55 test suites require the infrastructure stack to be deployed and healthy.
+All 56 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -469,6 +469,7 @@ with the new suites.
 | [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone-chaos-cascade` | Dependency outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the mariadb-operator and the keystone-operator replaced; within 120 s `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `cp-rmq-cascade` | Broker outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the rabbitmq-cluster-operator and the c5c3-operator replaced; within 120 s the RabbitmqCluster at `AllReplicasReady=False`, the ControlPlane at `InfrastructureReady=False/WaitingForMessaging` and `Ready=False/NotAllReady`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `AllReplicasReady=True` and `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [korc-provisioning-outage](#korc-provisioning-outage) | — | `cp-korc-out` | K-ORC outage across a ControlPlane's provisioning | `INJECTED` at `DBCredentialsReady`, `AC-SEEN` while K-ORC is down, `BLIND-OK`: `KORCReady=False/WaitingForApplicationCredential` with neither `Ready` nor `CatalogReady` `True` for 90 s; after the lift `KORCReady=True/ApplicationCredentialMinted`, `CatalogReady=True/CatalogRegistered` and `Ready=True/AllReady`, `NO-DUPLICATE-OK`: one application credential of the reported name in Keystone, every K-ORC CR `Available=True` with a `status.id`, workload budget zero |
+| [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `cp-ks-degraded` | ControlPlane over a degraded Keystone | Within 300 s the Keystone CR `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady` with `status.services` keystone `ready: false`; `NO-MASK-OK`: 60 s without the ControlPlane at `Ready=True` over a Keystone that is not; `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 
 ---
 
@@ -3704,6 +3705,54 @@ both controller logs, and dumps the workload.
 
 ---
 
+### controlplane-keystone-degraded
+
+**File:** `tests/e2e-chaos/controlplane-keystone-degraded/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds the API pods of `cp-ks-degraded-keystone`,
+the Keystone of ControlPlane `cp-ks-degraded`, down. `reconcileKeystone` mirrors the
+child's aggregate `Ready` through `ProjectChild` (`reconcile_keystone.go`), and
+`Ready` aggregates every sub-condition. The suite pins that the ControlPlane never
+reports itself Ready over a Keystone that is not.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring the plane up, start the workload | `script` (40m) + `script` (6m) | `cp_bring_up` of `lib/controlplane.sh` to `Ready=True/AllReady`; `workload.sh start` against `cp-ks-degraded-keystone`. The step cleanup deletes the ControlPlane |
+| 2 | Hold the Keystone API down | `script` (5m) | `workload.sh mark fault-start`, `01-podchaos.yaml`, `kubectl wait --for=condition=AllInjected`, the API pods at `Ready=false` |
+| 3 | The plane reports it | `script` (6m) | Within 300 s: the Keystone `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady`, and `status.services[?name=='keystone'].ready` at `false`. Then for 60 s, every 5 s, the ControlPlane never reads `Ready=True` while the Keystone does not (`NO-MASK-OK`) |
+| 4 | Lift the fault | `script` (2m) | Deletes the `PodChaos`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) + `assert` (5m) | The Keystone `Ready=True`; the ControlPlane at `KeystoneReady=True` and `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against the measured budget |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-ks-degraded`), `01-podchaos.yaml`
+(`fail-cp-keystone`, the three API labels of `cp-ks-degraded-keystone`,
+`duration: "600s"`).
+
+**Workload:** the `token` stream against `cp-ks-degraded-keystone`, the Keystone the
+fault takes, with the admin password from
+`cp-ks-degraded-keystone-admin-credentials`. Started in step 1 and judged in step 6
+against `failures=214 recovery=70s`, from a kind run that failed 107 records, the
+last 39 seconds after the lift. The suite runs in the `controlplane` matrix entry,
+in its own namespace, `chaos-ks-degraded`.
+
+**Catch blocks:** steps 2 to 4 delete the `PodChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh` and dumps the Keystone CR and the workload.
+
+**Design notes:**
+
+- A MariaDB partition under the plane's Keystone, the example of #550, does not
+  reach the plane's status: `DatabaseReady` reads the MariaDB CR, and the
+  partition leaves that CR unchanged. Holding the API pods down is the fault that
+  reaches the plane's conditions.
+- No unit test covers `WaitingForKeystone`; `reconcile_keystone_test.go` covers
+  the `True` path. This suite is the one place that reason is asserted.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -4049,6 +4098,10 @@ tests/e2e-chaos/
 │   ├── 01-cinderbackend-cr.yaml      NFS backend vol-kill-nfs1
 │   ├── 02-podchaos.yaml              PodChaos pod-kill of the volume service of vol-kill-nfs1
 │   └── chainsaw-test.yaml            Test: killed mid-attach, the sweep leaves nothing transitional
+├── controlplane-keystone-degraded/   ControlPlane over a degraded Keystone
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-ks-degraded, Keystone only
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on the plane Keystone API pods
+│   └── chainsaw-test.yaml            Test: the plane reports the Keystone, never masks it
 ├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
 │   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods

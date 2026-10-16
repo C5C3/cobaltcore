@@ -1,0 +1,199 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a ControlPlane over a degraded Keystone.
+#
+# Fault: a PodChaos pod-failure holds the API pods of the plane's Keystone,
+# cp-ks-degraded-keystone, down.
+#
+# Claim, phase by phase:
+#   degraded  Within 300 s the Keystone CR reads Ready=False, and the
+#             ControlPlane mirrors it: KeystoneReady=False/WaitingForKeystone
+#             (reconcile_keystone.go mirrors the child's aggregate Ready
+#             through ProjectChild), Ready=False/NotAllReady, and the keystone
+#             entry of status.services reads ready: false. Then for 60 s the
+#             ControlPlane never reads Ready=True while its Keystone does not
+#             (NO-MASK-OK).
+#   lifted    The Keystone is Ready again, and the ControlPlane reads
+#             KeystoneReady=True and Ready=True/AllReady within 5 minutes.
+#
+# A MariaDB partition under the plane's Keystone, the example of #550, would
+# not flip DatabaseReady: that condition reads the MariaDB CR, not the
+# connection. The API pods are the fault that reaches the plane's status.
+#
+# Blast radius: the plane's identity endpoint alone. The PodChaos is the
+# shared state to undo, so steps 2 to 4 delete it in their catch blocks; the
+# cleanup of step 1 deletes the ControlPlane.
+#
+# Leg: controlplane. The suite runs in namespace chaos-ks-degraded, short for the reason
+# ../lib/controlplane.sh gives.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against cp-ks-degraded-keystone, the Keystone the fault takes, so the budget
+# is measured.
+# Chaos budget: failures=214 recovery=70s
+# Chaos budget measured: 2026-10-16, kind, failures 107, recovery 39 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-keystone-degraded
+spec:
+  namespace: chaos-ks-degraded
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Bring the plane up, start the workload ─────────────────────
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_bring_up cp-ks-degraded 00-controlplane-cr.yaml
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-ks-degraded-keystone-admin-credentials ../lib/workload.sh start controlplane-keystone-degraded -- --streams token --keystone "http://cp-ks-degraded-keystone.${NAMESPACE}.svc:5000/v3"
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-ks-degraded
+          kubectl get keystone cp-ks-degraded-keystone -n "$NAMESPACE" -o yaml 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump controlplane-keystone-degraded
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_teardown cp-ks-degraded
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop controlplane-keystone-degraded
+  # ── Step 2: Hold the plane's Keystone API down ─────────────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          ../lib/workload.sh mark controlplane-keystone-degraded fault-start
+          cp_apply_file 01-podchaos.yaml
+          kubectl wait podchaos/fail-cp-keystone -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          kubectl wait pod -n "$NAMESPACE" \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=cp-ks-degraded-keystone,app.kubernetes.io/component=api \
+            --for=condition=Ready=false --timeout=120s
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+    - *cp-dump
+    - *workload-dump
+  # ── Step 3: The plane reports the degraded Keystone ────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          service_ready() {
+            kubectl get controlplane cp-ks-degraded -n "$NAMESPACE" \
+              -o 'jsonpath={.status.services[?(@.name=="keystone")].ready}'
+          }
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            keystone="$(cp_status keystone cp-ks-degraded-keystone Ready)"
+            mirrored="$(cp_status controlplane cp-ks-degraded KeystoneReady)/$(cp_reason controlplane cp-ks-degraded KeystoneReady)"
+            ready="$(cp_status controlplane cp-ks-degraded Ready)/$(cp_reason controlplane cp-ks-degraded Ready)"
+            service="$(service_ready)"
+            if [ "$keystone" = "False" ] && [ "$mirrored" = "False/WaitingForKeystone" ] &&
+              [ "$ready" = "False/NotAllReady" ] && [ "$service" = "false" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 300 s into the fault: Keystone Ready ${keystone:-<none>}, KeystoneReady ${mirrored}, Ready ${ready}, status.services keystone ready ${service:-<none>}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: Keystone Ready=False, KeystoneReady=False/WaitingForKeystone, Ready=False/NotAllReady, status.services keystone ready: false"
+          end=$(( $(date +%s) + 60 ))
+          while true; do
+            ready="$(cp_status controlplane cp-ks-degraded Ready)"
+            keystone="$(cp_status keystone cp-ks-degraded-keystone Ready)"
+            if [ "$ready" = "True" ] && [ "$keystone" != "True" ]; then
+              echo "FAIL: the ControlPlane reads Ready=True while its Keystone does not"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "NO-MASK-OK: the ControlPlane never read Ready=True over a degraded Keystone for 60 s"
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 4: Lift the fault ─────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml
+          ../lib/workload.sh mark controlplane-keystone-degraded fault-end
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 5: The Keystone and the plane recover ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: cp-ks-degraded-keystone
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: c5c3.io/v1alpha1
+          kind: ControlPlane
+          metadata:
+            name: cp-ks-degraded
+          status:
+            (conditions[?type == 'KeystoneReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify controlplane-keystone-degraded
+    catch:
+    - *workload-dump

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding the Keystone API pods of cp-ks-degraded down: the three
+# labels the keystone-operator puts on the API pods of Keystone
+# cp-ks-degraded-keystone. Its db-sync, bootstrap and rotation Job pods carry
+# no component: api label and stay out of the selector. duration bounds a run
+# that dies before the suite deletes this CR. @NS@ is replaced with the
+# suite's namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-cp-keystone
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - "@NS@"
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: cp-ks-degraded-keystone
+      app.kubernetes.io/component: api
