@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package computeapitest is an in-memory Keystone and Nova compute API for the
-// tests of the computeapi client and the NovaCompute reconciler. It keeps
-// compute services, the host mapping of their hosts, host aggregates and a
-// server count per host, answers the requests the client sends at
-// microversions 2.53, 2.69 and 2.88, and records every call.
+// Package computeapitest is an in-memory Keystone, Nova compute API and
+// Placement trait API for the tests of the computeapi client and the
+// NovaCompute reconciler. It keeps compute services, the host mapping of their
+// hosts, host aggregates, a server count per host and the custom traits of
+// Placement, answers the requests the client sends at microversions 2.53, 2.69
+// and 2.88 and at Placement 1.6, and records every call.
 //
 // Fake is both an http.Handler and a computeapi.Doer. Used as a Doer it serves
 // the request in process, so any URL reaches it and no listener is needed.
@@ -27,6 +28,10 @@ import (
 
 // token is the token the fake issues and requires on compute requests.
 const token = "fake-token"
+
+// PlacementURL is the internal Placement endpoint the token's catalog lists,
+// in RegionOne.
+const PlacementURL = "http://placement.openstack.svc:8778"
 
 // Call is one request the fake received.
 type Call struct {
@@ -74,6 +79,10 @@ type Fake struct {
 	// RejectAuth answers every token request with 401.
 	RejectAuth bool
 
+	// OmitPlacementFromCatalog leaves the placement service out of the token's
+	// catalog.
+	OmitPlacementFromCatalog bool
+
 	services   []*Service
 	aggregates []*Aggregate
 	servers    map[string]int
@@ -83,11 +92,17 @@ type Fake struct {
 	calls      []Call
 	nextSvc    int
 	nextAgg    int
+	// traits maps each custom trait Placement knows to whether a resource
+	// provider carries it.
+	traits map[string]bool
 }
 
 // New returns an empty fake.
 func New() *Fake {
-	return &Fake{servers: map[string]int{}, downCells: map[string]bool{}, unmapped: map[string]bool{}}
+	return &Fake{
+		servers: map[string]int{}, downCells: map[string]bool{}, unmapped: map[string]bool{},
+		traits: map[string]bool{},
+	}
 }
 
 // Do serves req in process.
@@ -156,6 +171,31 @@ func (f *Fake) addAggregate(name, zone string, hosts []string, metadata map[stri
 	agg := &Aggregate{ID: f.nextAgg, Name: name, AvailabilityZone: zone, Hosts: slices.Clone(hosts), Metadata: md}
 	f.aggregates = append(f.aggregates, agg)
 	return agg
+}
+
+// AddTrait creates a custom trait in Placement, carried by no resource
+// provider.
+func (f *Fake) AddTrait(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.traits[name]; !ok {
+		f.traits[name] = false
+	}
+}
+
+// SetTraitInUse sets whether a resource provider carries the trait, creating
+// it when it is missing. Placement refuses to delete a trait in use.
+func (f *Fake) SetTraitInUse(name string, inUse bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.traits[name] = inUse
+}
+
+// Traits returns the custom traits Placement knows, sorted.
+func (f *Fake) Traits() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Sorted(maps.Keys(f.traits))
 }
 
 // FailNext makes the next request whose method matches and whose path starts
@@ -258,6 +298,8 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 3 && parts[0] == "v2.1" && parts[1] == "os-hypervisors" && parts[2] == "detail" &&
 		r.Method == http.MethodGet:
 		f.serveHypervisors(w, r)
+	case len(parts) == 2 && parts[0] == "traits":
+		f.serveTrait(w, r, parts[1])
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such route"})
 	}
@@ -278,8 +320,55 @@ func (f *Fake) serveToken(w http.ResponseWriter) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "the request you have made requires authentication"})
 		return
 	}
+	catalog := []map[string]any{}
+	if !f.OmitPlacementFromCatalog {
+		catalog = append(catalog, map[string]any{
+			"type": "placement", "name": "placement",
+			"endpoints": []map[string]any{
+				{"interface": "internal", "region": "RegionOne", "region_id": "RegionOne", "url": PlacementURL},
+			},
+		})
+	}
 	w.Header().Set("X-Subject-Token", token)
-	writeJSON(w, http.StatusCreated, map[string]any{"token": map[string]any{"methods": []string{"password"}}})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token": map[string]any{"methods": []string{"password"}, "catalog": catalog},
+	})
+}
+
+// serveTrait answers PUT and DELETE /traits/{name} as Placement 1.6 does. A
+// request below 1.6 gets the 404 Placement answers for a route it does not
+// serve at that microversion.
+func (f *Fake) serveTrait(w http.ResponseWriter, r *http.Request, name string) {
+	if placementMicroversion(r) < 6 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such route at this microversion"})
+		return
+	}
+	inUse, known := f.traits[name]
+	switch r.Method {
+	case http.MethodPut:
+		if !strings.HasPrefix(name, "CUSTOM_") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "the trait name must start with CUSTOM_"})
+			return
+		}
+		if known {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		f.traits[name] = false
+		w.WriteHeader(http.StatusCreated)
+	case http.MethodDelete:
+		switch {
+		case !known:
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such trait"})
+		case inUse:
+			writeJSON(w, http.StatusConflict, map[string]string{"message": "the trait is associated with a resource provider"})
+		default:
+			delete(f.traits, name)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
+	}
 }
 
 func (f *Fake) serveServices(w http.ResponseWriter, r *http.Request, rest []string, body []byte) {
@@ -465,6 +554,17 @@ func (f *Fake) serveAggregates(w http.ResponseWriter, r *http.Request, rest []st
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such route"})
 	}
+}
+
+// placementMicroversion is the minor Placement microversion r asks for, 0 when
+// it names none.
+func placementMicroversion(r *http.Request) int {
+	version, ok := strings.CutPrefix(r.Header.Get("OpenStack-API-Version"), "placement 1.")
+	if !ok {
+		return 0
+	}
+	n, _ := strconv.Atoi(version)
+	return n
 }
 
 // microversion is the minor compute API microversion r asks for, 0 when it

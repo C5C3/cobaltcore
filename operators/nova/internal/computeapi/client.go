@@ -10,6 +10,11 @@
 // service is addressed by its UUID; the service list asks for 2.69 (see
 // ListComputeServices) and the hypervisor list for 2.88 (see ListMappedHosts).
 //
+// The same client creates and deletes custom traits in Placement (EnsureTrait,
+// DeleteTrait) at Placement microversion 1.6, the first that serves /traits.
+// It finds Placement in the token's service catalog or at an override (see
+// UsePlacement).
+//
 // It is stdlib only (net/http and encoding/json). Every request goes through a
 // Doer, the same seam the operator's health check uses, so a placed Nova is
 // reached through the target cluster's service proxy and tests inject an
@@ -79,7 +84,16 @@ var ErrServiceHasInstances = errors.New("compute service still hosts instances o
 // create (HTTP 409) because an aggregate of that name exists.
 var ErrAggregateExists = errors.New("aggregate name already exists")
 
-// APIError is an unexpected HTTP status from Keystone or Nova.
+// ErrPlacementEndpointNotFound is what UsePlacement returns when the token's
+// catalog lists no internal Placement endpoint for the region, and what the
+// trait calls return before UsePlacement selected one.
+var ErrPlacementEndpointNotFound = errors.New("no internal placement endpoint in the service catalog")
+
+// ErrTraitInUse is what DeleteTrait returns when Placement refuses the delete
+// (HTTP 409) because a resource provider carries the trait.
+var ErrTraitInUse = errors.New("trait is associated with a resource provider")
+
+// APIError is an unexpected HTTP status from Keystone, Nova or Placement.
 type APIError struct {
 	Method     string
 	Path       string
@@ -124,6 +138,10 @@ const serviceStatusUnknown = "UNKNOWN"
 // bulk of a page; the id and the service host stay.
 const hypervisorListMicroVersion = "2.88"
 
+// placementMicroVersion is the Placement microversion the trait calls ask
+// for. Below 1.6 Placement answers /traits with 404.
+const placementMicroVersion = "1.6"
+
 // maxResponseBody bounds how much of a response body the client decodes. A
 // servers list at the default page limit of a thousand entries is a fraction
 // of it.
@@ -135,6 +153,24 @@ type Client struct {
 	doer       Doer
 	computeURL string
 	token      string
+
+	// catalog is the service catalog of the token, and placementURL the
+	// Placement base UsePlacement selected from it, "" until then.
+	catalog      []catalogEntry
+	placementURL string
+}
+
+// catalogEntry is one service of a Keystone v3 token's catalog.
+type catalogEntry struct {
+	Type      string            `json:"type"`
+	Endpoints []catalogEndpoint `json:"endpoints"`
+}
+
+// catalogEndpoint is one endpoint of a catalog entry.
+type catalogEndpoint struct {
+	Interface string `json:"interface"`
+	Region    string `json:"region"`
+	URL       string `json:"url"`
 }
 
 // New authenticates against keystoneURL and returns a client for computeURL.
@@ -142,7 +178,9 @@ type Client struct {
 // keystoneURL is the Identity v3 base; a URL whose path does not end in /v3
 // gets it appended, so "http://keystone:5000" and "http://keystone:5000/v3/"
 // both post to /v3/auth/tokens. A 201 without an X-Subject-Token header is an
-// error, and any other status comes back as an *APIError.
+// error, and so is a 201 whose body does not decode as a token, whose catalog
+// the client keeps for UsePlacement. Any other status comes back as an
+// *APIError.
 func New(ctx context.Context, doer Doer, keystoneURL, computeURL string, creds Credentials) (*Client, error) {
 	base := strings.TrimRight(keystoneURL, "/")
 	if !strings.HasSuffix(base, "/v3") {
@@ -179,8 +217,44 @@ func New(ctx context.Context, doer Doer, keystoneURL, computeURL string, creds C
 	if token == "" {
 		return nil, errors.New("keystone returned no X-Subject-Token")
 	}
+	var body struct {
+		Token struct {
+			Catalog []catalogEntry `json:"catalog"`
+		} `json:"token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decoding token response: %w", err)
+	}
 
-	return &Client{doer: doer, computeURL: strings.TrimRight(computeURL, "/"), token: token}, nil
+	return &Client{
+		doer: doer, computeURL: strings.TrimRight(computeURL, "/"), token: token, catalog: body.Token.Catalog,
+	}, nil
+}
+
+// UsePlacement selects the Placement base URL the trait calls go to: override
+// when it is not empty, else the internal endpoint of the catalog's placement
+// service in region, or in any region when region is empty. Without one it
+// returns ErrPlacementEndpointNotFound.
+func (c *Client) UsePlacement(override, region string) error {
+	if override != "" {
+		c.placementURL = strings.TrimRight(override, "/")
+		return nil
+	}
+	for _, entry := range c.catalog {
+		if entry.Type != "placement" {
+			continue
+		}
+		for _, ep := range entry.Endpoints {
+			if ep.Interface == "internal" && (region == "" || ep.Region == region) && ep.URL != "" {
+				c.placementURL = strings.TrimRight(ep.URL, "/")
+				return nil
+			}
+		}
+	}
+	if region == "" {
+		return ErrPlacementEndpointNotFound
+	}
+	return fmt.Errorf("%w for region %s", ErrPlacementEndpointNotFound, region)
 }
 
 // tokenRequest is the password-method, project-scoped token request body.
@@ -356,21 +430,77 @@ func (c *Client) DeleteAggregate(ctx context.Context, id int) error {
 	return err
 }
 
+// EnsureTrait creates the custom trait name in Placement. created is true when
+// Placement created it (201) and false when it existed already (204). Placement
+// refuses a name without the CUSTOM_ prefix with a 400.
+func (c *Client) EnsureTrait(ctx context.Context, name string) (created bool, err error) {
+	path := "/traits/" + url.PathEscape(name)
+	code, err := c.doPlacement(ctx, http.MethodPut, path)
+	if err != nil {
+		return false, err
+	}
+	switch code {
+	case http.StatusCreated:
+		return true, nil
+	case http.StatusNoContent:
+		return false, nil
+	}
+	return false, &APIError{Method: http.MethodPut, Path: path, StatusCode: code}
+}
+
+// DeleteTrait deletes the custom trait name from Placement. A trait that is
+// already gone is success, and one a resource provider carries yields
+// ErrTraitInUse.
+func (c *Client) DeleteTrait(ctx context.Context, name string) error {
+	_, err := c.doPlacement(ctx, http.MethodDelete, "/traits/"+url.PathEscape(name))
+	switch statusOf(err) {
+	case http.StatusNotFound:
+		return nil
+	case http.StatusConflict:
+		return fmt.Errorf("%w: %w", ErrTraitInUse, err)
+	}
+	return err
+}
+
 // do sends one authenticated compute request at MicroVersion; see doVersion.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	return c.doVersion(ctx, MicroVersion, method, path, in, out)
 }
 
-// doVersion sends one authenticated compute request at version under
-// requestTimeout, decodes a 2xx body into out when out is non-nil, and returns
-// an *APIError for any other status. A transport error is wrapped as
-// "<method> <path>: <err>", so a deadline stays detectable with errors.Is.
+// doVersion sends one authenticated compute request at version; see send.
 func (c *Client) doVersion(ctx context.Context, version, method, path string, in, out any) error {
+	_, err := c.send(ctx, c.computeURL, method, path, map[string]string{
+		"X-OpenStack-Nova-API-Version": version,
+		"OpenStack-API-Version":        "compute " + version,
+	}, in, out)
+	return err
+}
+
+// doPlacement sends one authenticated Placement request without a body at
+// placementMicroVersion and returns the 2xx status; see send. Before
+// UsePlacement selected an endpoint it sends nothing and returns
+// ErrPlacementEndpointNotFound.
+func (c *Client) doPlacement(ctx context.Context, method, path string) (int, error) {
+	if c.placementURL == "" {
+		return 0, ErrPlacementEndpointNotFound
+	}
+	return c.send(ctx, c.placementURL, method, path, map[string]string{
+		"OpenStack-API-Version": "placement " + placementMicroVersion,
+	}, nil, nil)
+}
+
+// send sends one authenticated request to baseURL+path with headers under
+// requestTimeout, decodes a 2xx body into out when out is non-nil, and returns
+// the status. Any other status is an *APIError. A transport error is wrapped
+// as "<method> <path>: <err>", so a deadline stays detectable with errors.Is.
+func (c *Client) send(ctx context.Context, baseURL, method, path string, headers map[string]string,
+	in, out any,
+) (int, error) {
 	var body io.Reader
 	if in != nil {
 		payload, err := json.Marshal(in)
 		if err != nil {
-			return fmt.Errorf("marshaling %s %s request: %w", method, path, err)
+			return 0, fmt.Errorf("marshaling %s %s request: %w", method, path, err)
 		}
 		body = bytes.NewReader(payload)
 	}
@@ -378,13 +508,14 @@ func (c *Client) doVersion(ctx context.Context, version, method, path string, in
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, method, c.computeURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("building %s %s request: %w", method, path, err)
+		return 0, fmt.Errorf("building %s %s request: %w", method, path, err)
 	}
 	req.Header.Set("X-Auth-Token", c.token)
-	req.Header.Set("X-OpenStack-Nova-API-Version", version)
-	req.Header.Set("OpenStack-API-Version", "compute "+version)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -392,20 +523,20 @@ func (c *Client) doVersion(ctx context.Context, version, method, path string, in
 
 	resp, err := c.doer.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
+		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer closeBody(resp)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return newAPIError(method, path, resp)
+		return 0, newAPIError(method, path, resp)
 	}
 	if out == nil {
-		return nil
+		return resp.StatusCode, nil
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(out); err != nil {
-		return fmt.Errorf("decoding %s %s response: %w", method, path, err)
+		return 0, fmt.Errorf("decoding %s %s response: %w", method, path, err)
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 // newAPIError reads the first bytes of resp's body into an *APIError.
