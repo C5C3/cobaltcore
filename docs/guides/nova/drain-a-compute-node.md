@@ -26,8 +26,8 @@ This guide drains the node of the ControlPlane devstack through a pool on
 nova's fake driver. It then gives the order on a compute cluster that runs
 [openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
 (hvo), and what the pool reports when hvo terminates a node. Every statement
-about hvo below is as read at `a2baf3f`, the commit the `ARG HVO_COMMIT` line of
-`images/openstack-hypervisor-operator/Dockerfile` pins; moving that pin includes
+about hvo below is as read at `a2baf3f`, the commit the `rev` key of
+`images/openstack-hypervisor-operator/source.json` pins; moving that pin includes
 checking them again (see
 [openstack-hypervisor-operator](../../reference/ci-cd/container-images.md#openstack-hypervisor-operator)).
 

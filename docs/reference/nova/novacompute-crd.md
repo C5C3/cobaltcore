@@ -656,7 +656,7 @@ named after the zone, carrying it as its availability zone, and, while it is
 not being deleted, the zone-less `tenant_filter_tests`. The pool never adds a
 host to an aggregate. openstack-hypervisor-operator (hvo) decides which hosts
 the aggregates hold. The statements about hvo are as read at `a2baf3f`, the
-commit `images/openstack-hypervisor-operator/Dockerfile` pins:
+commit `images/openstack-hypervisor-operator/source.json` pins:
 
 1. While hvo onboards a host, it keeps the host in the zone's aggregate and
    `tenant_filter_tests` and in no other. This covers the `Onboarding` reasons
@@ -943,7 +943,7 @@ deleted, or for every node when the CR is deleted:
 On a compute cluster openstack-hypervisor-operator (hvo) empties the host
 before the pool label comes off. The figure draws that order, and its numbers
 are the steps below. The statements about hvo are as read at `a2baf3f`, the
-commit `images/openstack-hypervisor-operator/Dockerfile` pins.
+commit `images/openstack-hypervisor-operator/source.json` pins.
 
 ![The drain of a compute node under the hypervisor operator, in seven numbered steps across four lanes: a person, the hypervisor operator, the NovaCompute pool and the Nova API. 1: the person sets spec.maintenance of the Hypervisor resource to manual. 2: the hypervisor operator disables the compute service of the node in Nova. 3: it creates an Eviction, which migrates every server away, and sets status.evicted. Up to here clearing spec.maintenance reverts the drain. 4: the person removes the pool label from the Node, and the pool turns the node Draining. 5: the pool counts the servers on the host and finds none; the service is disabled already. 6: the pool turns the node Releasing, releases its pod and waits until it is gone. 7: the pool deletes the compute service, and Nova drops the host mapping, the resource providers and the aggregate membership. That delete is the point of no return. Without the hypervisor operator the order starts at step 4: the pool disables the service itself, and a person moves the servers.](../../diagrams/compute-node-drain.svg)
 

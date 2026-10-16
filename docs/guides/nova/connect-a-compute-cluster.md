@@ -68,8 +68,8 @@ with `requires a brownfield bus with tls (...)` (see
 - [openstack-hypervisor-operator](https://github.com/cobaltcore-dev/openstack-hypervisor-operator)
   and [kvm-node-agent](https://github.com/cobaltcore-dev/kvm-node-agent),
   installed by the cluster's own tooling. Everything this guide says about hvo
-  is as read at `a2baf3f`, the commit the `ARG HVO_COMMIT` line of
-  `images/openstack-hypervisor-operator/Dockerfile` pins; moving that pin
+  is as read at `a2baf3f`, the commit the `rev` key of
+  `images/openstack-hypervisor-operator/source.json` pins; moving that pin
   includes checking it again (see
   [openstack-hypervisor-operator](../../reference/ci-cd/container-images.md#openstack-hypervisor-operator)).
 - `jq` on `PATH`.
