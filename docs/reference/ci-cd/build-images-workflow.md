@@ -39,7 +39,7 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
 | Resolve hvo commit script | `hack/ci-resolve-hvo-commit.sh` |
 | Resolve kna commit script | `hack/ci-resolve-kna-commit.sh` |
-| Mint libvirt keeper tag script | `hack/ci-tag-libvirt-keeper.sh` |
+| Libvirt keeper tag script | `hack/ci-tag-libvirt-keeper.sh` |
 
 Both workflow files use the `.yaml` extension and quote the trigger key as `"on"` to
 prevent YAML boolean interpretation. They start with the standard SPDX license
@@ -63,11 +63,13 @@ The two path lists differ. The push list is the broad one it has always been:
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
 `scripts/**`, `overrides/**`, the option catalogs it verifies, and the eleven
-composite actions and thirteen `hack/` scripts its jobs call, directly or through
+composite actions and eleven `hack/` scripts its jobs call, directly or through
 `build-push-image`, `build-nix-image`, `setup-docker-registry` and
 `merge-manifest-and-attest`. Both lists name `flake.nix`, `flake.lock`,
-`nix/lib/**`, `nix/pkgs/**` and `nix/locks/**`, the inputs of the Nix-built images,
-and `hack/nix-lock.sh`, which `nix-lock-check` runs; the pull-request list also names
+`nix/lib/**`, `nix/pkgs/**`, `nix/locks/**` and `nix/base-requirements.txt`, the
+inputs of the Nix-built images and their locks, and `hack/nix-lock.sh`, which
+`nix-lock-check` runs, so a Renovate pull request that moves only the base pins still
+runs that check; the pull-request list also names
 `.github/actions/build-nix-image/**`, which the push list's `.github/actions/**`
 covers. Four
 negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
@@ -80,15 +82,14 @@ the positive `tests/container-images/**` entry it carves out of. Both lists also
 scripts source, and so do the `svc_glance`, `svc_cinder` and `svc_nova` filters of the
 [`changes`](#changes) job. They name `tests/lib/build_tools.sh` too, the build-tools
 check every service and Tempest verify script sources, which the `base` filter names
-because it rebuilds exactly those images, and `tests/lib/static_image.sh`, the
+because it rebuilds those images (the `ovn` and `libvirt` filters name it as well), and
+`tests/lib/static_image.sh`, the
 static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
 filters name.
 
-> **Fork PRs are not supported.** Base images must be pushed to GHCR on every run
-> (because the nova-compute build reads them through `docker-image://` URIs, which
-> require registry availability), but fork
-> PRs receive a read-only `GITHUB_TOKEN` that cannot write packages. The workflow
-> detects fork PRs and fails fast with a clear error message.
+> **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`
+> that cannot write packages. The workflow detects fork PRs and fails fast with a
+> clear error message.
 
 ## Permissions
 
@@ -117,16 +118,16 @@ permissions:
   attestations: write
   artifact-metadata: write
 
-# Verification jobs (verify-base-images, verify-service-images)
+# Verification jobs (verify-service-images, verify-nova-compute-image)
 permissions:
   contents: read
   packages: read
 ```
 
 `contents: read` allows repository checkout. `packages: write` is granted to
-`build-base-images`, `build-service-images`, `build-tempest` (for pushing per-platform
-digests) and to `merge-base-images`, `merge-tempest-image`, `merge-service-images` (for
-pushing manifest lists).
+the build jobs, `build-service-images` and `build-tempest` among them (for pushing
+per-platform digests), and to the merge jobs, `merge-tempest-image` and
+`merge-service-images` among them (for pushing manifest lists).
 `id-token: write` enables Sigstore keyless OIDC signing — the GitHub Actions runner
 requests a short-lived OIDC token bound to the workflow identity, which Sigstore uses to
 sign the attestation without managing keys. `attestations: write` grants
@@ -137,7 +138,8 @@ upload. `id-token`, `attestations` and `artifact-metadata` are scoped to the mer
 `build-service-images` and `build-nova-compute-image`. The per-platform build jobs run
 the PR-only Grype scan via `supply-chain-attest` with `scan-mode: image` but upload no
 SARIF, so none of them holds `security-events`. The verification jobs
-(`verify-base-images`, `verify-service-images`) do **not** receive `id-token`,
+(`verify-service-images`, `verify-nova-compute-image` and the other `verify-*` jobs)
+do **not** receive `id-token`,
 `attestations`, or `security-events` permissions — they only need `contents: read` (for
 checkout and test scripts) and `packages: read` (for pulling images from GHCR),
 following the principle of least privilege.
@@ -159,7 +161,7 @@ ensuring every merge commit produces a complete set of images.
 ## Reusable Components
 
 Repeated inline step sequences are extracted into eleven composite GitHub Actions and
-thirteen `hack/` scripts. These components encapsulate patterns that were previously
+eleven `hack/` scripts. These components encapsulate patterns that were previously
 duplicated across multiple jobs, ensuring consistency. This section documents six of
 the actions and four of the scripts. All components follow the repository's CI script
 and composite action conventions.
@@ -177,8 +179,8 @@ that was previously inlined in every job.
 | `password` | yes | — | Registry password/token |
 | `install-cosign` | no | `'true'` | Whether to install cosign |
 
-**Usage:** Every job that pulls or pushes images calls this composite action: 26 of the
-33 jobs, all but `changes`, `lint-dockerfiles`, `nix-flake-check`, `nix-lock-check`,
+**Usage:** Every job that pulls or pushes images calls this composite action: 23 of the
+30 jobs, all but `changes`, `lint-dockerfiles`, `nix-flake-check`, `nix-lock-check`,
 `prepare`, `generate-matrix` and `test-service-images`. Jobs
 that do not need cosign (build jobs, verification jobs) pass `install-cosign: 'false'`.
 Only merge jobs (which run attestation and signing) leave it at the default `'true'`.
@@ -193,9 +195,9 @@ inline sequence that was previously duplicated for each image type.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `image-name` | yes | — | Bare image name without tag/digest (e.g. `ghcr.io/c5c3/python-base`) |
+| `image-name` | yes | — | Bare image name without tag/digest (e.g. `ghcr.io/c5c3/keystone-federation-proxy`) |
 | `image-digest` | no | `''` | Image digest (`sha256:...`); required when `scan-mode` is `sbom` |
-| `sbom-output-file` | no | `''` | SBOM output filename (e.g. `sbom-python-base.cyclonedx.json`); required when `scan-mode` is `sbom` |
+| `sbom-output-file` | no | `''` | SBOM output filename (e.g. `sbom-keystone-federation-proxy.cyclonedx.json`); required when `scan-mode` is `sbom` |
 | `grype-category` | yes | — | SARIF category for the GitHub Security tab |
 | `scan-mode` | no | `'sbom'` | `'sbom'` for full supply chain (non-PR) or `'image'` for scan-only (PR) |
 | `image-ref-for-scan` | no | `''` | Full image ref for image-mode scan |
@@ -209,8 +211,9 @@ inline sequence that was previously duplicated for each image type.
   SBOM generation, no attestation, no signing. The scan keeps the tooling exercised on
   PRs and is where `fail-build` turns into a severity gate once one is wanted.
 
-**Usage:** `python-base`, `venv-builder`, `tempest`, and service images all call this
-composite action. Merge jobs use `sbom` mode; build jobs use `image` mode for PR-only
+**Usage:** Every merge job calls this composite action through
+`merge-manifest-and-attest`, and the build jobs through `build-push-image` or
+`build-nix-image`. Merge jobs use `sbom` mode; build jobs use `image` mode for PR-only
 scans. This replaces the per-image-type inline SBOM + Grype + SARIF + attest + provenance
 + cosign sequences.
 
@@ -241,9 +244,8 @@ duplicated (with "MUST stay in sync" comments) between `build-service-images` an
    if no patches exist, guarded by a shell `compgen -G` check)
 5. Runs `scripts/apply-constraint-overrides.sh <release>`
 
-**Usage:** Both `build-service-images` and `test-service-images` call this composite
-action, eliminating the source checkout duplication and the three "MUST stay in sync"
-comments.
+**Usage:** `build-service-images` calls this composite action for the option catalog
+check, which reads the patched source.
 
 ### export-digest
 
@@ -257,8 +259,8 @@ duplicated for each image type.
 | `artifact-name` | yes | — | Name for the uploaded artifact |
 | `digest-dir` | no | `/tmp/digests` | Directory for digest files |
 
-**Usage:** `python-base`, `venv-builder`, `tempest`, and service images all call this
-composite action after building, replacing inline `mkdir`/`touch`/`upload-artifact` steps.
+**Usage:** `build-push-image` and `build-nix-image` call this composite action after
+a push by digest, replacing inline `mkdir`/`touch`/`upload-artifact` steps.
 
 ### build-nix-image
 
@@ -266,8 +268,9 @@ Builds a flake image attribute, the counterpart of `build-push-image` for the im
 the root flake builds. Its inputs and steps are documented under
 [The build-nix-image action](./nix-image-build.md#the-build-nix-image-action).
 
-**Usage:** `build-backup-shifter`, `build-tempest` and `build-service-images` call this
-composite action.
+**Usage:** `build-backup-shifter`, `build-libvirt`, `build-ovn`, `build-hvo`,
+`build-kna`, `build-tempest`, `build-service-images` and `build-nova-compute-image`
+call this composite action.
 
 ### setup-nix
 
@@ -284,8 +287,8 @@ describes the cache.
 | `cachix-auth-token` | no | `''` | The `CACHIX_AUTH_TOKEN` secret; empty pushes nothing (`skipPush`) |
 | `push-filter` | no | `''` | Regular expression of the store paths never pushed (`pushFilter`) |
 
-**Usage:** `nix-flake-check`, `build-tempest`, `build-backup-shifter`,
-`build-service-images` and `test-service-images` call this composite action with
+**Usage:** `nix-flake-check`, every job that calls `build-nix-image` and
+`test-service-images` call this composite action with
 <code v-pre>cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}</code>; `test-service-images` also
 passes `push-filter: '-test-run$'`. `nix-lock-check` installs Nix itself, because it
 hands the GitHub token to `install-nix-action` and reads no cache.
@@ -299,7 +302,7 @@ final manifest digest. Follows the repo's CI-script conventions: shebang, SPDX h
 
 | Env var | Required | Default | Description |
 | --- | --- | --- | --- |
-| `IMAGE` | yes | — | Full image name without tag (e.g. `ghcr.io/c5c3/python-base`) |
+| `IMAGE` | yes | — | Full image name without tag (e.g. `ghcr.io/c5c3/keystone-federation-proxy`) |
 | `DIGEST_DIR` | yes | — | Path to directory containing digest files |
 | `TAGS` | yes | — | Space-separated list of full tag references to apply |
 | `INSPECT_TAG` | no | first entry in `TAGS` | Tag for post-creation digest inspection |
@@ -337,7 +340,7 @@ and the image flags the build and test jobs gate on.
 | `EVENT_NAME` | yes | — | `github.event_name` |
 | `ALL_SERVICES` | yes | — | Space-separated list of every service in the build matrix |
 | `FILTER_svc_<service>` | no | `false` | One per name in `ALL_SERVICES` |
-| `FILTER_base` | no | `false` | Base images, release configs, build scripts, constraint overrides |
+| `FILTER_base` | no | `false` | Flake inputs, Nix library and packages, release configs, build scripts, constraint overrides |
 | `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` / `FILTER_libvirt` / `FILTER_hvo` / `FILTER_kna` | no | `false` | The release-independent images, one each |
 | `FILTER_plumbing` | no | `false` | The workflow, its composite actions, its `hack/` scripts |
 | `GITHUB_OUTPUT` | no | `/dev/null` | GitHub Actions output file |
@@ -353,11 +356,12 @@ step yields on `push` and `workflow_dispatch`.
 
 Three inputs resolve to everything, because everything is built from them: an event
 that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
-also sets `build-tempest`, since the Tempest image is built `FROM` `python-base` and
-`venv-builder` and reads `releases/<release>/`. OVN, the federation proxy and libvirt
-build `FROM ubuntu:noble`, the backup shifter is built by Nix from `flake.lock`, and
-openstack-hypervisor-operator and kvm-node-agent build `FROM golang` and distroless.
-None of them reads either, so they follow their own filters alone.
+also sets `build-tempest`, since Nix builds the Tempest image from its lock with the
+same flake inputs and library and it reads `releases/<release>/`. The federation proxy
+builds `FROM ubuntu:noble`; OVN, the backup shifter, libvirt,
+openstack-hypervisor-operator and kvm-node-agent are built by Nix from their own pins
+and `flake.lock`. None of them reads a release, so they follow their own filters,
+which also name the flake inputs, `nix/lib/` and the two Nix actions.
 
 Every output line is echoed as well as written, so running the script prints what it
 decided:
@@ -394,10 +398,10 @@ per release, not per service. The empty case reaches only jobs that gate on
 `has-services`, so an empty `include` never reaches a job that runs.
 
 `nova-compute-releases` and `nova-compute-build-matrix` follow the nova pairs
-that survive `SERVICES`, because `images/nova-compute/` is built from nova's
-source pin. `nova-compute-releases` is a JSON array of release names, `[]` when
-no nova pair survives. `nova-compute-build-matrix` holds
-`{release, platform, runner}` legs on the same platforms as `build-matrix`, and
+that remain after `SERVICES`, because `images/nova-compute/` is built from
+nova's lock. `nova-compute-releases` is a JSON array of release names, `[]` when
+no nova pair remains. `nova-compute-build-matrix` holds
+`{release, platform, runner}` entries on the same platforms as `build-matrix`, and
 is `{"include":[]}` when empty. The three
 [nova-compute jobs](#build-nova-compute-image-merge-nova-compute-image-verify-nova-compute-image)
 gate on the array, so an empty `include` never reaches one of them either. A
@@ -411,13 +415,13 @@ The workflow's jobs form this dependency graph:
 ```text
 changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
 lint-dockerfiles ─┤      └──> merge-keystone-federation-proxy-image (push only)
-prepare ──────────┤
-                  └──> build-libvirt (matrix: amd64 + arm64)
-                         └──> merge-libvirt-image (push only)
+prepare ──────────┘
 
 changes ──────────┬──> build-backup-shifter (matrix: amd64 + arm64)
 nix-flake-check ──┤      └──> merge-backup-shifter-image (push only)
-prepare ──────────┘
+prepare ──────────┤
+                  └──> build-libvirt (matrix: amd64 + arm64)
+                         └──> merge-libvirt-image (push only)
 
 changes ──────────┬──> build-ovn (matrix: amd64 + arm64)
 nix-flake-check ──┤      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
@@ -434,34 +438,29 @@ nix-lock-check ───────────────┤
 prepare ──────────────────────┼──> build-service-images (matrix: service × release × platform)
                               │      └──> merge-service-images (push only) ──┐
                               │                                              ├──> verify-service-images (push only)
-                              └──> test-service-images ──────────────────────┘
-                                     └── nix build .#<service>-<rel_>-test-run
-
-lint-dockerfiles ─┬──> build-base-images (matrix: amd64 + arm64)
-prepare ──────────┘      └──> merge-base-images ──> verify-base-images ──┐
-generate-matrix ─────────────────────────────────────────────────────────┴──> build-nova-compute-image (matrix: release × platform)
-                                                                                └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
+                              ├──> test-service-images ──────────────────────┘
+                              │      └── nix build .#<service>-<rel_>-test-run
+                              └──> build-nova-compute-image (matrix: release × platform)
+                                     └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
 ```
 
 The graph leaves out the `needs` entries that a drawn path already implies (`prepare` on
-`build-nova-compute-image` and every merge job except `merge-nova-compute-image`, and
-`merge-base-images` and `verify-base-images` on jobs further down their chain) and
-`changes` on `build-tempest`, `build-service-images` and `test-service-images`:
+every merge job except `merge-nova-compute-image`) and `changes` on `build-tempest`,
+`build-service-images`, `test-service-images` and `build-nova-compute-image`:
 `changes` supplies the service list the matrix is built from and the flags the other
-three gate on. `test-service-images` needs `nix-lock-check` and `generate-matrix` but
-not `nix-flake-check` or `prepare`.
+jobs gate on. `test-service-images` needs `nix-lock-check` and `generate-matrix` but
+not `nix-flake-check` or `prepare`. `build-libvirt` needs no `nix-lock-check`, since
+no lock pin feeds the libvirt image.
 
 Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
-built on a native runner and pushed by digest. `merge-base-images` then assembles the
-multi-arch manifest list and runs the supply chain security pipeline via the
-`supply-chain-attest` composite action. The same pattern applies to service
-images via `build-service-images` and `merge-service-images`, and to Tempest images via
-`build-tempest` and `merge-tempest-image`; those two build jobs build a flake attribute
-with `build-nix-image` instead of a Dockerfile.
+built on a native runner and pushed by digest. The merge job of the image then
+assembles the multi-arch manifest list and runs the supply chain security pipeline via
+the `supply-chain-attest` composite action, as `build-service-images` and
+`merge-service-images` do for the service images and `build-tempest` and
+`merge-tempest-image` for Tempest. Every build job but the federation proxy's builds a
+flake attribute with `build-nix-image` instead of a Dockerfile.
 
-The `verify-base-images` job validates base image properties (Python version, user
-UID/GID, PATH, uv version) before the nova-compute build begins. This catches base image
-regressions before they cascade into the compute image. The `test-service-images`
+The `test-service-images`
 job runs the upstream unit tests of each service as a Nix build
 (`nix/lib/service-tests.nix`), in parallel with `build-service-images`. On push events, the
 `verify-service-images` job validates service images pulled from GHCR and gates on
@@ -554,9 +553,9 @@ nix develop .#lock-tools --command bash hack/nix-lock.sh --check
 ```
 
 A failure adds the annotation `the Nix locks or image pins are stale: run make nix-lock
-and commit the result`. `build-service-images`, `build-tempest`, `test-service-images`,
-`build-ovn`, `build-hvo` and `build-kna` need the job, so no image and no unit test is
-built from a stale lock or pin. A Renovate pull request that
+and commit the result`. `build-service-images`, `build-nova-compute-image`,
+`build-tempest`, `test-service-images`, `build-ovn`, `build-hvo` and `build-kna` need
+the job, so no image and no unit test is built from a stale lock or pin. A Renovate pull request that
 moves a pin the locks are derived from fails here until `make nix-lock` is pushed to
 its branch ([Renovate](./nix-image-build.md#renovate)).
 
@@ -566,13 +565,13 @@ The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
 (OIDC) and `mod_auth_mellon` (SAML) in one image
 (`images/keystone-federation-proxy/`, single-stage `ubuntu:noble` + distro
 `apache2` + `libapache2-mod-auth-openidc` + `libapache2-mod-auth-mellon`). The
-image is release-independent — no OpenStack code — so the job pair follows
-the base-image shape rather than the release matrix: a two-platform build
+image is release-independent — no OpenStack code — so the job pair has no
+release matrix: a two-platform build
 job that depends on `changes`, `lint-dockerfiles` and `prepare` (PR mode loads
 the amd64 image locally for the inline Grype scan and the
 `tests/container-images/verify_keystone_federation_proxy.sh` verify
 script), and a PR-skipped merge job assembling the multi-arch manifest with
-the `:latest` + `:<sha>` tag scheme the base images use, followed by the
+the `:latest` + `:<sha>` tag scheme, followed by the
 supply-chain pipeline (SBOM, attestation, cosign).
 
 Condition: `needs.changes.outputs.build-proxy == 'true'`. On a pull request the
@@ -587,7 +586,7 @@ Nix-built image: the root flake builds it from `images/backup-shifter/image.nix`
 ([Nix Image Build](./nix-image-build.md)). It runs as the `shifter` container of the
 `OVNCentral` backup CronJob, which the operator renders only when `spec.backup.s3` is
 set. Like the federation proxy, the image carries no OpenStack code, so the job pair
-follows the base-image shape. The two-platform build job depends on `changes`,
+has no release matrix. The two-platform build job depends on `changes`,
 `nix-flake-check` and `prepare`, installs Nix, adds the Cachix cache `cobaltcore` and
 calls [`build-nix-image`](#build-nix-image) with the attribute `backup-shifter-image`.
 On a pull request the action loads the amd64 image locally for the inline Grype scan
@@ -604,20 +603,26 @@ runs. The arm64 image is built on a push only.
 
 ### build-libvirt / merge-libvirt-image
 
-The libvirt daemon and QEMU for containerized hypervisor nodes
-(`images/libvirt/`, single-stage `ubuntu:noble` + distro libvirt, QEMU, the QEMU
-disk tools and OVMF). The hypervisor package of issue #1142 runs it as a
-DaemonSet beside `nova-compute`. Like the backup shifter, the image carries no
-OpenStack code, so the job pair follows the base-image shape: a two-platform build job
-depending on `changes`, `lint-dockerfiles` and `prepare` (PR mode loads the amd64 image
-locally for the inline Grype scan and the `tests/container-images/verify_libvirt.sh`
-verify script, which starts `libvirtd` and queries the QEMU driver), and a PR-skipped
-merge job assembling the multi-arch manifest with the `:latest` + `:<sha>` tags,
-followed by the supply-chain pipeline. The arm64 leg builds on a push only.
+The libvirt daemon and QEMU for containerized hypervisor nodes, built by Nix: the root
+flake builds `libvirt-image` from `images/libvirt/` with the libvirt of
+`nix/pkgs/libvirt.nix`
+([Hypervisor images](./nix-image-build.md#hypervisor-images)). The hypervisor package
+of issue #1142 runs it as a DaemonSet beside `nova-compute`. Like the backup shifter,
+the image carries no OpenStack code, so the job pair has no release matrix. The
+two-platform build job depends on `changes`, `nix-flake-check` and `prepare`, has 60
+minutes for the first build per `nixpkgs-images` revision, which compiles libvirt and
+QEMU, installs Nix with the Cachix cache `cobaltcore` and calls
+[`build-nix-image`](#build-nix-image) with the attribute `libvirt-image`. On a pull
+request the action loads the amd64 image locally for the inline Grype scan and the
+`tests/container-images/verify_libvirt.sh` verify script, which starts `libvirtd` and
+queries the QEMU driver; on a push it pushes each platform by digest with skopeo and
+uploads the vulnix report `vulnix-libvirt-<platform-pair>`. The PR-skipped merge job
+assembles the multi-arch manifest with the `:<sha>` tag, plus `:latest` on `main`,
+followed by the supply-chain pipeline. The arm64 build runs on a push only.
 
 On `main`, the step `Mint the libvirt keeper tag` of the merge job runs
 `hack/ci-tag-libvirt-keeper.sh` on the merged index and gives it the third tag,
-`<libvirt-package-version>-r<N>` (see
+`<libvirt-version>-r<N>` (see
 [Release-independent images](#release-independent-images)). The script counts
 commits, so on `main` the merge job checks out the full history
 (`fetch-depth: 0`). The count reads commits and trees only, so the checkout
@@ -629,9 +634,18 @@ also the step's outputs `tag` and `minted`. An existence check that fails with
 anything but `not found` fails the step before it tags anything: moving an
 existing tag would take the keeper off a digest the lab pins.
 
+A `workflow_dispatch` run on a branch publishes `ghcr.io/c5c3/libvirt:<sha>` and moves
+neither `latest` nor a keeper tag: the `e2e-nova-libvirt` leg of a pull request that
+changes no libvirt input runs the image `latest` names. The lab pins no such build,
+because the cleanup removes a branch's `<sha>` tag after 24 hours: a pull request that
+changes the image leaves the lab pins alone, and Renovate moves them to the keeper tag
+main's build mints after the merge.
+
 Condition: `needs.changes.outputs.build-libvirt == 'true'`. On a pull request the
-build job runs when `images/libvirt/**` or
-`tests/container-images/verify_libvirt.sh` changed; on a push it always runs.
+build job runs when `images/libvirt/**`, `nix/pkgs/libvirt.nix`,
+`tests/container-images/verify_libvirt.sh`, `tests/lib/build_tools.sh`, `flake.nix`,
+`flake.lock`, `nix/lib/**` or one of the two Nix actions changed; on a push it always
+runs.
 
 ### build-ovn / merge-ovn-image / verify-ovn-image
 
@@ -766,117 +780,6 @@ output is the merged manifest as `ghcr.io/<owner>/kvm-node-agent@<digest>`.
 `[ubuntu-latest, ubuntu-24.04-arm]` runner matrix, with `contents: read` and
 `packages: read` only.
 
-### build-base-images
-
-Builds the two base images (`python-base` and `venv-builder`) per platform on native
-runners and pushes each single-arch image by digest. These must always be
-pushed — even on PRs — because downstream service builds reference them via
-`docker-image://` URIs, which require registry availability. The multi-arch manifest list
-is assembled by the subsequent `merge-base-images` job.
-
-| Property | Value |
-| --- | --- |
-| `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
-| `timeout-minutes` | `45` |
-| `needs` | `[lint-dockerfiles, prepare]` |
-| Matrix | `platform: [linux/amd64, linux/arm64]` × native runner |
-| Push behavior | Pushes by digest to GHCR (even on PRs); tags assigned by `merge-base-images` |
-
-**Steps:**
-
-::: v-pre
-
-| # | Step | Action / Command | Details |
-| --- | --- | --- | --- |
-| 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork |
-| 2 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 3 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for use in artifact names and cache scopes |
-| 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled); replaces inline buildx + login steps |
-| 5 | Resolve ubuntu:noble digest | `hack/ci-resolve-ubuntu-digest.sh` | Resolves the upstream base image digest for OCI base-image annotations |
-| 6 | Build and push python-base | `.github/actions/build-push-image` | Context: `images/python-base`, single platform, `push-by-digest=true`; generates the OCI labels and uploads the digest as artifact `digests-python-base-<platform-pair>` |
-| 7 | Wait for python-base digest to propagate | `hack/ci-wait-for-image.sh` | Blocks until the pushed python-base digest resolves on GHCR, before venv-builder builds from it |
-| 8 | Build and push venv-builder | `.github/actions/build-push-image` | Context: `images/venv-builder`, single platform, `push-by-digest=true`; uses python-base from step 6 by digest; generates the OCI labels and uploads the digest as artifact `digests-venv-builder-<platform-pair>` |
-
-:::
-
-### merge-base-images
-
-Downloads per-platform digests from `build-base-images`, assembles multi-arch manifest
-lists, then runs SBOM generation, vulnerability scanning, attestation, and cosign signing
-on the final manifests.
-
-| Property | Value |
-| --- | --- |
-| `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `23` |
-| `needs` | `[build-base-images, prepare]` |
-| Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write`, `security-events: write` |
-
-**Steps:**
-
-::: v-pre
-
-| # | Step | Action / Command | Details |
-| --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
-| 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
-| 3 | Merge and attest python-base | `.github/actions/merge-manifest-and-attest` | Downloads all `digests-python-base-*` artifacts into `/tmp/digests/python-base/` (`actions/download-artifact@v8`), assembles the multi-arch manifest with `hack/ci-merge-manifest.sh`, tags `:latest` and `:${{ github.sha }}`, then runs `supply-chain-attest`. Uses `scan-mode: image` on PR (Grype scan only), `sbom` otherwise (SBOM + Grype scan + SARIF upload + attestation + provenance + cosign sign) |
-| 4 | Merge and attest venv-builder | `.github/actions/merge-manifest-and-attest` | Same pattern as step 3 for venv-builder |
-
-:::
-
-::: v-pre
-
-Each base image is tagged with both `:latest` (mutable convenience tag) and
-`:${{ github.sha }}` (immutable commit-pinned tag). The SHA tag provides an auditable
-mapping from any base image in GHCR back to the commit that produced it.
-
-:::
-
-**Outputs:**
-
-| Output | Format | Example |
-| --- | --- | --- |
-| `python-base-image` | `ghcr.io/<owner>/python-base@sha256:<digest>` | `ghcr.io/c5c3/python-base@sha256:abc123...` |
-| `python-base-name` | `ghcr.io/<owner>/python-base` | `ghcr.io/c5c3/python-base` |
-| `python-base-digest` | `sha256:<digest>` | `sha256:abc123...` |
-| `venv-builder-image` | `ghcr.io/<owner>/venv-builder@sha256:<digest>` | `ghcr.io/c5c3/venv-builder@sha256:def456...` |
-
-These outputs are consumed by `verify-base-images` and `build-service-images` via
-`needs.merge-base-images.outputs`.
-
-### verify-base-images
-
-Validates that just-assembled base image manifests meet expected properties before
-service image builds begin. Runs after `merge-base-images` and blocks
-`build-service-images`, forming the dependency chain:
-`build-base-images` → `merge-base-images` → `verify-base-images` → `build-service-images`.
-
-| Property | Value |
-| --- | --- |
-| `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `15` |
-| `needs` | `[merge-base-images]` |
-| Permissions | `contents: read`, `packages: read` |
-
-**Steps:**
-
-| # | Step | Action / Command | Details |
-| --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts) |
-| 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
-| 3 | Pull and verify base images | Shell | Pulls both `python-base` and `venv-builder` by digest from `merge-base-images` outputs, then runs `verify_python_base.sh` and `verify_venv_builder.sh` with the digest-tagged image refs |
-
-**Test scripts executed:**
-
-| Script | Validates |
-| --- | --- |
-| `tests/container-images/verify_python_base.sh` | Python version, `openstack` user (UID/GID 42424), PATH includes `/opt/openstack/bin`, virtualenv at `/opt/openstack` |
-| `tests/container-images/verify_venv_builder.sh` | uv version (from Dockerfile), pip available, virtualenv at `/var/lib/openstack` |
-
-The job receives image references via `needs.merge-base-images.outputs` (digest-pinned),
-ensuring the exact manifests that were just assembled are the ones being tested.
-
 ### build-service-images
 
 Builds service images per platform on native runners and pushes each single-arch image by
@@ -889,9 +792,9 @@ digest. Each image is the flake attribute `<service>-<rel_>-image`, built from
 On pull requests, ARM64 is excluded (only `linux/amd64` is built) and the image is loaded
 locally for inline verification instead of being pushed to GHCR.
 
-The figure shows the Docker build nova-compute still runs; the service images build from
-Nix. [Dockerfile Hierarchy](container-images.md#dockerfile-hierarchy) names both stages
-of that build.
+The figure shows the Docker lineage of the service images, which #1407 retired with
+the Docker build of nova-compute, and #1410 redraws it; the service images build from
+Nix.
 
 ![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
 
@@ -954,36 +857,6 @@ were computed during the build.
 
 :::
 
-**Build Contexts:**
-
-The service images are built by Nix and take no build context. The nova-compute build
-of [build-nova-compute-image](#build-nova-compute-image-merge-nova-compute-image-verify-nova-compute-image)
-passes four named build contexts to resolve `FROM` and `--mount=type=bind,from=`
-directives in `images/nova-compute/Dockerfile`:
-
-| Context name | Source | Purpose |
-| --- | --- | --- |
-| `python-base` | `docker-image://<python-base-image>` | Runtime base image (output already includes `@sha256:<digest>`) |
-| `venv-builder` | `docker-image://<venv-builder-image>` | Build stage image (output already includes `@sha256:<digest>`) |
-| `nova` | `src/nova` | nova source tree (upstream checkout) |
-| `upper-constraints` | `releases/<release>/` | Release directory containing `upper-constraints.txt` |
-
-**Build Arguments:**
-
-The nova-compute build passes three build arguments sourced from the `nova-compute`
-block of `releases/<release>/extra-packages.yaml` by `hack/ci-resolve-extra-packages.sh`:
-
-| Build arg | Source field | Format | Example |
-| --- | --- | --- | --- |
-| `PIP_EXTRAS` | `nova-compute.pip_extras` | Comma-separated | *(empty)* |
-| `PIP_PACKAGES` | `nova-compute.pip_packages` | Space-separated | `libvirt-python pyroute2` |
-| `EXTRA_APT_PACKAGES` | `nova-compute.apt_packages` | Space-separated | `libvirt0 qemu-utils open-iscsi ...` |
-
-`PIP_EXTRAS` and `PIP_PACKAGES` are consumed in the Dockerfile build stage (stage 1).
-`EXTRA_APT_PACKAGES` is consumed in the runtime stage (stage 2). See
-[Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for the
-YAML schema.
-
 This job does not declare outputs. The `verify-service-images` job derives its own image
 refs independently via its own matrix strategy.
 
@@ -999,8 +872,8 @@ split lets a failed run still upload its subunit stream. An optional per-service
 (`releases/<release>/test-excludes/<service>.txt`) skips known-failing tests via
 `stestr run --exclude-list`.
 
-This job runs in parallel with `build-service-images`, behind `nix-lock-check` but not
-behind the base images. The `verify-service-images` job gates on both.
+This job runs in parallel with `build-service-images`, behind `nix-lock-check`. The
+`verify-service-images` job gates on both.
 
 | Property | Value |
 | --- | --- |
@@ -1051,7 +924,7 @@ and steps:
 | `test_test_service_images_env_vars` | `Run tests` gets `MATRIX_SERVICE` and `MATRIX_RELEASE` from `env:` and interpolates no <code v-pre>${{ }}</code> expression into its run block |
 | `test_verify_service_images_depends_on_service_images` | `verify-service-images` `needs` includes `merge-service-images`, `test-service-images` and `generate-matrix` |
 | `test_timeout_minutes_on_all_jobs` | All jobs including `test-service-images` have `timeout-minutes` set |
-| `test_runs_on_ubuntu_latest` | `test-service-images`, `verify-base-images`, `merge-base-images`, `merge-service-images`, `verify-service-images` and the six release-independent merge jobs use `runs-on: ubuntu-latest`; `build-base-images`, `build-service-images`, the six release-independent build jobs and `verify-ovn-image`, `verify-hvo-image`, `verify-kna-image` use `matrix.runner` |
+| `test_runs_on_ubuntu_latest` | `test-service-images`, `merge-service-images`, `verify-service-images` and the six release-independent merge jobs use `runs-on: ubuntu-latest`; `build-service-images`, the six release-independent build jobs and `verify-ovn-image`, `verify-hvo-image`, `verify-kna-image` use `matrix.runner` |
 | `test_matrix_jobs_fail_fast_false` | `build-service-images`, `test-service-images` and `verify-service-images` have `fail-fast: false` |
 
 The `verify_release_config.sh` script validates test-excludes file structure:
@@ -1111,12 +984,12 @@ truth shared by `build-service-images`, `merge-service-images`, and `verify-serv
 ### build-nova-compute-image / merge-nova-compute-image / verify-nova-compute-image
 
 These jobs build the compute image of `images/nova-compute/` (see
-[nova-compute](./container-images.md#nova-compute)) from nova's source pin
-with nova's patches and constraint overrides. The image gets jobs of its own
-because a failed leg of `build-service-images` on a main push skips
-`merge-service-images` for every service. Extra steps in the nova leg would add
-a compiled binding and ten apt packages to that blast radius. A failed compute
-leg skips `merge-nova-compute-image` for every release and leaves every other
+[nova-compute](./container-images.md#nova-compute)) from nova's lock with its
+`nova-compute` dependency group. The image gets jobs of its own
+because a failed matrix entry of `build-service-images` on a main push skips
+`merge-service-images` for every service. Extra steps in the nova entry would add
+a compiled binding and the host tools to that blast radius. A failed compute
+build skips `merge-nova-compute-image` for every release and leaves every other
 merge job alone.
 
 `build-nova-compute-image` gates on `nova-compute-releases != '[]'` from
@@ -1127,25 +1000,22 @@ compute-only change still reaches them:
 sit in the `svc_nova` paths filter, so the `changes` job resolves `nova`. Such
 a pull request also rebuilds the nova image and runs nova's unit tests. That
 cost is accepted, because the compute image has to rebuild whenever nova's
-pin, patches or constraints move, and one filter keeps that coupling in one
-place. `lint-dockerfiles` lints `images/nova-compute/Dockerfile`.
+lock moves, and one filter keeps that coupling in one place. A change to
+`nix/pkgs/` reaches it through the `base` filter, which sets every service.
 
-`build-nova-compute-image` needs `merge-base-images`, `verify-base-images`,
-`generate-matrix` and `prepare`, and runs over `nova-compute-build-matrix`
-(`release × platform`, amd64 only on pull requests). Its steps mirror
-`build-service-images`:
+`build-nova-compute-image` needs `changes`, `generate-matrix`,
+`nix-flake-check`, `nix-lock-check` and `prepare`, has 60 minutes for the first
+build per `nixpkgs-images` revision, which compiles libvirt, and runs over
+`nova-compute-build-matrix` (`release × platform`, amd64 only on pull requests).
+Its steps mirror `build-service-images`:
 
-- `checkout-service-source` with `service: nova`, which applies nova's patches
-  and constraint overrides
-- `hack/ci-resolve-extra-packages.sh` with `MATRIX_SERVICE=nova-compute`, which
-  reads the `nova-compute` block: `libvirt-python` as `PIP_PACKAGES` and ten
-  apt packages as `EXTRA_APT_PACKAGES`
 - `derive-service-tags` with `service: nova` and `image: nova-compute`: nova's
   version and patch count under the `nova-compute` name
-- `build-push-image` with context `images/nova-compute`, the named contexts
-  `nova=src/nova` and `upper-constraints=releases/<release>/`, cache scope
-  `nova-compute-<release>` and no secret, since the Dockerfile fetches nothing
-  from github.com
+- `setup-nix`, and a `Resolve flake attribute` step that writes
+  `attribute=nova-compute-<release with _>-image`
+- `build-nix-image` with that attribute, the image name of the tags step, the
+  composite tag as `verify-image-ref` and the vulnix report
+  `vulnix-nova-compute-<release>-<platform-pair>`
 
 On pull requests the image is loaded locally, scanned by Grype
 (`grype-nova-compute-<platform-pair>`) and checked by
@@ -1166,7 +1036,7 @@ later SARIF upload would replace the earlier one and close its alerts as fixed.
 `verify_nova_compute.sh` on a `release × [ubuntu-latest, ubuntu-24.04-arm]`
 matrix. It and `build-nova-compute-image` pass the release to the script as
 `NOVA_COMPUTE_RELEASE`. Pull requests build amd64 only, so this job is the
-first place the arm64 build of the compiled binding runs. It holds
+first place the arm64 build of the binding and the host tools runs. It holds
 `contents: read` and `packages: read` only. There is no option-catalog step:
 the compute image adds no oslo.config namespace to the nova catalog.
 
@@ -1213,8 +1083,8 @@ to tag with:
 | --- | --- | --- |
 | `keystone-federation-proxy` | `latest`, `<sha>` | all |
 | `backup-shifter` | `latest`, `<sha>` | all |
-| `libvirt` | `latest`, `<sha>` | all |
-| `libvirt` | `<libvirt-package-version>-r<N>` | `main` only |
+| `libvirt` | `<sha>` | all |
+| `libvirt` | `latest`, `<libvirt-version>-r<N>` | `main` only |
 | `ovn` | `<ovn-version>-<sha>` | all |
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
 | `openstack-hypervisor-operator` | `sha-<hvo-commit>-<sha>` | all |
@@ -1222,8 +1092,7 @@ to tag with:
 | `kvm-node-agent` | `sha-<kna-commit>-<sha>` | all |
 | `kvm-node-agent` | `sha-<kna-commit>`, `upstream-<kna-commit>`, `latest` | `main` only |
 
-`<sha>` is the full 40-character `github.sha` here, as it is for the base
-images. Restricting `ovn:<ovn-version>` and `ovn:latest` to `main` has the same
+`<sha>` is the full 40-character `github.sha` here. Restricting `ovn:<ovn-version>` and `ovn:latest` to `main` has the same
 reason as the service version tag above: when two branches build the same
 upstream version, a shared tag would be silently overwritten. The same holds
 for the three `main`-only tags of `openstack-hypervisor-operator` and
@@ -1231,22 +1100,23 @@ for the three `main`-only tags of `openstack-hypervisor-operator` and
 commits their `source.json` pins. `sha-<hvo-commit>` and `sha-<kna-commit>` are the
 tags the upstream chart of that commit renders from its `appVersion`.
 
-`libvirt:<libvirt-package-version>-r<N>`, such as `libvirt:10.0.0-2ubuntu8.19-r1`,
-names what a build contains. `<libvirt-package-version>` is the version of the
-`libvirt-daemon-system` package in the image's `linux/amd64` variant, read with
-`dpkg-query -W -f='${Version}' libvirt-daemon-system`. `<N>` is
-`git rev-list --count HEAD -- images/libvirt`, the number of commits on `main`
-that touched the image's directory. The tag is minted once and never moved. The
-first `main` build with a new value gets it; every later build with the same
-value finds it in the registry, keeps `latest` and `<sha>` only, and is pruned
-once superseded. A new tag appears when Ubuntu publishes a new libvirt package,
-or when a commit touches `images/libvirt/` (a Dockerfile edit, or Renovate's bump
-of the `ubuntu:noble` digest). A QEMU-only or OVMF-only package update mints no
-tag and reaches a keeper tag with the next one. A package version with an epoch
-or a suffix, such as `10.0.0-2ubuntu8.19+esm1`, fails the step, because the
-prune's keep pattern and Renovate's `allowedVersions` assume
-`<upstream>-<n>ubuntu<m>`. The lab manifests under `deploy/lab/metal-stack/` pin
-this tag by digest (see
+`libvirt:<libvirt-version>-r<N>`, such as `libvirt:12.2.0-r57`, names what a build
+contains. `<libvirt-version>` is the third field of the first line `libvirtd --version`
+prints in the image's `linux/amd64` variant. `<N>` is
+`git rev-list --count HEAD -- images/libvirt nix/pkgs/libvirt.nix nix/lib/image-defaults.nix flake.lock`,
+the number of commits on `main` that touched the image's directory, its libvirt
+derivation, the creation date and labels every Nix image shares, or the flake's
+lock file. The tag is created once and never moved. The first `main` build with a
+new value gets it; every later build with the same value finds it in the registry,
+keeps `latest` and `<sha>` only, and is pruned once superseded. A new tag appears
+when a commit touches one of the four paths: a change to the image, to the libvirt
+override or to the shared image defaults, or a `nixpkgs-images` re-lock, which can
+rebuild QEMU, Ceph or glibc while libvirt keeps its version. A version that is not
+`<major>.<minor>[.<patch>]`, such as `12.2.0-rc1`, fails the step, because the
+prune's keep pattern and Renovate's `allowedVersions` assume that shape. The
+Docker-built image before #1407 carried `<libvirt-package-version>-r<N>`, such as
+`10.0.0-2ubuntu8.19-r2`; the prune keeps those as the lab's rollback target. The lab
+manifests under `deploy/lab/metal-stack/` pin the current tag by digest (see
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
 ## Retention
@@ -1257,12 +1127,12 @@ survives while it carries a **keeper** tag:
 
 | Kept | Example | Why |
 | --- | --- | --- |
-| `latest` | `python-base:latest` | Current base image |
+| `latest` | `backup-shifter:latest` | Current build of a release-independent image |
 | Version | `keystone:29.0.0` | Names an upstream release |
 | Release | `keystone:2026.1` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
 | Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
-| Libvirt keeper | `libvirt:10.0.0-2ubuntu8.19-r1` | The lab manifests pin that build by digest |
+| Libvirt keeper | `libvirt:12.2.0-r57`, and `libvirt:10.0.0-2ubuntu8.19-r2` of the Docker-built image | The lab manifests pin that build by digest; the Docker-built keepers are the lab's rollback target |
 
 Everything else is a build artifact with a successor and is deleted once it is
 older than 24 hours: composite tags, SHA tags in all four shapes
@@ -1288,9 +1158,9 @@ see a plan without deleting anything.
 
 The figure shows both paths for a service image: what every run builds and
 pushes, where a pull request ends, and what a push merges, attests and signs.
-It shows the Docker lineage nova-compute still uses; the service images build
-from Nix through `build-nix-image` and run their unit tests as Nix builds. The
-table lists the differences aspect by aspect.
+It still shows the base-image jobs #1407 retired; #1410 redraws it. The service
+images build from Nix through `build-nix-image` and run their unit tests as Nix
+builds. The table lists the differences aspect by aspect.
 
 ![The image build workflow on its two paths. On every run, build-base-images builds python-base and venv-builder for amd64 and arm64 and pushes them by digest, merge-base-images joins each pair into one manifest and pushes it to ghcr.io, verify-base-images checks both, and generate-matrix works out the services, releases and platforms to build. On a pull request, build-service-images builds each service image for linux/amd64 only and loads it into the local Docker daemon, scans it with Grype, runs its verify script and checks the option catalog. test-service-images runs the upstream unit tests. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, pushes by digest and exports the digest. merge-service-images creates and pushes the manifest with its tags, generates an SBOM, scans the SBOM with Grype and uploads the report, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check, once merge-service-images and test-service-images have passed.](../../diagrams/ci-image-publish.svg)
 
@@ -1298,8 +1168,6 @@ The workflow behaves differently depending on the trigger event:
 
 | Aspect | Pull Request | Push (main / stable/**) |
 | --- | --- | --- |
-| Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
-| Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
 | Service matrix | The services whose sources changed, every release each | Every service |
 | Tempest images | On `images/tempest/**`, its locks, its verify script, a base change, or a plumbing change | Always |
 | OVN, federation proxy, backup shifter, libvirt, openstack-hypervisor-operator, kvm-node-agent | On their own sources, or a plumbing change | Always |
@@ -1307,7 +1175,7 @@ The workflow behaves differently depending on the trigger event:
 | Service image push | No (`docker load` on amd64 runner) | Yes (by digest with skopeo, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
 | SBOM generation | Skipped | CycloneDX JSON for every merged manifest |
-| Vulnerability scanning | Image-based scan on PR (`image:` input): service images in `build-service-images`, base images in `merge-base-images` | SBOM-based scan in the merge jobs (`sbom:` input) |
+| Vulnerability scanning | Image-based scan on PR (`image:` input) in the build jobs | SBOM-based scan in the merge jobs (`sbom:` input) |
 | SBOM attestation | Skipped | Sigstore-signed, pushed to GHCR |
 | Cosign signing | Skipped | Keyless signature for every merged manifest |
 | OIDC token request | None | Requested in merge jobs for Sigstore signing |
@@ -1316,21 +1184,14 @@ The workflow behaves differently depending on the trigger event:
 | ovn image verification | Inline step in `build-ovn` (`verify_ovn.sh` on `:pr-verify`) | Separate `verify-ovn-image` job (pulled by digest from GHCR) |
 | nova-compute image verification | Inline step in `build-nova-compute-image` (`verify_nova_compute.sh`, amd64) | Separate `verify-nova-compute-image` job on `ubuntu-latest` and `ubuntu-24.04-arm` |
 
-On a pull request every Nix-built image (the service images, Tempest and the backup
-shifter) is scanned twice: Grype scans the loaded image, and vulnix scans the store
+On a pull request every Nix-built image (every image but the federation proxy) is
+scanned twice: Grype scans the loaded image, and vulnix scans the store
 paths of the image
 ([The build-nix-image action](./nix-image-build.md#the-build-nix-image-action)).
 
-**Why base images are always pushed:** The nova-compute Dockerfile, the one service
-Dockerfile left, references the base images via `docker-image://` URIs in build
-contexts. This Docker BuildKit feature requires the referenced image to exist in a
-registry — local images are not sufficient. Pushing small base images on every PR is
-a deliberate trade-off to keep that Dockerfile registry-independent.
-
 **Why PRs use single-arch for service images:** `docker load` reads a single-platform
 image, and a multi-platform image cannot be loaded into the local Docker daemon. Since the inline verification step needs the image locally,
-PRs build only `linux/amd64`. Base images are still built for both platforms on PRs (by
-digest), so the native ARM runner is exercised without requiring a locally loaded result.
+PRs build only `linux/amd64`. The arm64 images are built and verified on push.
 
 ## GHA Caching
 
@@ -1345,14 +1206,11 @@ Each image has a unique cache scope per platform to prevent cross-arch cache col
 
 | Image | Scope |
 | --- | --- |
-| `python-base` | `python-base-linux-amd64` / `python-base-linux-arm64` |
-| `venv-builder` | `venv-builder-linux-amd64` / `venv-builder-linux-arm64` |
-| `nova-compute` | `nova-compute-<release>-linux-amd64` / `nova-compute-<release>-linux-arm64` |
+| `keystone-federation-proxy` | `keystone-federation-proxy-linux-amd64` / `keystone-federation-proxy-linux-arm64` |
 
 The `mode=max` setting caches all intermediate layers, not just the final image layer.
 
-A Nix-built image, the service, Tempest, ovn, hvo and kna images among them, uses no
-`type=gha` scope: its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
+A Nix-built image, every image but the federation proxy, uses no `type=gha` scope: its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
 ([Binary cache](./nix-image-build.md#binary-cache)).
 
 ## Action Pinning
@@ -1413,8 +1271,8 @@ action; the table lists four of them:
 
 | Image | SBOM output file | Job |
 | --- | --- | --- |
-| `python-base` | `sbom-python-base.cyclonedx.json` | `merge-base-images` |
-| `venv-builder` | `sbom-venv-builder.cyclonedx.json` | `merge-base-images` |
+| `libvirt` | `sbom-libvirt.cyclonedx.json` | `merge-libvirt-image` |
+| `nova-compute` | `sbom-nova-compute-${{ matrix.release }}.cyclonedx.json` | `merge-nova-compute-image` |
 | `tempest` | `sbom-tempest-${{ matrix.release }}.cyclonedx.json` | `merge-tempest-image` |
 | Service (e.g., `keystone`) | `sbom-${{ matrix.service }}.cyclonedx.json` | `merge-service-images` |
 
@@ -1423,9 +1281,10 @@ action; the table lists four of them:
 ### PR Behavior
 
 The `supply-chain-attest` composite action uses its `scan-mode` input to control PR vs
-push behavior. On pull requests, merge jobs pass `scan-mode: image` which runs only the
-Grype vulnerability scan (no SBOM generation, no attestation, no signing). On push
-events, merge jobs use the default `scan-mode: sbom` for the full pipeline.
+push behavior. On pull requests the merge jobs do not run, and the build jobs pass
+`scan-mode: image`, which runs only the Grype vulnerability scan (no SBOM generation,
+no attestation, no signing). On push events, merge jobs use the default
+`scan-mode: sbom` for the full pipeline.
 
 On pull requests:
 
@@ -1433,11 +1292,6 @@ On pull requests:
 - No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.
 - No attestations are created for ephemeral PR builds.
 - PR CI time is not increased by SBOM/attestation steps.
-
-Base images are always pushed to GHCR (even on PRs) because the nova-compute build
-references them via `docker-image://` URIs. However, SBOM generation and attestation for
-base images are still skipped on PRs — the composite action's `scan-mode` guard applies
-uniformly.
 
 ### Required Permissions
 
@@ -1451,8 +1305,9 @@ SBOM attestation requires three additional job-level permissions beyond the exis
 | `artifact-metadata: write` | Allows `actions/attest` to write its storage record |
 
 These permissions are granted to every merge job, to `build-service-images` and to
-`build-nova-compute-image`. Verification jobs (`verify-base-images`,
-`verify-service-images`) do not receive these permissions.
+`build-nova-compute-image`. Verification jobs (`verify-service-images`,
+`verify-nova-compute-image` and the other `verify-*` jobs) do not receive these
+permissions.
 
 ### Verifying Attestations
 
@@ -1488,15 +1343,14 @@ The `verify_build_images_workflow.sh` script validates SBOM/attestation configur
 
 | Test | Validates |
 | --- | --- |
-| `test_sbom_permissions_on_build_base_images` | `id-token: write` and `attestations: write` on `merge-base-images` |
 | `test_sbom_permissions_on_build_service_images` | `id-token: write` and `attestations: write` on `merge-service-images` |
-| `test_verify_jobs_no_sbom_permissions` | `verify-base-images`, `verify-service-images`, `test-service-images`, `verify-ovn-image`, `verify-hvo-image` and `verify-kna-image` do **not** have `id-token` or `attestations` permissions |
-| `test_sbom_generation_steps_exist` | `supply-chain-attest` has one `anchore/sbom-action` step; `merge-base-images` calls `merge-manifest-and-attest` twice, `merge-service-images` once |
+| `test_verify_jobs_no_sbom_permissions` | `verify-service-images`, `test-service-images`, `verify-ovn-image`, `verify-hvo-image`, `verify-kna-image` and `verify-nova-compute-image` do **not** have `id-token` or `attestations` permissions |
+| `test_sbom_generation_steps_exist` | `supply-chain-attest` has one `anchore/sbom-action` step; `merge-libvirt-image` and `merge-service-images` call `merge-manifest-and-attest` once each |
 | `test_sbom_format_cyclonedx_json` | The SBOM step specifies `format: cyclonedx-json` |
-| `test_sbom_generation_references_digest` | The SBOM step builds its image ref from `inputs.image-name` and `inputs.image-digest`; `merge-manifest-and-attest` forwards `steps.merge.outputs.digest`; the three merge calls pass their image |
+| `test_sbom_generation_references_digest` | The SBOM step builds its image ref from `inputs.image-name` and `inputs.image-digest`; `merge-manifest-and-attest` forwards `steps.merge.outputs.digest`; the libvirt and service merge calls pass their image |
 | `test_sbom_attestation_steps_exist` | `supply-chain-attest` has one `actions/attest` step |
 | `test_sbom_attestation_push_to_registry` | The `actions/attest` step has `push-to-registry: true` |
-| `test_sbom_steps_pr_skip_guard` | The SBOM and attestation steps have the `scan-mode == 'sbom'` guard; both `merge-base-images` calls pick `scan-mode` from the event name; `merge-service-images` has the job-level `github.event_name != 'pull_request'` guard |
+| `test_sbom_steps_pr_skip_guard` | The SBOM and attestation steps have the `scan-mode == 'sbom'` guard; `merge-service-images` and `merge-libvirt-image` have the job-level `github.event_name != 'pull_request'` guard |
 
 ## Cosign Image Signing
 
@@ -1525,8 +1379,8 @@ action; the table lists four of them:
 
 | Image | Job | Digest source |
 | --- | --- | --- |
-| `python-base` | `merge-base-images` | `steps.merge-python-base.outputs.digest` |
-| `venv-builder` | `merge-base-images` | `steps.merge-venv-builder.outputs.digest` |
+| `libvirt` | `merge-libvirt-image` | `steps.merge-libvirt.outputs.digest` |
+| `nova-compute` | `merge-nova-compute-image` | `steps.merge-nova-compute.outputs.digest` |
 | `tempest` | `merge-tempest-image` | `steps.merge-tempest.outputs.digest` |
 | Service (e.g., `keystone`) | `merge-service-images` | `steps.merge-service.outputs.digest` |
 
@@ -1561,8 +1415,7 @@ The `verify_build_images_workflow.sh` script validates cosign signing configurat
 
 | Test | Validates |
 | --- | --- |
-| `test_cosign_installer_in_build_base_images` | `setup-docker-registry` has one `sigstore/cosign-installer` step, and `merge-base-images` leaves `install-cosign` at its default |
-| `test_cosign_installer_in_build_service_images` | `merge-service-images` leaves `install-cosign` at its default |
+| `test_cosign_installer_in_build_service_images` | `setup-docker-registry` has one `sigstore/cosign-installer` step, and `merge-service-images` leaves `install-cosign` at its default |
 | `test_cosign_sign_steps_count` | `supply-chain-attest` has one `cosign sign` step |
 | `test_cosign_sign_steps_pr_guard` | The sign step has the `scan-mode == 'sbom'` guard; `merge-service-images` has the job-level `github.event_name != 'pull_request'` guard |
 | `test_cosign_sign_steps_reference_digest` | The sign step takes `IMAGE_NAME` and `IMAGE_DIGEST` from the action inputs and signs `${IMAGE_NAME}@${IMAGE_DIGEST}` |
@@ -1613,8 +1466,8 @@ action; the table lists four of them:
 
 | Image | SARIF category | Push job (uploads) | PR job (scan only) |
 | --- | --- | --- | --- |
-| `python-base` | `grype-python-base` | `merge-base-images` | `merge-base-images` |
-| `venv-builder` | `grype-venv-builder` | `merge-base-images` | `merge-base-images` |
+| `libvirt` | `grype-libvirt` | `merge-libvirt-image` | `build-libvirt` |
+| `nova-compute` | `grype-nova-compute-${{ matrix.release }}` | `merge-nova-compute-image` | `build-nova-compute-image` |
 | `tempest` | `grype-tempest-${{ matrix.release }}` | `merge-tempest-image` | `build-tempest` |
 | Service (e.g., `keystone`) | <code v-pre>grype-${{ matrix.service }}</code> | `merge-service-images` | `build-service-images` |
 
@@ -1635,10 +1488,9 @@ for `sbom` mode and one for `image` mode — because `anchore/scan-action` docum
 The SARIF upload step uses a fallback expression to reference whichever scan step
 produced output, since exactly one runs per invocation.
 
-For base images on PRs, the image is referenced by digest from GHCR (base images are
-always pushed). For service images on PRs, the image is referenced by the composite tag
-from `steps.tags.outputs.composite` (service images use `load: true` on PRs, making them
-available locally).
+On PRs, the image is referenced by the local tag the build job gave the loaded image:
+the composite tag from `steps.tags.outputs.composite` for a service image,
+`<image>:pr-verify` for a release-independent one.
 
 ### Severity Threshold
 
@@ -1667,7 +1519,7 @@ ignore:
 The ignore list is initially empty. To add a CVE suppression, append an entry with the
 CVE identifier, a justification explaining why the CVE is acceptable, and optionally a
 `fix-state` field (`fixed`, `not-fixed`, `wont-fix`, or `unknown`). This prevents
-false-positive build failures on unfixable base-image vulnerabilities without disabling
+false-positive build failures on unfixable vulnerabilities without disabling
 scanning entirely.
 
 ### SARIF Integration
@@ -1675,9 +1527,8 @@ scanning entirely.
 Grype scan results are uploaded to the GitHub Security tab via
 `github/codeql-action/upload-sarif`:
 
-- Each image has a unique SARIF `category` value (e.g., `grype-python-base`,
-  `grype-venv-builder`, `grype-<service>`) for per-image categorization in the Security
-  dashboard
+- Each image has a unique SARIF `category` value (e.g., `grype-libvirt`,
+  `grype-<service>`) for per-image categorization in the Security dashboard
 - Upload steps use `if: always()` with a guard for non-empty SARIF output, ensuring
   clean skip when a scan step crashes without producing output
 - Uploads run on push events only (`github.event_name != 'pull_request'`); the SARIF
@@ -1687,10 +1538,10 @@ Grype scan results are uploaded to the GitHub Security tab via
 ### Required Permissions
 
 SARIF upload requires `security-events: write` permission on the merge jobs
-(`merge-base-images`, `merge-tempest-image`, `merge-service-images` and the other
-`merge-*-image` jobs). The per-platform build jobs scan on pull requests without
-uploading and hold no `security-events` permission, and neither do the verification jobs
-(`verify-base-images`, `verify-service-images`): least privilege.
+(`merge-tempest-image`, `merge-service-images` and the other `merge-*-image` jobs). The
+per-platform build jobs scan on pull requests without uploading and hold no
+`security-events` permission, and neither do the verification jobs
+(`verify-service-images` and the other `verify-*` jobs): least privilege.
 
 ### Test Coverage
 
@@ -1699,17 +1550,17 @@ configuration:
 
 | Test | Validates |
 | --- | --- |
-| `test_grype_scan_steps_in_build_base_images` | 2 `anchore/scan-action` steps exist in `supply-chain-attest` (SBOM + image) |
+| `test_grype_scan_steps_in_supply_chain_attest` | 2 `anchore/scan-action` steps exist in `supply-chain-attest` (SBOM + image) |
 | `test_grype_scan_step_in_build_service_images` | `build-push-image` calls `supply-chain-attest` once, and the `build-service` step passes a `grype-category` with `matrix.service` |
 | `test_grype_scan_action_sha_pinned` | `anchore/scan-action` is SHA-pinned with `# v7` version comment |
-| `test_grype_scan_steps_cover_both_contexts` | The `grype-sbom` step has the `scan-mode == 'sbom'` guard and the `grype-image` step the `scan-mode == 'image'` guard; both `merge-base-images` calls toggle `scan-mode` on the event name; `merge-service-images` has the job-level pull-request guard; the `build-push-image` scan call is guarded on `push-by-digest == 'false'` and uses `scan-mode: image` |
-| `test_grype_sbom_input_wiring` | The `grype-sbom` step reads `inputs.sbom-output-file`, and the merge calls pass the filenames (`sbom-python-base.cyclonedx.json`, etc.) |
+| `test_grype_scan_steps_cover_both_contexts` | The `grype-sbom` step has the `scan-mode == 'sbom'` guard and the `grype-image` step the `scan-mode == 'image'` guard; `merge-service-images` has the job-level pull-request guard; the `build-push-image` scan call is guarded on `push-by-digest == 'false'` and uses `scan-mode: image` |
+| `test_grype_sbom_input_wiring` | The `grype-sbom` step reads `inputs.sbom-output-file`, and the merge calls pass the filenames (`sbom-libvirt.cyclonedx.json`, etc.) |
 | `test_grype_image_input_wiring` | The `grype-image` step reads `inputs.image-ref-for-scan`; `merge-manifest-and-attest` builds it from `inputs.image` and the merged digest; the `build-service` step passes the composite tag |
 | `test_grype_severity_threshold` | Both Grype steps use `severity-cutoff: high` |
 | `test_grype_fail_build_false` | Both Grype steps use `fail-build: false` |
 | `test_grype_output_format_sarif` | Both Grype steps use `output-format: sarif` |
 | `test_sarif_upload_steps_exist` | 1 `upload-sarif` step in `supply-chain-attest` |
-| `test_sarif_upload_categories` | The upload category forwards `inputs.grype-category`; the callers pass `grype-python-base`, `grype-venv-builder` and categories with `matrix.service` |
+| `test_sarif_upload_categories` | The upload category forwards `inputs.grype-category`; the callers pass `grype-libvirt` and categories with `matrix.service` |
 | `test_sarif_upload_always_condition` | The SARIF upload step has `if: always()`, the pull-request guard, and the SARIF output guard |
 | `test_sarif_upload_action_sha_pinned` | `github/codeql-action/upload-sarif` is SHA-pinned with `# v4` version comment |
 | `test_sarif_upload_references_grype_output` | SARIF upload `sarif_file` references Grype step output |
@@ -1729,17 +1580,16 @@ static ones at push time. A Nix-built image sets its labels in its Nix expressio
 Each Dockerfile includes a `LABEL` instruction with four OCI annotations that are always
 present, regardless of whether the image is built locally or in CI:
 
-| Label | Value (example for nova-compute) |
+| Label | Value (example for keystone-federation-proxy) |
 | --- | --- |
-| `org.opencontainers.image.title` | `nova-compute` |
-| `org.opencontainers.image.description` | `OpenStack nova-compute service` |
+| `org.opencontainers.image.title` | `keystone-federation-proxy` |
+| `org.opencontainers.image.description` | `Apache/mod_auth_openidc reverse-proxy sidecar for Keystone OIDC federation` |
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 
-In `python-base` and `venv-builder`, the `LABEL` instruction is placed after the last
-`RUN` instruction. In a multi-stage Dockerfile such as `nova-compute`'s, the `LABEL` is
-placed in the runtime stage before the `USER` instruction, because Docker discards the
-labels of the build stage.
+The `LABEL` instruction is placed after the last `RUN` instruction. In a multi-stage
+Dockerfile such as `operators/Dockerfile`, the `LABEL` is placed in the final stage,
+because Docker discards the labels of a build stage.
 
 ### CI Metadata Action
 
@@ -1752,7 +1602,7 @@ labels. The action auto-generates dynamic labels from the GitHub context:
 | `org.opencontainers.image.revision` | `GITHUB_SHA` (40-character Git SHA) |
 | `org.opencontainers.image.source` | GitHub repository URL |
 | `org.opencontainers.image.url` | GitHub repository URL |
-| `org.opencontainers.image.version` | Git-derived version (or raw override for nova-compute) |
+| `org.opencontainers.image.version` | Git-derived version |
 
 The `labels` input of each metadata-action step provides the four custom labels (title,
 description, licenses, vendor). These supplement the auto-generated labels.
@@ -1787,12 +1637,10 @@ The upstream version of a service image comes from its lock: `nix/lib/service-im
 sets `org.opencontainers.image.version` to the `ref` of the lock's `sources.json`, the
 value `releases/<release>/source-refs.yaml` pins. The OCI version annotation therefore
 reflects the software version, not a Git-derived one, and no `type=raw` metadata
-strategy is involved. The nova-compute build keeps the `type=raw` strategy for the same
-purpose: its `Build compute image` step passes the source ref as the
-`metadata-tags` input, which `build-push-image` hands to the `tags` input of its `meta`
-step. The base images (`python-base`, `venv-builder`) use the default Git-derived
-version strategy, which is appropriate for infrastructure images without an upstream
-software version.
+strategy is involved. nova-compute gets nova's ref the same way, from the nova lock.
+The federation proxy, the one image `build-push-image` still builds here, uses the
+default Git-derived version strategy, which fits an image without an upstream software
+version.
 
 > **Note:** The `tags` input on `docker/metadata-action` controls the
 > `org.opencontainers.image.version` label, not the image tags passed to
@@ -1806,16 +1654,12 @@ The `verify_build_images_workflow.sh` script validates OCI annotation configurat
 
 | Test | Validates |
 | --- | --- |
-| `test_metadata_action_steps_exist_in_build_base_images` | `build-push-image` has one `docker/metadata-action` step with the ID `meta`, and `build-base-images` calls `build-push-image` twice |
-| `test_base_metadata_steps_have_no_tags_override` | `build-python-base` and `build-venv-builder` do not pass a `metadata-tags` input |
-| `test_python_base_build_push_has_labels_input` | `build` step of `build-push-image` wires `steps.meta.outputs.labels` |
-| `test_venv_builder_build_push_has_labels_input` | `build-venv-builder` step passes `labels-title: venv-builder` |
-| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the `build-python-base` and `build-venv-builder` steps pass `labels-title` |
-| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the same two steps pass `labels-description` |
+| `test_build_push_image_has_labels_input` | `build` step of `build-push-image` wires `steps.meta.outputs.labels` |
+| `test_oci_base_labels_in_build_steps` | The federation proxy's build step passes `org.opencontainers.image.base.name` and `.base.digest` in `extra-labels` |
+| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the federation proxy's build step passes `labels-title` |
+| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the federation proxy's build step passes `labels-description` |
 | `test_metadata_action_labels_include_oci_licenses` | The `meta` step includes `org.opencontainers.image.licenses=Apache-2.0` |
 | `test_metadata_action_labels_include_oci_vendor` | The `meta` step includes `org.opencontainers.image.vendor` |
-| `test_dockerfile_static_labels_python_base` | `images/python-base/Dockerfile` has `LABEL` for title, description, licenses, vendor |
-| `test_dockerfile_static_labels_venv_builder` | `images/venv-builder/Dockerfile` has `LABEL` for title, description, licenses, vendor |
 
 ## Adding a New Service
 
@@ -1950,8 +1794,9 @@ this path have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
 - Static assertions: the job structure and tag scheme in
   `verify_build_images_workflow.sh`, a note in `verify_release_config.sh`
   recording why the image is absent from its `SERVICES` list, and a check in
-  `verify_deviation_comments.sh` when the image deviates from the `python-base`
-  user, by creating the `openstack` user itself or by keeping root.
+  `verify_deviation_comments.sh` when the image deviates from the user of
+  `nix/lib/service-image.nix`, by creating the `openstack` user itself or by
+  keeping root.
 - A Renovate `customManager` for the pin, `packageRules` for the update
   types the image accepts, and a regression test under `tests/unit/renovate/`.
   A pin with a hash fails `nix-lock-check` after a Renovate move until
@@ -1964,9 +1809,9 @@ An image pinned to an upstream commit instead of a version names its resolver
 `build-hvo` and `verify_hvo.sh`, and `kvm-node-agent` has
 `hack/ci-resolve-kna-commit.sh`, `build-kna` and `verify_kna.sh`.
 
-An image built from distro packages alone (`keystone-federation-proxy`,
-`libvirt`) has no upstream pin and therefore skips the resolver script and the
-Renovate `customManager`.
+An image built from distro packages alone (`keystone-federation-proxy`) or from
+nixpkgs alone (`libvirt`, `backup-shifter`) has no upstream pin of its own and
+therefore skips the resolver script and the Renovate `customManager`.
 
 ## Adding a New Release
 
@@ -1978,7 +1823,7 @@ Create the release directory with required files:
 
 ```text
 releases/2026.1/
-├── extra-packages.yaml       # Extra pip/apt packages per service
+├── extra-packages.yaml       # Extra pip packages per service
 ├── source-refs.yaml          # Service versions for this release
 ├── test-refs.yaml            # PyPI version pins for test tooling
 ├── test-excludes/            # (Optional) Per-service stestr exclude-lists
@@ -1987,8 +1832,8 @@ releases/2026.1/
 ```
 
 `extra-packages.yaml` is required — `hack/nix-lock.sh` reads the extras and pip
-packages of every service from it, and the nova-compute build reads its three build
-arguments. `test-refs.yaml` is required — the tempest lock pins its five keys (tempest
+packages of every service from it, and the `nova-compute` block into the nova lock's
+`nova-compute` group. `test-refs.yaml` is required — the tempest lock pins its five keys (tempest
 and the barbican, keystone, neutron and cinder plugins). Then run `make nix-lock`, which
 writes the locks of the new release under `nix/locks/<release>/`, and commit them. See
 [Container Images — extra-packages.yaml](container-images.md#extra-packages-yaml) for
@@ -2089,8 +1934,8 @@ The verify-container-images workflow is intentionally separate from `build-image
 because it tests container _infrastructure_ (file structure, conventions, configs) rather
 than the container _images_ themselves. Separate workflows provide clear, independent
 signals in GitHub's check status UI. The Docker-based image verification tests
-(`verify_python_base.sh`, `verify_venv_builder.sh`, `verify_<service>.sh`) run inside
-`build-images.yaml` where the images are actually built.
+(`verify_<service>.sh`, `verify_libvirt.sh` and the other per-image scripts) run
+inside `build-images.yaml` where the images are actually built.
 
 ## Verification Coverage Summary
 
@@ -2103,8 +1948,6 @@ The following table summarizes which test scripts run where:
 | `verify_release_config.sh` | verify-static-tests | — | No |
 | `verify_spdx_headers.sh` | verify-static-tests | — | No |
 | `test_apply_constraint_overrides.sh` | verify-static-tests | — | No |
-| `verify_python_base.sh` | — | verify-base-images | Yes |
-| `verify_venv_builder.sh` | — | verify-base-images | Yes |
 | `verify_<service>.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
 | `verify_ovn.sh` | — | build-ovn (PR) / verify-ovn-image (push) | Yes |
 | `verify_nova_compute.sh` | — | build-nova-compute-image (PR) / verify-nova-compute-image (push) | Yes |
@@ -2124,20 +1967,21 @@ The file starts with the standard SPDX license header:
 ---
 ```
 
-## Dependencies on Base Images and Release Configs
+## Dependencies on Release Configs
 
 The build-images workflow depends on the following artifacts:
 
 | Artifact | Used by | Purpose |
 | --- | --- | --- |
-| `images/python-base/Dockerfile` | `build-base-images` | Python runtime base image of nova-compute |
-| `images/venv-builder/Dockerfile` | `build-base-images` | Build-stage image of nova-compute with uv and compilers |
 | `images/<service>/image.nix` | `build-service-images` | Service image (Nix expression over `nix/lib/service-image.nix`) |
-| `nix/locks/<release>/<service>/` | `build-service-images`, `test-service-images`, `nix-lock-check` | The lock of the service release: source pin, patches, resolved dependencies |
+| `images/nova-compute/image.nix` | `build-nova-compute-image` | The compute image, built from the nova lock's `nova-compute` group |
+| `images/libvirt/image.nix`, `nix/pkgs/libvirt.nix` | `build-libvirt` | The libvirt image and the libvirt it shares with nova-compute |
+| `nix/locks/<release>/<service>/` | `build-service-images`, `build-nova-compute-image`, `test-service-images`, `nix-lock-check` | The lock of the service release: source pin, patches, resolved dependencies |
+| `nix/base-requirements.txt` | `nix-lock-check` | The base pins of every lock |
 | `flake.nix`, `flake.lock` | every Nix job | The flake inputs and outputs |
 | `images/<name>/source.json` | `build-ovn`, `build-hvo`, `build-kna`, `nix-lock-check` | The pin of an image built from an upstream commit |
-| `releases/2026.1/source-refs.yaml` | `nix-lock-check`, `build-nova-compute-image` | Upstream version resolution |
-| `releases/2026.1/upper-constraints.txt` | `nix-lock-check`, `build-nova-compute-image` | Python dependency pins |
-| `scripts/apply-constraint-overrides.sh` | `nix-lock-check`, `build-nova-compute-image` | Constraint override application |
+| `releases/2026.1/source-refs.yaml` | `nix-lock-check`, `build-service-images` | Upstream version resolution |
+| `releases/2026.1/upper-constraints.txt` | `nix-lock-check` | Python dependency pins |
+| `scripts/apply-constraint-overrides.sh` | `nix-lock-check`, `build-service-images` | Constraint override application |
 
 :::

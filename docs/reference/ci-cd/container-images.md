@@ -6,165 +6,48 @@ quadrant: infrastructure
 # Container Images
 
 Reference documentation for the container image build system. This covers
-the Dockerfile hierarchy, base image contents, the contents of every service
-image, release configuration file formats, named build context patterns,
-constraint override tooling, and local build instructions. The eight Python
-service images (keystone, horizon, glance, placement, barbican, neutron,
-cinder, nova), the Tempest image and `backup-shifter` are built by the root
+the two Dockerfiles left, the contents of every service image, release
+configuration file formats, constraint override tooling, and local build
+instructions. The eight Python service images (keystone, horizon, glance,
+placement, barbican, neutron, cinder, nova), `nova-compute`, the Tempest image
+and the release-independent `backup-shifter`, `ovn`, `libvirt`,
+`openstack-hypervisor-operator` and `kvm-node-agent` are built by the root
 flake from `images/<name>/image.nix`, as
 [Nix Image Build](./nix-image-build.md) describes; the sections below name
 what each of them carries.
 
 ## Dockerfile Hierarchy
 
-nova-compute is the one OpenStack service image left on the three-layer
-Docker hierarchy until #1407 moves it to Nix. Each layer builds on the
-previous one, separating concerns between runtime base, build tooling, and
-service-specific code.
+Two Dockerfiles are left: `images/keystone-federation-proxy/Dockerfile`, a
+single stage on `ubuntu:noble` with the distro's apache2, mod_auth_openidc
+and mod_auth_mellon ([#1408](https://github.com/C5C3/cobaltcore/issues/1408)
+moves it to Nix), and `operators/Dockerfile`, which builds every operator image
+([#1409](https://github.com/C5C3/cobaltcore/issues/1409)). Every other image
+has no Dockerfile: the root flake builds it from `images/<name>/image.nix`
+([Nix Image Build](./nix-image-build.md)).
 
-The figure follows one service image from the files of the repository to the
-image: which file feeds which step before the build, which stage starts from
-which base image, and what the two contexts and the three build args carry. It
-shows the Docker lineage nova-compute still uses; the other service images
-build from Nix. The table names both stages of the nova-compute build.
+The figure shows the Docker lineage of the service images,
+`ubuntu:noble` to `python-base` to `venv-builder`, which #1407 retired with the
+Docker build of nova-compute; #1410 redraws it. A service image is now built
+from the lock under `nix/locks/<release>/<name>/`
+([Python environments and locks](./nix-image-build.md#python-environments-and-locks)).
 
 ![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
 
-| Image | Build stage, on `venv-builder` | Runtime stage, on `python-base` |
-| --- | --- | --- |
-| `nova-compute` | installs Nova and `libvirt-python`, built against `libvirt-dev` | copies the virtualenv, adds host tools and the rootwrap posture |
-
-The `venv-builder` image never runs in production. It is the `FROM` target of
-the nova-compute build stage, which extends `venv-builder` to install nova;
-the runtime stage extends `python-base` and copies only the virtualenv from
-it. This ensures the final image contains no build tools.
-
-The release-independent images sit outside that lineage. They carry no
-OpenStack code, and two of them build straight on `ubuntu:noble`:
-
-```text
-ubuntu:noble
-├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
-└── libvirt                    Single stage: distro libvirt + QEMU + OVMF
-```
-
-`backup-shifter`, `ovn`, `openstack-hypervisor-operator`, `kvm-node-agent`,
-the eight Python service images and `tempest` have no Dockerfile: the root
-flake builds them from `images/<name>/image.nix`
-([Nix Image Build](./nix-image-build.md)). `ovn` compiles Open vSwitch and OVN
-from pinned upstream commits; `openstack-hypervisor-operator` and
-`kvm-node-agent` compile a Go program from a pinned upstream commit with the
-patches under `images/<name>/patches/` and run it on the distroless-equivalent
-image of `nix/lib/static-image.nix`.
-
-Each is described under [Release-independent images](#release-independent-images).
-
-## Base Images
-
-### python-base
-
-**Location:** `images/python-base/Dockerfile`
-
-The runtime base of the nova-compute image, the one service image still built
-by Docker.
-
-| Property | Value |
-| --- | --- |
-| Base image | `ubuntu:noble` (Ubuntu 24.04 LTS) |
-| Python | 3.12 (from Ubuntu Noble package repository) |
-| User | `openstack` (UID 42424, GID 42424, shell `/usr/sbin/nologin`) |
-| Home directory | `/var/lib/openstack` |
-
-**Environment variables:**
-
-| Variable | Value | Purpose |
-| --- | --- | --- |
-| `PATH` | `/var/lib/openstack/bin:$PATH` | Ensures virtualenv binaries take precedence |
-| `LANG` | `C.UTF-8` | Consistent locale for Python string handling |
-
-**Runtime packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `ca-certificates` | TLS certificate verification |
-| `netbase` | `/etc/protocols` and `/etc/services` for network operations |
-| `python3` | Python 3.12 runtime |
-| `sudo` | Privilege escalation for entrypoint scripts |
-| `tzdata` | Timezone data for datetime operations |
-
-**User convention:** All service images share a single `openstack` user (UID/GID 42424)
-rather than creating per-service users. This is a deliberate deviation from the architecture
-document — see [Design Deviations](#design-deviations) for rationale.
-
-**OCI labels:** The Dockerfile includes static `LABEL` instructions for baseline
-OCI Image Spec annotations (`title`, `description`, `licenses`, `vendor`). These are
-always present on locally-built images. In CI, `docker/metadata-action` supplements these
-with dynamic labels (created, revision, source, url, version) — see
-[Build Images Workflow — OCI Annotations](build-images-workflow.md#oci-annotations).
-
-### venv-builder
-
-**Location:** `images/venv-builder/Dockerfile`
-
-Build-stage image that extends `python-base` with compilation tools and a prepared
-Python virtualenv. This image is never deployed. It is the `FROM` target of the
-nova-compute build stage, and it retires with that image in #1407.
-
-| Property | Value |
-| --- | --- |
-| Base image | `python-base` (local) |
-| Package manager | `uv` 0.12.5 (copied from the digest-pinned `ghcr.io/astral-sh/uv:0.12.5`; tracked by Renovate) |
-| Virtualenv path | `/var/lib/openstack` |
-
-**Build-time packages:**
-
-| Package | Purpose |
-| --- | --- |
-| `build-essential` | C compiler and make (for building Python C extensions) |
-| `git` | Fetching Python packages from git repositories |
-| `libffi-dev` | cffi/cryptography compilation |
-| `libldap2-dev` | OpenLDAP development headers and libraries |
-| `libpq-dev` | psycopg2 compilation (PostgreSQL client) |
-| `libsasl2-dev` | Cyrus SASL development headers and libraries |
-| `libssl-dev` | cryptography/pyOpenSSL compilation |
-| `python3-dev` | Python headers for C extensions |
-| `python3-venv` | `venv` module for virtualenv creation |
-| `qemu-utils` | `qemu-img`, which cinder's `TestFormatInspectors` shell out to when they build their fixture images. Not a build dependency: the container ran the service unit tests until #1405, which moved them to `nix/lib/service-tests.nix` |
-
-**Pre-installed common packages:**
-
-The virtualenv includes five packages shared by all OpenStack services, version-pinned in
-`images/venv-builder/requirements.txt`. `hack/nix-lock.sh` adds the same pins to every
-lock under `nix/locks/`:
-
-| Package | Purpose |
-| --- | --- |
-| `cryptography` | TLS, token encryption, Fernet keys |
-| `pymemcache` | Memcached client (pure-Python `pymemcache` backend) |
-| `pymysql` | MySQL/MariaDB database driver |
-| `python-memcached` | Memcached client for caching |
-| `uwsgi` | WSGI application server |
-
-These packages are **version-pinned** in `requirements.txt` so the `venv-builder` image is
-reproducible — without pins they would resolve to whatever is latest on PyPI at build time.
-The image stays release-independent: the pins are deliberately not taken from any single
-release's `upper-constraints.txt`. The OpenStack-dependency subset (`cryptography`,
-`pymemcache`, `pymysql`, `python-memcached`) is authoritatively re-pinned per release by
-the nova-compute Dockerfile via `uv pip install --constraint upper-constraints.txt` and by
-the constraints of each lock; `uwsgi` is not
-an OpenStack dependency (it is absent from `upper-constraints.txt`), so its version is fixed
-here. Renovate tracks these pins through its native `pip_requirements` manager — major bumps
-are gated for manual review, minor/patch are automerged after a three-day soak.
-
-**OCI labels:** Same static `LABEL` pattern as `python-base` — title, description,
-licenses, and vendor are embedded in the Dockerfile for local build visibility.
+`ovn` compiles Open vSwitch and OVN from pinned upstream commits;
+`openstack-hypervisor-operator` and `kvm-node-agent` compile a Go program from
+a pinned upstream commit with the patches under `images/<name>/patches/` and
+run it on the distroless-equivalent image of `nix/lib/static-image.nix`;
+`libvirt` runs the libvirt of `nix/pkgs/libvirt.nix` with the QEMU of
+`images/libvirt/qemu.nix`. Each is described under
+[Release-independent images](#release-independent-images).
 
 ## Service Images
 
 CI builds, verifies and publishes these images through the
 [Build Images Workflow](build-images-workflow.md). The figure shows that
-workflow on a pull request and on a push. It shows the Docker lineage
-nova-compute still uses: the other service images build from Nix through the
+workflow on a pull request and on a push, with the base-image jobs #1407
+retired; #1410 redraws it. The service images build from Nix through the
 `build-nix-image` action, and their unit tests run as Nix builds.
 [PR vs Push Behavior](build-images-workflow.md#pr-vs-push-behavior) lists the
 differences aspect by aspect.
@@ -176,8 +59,8 @@ differences aspect by aspect.
 **Location:** `images/keystone/image.nix`, built from the lock
 `nix/locks/<release>/keystone/` ([Nix Image Build](./nix-image-build.md#service-images))
 
-The venv holds keystone with its `ldap` extra and uwsgi from the venv-builder
-pins. pyproject.nix generates no PBR `wsgi_scripts`, so `image.nix` writes the
+The venv holds keystone with its `ldap` extra and uwsgi from the base pins
+of `nix/base-requirements.txt`. pyproject.nix generates no PBR `wsgi_scripts`, so `image.nix` writes the
 uWSGI entry script `/var/lib/openstack/bin/keystone-wsgi-public`; its callable
 matches the `wsgi_scripts` entry of keystone's `setup.cfg`. The
 keystone-operator launches uWSGI with `--wsgi-file` on that path.
@@ -231,7 +114,7 @@ image are horizon's own:
   ConfigMap is mounted
 
 **Runtime packages:** none beyond the venv; the pymemcache session-cache client
-and uwsgi come from the venv-builder pins.
+and uwsgi come from the base pins of `nix/base-requirements.txt`.
 
 **Final image properties:**
 
@@ -386,7 +269,7 @@ that carries neither function fails the test.
 runs its suite under stestr (the default path, as for keystone). No release
 carries an exclude file. The first CI run of the 33.0.0 suite counted 2,423
 tests with the one `test_new_image_with_location` failure the source patch
-above removes; a run of the patched tree in the venv-builder container
+above removes; a run of the patched tree in the Docker build container
 (local, arm64, 2026-10-10) counted 2,423 tests and passed with no failure:
 2,422 passed, 1 skipped.
 
@@ -771,7 +654,7 @@ the pipeline that runs them, so the test run carries `qemu-utils` instead.
 `releases/2026.1/test-excludes/cinder.txt` excludes one test,
 `test_put_container_disabled`, which passes upstream only because tox runs
 unprivileged and `os.makedirs` raises `PermissionError`, whereas the
-venv-builder container of the first runs ran it as root; the first run of the 28.0.0 suite counted 18,076
+Docker build container of the first runs ran it as root; the first run of the 28.0.0 suite counted 18,076
 tests. `releases/2026.2/test-excludes/cinder.txt` keeps that one pattern, and
 the first run of the 29.0.0 suite counted 19,003 tests with no failure (18,984
 passed, 19 skipped).
@@ -1022,17 +905,19 @@ bash tests/container-images/verify_nova.sh nova:2026.1
 
 ### nova-compute
 
-**Location:** `images/nova-compute/Dockerfile`, `images/nova-compute/sudoers`
+**Location:** `images/nova-compute/image.nix` and
+`images/nova-compute/sudoers`, built from the lock `nix/locks/<release>/nova/`
+with its `nova-compute` dependency group
 
 nova-compute runs from this image on a compute cluster's hypervisor nodes. It
-is built from nova's own source pin (33.0.0 for 2026.1, 34.0.0 for 2026.2) with
-nova's patches and constraint overrides, and it is published under the same
-four tags as `ghcr.io/c5c3/nova` (see
-[Tag Schema](./build-images-workflow.md#tag-schema)). `nova-compute:2026.1`
-and `nova:2026.1` therefore carry the same nova. On top of nova the image
-carries the libvirt binding and client libraries, `qemu-img`, the host tools
-for iSCSI, multipath and NVMe that os-brick (the library nova attaches volumes
-with) runs, `mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`,
+is built from nova's own lock (33.0.0 for 2026.1, 34.0.0 for 2026.2), so
+`nova-compute:2026.1` and `nova:2026.1` carry the same nova with the same
+patches and constraints, and it is published under the same four tags as
+`ghcr.io/c5c3/nova` (see
+[Tag Schema](./build-images-workflow.md#tag-schema)). On top of nova the image
+carries the libvirt binding, `qemu-img`, the host tools for iSCSI, multipath
+and NVMe that os-brick (the library nova attaches volumes with) runs,
+`mount.nfs` for the NFS exports nova mounts itself, `cryptsetup`,
 `genisoimage`, the Ceph client, and a rootwrap and sudo posture that lets the
 unprivileged `openstack` user start nova's privileged helpers.
 The [nova](#nova) control-plane image carries none of it (decision D14 of
@@ -1044,99 +929,60 @@ The image has a directory of its own instead of being part of
 `images/<name>/` directory into a package the nightly GHCR cleanup prunes. The only
 other packages it knows are the `<name>-operator` images, one per `operators/<name>/`
 directory with a `go.mod`. And `verify_nova.sh` would share an image definition with
-an image it must not describe. Until #1407 moves it to Nix, it is the one service
-image built FROM `python-base` and `venv-builder`.
+an image it must not describe.
 
-**Stage 1 (`build`)** extends `venv-builder`:
+`image.nix` builds the image on `nix/lib/service-image.nix` under the name
+`nova-compute`, with the venv `env.venvWith [ "nova-compute" ]`: nova's default
+dependencies plus the `nova-compute` group, which `hack/nix-lock.sh` writes
+from the `nova-compute` block of `extra-packages.yaml` (`libvirt-python` at
+both releases). `upper-constraints.txt` fixes the binding's version: 12.0.0 at
+2026.1, 12.6.0 at 2026.2. PyPI ships it as an
+sdist only, and `nix/lib/python-env.nix` builds it against the libvirt of
+`nix/pkgs/libvirt.nix`, the derivation the [libvirt](#libvirt) image runs
+(`checks.<system>.libvirt-pairing` holds the two together). The nova image's
+venv and nova's unit-test venv stay without it.
 
-- Declares `ARG PIP_EXTRAS` (empty) and `ARG PIP_PACKAGES`, which CI fills
-  with `libvirt-python` from the `nova-compute` block of
-  `extra-packages.yaml`. `upper-constraints.txt` fixes its version: 12.0.0 at
-  2026.1, 12.6.0 at 2026.2
-- Installs `libvirt-dev` and `pkg-config`. PyPI ships libvirt-python as an
-  sdist only, so the install compiles it against the libvirt API description
-  and the pkg-config file of noble's libvirt 10.0.0. Both packages stay in
-  this stage, together with the compilers
-- Installs Nova and the binding with the same named build contexts (`nova`
-  and `upper-constraints`) and the same `uv pip install --constraint` step as
-  the nova image
-
-**Stage 2 (runtime)** extends `python-base`:
-
-- Declares `ARG EXTRA_APT_PACKAGES` and copies `/var/lib/openstack` from the
-  build stage using `COPY --from=build --link`
-- Installs the runtime packages, then removes the node identities they bake
-  (see below). The removal sits outside the build-arg guard, so a build
-  without `--build-arg EXTRA_APT_PACKAGES` stays a clean no-op
-- Links the Ceph bindings and writes `ceph-bindings.pth`, as the
-  [glance](#glance) image does
-- Creates the two state directories under `/var/lib/nova`, empty and owned by
-  UID/GID 42424, as the nova image does
-- Generates `/etc/nova/rootwrap.conf`, copies the sudoers file and checks it
-  with `visudo`
-- Sets `USER openstack` for non-root execution
-
-There is no noVNC stage and no `nova-amqp-ready`: the NovaCompute pod runs no
+There is no noVNC tree and no `nova-amqp-ready`: the NovaCompute pod runs no
 probe, because the service state Nova reports is its health signal.
 
-**Runtime packages** (`nova-compute.apt_packages`, the same list in both
+**Runtime packages** (the `packages` of `image.nix`, the same list in both
 releases):
 
 | Package | What runs it |
 | --- | --- |
-| `libvirt0` | `libvirt.so.0`, `libvirt-qemu.so.0` and `libvirt-lxc.so.0`, linked by the binding's `libvirtmod*` extensions; `nova/virt/libvirt/host.py` imports `libvirt` |
-| `qemu-utils` | `qemu-img create` (`nova/virt/libvirt/utils.py`), `qemu-img info` and `convert` (`nova/privsep/qemu.py`) |
-| `open-iscsi` | `iscsiadm` (`os_brick/initiator/connectors/iscsi.py`) |
-| `multipath-tools` | `multipath`, `multipathd` (`os_brick/initiator/linuxscsi.py`) |
+| `qemu-utils` | `qemu-img create` (`nova/virt/libvirt/utils.py`), `qemu-img info` and `convert` (`nova/privsep/qemu.py`), and `qemu-nbd` |
+| `openiscsi` | `iscsiadm` (`os_brick/initiator/connectors/iscsi.py`) and `iscsid`; a root link puts `iscsiadm` at `/sbin/iscsiadm`, which os-brick reads at import |
+| `multipath-tools` | `multipath`, `multipathd` and `kpartx` (`os_brick/initiator/linuxscsi.py`) |
 | `nvme-cli` | `nvme` (`os_brick/initiator/connectors/nvmeof.py`, `os_brick/privileged/nvmeof.py`) |
 | `lsscsi` | `lsscsi` (`os_brick/initiator/linuxscsi.py`) |
-| `udev` | `/lib/udev/scsi_id` (`get_scsi_wwn` in `os_brick/initiator/linuxscsi.py`) |
-| `nfs-common` | `mount.nfs`, the helper `mount -t nfs` runs. nova mounts a Cinder NFS export itself, without os-brick: `LibvirtNFSVolumeDriver` (`nova/virt/libvirt/volume/nfs.py`) goes through `nova/virt/libvirt/volume/mount.py` to `mount` in `nova/privsep/fs.py`, below `[libvirt] nfs_mount_point_base` (default `$state_path/mnt`) |
-| `cryptsetup-bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
-| `genisoimage` | The default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
-| `ceph-common` | `ceph` and `rbd` (`nova/storage/rbd_utils.py`): `ceph mon dump` in `get_mon_addrs`, `rbd import` in `import_image`, `rbd export` in `export_image` and `ceph df` in `get_pool_info` |
-| `python3-rados` | The `rados` module. `nova/storage/rbd_utils.py` imports it behind a guard, and `RBDDriver.__init__` raises `RuntimeError('rbd python libraries not found')` through `_check_for_import_failure` without it. `ceph-common` depends on it; the list names it because nova imports it |
-| `python3-rbd` | The `rbd` module, imported behind the same guard and named for the same reason |
+| `nfs-utils` | `mount.nfs`, the helper `mount -t nfs` runs, and `rpc.statd`. nova mounts a Cinder NFS export itself, without os-brick: `LibvirtNFSVolumeDriver` (`nova/virt/libvirt/volume/nfs.py`) goes through `nova/virt/libvirt/volume/mount.py` to `mount` in `nova/privsep/fs.py`, below `[libvirt] nfs_mount_point_base` (default `$state_path/mnt`). nixpkgs installs the helpers into `bin/`; root links put them at `/sbin`, where util-linux looks for `mount.<type>`, and `mount.nfs` also at `/usr/sbin`, noble's path |
+| `cryptsetup.bin` | `cryptsetup` (`os_brick/encryptors/luks.py`) for encrypted volumes; the compute contract renders `[key_manager] backend = barbican` when Barbican is enabled |
+| `cdrkit` | `genisoimage`, the default of `[DEFAULT] mkisofs_cmd` (`nova/conf/configdrive.py`), which builds config drives |
+| `ceph-client` | `ceph` and `rbd` (`nova/storage/rbd_utils.py`): `ceph mon dump` in `get_mon_addrs`, `rbd import` in `import_image`, `rbd export` in `export_image` and `ceph df` in `get_pool_info` |
+| `util-linux.bin`, `e2fsprogs.bin`, `kmod`, `sg3_utils`, `lvm2.bin` | The tools noble's package closure carried that nova's privsep and os-brick run by name: `mount`, `umount`, `blockdev`, `findmnt`, `lsblk`, `blkid`, `losetup`, `mkswap`, `mkfs`, `nsenter`, `mkfs.ext4`, `e2fsck`, `resize2fs`, `modprobe` (with xz and zstd), `sg_scan` and `dmsetup` |
+| `rados`, `rbd` | The modules of `nix/pkgs/ceph-bindings.nix`. `nova/storage/rbd_utils.py` imports them behind a guard, and `RBDDriver.__init__` raises `RuntimeError('rbd python libraries not found')` through `_check_for_import_failure` without them |
 
-`open-iscsi` and `multipath-tools` pull `systemd`, `initramfs-tools` and
-`sg3-utils` as hard dependencies. Measured on the 2025.2 images, the compute
-image is about 170 MB larger than the nova image. The Ceph client adds about
-167 MB on amd64 (166,989,790 bytes):
-`docker image inspect` on two `linux/amd64` builds of this package layer on
-the pinned `ubuntu:noble` base, one with and one without `ceph-common`,
-`python3-rados` and `python3-rbd`. On arm64 the same probe gives 161,471,190
-bytes, equal to the delta between the 2026.1 image and a build of it without
-the three packages. `nfs-common` pulls `rpcbind`, `keyutils`, `libnfsidmap1`,
-`libevent-core-2.1-7t64`, `libwrap0` and `ucf`, about 3 MB together. No
-process in the pod starts `rpcbind` or `rpc.statd`; an NFSv4 mount needs
-neither, and the in-cluster server of `deploy/kind/nfs/nfs-server.yaml` speaks
-NFSv4 only. There is no `libpython3.12t64`, because nothing in this image runs
-uWSGI, and `sudo` comes from `python-base`.
+Two more root links come from nixpkgs' systemd without adding it to `PATH`:
+`/lib/udev/scsi_id` (`get_scsi_wwn` in `os_brick/initiator/linuxscsi.py`) and
+`/usr/bin/udevadm`. nixpkgs' `udev` ships no binaries, and the full systemd on
+`PATH` would bring `reboot`, `halt` and `init`. Measured with
+`nix path-info -S` on `x86_64-linux`, the store paths of the 2026.1 image hold
+about 3.06 GB against 0.57 GB for the nova image; Ceph, systemd, libvirt and
+QEMU's tools make most of the difference.
 
-**Node identities:** the postinst scripts of `open-iscsi` and `nvme-cli`
-write `/etc/iscsi/initiatorname.iscsi`, `/etc/nvme/hostnqn` and
-`/etc/nvme/hostid` at build time, and `multipath-tools` ships
-`/etc/multipath.conf` with `user_friendly_names yes`. os-brick reports the
-initiator name and the host NQN to Cinder as the node's identity, so baked
-files would give every compute node the same IQN and NQN. A baked multipath
-configuration can also disagree with the host's `multipathd`. The image removes
-all four files, and `iscsiadm --version` and `nvme version` still run without
-them. `nfs-common` and `rpcbind` bake none: their postinst scripts create the
-`statd` and `_rpc` users and install `/etc/idmapd.conf`,
-`/etc/default/nfs-common` and `/etc/nfs.conf`, and none of these names the
-node. `ceph-common` bakes none either: its postinst installs
-`/etc/ceph/rbdmap`, `/etc/default/ceph` and `/etc/logrotate.d/ceph-common`,
-none of which names the node, so the removal list has no Ceph entry.
+**Node identities:** nixpkgs' packages run no postinst, but `openiscsi`
+installs an `/etc/iscsi/initiatorname.iscsi` it generated at build time.
+os-brick reports the initiator name and the host NQN to Cinder as the node's
+identity, so a baked file would give every compute node the same IQN or NQN,
+and a baked `/etc/multipath.conf` can disagree with the host's `multipathd`.
+The image removes `/etc/iscsi/initiatorname.iscsi`, `/etc/nvme/hostnqn`,
+`/etc/nvme/hostid` and `/etc/multipath.conf`, and `iscsiadm --version` and
+`nvme version` still run without them.
 
 **Ceph client:** the image writes the `ceph-bindings.pth` of the
-[glance](#glance) section, because the virtualenv does not search
-`/usr/lib/python3/dist-packages`, the only directory noble installs the two
-bindings into. `ceph-common` also brings `python3-requests`, `python3-yaml`
-and their dependencies, `python3-chardet` among them, into that directory, and
-the virtualenv imports none of them. The postinst of `ceph-common` adds the
-system user `ceph` (UID 64045) and the directories `/var/lib/ceph` (mode 0750)
-and `/var/log/ceph` (mode 3770), both owned by it. The `openstack` user (UID
-42424) can write neither. The
+[glance](#glance) section. The client is Ceph 20.2.4 (Tentacle) from
+`nixpkgs-images`, as in the [cinder](#cinder) image, and the image creates no
+`ceph` system user. The
 NovaCompute still offers no `imagesType: rbd`, because it carries no Ceph
 credential contract (see the [NovaCompute reference](../nova/novacompute-crd.md)).
 
@@ -1147,20 +993,17 @@ privsep context it starts: os-brick's, nova's `sys_admin_pctxt` and os-vif's.
 A privsep context is a root daemon oslo.privsep starts through
 `privsep-helper`, and the helper is how it gets root.
 The compute contract renders no `[privsep*]`, `[workarounds]` or
-`rootwrap_config` key, so nova's default helper is the one that runs. Two gaps
-would stop it in an image built like the nova image. The installed
-`rootwrap.conf` points `filters_path` and `exec_dirs` at system directories,
-where neither `compute.filters` nor `privsep-helper` lives. And noble's
-`secure_path` does not contain `/var/lib/openstack/bin`, so
-`sudo nova-rootwrap` finds no command. The image closes both:
+`rootwrap_config` key, so nova's default helper is the one that runs. The
+`rootwrap.conf` nova installs points `filters_path` and `exec_dirs` at system
+directories, where neither `compute.filters` nor `privsep-helper` lives, and
+the programs of this image live in `/nix/store`. The image closes both gaps:
 
-- `/etc/nova/rootwrap.conf` is generated from the installed file with
-  `filters_path=/var/lib/openstack/etc/nova/rootwrap.d` and with
-  `/var/lib/openstack/bin` first in `exec_dirs`. Two `grep`s fail the build
-  when an upstream release reshapes the file and the `sed` matches nothing.
-  The file is root-owned with mode 0644. It records where this image keeps its
-  binaries, which is image plumbing, so the config-free rule of the nova image
-  does not cover it
+- `/etc/nova/rootwrap.conf`, written by `nix/lib/rootwrap-conf.nix`, sets
+  `filters_path=/var/lib/openstack/etc/nova/rootwrap.d` and
+  `exec_dirs=/var/lib/openstack/bin,` followed by the store `bin` directory of
+  every runtime package. The file is root-owned with mode 0644. It records
+  where this image keeps its binaries, which is image plumbing, so the
+  config-free rule of the nova image does not cover it
 - `/etc/sudoers.d/nova-compute`, mode 0440, sets a global `secure_path` that
   starts with `/var/lib/openstack/bin` and holds one rule:
   `openstack ALL = (root) NOPASSWD: /var/lib/openstack/bin/nova-rootwrap /etc/nova/rootwrap.conf *`.
@@ -1174,14 +1017,15 @@ say, so one rule covers every privsep daemon nova-compute starts, and
 root-equivalent, which is what nova's own design grants its service user. The
 pod that runs this image is privileged on a hypervisor node anyway. Because
 `secure_path` is global, a consumer that runs nova-compute as root resolves the
-same helper. The neutron metadata agent runs as root in the same way.
+same helper. sudo runs the PAM stack of `nix/lib/service-image.nix`, whose
+account phase permits: the image has no `/etc/shadow`, and the one rule names
+a `nologin` service user with no password ageing to check.
 
 **Open vSwitch client:** os-vif plugs OVS ports through
 `[os_vif_ovs] ovsdb_interface`, whose default `native` is the ovsdbapp IDL.
 ovsdbapp is a Python library already in the virtualenv (2.16.1 at 2026.1,
 2.19.0 at 2026.2), and nova runs no `ovs-*` binary itself. The image therefore
-installs no OVS package. `openvswitch-common` carries `ovsdb-client`,
-`ovs-appctl` and `ovs-ofctl`, which neither project runs. Pointing
+installs no OVS package. Pointing
 `[os_vif_ovs] ovsdb_connection` at the host's OVSDB socket is the consumer's
 configuration.
 
@@ -1224,28 +1068,30 @@ spec that meets it):
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
-- Contains no build tools (`gcc`, `pkg-config`, `uv`, `python3-dev` and
-  `libvirt-dev` are absent)
+- Contains no build tools (no `gcc`, `cc`, `uv`, `python3-config` or
+  `pkg-config` on `PATH`, and no compiler, binutils or uv package in
+  `/nix/store`)
 - Virtualenv at `/var/lib/openstack` with Nova, its dependencies and
   `libvirt-python`
 - `sudo` present with the one `nova-rootwrap` rule
 
 **Image contract check:** `tests/container-images/verify_nova_compute.sh` runs
-inline on pull requests and in `verify-nova-compute-image` on push. Its ten
-tests, of which test 10 runs right after test 4:
+inline on pull requests and in `verify-nova-compute-image` on push. Its
+eleven tests, of which test 10 runs right after test 4:
 
 1. `nova-compute`, `nova-manage`, `nova-rootwrap` and `privsep-helper` are
    executable, and `nova-compute --help` exits 0.
-2. `import libvirt` succeeds, `libvirt.getVersion()` is at least `10000000`,
-   and the installed `libvirt-python` equals the effective pin of the image's
+2. `import libvirt` succeeds, `libvirt.getVersion()` is at least `12000000`,
+   since the binding links the libvirt the libvirt image runs, and the
+   installed `libvirt-python` equals the effective pin of the image's
    release. The release is `NOVA_COMPUTE_RELEASE`, which both CI jobs set
    from `matrix.release`; unset, it is the one whose `source-refs.yaml` names
    the image's nova, which needs a tag pin. The pin comes from
    `overrides/<release>/constraints.txt` when that file carries one and from
-   `upper-constraints.txt` otherwise, because `checkout-service-source`
-   rewrites `upper-constraints.txt` on pull requests. A nova version that no
-   release or more than one release carries, a `-libvirt-python` override and a missing
-   pin each fail with a message naming the value.
+   `upper-constraints.txt` otherwise, the order `hack/nix-lock.sh` merges
+   them in. A nova version that no release or more than one release carries,
+   a `-libvirt-python` override and a missing pin each fail with a message
+   naming the value.
 3. `nova.virt.libvirt.driver`, the os-brick iSCSI and NVMe connectors, the
    LUKS encryptor and `vif_plug_ovs.ovsdb.impl_idl` import.
 4. The eleven host tools run, `ceph --version` and `rbd --version` among
@@ -1261,7 +1107,8 @@ tests, of which test 10 runs right after test 4:
    `exec_dirs` (without that entry rootwrap exits 96 with
    `Executable not found`).
 7. The container runs as `openstack`.
-8. `gcc`, `pkg-config`, `uv`, `python3-dev` and `libvirt-dev` are absent.
+8. The build-tools check of `tests/lib/build_tools.sh` passes, and
+   `pkg-config` is not on `PATH`.
 9. The state directories match `verify_nova.sh` test 13.
 10. The bindings checks of the [glance](#glance) Test 13 pass.
     `nova.storage.rbd_utils.rbd` and `nova.storage.rbd_utils.rados`, the
@@ -1269,21 +1116,21 @@ tests, of which test 10 runs right after test 4:
     and `rbd help import` exit 0, and the
     `ceph --version` line starts with `ceph version `; the script logs that
     line and asserts no version.
+11. The tools nova and os-brick run as root resolve: one `command -v` probe
+    per tool of the noble closure, `/sbin/mount.nfs`, `/sbin/iscsiadm` and
+    `/lib/udev/scsi_id` are executable, and `modprobe --version` lists
+    `+ZSTD` and `+XZ`, so the host's compressed modules load.
 
-The 2026.1 and 2026.2 images pass all 61 assertions. Pointed at the nova
+The 2026.1 and 2026.2 images pass all 90 assertions. Pointed at the nova
 control-plane image, the script exits 1: test 2 reports
-`ModuleNotFoundError: No module named 'libvirt'`, test 4 fails once per tool,
-and test 10 fails on the missing `ceph-bindings.pth` and
-`No module named 'rados'`. A build without any `--build-arg` succeeds and fails
-the same three tests, which is how a missing `nova-compute` block in
-`extra-packages.yaml` shows up.
+`ModuleNotFoundError: No module named 'libvirt'`, and tests 4, 6, 10 and 11 fail
+on the missing tools, posture and bindings.
 
 ## Release-independent images
 
 These images ship software from outside the OpenStack release matrix. They have
-no key in `releases/*/source-refs.yaml`, take no `PIP_EXTRAS` or
-`EXTRA_APT_PACKAGES` build args, and are built once per upstream version
-instead of once per release.
+no key in `releases/*/source-refs.yaml` and no lock under `nix/locks/`, and are
+built once per upstream version instead of once per release.
 
 ### ovn
 
@@ -1442,53 +1289,73 @@ and the local commands. The build, verification and tag scheme are described in
 
 ### libvirt
 
-**Location:** `images/libvirt/Dockerfile`
+**Location:** `images/libvirt/image.nix` and `images/libvirt/qemu.nix`, with
+the libvirt of `nix/pkgs/libvirt.nix`
 
-The libvirt daemon and QEMU for hypervisor nodes whose host image has neither:
-a single stage on `ubuntu:noble` with every package taken from the Ubuntu
-archive, so the image has no version pin of its own and follows the `noble`
-package set. The hypervisor package of issue #1142 runs it privileged as a
-DaemonSet beside `nova-compute`. The `libvirt-e2e` DaemonSet of the
-`e2e-nova-libvirt` CI job is its second consumer: it runs the image on a kind
-node, where QEMU emulates the guest without KVM.
+The libvirt daemon and QEMU for hypervisor nodes whose host image has neither,
+built by the root flake as `libvirt-image`
+([Hypervisor images](./nix-image-build.md#hypervisor-images)). libvirt and
+QEMU come from the `nixpkgs-images` revision `flake.lock` pins, so the image
+has no release axis, and a re-lock moves both: libvirt 12.2.0 and QEMU 10.2.4
+at the current pin. The Docker image the lab ran before #1407 carried noble's
+libvirt 10.0.0 and QEMU 8.2.2. The hypervisor package of issue #1142 runs the
+image privileged as a DaemonSet beside `nova-compute`. The `libvirt-e2e`
+DaemonSet of the `e2e-nova-libvirt` CI job is its second consumer: it runs the
+image on a kind node, where QEMU emulates the guest without KVM.
 
-| Package | Why it is installed |
+| Content | Why it is in the image |
 | --- | --- |
+| `nix/pkgs/libvirt.nix` | `libvirtd`, `virtlogd`, `virsh` and `virt-admin`, each linked into `/bin`. Built with `--sysconfdir=/etc`, so libvirtd reads `/etc/libvirt/libvirtd.conf` and `/etc/libvirt/qemu.conf`, keeps its secrets below `/etc/libvirt/secrets` and finds its TLS files below `/etc/pki`. nixpkgs' wrapper puts `dnsmasq`, `iptables`, `nftables`, `lvm2` and the other helpers libvirt runs on the daemon's `PATH` |
+| `images/libvirt/qemu.nix` | `qemu-system-x86_64`, also at `/usr/bin/qemu-system-x86_64`, and `qemu-img`. The `x86_64-softmmu` target alone, with the rbd block driver for a Cinder volume on Ceph; built without libiscsi and curl, and without the GTK, SDL, OpenGL, PulseAudio, PipeWire, JACK, SPICE and smartcard parts noble kept in Recommends |
 | `dmidecode` | libvirt reads the host's SMBIOS (firmware system information) data with it |
-| `iproute2` | `ip`; a Recommends of `libvirt-daemon-system`, which `--no-install-recommends` skips |
-| `kmod` | `modprobe`, for loading the `vhost_net` kernel module from the host's module tree |
-| `libvirt-clients` | `virsh`, and `virt-admin` for reloading the daemon's TLS certificates |
-| `libvirt-daemon-system` | `libvirtd`, `virtlogd` and the QEMU driver for `qemu:///system`, through its dependency `libvirt-daemon`; the configuration under `/etc/libvirt`, the `libvirt` and `kvm` groups and the `libvirt-qemu` user. It pulls in `systemd`, which brings `systemd-run` |
-| `ovmf` | UEFI firmware for guests: `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` |
-| `qemu-block-extra` | `block-rbd.so` under `/usr/lib/<multiarch>/qemu/`, the block module QEMU loads to attach a Cinder volume on Ceph. It depends on `librbd1` and `librados2` 19.2.3, which decode `aes` keys and not `aes256k` (D7 of #1338). The build deletes the package's `block-curl.so`, `block-iscsi.so`, `block-nfs.so` and `block-ssh.so`: QEMU would load one for a disk or backing file that names such a URL and connect to it from the node's address, and nothing here uses them. QEMU's NBD client is compiled into `qemu-system-x86_64` and `qemu-img`, so a disk or backing file that names an NBD server still makes QEMU connect to it; Nova rejects a downloaded Glance image that has a backing file |
-| `qemu-system-x86` | `qemu-system-x86_64`, the emulator for x86 guests; `libvirt-daemon` only recommends a QEMU |
-| `qemu-utils` | `qemu-img`, for disk images |
+| `iproute2` | `ip` |
+| `kmod` | `modprobe` and `rmmod`, for the `vhost_net` and NFS client modules of the host's module tree; nixpkgs builds kmod with xz and zstd and searches `/lib/modules` last |
+| `systemd` | `/usr/bin/systemctl` and `/usr/bin/systemd-run`, the commands the lab's `libvirtd.sh` starts libvirtd with |
+| `coreutils`, `findutils`, `gnugrep`, `gnused`, `gawk`, `getent` | the commands of the lab scripts (`sha256sum`, `comm`, `cut`, `sort`, `tr`, `awk`, `grep`) and of the contract check (`getent group`) |
 
-**Why noble:** `images/nova-compute/` builds `libvirt-python` against noble's
-libvirt 10.0.0 and installs `libvirt0` at runtime. Building this image on noble
-makes the client in `nova-compute` and the daemon here one libvirt.
-`tests/container-images/verify_libvirt.sh` pins the major version and fails
-unless `libvirtd --version` reports 10. The apt packages carry no version pin
-(see `.hadolint.yaml`), so a rebuild can move the libvirt point release; only a
-major move fails the check.
+QEMU is built without modules, so every block driver is compiled in, and the
+choice is made at configure time: `qemu-img --help` lists `rbd` and none of
+`curl`, `http`, `https`, `ftp`, `ftps`, `iscsi`, `nfs` or `ssh`. QEMU would
+otherwise connect to a URL that a disk or a backing file names, from the
+node's address. QEMU's NBD client is compiled in, so a disk or backing file
+that names an NBD server still makes QEMU connect to it; Nova rejects a
+downloaded Glance image that has a backing file. The rbd driver links the
+librbd of Ceph 20.2.4 and adds `ceph.lib`, about 1 GB, to the closure; the
+store paths of the image hold about 1.99 GB on `x86_64-linux`.
 
-**What the image does not carry:** the image has no configuration of its own
-and no `ENTRYPOINT` or `CMD`. The consumer renders `libvirtd.conf`, `qemu.conf`
-and the start command. `libvirt-daemon-system` depends on
-`libvirt-daemon-config-network`, which defines the `default` NAT network and
-links it into `/etc/libvirt/qemu/networks/autostart/`. The consumer runs
-libvirtd in the host's network namespace, where that network would create
-`virbr0` and NAT rules on the node, so the Dockerfile removes the autostart
-link and keeps the definition. `dnsmasq-base`, which the network would serve
-DHCP and DNS with, is a Recommends and is not installed.
+**Firmware:** the UEFI firmware is QEMU's own edk2 build.
+`/usr/share/qemu` holds QEMU's `share/qemu`, where libvirt's `qemu_datadir`
+looks for firmware descriptors, with copies of the descriptors that name
+`/usr/share/qemu/<file>` instead of the store path: libvirt records the
+descriptor's path in a UEFI guest's XML, and the next image has another store
+path. `/usr/share/OVMF/OVMF_CODE_4M.fd` and `/usr/share/OVMF/OVMF_VARS_4M.fd`,
+the names noble's ovmf package used, link to `edk2-x86_64-code.fd` and
+`edk2-i386-vars.fd`.
 
-**Runs as root:** libvirtd has to run as root, so the image has no `USER`
-instruction and creates no `openstack` user (see
-[Design Deviations](#design-deviations)). The packages create the
-`libvirt-qemu` user (UID 64055) and the `libvirt` and `kvm` groups, and QEMU
-runs guests as `libvirt-qemu` with the group `kvm`. The package scripts assign
-the two group IDs at build time, and they are not part of the image's
-contract: the consumer sets the socket's ownership in its own configuration.
+**libvirt and nova-compute:** the [nova-compute](#nova-compute) image builds
+`libvirt-python` against the same `nix/pkgs/libvirt.nix` derivation, so the
+client and the daemon are one libvirt, and `checks.<system>.libvirt-pairing`
+fails `nix flake check` when either side takes another one.
+`tests/container-images/verify_libvirt.sh` checks that `libvirtd --version`
+reports 12; the major moves with the `nixpkgs-images` pin. libvirtd prints the
+name it was started by, and nixpkgs' wrapper starts it under the wrapper's
+path, so the line reads `/sbin/libvirtd (libvirt) 12.2.0` when `PATH` finds it.
+
+**What the image does not carry:** the image has no `Cmd` and no
+`Entrypoint`. The consumer renders `libvirtd.conf`, `qemu.conf` and the start
+command. `/etc/libvirt` is a writable copy of libvirt's default configuration,
+`qemu.conf` with noble's mode 0600, and keeps the definition of the `default`
+NAT network at `/etc/libvirt/qemu/networks/default.xml` without its autostart
+link. The consumer runs libvirtd in the host's network namespace, where that
+network would create `virbr0` and NAT rules on the node.
+
+**Runs as root:** libvirtd has to run as root, so the image sets no `User`
+and creates no `openstack` user (see [Design Deviations](#design-deviations)).
+fakeNss writes the guest accounts noble's packages created, with noble's IDs:
+the `libvirt-qemu` user (UID 64055, primary group `kvm`) and the `libvirt`
+(103) and `kvm` (104) groups. nixpkgs compiles root as libvirt's default QEMU
+user, and the lab and the e2e suite set `user = "root"` in `qemu.conf`. The
+consumer sets the socket's ownership in its own configuration.
 
 The same applies to `/dev/kvm`. A privileged container gets its own device
 node with the host's group ID and mode. Debian and Ubuntu hosts create it as
@@ -1499,36 +1366,42 @@ not start. Before it starts libvirtd, the consumer runs
 node. On a hostPath mount of the host's `/dev` the same command would change
 the host's device.
 
-**Tags:** CI publishes `ghcr.io/c5c3/libvirt` as `latest` and `<sha>`, and on
-`main` as `<libvirt-package-version>-r<N>`, such as `10.0.0-2ubuntu8.19-r1` (see
-the [tag table](./build-images-workflow.md#release-independent-images)). Every
-run of `build-images.yaml` that is not a pull request rebuilds the image and
-moves `latest` to the new manifest: a push that touches any image, a change
-under `images/libvirt/` included, and the dispatch a base image refresh starts.
-The keeper tag is minted once per value and never moved, so it stays on the
-first build that had it, and
+**Tags:** the image streams as `libvirt:latest`. CI publishes
+`ghcr.io/c5c3/libvirt` as `<sha>`, and on `main` as `latest` and
+`<libvirt-version>-r<N>`, such as `12.2.0-r57`, where `N` counts the commits
+under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix`
+and `flake.lock` (see the
+[tag table](./build-images-workflow.md#release-independent-images)). Every
+run of `build-images.yaml` on `main` that is not a pull request rebuilds the
+image and moves `latest` to the new manifest. The keeper tag is created once
+per value and never moved, so it stays on the first build that had it, and
 [Retention](./build-images-workflow.md#retention) keeps every manifest that
-carries one. A manifest left with its `<sha>` tag alone is deleted once it is
-older than 24 hours. A consumer therefore pins the keeper tag by digest, as the
-lab does with `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`.
+carries one, the `<libvirt-package-version>-r<N>` tags of the Docker-built
+image included. A manifest left with its `<sha>` tag alone is deleted once it
+is older than 24 hours. A consumer therefore pins the keeper tag by digest, as
+the lab does with `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>`.
 
 ```bash
-docker build -t c5c3/libvirt:latest images/libvirt/
+nix build .#libvirt-image && ./result | docker load
 
 # Run the full image contract check
-bash tests/container-images/verify_libvirt.sh c5c3/libvirt:latest
+bash tests/container-images/verify_libvirt.sh libvirt:latest
 ```
 
-The contract check runs without `--privileged`. Its daemon smoke test starts
-`libvirtd` in the container, waits at most 30 seconds for
-`/run/libvirt/libvirt-sock` and asks the QEMU driver for its version and its
-x86_64 domain capabilities. Its rbd test checks that `block-rbd.so` is
-installed and the four network modules are not, and runs
-`qemu-img info rbd:volumes/x`: without the module, qemu-img prints
-`Unable to load block driver rbd`; with it, librados runs and fails with
-`error connecting`, because no `ceph.conf` names a monitor. The test asserts
-the second message and the absence of the first. Its secret test makes the
-calls of the lab's `ceph-secret.sh`
+The contract check runs without `--privileged`. It checks the libvirt 12
+version line, the QEMU and `qemu-img` versions, the tools on `PATH` and the
+commands of the lab scripts (`modprobe --version` listing `+ZSTD` and `+XZ`
+among them), the firmware files and the x86_64 descriptor, root, the guest
+accounts, the network definition without its autostart link, and the absence
+of build tools, `git` and `python3`. Its daemon smoke test names a log file
+in `/etc/libvirt/libvirtd.conf`, starts `libvirtd` in the container, waits at
+most 30 seconds for `/run/libvirt/libvirt-sock`, and asks the QEMU driver for
+its version and its x86_64 domain capabilities: the emulator path, the `efi`
+firmware value, and a written log file, which proves that libvirtd reads
+`/etc/libvirt`. Its rbd test reads the driver list of `qemu-img --help` and
+runs `qemu-img info rbd:volumes/x`: librados runs and fails with
+`error connecting`, because no `ceph.conf` names a monitor. Its secret test
+makes the calls of the lab's `ceph-secret.sh`
 ([Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors))
 against `libvirtd`: it defines a private, ephemeral `ceph` secret, sets its
 value with `virsh secret-set-value --file` from a base64 key with a trailing
@@ -1857,54 +1730,6 @@ the pin. The fifth test is the static-image check of `verify_hvo.sh`.
 Its build, verification and tag scheme are described in
 [build-kna / merge-kna-image / verify-kna-image](./build-images-workflow.md#build-kna-merge-kna-image-verify-kna-image).
 
-## Named Build Contexts
-
-The nova-compute Dockerfile, the one service Dockerfile left, uses Docker's
-named build context feature (`--build-context`) to inject release-specific
-files without embedding them in the Dockerfile or using `COPY` from the build
-directory. This keeps the Dockerfile release-independent. The Nix-built
-service images take the same inputs from their locks
-([Python environments and locks](./nix-image-build.md#python-environments-and-locks)).
-
-A local build passes two named build contexts. CI passes two more,
-`python-base` and `venv-builder`, as `docker-image://` references to the
-digests `merge-base-images` published. The figure under
-[Dockerfile Hierarchy](#dockerfile-hierarchy) shows where each context and each
-build arg enters the build.
-
-| Context name | Contents | Mounted as |
-| --- | --- | --- |
-| `upper-constraints` | Release directory containing `upper-constraints.txt` | `/tmp/upper-constraints.txt` |
-| `nova` | Nova source tree (git checkout at the version from `source-refs.yaml`, with the nova patches applied) | `/tmp/nova` |
-
-These are passed to `docker build` via `--build-context` flags:
-
-```bash
-docker build images/nova-compute \
-  --build-context nova=src/nova \
-  --build-context upper-constraints=releases/2026.1/
-```
-
-Inside the Dockerfile, named build contexts are consumed via `--mount=type=bind,from=`.
-Extras and packages are injected via `ARG PIP_EXTRAS` (comma-separated) and
-`ARG PIP_PACKAGES`, which the CI workflow reads from the `nova-compute` block
-of `extra-packages.yaml`:
-
-```dockerfile
-RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
-    --mount=type=bind,from=nova,target=/tmp/nova,readwrite \
-    PKG="/tmp/nova" && \
-    if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
-    set -f && \
-    uv pip install --prefix /var/lib/openstack \
-        --constraint /tmp/upper-constraints.txt \
-        "$PKG" $PIP_PACKAGES
-```
-
-The `from=upper-constraints` directive tells Docker to resolve the file from the named
-build context rather than the Dockerfile's primary build context. The `source=` parameter
-selects a specific file within that context.
-
 ## Release Configuration
 
 All release-specific configuration lives under `releases/<release>/` (e.g.,
@@ -1961,8 +1786,8 @@ the standard format used by OpenStack's global requirements process.
 **Location:** `releases/<release>/extra-packages.yaml`
 
 Defines per-service Python extras and additional pip packages that are not part of the
-core OpenStack package, and the runtime system packages of nova-compute.
-`hack/nix-lock.sh` reads the first two into each lock under `nix/locks/`.
+core OpenStack package. `hack/nix-lock.sh` reads both into each lock under
+`nix/locks/`.
 
 **Format:**
 
@@ -1979,17 +1804,22 @@ keystone:
 
 | Key | Purpose |
 | --- | --- |
-| `<service>.pip_extras` | Bare Python extra names combined with the project name to form the dependency of the lock (e.g. `keystone[ldap]`); the `PIP_EXTRAS` build arg for nova-compute. |
-| `<service>.pip_packages` | Additional pip packages locked and installed alongside the service; the `PIP_PACKAGES` build arg for nova-compute. Use an empty list (`[]`) when none are needed. |
-| `nova-compute.apt_packages` | Runtime system packages installed via `apt` in the nova-compute image, passed as the `EXTRA_APT_PACKAGES` build arg. A Nix-built service names its runtime packages in `images/<service>/image.nix`, and `verify_release_config.sh` fails a service block that carries the key. |
+| `<service>.pip_extras` | Bare Python extra names combined with the project name to form the dependency of the lock (e.g. `keystone[ldap]`). |
+| `<service>.pip_packages` | Additional pip packages locked and installed alongside the service. Use an empty list (`[]`) when none are needed. |
+
+No block carries `apt_packages`: every image names its runtime packages in
+`images/<name>/image.nix`, and `verify_release_config.sh` fails a block that
+carries the key.
 
 To add packages for a new service, add a new top-level key matching the service name
 with a `pip_extras` list, then run `make nix-lock`.
 
 `nova-compute` is the one key that is not a service. It configures the image of
-`images/nova-compute/`, which is built from the `nova` pin and has no
-`source-refs.yaml` key of its own; `verify_release_config.sh` checks its block
-through its `DERIVED_IMAGES` list.
+`images/nova-compute/`, which is built from the `nova` lock and has no
+`source-refs.yaml` key of its own: `hack/nix-lock.sh` writes its
+`pip_extras` and `pip_packages` into the `nova-compute` dependency group of
+the nova lock. `verify_release_config.sh` checks the block, `image.nix` and
+the group through its `DERIVED_IMAGES` list.
 
 ## Constraint Overrides
 
@@ -2053,7 +1883,7 @@ directory (must be invoked from the repository root) and modifies it in-place. I
 
 ## Local Build Instructions
 
-The service and Tempest images build with Nix:
+Every image builds with Nix:
 
 ```bash
 nix build .#keystone-2026_1-image && ./result | docker load
@@ -2062,61 +1892,36 @@ bash tests/container-images/verify_keystone.sh keystone:2026.1
 
 Every `<name>-<rel_>-image` attribute of
 [Nix Image Build](./nix-image-build.md#build-and-load-locally) works the same
-way. The steps below build nova-compute, the one service image left on the
-Docker chain.
+way.
 
-### Step 1: Build base images
+### Building nova-compute locally
 
-```bash
-# Build python-base (tag must match FROM python-base in downstream Dockerfiles)
-docker build images/python-base -t python-base
-
-# Build venv-builder (tag must match FROM venv-builder in the nova-compute build stage)
-docker build images/venv-builder -t venv-builder
-```
-
-The tag names (`python-base`, `venv-builder`) must match the `FROM` directives in
-downstream Dockerfiles. Docker resolves `FROM python-base` to the local image.
-
-To also apply the tags that `verify_python_base.sh` and `verify_venv_builder.sh` use as
-their default image, add a second `-t` flag:
+The compute image builds from the nova lock of the release, with the
+`libvirt-python` of its `nova-compute` group:
 
 ```bash
-docker build images/python-base -t python-base -t c5c3/python-base:3.12-noble
-docker build images/venv-builder -t venv-builder -t c5c3/venv-builder:3.12-noble
-```
-
-### Step 2: Build nova-compute
-
-The compute image builds from the nova source at the release's pin, with the
-two build args read from the `nova-compute` block by mikefarah `yq` v4 (the
-version CI pins). After Step 1:
-
-```bash
-git clone --branch 33.0.0 --depth 1 \
-  https://opendev.org/openstack/nova.git src/nova
-
-docker build images/nova-compute \
-  -t c5c3/nova-compute:33.0.0 \
-  --build-context nova=src/nova \
-  --build-context upper-constraints=releases/2026.1/ \
-  --build-arg "PIP_PACKAGES=$(yq -r '."nova-compute".pip_packages | join(" ")' releases/2026.1/extra-packages.yaml)" \
-  --build-arg "EXTRA_APT_PACKAGES=$(yq -r '."nova-compute".apt_packages | join(" ")' releases/2026.1/extra-packages.yaml)"
+nix build .#nova-compute-2026_1-image && ./result | docker load
 
 # Run the full image contract check
-bash tests/container-images/verify_nova_compute.sh c5c3/nova-compute:33.0.0
+NOVA_COMPUTE_RELEASE=2026.1 bash tests/container-images/verify_nova_compute.sh nova-compute:2026.1
 ```
 
-For 2026.2, clone `34.0.0` and read `releases/2026.2/`. The contract script
-finds the release from the nova version inside the image, so a local run
-needs no release argument. `NOVA_COMPUTE_RELEASE=<release>` names it instead,
-as CI does.
+For 2026.2, build `.#nova-compute-2026_2-image` and check
+`nova-compute:2026.2`. Without `NOVA_COMPUTE_RELEASE` the contract script finds
+the release from the nova version inside the image. The first build per
+`nixpkgs-images` revision compiles libvirt, which `libvirt-python` builds
+against.
 
-The install step compiles libvirt-python. When it stops with
-``Failed to build `libvirt-python==<pin>` ``, the build stage could not find the
-libvirt headers or their pkg-config file, which `libvirt-dev` and `pkg-config`
-provide. A build without the two build args succeeds but ships neither the
-binding nor the host tools, and the contract script then fails tests 2 and 4.
+### Building libvirt locally
+
+```bash
+nix build .#libvirt-image && ./result | docker load
+
+# Run the full image contract check
+bash tests/container-images/verify_libvirt.sh libvirt:latest
+```
+
+The first build per `nixpkgs-images` revision compiles libvirt and QEMU.
 
 ### Building ovn locally
 
@@ -2181,8 +1986,7 @@ bash tests/container-images/verify_kna.sh kvm-node-agent:sha-$(hack/ci-resolve-k
 ## Design Deviations
 
 The implementation deviates from the original design document in four areas,
-documented with `# DEVIATION` comments in the affected Dockerfiles and Nix
-expressions:
+documented with `# DEVIATION` comments in the affected Nix expressions:
 
 **Generic `openstack` user instead of per-service users:**
 
@@ -2198,14 +2002,12 @@ Nix-built service and Tempest images run as the user that
 `images/horizon/image.nix`, `images/glance/image.nix`,
 `images/placement/image.nix`, `images/barbican/image.nix`,
 `images/neutron/image.nix`, `images/cinder/image.nix`,
-`images/nova/image.nix`). nova-compute still inherits the user through
-`USER openstack` from `python-base`, so `images/python-base/Dockerfile` (where
-the user is created) and `images/nova-compute/Dockerfile` carry the comment
-too.
+`images/nova/image.nix`, `images/nova-compute/image.nix`).
 
 `images/ovn/image.nix` carries the comment for the other half of the same
-decision. It does not derive from `python-base`, so it carries the `openstack`
-user and group itself, through the `fakeNss` entry of the FHS façade: the
+decision. It is built without `nix/lib/service-image.nix`, so it carries the
+`openstack` user and group itself, through the `fakeNss` entry of the FHS
+façade: the
 distro packages would install separate `openvswitch` and `ovn` users, and the
 source build carries no such packaging. The `backup-shifter` image states the
 same decision in the header comment of `images/backup-shifter/image.nix`, also
@@ -2216,15 +2018,15 @@ security context.
 
 **Root instead of the `openstack` user (libvirt):**
 
-`images/libvirt/Dockerfile` keeps root and creates no `openstack` user, and
+`images/libvirt/image.nix` keeps root and creates no `openstack` user, and
 carries a `# DEVIATION` comment saying so. libvirtd has to run as root to
-manage domains, devices and cgroups on the node, and the libvirt packages
-create the `libvirt-qemu` user that QEMU runs guests as.
+manage domains, devices and cgroups on the node. fakeNss writes the guest
+accounts noble's libvirt packages created, with noble's IDs: the
+`libvirt-qemu` user and the `libvirt` and `kvm` groups.
 
-**Distroless and UID 65532 instead of `python-base` (openstack-hypervisor-operator):**
+**Distroless and UID 65532 instead of the `openstack` user (openstack-hypervisor-operator):**
 
-`images/openstack-hypervisor-operator/image.nix` does not derive from
-`python-base` and creates no `openstack` user, and carries a `# DEVIATION`
+`images/openstack-hypervisor-operator/image.nix` creates no `openstack` user, and carries a `# DEVIATION`
 comment saying so. The operator is a static Go binary, so it runs on
 `nix/lib/static-image.nix`, the stand-in for the
 `gcr.io/distroless/static:nonroot` base the CobaltCore operator images use
@@ -2232,10 +2034,9 @@ comment saying so. The operator is a static Go binary, so it runs on
 own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
 no command, which any non-root user and the image's `Entrypoint` satisfy.
 
-**Distroless and UID 0 instead of `python-base` (kvm-node-agent):**
+**Distroless and UID 0 instead of the `openstack` user (kvm-node-agent):**
 
-`images/kvm-node-agent/image.nix` does not derive from `python-base` and
-creates no `openstack` user, and carries a `# DEVIATION` comment saying so.
+`images/kvm-node-agent/image.nix` creates no `openstack` user, and carries a `# DEVIATION` comment saying so.
 The agent is a static Go binary on the same stand-in for the
 `gcr.io/distroless/static:nonroot` base, but it runs as root (`User 0:0`)
 instead of that base's `nonroot` user.

@@ -58,8 +58,10 @@ beside it on the same pool, and `rbd1` as the same user.
 
 `WITH_CEPH=true` deploys a Ceph through Rook in `rook-ceph`: the RBD pools
 `volumes` and `backups`, and the Ceph users `cinder` and `cinder-backup`, each
-with a key of the `aes` type. The noble image's `librbd` reads no `aes256k`
-key, which is why the lab pins the type. The keys reach `openstack` through
+with a key of the `aes` type. The librbd of Ceph 19.2.3 in the images before
+#1407 read no `aes256k` key, which is why the lab pins the type, and no run has
+tried an `aes256k` key against the Ceph 20.2.4 clients of the Nix-built
+images. The keys reach `openstack` through
 OpenBao as the Secrets `ceph-client-cinder` and `ceph-client-cinder-backup`,
 each carrying the raw key under `userKey`, the data key the backend reads:
 

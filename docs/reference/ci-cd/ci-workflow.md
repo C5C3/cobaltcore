@@ -64,8 +64,9 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | Change class | Paths | What it schedules |
 | --- | --- | --- |
 | `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
-| `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**`, the two base images and `hack/ci-build-service-image.sh` | that service's `e2e-operator` leg |
+| `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg |
 | `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources (the Tempest locks included) | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
+| `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
 | `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
@@ -325,6 +326,7 @@ four to `hack/ci-resolve-e2e-images.sh`:
 | `changed-tempest` | `true` when the `image_tempest` or `images_base` class changed. Passed as `CHANGED_TEMPEST` |
 | `changed-proxy` | `true` when the `image_proxy` class changed. Passed as `CHANGED_PROXY` |
 | `changed-ovn` | `true` when the `image_ovn` class changed: the ovn and backup-shifter image sources, `flake.nix`, `flake.lock`, `nix/lib/**` or `hack/ci-nix-build-e2e-images.sh`. Passed as `CHANGED_OVN` |
+| `changed-libvirt` | `true` when the `image_libvirt` class changed: the libvirt image sources, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**` or `hack/ci-nix-build-e2e-images.sh`. Passed as `CHANGED_LIBVIRT` |
 | `build-e2e-images` | `true` when `has-e2e-operators`, `tempest` or an `e2e-*` flag other than `e2e-infra` is `true`. Gates `build-e2e-images` |
 | `has-e2e-operators` | `true` when `e2e-operators` holds at least one operator. Gates `e2e-operator`, `build-and-push` and `helm-push` |
 
@@ -336,7 +338,7 @@ The matrices come last:
 | `e2e-operator-legs` | Written by step 6: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
 | `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release. The matrix of `tempest` |
-| `cleanup-e2e-packages` | Written by step 5: JSON array of the GHCR packages that receive run-scoped tags, which leaves out `python-base` and `venv-builder`. The `package` matrix of `cleanup-e2e-tags` |
+| `cleanup-e2e-packages` | Written by step 5: JSON array of the GHCR packages that may receive run-scoped tags, every published package. The `package` matrix of `cleanup-e2e-tags` |
 
 ### lint
 
@@ -864,26 +866,24 @@ guard.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads, and with `persist-credentials: false`, so no token lies in `/github/runner_temp` for the build users of step 5 to read |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy` and `changed-ovn`; writes the `BUILD_*` variables, `NEEDS_BASE_IMAGES`, `OVN_VERSION` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES`, `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES` and `ovn-image` when `BUILD_OVN` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn) |
+| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true and `libvirt-image` when `BUILD_LIBVIRT` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt) |
 | 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>`, then the tar is removed |
-| 7 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true (a nova-compute line is built) |
-| 8 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
-| 9 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
-| 10 | Build service images | Builds `<IMAGE_PREFIX>/<image>:<release>` from the service's source for each line of `BUILD_SERVICE_IMAGES` carrying a third field (`nova 2026.1 nova-compute`) and skips the other lines, which step 5 built; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
-| 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`; `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true |
+| 7 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
+| 8 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
+| 9 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`; `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
 `releases/*/source-refs.yaml`, a derived image per release of the service it is built
 from (`nova-compute` from `nova`, built whenever that `nova` image is), a Tempest image
-per `releases/<release>/`, the federation proxy, and the OVN daemon image under the
-version `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`. An image
-whose sources this pull request changed is built here and mapped to its run-scoped tag.
-Every other image is mapped to the index digest behind its published tag
-(`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>`,
-`keystone-federation-proxy:latest`, `ovn:<version>`), which the run pulls instead of
-rebuilding.
+per `releases/<release>/`, the federation proxy, the OVN daemon image under the
+version `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`, and the
+libvirt image as `libvirt:latest`. An image whose sources this pull request changed is
+built here and mapped to its run-scoped tag. Every other image is mapped to the index
+digest behind its published tag (`<op>-operator:latest`, `<svc>:<release>`,
+`tempest:<release>`, `keystone-federation-proxy:latest`, `ovn:<version>`,
+`libvirt:latest`), which the run pulls instead of rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
 
@@ -901,11 +901,12 @@ The OVN daemon image carries no OpenStack release and no `go.mod`; its key comes
 from the pin. The resolver builds it when `changed-ovn` is set or main has not
 published the pinned version yet: it writes `BUILD_OVN=true`, and step 5 builds
 `ovn-image` beside the other Nix images. A pin the resolver cannot read fails the step
-before the map is written.
+before the map is written. The libvirt image follows the same rule through
+`changed-libvirt` and `BUILD_LIBVIRT`: built when its inputs changed or `latest` is not
+published yet, otherwise pulled by the digest `latest` names.
 
-Only nova-compute builds `FROM python-base` and `venv-builder`, so a run that builds
-no nova-compute skips the base-image step. The service, Tempest and ovn images are
-flake attributes that share their Nix store layers. The `nixos/nix` container runs as root
+The service, nova-compute, Tempest, ovn and libvirt images are flake attributes that
+share their Nix store layers. The `nixos/nix` container runs as root
 in the runner's workspace and builds without the Nix sandbox, which an unprivileged
 container cannot create, so its builders run as build users of their own that can
 neither open the runner's Docker socket nor write the workspace, and the job's checkout
@@ -922,10 +923,11 @@ GHCR push/pull because the 355 MB single-blob artifact intermittently timed out 
 the 5-minute `actions/download-artifact` window. Layer-level pull retries plus the
 GHCR CDN dramatically reduce the failure rate.
 
-Timeout: 120 minutes. The job needs 45 without the ovn image, and a run that builds
-the ovn image without a cached build of the pin compiles Open vSwitch and OVN from
-source, which is what the `build-ovn` job of `build-images.yaml` budgets 60 minutes
-for. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
+Timeout: 120 minutes. The job needs 45 without the ovn and libvirt images. A run that
+builds the ovn image without a cached build of the pin compiles Open vSwitch and OVN
+from source, and one that builds the libvirt image compiles libvirt and QEMU, which is
+what the `build-ovn` and `build-libvirt` jobs of `build-images.yaml` budget 60 minutes
+for; one `nix build` builds both side by side. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
 timeout costs the pull request its whole E2E coverage.
 
 ### e2e-operator
@@ -1331,22 +1333,24 @@ keystone, placement, glance, ovn, neutron and nova operators in that order,
 each into `<op>-system`, and the suite runs through `make e2e-nova-libvirt`,
 the target a developer calls locally.
 
-The job loads 14 images: the six operators at `:dev`, `keystone`, `placement`,
+The job loads 15 images: the six operators at `:dev`, `keystone`, `placement`,
 `glance`, `neutron`, `nova` and `nova-compute` at `2026.1`, the OVN daemon image
 at the tag `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`,
-and `tempest:2026.1`, whose
-`openstack` client the suite's Jobs run. It loads no libvirt image: the image
-is not in the E2E image map, and the kind node pulls the public
-`ghcr.io/c5c3/libvirt:latest` that `main` published. Diagnostics run with
+`tempest:2026.1`, whose `openstack` client the suite's Jobs run, and
+`libvirt:latest`, which the suite's DaemonSet runs with `IfNotPresent`. The
+image map resolves `libvirt:latest` to this run's build when the pull request
+changed an input of the libvirt image, and otherwise to the digest `latest`
+names on GHCR, so a pull request that changes the image runs the suite against
+its own libvirt. Diagnostics run with
 `OPERATOR: nova` and then once per sibling with `OPERATOR_ONLY=1`, and
 `_output/reports/` is uploaded as the `e2e-nova-libvirt-junit-report` artifact
 (14-day retention). `cleanup-e2e-tags` lists the job in its `needs`.
 
 **Path filter:** `tests/e2e-nova-libvirt/**`,
 `tests/e2e/nova/compute-node-pool/**` and `tests/e2e/cinder/broker-vhost.sh`
-(the `tests_nova_libvirt` class), `operators/nova/**` (`nova`), and
+(the `tests_nova_libvirt` class), `operators/nova/**` (`nova`),
 `images/nova/**`, `images/nova-compute/**` and `patches/nova/**`
-(`image_nova`). A shared Go change does not schedule the job, and `ci:full`
+(`image_nova`), and the libvirt image's inputs (`image_libvirt`). A shared Go change does not schedule the job, and `ci:full`
 forces it on.
 
 ### e2e-prometheus
@@ -1560,7 +1564,7 @@ behind `ghcr.io/c5c3/keystone-federation-proxy:latest`.
 | 4 | `kind load docker-image` | Loads the six images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-sso WITH_CONTROLPLANE_CR=false` |
 | 5a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 5 then also carries `WITH_VPA` |
-| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hack-ci-build-service-image-sh) for why) |
+| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated, since GitHub can answer an anonymous clone from the runners' git 2.43 with a 401 challenge (the header comment of `hack/ci-deploy-korc.sh` has the details) |
 | 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
 | 8 | `hack/ci-deploy-operator.sh` (horizon) | Deploys the horizon-operator dev image into `horizon-system` |
 | 9 | `kubectl apply -f operators/glance/helm/glance-operator/crds/` | Installs the Glance CRDs the c5c3-operator watches; the glance-operator itself stays undeployed |
@@ -2151,49 +2155,6 @@ OPERATOR=keystone hack/ci-dump-diagnostics.sh   # + operator-specific diagnostic
 OPERATOR=nova OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh  # the operator sections alone
 ```
 
-### hack/ci-build-service-image.sh
-
-Builds the nova-compute container image, the one service image still built by Docker,
-by resolving upstream source refs, cloning the project at the pinned ref, applying
-patches from `patches/<service>/<release>/`, applying constraint overrides, and building
-the full image chain (`python-base` -> `venv-builder` -> nova-compute). An image without
-a Dockerfile is refused before anything is cloned: with an `images/<IMAGE>/image.nix`
-the script exits 1 with
-`ci-build-service-image.sh: images/<IMAGE> is built by Nix: nix build .#<IMAGE>-<rel_>-image`,
-and without one with `ci-build-service-image.sh: images/<IMAGE>/Dockerfile not found`.
-
-| Environment Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `OPERATOR` | Yes | - | OpenStack service whose source the image is built from (`nova`) |
-| `IMAGE_PREFIX` | Yes | - | Container image prefix (e.g. `ghcr.io/c5c3`) |
-| `IMAGE` | No | `$OPERATOR` | Image to build. A derived image (`nova-compute`) is built from `OPERATOR`'s source, patches and constraints; `IMAGE` selects the `extra-packages.yaml` key, `images/<IMAGE>/` and the tag. Lowercase alphanumeric with hyphens, like `OPERATOR`. An `IMAGE` your shell exports for another purpose is read too |
-| `RELEASE` | No | `2026.1` | Release directory name under `releases/` |
-| `GITHUB_TOKEN` | No | (unset) | Authenticates the clone from `github.com`; the `Build service images` step passes the workflow token, a run without one clones anonymously |
-
-The script reads `releases/<RELEASE>/source-refs.yaml` for the upstream Git ref of
-`OPERATOR` and `releases/<RELEASE>/extra-packages.yaml` for the additional pip/apt
-packages under the `IMAGE` key. The final image is tagged
-`<IMAGE_PREFIX>/<IMAGE>:<RELEASE>`.
-
-The source is cloned from the GitHub mirror first, the host the Build Images
-workflow checks out, and from `opendev.org` when the mirror does not serve the
-ref after three attempts with a linear backoff. Both hosts carry the same
-tags. GitHub does not reliably serve unauthenticated `upload-pack` requests to
-the git a distribution ships (the self-hosted runners run Ubuntu 24.04's
-2.43): since 2026-09-02 the anonymous request can come back as a 401
-challenge, which a runner without a terminal reports as `could not read
-Username for 'https://github.com'`. With `GITHUB_TOKEN` set the script sends
-the token the way `actions/checkout` does, as a basic-auth header scoped to
-`https://github.com/`, through git's environment config, so it lands in no
-file, no argument list and never reaches `opendev.org`. `GIT_TERMINAL_PROMPT=0`
-keeps a rejected clone from waiting for a username.
-
-Usage:
-
-```bash
-OPERATOR=nova IMAGE=nova-compute IMAGE_PREFIX=ghcr.io/c5c3 hack/ci-build-service-image.sh
-```
-
 ### hack/ci-deploy-operator.sh
 
 Deploys an operator into a kind cluster by installing CRDs, waiting for establishment, and
@@ -2232,22 +2193,25 @@ image set `hack/ci-resolve-e2e-images.sh` wrote.
 
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `BUILD_SERVICE_IMAGES` | No | (empty) | One `<service> <release> [<image>]` line per image; a line without a third field is built here, a line with one (`nova-compute`) is skipped |
+| `BUILD_SERVICE_IMAGES` | No | (empty) | One `<service> <release> [<image>]` line per image; a line without a third field builds the service's own image, a line with one (`nova-compute`) the attribute of that derived image |
 | `BUILD_TEMPEST_RELEASES` | No | (empty) | The releases whose Tempest image is built |
 | `BUILD_OVN` | No | (empty) | `true` builds the ovn image, the flake attribute `ovn-image` |
 | `OVN_VERSION` | With `BUILD_OVN` | (empty) | The pinned OVN version, the tag `docker load` prints for the ovn image; `hack/ci-resolve-e2e-images.sh` writes it |
+| `BUILD_LIBVIRT` | No | (empty) | `true` builds the libvirt image, the flake attribute `libvirt-image` |
 | `GITHUB_WORKSPACE` | Yes | - | The checkout the flake is evaluated in; set by the runner |
 
 The script writes the group `e2ebld` (gid 40000) and one build user per CPU (uids
 from 40001) to the container's account files (`NIX_E2E_ETC`, `/etc` by default), then
-builds the flake attributes `<name>-<rel_>-image` of every image, and `ovn-image` with
-`BUILD_OVN`, in one `nix build` with `--option sandbox false`,
+builds the flake attributes `<name>-<rel_>-image` of every image (`<name>` the third
+field of a line that has one), `ovn-image` with `BUILD_OVN` and `libvirt-image` with
+`BUILD_LIBVIRT`, in one `nix build` with `--option sandbox false`,
 `--option build-users-group e2ebld` and one job per CPU. The builders, which run the setup code of every sdist the locks build, run as
 those users: the runner mounts its Docker socket and the workspace into the container,
 and a build user can neither open the socket nor write the workspace. Their uids are not
 those of a host Nix daemon's build users. It then writes each image stream to
 `.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`;
-the ovn image is listed as `ovn <OVN_VERSION>`. A line with four fields exits 1
+the ovn image is listed as `ovn <OVN_VERSION>`, the libvirt image as `libvirt latest`,
+the tag `docker load` prints for it. A line with four fields exits 1
 with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, a `BUILD_OVN` without
 `OVN_VERSION` with `ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is
 empty`, both before nix runs, and a missing attribute or a
@@ -2776,9 +2740,8 @@ The CI workflow depends on the following artifacts:
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | every `e2e-*` job and the `tempest` job | Shared diagnostic dump |
-| `hack/ci-build-service-image.sh` | `build-e2e-images` job | Builds the nova-compute image from an authenticated clone of the nova source |
-| `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built service and Tempest images and writes their streams to `.nix-e2e/` |
-| `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the service and Tempest images are built from |
+| `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built service, nova-compute, Tempest, ovn and libvirt images and writes their streams to `.nix-e2e/` |
+| `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the e2e images are built from |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |

@@ -44,13 +44,16 @@ on, the images input adds these outputs:
 
 | Output | Content |
 | --- | --- |
-| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`) |
+| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`, `libvirt-image`) |
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
+| `packages.<system>.nova-compute-<rel_>-image` | the compute image for each nova lock, built from that lock with its `nova-compute` dependency group ([Hypervisor images](#hypervisor-images)) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
 | `checks.<system>.<name>-<rel_>-tests` | fails unless that run passed |
 | `checks.<system>.nix-lint` | nixfmt, statix and deadnix over the Nix files ([Lint](#lint)) |
 | `checks.<system>.fhs-layout` | builds `nix/lib/fhs-layout.nix` with a Python environment, an `extraRoots` and a `rootLinks` entry, and checks the paths of the result |
 | `checks.<system>.service-tests` | runs `nix/lib/service-tests.nix` over the fixture suite under `nix/lib/fixtures/service-tests/`, which has one failing test, and checks that the run still writes its results |
+| `checks.<system>.libvirt-pairing` | fails evaluation unless the `libvirt-python` of every nova lock builds against the libvirt `libvirt-image` runs ([Hypervisor images](#hypervisor-images)) |
+| `checks.<system>.libvirt-pairing-rejects-foreign` | fails evaluation unless the same comparison against nixpkgs' own libvirt throws |
 | `devShells.<system>.image-tools` | skopeo and vulnix at the versions of `flake.lock`, for the `build-nix-image` action |
 
 The package names are flat because `nix flake check` rejects a nested
@@ -58,14 +61,17 @@ attribute set under `packages`. The three images built from an upstream commit
 pass their inner build through `passthru`: `nix build .#ovn-image.ovn` builds
 OVS and OVN, and `nix build .#openstack-hypervisor-operator-image.manager` or
 `.#kvm-node-agent-image.manager` the manager binary
-([Source-built images](#source-built-images)). `<rel_>` is the release with its dot replaced
+([Source-built images](#source-built-images)). `.#libvirt-image.libvirt` and
+`.#libvirt-image.qemu` are the libvirt and the QEMU of the libvirt image. `<rel_>` is the release with its dot replaced
 by `_`, since an unquoted flake attribute cannot contain a dot. The
 directories under `nix/locks/` are the inventory of the Python images: one
 output per `<release>/<name>/` directory.
 
 On all four systems of the flake, `devShells.<system>.lock-tools` carries the
 uv, yq, jq, git, Python 3.12 and bash 5 of `nixpkgs-images` that
-`hack/nix-lock.sh` runs ([Python environments and locks](#python-environments-and-locks)).
+`hack/nix-lock.sh` runs ([Python environments and locks](#python-environments-and-locks)),
+and the pkg-config and libvirt that the setup script of the `libvirt-python`
+sdist asks for before uv can read its metadata.
 
 | File | Content |
 | --- | --- |
@@ -73,14 +79,18 @@ uv, yq, jq, git, Python 3.12 and bash 5 of `nixpkgs-images` that
 | `flake.lock` | the pinned revisions of the five inputs |
 | `nix/lib/image-defaults.nix` | what every image shares: user and group 42424, the creation date `1970-01-01T00:00:01Z`, `PATH` and `LANG`, the licence and vendor labels |
 | `nix/lib/fhs-layout.nix` | the FHS façade: `/var/lib/openstack`, `/bin/sh` and `/bin/bash` (bash), `/usr/bin/env`, the CA bundle at `/etc/ssl/certs/ca-certificates.crt`, and `/etc/passwd` and `/etc/group` with the `openstack` user. The Python environment is optional; without one, `/var/lib/openstack` is an empty directory. `extraRoots` adds store paths below `/var/lib/openstack`, `rootLinks` below the image root (`usr/share/novnc`) |
-| `nix/lib/python-env.nix` | the uv2nix environment of one lock: the venv, the venv with the test group, and the patched source |
+| `nix/lib/python-env.nix` | the uv2nix environment of one lock: the venv, `venvWith`, the venv with named dependency groups (`test`, `nova-compute`), and the patched source |
 | `nix/lib/service-image.nix` | the image of a Python service or of tempest around that venv ([Service images](#service-images)) |
 | `nix/lib/static-image.nix` | the image of a static Go binary, the stand-in for the distroless base of the Docker builds ([Source-built images](#source-built-images)) |
 | `nix/lib/service-tests.nix` | the unit-test run and check of a lock |
 | `nix/lib/subunit-crc.py` | recomputes the packet checksums of a subunit stream after `nuke-refs` |
+| `nix/lib/rootwrap-conf.nix` | the text of nova-compute's `/etc/nova/rootwrap.conf`, with the image's store bin directories as `exec_dirs` |
 | `nix/pkgs/ceph-bindings.nix` | the `rados` and `rbd` modules for Python 3.12, built from the ceph source of `nixpkgs-images` |
+| `nix/pkgs/libvirt.nix` | nixpkgs' libvirt with `--sysconfdir=/etc` and `-Dqemu_datadir=/usr/share/qemu`, the one libvirt of both hypervisor images |
+| `nix/base-requirements.txt` | the release-independent pins `hack/nix-lock.sh` adds to every service and tempest lock, `uwsgi` among them |
 | `nix/locks/<release>/<name>/` | the lock of one service or tempest release, written by `hack/nix-lock.sh` |
-| `images/<name>/image.nix` | the image; backup-shifter's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, a Python image's of `serviceImage`, its environment `env` and what else it names |
+| `images/<name>/image.nix` | the image; backup-shifter's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, libvirt's of `pkgs` and `libvirt`, a Python image's of `serviceImage`, its environment `env` and what else it names (nova-compute's also `libvirt`) |
+| `images/libvirt/qemu.nix` | the QEMU of the libvirt image |
 | `images/<name>/source.json` | the pin of an image built from an upstream commit (ovn, openstack-hypervisor-operator, kvm-node-agent), written by `hack/nix-lock.sh` |
 | `images/ovn/ovn.nix` | OVS and OVN compiled from the commits of `images/ovn/source.json` |
 | `images/<name>/manager.nix` | the manager binary of hvo or kna, built with `buildGo127Module` from the commit of its `source.json` with the patches under `images/<name>/patches/` |
@@ -104,7 +114,7 @@ release, plus one per release for tempest. A lock is the directory
 | File | Content |
 | --- | --- |
 | `sources.json` | for a service: the ref `releases/<release>/source-refs.yaml` pins, the commit that ref names, the NAR hash of its tree, the project name and the paths of `patches/<name>/<release>/*.patch`; for tempest: the tempest version and the project name |
-| `pyproject.toml` | a virtual uv project: the service as a git source at that commit with its `pip_extras`, the `pip_packages` of `releases/<release>/extra-packages.yaml`, the pins of `images/venv-builder/requirements.txt`, the constraints of `releases/<release>/upper-constraints.txt` after `overrides/<release>/constraints.txt`, and a `test` dependency group |
+| `pyproject.toml` | a virtual uv project: the service as a git source at that commit with its `pip_extras`, the `pip_packages` of `releases/<release>/extra-packages.yaml`, the pins of `nix/base-requirements.txt`, the constraints of `releases/<release>/upper-constraints.txt` after `overrides/<release>/constraints.txt`, and a `test` dependency group; the nova lock also has a `nova-compute` group |
 | `uv.lock` | what `uv lock` resolves from `pyproject.toml` |
 
 The build fetches the source by commit and hash and applies the patches with
@@ -113,7 +123,12 @@ fetched tree, so the placement lock names `openstack-placement`. The test
 group holds `stestr` and `testtools` for a suite with a `.stestr.conf` and
 `pytest` with the `hacking` pin of horizon's tox environment for the one
 without, each unless `test-requirements.txt` lists it, followed by that
-file's lines. The tempest lock pins the five keys of
+file's lines. `DERIVED_IMAGES` in `hack/nix-lock.sh` names the images built
+from another key's source: the `nova-compute` block of
+`extra-packages.yaml` becomes the `nova-compute` group of the nova lock, and
+a release without that block stops the run with `nix-lock.sh: no block
+'nova-compute' in releases/<release>/extra-packages.yaml` before anything is
+written. The tempest lock pins the five keys of
 `releases/<release>/test-refs.yaml` and the `openstack` client with its
 placement and barbican plugins, and fetches nothing.
 
@@ -255,6 +270,103 @@ nix log .#openstack-hypervisor-operator-image.manager   # the PASS lines of the 
 
 `<commit>` is the `rev` of the image's `source.json`.
 
+## Hypervisor images
+
+`nova-compute` and `libvirt` run on the hypervisor nodes and share one libvirt
+derivation. `nix/pkgs/libvirt.nix` overrides nixpkgs' libvirt, 12.2.0 at the
+locked `nixpkgs-images`, in four meson flags:
+
+| nixpkgs passes | The override passes | Effect |
+| --- | --- | --- |
+| `--sysconfdir=/var/lib` | `--sysconfdir=/etc` | libvirtd reads `/etc/libvirt/libvirtd.conf` and `/etc/libvirt/qemu.conf`, which the lab and the e2e suite write, keeps its secrets below `/etc/libvirt/secrets`, and finds its TLS files below `/etc/pki` |
+| `-Dqemu_datadir=` | `-Dqemu_datadir=/usr/share/qemu` | libvirt reads QEMU's firmware descriptors from `/usr/share/qemu/firmware`, where the libvirt image links them |
+| `-Dtests=enabled` | `-Dtests=disabled` | meson compiles none of libvirt's test programs, which the build would not run |
+| `-Dexpensive_tests=enabled` | `-Dexpensive_tests=disabled` | meson refuses expensive tests without tests |
+
+A nixpkgs revision that drops one of the flags fails evaluation with this
+message:
+
+```text
+nix/pkgs/libvirt.nix: nixpkgs' libvirt no longer passes <flag>; re-check the override
+```
+
+libvirt's test suite is neither built nor run: Hydra ran it on the same
+source. nixpkgs compiles root as the default QEMU user; the lab
+and the e2e suite set `user = "root"` in `qemu.conf` themselves.
+
+The libvirt image runs that derivation, and nova-compute's `libvirt-python`
+builds against it: PyPI ships the binding as an sdist, and the
+`libvirt-python` row of `nix/lib/python-env.nix` gives its `setup.py` the
+pkg-config and libvirt it generates the binding from.
+`checks.<system>.libvirt-pairing` compares the libvirt among the build inputs
+of each nova lock's `libvirt-python` with `libvirt-image.libvirt`, by
+derivation path. A nixpkgs libvirt wired into either side fails
+`nix flake check --no-build`:
+
+```text
+libvirt-pairing: libvirt-python of nova <release> builds against <drv>, the libvirt image runs <drv>
+```
+
+`checks.<system>.libvirt-pairing-rejects-foreign` runs the same comparison
+against nixpkgs' own libvirt and fails evaluation unless that throws, so
+`libvirt-pairing` cannot pass by comparing nothing.
+
+`images/libvirt/qemu.nix` overrides nixpkgs' QEMU, 10.2.4 at the locked
+revision, to the `x86_64-softmmu` target, with the rbd block driver and
+without libiscsi, curl, GTK, SDL, OpenGL, PulseAudio, PipeWire, JACK, SPICE
+and smartcard support, and without the manual, whose Sphinx build the image
+would not ship. nixpkgs builds QEMU without modules, so the drivers are
+compiled in, and `qemu-img --help` lists rbd and none of curl, http, https,
+ftp, ftps, iscsi, nfs or ssh. The rbd driver adds `ceph.lib`, about 1 GB, to
+the closure. The UEFI firmware is QEMU's own edk2 build. `/usr/share/qemu`
+holds QEMU's `share/qemu` with copies of the firmware descriptors that name
+`/usr/share/qemu/<file>` instead of the store path, because libvirt records
+the descriptor's path in a UEFI guest's XML and the next image has another
+store path. `/usr/share/OVMF/OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` link to
+`edk2-x86_64-code.fd` and `edk2-i386-vars.fd`, the names noble's ovmf
+package used.
+
+The libvirt image writes its own root instead of `nix/lib/fhs-layout.nix`,
+whose `/etc/passwd` adds the `openstack` user: it runs as root, carries the
+`libvirt-qemu` user and the `libvirt` and `kvm` groups with noble's IDs, and
+copies libvirt's default configuration into a writable `/etc/libvirt` without
+the autostart link of the `default` network. Its tag is `latest`.
+
+`images/nova-compute/image.nix` builds on `nix/lib/service-image.nix` with
+`env.venvWith [ "nova-compute" ]`, the nova venv plus `libvirt-python`, so
+neither the nova image nor nova's unit-test venv carries the binding. The
+host tools are nixpkgs packages; root links put `/lib/udev/scsi_id`,
+`/usr/bin/udevadm`, `/sbin/iscsiadm` and the `mount.nfs` helpers where
+mount(8), os-brick and noble put them. `/etc/nova/rootwrap.conf` comes from
+`nix/lib/rootwrap-conf.nix`, with the bin directory of every host-tool package
+in `exec_dirs`, and `visudo -csf` checks the one sudo rule at build time.
+nixpkgs' open-iscsi installs an initiator name it generated at build time;
+the image removes it, as the Dockerfile removed the four identity files.
+[Container Images](./container-images.md) lists the packages and links of
+both images.
+
+`merge-libvirt-image` gives the merged index a keeper tag on main,
+`<libvirt-version>-r<N>` such as `12.2.0-r57`, where `N` counts the commits
+under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix`
+and `flake.lock`. A `nixpkgs-images` re-lock that rebuilds QEMU, Ceph or
+glibc while libvirt keeps its version therefore gets a new tag. The lab
+manifests pin the tag by digest, and Renovate moves the eight pins to each
+new keeper, a libvirt major included; a pull request that changes the image
+leaves them alone
+([Dependency Management](../../contributing/dependency-management.md)).
+
+```bash
+nix build .#libvirt-image && ./result | docker load
+bash tests/container-images/verify_libvirt.sh libvirt:latest
+
+nix build .#nova-compute-2026_1-image && ./result | docker load
+NOVA_COMPUTE_RELEASE=2026.1 bash tests/container-images/verify_nova_compute.sh nova-compute:2026.1
+```
+
+`cache.nixos.org` holds neither the libvirt override nor the QEMU override,
+so the first build per `nixpkgs-images` revision compiles both; the Cachix
+cache keeps them after that.
+
 ## Unit tests
 
 `nix/lib/service-tests.nix` turns a lock into two derivations:
@@ -312,6 +424,13 @@ The same call builds `ovn-image` when the `changed-ovn` output of the
 backup-shifter sources, the flake inputs, `nix/lib/` and the build script), or
 when main has not published the pinned version yet. Otherwise the image map of `hack/ci-resolve-e2e-images.sh` names the
 digest behind `ghcr.io/c5c3/ovn:<version>`, and the e2e jobs pull that image.
+`libvirt-image` follows the same rule through `changed-libvirt`, set when
+the `image_libvirt` filter matches (`images/libvirt/`,
+`nix/pkgs/libvirt.nix`, the flake inputs, `nix/lib/` and the build script);
+otherwise the map resolves `ghcr.io/c5c3/libvirt:latest` to the digest main
+published, and `e2e-nova-libvirt` loads that image into kind as `latest`.
+A `BUILD_SERVICE_IMAGES` line with a third field (`nova 2026.1 nova-compute`)
+builds the attribute of that derived image, `nova-compute-2026_1-image`.
 
 The container is unprivileged and cannot create the namespaces of the build
 sandbox, so the builds run with `--option sandbox false`. The builders, which
@@ -489,15 +608,15 @@ Renovate's `nix` manager re-locks the five inputs of `flake.lock` through
 as one pull request on the Monday schedule of the ubuntu digest bump, never
 automerged; the re-lock is not a version bump, so the three-day release age
 cannot gate it. A re-lock changes `flake.lock`, which the `base`, `ovn`,
-`shifter`, `hvo` and `kna` filters of the build-images workflow cover, so its
-pull request rebuilds the images. Separate rules disable every update under
+`shifter`, `libvirt`, `hvo` and `kna` filters of the build-images workflow
+cover, so its pull request rebuilds the images. Separate rules disable every update under
 `nix/spike/**` and under `nix/locks/**`: the locks are derived files that only
 `hack/nix-lock.sh` writes. `ignorePaths` also keeps `nix/locks/**` out of
 extraction, and repeats the paths of the `config:recommended` preset, which a
 repository value replaces.
 
 A Renovate pull request that moves a pin the locks are derived from (under
-`releases/`, `overrides/`, `patches/` or `images/venv-builder/requirements.txt`,
+`releases/`, `overrides/`, `patches/` or `nix/base-requirements.txt`,
 the noVNC pin in `images/nova/novnc.json`, or one of the three
 `images/<name>/source.json` pins) fails `nix-lock-check` until someone runs
 `make nix-lock` on its branch and pushes the result. The OVN manager moves
@@ -519,8 +638,6 @@ exist and read Nix or Docker.
 | Image | Build | Phase | Issue |
 | --- | --- | --- | --- |
 | `backup-shifter` | Nix | Phase 1 | [#1404](https://github.com/C5C3/cobaltcore/issues/1404) |
-| `python-base` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
-| `venv-builder` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `keystone` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
 | `horizon` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
 | `glance` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
@@ -533,8 +650,8 @@ exist and read Nix or Docker.
 | `ovn` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
 | `openstack-hypervisor-operator` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
 | `kvm-node-agent` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `nova-compute` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
-| `libvirt` | Docker | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
+| `nova-compute` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
+| `libvirt` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `keystone-federation-proxy` | Docker | Phase 5 | [#1408](https://github.com/C5C3/cobaltcore/issues/1408) |
 | `barbican-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
 | `c5c3-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
