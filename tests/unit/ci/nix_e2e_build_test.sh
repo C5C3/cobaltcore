@@ -5,22 +5,25 @@
 
 # Drive hack/ci-nix-build-e2e-images.sh in a scratch workspace with stub nix,
 # git and nproc binaries first on PATH and scratch account files:
-#   - the service lines without a third field and the Tempest releases become
-#     the flake attributes <name>-<rel_>-image, built in one nix invocation
-#     without the sandbox, one job per CPU, as the build users of the group
-#     e2ebld; each image is streamed to .nix-e2e/<name>-<release>.tar and
-#     listed in .nix-e2e/images.txt; a nova-compute line is skipped;
+#   - the service lines and the Tempest releases become the flake attributes
+#     <name>-<rel_>-image, <name> the third field of a line that has one
+#     (nova-compute), built in one nix invocation without the sandbox, one
+#     job per CPU, as the build users of the group e2ebld; each image is
+#     streamed to .nix-e2e/<name>-<release>.tar and listed in
+#     .nix-e2e/images.txt;
 #   - BUILD_OVN adds the attribute ovn-image to that invocation, streamed to
 #     .nix-e2e/ovn-<OVN_VERSION>.tar and listed as "ovn <OVN_VERSION>"; a
 #     BUILD_OVN without OVN_VERSION exits 1 and builds nothing;
+#   - BUILD_LIBVIRT adds the attribute libvirt-image, streamed to
+#     .nix-e2e/libvirt-latest.tar and listed as "libvirt latest";
 #   - the group e2ebld (gid 40000) and one user per CPU (uids 40001 and up)
 #     are written to the account files before nix runs;
 #   - git is told to trust the workspace before anything else runs;
 #   - a line with four fields exits 1 with the line named, builds nothing and
 #     writes no build user; an attribute nix cannot build exits with nix's
 #     status and writes no image;
-#   - an empty image set, BUILD_OVN=false included, prints "nothing to build"
-#     and exits 0.
+#   - an empty image set, BUILD_OVN=false and BUILD_LIBVIRT=false included,
+#     prints "nothing to build" and exits 0.
 #
 # The build-e2e-images job of .github/workflows/ci.yaml runs the script in the
 # nixos/nix container; this test checks what the script does with its input,
@@ -105,6 +108,7 @@ run_script() {
   RC=0
   OUTPUT=$(cd "$workspace" && env PATH="$STUB_DIR:$PATH" GITHUB_WORKSPACE="$workspace" \
     NIX_E2E_ETC="$ETC_DIR" BUILD_SERVICE_IMAGES="" BUILD_TEMPEST_RELEASES="" BUILD_OVN=false OVN_VERSION="" \
+    BUILD_LIBVIRT=false \
     "$@" bash "$SCRIPT" 2>&1) || RC=$?
 }
 
@@ -117,14 +121,15 @@ test_builds_service_and_tempest_images() {
 
   assert_eq "the script exits 0" "0" "$RC"
   assert_eq "nix runs once" "1" "$(wc -l <"$NIX_LOG" | tr -d ' ')"
-  assert_eq "both attributes are built in that one call, without the sandbox, as e2ebld, one job per CPU" \
-    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#glance-2026_1-image .#tempest-2026_2-image --print-build-logs --out-link .nix-e2e/result" \
+  assert_eq "the three attributes are built in that one call, without the sandbox, as e2ebld, one job per CPU" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#glance-2026_1-image .#nova-compute-2026_1-image .#tempest-2026_2-image --print-build-logs --out-link .nix-e2e/result" \
     "$(cat "$NIX_LOG")"
-  assert_not_contains "the nova-compute line is skipped" "$(cat "$NIX_LOG")" "nova"
-  assert_eq "images.txt lists both images in order" $'glance 2026.1\ntempest 2026.2' \
-    "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "images.txt lists the images in order, nova-compute under its own name" \
+    $'glance 2026.1\nnova-compute 2026.1\ntempest 2026.2' "$(cat "$ws/.nix-e2e/images.txt")"
   assert_eq "the glance stream is written to its tar" "stream of glance-2026_1-image" \
     "$(cat "$ws/.nix-e2e/glance-2026.1.tar")"
+  assert_eq "the nova-compute stream is written to its tar" "stream of nova-compute-2026_1-image" \
+    "$(cat "$ws/.nix-e2e/nova-compute-2026.1.tar")"
   assert_eq "the tempest stream is written to its tar" "stream of tempest-2026_2-image" \
     "$(cat "$ws/.nix-e2e/tempest-2026.2.tar")"
   assert_eq "the group e2ebld lists one build user per CPU" "e2ebld:x:40000:e2ebld1,e2ebld2,e2ebld3" \
@@ -200,10 +205,38 @@ test_ovn_without_a_version_fails() {
   assert_not_contains "no build user is written" "$(cat "$ETC_DIR/passwd" "$ETC_DIR/group")" "e2ebld"
 }
 
+test_builds_the_libvirt_image() {
+  echo "Test: BUILD_LIBVIRT builds libvirt-image and lists it as libvirt latest"
+
+  local ws="$TMP_DIR/ws-libvirt"
+  run_script "$ws" BUILD_LIBVIRT=true
+
+  assert_eq "the script exits 0" "0" "$RC"
+  assert_eq "nix builds the attribute libvirt-image" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#libvirt-image --print-build-logs --out-link .nix-e2e/result" \
+    "$(cat "$NIX_LOG")"
+  assert_eq "images.txt lists the libvirt image under latest, the tag docker load prints" \
+    "libvirt latest" "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the libvirt stream is written to its tar" "stream of libvirt-image" \
+    "$(cat "$ws/.nix-e2e/libvirt-latest.tar")"
+
+  run_script "$ws" BUILD_SERVICE_IMAGES=$'nova 2026.1 nova-compute\n' BUILD_LIBVIRT=true
+  assert_eq "the compute image and the libvirt image build in one nix call" "1" \
+    "$(wc -l <"$NIX_LOG" | tr -d ' ')"
+  assert_contains "that call names both attributes in order" "$(cat "$NIX_LOG")" \
+    ".#nova-compute-2026_1-image .#libvirt-image --print-build-logs"
+  assert_eq "the second result is the libvirt stream" "stream of libvirt-image" \
+    "$(cat "$ws/.nix-e2e/libvirt-latest.tar")"
+
+  run_script "$TMP_DIR/ws-libvirt-off" BUILD_LIBVIRT=false
+  assert_contains "BUILD_LIBVIRT=false alone builds nothing" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: nothing to build"
+}
+
 test_nothing_to_build() {
   echo "Test: an empty image set builds nothing and exits 0"
 
-  run_script "$TMP_DIR/ws-empty" BUILD_SERVICE_IMAGES=$'nova 2026.1 nova-compute\n' BUILD_OVN=false OVN_VERSION=26.03.2
+  run_script "$TMP_DIR/ws-empty" BUILD_SERVICE_IMAGES="" BUILD_OVN=false OVN_VERSION=26.03.2
 
   assert_eq "the script exits 0" "0" "$RC"
   assert_contains "it says so" "$OUTPUT" "ci-nix-build-e2e-images.sh: nothing to build"
@@ -246,6 +279,7 @@ test_malformed_line_fails
 test_missing_attribute_fails
 test_builds_the_ovn_image
 test_ovn_without_a_version_fails
+test_builds_the_libvirt_image
 test_nothing_to_build
 test_checkout_persists_no_token
 test_script_is_shellcheck_clean

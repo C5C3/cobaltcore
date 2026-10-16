@@ -65,7 +65,7 @@ run_resolve() {
 # ---------------------------------------------------------------------------
 
 test_each_input_schedules_the_job() {
-  echo "Test: the suite, the nova-operator and the Nova images each schedule the job"
+  echo "Test: the suite, the nova-operator, the Nova images and the libvirt image each schedule the job"
 
   assert_eq "a changed suite schedules the job" \
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main true)"
@@ -73,6 +73,16 @@ test_each_input_schedules_the_job() {
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_nova=true)"
   assert_eq "a Nova or nova-compute image change schedules the job" \
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_image_nova=true)"
+  assert_eq "a libvirt image change schedules the job" \
+    "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_image_libvirt=true)"
+  # The libvirt image change also tells build-e2e-images to build it, so the
+  # job runs against the pull request's libvirt.
+  assert_eq "a libvirt image change signals the libvirt build" \
+    "changed-libvirt=true" \
+    "$(resolve_output changed-libvirt refs/heads/main "$ALL_OPERATORS_FIXTURE" FILTER_image_libvirt=true)"
+  assert_eq "no libvirt input leaves the libvirt build off" \
+    "changed-libvirt=false" \
+    "$(resolve_output changed-libvirt refs/heads/main "$ALL_OPERATORS_FIXTURE" FILTER_image_nova=true)"
 }
 
 test_other_changes_do_not_schedule_the_job() {
@@ -149,6 +159,7 @@ test_ci_yaml_wires_the_signal() {
   echo "Test: ci.yaml declares the filter, passes it in and exports the output"
 
   assert_filter_is_wired tests_nova_libvirt e2e-nova-libvirt
+  assert_filter_is_wired image_libvirt changed-libvirt
 }
 
 test_filter_names_the_suite_and_its_fixtures() {
@@ -163,8 +174,9 @@ test_filter_names_the_suite_and_its_fixtures() {
     "$block" "tests/e2e/nova/compute-node-pool/**"
   assert_contains "the filter lists the vhost script the suite runs by path" \
     "$block" "tests/e2e/cinder/broker-vhost.sh"
-  # The operator and the images reach the job through the nova and image_nova
-  # filters the resolver reads, and the deploy stack and the hack scripts
+  # The operator and the images reach the job through the nova, image_nova
+  # and image_libvirt filters the resolver reads, and the deploy stack and the
+  # hack scripts
   # through the canary. Listing them here would schedule a self-hosted full
   # Nova stack for every helper-script edit.
   assert_not_contains "the filter does not carry the operator tree" \
@@ -173,6 +185,14 @@ test_filter_names_the_suite_and_its_fixtures() {
     "$block" "hack/**"
   assert_not_contains "the filter does not carry the deploy stack" \
     "$block" "deploy/**"
+
+  # The libvirt image filter names what the image is built from.
+  local libvirt_block glob
+  libvirt_block=$(filter_block image_libvirt)
+  for glob in 'images/libvirt/**' 'nix/pkgs/libvirt.nix' 'flake.nix' 'flake.lock' 'nix/lib/**' \
+    'hack/ci-nix-build-e2e-images.sh'; do
+    assert_contains "the image_libvirt filter lists $glob" "$libvirt_block" "$glob"
+  done
 }
 
 test_the_job_reads_the_signal() {
@@ -211,6 +231,19 @@ test_the_job_reads_the_signal() {
     "\${{ env.IMAGE_PREFIX }}/nova-compute:2026.1"
   assert_contains "the job loads the Nova service image into kind" "$kind_load" \
     "\${{ env.IMAGE_PREFIX }}/nova:2026.1"
+  # The suite starts libvirtd from libvirt:latest with IfNotPresent, so the
+  # image the map names has to be on the node before the suite runs. With
+  # Always, or no policy (the default for :latest), the node would pull
+  # main's image from GHCR and the job would test that instead.
+  assert_eq "the suite runs the kind-loaded libvirt image without pulling" \
+    "ghcr.io/c5c3/libvirt:latest IfNotPresent" \
+    "$(yq -N -r 'select(.kind == "DaemonSet") | .spec.template.spec.containers[]
+      | select(.image == "*libvirt*") | .image + " " + .imagePullPolicy' \
+      "$PROJECT_ROOT/tests/e2e-nova-libvirt/server-boot/00-libvirt.yaml")"
+  assert_contains "the job pulls the libvirt image the map resolves" \
+    "$(job_step e2e-nova-libvirt "Load E2E images")" "\${{ env.IMAGE_PREFIX }}/libvirt:latest"
+  assert_contains "the job loads the libvirt image into kind" "$kind_load" \
+    "\${{ env.IMAGE_PREFIX }}/libvirt:latest"
 
   # cleanup-e2e-tags prunes the run-scoped image tags this job pulls, so it
   # has to wait for the job.

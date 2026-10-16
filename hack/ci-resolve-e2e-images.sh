@@ -10,11 +10,12 @@
 # operators/<op>/ that has a go.mod, one service image per (operator, release)
 # pair in releases/*/source-refs.yaml, one derived image per release of the
 # service it is built from (nova-compute from nova), one Tempest image per
-# releases/<release>/, and the release-independent federation proxy and OVN
-# image; the OVN key is <IMAGE_PREFIX>/ovn:<version>, the version
-# hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json. Deriving it
-# from the tree means a new operator or release directory extends the set with
-# no workflow edit.
+# releases/<release>/, and the release-independent federation proxy, OVN and
+# libvirt images; the OVN key is <IMAGE_PREFIX>/ovn:<version>, the version
+# hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json, and the
+# libvirt key is <IMAGE_PREFIX>/libvirt:latest, the tag the libvirt image
+# streams with and main publishes. Deriving it from the tree means a new
+# operator or release directory extends the set with no workflow edit.
 #
 # An image whose sources this pull request changed is built in this job and
 # pushed under the run-scoped tag. Every other image resolves to the digest
@@ -46,6 +47,8 @@
 #   CHANGED_PROXY       — "true" when the federation proxy sources changed
 #   CHANGED_OVN         — "true" when the OVN image sources or the flake
 #                         inputs it is built from changed
+#   CHANGED_LIBVIRT     — "true" when the libvirt image sources or the flake
+#                         inputs it is built from changed
 #   IMAGE_INSPECT_CMD   — Registry inspect command, default
 #                         "docker buildx imagetools inspect". The unit test
 #                         points it at a stub
@@ -56,20 +59,17 @@
 #   BUILD_OPERATORS        — one operator name per line
 #   BUILD_SERVICE_IMAGES   — one "<service> <release> [<image>]" line per
 #                            image; the third field names a derived image
-#                            built from the service's source, and a line
+#                            built from the service's lock, and a line
 #                            without it builds the service's own image
 #   BUILD_TEMPEST_RELEASES — one release per line
 #   BUILD_PROXY            — true or false
 #   BUILD_OVN              — true or false
 #   OVN_VERSION            — the pinned OVN version, the tag of the ovn image
-#   NEEDS_BASE_IMAGES      — true when a derived image (a BUILD_SERVICE_IMAGES
-#                            line with a third field, today nova-compute) is
-#                            built; it builds FROM python-base and venv-builder
-#   BUILD_NIX_IMAGES       — true when a service image (a BUILD_SERVICE_IMAGES
-#                            line without a third field), a Tempest image or
-#                            the ovn image is built; Nix builds those from their
-#                            locks and pins, and the proxy builds FROM
-#                            ubuntu:noble and needs neither
+#   BUILD_LIBVIRT          — true or false
+#   BUILD_NIX_IMAGES       — true when a BUILD_SERVICE_IMAGES line, a Tempest
+#                            image, the ovn image or the libvirt image is
+#                            built; Nix builds those from their locks and
+#                            pins, and the proxy builds FROM ubuntu:noble
 #
 # Written to GITHUB_OUTPUT:
 #   image-map — JSON object mapping each canonical local reference to the
@@ -131,6 +131,10 @@ fi
 changed_ovn=false
 if [[ "${CHANGED_OVN:-}" == "true" ]]; then
   changed_ovn=true
+fi
+changed_libvirt=false
+if [[ "${CHANGED_LIBVIRT:-}" == "true" ]]; then
+  changed_libvirt=true
 fi
 
 # A pin the resolver cannot read ends the step with its ::error:: line.
@@ -204,8 +208,7 @@ RESOLVED_REVISION=""
 # something that is not a digest.
 resolve_digest() {
   local source="$1" mode="${2:-}" format attempt delay out digest
-  # No --platform, so this is the multi-arch index digest, the same digest
-  # .github/workflows/check-base-image-updates.yaml compares against.
+  # No --platform, so this is the multi-arch index digest.
   format='{{json .Manifest.Digest}}'
   if [[ "${mode}" == "revision" ]]; then
     # .Image is the image config of each platform in the index, keyed by
@@ -333,6 +336,7 @@ build_service_images=()
 build_tempest_releases=()
 build_proxy=false
 build_ovn=false
+build_libvirt=false
 
 for operator in "${operators[@]}"; do
   built=false
@@ -361,10 +365,10 @@ for operator in "${operators[@]}"; do
   done < <(OPERATOR="${operator}" "${REPO_ROOT}/hack/ci-service-image-releases.sh")
 done
 
-# The derived image nova-compute: an image built from nova's source, patches
-# and constraints under a name of its own (images/nova-compute/). It is built
-# whenever nova's image is, since both come from the same source, and otherwise
-# reused from what main published under its own name.
+# The derived image nova-compute: an image built from nova's lock under a
+# name of its own (images/nova-compute/). It is built whenever nova's image
+# is, since both come from the same lock, and otherwise reused from what main
+# published under its own name.
 while read -r release; do
   [[ -n "${release}" ]] || continue
   built=false
@@ -400,23 +404,22 @@ if [[ "${ENTRY_BUILT}" == "true" ]]; then
   build_ovn=true
 fi
 
+# The libvirt image streams as libvirt:latest and main publishes it under
+# that tag, so a run that changed none of its inputs pulls that digest
+# instead of compiling libvirt and QEMU.
+add_entry "${IMAGE_PREFIX}/libvirt:latest" "${IMAGE_PREFIX}/libvirt:latest" "${changed_libvirt}"
+if [[ "${ENTRY_BUILT}" == "true" ]]; then
+  build_libvirt=true
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Emit
 # ---------------------------------------------------------------------------
-needs_base_images=false
 build_nix_images=false
-if [[ ${#build_tempest_releases[@]} -gt 0 || "${build_ovn}" == "true" ]]; then
+if [[ ${#build_service_images[@]} -gt 0 || ${#build_tempest_releases[@]} -gt 0 ||
+  "${build_ovn}" == "true" || "${build_libvirt}" == "true" ]]; then
   build_nix_images=true
 fi
-for entry in ${build_service_images[@]+"${build_service_images[@]}"}; do
-  read -r _ _ image <<<"${entry}"
-  if [[ -z "${image}" ]]; then
-    build_nix_images=true
-  else
-    # A derived image (nova-compute) builds FROM python-base and venv-builder.
-    needs_base_images=true
-  fi
-done
 
 # emit_block <name> [value...] — a GITHUB_ENV heredoc block, empty when the run
 # builds nothing of that kind.
@@ -439,7 +442,7 @@ emit_block BUILD_TEMPEST_RELEASES "${build_tempest_releases[@]}"
   echo "BUILD_PROXY=${build_proxy}"
   echo "BUILD_OVN=${build_ovn}"
   echo "OVN_VERSION=${ovn_version}"
-  echo "NEEDS_BASE_IMAGES=${needs_base_images}"
+  echo "BUILD_LIBVIRT=${build_libvirt}"
   echo "BUILD_NIX_IMAGES=${build_nix_images}"
 } >>"${GITHUB_ENV}"
 

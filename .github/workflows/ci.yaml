@@ -100,6 +100,7 @@ jobs:
       changed-tempest: ${{ steps.result.outputs.changed-tempest }}
       changed-proxy: ${{ steps.result.outputs.changed-proxy }}
       changed-ovn: ${{ steps.result.outputs.changed-ovn }}
+      changed-libvirt: ${{ steps.result.outputs.changed-libvirt }}
       build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
@@ -175,11 +176,6 @@ jobs:
               - 'nix/locks/*/nova/**'
               - 'images/nova-compute/**'
               - 'patches/nova/**'
-              # nova-compute is the one image still built FROM the base
-              # images, by hack/ci-build-service-image.sh.
-              - 'images/python-base/**'
-              - 'images/venv-builder/**'
-              - 'hack/ci-build-service-image.sh'
             # ovn ships the OVS/OVN daemons the CRs project and the rclone
             # shifter the OVNCentral backup CronJob uploads with. Neither is a
             # per-release service image, so they steer the ovn e2e leg rather
@@ -190,6 +186,18 @@ jobs:
             image_ovn:
               - 'images/ovn/**'
               - 'images/backup-shifter/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - 'hack/ci-nix-build-e2e-images.sh'
+            # The libvirt image the libvirt suite starts libvirtd from.
+            # build-e2e-images builds it from the flake (images/libvirt/,
+            # nix/pkgs/libvirt.nix, flake.nix, flake.lock, nix/lib/) with
+            # hack/ci-nix-build-e2e-images.sh when this filter matches, and
+            # pulls the image main published as latest otherwise.
+            image_libvirt:
+              - 'images/libvirt/**'
+              - 'nix/pkgs/libvirt.nix'
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/lib/**'
@@ -327,8 +335,8 @@ jobs:
             tests_ovn_overlay:
               - 'tests/e2e-ovn-overlay/**'
             # The libvirt suite and the compute-node-pool fixtures it applies by
-            # path. The operator and the images reach the job through the nova
-            # and image_nova filters.
+            # path. The operator and the images reach the job through the nova,
+            # image_nova and image_libvirt filters.
             tests_nova_libvirt:
               - 'tests/e2e-nova-libvirt/**'
               - 'tests/e2e/nova/compute-node-pool/**'
@@ -415,8 +423,6 @@ jobs:
               - 'scripts/**'
               - 'releases/**'
               - 'deploy/**'
-              - 'images/python-base/**'
-              - 'images/venv-builder/**'
               - 'images/tempest/**'
               - 'tests/e2e/**'
               - 'tests/e2e-chaos/**'
@@ -464,6 +470,7 @@ jobs:
           FILTER_image_cinder: ${{ steps.filter.outputs.image_cinder }}
           FILTER_image_nova: ${{ steps.filter.outputs.image_nova }}
           FILTER_image_ovn: ${{ steps.filter.outputs.image_ovn }}
+          FILTER_image_libvirt: ${{ steps.filter.outputs.image_libvirt }}
           FILTER_image_proxy: ${{ steps.filter.outputs.image_proxy }}
           FILTER_image_tempest: ${{ steps.filter.outputs.image_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
@@ -1181,10 +1188,12 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    # 120 minutes: the 45 the job needs without the ovn image, plus the 60 the
-    # build-ovn job of .github/workflows/build-images.yaml budgets for an
-    # uncached Nix compile of Open vSwitch and OVN from source when this run
-    # builds the ovn image, plus slack. Under 60 the job was killed before the
+    # 120 minutes: the 45 the job needs without the ovn and libvirt images,
+    # plus the 60 the build-ovn and build-libvirt jobs of
+    # .github/workflows/build-images.yaml budget for an uncached Nix compile
+    # of Open vSwitch and OVN, or of libvirt and QEMU, from source when this
+    # run builds those images (one nix call builds them side by side), plus
+    # slack. Under 60 the job was killed before the
     # Tempest images were built, and every E2E job gates on its success, so
     # the PR would have shipped with no E2E coverage at all.
     timeout-minutes: 120
@@ -1231,9 +1240,11 @@ jobs:
           CHANGED_TEMPEST: ${{ needs.changes.outputs.changed-tempest }}
           CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
           CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}
+          CHANGED_LIBVIRT: ${{ needs.changes.outputs.changed-libvirt }}
         run: hack/ci-resolve-e2e-images.sh
 
-      # The service, Tempest and ovn images are flake attributes. The nixos/nix
+      # The service, nova-compute, Tempest, ovn and libvirt images are flake
+      # attributes. The nixos/nix
       # container builds them without its sandbox, which an unprivileged
       # container cannot create, as build users of its own that can neither
       # open the Docker socket nor write the workspace the runner mounts, and
@@ -1247,6 +1258,7 @@ jobs:
           BUILD_TEMPEST_RELEASES: ${{ env.BUILD_TEMPEST_RELEASES }}
           BUILD_OVN: ${{ env.BUILD_OVN }}
           OVN_VERSION: ${{ env.OVN_VERSION }}
+          BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
@@ -1263,25 +1275,6 @@ jobs:
             docker tag "${name}:${release}" "${IMAGE_PREFIX}/${name}:${release}"
             rm -f ".nix-e2e/${name}-${release}.tar"
           done < .nix-e2e/images.txt
-
-      # Build base images once for nova-compute, the one image still built
-      # FROM them, through the skip-if-exists guard in
-      # ci-build-service-image.sh. GHA cache scopes are shared across
-      # branches; these images rarely change. The Nix-built images share Nix
-      # store layers instead, so a run that builds no nova-compute skips this
-      # step.
-      - name: Build base images
-        if: env.NEEDS_BASE_IMAGES == 'true'
-        run: |
-          docker build -t python-base \
-            --cache-from type=gha,scope=e2e-python-base \
-            --cache-to type=gha,mode=max,scope=e2e-python-base \
-            --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
-            images/python-base/
-          docker build -t venv-builder \
-            --cache-from type=gha,scope=e2e-venv-builder \
-            --cache-to type=gha,mode=max,scope=e2e-venv-builder \
-            images/venv-builder/
 
       # The keystone oidc-federation e2e projects the mod_auth_openidc sidecar.
       # The image is built when images/keystone-federation-proxy/** changed and
@@ -1305,32 +1298,6 @@ jobs:
               DOCKER_CACHE_TO="type=gha,mode=max,scope=e2e-${op}-operator"
             echo "::endgroup::"
           done
-
-      # Build the service images whose sources changed, one line per
-      # (service, release) pair. ci-resolve-e2e-images.sh derives the release
-      # list per operator from releases/<release>/source-refs.yaml through
-      # ci-service-image-releases.sh (the single source of truth, also used by
-      # ci-generate-build-matrix.sh). Orchestration operators without a service
-      # image — e.g. c5c3, which deploys K-ORC via an upstream Helm chart —
-      # yield no releases and so never appear here. A line without a third
-      # field is a Nix-built service image, which "Build Nix images" built; a
-      # line with one builds the derived image (nova-compute) from the
-      # service's source here.
-      - name: Build service images
-        env:
-          # Authenticates the source clones from github.com; see the script.
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          while read -r svc release image; do
-            [ -n "$svc" ] || continue
-            [ -n "$image" ] || continue
-            echo "::group::Building ${image}:${release}"
-            OPERATOR="${svc}" IMAGE="${image}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
-              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${image}-${release}" \
-              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${image}-${release}" \
-              hack/ci-build-service-image.sh
-            echo "::endgroup::"
-          done <<<"$BUILD_SERVICE_IMAGES"
 
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped
       # tag so consumer jobs can `docker pull` instead of downloading a 355 MB
@@ -1388,6 +1355,9 @@ jobs:
           done
           if [ "$BUILD_OVN" = "true" ]; then
             push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
+          if [ "$BUILD_LIBVIRT" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/libvirt:latest"
           fi
 
   # End-to-end operator tests using kind cluster and Chainsaw.
@@ -1528,8 +1498,7 @@ jobs:
           # The nova leg loads the resolve step's list as it stands, so the
           # sibling images are named in one place, and in one call, so the Nix
           # store layers the service images share are saved and imported once
-          # rather than once per image (only nova-compute builds from the base
-          # images). It runs first because kind saves
+          # rather than once per image. It runs first because kind saves
           # every image of a call as soon as one is missing: the per-image
           # loads below then find the leg's own images on the node and skip
           # them.
@@ -4044,9 +4013,11 @@ jobs:
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
       # The 2026.1 stack of tests/e2e/nova/compute-node-pool, whose fixtures the
-      # suite applies, and the tempest image its Jobs run the openstack client
-      # from. No libvirt image: it is not in the E2E image map, and the kind
-      # node pulls the public ghcr.io/c5c3/libvirt:latest itself.
+      # suite applies, the tempest image its Jobs run the openstack client
+      # from, and the libvirt image the suite starts libvirtd from. The map
+      # resolves libvirt:latest to this run's build when the pull request
+      # changed an input of the image, and otherwise to the digest latest
+      # names on GHCR.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
@@ -4066,9 +4037,9 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
             ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+            ${{ env.IMAGE_PREFIX }}/libvirt:latest
       # One call, so the Nix store layers the service images share are saved
-      # and imported once rather than once per image; only nova-compute builds
-      # from the base images.
+      # and imported once rather than once per image.
       - name: Load images into kind
         run: |
           kind load docker-image \
@@ -4086,6 +4057,7 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1 \
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} \
             ${{ env.IMAGE_PREFIX }}/tempest:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/libvirt:latest \
             --name "${{ env.KIND_CLUSTER }}"
       # The pool's chassis gate needs an OVNChassis on the node, which needs
       # the openvswitch module on the host, and every Nova process dials the
@@ -4344,9 +4316,9 @@ jobs:
       #
       # One call for all eight. Each `kind load` is a `docker save` piped into
       # the node's containerd, and the three service images share their Nix
-      # store layers (images/nova/image.nix; only nova-compute builds from the
-      # base images) while the four operator images share their own base, so
-      # eight calls save and import those shared layers over and over. The nova e2e leg already loads its list this way
+      # store layers (images/nova/image.nix) while the four operator images
+      # share their own base, so eight calls save and import those shared
+      # layers over and over. The nova e2e leg already loads its list this way
       # ("Load images into kind" above).
       - name: Load compute stack images into kind
         if: matrix.service == 'nova' || matrix.service == 'cinder'

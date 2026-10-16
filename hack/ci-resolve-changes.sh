@@ -172,7 +172,7 @@ if [[ "${noop}" == "true" ]]; then
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
-    changed-proxy changed-ovn build-e2e-images actionlint; do
+    changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint; do
     emit "$out" false
   done
   for out in changed-operators changed-services tempest-services; do
@@ -343,16 +343,19 @@ if filter_on tests_ovn_overlay || filter_on ovn || filter_on image_ovn; then con
 e2e_ovn_overlay=$(or_force "$cond")
 
 # The single-node libvirt job. Its inputs are the suite with the pool fixtures
-# it applies by path, the nova-operator, and the Nova and nova-compute images:
-# the libvirt path it proves runs through the pool's DaemonSet and the
-# nova-compute image that DaemonSet runs.
+# it applies by path, the nova-operator, the Nova and nova-compute images and
+# the libvirt image: the libvirt path it proves runs through the pool's
+# DaemonSet, the nova-compute image that DaemonSet runs and the libvirtd the
+# suite starts from the libvirt image.
 #
 # Deliberately FILTER_nova rather than membership of op_changed, for the reason
 # the overlay gives above: the job brings up a full Nova stack on a self-hosted
 # runner, so a shared Go change must not schedule it. ci:full is how you ask
 # for it anyway.
 cond=false
-if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova; then cond=true; fi
+if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova || filter_on image_libvirt; then
+  cond=true
+fi
 e2e_nova_libvirt=$(or_force "$cond")
 
 cond=false
@@ -374,6 +377,10 @@ changed_proxy=$(or_force "$cond")
 cond=false
 if filter_on image_ovn; then cond=true; fi
 changed_ovn=$(or_force "$cond")
+
+cond=false
+if filter_on image_libvirt; then cond=true; fi
+changed_libvirt=$(or_force "$cond")
 
 cond=false
 if filter_on actionlint; then cond=true; fi
@@ -518,6 +525,7 @@ emit actionlint "$actionlint"
 emit changed-tempest "$changed_tempest"
 emit changed-proxy "$changed_proxy"
 emit changed-ovn "$changed_ovn"
+emit changed-libvirt "$changed_libvirt"
 emit build-e2e-images "$build_e2e_images"
 emit has-e2e-operators "$has_e2e_operators"
 
