@@ -116,7 +116,9 @@ if that succeeds. The write goes through `apply --server-side` because a bare
 rotation starts from:
 
 ```bash
-read -rs -p 'placement service-user password: ' PW; echo
+printf 'placement service-user password: '
+IFS= read -r -s PW
+printf '\n'
 
 if OS_USERNAME=placement OS_PROJECT_NAME=service OS_PASSWORD="$PW" \
     openstack --insecure token issue >/dev/null; then
