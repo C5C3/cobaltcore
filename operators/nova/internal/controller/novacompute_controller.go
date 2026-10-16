@@ -61,6 +61,7 @@ const (
 	stepDaemonSet  = "DaemonSet"
 	stepAggregates = "Aggregates"
 	stepServices   = "Services"
+	stepTraits     = "Traits"
 	stepVPA        = "ComputeVPA"
 )
 
@@ -72,6 +73,7 @@ const (
 	conditionTypeDaemonSetReady  = "DaemonSetReady"
 	conditionTypeAggregatesReady = "AggregatesReady"
 	conditionTypeServicesReady   = "ServicesReady"
+	conditionTypeTraitsReady     = "TraitsReady"
 )
 
 // Event reasons the NovaCompute controller records.
@@ -85,6 +87,9 @@ const (
 	eventReasonNodeConflict              = "NodeConflict"
 	eventReasonHostDiscoveryStarted      = "HostDiscoveryStarted"
 	eventReasonHostDiscoveryFailed       = "HostDiscoveryFailed"
+	eventReasonTraitCreated              = "TraitCreated"
+	eventReasonTraitDeleted              = "TraitDeleted"
+	eventReasonTraitKept                 = "TraitKept"
 )
 
 // novaComputeSubConditionTypes lists the condition types the NovaCompute
@@ -102,6 +107,7 @@ var novaComputeSubConditionTypes = []string{
 	conditionTypeDaemonSetReady,
 	conditionTypeAggregatesReady,
 	conditionTypeServicesReady,
+	conditionTypeTraitsReady,
 	"VPAReady",
 }
 
@@ -140,8 +146,9 @@ func novaComputeNovaRefExtractor(obj client.Object) []string {
 }
 
 // NovaComputeReconciler reconciles a NovaCompute: it runs nova-compute on the
-// node pool the CR selects, keeps the host aggregates the pool's zones need,
-// and drains a node through the Nova API before its pod goes.
+// node pool the CR selects, keeps the host aggregates the pool's zones need and
+// the custom Placement traits its hosts carry, and drains a node through the
+// Nova API before its pod goes.
 type NovaComputeReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -223,6 +230,16 @@ type novaComputePass struct {
 	// teardown waits for so the last pool of a Nova removes the aggregates it
 	// created.
 	aggregatesEnsured bool
+
+	// servicesPoll is the Services step's requeue, its poll of Nova. The step
+	// hands it to the Traits step, which runs after it and returns the shorter
+	// of the two, rather than ending the pipeline with it.
+	servicesPoll ctrl.Result
+
+	// traitsSettled is set when the Traits step completed with no created
+	// trait left, which the teardown waits for so a pool deletes the traits it
+	// created.
+	traitsSettled bool
 }
 
 // computeClient returns the pass's compute API client, authenticating on first
@@ -248,6 +265,9 @@ func (p *novaComputePass) computeClient(ctx context.Context) (*computeapi.Client
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // nodes are read to resolve a pool's selection, its zones and its conflicts.
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// hypervisors (openstack-hypervisor-operator) are read and patched by the Traits
+// step to steer the custom Placement traits of a pool's hosts.
+// +kubebuilder:rbac:groups=kvm.cloud.sap,resources=hypervisors,verbs=get;patch
 
 // Reconcile is the main reconciliation loop for the NovaCompute CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the finalizers,
@@ -308,7 +328,10 @@ func (r *NovaComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // gates everything, the node set parameterises the config and the DaemonSet,
 // the pods have to exist before their services can register, and the
 // aggregates are ensured before the services are polled so a node never waits
-// on an aggregate its onboarding needs.
+// on an aggregate its onboarding needs. The traits come last: they are kept on
+// the Pending and Active nodes the Services step settles. The Services step's
+// requeue is the pool's periodic poll of Nova rather than a wait, so the Traits
+// step runs after it and returns the shorter of the two requeues.
 //
 // A step that sets its condition False for a reason that is not a wait on an
 // input returns a zero result, so the later steps still run: an empty
@@ -340,7 +363,16 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 			return r.reconcileNovaComputeAggregates(ctx, cr, pass)
 		}},
 		{Name: stepServices, Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileNovaComputeServices(ctx, children, cr, pass)
+			result, err := r.reconcileNovaComputeServices(ctx, children, cr, pass)
+			if err != nil {
+				return result, err
+			}
+			pass.servicesPoll = result
+			return ctrl.Result{}, nil
+		}},
+		{Name: stepTraits, Fn: func(ctx context.Context) (ctrl.Result, error) {
+			result, err := r.reconcileNovaComputeTraits(ctx, children, cr, pass)
+			return commonreconcile.ShortestRequeue(result, pass.servicesPoll), err
 		}},
 	}
 }
@@ -351,10 +383,12 @@ func (r *NovaComputeReconciler) pipelineSteps(children client.Client, cr *novav1
 // pipeline runs with every held node leaving: each is drained, released and has
 // its compute service deleted, and the aggregates are recomputed without this
 // CR, so the last pool of a Nova removes the ones it created (see
-// teardownSteps). The finalizers
+// teardownSteps). The Traits step deletes the Placement traits the pool created
+// that no other pool declares or carries. The finalizers
 // stay until a pass that began with no node held completed the aggregates
-// step. An unreachable Nova API therefore blocks the deletion; removing the
-// drain finalizer by hand is the escape.
+// step and left no created trait. An unreachable Nova or Placement API
+// therefore blocks the deletion; removing the drain finalizer by hand is the
+// escape.
 //
 // Once that is done, or at once when the Nova is gone or the target cluster
 // was abandoned, the compute-contract and hypervisor-operator auth mirrors are
@@ -389,7 +423,7 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 			pass := &novaComputePass{}
 			result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument,
 				r.teardownSteps(children, cr, pass))
-			if err != nil || heldAtStart || !pass.aggregatesEnsured {
+			if err != nil || heldAtStart || !pass.aggregatesEnsured || !pass.traitsSettled {
 				if err == nil && result.IsZero() {
 					result = ctrl.Result{RequeueAfter: RequeueComputeDrainPolling}
 				}
@@ -417,8 +451,8 @@ func (r *NovaComputeReconciler) reconcileDelete(ctx context.Context, cr *novav1a
 
 // teardownSteps is the pipeline a terminating NovaCompute runs. While it holds
 // a node, that is the whole pipeline: the node's pod stays through the
-// DaemonSet until its instances are gone. Once it holds none, only the NovaRef
-// and Aggregates steps run. Nothing is left for a pod or a config to serve, and
+// DaemonSet until its instances are gone. Once it holds none, only the NovaRef,
+// Aggregates and Traits steps run. Nothing is left for a pod or a config to serve, and
 // a pass working from a cached copy of the CR that predates the release of its
 // finalizers must not recreate the children the sweep has already removed.
 func (r *NovaComputeReconciler) teardownSteps(children client.Client, cr *novav1alpha1.NovaCompute,
@@ -429,7 +463,7 @@ func (r *NovaComputeReconciler) teardownSteps(children client.Client, cr *novav1
 		return steps
 	}
 	return slices.DeleteFunc(steps, func(step commonreconcile.Step) bool {
-		return step.Name != stepNovaRef && step.Name != stepAggregates
+		return step.Name != stepNovaRef && step.Name != stepAggregates && step.Name != stepTraits
 	})
 }
 
@@ -517,6 +551,25 @@ func novaComputesOfNova(ctx context.Context, c client.Reader, namespace, nova st
 		return nil, fmt.Errorf("listing the NovaComputes of Nova %s/%s: %w", namespace, nova, err)
 	}
 	return list.Items, nil
+}
+
+// siblingsOf returns the NovaComputes of cr's Nova, the list the Nodes step
+// handed over. A deleting pool that holds no node skips that step (see
+// teardownSteps), so the first later step that needs them lists them and keeps
+// the list for the steps after it. A failed list is set on conditionType.
+func (r *NovaComputeReconciler) siblingsOf(ctx context.Context, cr *novav1alpha1.NovaCompute,
+	pass *novaComputePass, conditionType string,
+) ([]novav1alpha1.NovaCompute, error) {
+	if pass.siblings != nil {
+		return pass.siblings, nil
+	}
+	listed, err := novaComputesOfNova(ctx, r.Client, cr.Namespace, cr.Spec.NovaRef.Name)
+	if err != nil {
+		novaComputeSkeleton.MarkFailed(cr, conditionType, conditionReasonNovaComputeListError, err)
+		return nil, err
+	}
+	pass.siblings = listed
+	return listed, nil
 }
 
 // sameTargetCluster reports whether two NovaComputes project onto the same

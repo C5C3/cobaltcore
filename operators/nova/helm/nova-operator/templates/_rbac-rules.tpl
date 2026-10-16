@@ -142,6 +142,13 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - list
   - watch
 - apiGroups:
+  - kvm.cloud.sap
+  resources:
+  - hypervisors
+  verbs:
+  - get
+  - patch
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies
