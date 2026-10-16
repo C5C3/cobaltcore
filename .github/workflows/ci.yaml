@@ -711,8 +711,9 @@ jobs:
   # contexts, so a `needs.changes.outputs.<name>` that no job exports fails here
   # rather than silently evaluating to the empty string and leaving a job
   # unscheduled — the failure mode the change classes above are built on. It
-  # also runs shellcheck over every `run:` script. Custom runner labels are
-  # declared in .github/actionlint.yaml.
+  # also runs shellcheck over every `run:` script. `self-hosted` is a built-in
+  # label; a custom runner pool would have to be declared in
+  # .github/actionlint.yaml before it can be used in `runs-on:`.
   actionlint:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.actionlint == 'true'
@@ -1374,10 +1375,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The keystone leg is pinned back to Blacksmith for now: it is by far the
-    # largest suite in this matrix and has not been stable on the self-hosted
-    # runners since they took over. The other legs stay self-hosted.
-    runs-on: ${{ matrix.operator == 'keystone' && 'blacksmith-4vcpu-ubuntu-2404' || 'self-hosted' }}
+    runs-on: self-hosted
     # 150 minutes for the nova leg: the kind broker, fourteen extra image loads
     # (about 4 minutes) and five sibling deploys (about 2 minutes) come before
     # its suites, and each suite brings five services up. On 2026-09-18 the leg
@@ -1888,12 +1886,9 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The pod leg is pinned back to Blacksmith for now: it is the blocking leg
-    # and has not been stable on the self-hosted runners since they took over.
-    # The network and ovn legs stay self-hosted. The split into three matrix
-    # entries is kept so PodChaos, NetworkChaos and the OVN datapath suite stay
-    # independently gated (see continue-on-error below) and so the suites run
-    # in parallel.
+    # The split into four matrix entries is kept so PodChaos, NetworkChaos, the
+    # OVN datapath suite and the nova-stack suites stay independently gated
+    # (see continue-on-error below) and so the suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -1911,7 +1906,6 @@ jobs:
           # runner sets WITH_CHAOS_MESH=true via setup-e2e-infra (env block
           # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
-            runner: blacksmith-4vcpu-ubuntu-2404
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb
@@ -1933,7 +1927,6 @@ jobs:
               tests/e2e-chaos/barbican-keystone-outage
               tests/e2e-chaos/horizon-dashboard-pod-kill
           - suite: network
-            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/mariadb-network-latency
@@ -1963,7 +1956,6 @@ jobs:
           # non-blocking. No suite here touches Keystone, so this leg deploys
           # the ovn-operator alone and skips the keystone stack.
           - suite: ovn
-            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
@@ -1978,7 +1970,6 @@ jobs:
           # sch_netem/ip_set dependency the network leg carries, and the
           # metadata-agent suite needs the openvswitch and geneve modules.
           - suite: nova
-            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/nova-broker-outage
@@ -1987,7 +1978,7 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
-    runs-on: ${{ matrix.runner }}
+    runs-on: self-hosted
     # 150 minutes for the nova leg, 135 for network, 45 for ovn and 90 for pod:
     # 420 minutes for the four, the seven hours D6 of #1386 allows. Run
     # 38626068128 (PR #1411) took 48 minutes on pod, 54 on network, 12 on ovn

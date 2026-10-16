@@ -215,7 +215,7 @@ jobs:
           - suite: network
             test_dirs: >-
               tests/e2e-chaos/beta-network-partition
-    runs-on: ${{ matrix.runner }}
+    runs-on: self-hosted
     # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1
     steps:
       - run: chainsaw test tests/e2e-chaos/alpha-pod-kill

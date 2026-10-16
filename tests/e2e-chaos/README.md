@@ -32,34 +32,31 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
   suite **must** be added to the `pod`, `network`, `ovn` or `nova` leg
   there, or it never runs in CI.
-- **Runner split:** the `pod` leg is pinned to
-  `blacksmith-4vcpu-ubuntu-2404` for now (it is the blocking leg and has not
-  been stable on the self-hosted runners); the `network` leg runs on the
-  `self-hosted` runners. The NetworkChaos suites
-  (`mariadb-network-latency`, `-partition`, `glance-garage-outage`,
-  `barbican-openbao-outage`, `neutron-mariadb-outage`,
-  `neutron-broker-outage`, `cinder-broker-outage`, `glance-mariadb-outage`,
-  `placement-mariadb-outage`, `barbican-mariadb-outage`,
-  `cinder-mariadb-outage`, `memcached-network-partition`,
-  `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`) need
-  the `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
+- **Runners:** all four legs run on the `self-hosted` runners. The
+  NetworkChaos suites (`mariadb-network-latency`, `-partition`,
+  `glance-garage-outage`, `barbican-openbao-outage`,
+  `neutron-mariadb-outage`, `neutron-broker-outage`, `cinder-broker-outage`,
+  `glance-mariadb-outage`, `placement-mariadb-outage`,
+  `barbican-mariadb-outage`, `cinder-mariadb-outage`,
+  `memcached-network-partition`, `nova-broker-outage`,
+  `nova-mariadb-outage`, `nova-placement-outage`) need the
+  `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
   (installing `linux-modules-extra-$(uname -r)` on demand); the `network`
   leg stays `continue-on-error`. It runs every suite that needs the neutron,
   cinder or ovn operators, the placement-operator for
   `placement-mariadb-outage`, and a diagnostics step that dumps all seven
   operator namespaces; its wall is 135 minutes. The `ovn` leg runs
-  `ovn-southbound-outage` on the `self-hosted` runners as well, with
-  `WITH_OVN_KERNEL_MODULES=true` so `hack/deploy-infra.sh` loads the
-  `openvswitch`/`geneve` modules the chassis DaemonSets need, and only the
-  ovn-operator deployed, within a wall of 45 minutes. It stays
-  `continue-on-error` too: the suite builds a datapath on the node itself.
-  The `nova` leg runs the six suites on the Nova stack (`nova-broker-outage`,
-  `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`,
-  `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill`) on the
-  `self-hosted` runners, with the keystone stack plus the placement, ovn,
-  neutron and nova operators, `WITH_MESSAGING=true` (five of the six take a
-  vhost on the shared broker, and `nova-broker-outage` brings a
-  `RabbitmqCluster` of its own) and `WITH_OVN_KERNEL_MODULES=true` for the
+  `ovn-southbound-outage` with `WITH_OVN_KERNEL_MODULES=true` so
+  `hack/deploy-infra.sh` loads the `openvswitch`/`geneve` modules the
+  chassis DaemonSets need, and only the ovn-operator deployed, within a wall
+  of 45 minutes. It stays `continue-on-error` too: the suite builds a
+  datapath on the node itself. The `nova` leg runs the six suites on the
+  Nova stack (`nova-broker-outage`, `nova-mariadb-outage`,
+  `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
+  `neutron-metadata-agent-pod-kill`) with the keystone stack plus the
+  placement, ovn, neutron and nova operators, `WITH_MESSAGING=true` (five of
+  the six take a vhost on the shared broker, and `nova-broker-outage` brings
+  a `RabbitmqCluster` of its own) and `WITH_OVN_KERNEL_MODULES=true` for the
   OVNChassis of `neutron-metadata-agent-pod-kill`, within a wall of 150
   minutes. That leg stays `continue-on-error` as well, because three of its
   suites are NetworkChaos partitions on the same kernel modules. The `pod`

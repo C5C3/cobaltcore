@@ -244,11 +244,7 @@ section that describes the job.
 `e2e-infra`, the jobs of the E2E fan-out, `e2e-chaos` and `tempest` bring up a
 kind cluster through the `create-kind-cluster` and `setup-e2e-infra` composite
 actions and dump diagnostics through `hack/ci-dump-diagnostics.sh`. They run on
-the `self-hosted` runners, as do `test-integration` and `build-e2e-images`, with
-two exceptions: the keystone leg of the `e2e-operator` matrix and the `pod` leg
-of the `e2e-chaos` matrix are pinned back to the `blacksmith-4vcpu-ubuntu-2404`
-runner for now, because those suites have not been stable on the self-hosted
-runners.
+the `self-hosted` runners, as do `test-integration` and `build-e2e-images`.
 
 ## Jobs
 
@@ -529,9 +525,10 @@ The binary is pinned and checksummed the way `verify-container-images.yaml`
 installs `yq`. Renovate bumps `ACTIONLINT_VERSION`; the checksum then fails until
 it is updated alongside, which is the intended signal.
 
-`.github/actionlint.yaml` declares `blacksmith-4vcpu-ubuntu-2404`. actionlint
-validates `runs-on:` against the labels GitHub itself provides, so a self-hosted
-pool has to be declared there or the lint fails on a runner that exists.
+actionlint validates `runs-on:` against the labels GitHub itself provides plus
+the built-in `self-hosted`. The workflows use only those, so no
+`.github/actionlint.yaml` exists; a custom runner pool would have to be declared
+there first or the lint fails on a runner that exists.
 
 Three `run:` scripts carry inline `# shellcheck disable=` directives for
 deliberate word splitting: the release-list loops in `e2e-operator` (SC2086), the
@@ -1005,8 +1002,8 @@ cinder suite brings up three or four Deployments, a db-sync Job and a probe
 pod, and four of those at once do not fit on the kind node of the self-hosted
 runner; the other legs keep the shared config's `parallel: 4`. Chart-level
 suites live in `tests/e2e/cinder-operator/`, which the `-operator` directory
-probe appends to `tests/e2e/cinder/`. The leg runs on a `self-hosted` runner, like every leg but
-`keystone`, and one diagnostics dump covers it, because it deploys a single
+probe appends to `tests/e2e/cinder/`. The leg runs on a `self-hosted` runner,
+like every leg, and one diagnostics dump covers it, because it deploys a single
 operator. See [Cinder E2E Test Suites](../testing/cinder-e2e-tests.md).
 
 **The nova leg.** It deploys five sibling operators through
@@ -1148,17 +1145,16 @@ pre-validation of any leg is available via the `ci:chaos` PR label, with
 The job runs as a four-entry matrix, split by chaos type and by the stack each
 leg needs:
 
-| Leg | Runner | Operators deployed | Suites |
-| --- | --- | --- | --- |
-| `pod` | `blacksmith-4vcpu-ubuntu-2404` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, and `horizon-dashboard-pod-kill` |
-| `network` | `self-hosted` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
-| `ovn` | `self-hosted` | ovn | `ovn-southbound-outage` |
-| `nova` | `self-hosted` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
+| Leg | Operators deployed | Suites |
+| --- | --- | --- |
+| `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, and `horizon-dashboard-pod-kill` |
+| `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
+| `ovn` | ovn | `ovn-southbound-outage` |
+| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
 
-The `pod` leg is pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now,
-because it is the blocking leg and has not been stable on the self-hosted
-runners. The split keeps the legs independently gated and lets them run in
-parallel. Each matrix entry lists its per-suite test directories explicitly.
+All four legs run on the `self-hosted` runners. The split keeps the legs
+independently gated and lets them run in parallel. Each matrix entry lists its
+per-suite test directories explicitly.
 
 A `Resolve OVN version` step reads the pin from `images/ovn/source.json` through
 `hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
