@@ -201,12 +201,14 @@ type novaComputePass struct {
 
 	// The Nodes step hands the DaemonSet step the nodes to keep the pod off
 	// (excluded, in Conflict) and on (keepPods, Draining), the Services step
-	// the Releasing nodes another pool now selects, and the Aggregates step the
-	// other NovaComputes of the Nova on any cluster.
-	siblings []novav1alpha1.NovaCompute
-	excluded []string
-	keepPods []string
-	handover map[string]bool
+	// the Releasing nodes another pool now selects, the Aggregates step the
+	// other NovaComputes of the Nova on any cluster, and the Traits step the
+	// selected nodes that carry customTraitsAnnotation.
+	siblings              []novav1alpha1.NovaCompute
+	excluded              []string
+	keepPods              []string
+	handover              map[string]bool
+	customTraitsAnnotated map[string]bool
 
 	// The PoolConfig step names the rendered ConfigMap and hashes the contract.
 	configMapName string

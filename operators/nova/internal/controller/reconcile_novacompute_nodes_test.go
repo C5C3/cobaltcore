@@ -92,6 +92,23 @@ func TestReconcileNovaComputeNodes_TakesASelectedNode(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonNodesResolved))
 }
 
+// TestReconcileNovaComputeNodes_HandsOverTheCustomTraitsAnnotation pins that a
+// selected node carrying the custom-traits annotation is handed to the Traits
+// step whatever its value, the empty one included.
+func TestReconcileNovaComputeNodes_HandsOverTheCustomTraitsAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := validNovaCompute()
+	annotated := selectedNode("node-annotated")
+	annotated.Annotations = map[string]string{customTraitsAnnotation: ""}
+	elsewhere := poolNode("node-elsewhere", map[string]string{testPoolLabel: "b"})
+	elsewhere.Annotations = map[string]string{customTraitsAnnotation: "CUSTOM_A"}
+
+	pass, _ := runNodes(t, cr, annotated, selectedNode(testNodeName), elsewhere)
+
+	g.Expect(pass.customTraitsAnnotated).To(Equal(map[string]bool{"node-annotated": true}),
+		"an unselected node does not count")
+}
+
 func TestReconcileNovaComputeNodes_ForbiddenListWaits(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := validNovaCompute()
