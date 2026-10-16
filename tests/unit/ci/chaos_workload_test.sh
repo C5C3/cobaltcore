@@ -2069,8 +2069,8 @@ ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
 cinder-volume-pod-kill cronjob-rotation-failure envoy-gateway-outage \
-eso-down eso-pod-kill glance-keystone-outage glance-mariadb-outage \
-glance-operator-pod-kill horizon-dashboard-pod-kill \
+envoy-proxy-pod-kill eso-down eso-pod-kill glance-keystone-outage \
+glance-mariadb-outage glance-operator-pod-kill horizon-dashboard-pod-kill \
 horizon-memcached-pod-kill horizon-operator-pod-kill mariadb-network-latency \
 mariadb-network-partition mariadb-pod-kill memcached-network-partition \
 memcached-pod-kill neutron-keystone-outage neutron-metadata-agent-pod-kill \

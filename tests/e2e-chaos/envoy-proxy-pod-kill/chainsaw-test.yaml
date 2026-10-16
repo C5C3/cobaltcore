@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: every Envoy proxy pod of openstack-gw killed.
+#
+# Fault: a PodChaos pod-kill with mode: all and gracePeriod: 0 on the pods
+# labelled gateway.envoyproxy.io/owning-gateway-name: openstack-gw, the data
+# plane of the Gateway. envoy-gateway-outage holds the controller, the
+# configuration plane.
+#
+# Claim, phase by phase:
+#   kill   Every pre-kill proxy pod UID is gone, and the proxy Deployment is
+#          back at readyReplicas == spec.replicas with the configuration the
+#          controller hands the new pod.
+#   after  The Keystone behind the listener is Ready=True/AllReady, and the
+#          token stream through the listener recovers within the budget.
+#
+# Blast radius: every route of openstack-gw is unreachable until the new
+# proxy pod is Ready. EnvoyProxy envoy-nodeport sets no replica count, so the
+# proxy runs the upstream default of one replica and the listener refuses
+# connections in that window; the budget is measured, not zero. The PodChaos
+# is the only shared state to undo.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-proxy through the https listener of openstack-gw, by
+# hostname with --resolve to the proxy Service's ClusterIP, which outlives the
+# pods, and --insecure-tls for the self-signed leaf. Three kind runs each
+# failed ten records while no proxy pod was Ready, all before the lift.
+# Chaos budget: failures=20 recovery=30s
+# Chaos budget measured: 2026-10-16, kind, failures 10/10/10, recovery 0/0/0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: envoy-proxy-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone behind the Gateway, selector guard, workload ──────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-proxy
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # The PodChaos selector has to reach the proxy and no controller pod.
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          proxies="$(kubectl get pods -n envoy-gateway-system \
+            -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)"
+          controllers="$(kubectl get pods -n envoy-gateway-system \
+            -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw,control-plane=envoy-gateway -o name)"
+          if [ -z "$proxies" ]; then
+            echo "FAIL: no pod in envoy-gateway-system carries gateway.envoyproxy.io/owning-gateway-name=openstack-gw"
+            exit 1
+          fi
+          if [ -n "$controllers" ]; then
+            echo "FAIL: the PodChaos selector reaches controller pods: ${controllers}"
+            exit 1
+          fi
+          echo "OK: the selector reaches the proxy pods alone: ${proxies}"
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/gateway.sh
+          GW_IP="$(gateway_ip)"
+          ../lib/workload.sh start envoy-proxy-pod-kill -- --streams token \
+            --keystone https://keystone.127-0-0-1.nip.io/v3 \
+            --resolve "keystone.127-0-0-1.nip.io:${GW_IP}" --insecure-tls
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-proxy --dep-ns=envoy-gateway-system --dep-label=gateway.envoyproxy.io/owning-gateway-name=openstack-gw
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump envoy-proxy-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop envoy-proxy-pod-kill
+  # ── Step 2: Kill every proxy pod and wait for the new ones ─────────────
+  # The snapshot, the kill and the wait share one script, so they share the
+  # pre-kill UIDs. mode: all replaces every pod, so every old UID has to go.
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/pods.sh
+          selector=gateway.envoyproxy.io/owning-gateway-name=openstack-gw
+          deploy="$(kubectl get deploy -n envoy-gateway-system -l "$selector" -o jsonpath='{.items[0].metadata.name}')"
+          desired="$(kubectl get deploy "$deploy" -n envoy-gateway-system -o jsonpath='{.spec.replicas}')"
+          old="$(pod_uids envoy-gateway-system "$selector")"
+          if [ -z "$old" ] || [ "${desired:-0}" -lt 1 ]; then
+            echo "FAIL: no proxy pod to kill (deployment ${deploy:-<none>}, spec.replicas ${desired:-<none>})"
+            exit 1
+          fi
+          echo "deployment/${deploy}: spec.replicas ${desired}, pre-kill proxy pod UIDs: ${old}"
+          ../lib/workload.sh mark envoy-proxy-pod-kill fault-start
+          kubectl apply -f 01-podchaos.yaml
+          wait_replaced envoy-gateway-system "$selector" "$old" 240
+    catch:
+    - &lift
+      script:
+        content: kubectl delete podchaos kill-envoy-proxy -n "$NAMESPACE" --ignore-not-found
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-proxy --dep-ns=envoy-gateway-system --dep-label=gateway.envoyproxy.io/owning-gateway-name=openstack-gw
+    - *workload-dump
+  # ── Step 3: Lift the fault ─────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-envoy-proxy
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark envoy-proxy-pod-kill fault-end
+    catch:
+    - *lift
+    - *workload-dump
+  # ── Step 4: The Keystone behind the listener is Ready ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-proxy
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 5: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify envoy-proxy-pod-kill
+    catch:
+    - *workload-dump

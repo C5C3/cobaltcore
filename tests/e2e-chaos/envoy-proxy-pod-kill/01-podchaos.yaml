@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing every proxy pod of Gateway openstack-gw at once. The label
+# is the one the proxy Service selects on (hack/deploy-infra.sh); the
+# controller pods carry control-plane: envoy-gateway instead, and step 1 of
+# the suite proves the selector reaches no controller pod.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-envoy-proxy
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - envoy-gateway-system
+    labelSelectors:
+      gateway.envoyproxy.io/owning-gateway-name: openstack-gw
+  gracePeriod: 0

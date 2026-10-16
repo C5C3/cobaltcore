@@ -1933,6 +1933,7 @@ jobs:
               tests/e2e-chaos/openbao-sealed
               tests/e2e-chaos/openbao-tenant-policy-narrowed
               tests/e2e-chaos/envoy-gateway-outage
+              tests/e2e-chaos/envoy-proxy-pod-kill
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
