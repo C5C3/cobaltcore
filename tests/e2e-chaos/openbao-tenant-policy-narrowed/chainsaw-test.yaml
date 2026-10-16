@@ -1,0 +1,279 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the tenant store's OpenBao policy narrowed.
+#
+# Fault: policy eso-tenant, the identity every per-tenant SecretStore
+# authenticates as since #605 (setup-eso-tenant.sh, role eso-tenant), loses
+# the one stanza that grants read on the caller's own Keystone subtree,
+# kv-v2/data/openstack/keystone/<namespace>/*. The root token reaches
+# openbao-0 on the first line of stdin, so it lands in neither a file nor an
+# argv. setup-policies.sh substitutes the auth-mount accessor when it writes
+# the policy, so the suite captures the live text into ConfigMap
+# policy-narrowed-orig and writes that back.
+#
+# Claim, phase by phase:
+#   narrowed  A forced sync of ExternalSecret policy-narrowed-db turns it
+#             Ready=False/SecretSyncedError within 120 s, with permission
+#             denied or 403 in its condition or an event. For the rest of the
+#             window Secret policy-narrowed-db keeps its resourceVersion (ESO's
+#             default deletionPolicy, Retain) and the Keystone that reads it
+#             stays Ready (DENIED-OK).
+#   restored  The captured policy goes back byte for byte, and forced syncs of
+#             policy-narrowed-db and of the kind stack's keystone-db reach
+#             Ready=True/SecretSynced within 120 s.
+#
+# Blast radius: every per-tenant store loses its Keystone subtree while the
+# policy is narrowed; a sync of any of them fails, and their Secrets stay. The
+# narrowed policy is shared platform state, so steps 2 to 4 restore it from
+# the capture in their catch blocks.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-policy through the fault. Its credentials are already
+# materialized, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: openbao-tenant-policy-narrowed
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: A synced credential, a Keystone on it, the workload ────────
+  - try:
+    - apply:
+        file: 00-externalsecret.yaml
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: policy-narrowed-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-policy
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start openbao-tenant-policy-narrowed -- --streams token --keystone http://keystone-chaos-policy.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-policy --dep-ns=shared-services --dep-label=app.kubernetes.io/name=openbao
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump openbao-tenant-policy-narrowed
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop openbao-tenant-policy-narrowed
+  # ── Step 2: Capture eso-tenant, then narrow it ─────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          orig="$(mktemp)"
+          narrowed="$(mktemp)"
+          live="$(mktemp)"
+          trap 'rm -f "$orig" "$narrowed" "$live"' EXIT
+          bao_root policy read "$POLICY" </dev/null >"$orig"
+          kubectl create configmap "$ORIG" -n "$NAMESPACE" --from-file=policy.hcl="$orig" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          narrow <"$orig" >"$narrowed"
+          ../lib/workload.sh mark openbao-tenant-policy-narrowed fault-start
+          bao_root policy write "$POLICY" - <"$narrowed"
+          bao_root policy read "$POLICY" </dev/null >"$live"
+          if ! cmp -s "$narrowed" "$live"; then
+            echo "FAIL: policy ${POLICY} is not the narrowed text after the write"
+            exit 1
+          fi
+          echo "OK: policy ${POLICY} holds no read on the tenant's Keystone subtree"
+    catch:
+    - &restore-policy
+      script:
+        timeout: 2m
+        shell: bash
+        content: |
+          # Restore on failure so the next suite is not left with a narrowed
+          # tenant policy.
+          . ./probe-lib.sh
+          restore_policy 2>&1 || true
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-policy --dep-ns=shared-services --dep-label=app.kubernetes.io/name=openbao --eso
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          # The last rollback point, at the end of the test: the capture goes
+          # only once OpenBao holds it again, and a restore that fails keeps it.
+          set -euo pipefail
+          . ./probe-lib.sh
+          kubectl get configmap "$ORIG" -n "$NAMESPACE" >/dev/null 2>&1 || exit 0
+          want="$(mktemp)"
+          live="$(mktemp)"
+          trap 'rm -f "$want" "$live"' EXIT
+          kubectl get configmap "$ORIG" -n "$NAMESPACE" -o 'jsonpath={.data.policy\.hcl}' >"$want"
+          bao_root policy read "$POLICY" </dev/null >"$live" || true
+          if ! cmp -s "$want" "$live"; then
+            echo "policy ${POLICY} is not the capture at the end of the test; writing the capture back"
+            # A failed write or read prints its own error; the comparison
+            # below decides, so either way the capture is kept.
+            bao_root policy write "$POLICY" - <"$want" || true
+            bao_root policy read "$POLICY" </dev/null >"$live" || true
+            if ! cmp -s "$want" "$live"; then
+              echo "FAIL: policy ${POLICY} is still not the capture; ConfigMap ${ORIG} is kept"
+              exit 1
+            fi
+          fi
+          kubectl delete configmap "$ORIG" -n "$NAMESPACE" --ignore-not-found
+  # ── Step 3: A forced sync is denied, the Secret and the Keystone stay ──
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          es_field() {
+            kubectl get externalsecret policy-narrowed-db -n "$NAMESPACE" -o "jsonpath=$1"
+          }
+          rv0="$(kubectl get secret policy-narrowed-db -n "$NAMESPACE" -o jsonpath='{.metadata.resourceVersion}')"
+          requested="$(date -u +%s)"
+          kubectl annotate externalsecret policy-narrowed-db -n "$NAMESPACE" force-sync="$requested" --overwrite
+          end=$((requested + 120))
+          denied=""
+          while true; do
+            ready="$(es_field '{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}')"
+            if [ -z "$denied" ] && [ "$ready" = "False/SecretSyncedError" ]; then
+              said="$(es_field '{.status.conditions[?(@.type=="Ready")].message}')"
+              said="${said}"$'\n'"$(kubectl get events -n "$NAMESPACE" \
+                --field-selector involvedObject.kind=ExternalSecret,involvedObject.name=policy-narrowed-db \
+                -o jsonpath='{range .items[*]}{.message}{"\n"}{end}')"
+              if grep -qiE 'permission denied|403' <<<"$said"; then
+                denied="$(grep -iE -m1 'permission denied|403' <<<"$said")"
+                echo "OK: the sync is denied: ${denied}"
+              fi
+            fi
+            rv="$(kubectl get secret policy-narrowed-db -n "$NAMESPACE" -o jsonpath='{.metadata.resourceVersion}')"
+            if [ "$rv" != "$rv0" ]; then
+              echo "FAIL: Secret policy-narrowed-db moved from resourceVersion ${rv0} to ${rv:-<gone>}"
+              exit 1
+            fi
+            keystone="$(kubectl get keystone keystone-chaos-policy -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$keystone" != "True" ]; then
+              echo "FAIL: keystone-chaos-policy reads Ready=${keystone:-<none>}"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$denied" ]; then
+            echo "FAIL: no Ready=False/SecretSyncedError naming permission denied or 403 within 120 s (last Ready ${ready})"
+            exit 1
+          fi
+          echo "DENIED-OK: the sync failed closed, the Secret kept resourceVersion ${rv0} and the Keystone stayed Ready"
+    catch:
+    - *restore-policy
+    - *chaos-diagnostics
+    - &externalsecret-dump
+      script:
+        timeout: 1m
+        content: |
+          kubectl get externalsecret policy-narrowed-db keystone-db -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl get events -n "$NAMESPACE" --field-selector involvedObject.kind=ExternalSecret 2>&1 | tail -20 || true
+    - *workload-dump
+  # ── Step 4: Restore the captured policy byte for byte ──────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          want="$(mktemp)"
+          live="$(mktemp)"
+          trap 'rm -f "$want" "$live"' EXIT
+          kubectl get configmap "$ORIG" -n "$NAMESPACE" -o 'jsonpath={.data.policy\.hcl}' >"$want"
+          bao_root policy write "$POLICY" - <"$want"
+          bao_root policy read "$POLICY" </dev/null >"$live"
+          if ! cmp "$want" "$live"; then
+            echo "FAIL: policy ${POLICY} differs from the capture after the restore"
+            exit 1
+          fi
+          echo "OK: policy ${POLICY} is the capture again, byte for byte ($(wc -c <"$live") bytes)"
+          ../lib/workload.sh mark openbao-tenant-policy-narrowed fault-end
+    catch:
+    - *restore-policy
+    - *chaos-diagnostics
+    - *workload-dump
+  # ── Step 5: Both credentials sync again ────────────────────────────────
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          requested="$(date -u +%s)"
+          for es in policy-narrowed-db keystone-db; do
+            kubectl annotate externalsecret "$es" -n "$NAMESPACE" force-sync="$requested" --overwrite
+          done
+          deadline=$((requested + 120))
+          for es in policy-narrowed-db keystone-db; do
+            while true; do
+              ready="$(kubectl get externalsecret "$es" -n "$NAMESPACE" \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}')"
+              refreshed="$(kubectl get externalsecret "$es" -n "$NAMESPACE" -o jsonpath='{.status.refreshTime}')"
+              at=0
+              if [ -n "$refreshed" ]; then
+                at="$(date -u -d "$refreshed" +%s)"
+              fi
+              if [ "$ready" = "True/SecretSynced" ] && [ "$at" -ge "$requested" ]; then
+                echo "OK: ${es} synced at ${refreshed}"
+                break
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "FAIL: ${es} did not sync within 120 s of the force-sync (Ready ${ready}, refreshTime ${refreshed:-<none>})"
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+    catch:
+    - *chaos-diagnostics
+    - *externalsecret-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify openbao-tenant-policy-narrowed
+    catch:
+    - *workload-dump
