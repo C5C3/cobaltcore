@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # libvirtd and QEMU on the one kind node, for the nova-compute of
-# 01-novacompute-libvirt.yaml. The image is the one the lab runs
-# (images/libvirt/Dockerfile), but the lab's manifests under
+# 01-novacompute-libvirt.yaml. The image is the one the lab runs, built from
+# images/libvirt/image.nix, but the lab's manifests under
 # deploy/lab/metal-stack/hypervisor/ are not reused: they fail the pod on a
 # node without /dev/kvm, wait for the TLS files kvm-node-agent writes, and move
 # libvirtd into a host systemd scope. None of that holds on kind.
@@ -43,8 +43,9 @@
 # over the local socket.
 #
 # The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
-# that does not name a commit of this repository: the job tests the image main
-# published, and the kind node pulls it from the registry.
+# that does not name a commit of this repository. The job loads the image into
+# kind as latest: the run's own build when the pull request changed an input
+# of the libvirt image, otherwise the image main published.
 apiVersion: v1
 kind: ConfigMap
 metadata:
