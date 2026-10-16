@@ -29,12 +29,12 @@
 #
 # IMAGE AND MOUNT mirror the init container host-prepare of
 # deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml, which loads
-# vhost_net from a pod the same way: ghcr.io/c5c3/libvirt, whose kmod package
-# (images/libvirt/Dockerfile) supplies modprobe and rmmod, privileged, as root,
+# vhost_net from a pod the same way: ghcr.io/c5c3/libvirt, whose pkgs.kmod
+# (images/libvirt/image.nix) supplies modprobe and rmmod, privileged, as root,
 # with the node's /lib/modules mounted read-only so modprobe finds the running
 # kernel's module files. The image string is the DaemonSet's, pinned like it by
-# the keeper tag and digest <libvirt-package-version>-r<N>@sha256:<digest>;
-# hack/ci-tag-libvirt-keeper.sh mints that tag once and never moves it.
+# its keeper tag and digest; hack/ci-tag-libvirt-keeper.sh mints that tag once
+# and never moves it.
 # tests/unit/deploy/metal_stack_probe_test.sh keeps the two equal, and Renovate
 # moves this line in the pull request that moves the DaemonSet's. No hostPID,
 # no hostNetwork, no ServiceAccount token, a read-only root filesystem.

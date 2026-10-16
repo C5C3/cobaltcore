@@ -128,7 +128,7 @@ test_shape_table_self_check() {
     "pep440|>=1.0|1"
     "docker|3.20|0"
     "docker||1"
-    "deb|10.0.0-2ubuntu8.19-r1|0"
+    "deb|12.2.0-r57|0"
     "deb|latest|1"
     "deb||1"
     "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|v26.03.2|0"

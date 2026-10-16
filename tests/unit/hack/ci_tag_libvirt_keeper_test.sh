@@ -9,20 +9,24 @@
 #     and reported as tag=<version>-r<N> and minted=true;
 #   - a tag the registry has is left where it is (minted=false);
 #   - a registry that answers anything but "not found" mints nothing;
-#   - a shallow clone, a history without a commit under images/libvirt and a
-#     directory that is no repository fail before docker runs;
-#   - a failing docker run and a version outside <upstream>-<n>ubuntu<m> fail
-#     before imagetools runs;
+#   - N counts the commits under images/libvirt, nix/pkgs/libvirt.nix,
+#     nix/lib/image-defaults.nix and flake.lock, so a commit that touches one
+#     of the last three alone raises it;
+#   - a shallow clone, a history without a commit under those four paths and
+#     a directory that is no repository fail before docker runs;
+#   - a failing docker run, a first line of libvirtd --version that is not
+#     "[<dir>/]libvirtd (libvirt) <version>" and a version outside
+#     <major>.<minor>[.<patch>] fail before imagetools runs;
 #   - IMAGE or DIGEST unset, and a DIGEST that is no sha256 digest, fail
 #     before anything runs;
 #   - a failing create and a read-back that names another digest fail;
 #   - a read-back that answers "not found" is retried after RETRY_DELAY, and
 #     the delay triples per read;
-#   - the keep pattern of hack/ghcr-prune-stale-versions.py and Renovate's
-#     allowedVersions are the script's version shape plus -r<N>.
+#   - the Nix keep pattern of hack/ghcr-prune-stale-versions.py and Renovate's
+#     allowedVersions are the script's version shape plus -r<N>, and the prune
+#     still keeps the Debian-shaped keepers of the Docker-built image.
 #
-# Follows the project-native bash test pattern (tests/lib/assertions.sh),
-# mirroring tests/unit/hack/ci_build_service_image_test.sh.
+# Follows the project-native bash test pattern (tests/lib/assertions.sh).
 #
 # Usage: bash tests/unit/hack/ci_tag_libvirt_keeper_test.sh
 
@@ -52,11 +56,14 @@ STDERR_FILE="$TMP_DIR/stderr"
 IMAGE="ghcr.io/c5c3/libvirt"
 DIGEST="sha256:$(printf '%.0sa' {1..64})"
 OTHER_DIGEST="sha256:$(printf '%.0sb' {1..64})"
-VERSION="10.0.0-2ubuntu8.19"
+VERSION="12.2.0"
 
 # Two commits under images/libvirt and one elsewhere: the revision is 2.
 FIXTURE="$TMP_DIR/fixture"
-# A history whose only commit is outside images/libvirt.
+# The revision paths besides images/libvirt. For each, a clone of the fixture
+# plus one commit that touches that path alone: the revision is 3.
+OTHER_PATHS=(nix/pkgs/libvirt.nix nix/lib/image-defaults.nix flake.lock)
+# A history whose only commit is outside the four paths.
 NO_LIBVIRT="$TMP_DIR/no-libvirt"
 SHALLOW="$TMP_DIR/shallow"
 NOT_A_REPO="$TMP_DIR/not-a-repo"
@@ -69,7 +76,9 @@ make_stubs() {
   mkdir -p "$STUB_DIR"
 
   # docker: records its argv, one line per call.
-  #   run                  prints STUB_VERSION, or fails with STUB_RUN_RC
+  #   run                  prints STUB_LINE, by default the line libvirtd
+  #                        --version prints for STUB_VERSION, or fails with
+  #                        STUB_RUN_RC
   #   imagetools inspect   the first call answers per STUB_FIRST_INSPECT
   #                        (absent: not found; present: OTHER_DIGEST; error:
   #                        a 502), the next STUB_READBACK_FAILS calls with not
@@ -84,7 +93,7 @@ case "$1" in
       echo "docker: Error response from daemon: stub run failure." >&2
       exit "$STUB_RUN_RC"
     fi
-    printf '%s' "$STUB_VERSION"
+    printf '%s\n' "${STUB_LINE-libvirtd (libvirt) ${STUB_VERSION}}"
     exit 0
     ;;
 esac
@@ -142,11 +151,22 @@ fixture_commit() {
     -c commit.gpgsign=false commit -q -m "change $path"
 }
 
+# one_commit_repo <path> — the clone whose last commit touches <path> alone.
+one_commit_repo() {
+  echo "$TMP_DIR/one-commit/$1"
+}
+
 make_repos() {
   git init -q "$FIXTURE"
-  fixture_commit "$FIXTURE" images/libvirt/Dockerfile
+  fixture_commit "$FIXTURE" images/libvirt/image.nix
   fixture_commit "$FIXTURE" README.md
-  fixture_commit "$FIXTURE" images/libvirt/Dockerfile
+  fixture_commit "$FIXTURE" images/libvirt/image.nix
+
+  local path
+  for path in "${OTHER_PATHS[@]}"; do
+    git clone -q "$FIXTURE" "$(one_commit_repo "$path")"
+    fixture_commit "$(one_commit_repo "$path")" "$path"
+  done
 
   git init -q "$NO_LIBVIRT"
   fixture_commit "$NO_LIBVIRT" README.md
@@ -219,7 +239,7 @@ test_absent_tag_is_minted() {
   assert_contains "the tag is <version>-r2 on DIGEST" "$DOCKER_CALLS" \
     "docker buildx imagetools create -t ${IMAGE}:${VERSION}-r2 ${IMAGE}@${DIGEST}"
   assert_contains "the version is read from the linux/amd64 variant of DIGEST" "$DOCKER_CALLS" \
-    "docker run --rm --platform linux/amd64 ${IMAGE}@${DIGEST} dpkg-query -W -f=\${Version} libvirt-daemon-system"
+    "docker run --rm --platform linux/amd64 ${IMAGE}@${DIGEST} libvirtd --version"
   assert_eq "the tag is inspected before and after the create" "2" "$(calls_of "imagetools inspect ${IMAGE}:${VERSION}-r2")"
   assert_eq "GITHUB_OUTPUT holds the tag and minted=true" \
     "$(printf 'tag=%s\nminted=true' "${VERSION}-r2")" "$GH_OUTPUT"
@@ -268,7 +288,7 @@ test_shallow_clone_fails() {
 
   assert_eq "the script exits 1" "1" "$RC"
   assert_contains "the error asks for the full history" "$STDERR" \
-    "::error::hack/ci-tag-libvirt-keeper.sh needs the full history to count the commits under images/libvirt (actions/checkout with fetch-depth: 0)"
+    "::error::hack/ci-tag-libvirt-keeper.sh needs the full history to count the commits under images/libvirt nix/pkgs/libvirt.nix nix/lib/image-defaults.nix flake.lock (actions/checkout with fetch-depth: 0)"
   assert_eq "docker never runs" "" "$DOCKER_CALLS"
 }
 
@@ -276,14 +296,36 @@ test_shallow_clone_fails() {
 # Test 5: a history without the image fails
 # ---------------------------------------------------------------------------
 test_no_libvirt_commit_fails() {
-  echo "Test: a history with no commit under images/libvirt fails"
+  echo "Test: a history with no commit under the four paths fails"
 
   run_keeper LIBVIRT_REPO_DIR="$NO_LIBVIRT"
 
   assert_eq "the script exits 1" "1" "$RC"
-  assert_contains "the error names the directory" "$STDERR" \
-    "::error::no commit touches images/libvirt in ${NO_LIBVIRT}"
+  assert_contains "the error names the four paths and the directory" "$STDERR" \
+    "::error::no commit touches any of images/libvirt nix/pkgs/libvirt.nix nix/lib/image-defaults.nix flake.lock in ${NO_LIBVIRT}"
   assert_eq "docker never runs" "" "$DOCKER_CALLS"
+}
+
+# ---------------------------------------------------------------------------
+# Test 5b: a commit under any other revision path raises N
+# ---------------------------------------------------------------------------
+# A change to the libvirt override or to the shared image defaults changes
+# the image, and a re-lock of nixpkgs-images can rebuild QEMU, Ceph or glibc
+# while libvirt keeps its version. A count that missed one of them would find
+# the old tag on the old digest and leave the new build without a keeper.
+test_other_path_commit_raises_n() {
+  local path
+  for path in "${OTHER_PATHS[@]}"; do
+    echo "Test: a commit that touches $path alone raises N by one"
+
+    run_keeper LIBVIRT_REPO_DIR="$(one_commit_repo "$path")"
+
+    assert_eq "$path: the script exits 0" "0" "$RC"
+    assert_contains "$path: the tag is <version>-r3" "$DOCKER_CALLS" \
+      "docker buildx imagetools create -t ${IMAGE}:${VERSION}-r3 ${IMAGE}@${DIGEST}"
+    assert_eq "$path: GITHUB_OUTPUT holds the raised tag" \
+      "$(printf 'tag=%s\nminted=true' "${VERSION}-r3")" "$GH_OUTPUT"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -312,7 +354,7 @@ test_failing_run_fails() {
 
   assert_eq "the script exits 1" "1" "$RC"
   assert_contains "the error names the image" "$STDERR" \
-    "::error::cannot read the libvirt-daemon-system version from ${IMAGE}@${DIGEST}"
+    "::error::cannot read the libvirtd version from ${IMAGE}@${DIGEST}"
   assert_eq "imagetools never runs" "0" "$(calls_of "imagetools")"
 }
 
@@ -320,16 +362,28 @@ test_failing_run_fails() {
 # Test 8: a version outside the keeper shape fails
 # ---------------------------------------------------------------------------
 test_unexpected_version_fails() {
-  echo "Test: an empty version, an epoch and a suffix fail before imagetools runs"
+  echo "Test: an empty line, a foreign line and a release candidate fail before imagetools runs"
 
-  local version
-  for version in "" "1:10.0.0-2ubuntu8.19" "10.0.0-2ubuntu8.19+esm1"; do
-    run_keeper STUB_VERSION="$version"
-    assert_eq "'$version' exits 1" "1" "$RC"
-    assert_contains "'$version' is named as not <upstream>-<n>ubuntu<m>" "$STDERR" \
-      "::error::libvirt-daemon-system version '${version}' is not <upstream>-<n>ubuntu<m>"
-    assert_eq "'$version' never reaches imagetools" "0" "$(calls_of "imagetools")"
+  local line
+  for line in "" "libvirt 12.2.0"; do
+    run_keeper STUB_LINE="$line"
+    assert_eq "'$line' exits 1" "1" "$RC"
+    assert_contains "'$line' is named as not the libvirtd version line" "$STDERR" \
+      "::error::libvirtd --version printed '${line}', not 'libvirtd (libvirt) <version>'"
+    assert_eq "'$line' never reaches imagetools" "0" "$(calls_of "imagetools")"
   done
+
+  run_keeper STUB_LINE="libvirtd (libvirt) 12.2.0-rc1"
+  assert_eq "a release candidate exits 1" "1" "$RC"
+  assert_contains "the release candidate is named as not <major>.<minor>[.<patch>]" "$STDERR" \
+    "::error::libvirt version '12.2.0-rc1' is not <major>.<minor>[.<patch>]"
+  assert_eq "a release candidate never reaches imagetools" "0" "$(calls_of "imagetools")"
+
+  # nixpkgs' wrapper starts libvirtd under its own path, which libvirtd prints.
+  run_keeper STUB_LINE="/sbin/libvirtd (libvirt) 12.2.0"
+  assert_eq "a line naming libvirtd by its path exits 0" "0" "$RC"
+  assert_contains "its version makes the tag" "$DOCKER_CALLS" \
+    "docker buildx imagetools create -t ${IMAGE}:12.2.0-r2 ${IMAGE}@${DIGEST}"
 }
 
 # ---------------------------------------------------------------------------
@@ -415,10 +469,22 @@ test_readback_not_found_is_retried() {
 test_keeper_shape_lockstep() {
   echo "Test: the prune keep pattern and Renovate's allowedVersions are the script's shape plus -r<N>"
 
-  local shape want prune renovate
+  local shape want prune debian renovate
   shape="$(sed -n "s/^version_shape='\(.*\)'$/\1/p" "$KEEPER_SH")"
   want="${shape%\$}-r[0-9]+\$"
   prune="$(python3 - "$PROJECT_ROOT/hack/ghcr-prune-stale-versions.py" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
+prune = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prune)
+print("\n".join(p for p in prune.DEFAULT_KEEP_PATTERNS if p.endswith("-r[0-9]+$") and "ubuntu" not in p))
+PYEOF
+  )"
+  # The Docker-built keepers the lab ran before the Nix image stay its
+  # rollback target.
+  debian="$(python3 - "$PROJECT_ROOT/hack/ghcr-prune-stale-versions.py" <<'PYEOF'
 import importlib.util
 import sys
 
@@ -434,6 +500,7 @@ PYEOF
 
   assert_not_empty "the script defines version_shape" "$shape"
   assert_eq "the prune keep pattern is the script's shape plus -r<N>" "$want" "$prune"
+  assert_not_empty "the prune still keeps the Debian-shaped keepers" "$debian"
   assert_eq "Renovate's allowedVersions is the script's shape plus -r<N>" "$want" "$renovate"
 }
 
@@ -445,6 +512,7 @@ test_present_tag_is_not_moved
 test_registry_error_mints_nothing
 test_shallow_clone_fails
 test_no_libvirt_commit_fails
+test_other_path_commit_raises_n
 test_not_a_repository_fails
 test_failing_run_fails
 test_unexpected_version_fails

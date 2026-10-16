@@ -10,8 +10,10 @@ Retention is decided per package version from its *whole tag set*, not from a
 
   keep    the version carries at least one keeper tag -- `latest`, a bare
           version / release tag such as `32.0.0`, `2026.1`, `1.2.0-rc1`,
-          `upstream-<sha40>`, a pinned upstream commit, or the libvirt keeper
-          `<libvirt-package-version>-r<N>` such as `10.0.0-2ubuntu8.19-r1`
+          `upstream-<sha40>`, a pinned upstream commit, or a libvirt keeper:
+          `<libvirt-version>-r<N>` such as `12.2.0-r57` of the Nix-built
+          image, or `<libvirt-package-version>-r<N>` such as
+          `10.0.0-2ubuntu8.19-r1` of the Docker-built image before it
   delete  every other version older than --min-age-hours, including untagged
           ones: `<sha7>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`,
           `e2e-<run_id>-*`, `dev`, and composite tags
@@ -79,10 +81,15 @@ DEFAULT_KEEP_PATTERNS = (
     # names (openstack-hypervisor-operator and kvm-node-agent: the chart renders
     # sha-<sha40>, which sits on the same manifest)
     r"^upstream-[0-9a-f]{40}$",
-    # 10.0.0-2ubuntu8.19-r1 -- the libvirt image's <libvirt-package-version>-r<N>,
-    # minted once by hack/ci-tag-libvirt-keeper.sh; the lab manifests under
+    # 12.2.0-r57 -- the libvirt image's <libvirt-version>-r<N>, minted once by
+    # hack/ci-tag-libvirt-keeper.sh; the lab manifests under
     # deploy/lab/metal-stack/ pin that build by digest. The shape is copied in
-    # that script's version check and in allowedVersions in renovate.json.
+    # that script's version check and in allowedVersions in renovate.json. No
+    # other image carries a -r<N> tag.
+    r"^[0-9]+(\.[0-9]+)+-r[0-9]+$",
+    # 10.0.0-2ubuntu8.19-r1 -- the <libvirt-package-version>-r<N> keepers of
+    # the Docker-built libvirt image the lab ran before #1407, kept as its
+    # rollback target.
     r"^[0-9]+(\.[0-9]+)+-[0-9]+ubuntu[0-9]+(\.[0-9]+)*-r[0-9]+$",
 )
 
