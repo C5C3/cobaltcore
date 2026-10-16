@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 50 chaos test suites validate operator behavior during and after fault
+The 51 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 50 test suites require the infrastructure stack to be deployed and healthy.
+All 51 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -464,6 +464,7 @@ with the new suites.
 | [eso-pod-kill](#eso-pod-kill) | — | `keystone-chaos-esokill` | ESO controller pod kill | Every pre-kill controller pod UID gone and `readyReplicas` back at `spec.replicas`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady`, `RESYNC-OK`: a forced sync of `eso-kill-probe` with a `refreshTime` at or after the request and `Ready=True/SecretSynced` within 180 s, workload budget zero |
 | [openbao-sealed](#openbao-sealed) | — | `keystone-chaos-seal` | OpenBao sealed in place | `openbao-cluster-store` `Ready=False`, the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`, `SEALED-IN-PLACE-OK`: `openbao-0` with its pod UID and `restartCount` unchanged; after `unseal-openbao.sh` the store and the Keystone `Ready=True` within 5 minutes, workload budget zero |
 | [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `403` in its condition or an event, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
+| [envoy-gateway-outage](#envoy-gateway-outage) | — | `keystone-chaos-eg` | Gateway controller outage (configuration plane) | `UNPROGRAMMED-OK`: for 90 s a route added under the fault carries no `Accepted=True` and `GET /v3` through `placement.127-0-0-1.nip.io` gets no 200; `PROGRAMMED-OK`: `Accepted=True` and a 200 within 180 s of the lift; `Ready=True/AllReady` throughout, workload budget zero |
 
 ---
 
@@ -3415,6 +3416,58 @@ the policy reads back as the capture. Otherwise it fails and keeps the ConfigMap
 
 ---
 
+### envoy-gateway-outage
+
+**File:** `tests/e2e-chaos/envoy-gateway-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds the Envoy Gateway controller down,
+the pods labelled `control-plane: envoy-gateway` that HelmRelease
+`envoy-gateway-system/envoy-gateway` runs. The controller is the configuration
+plane of every Gateway; the proxy it rolled out is the data plane, which
+`envoy-proxy-pod-kill` kills. The suite pins that a route added under the fault
+waits for the controller, while the proxy keeps serving the configuration it
+holds.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone behind the Gateway | `apply` + `assert` (5m) + `script` (6m) | `keystone-chaos-eg` (database `keystone_chaos_eg`, `spec.gateway` on `openstack-gw`) reaches `HTTPRouteReady=True` and `Ready=True/AllReady`; `workload.sh start` through the listener |
+| 2 | Hold the controller down, add a route | `script` (1m) + `apply` + `script` (5m) + `apply` | `workload.sh mark fault-start`, `fail-envoy-gateway` (`mode: all`, `duration: "600s"`), `kubectl wait --for=condition=AllInjected`, the controller pod at `Ready=false`, then HTTPRoute `chaos-eg-late` |
+| 3 | Nothing programs the route | `script` (3m) | For 90 s, every 10 s: `chaos-eg-late` carries no parent condition `Accepted=True`, and `GET /v3` from the workload pod to the proxy with SNI and `Host` `placement.127-0-0-1.nip.io` gets no 200; a 404 or a failed handshake both count (`UNPROGRAMMED-OK`) |
+| 4 | Lift the fault | `delete` + `script` (1m) | Removes `PodChaos/fail-envoy-gateway`, then `workload.sh mark fault-end` |
+| 5 | The controller programs the route | `script` (7m) + `assert` (5m) | `kubectl rollout status` of the controller, then within 180 s `Accepted=True` on the route and a 200 to the same `GET` (`PROGRAMMED-OK`); the Keystone stays at `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, `02-httproute.yaml`
+(`chaos-eg-late` on listener `https-placement`, every path to Service
+`keystone-chaos-eg` port 5000), and `probe-lib.sh` with the route's `Accepted`
+status and the `GET` through the placement hostname, with the address of the
+proxy from `lib/gateway.sh`.
+
+**Workload:** the `token` stream against `keystone-chaos-eg` through listener
+`https` of `openstack-gw`, with the run options of `cert-manager-outage`. Started
+in step 1 and judged in step 6 against `failures=0 recovery=0s`. The suite runs in
+the `pod` matrix entry. The controller is on no request path: the proxy keeps the
+configuration it was given before the fault.
+
+**Catch blocks:** `../diagnostics.sh chaos keystone-chaos-eg` with
+`--dep-ns=envoy-gateway-system` and `--dep-label=control-plane=envoy-gateway`, the
+HTTPRoutes as YAML with the controller log, and the workload dump. Steps 2 to 4
+delete the `PodChaos` first.
+
+**Design notes:**
+
+- Listener `https-placement` serves `placement.127-0-0-1.nip.io`, and no chaos
+  suite attaches a route to it otherwise. Under the fault it answered 404 in the
+  kind runs: the proxy has the listener and no route for it.
+- The route sends every path to the suite's Keystone, so the 200 of step 5 needs
+  no Placement.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3767,6 +3820,12 @@ tests/e2e-chaos/
 ├── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
 │   └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
+├── envoy-gateway-outage/             Envoy Gateway controller outage
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-eg behind openstack-gw
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on the Envoy Gateway controller
+│   ├── 02-httproute.yaml             HTTPRoute chaos-eg-late, added under the fault
+│   ├── chainsaw-test.yaml            Test: the late route waits for the controller
+│   └── probe-lib.sh                  Helpers the scripts source: route status, GET through the proxy
 ├── eso-down/                         ESO controller at zero under a fresh Keystone
 │   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-eso, Ready before the fault
 │   ├── 01-externalsecrets.yaml       ExternalSecrets eso-down-db and eso-down-admin
