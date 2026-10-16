@@ -36,11 +36,8 @@
 #   - the pinned tag resolves at github.com to the pinned commit. This
 #     skips instead of failing when the repository cannot be reached.
 #
-# The commit is Renovate-tracked here, unlike the ARG OVN_COMMIT and
-# ARG OVS_COMMIT pins beside the OVN tag: the github-tags datasource
-# resolves a tag to the commit it names and writes it as currentDigest,
-# and a plain tag has no second gitlink (the ovs submodule) that only a
-# reviewer can read out of a clone.
+# The commit is Renovate-tracked here: the github-tags datasource resolves a
+# tag to the commit it names and writes it as currentDigest.
 #
 # Schema validation of renovate.json via `renovate-config-validator`
 # (which transitively pulls Renovate via npx) is intentionally NOT run

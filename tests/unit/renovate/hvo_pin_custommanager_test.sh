@@ -3,22 +3,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json tracks the single ARG HVO_COMMIT pin in
-# images/openstack-hypervisor-operator/Dockerfile as a digest of the upstream
-# main branch, the way the K-ORC GitRepository commit is tracked.
+# Verify renovate.json tracks the "rev" pin in
+# images/openstack-hypervisor-operator/source.json as a digest of the
+# upstream main branch, the way the K-ORC GitRepository commit is tracked.
 #
 # Asserts:
-#   - exactly one customManager targets the Dockerfile, with datasource
+#   - exactly one customManager targets the pin file, with datasource
 #     git-refs, currentValue main and the upstream repository URL as its dep
 #     and package name
-#   - its matchStrings regex matches the checked-in Dockerfile exactly once
-#     (the bare 'ARG HVO_COMMIT' re-declarations in the build stages carry no
-#     value) and captures the commit hack/ci-resolve-hvo-commit.sh resolves
+#   - its matchStrings regex matches the checked-in pin exactly once and
+#     captures the commit hack/ci-resolve-hvo-commit.sh resolves
 #   - a paired digest packageRule does NOT automerge: a pin move can leave the
 #     patch under images/openstack-hypervisor-operator/patches/ unappliable,
 #     and from #1142 on the lab's chart reference has to move with it. Every
 #     upstream main commit is a new digest, so the rule batches them weekly
-#     behind a 3-day cooldown
+#     behind a 3-day cooldown. The PR also fails nix-lock-check until make
+#     nix-lock writes the hash and vendorHash of the new commit
 #
 # Schema validation of renovate.json via `renovate-config-validator`
 # (which transitively pulls Renovate via npx) is intentionally NOT run
@@ -42,14 +42,14 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-HVO_DOCKERFILE="$PROJECT_ROOT/images/openstack-hypervisor-operator/Dockerfile"
+HVO_PIN="$PROJECT_ROOT/images/openstack-hypervisor-operator/source.json"
 RESOLVER="$PROJECT_ROOT/hack/ci-resolve-hvo-commit.sh"
 
 PKG_NAME="https://github.com/cobaltcore-dev/openstack-hypervisor-operator"
-DOCKERFILE_PATH="images/openstack-hypervisor-operator/Dockerfile"
+PIN_PATH="images/openstack-hypervisor-operator/source.json"
 
 test_manager_uses_git_refs() {
-  echo "Test: the ARG HVO_COMMIT pin has a git-refs customManager on main"
+  echo "Test: the hvo pin has a git-refs customManager on main"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed"
@@ -58,16 +58,16 @@ test_manager_uses_git_refs() {
   fi
 
   local count
-  count="$(jq --arg path "$DOCKERFILE_PATH" '[.customManagers[]
-    | select(any((.managerFilePatterns // [])[]; contains($path)))] | length' "$RENOVATE_FILE")"
-  assert_eq "exactly one customManager targets ${DOCKERFILE_PATH}" "1" "$count"
+  count="$(jq --arg path "$PIN_PATH" '[.customManagers[]
+    | select(any((.managerFilePatterns // [])[]; (gsub("\\\\"; "") | contains($path))))] | length' "$RENOVATE_FILE")"
+  assert_eq "exactly one customManager targets ${PIN_PATH}" "1" "$count"
 
   local entry
-  entry="$(jq -c --arg path "$DOCKERFILE_PATH" '.customManagers[]
-    | select(any((.managerFilePatterns // [])[]; contains($path)))' "$RENOVATE_FILE" | head -1)"
+  entry="$(jq -c --arg path "$PIN_PATH" '.customManagers[]
+    | select(any((.managerFilePatterns // [])[]; (gsub("\\\\"; "") | contains($path))))' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$entry" ]; then
-    echo "  FAIL: no customManager for ${DOCKERFILE_PATH}"
+    echo "  FAIL: no customManager for ${PIN_PATH}"
     FAIL=$((FAIL + 1))
     return
   fi
@@ -95,19 +95,19 @@ test_regex_matches_the_pin_once() {
     SKIP=$((SKIP + 1))
     return
   fi
-  if [[ ! -f "$HVO_DOCKERFILE" ]]; then
-    echo "  FAIL: $HVO_DOCKERFILE missing"
+  if [[ ! -f "$HVO_PIN" ]]; then
+    echo "  FAIL: $HVO_PIN missing"
     FAIL=$((FAIL + 1))
     return
   fi
 
   local match_string
-  match_string="$(jq -r --arg path "$DOCKERFILE_PATH" '.customManagers[]
-    | select(any((.managerFilePatterns // [])[]; contains($path)))
+  match_string="$(jq -r --arg path "$PIN_PATH" '.customManagers[]
+    | select(any((.managerFilePatterns // [])[]; (gsub("\\\\"; "") | contains($path))))
     | .matchStrings[0]' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$match_string" ] || [ "$match_string" = "null" ]; then
-    echo "  FAIL: no matchStrings for ${DOCKERFILE_PATH}"
+    echo "  FAIL: no matchStrings for ${PIN_PATH}"
     FAIL=$((FAIL + 1))
     return
   fi
@@ -116,7 +116,7 @@ test_regex_matches_the_pin_once() {
   # "any", which takes every match, so a second match would be a second
   # dependency. The output is "<number of matches> <first currentDigest>".
   local result matches captured
-  result="$(REGEX="$match_string" FILE="$HVO_DOCKERFILE" perl -e '
+  result="$(REGEX="$match_string" FILE="$HVO_PIN" perl -e '
     my $re = $ENV{REGEX};
     local $/; open my $fh, "<", $ENV{FILE} or die $!;
     my $content = <$fh>;
@@ -127,7 +127,7 @@ test_regex_matches_the_pin_once() {
   matches="${result%% *}"
   captured="${result#* }"
 
-  assert_eq "matchStrings regex matches the Dockerfile exactly once" "1" "$matches"
+  assert_eq "matchStrings regex matches the pin exactly once" "1" "$matches"
 
   if [[ ! -x "$RESOLVER" ]]; then
     echo "  FAIL: $RESOLVER missing or not executable"
@@ -148,7 +148,7 @@ test_package_rule() {
   fi
 
   local rule
-  rule="$(jq -c --arg file "$DOCKERFILE_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
+  rule="$(jq -c --arg file "$PIN_PATH" --arg pkg "$PKG_NAME" '.packageRules[]
     | select(
         ((.matchFileNames // []) | index($file)) != null
         and (((.matchPackageNames // []) | index($pkg)) != null)
@@ -156,7 +156,7 @@ test_package_rule() {
       )' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$rule" ]; then
-    echo "  FAIL: no digest packageRule for ${DOCKERFILE_PATH}"
+    echo "  FAIL: no digest packageRule for ${PIN_PATH}"
     FAIL=$((FAIL + 4))
     return
   fi

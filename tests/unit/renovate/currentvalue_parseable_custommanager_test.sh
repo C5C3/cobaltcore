@@ -292,9 +292,10 @@ test_every_current_value_parses() {
   # without a FAIL is the digest-only classifier, so a misfiring probe
   # would otherwise move entries from replayed to skipped in bulk while a
   # single survivor kept the sweep green. The three digest-only entries are
-  # the K-ORC GitRepository commit, the openstack-hypervisor-operator
-  # ARG HVO_COMMIT pin and the kvm-node-agent ARG KNA_COMMIT pin, each a
-  # commit of an upstream main branch.
+  # the K-ORC GitRepository commit and the "rev" pins of
+  # images/openstack-hypervisor-operator/source.json and
+  # images/kvm-node-agent/source.json, each a commit of an upstream main
+  # branch.
   local entry_count
   entry_count="$(jq '.customManagers | length' "$RENOVATE_FILE")"
   assert_eq "exactly three digest-only customManagers entries are skipped" \
