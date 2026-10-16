@@ -2068,9 +2068,10 @@ CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
-cinder-volume-pod-kill cronjob-rotation-failure envoy-gateway-outage \
-envoy-proxy-pod-kill eso-down eso-pod-kill glance-keystone-outage \
-glance-mariadb-outage glance-operator-pod-kill horizon-dashboard-pod-kill \
+cinder-volume-pod-kill controlplane-keystone-degraded \
+cronjob-rotation-failure envoy-gateway-outage envoy-proxy-pod-kill eso-down \
+eso-pod-kill glance-keystone-outage glance-mariadb-outage \
+glance-operator-pod-kill horizon-dashboard-pod-kill \
 horizon-memcached-pod-kill horizon-operator-pod-kill \
 korc-provisioning-outage mariadb-network-latency mariadb-network-partition \
 mariadb-operator-cascading-failure mariadb-pod-kill \
