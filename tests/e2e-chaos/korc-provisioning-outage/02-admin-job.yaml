@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The duplicate check after the outage: the admin user's application
+# credentials as Keystone holds them, in the shape of
+# tests/e2e/c5c3/keystone-service/04-openstack-admin-job.yaml. It
+# authenticates with the password cloud the c5c3-operator keeps in Secret
+# cp-korc-out-admin-password-cloud (korc_secrets.go). K-ORC records status.id
+# only after Keystone answers, so a K-ORC that lost the answer and created the
+# credential again would leave two of the name the AC CR reports.
+# @AC_NAME@ is replaced with status.resource.name of that CR.
+#
+# The list is captured first and checked for failure: the container runs
+# /bin/sh, where a pipeline's status is the last command's, and a count of an
+# empty capture would read a failed call as "no credential".
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: korc-out-admin
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        - name: AC_NAME
+          value: "@AC_NAME@"
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          names="$(openstack --os-cloud admin application credential list \
+            --user admin --user-domain Default -f value -c Name)"
+          echo "application credentials of admin: $(printf '%s' "$names" | tr '\n' ' ')"
+          got="$(printf '%s\n' "$names" | grep -cx "$AC_NAME" || true)"
+          if [ "$got" != "1" ]; then
+            echo "ERROR: Keystone holds ${got} application credentials named ${AC_NAME}, want 1"
+            exit 1
+          fi
+          echo "NO-DUPLICATE-OK"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: cp-korc-out-admin-password-cloud

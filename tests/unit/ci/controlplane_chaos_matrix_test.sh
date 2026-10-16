@@ -38,7 +38,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # The suites of #1390 that bring up a ControlPlane of their own.
-CONTROLPLANE_SUITES=(rabbitmq-operator-cascading-failure)
+CONTROLPLANE_SUITES=(rabbitmq-operator-cascading-failure
+  korc-provisioning-outage)
 # The suites of #1390 that need only the standalone stack, on the pod leg.
 POD_SUITES=(cert-manager-outage eso-down eso-pod-kill openbao-sealed
   openbao-tenant-policy-narrowed envoy-gateway-outage envoy-proxy-pod-kill

@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 54 chaos test suites validate operator behavior during and after fault
+The 55 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 54 test suites require the infrastructure stack to be deployed and healthy.
+All 55 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -468,6 +468,7 @@ with the new suites.
 | [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `keystone-chaos-proxy` | Gateway proxy pod kill (data plane) | Every pre-kill proxy pod UID gone, the proxy Deployment back at `readyReplicas == spec.replicas`, `Ready=True/AllReady`, the token stream through the listener within its measured budget |
 | [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone-chaos-cascade` | Dependency outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the mariadb-operator and the keystone-operator replaced; within 120 s `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `cp-rmq-cascade` | Broker outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the rabbitmq-cluster-operator and the c5c3-operator replaced; within 120 s the RabbitmqCluster at `AllReplicasReady=False`, the ControlPlane at `InfrastructureReady=False/WaitingForMessaging` and `Ready=False/NotAllReady`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `AllReplicasReady=True` and `Ready=True/AllReady` after the lift, the token stream within its measured budget |
+| [korc-provisioning-outage](#korc-provisioning-outage) | — | `cp-korc-out` | K-ORC outage across a ControlPlane's provisioning | `INJECTED` at `DBCredentialsReady`, `AC-SEEN` while K-ORC is down, `BLIND-OK`: `KORCReady=False/WaitingForApplicationCredential` with neither `Ready` nor `CatalogReady` `True` for 90 s; after the lift `KORCReady=True/ApplicationCredentialMinted`, `CatalogReady=True/CatalogRegistered` and `Ready=True/AllReady`, `NO-DUPLICATE-OK`: one application credential of the reported name in Keystone, every K-ORC CR `Available=True` with a `status.id`, workload budget zero |
 
 ---
 
@@ -3646,6 +3647,63 @@ service on the broker, and the kind runs failed no record. The suite runs in the
 
 ---
 
+### korc-provisioning-outage
+
+**File:** `tests/e2e-chaos/korc-provisioning-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds K-ORC (`orc-controller-manager` in
+`orc-system`) down across the K-ORC phase of a ControlPlane's provisioning. The
+c5c3-operator creates the admin ApplicationCredential CR in the pass that turns
+`KeystoneReady` `True`, and it reports `KORCReady` from the `Available` condition
+K-ORC writes on that CR. The suite pins that the plane reports no credential that
+nobody created, and that the credential exists once in Keystone after K-ORC
+returns.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring-up to `DBCredentialsReady`, hold K-ORC, see the CR | `script` (40m) | `lib/controlplane.sh`: seed, apply `cp-korc-out`, infrastructure, database tenant. Requires that no CR `cp-korc-out-admin-app-credential` exists, applies `01-podchaos.yaml`, waits for `AllInjected` and the K-ORC pod at `Ready=false` (`INJECTED <epoch>`), then polls every 5 s for up to 900 s for the CR (`AC-SEEN <epoch>`). The step cleanup deletes the ControlPlane, bounded at 12 minutes |
+| 2 | Start the workload | `assert` (5m) + `script` (6m) + `script` (1m) | `KeystoneReady=True`; `workload.sh start` against `cp-korc-out-keystone`; `workload.sh mark fault-start` |
+| 3 | The blind window | `script` (3m) | For 90 s, every 5 s: `fail-korc` still at `desiredPhase` `Run`, `KORCReady=False/WaitingForApplicationCredential`, `Ready` and `CatalogReady` not `True` (`BLIND-OK`) |
+| 4 | Lift the fault | `script` (5m) | Deletes the `PodChaos`, runs `workload.sh mark fault-end` and `kubectl rollout status` of K-ORC |
+| 5 | The plane converges | `script` (20m) | `KORCReady=True/ApplicationCredentialMinted`, `AdminCredentialReady=True`, `CatalogReady=True/CatalogRegistered`, `Ready=True/AllReady` |
+| 6 | One credential in Keystone | `script` (6m) | `02-admin-job.yaml` with the CR's `status.resource.name` lists the application credentials of `admin` through Secret `cp-korc-out-admin-password-cloud`; the name appears once (`NO-DUPLICATE-OK`). Every K-ORC CR of the namespace carries `Available=True` and a `status.id` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-controlplane-cr.yaml` (the Keystone-only plane of
+`tests/e2e/c5c3/keystone-service` as `cp-korc-out`), `01-podchaos.yaml`
+(`fail-korc`, `duration: "1800s"`), `02-admin-job.yaml`.
+
+**Workload:** the `token` stream against `cp-korc-out-keystone`, with the admin
+password from `cp-korc-out-keystone-admin-credentials`
+(`CHAOS_WORKLOAD_ADMIN_SECRET`). Started in step 2 and judged in step 7 against
+`failures=0 recovery=0s`. The suite runs in the `controlplane` matrix entry, in
+its own namespace, `chaos-korc-out`. K-ORC is on no request path of a token.
+
+**Catch blocks:** steps 1 to 4 delete the `PodChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh`, which runs `../diagnostics.sh chaos` for the
+ControlPlane against `orc-system` and `c5c3-system` and dumps the K-ORC objects and
+both controller logs, and dumps the workload.
+
+**Design notes:**
+
+- K-ORC is held from `DBCredentialsReady`, before the CR exists. A K-ORC that runs
+  creates the credential within seconds of the CR, so a fault applied when the CR
+  appears loses that race in most runs, and the blind window would come and go
+  with it.
+- The risk the suite looks for: K-ORC records `status.id` only after Keystone
+  answers, so an outage between the call and the answer leaves a credential K-ORC
+  does not know of. On restart K-ORC has to adopt it or fail on Keystone's per-user
+  name uniqueness. That instant cannot be timed from outside; the duplicate check
+  of step 6 sees either outcome.
+- After the plane is Ready, a dead K-ORC changes no condition: `KORCReady` reads
+  the last `Available` K-ORC wrote. That is why the fault spans the provisioning.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -4060,6 +4118,11 @@ tests/e2e-chaos/
 │   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
 │   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
 │   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── korc-provisioning-outage/         K-ORC outage across a ControlPlane provisioning
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-korc-out, Keystone only
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on K-ORC
+│   ├── 02-admin-job.yaml             The admin application credentials (NO-DUPLICATE-OK)
+│   └── chainsaw-test.yaml            Test: the blind window, then one credential in Keystone
 ├── lib/                              Workload and consistency harness, no suite
 │   ├── workload.py                   The workload streams (run) and the verdict (evaluate)
 │   └── workload.sh                   start, mark, verify, dump and stop, called by the suites

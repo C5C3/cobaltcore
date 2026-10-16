@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding K-ORC down: Deployment orc-controller-manager in
+# orc-system, one replica, its pods labelled control-plane:
+# controller-manager. pod-failure keeps the controller down until the suite
+# deletes this CR in step 4 or the duration runs out. The suite applies it
+# into its own namespace. The duration of 1800 s covers the wait of up to
+# 900 s for the ApplicationCredential CR (the Keystone bring-up the fault
+# spans), the workload start of step 2 (up to 11 minutes) and the 3-minute
+# blind window, and bounds a run that dies first. Step 3 fails on its own when
+# the fault has ended before the window did.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-korc
+spec:
+  action: pod-failure
+  mode: all
+  duration: "1800s"
+  selector:
+    namespaces:
+    - orc-system
+    labelSelectors:
+      control-plane: controller-manager

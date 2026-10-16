@@ -1,0 +1,262 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: K-ORC held down across a ControlPlane's
+# provisioning.
+#
+# Fault: a PodChaos pod-failure holds K-ORC (orc-controller-manager in
+# orc-system) down from the moment the plane's database credential is ready
+# until the blind window below is over. The c5c3-operator creates the admin
+# ApplicationCredential CR <cp>-admin-app-credential in the pass that turns
+# KeystoneReady True (reconcile_korc.go), and a K-ORC that runs mints it within
+# seconds, so a fault applied when the CR appears races that mint and loses it
+# in most runs. Held from DBCredentialsReady, K-ORC is down for the whole
+# K-ORC phase of the provisioning.
+#
+# Claim, phase by phase:
+#   blind   The CR appears (AC-SEEN) while K-ORC is down. For 90 s KORCReady
+#           reads False/WaitingForApplicationCredential and neither Ready nor
+#           CatalogReady reads True (BLIND-OK): the plane does not report a
+#           credential nobody minted.
+#   lifted  K-ORC is back and the plane converges: KORCReady
+#           True/ApplicationCredentialMinted, AdminCredentialReady True,
+#           CatalogReady True/CatalogRegistered, Ready True/AllReady.
+#   unique  Keystone holds exactly one application credential of the name the
+#           CR reports (NO-DUPLICATE-OK), and every K-ORC CR in the namespace
+#           is Available with a status.id.
+#
+# The risk this suite looks for: K-ORC records status.id only after Keystone
+# answers, so an outage between the call and the answer leaves an application
+# credential K-ORC does not know of. On restart it must adopt that credential
+# or fail on Keystone's per-user name uniqueness. That instant cannot be timed
+# from outside; the duplicate check of the last phase sees either outcome.
+#
+# After the plane is Ready, a dead K-ORC changes no condition: KORCReady reads
+# the last Available K-ORC wrote, which is why the fault spans provisioning.
+#
+# Blast radius: K-ORC reconciles no CR of the cluster while it is down. The
+# PodChaos is the shared state to undo, so steps 1 to 4 delete it in their
+# catch blocks; the cleanup of step 1 deletes the ControlPlane, bounded at
+# 12 minutes.
+#
+# Leg: controlplane. The suite runs in namespace chaos-korc-out, short for the reason
+# ../lib/controlplane.sh gives.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against the plane's Keystone, cp-korc-out-keystone, during the blind window.
+# K-ORC is on no request path of a token, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: korc-provisioning-outage
+spec:
+  namespace: chaos-korc-out
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Bring-up to DBCredentialsReady, hold K-ORC, see the CR ─────
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          AC=applicationcredentials.openstack.k-orc.cloud/cp-korc-out-admin-app-credential
+          cp_seed cp-korc-out
+          kubectl apply -n "$NAMESPACE" -f 00-controlplane-cr.yaml
+          cp_wait_infrastructure cp-korc-out
+          cp_onboard_database cp-korc-out
+          if kubectl get "$AC" -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "FAIL: ${AC} exists before the fault landed"
+            exit 1
+          fi
+          cp_apply_file 01-podchaos.yaml
+          kubectl wait podchaos/fail-korc -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched; K-ORC is gone once
+          # the kubelet has stopped its container.
+          kubectl wait pod -n orc-system -l control-plane=controller-manager \
+            --for=condition=Ready=false --timeout=120s
+          echo "INJECTED $(date +%s)"
+          deadline=$(( $(date +%s) + 900 ))
+          until kubectl get "$AC" -n "$NAMESPACE" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no ${AC} within 900 s of the fault"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "AC-SEEN $(date +%s)"
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-korc-out
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump korc-provisioning-outage
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          kubectl delete job korc-out-admin -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+          cp_teardown cp-korc-out
+  # ── Step 2: The plane's Keystone serves; start the workload ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: c5c3.io/v1alpha1
+          kind: ControlPlane
+          metadata:
+            name: cp-korc-out
+          status:
+            (conditions[?type == 'KeystoneReady']):
+            - status: "True"
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-korc-out-keystone-admin-credentials ../lib/workload.sh start korc-provisioning-outage -- --streams token --keystone "http://cp-korc-out-keystone.${NAMESPACE}.svc:5000/v3"
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark korc-provisioning-outage fault-start
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop korc-provisioning-outage
+  # ── Step 3: The blind window ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          end=$(( $(date +%s) + 90 ))
+          while true; do
+            # A fault that ran out restores K-ORC, which then mints the
+            # credential: that is no defect of the plane.
+            phase="$(kubectl get podchaos fail-korc -n "$NAMESPACE" -o jsonpath='{.status.experiment.desiredPhase}')"
+            if [ "$phase" != "Run" ]; then
+              echo "FAIL: PodChaos fail-korc reads desiredPhase '${phase:-<none>}', not Run: the fault ended before the blind window did"
+              exit 1
+            fi
+            korc="$(cp_status controlplane cp-korc-out KORCReady)/$(cp_reason controlplane cp-korc-out KORCReady)"
+            if [ "$korc" != "False/WaitingForApplicationCredential" ]; then
+              echo "FAIL: KORCReady reads ${korc} while K-ORC is down"
+              exit 1
+            fi
+            for ctype in Ready CatalogReady; do
+              status="$(cp_status controlplane cp-korc-out "$ctype")"
+              if [ "$status" = "True" ]; then
+                echo "FAIL: ${ctype} reads True while K-ORC is down"
+                exit 1
+              fi
+            done
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "BLIND-OK: KORCReady=False/WaitingForApplicationCredential, Ready and CatalogReady not True for 90 s"
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 4: Lift the fault ─────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml
+          ../lib/workload.sh mark korc-provisioning-outage fault-end
+          kubectl rollout status deployment/orc-controller-manager -n orc-system --timeout=180s
+    catch:
+    - *lift
+    - *cp-dump
+    - *workload-dump
+  # ── Step 5: The plane converges ────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_wait_tail cp-korc-out
+          cp_wait_condition controlplane cp-korc-out CatalogReady True 300
+          for want in KORCReady:ApplicationCredentialMinted CatalogReady:CatalogRegistered; do
+            reason="$(cp_reason controlplane cp-korc-out "${want%%:*}")"
+            if [ "$reason" != "${want##*:}" ]; then
+              echo "FAIL: ${want%%:*} reads reason '${reason:-<none>}', not ${want##*:}"
+              exit 1
+            fi
+          done
+          echo "OK: KORCReady=True/ApplicationCredentialMinted, CatalogReady=True/CatalogRegistered, Ready=True/AllReady"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 6: One credential in Keystone, every K-ORC CR Available ───────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          name="$(kubectl get applicationcredentials.openstack.k-orc.cloud cp-korc-out-admin-app-credential \
+            -n "$NAMESPACE" -o jsonpath='{.status.resource.name}')"
+          if [ -z "$name" ]; then
+            echo "FAIL: the ApplicationCredential CR reports no status.resource.name"
+            exit 1
+          fi
+          sed -e "s|@AC_NAME@|${name}|g" 02-admin-job.yaml | kubectl apply -n "$NAMESPACE" -f -
+          if ! kubectl wait --for=condition=complete job/korc-out-admin -n "$NAMESPACE" --timeout=5m; then
+            kubectl logs -n "$NAMESPACE" job/korc-out-admin 2>&1 || true
+            echo "FAIL: job/korc-out-admin did not complete"
+            exit 1
+          fi
+          logs="$(kubectl logs -n "$NAMESPACE" job/korc-out-admin)"
+          echo "$logs"
+          grep -qx NO-DUPLICATE-OK <<<"$logs"
+          not_ready="$(kubectl get "$CP_KORC_KINDS" -n "$NAMESPACE" -o json | jq -r '.items[]
+            | select(([.status.conditions[]? | select(.type == "Available" and .status == "True")] | length) == 0
+                     or (.status.id // "") == "")
+            | "\(.kind)/\(.metadata.name)"')"
+          if [ -n "$not_ready" ]; then
+            echo "FAIL: K-ORC CRs without Available=True or a status.id: ${not_ready}"
+            exit 1
+          fi
+          echo "OK: every K-ORC CR in ${NAMESPACE} is Available with a status.id"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify korc-provisioning-outage
+    catch:
+    - *workload-dump
