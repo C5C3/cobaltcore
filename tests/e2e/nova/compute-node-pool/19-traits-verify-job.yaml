@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Reads the custom traits the pool keeps in Placement, from the outside,
+# through the openstack CLI and its osc-placement plugin (4.8.0 in the tempest
+# image). Placement serves traits from microversion 1.6 on, so every call names
+# it. The ConfigMap nova-pool-verify, written by the suite before each run,
+# names the state to expect under the key traits:
+#
+#   present  CUSTOM_C5C3_E2E_POOL and CUSTOM_C5C3_E2E_HOST both exist
+#   absent   neither is in the trait list
+#
+# backoffLimit is 0 so a failed run keeps the pod whose log says why.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-traits-verify
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TRAITS
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-pool-verify
+                  key: traits
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              PLACEMENT=(openstack --os-placement-api-version 1.6)
+
+              case "${TRAITS}" in
+                present)
+                  for trait in CUSTOM_C5C3_E2E_POOL CUSTOM_C5C3_E2E_HOST; do
+                    "${PLACEMENT[@]}" trait show "${trait}"
+                    echo "OK: trait ${trait} exists"
+                  done
+                  ;;
+                absent)
+                  # The list proves Placement answered, so a trait missing
+                  # from it is gone rather than unreadable.
+                  LISTED="$("${PLACEMENT[@]}" trait list -f value -c name)"
+                  for trait in CUSTOM_C5C3_E2E_POOL CUSTOM_C5C3_E2E_HOST; do
+                    if grep -qx "${trait}" <<<"${LISTED}"; then
+                      echo "ERROR: trait ${trait} is still in Placement"
+                      exit 1
+                    fi
+                    echo "OK: trait ${trait} is gone"
+                  done
+                  ;;
+                *)
+                  echo "ERROR: unknown TRAITS '${TRAITS}'"
+                  exit 1
+                  ;;
+              esac
+
+              echo NOVA-POOL-TRAITS-OK

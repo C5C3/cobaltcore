@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The node pool under test. It selects the node step 1 labels with
-# openstack.c5c3.io/nova-compute-pool=a, and removing that label is how step 7
+# openstack.c5c3.io/nova-compute-pool=a, and removing that label is how step 8
 # starts the drain.
 #
 # spec.extraConfig is the fake-driver seam: kind has no KVM, and
