@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding the shared MariaDB down: openstack-db runs one replica
+# with Galera off on kind, so pod-failure takes the database away until the
+# suite deletes this CR. A pod-kill would not do: mariadb-pod-kill measured a
+# killed MariaDB back in 19 to 20 s, before the operators of
+# 02-podchaos-operators.yaml are.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: cascade-fail-mariadb
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: mariadb

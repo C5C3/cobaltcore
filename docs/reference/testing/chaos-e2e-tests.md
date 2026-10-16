@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 52 chaos test suites validate operator behavior during and after fault
+The 53 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 52 test suites require the infrastructure stack to be deployed and healthy.
+All 53 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -466,6 +466,28 @@ with the new suites.
 | [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `403` in its condition or an event, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
 | [envoy-gateway-outage](#envoy-gateway-outage) | — | `keystone-chaos-eg` | Gateway controller outage (configuration plane) | `UNPROGRAMMED-OK`: for 90 s a route added under the fault carries no `Accepted=True` and `GET /v3` through `placement.127-0-0-1.nip.io` gets no 200; `PROGRAMMED-OK`: `Accepted=True` and a 200 within 180 s of the lift; `Ready=True/AllReady` throughout, workload budget zero |
 | [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `keystone-chaos-proxy` | Gateway proxy pod kill (data plane) | Every pre-kill proxy pod UID gone, the proxy Deployment back at `readyReplicas == spec.replicas`, `Ready=True/AllReady`, the token stream through the listener within its measured budget |
+| [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone-chaos-cascade` | Dependency outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the mariadb-operator and the keystone-operator replaced; within 120 s `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `Ready=True/AllReady` after the lift, the token stream within its measured budget |
+
+---
+
+## Coverage Notes
+
+### Status left by a dead dependency operator
+
+The operators read the readiness of a dependency off the status its own operator
+writes. `IsClusterReady` reads the MariaDB CR alone
+(`internal/common/database/flow.go`), and the ControlPlane reads
+`AllReplicasReady` off the RabbitmqCluster alone
+(`operators/c5c3/internal/controller/reconcile_infrastructure.go`). While the
+mariadb-operator or the rabbitmq-cluster-operator stays down, nothing rewrites
+those CRs, and every consumer keeps the last status the operator wrote: a
+Keystone keeps `DatabaseReady=True` on a database that is gone. The two cascade
+suites, `mariadb-operator-cascading-failure` and
+`rabbitmq-operator-cascading-failure`, therefore kill the dependency's operator
+together with the consuming operator while they hold the dependency down, and
+assert what the restarted operators report. No operator reads the readiness of a
+database or a broker itself, and changing that is a product change outside the
+chaos suites.
 
 ---
 
@@ -3515,6 +3537,61 @@ workload dump. Steps 2 and 3 delete the `PodChaos` first.
 
 ---
 
+### mariadb-operator-cascading-failure
+
+**File:** `tests/e2e-chaos/mariadb-operator-cascading-failure/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** The shared MariaDB `openstack-db` is held down with a `PodChaos`
+`pod-failure` while the mariadb-operator and the keystone-operator are
+pod-killed together, in one `kubectl apply`. The mariadb-operator writes the
+status of the MariaDB CR and the keystone-operator reads it, so the suite pins
+that both restarted operators report the outage they come back to: no status from
+before the restart passes for the current state. [Status left by a dead dependency
+operator](#status-left-by-a-dead-dependency-operator) gives the limit this suite
+records.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Baseline and workload | `apply` + `assert` (5m) + `script` (6m) | `keystone-chaos-cascade` (database `keystone_chaos_cascade`) reaches `Ready=True/AllReady`; `workload.sh start` |
+| 2 | Hold MariaDB down, kill both operators | `script` (6m) | Snapshots the pod UIDs of both operators, runs `workload.sh mark fault-start`, applies `01-podchaos-mariadb.yaml` and `02-podchaos-operators.yaml` in one call, waits for `AllInjected` on `cascade-fail-mariadb` and the MariaDB pod at `Ready=false`, then until neither Deployment has a pre-kill UID and both are at `readyReplicas == spec.replicas`. Prints `OPERATORS-BACK <epoch>` and writes it onto the MariaDB `PodChaos` |
+| 3 | The restarted operators report the outage | `script` (5m) | Within 120 s of `OPERATORS-BACK`: `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`. Then for 60 s, every 5 s, neither reads `Ready=True` (`COLD-CACHE-OK`) |
+| 4 | Lift the faults | `script` (2m) | Deletes the three `PodChaos`, then `workload.sh mark fault-end` |
+| 5 | Assert recovery | `assert` (5m) | MariaDB `Ready=True`, the Keystone at `DatabaseReady=True` and `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` against the measured budget |
+
+**Fixtures:** `00-keystone-cr.yaml`; `01-podchaos-mariadb.yaml`
+(`cascade-fail-mariadb`, `pod-failure` on `app.kubernetes.io/name: mariadb`,
+`duration: "600s"`); `02-podchaos-operators.yaml` (`cascade-kill-mariadb-operator`
+in `mariadb-system` and `cascade-kill-keystone-operator` in `keystone-system`,
+both `pod-kill`, `mode: all`, `gracePeriod: 0`).
+
+**Workload:** the `token` stream against `keystone-chaos-cascade`, started in step 1
+and judged in step 6 against `failures=156 recovery=70s`, measured in three kind
+runs: 70, 78 and 71 failed records, the last 30, 36 and 28 seconds after the lift.
+The suite runs in the `pod` matrix entry. A token issue needs the database, so every
+cycle of the outage fails.
+
+**Catch blocks:** steps 2 to 4 delete the three `PodChaos` first. Every catch calls
+`../diagnostics.sh chaos keystone-chaos-cascade` with
+`--dep-label=app.kubernetes.io/name=mariadb` and
+`--log-label=app.kubernetes.io/name=keystone-operator`, dumps the MariaDB CR, the
+pods and logs of both operators, and the workload.
+
+**Design notes:**
+
+- The database is held with `pod-failure`. `mariadb-pod-kill` measured a killed
+  MariaDB back in 19 to 20 s, before the operators, which would leave nothing to
+  report.
+- The webhooks and cert-controllers of both operators are Deployments of their own
+  with other `app.kubernetes.io/name` values, so admission keeps working through
+  the restart.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3940,6 +4017,11 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-part)
 │   ├── 01-networkchaos.yaml          NetworkChaos severing keystone↔mariadb traffic (server-side)
 │   └── chainsaw-test.yaml            Test: DeploymentReady=False → recovery
+├── mariadb-operator-cascading-failure/ MariaDB outage through two restarted operators
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-cascade
+│   ├── 01-podchaos-mariadb.yaml      PodChaos pod-failure on openstack-db
+│   ├── 02-podchaos-operators.yaml    PodChaos pod-kill of the mariadb- and keystone-operator
+│   └── chainsaw-test.yaml            Test: the restarted operators report the outage
 ├── mariadb-pod-kill/                 SC-CHAOS-001: MariaDB pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-db)
 │   ├── 01-podchaos.yaml              PodChaos targeting mariadb in openstack

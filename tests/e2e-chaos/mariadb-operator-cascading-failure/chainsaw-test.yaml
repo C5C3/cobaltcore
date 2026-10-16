@@ -1,0 +1,219 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a MariaDB outage cascading through two restarted
+# operators.
+#
+# Fault: the shared MariaDB openstack-db is held down with a PodChaos
+# pod-failure while the mariadb-operator and the keystone-operator are
+# pod-killed together (mode: all, gracePeriod: 0), in one kubectl apply.
+#
+# Claim, phase by phase:
+#   restart  Both operators come back: no pre-kill pod UID is left and both
+#            Deployments are at readyReplicas == spec.replicas
+#            (OPERATORS-BACK <epoch>).
+#   cold     Within 120 s of that the restarted operators report the outage:
+#            mariadb/openstack-db Ready=False, the Keystone
+#            DatabaseReady=False/ClusterNotReady and Ready=False. Then for
+#            60 s nothing reports Ready=True (COLD-CACHE-OK).
+#   lifted   MariaDB is Ready=True again, the Keystone DatabaseReady=True and
+#            Ready=True/AllReady within 5 minutes.
+#
+# Stale-status limit: the suite kills the mariadb-operator, it does not hold
+# it down. While that operator stays down nothing rewrites the MariaDB CR,
+# and every consumer keeps the last status the operator wrote:
+# IsClusterReady reads the MariaDB CR alone (internal/common/database/flow.go),
+# so a Keystone keeps DatabaseReady=True on a dead database. That fail-open is
+# recorded, not changed: no operator reads a database's readiness itself.
+#
+# Blast radius: every service on openstack-db loses its database for the
+# window, and neither operator reconciles anything while it restarts. The
+# three PodChaos are the shared state to undo, so steps 2 to 4 delete them in
+# their catch blocks.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against keystone-chaos-cascade through the fault. Token issue needs the
+# database, so the budget is what three kind runs measured.
+# Chaos budget: failures=156 recovery=70s
+# Chaos budget measured: 2026-10-16, kind, failures 70/78/71, recovery 30/36/28 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mariadb-operator-cascading-failure
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Baseline and workload ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cascade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start mariadb-operator-cascading-failure -- --streams token --keystone http://keystone-chaos-cascade.openstack.svc:5000/v3
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-cascade --dep-label=app.kubernetes.io/name=mariadb
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump mariadb-operator-cascading-failure
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop mariadb-operator-cascading-failure
+  # ── Step 2: Hold MariaDB down, kill both operators ─────────────────────
+  # The snapshot, the faults and the waits share one script, so they share
+  # the pre-kill UIDs. The epoch the operators are back at is written onto the
+  # MariaDB PodChaos for step 3.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/pods.sh
+          old_mariadb="$(pod_uids mariadb-system app.kubernetes.io/name=mariadb-operator)"
+          old_keystone="$(pod_uids keystone-system app.kubernetes.io/name=keystone-operator)"
+          if [ -z "$old_mariadb" ] || [ -z "$old_keystone" ]; then
+            echo "FAIL: an operator has no pod to kill (mariadb-operator: ${old_mariadb:-none}; keystone-operator: ${old_keystone:-none})"
+            exit 1
+          fi
+          ../lib/workload.sh mark mariadb-operator-cascading-failure fault-start
+          kubectl apply -f 01-podchaos-mariadb.yaml -f 02-podchaos-operators.yaml
+          kubectl wait podchaos/cascade-fail-mariadb -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched; the database is
+          # gone once the kubelet has stopped its container.
+          kubectl wait pod -n "$NAMESPACE" -l app.kubernetes.io/name=mariadb --for=condition=Ready=false --timeout=120s
+          wait_replaced mariadb-system app.kubernetes.io/name=mariadb-operator "$old_mariadb" 180
+          wait_replaced keystone-system app.kubernetes.io/name=keystone-operator "$old_keystone" 180
+          back="$(date +%s)"
+          kubectl annotate podchaos cascade-fail-mariadb -n "$NAMESPACE" chaos.c5c3.io/operators-back="$back" --overwrite
+          echo "OPERATORS-BACK ${back}"
+    catch:
+    - &lift
+      script:
+        content: kubectl delete -f 01-podchaos-mariadb.yaml -f 02-podchaos-operators.yaml --ignore-not-found
+    - &chaos-diagnostics
+      script:
+        content: ../diagnostics.sh chaos keystone-chaos-cascade --dep-label=app.kubernetes.io/name=mariadb --log-label=app.kubernetes.io/name=keystone-operator
+    - &operator-dump
+      script:
+        timeout: 1m
+        content: |
+          kubectl get mariadb openstack-db -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl get pods -n mariadb-system -o wide 2>&1 || true
+          kubectl get pods -n keystone-system -o wide 2>&1 || true
+          kubectl logs -n mariadb-system -l app.kubernetes.io/name=mariadb-operator --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=100 2>&1 || true
+    - *workload-dump
+  # ── Step 3: The restarted operators report the outage ──────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          cond() { # <resource> <type> <field>
+            kubectl get "$1" -n "$NAMESPACE" -o "jsonpath={.status.conditions[?(@.type==\"$2\")].$3}"
+          }
+          back="$(kubectl get podchaos cascade-fail-mariadb -n "$NAMESPACE" \
+            -o jsonpath='{.metadata.annotations.chaos\.c5c3\.io/operators-back}')"
+          deadline=$((back + 120))
+          while true; do
+            mariadb="$(cond mariadb/openstack-db Ready status)"
+            database="$(cond keystone/keystone-chaos-cascade DatabaseReady status)/$(cond keystone/keystone-chaos-cascade DatabaseReady reason)"
+            ready="$(cond keystone/keystone-chaos-cascade Ready status)"
+            if [ "$mariadb" = "False" ] && [ "$database" = "False/ClusterNotReady" ] && [ "$ready" = "False" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120 s after OPERATORS-BACK: MariaDB Ready ${mariadb:-<none>}, Keystone DatabaseReady ${database}, Ready ${ready:-<none>}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: MariaDB Ready=False, Keystone DatabaseReady=False/ClusterNotReady and Ready=False, $(( $(date +%s) - back )) s after OPERATORS-BACK"
+          end=$(( $(date +%s) + 60 ))
+          while true; do
+            for res in mariadb/openstack-db keystone/keystone-chaos-cascade; do
+              status="$(cond "$res" Ready status)"
+              if [ "$status" = "True" ]; then
+                echo "FAIL: ${res} reported Ready=True while MariaDB was held down"
+                exit 1
+              fi
+            done
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "COLD-CACHE-OK: nothing reported Ready=True for 60 s"
+    catch:
+    - *lift
+    - *chaos-diagnostics
+    - *operator-dump
+    - *workload-dump
+  # ── Step 4: Lift the faults ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl delete -f 01-podchaos-mariadb.yaml -f 02-podchaos-operators.yaml --ignore-not-found
+          ../lib/workload.sh mark mariadb-operator-cascading-failure fault-end
+    catch:
+    - *lift
+    - *workload-dump
+  # ── Step 5: Everything is Ready again ──────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: openstack-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-cascade
+            namespace: openstack
+          status:
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - *chaos-diagnostics
+    - *operator-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ──────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify mariadb-operator-cascading-failure
+    catch:
+    - *workload-dump
