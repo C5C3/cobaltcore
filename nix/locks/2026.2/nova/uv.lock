@@ -828,6 +828,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+nova-compute = [
+    { name = "libvirt-python" },
+    { name = "pyroute2" },
+]
 test = [
     { name = "bandit" },
     { name = "coverage" },
@@ -859,6 +863,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+nova-compute = [
+    { name = "libvirt-python" },
+    { name = "pyroute2" },
+]
 test = [
     { name = "bandit", specifier = ">=1.1.0" },
     { name = "coverage", specifier = ">=4.4.1" },
@@ -1274,6 +1282,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/b6/a5/607e533ed6c83ae1a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/0f/834427d8c03ff1d7e867d3db3d176470c64871753252b21b4f4897d1fa45/kombu-5.6.2-py3-none-any.whl", hash = "sha256:efcfc559da324d41d61ca311b0c64965ea35b4c55cc04ee36e55386145dace93", size = 214219, upload-time = "2025-12-29T20:30:05.74Z" },
 ]
+
+[[package]]
+name = "libvirt-python"
+version = "12.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/18/b64bc6c6739405fddd451f78e756c17411d309265ec748683b806bd1dd47/libvirt_python-12.6.0.tar.gz", hash = "sha256:f390abff81d4afd6c33157ade82912863b87de9c35172e9b0c9f0dfcdc09b139", size = 252693, upload-time = "2026-08-03T09:51:28.683Z" }
 
 [[package]]
 name = "lxml"

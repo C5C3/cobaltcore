@@ -4,12 +4,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/nix-lock.sh refuses bad input before it writes anything, writes
-# the release inputs into pyproject.toml and sources.json, keeps the previous
-# lock when a step fails, writes the noVNC hash and the three image pins,
+# the release inputs into pyproject.toml and sources.json, writes the
+# nova-compute group into the nova lock and refuses a release without its
+# block, keeps the previous lock when a step fails, writes the noVNC hash and
+# the three image pins,
 # deletes the locks nothing pins, reports stale locks and pins, resolves for
 # the interpreter flake.nix builds the images with, and that the committed
-# locks under nix/locks/ are the set the release files pin and the committed
-# image pins carry commits and hashes.
+# locks under nix/locks/ are the set the release files pin, the committed nova
+# locks carry the nova-compute group, and the committed image pins carry
+# commits and hashes.
 #
 # The generator checks the release directory first and the six tools next,
 # so those failures need no tool at all. The other runs use a throwaway git
@@ -75,7 +78,8 @@ can_run() {
 # gitlink $OVS_REV, and stub nix and uv commands in stubs/. The OVN pin names
 # that repository's commit and has no ovs object yet; the hvo pin's hash is
 # the one the stub prefetches, the kna pin's is not. The constraints spell
-# PyMySQL as PyPI does, the venv-builder pin as pymysql. Each run logs to
+# PyMySQL as PyPI does, the base pin of nix/base-requirements.txt as pymysql.
+# Each run logs to
 # stubs/nix.log and stubs/uv.log; NIX_STUB_FAIL makes every nix call exit 9,
 # NIX_STUB_NO_GOT keeps a failing nix build from naming a hash.
 make_tree() {
@@ -83,7 +87,7 @@ make_tree() {
   tree=$(mktemp -d)
   ovn="$tree/upstream/ovn"
   mkdir -p "$tree/hack" "$tree/scripts" "$tree/releases/2026.1" "$tree/overrides/2026.1" \
-    "$tree/images/venv-builder" "$tree/images/nova" "$tree/patches/placement/2026.1" \
+    "$tree/nix" "$tree/images/nova" "$tree/patches/placement/2026.1" \
     "$tree/images/ovn" "$tree/images/openstack-hypervisor-operator" "$tree/images/kvm-node-agent" \
     "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$ovn" "$tree/stubs"
   cp "$GENERATOR" "$tree/hack/"
@@ -100,7 +104,7 @@ make_tree() {
     >"$tree/releases/2026.1/upper-constraints.txt"
   echo '-horizon' >"$tree/overrides/2026.1/constraints.txt"
   printf '%s\n' 'cryptography==48.0.1' 'pymysql==1.2.3' 'uwsgi==2.0.31' \
-    >"$tree/images/venv-builder/requirements.txt"
+    >"$tree/nix/base-requirements.txt"
   printf '{\n  "version": "v1.7.0",\n  "rev": "%s"\n}\n' "$NOVNC_REV" >"$tree/images/nova/novnc.json"
 
   git -C "$ovn" init --quiet
@@ -197,6 +201,35 @@ seed_lock() {
   done
 }
 
+# add_nova adds the service nova to a tree: its source-refs.yaml key, an
+# upstream tree with a setup.cfg and a .stestr.conf, and the
+# extra-packages.yaml blocks of nova and of nova-compute, the image the
+# generator derives from nova. The nova-compute block names an extra, so its
+# group starts with the project.
+add_nova() {
+  local tree="$1"
+  echo 'nova: "33.0.0"' >>"$tree/releases/2026.1/source-refs.yaml"
+  mkdir -p "$tree/upstream/nova"
+  printf '%s\n' '[metadata]' 'name = nova' >"$tree/upstream/nova/setup.cfg"
+  printf '%s\n' '[DEFAULT]' 'test_path=./nova/tests' >"$tree/upstream/nova/.stestr.conf"
+  printf '%s\n' 'nova:' '  pip_extras: []' '  pip_packages: [pyroute2]' \
+    'nova-compute:' '  pip_extras: [zvm]' '  pip_packages: [libvirt-python, pyroute2]' \
+    >>"$tree/releases/2026.1/extra-packages.yaml"
+}
+
+# group_names <pyproject.toml> prints the names of the dependency groups in
+# file order, on one line.
+group_names() {
+  sed -n '/^\[dependency-groups\]$/,/^\[tool/p' "$1" | sed -n 's/^\([a-z-]*\) = \[$/\1/p' |
+    tr '\n' ' ' | sed 's/ $//'
+}
+
+# group_items <pyproject.toml> <group> prints the items of one dependency
+# group, one per line, without quotes and commas.
+group_items() {
+  sed -n "/^$2 = \[\$/,/^\]\$/p" "$1" | sed -e '1d' -e '$d' -e 's/^ *"//' -e 's/",$//'
+}
+
 test_usage_and_missing_release() {
   echo "Test: a wrong argument list and an unknown release exit 1 before any tool runs"
   local output exit_code=0
@@ -274,13 +307,13 @@ test_service_lock_carries_the_release_inputs() {
   assert_file_contains_fixed "the git source is keyed by the project name" "$pyproject" \
     "openstack-placement = { git = \"https://github.com/openstack/placement\", rev = \"$FIXTURE_REV\" }"
   assert_file_contains "the pip_packages are dependencies" "$pyproject" '^    "lhafile",$'
-  assert_file_contains "a venv-builder package the constraints pin is listed by name" \
+  assert_file_contains "a base package the constraints pin is listed by name" \
     "$pyproject" '^    "cryptography",$'
-  assert_file_contains "a venv-builder pin matches its constraint case-insensitively" \
+  assert_file_contains "a base pin matches its constraint case-insensitively" \
     "$pyproject" '^    "pymysql",$'
-  assert_file_not_contains "the venv-builder version of a case-folded name is dropped" \
+  assert_file_not_contains "the base version of a case-folded name is dropped" \
     "$pyproject" '"pymysql==1.2.3"'
-  assert_file_contains "a venv-builder package the constraints lack keeps its pin" \
+  assert_file_contains "a base package the constraints lack keeps its pin" \
     "$pyproject" '^    "uwsgi==2.0.31",$'
   assert_file_contains "a === constraint is written with ==" "$pyproject" '^    "oslo.db==18.0.0",$'
   assert_file_not_contains "a constraint the overrides remove is left out" "$pyproject" '"horizon=='
@@ -292,6 +325,8 @@ test_service_lock_carries_the_release_inputs() {
   assert_file_contains "surrounding whitespace is trimmed from a test requirement" \
     "$pyproject" '^    "oslotest>=3.2.0",$'
   assert_file_not_contains "a pip option is no test requirement" "$pyproject" '"-r requirements.txt"'
+  assert_file_not_contains "a service no image derives from has no nova-compute group" \
+    "$pyproject" '^nova-compute = \[$'
   assert_eq "sources.json carries the ref, commit, hash, project and patch" \
     "{\"ref\":\"15.0.0\",\"rev\":\"$FIXTURE_REV\",\"hash\":\"sha256-fixture\",\"project\":\"openstack-placement\",\"patches\":[\"patches/placement/2026.1/0001-fix.patch\"]}" \
     "$(jq -c . "$out/sources.json")"
@@ -644,6 +679,76 @@ test_failures_leave_the_lock_untouched() {
   rm -rf "$tree"
 }
 
+test_nova_lock_carries_the_nova_compute_group() {
+  echo "Test: the nova lock carries the nova-compute block as a dependency group after the test group"
+  can_run 8 || return
+
+  local tree pyproject output exit_code=0
+  tree=$(make_tree)
+  add_nova "$tree"
+  pyproject="$tree/nix/locks/2026.1/nova/pyproject.toml"
+
+  output=$(run_generator "$tree" nova 2026.1 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the groups are test, then nova-compute" "test nova-compute" "$(group_names "$pyproject")"
+  assert_eq "the group is the project with the block's extras, then its pip packages" \
+    "nova[zvm] libvirt-python pyroute2" "$(group_items "$pyproject" nova-compute | tr '\n' ' ' | sed 's/ $//')"
+  assert_file_contains "nova's own pip packages stay default dependencies" "$pyproject" '^    "pyroute2",$'
+  assert_eq "libvirt-python is no default dependency" "" \
+    "$(sed -n '/^dependencies = \[$/,/^\]$/p' "$pyproject" | grep libvirt-python)"
+
+  sed -i.bak 's/^  pip_extras: \[zvm\]$/  pip_extras: []/' "$tree/releases/2026.1/extra-packages.yaml"
+  exit_code=0
+  run_generator "$tree" nova 2026.1 >/dev/null 2>&1 || exit_code=$?
+  assert_eq "a block without extras exits 0" "0" "$exit_code"
+  assert_eq "a block without extras lists its pip packages alone" "libvirt-python pyroute2" \
+    "$(group_items "$pyproject" nova-compute | tr '\n' ' ' | sed 's/ $//')"
+  rm -rf "$tree"
+}
+
+test_a_missing_derived_block_fails_and_leaves_the_lock() {
+  echo "Test: a release without the nova-compute block fails before nix runs and keeps the nova lock"
+  can_run 5 || return
+
+  local tree dest before output exit_code=0 file
+  tree=$(make_tree)
+  add_nova "$tree"
+  dest="$tree/nix/locks/2026.1/nova"
+  mkdir -p "$dest"
+  for file in pyproject.toml uv.lock sources.json; do
+    echo "previous $file" >"$dest/$file"
+  done
+  before=$(lock_state "$dest")
+  sed -i.bak '/^nova-compute:/,$d' "$tree/releases/2026.1/extra-packages.yaml"
+
+  output=$(run_generator "$tree" nova 2026.1 2>&1) || exit_code=$?
+  assert_eq "the run exits 1" "1" "$exit_code"
+  assert_eq "the message names the block and the file" \
+    "nix-lock.sh: no block 'nova-compute' in releases/2026.1/extra-packages.yaml" "$output"
+  assert_eq "nix was not called" "" "$(cat "$tree/stubs/nix.log" 2>/dev/null)"
+  assert_eq "uv was not called" "" "$(cat "$tree/stubs/uv.log" 2>/dev/null)"
+  assert_eq "the nova lock is unchanged" "$before" "$(lock_state "$dest")"
+  rm -rf "$tree"
+}
+
+test_committed_nova_locks_carry_the_group() {
+  echo "Test: each committed nova lock carries the nova-compute group with libvirt-python after test"
+
+  local pyproject release found=0
+  for pyproject in "$LOCKS"/*/nova/pyproject.toml; do
+    [ -f "$pyproject" ] || continue
+    found=$((found + 1))
+    release=$(basename "$(dirname "$(dirname "$pyproject")")")
+    assert_eq "$release: the groups are test, then nova-compute" "test nova-compute" \
+      "$(group_names "$pyproject")"
+    assert_contains "$release: the nova-compute group names libvirt-python" \
+      "$(group_items "$pyproject" nova-compute)" "libvirt-python"
+  done
+  assert_eq "nix/locks holds a nova lock for each release" \
+    "$(find "$PROJECT_ROOT/releases" -name source-refs.yaml | wc -l | tr -d ' ')" "$found"
+}
+
 test_committed_locks_match_the_pins() {
   echo "Test: nix/locks holds one lock per source-refs key and release plus tempest"
   if ! command -v yq >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -729,6 +834,9 @@ test_an_empty_vendor_hash_is_recomputed
 test_check_reports_an_ovs_rev_that_is_not_the_gitlink
 test_nix_stub_fail_leaves_every_pin_byte_identical
 test_failures_leave_the_lock_untouched
+test_nova_lock_carries_the_nova_compute_group
+test_a_missing_derived_block_fails_and_leaves_the_lock
+test_committed_nova_locks_carry_the_group
 test_committed_locks_match_the_pins
 test_committed_pins_carry_revs_and_sri_hashes
 test_python_is_the_flake_interpreter

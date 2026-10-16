@@ -28,11 +28,13 @@
 #   pyproject.toml  a virtual uv project. For a service: the project as a git
 #                   source at that commit with its pip_extras, the
 #                   pip_packages of releases/<release>/extra-packages.yaml, the
-#                   venv-builder pins, the merged constraints as
-#                   constraint-dependencies, and a test dependency group. For
-#                   tempest: the five releases/<release>/test-refs.yaml pins,
-#                   the clients the e2e suites run, the venv-builder pins and
-#                   the merged constraints, without a test group.
+#                   base pins of nix/base-requirements.txt, the merged
+#                   constraints as constraint-dependencies, a test dependency
+#                   group, and a dependency group per image of DERIVED_IMAGES
+#                   built from it. For tempest: the five
+#                   releases/<release>/test-refs.yaml pins, the clients the
+#                   e2e suites run, the base pins and the merged constraints,
+#                   without a test group.
 #   uv.lock         what `uv lock` resolves from pyproject.toml, seeded with
 #                   the committed uv.lock so a rerun with unchanged inputs
 #                   writes the same lock
@@ -114,6 +116,14 @@ NIX=(nix --extra-experimental-features 'nix-command flakes')
 # resolve for it, with the one the lock-tools shell puts on PATH.
 PYTHON_MINOR=3.12
 
+# The images built from another key's source, without a source-refs.yaml key
+# of their own, mapped to that key. The image's block of
+# releases/<release>/extra-packages.yaml becomes a dependency group named
+# after the image in the key's lock, so the image and the key's own image
+# share one resolution. tests/container-images/verify_release_config.sh
+# keeps a copy (DERIVED_IMAGES).
+declare -A DERIVED_IMAGES=([nova-compute]=nova)
+
 # PEP 503 normalisation, for comparing a requirement name with a constraint.
 normalize() {
   local name="${1,,}"
@@ -167,15 +177,27 @@ collect_tempest_inputs() {
     >"${TMP}/work/sources.json"
 }
 
-# collect_service_inputs fills lock's DEPENDENCIES, TEST_GROUP and SOURCE_LINE
-# for a service and writes its sources.json: the ref source-refs.yaml pins,
-# fetched by commit and hash, the project name of the fetched tree with its
-# extras, the extra pip packages, and the test group of its suite.
+# collect_service_inputs fills lock's DEPENDENCIES, TEST_GROUP, DERIVED_GROUPS
+# and SOURCE_LINE for a service and writes its sources.json: the ref
+# source-refs.yaml pins, fetched by commit and hash, the project name of the
+# fetched tree with its extras, the extra pip packages, the test group of its
+# suite, and the groups of the images built from it.
 collect_service_inputs() {
   local REFS="releases/${RELEASE}/source-refs.yaml"
-  local REF REV HASH TREE PREFETCH PROJECT EXTRAS line pkg patch
+  local EXTRA_PACKAGES="releases/${RELEASE}/extra-packages.yaml"
+  local REF REV HASH TREE PREFETCH PROJECT EXTRAS line pkg patch image group
   local -a PATCHES=() TEST_REQS=() runners=()
   local -A IN_TEST_REQS=()
+
+  # A derived image without its block would lose its packages, so the run
+  # stops before anything is fetched or written.
+  for image in "${!DERIVED_IMAGES[@]}"; do
+    [ "${DERIVED_IMAGES[$image]}" = "$NAME" ] || continue
+    if [ "$(yq ".\"${image}\" | type" "$EXTRA_PACKAGES")" != "!!map" ]; then
+      echo "nix-lock.sh: no block '${image}' in ${EXTRA_PACKAGES}" >&2
+      exit 1
+    fi
+  done
 
   REF=$(yq ".\"${NAME}\"" "$REFS")
   if [ -z "$REF" ] || [ "$REF" = "null" ]; then
@@ -224,11 +246,11 @@ PYEOF
 )
 
   # The project with its extras and the extra pip packages.
-  EXTRAS=$(yq -r ".\"${NAME}\".pip_extras // [] | join(\",\")" "releases/${RELEASE}/extra-packages.yaml")
+  EXTRAS=$(yq -r ".\"${NAME}\".pip_extras // [] | join(\",\")" "$EXTRA_PACKAGES")
   DEPENDENCIES=("${PROJECT}${EXTRAS:+[${EXTRAS}]}")
   while IFS= read -r pkg; do
     [ -n "$pkg" ] && DEPENDENCIES+=("$pkg")
-  done < <(yq -r ".\"${NAME}\".pip_packages // [] | .[]" "releases/${RELEASE}/extra-packages.yaml")
+  done < <(yq -r ".\"${NAME}\".pip_packages // [] | .[]" "$EXTRA_PACKAGES")
 
   # The test group: the runner of the suite unless the project's
   # test-requirements.txt lists it, then that file without comments, blank
@@ -258,6 +280,18 @@ PYEOF
   done
   TEST_GROUP+=("${TEST_REQS[@]}")
 
+  # The group of each image built from this source: the project with the
+  # image's extras when it names any, then its pip packages, one per line.
+  for image in "${!DERIVED_IMAGES[@]}"; do
+    [ "${DERIVED_IMAGES[$image]}" = "$NAME" ] || continue
+    EXTRAS=$(yq -r ".\"${image}\".pip_extras // [] | join(\",\")" "$EXTRA_PACKAGES")
+    group="${EXTRAS:+${PROJECT}[${EXTRAS}]}"
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] && group+="${group:+$'\n'}${pkg}"
+    done < <(yq -r ".\"${image}\".pip_packages // [] | .[]" "$EXTRA_PACKAGES")
+    DERIVED_GROUPS["$image"]="$group"
+  done
+
   SOURCE_LINE="${PROJECT} = { git = $(toml_str "https://github.com/openstack/${NAME}"), rev = $(toml_str "$REV") }"
   jq -n --arg ref "$REF" --arg rev "$REV" --arg hash "$HASH" --arg project "$PROJECT" \
     '{ref: $ref, rev: $rev, hash: $hash, project: $project, patches: $ARGS.positional}' \
@@ -286,11 +320,10 @@ merge_constraints() {
   done <"${TMP}/releases/${RELEASE}/upper-constraints.txt"
 }
 
-# add_venv_builder_pins appends the venv-builder pins to lock's DEPENDENCIES.
-# A package the constraints pin is listed by name only: the constraints
-# re-pin it, as the comment in images/venv-builder/requirements.txt
-# describes.
-add_venv_builder_pins() {
+# add_base_pins appends the base pins to lock's DEPENDENCIES. A package the
+# constraints pin is listed by name only: the constraints re-pin it, as the
+# comment in nix/base-requirements.txt describes.
+add_base_pins() {
   local line name
   while IFS= read -r line; do
     [[ "$line" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)==[^=] ]] || continue
@@ -300,12 +333,15 @@ add_venv_builder_pins() {
     else
       DEPENDENCIES+=("$line")
     fi
-  done <images/venv-builder/requirements.txt
+  done <nix/base-requirements.txt
 }
 
-# write_pyproject prints the virtual project of lock: a test dependency group
-# only with a TEST_GROUP, a git source only with a SOURCE_LINE.
+# write_pyproject prints the virtual project of lock: the dependency groups
+# only with a TEST_GROUP or a DERIVED_GROUPS entry, test first and the
+# derived groups in name order, and a git source only with a SOURCE_LINE.
 write_pyproject() {
+  local image
+  local -a items
   echo "# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company"
   echo "#"
   echo "# SPDX-License-Identifier: Apache-2.0"
@@ -319,13 +355,23 @@ write_pyproject() {
   echo "dependencies = ["
   toml_items "${DEPENDENCIES[@]}"
   echo "]"
-  if [ "${#TEST_GROUP[@]}" -gt 0 ]; then
+  if [ "${#TEST_GROUP[@]}" -gt 0 ] || [ "${#DERIVED_GROUPS[@]}" -gt 0 ]; then
     echo
     echo "[dependency-groups]"
+  fi
+  if [ "${#TEST_GROUP[@]}" -gt 0 ]; then
     echo "test = ["
     toml_items "${TEST_GROUP[@]}"
     echo "]"
   fi
+  while IFS= read -r image; do
+    [ -n "$image" ] || continue
+    items=()
+    [ -z "${DERIVED_GROUPS[$image]}" ] || mapfile -t items <<<"${DERIVED_GROUPS[$image]}"
+    echo "${image} = ["
+    toml_items "${items[@]}"
+    echo "]"
+  done < <(printf '%s\n' "${!DERIVED_GROUPS[@]}" | sort)
   echo
   echo "[tool.uv]"
   echo "package = false"
@@ -342,13 +388,13 @@ write_pyproject() {
 # lock writes nix/locks/<release>/<name>/. It runs in a subshell of its
 # caller, so its trap and its exit end that lock only. The steps share its
 # locals through bash's dynamic scope: the inputs of tempest or of a service,
-# the merged constraints and the venv-builder pins fill DEPENDENCIES,
-# TEST_GROUP, SOURCE_LINE and CONSTRAINTS, which write_pyproject renders.
+# the merged constraints and the base pins fill DEPENDENCIES, TEST_GROUP,
+# DERIVED_GROUPS, SOURCE_LINE and CONSTRAINTS, which write_pyproject renders.
 lock() {
   local NAME="$1" RELEASE="$2"
   local DEST="nix/locks/${RELEASE}/${NAME}" SOURCE_LINE=""
   local -a DEPENDENCIES=() CONSTRAINTS=() TEST_GROUP=()
-  local -A CONSTRAINED=()
+  local -A CONSTRAINED=() DERIVED_GROUPS=()
 
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
@@ -360,7 +406,7 @@ lock() {
     collect_service_inputs
   fi
   merge_constraints
-  add_venv_builder_pins
+  add_base_pins
   write_pyproject >"${TMP}/work/pyproject.toml"
 
   # uv keeps every locked version the inputs still allow, so the committed
