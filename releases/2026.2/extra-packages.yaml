@@ -2,20 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Per-service Python extras and additional pip packages, and the runtime
-# system packages of nova-compute.
+# Per-service Python extras and additional pip packages.
 # pip_extras: bare Python extra names (e.g. ldap, not keystone[ldap]).
 #   hack/nix-lock.sh appends them to the project in the lock it writes under
-#   nix/locks/<release>/<service>/ (e.g. "keystone[ldap,...]"); for
-#   nova-compute the CI workflow passes them as the PIP_EXTRAS build arg.
+#   nix/locks/<release>/<service>/ (e.g. "keystone[ldap,...]").
 # pip_packages: additional pip packages installed alongside the service, locked
-#   the same way (PIP_PACKAGES build arg for nova-compute). Use an empty list
-#   when none are needed.
-# apt_packages: runtime system packages of nova-compute, installed via apt in
-#   its final image (EXTRA_APT_PACKAGES build arg). The Nix-built service
-#   images name theirs in images/<service>/image.nix.
-#   verify_release_config.sh validates the wiring between this file, the
-#   nova-compute Dockerfile and the CI workflow.
+#   the same way. Use an empty list when none are needed.
+# The nova-compute block lists what the image adds to nova's packages:
+#   hack/nix-lock.sh writes it into the nova-compute dependency group of the
+#   nova lock, whose venv also carries nova's own pip_packages. No block
+#   carries apt_packages: every image names its runtime packages in
+#   images/<image>/image.nix, which verify_release_config.sh checks.
 keystone:
   pip_extras:
     - ldap
@@ -73,60 +70,6 @@ nova-compute:
   pip_extras: []
   pip_packages:
     # The libvirt driver's binding, pinned by upper-constraints.txt. PyPI
-    # ships it as an sdist only; the build stage compiles it against
-    # libvirt-dev.
+    # ships it as an sdist only; nix/lib/python-env.nix builds it against
+    # the libvirt of nix/pkgs/libvirt.nix.
     - libvirt-python
-    # os-vif 5.2.1 omits pyroute2 from its wheel metadata although its ovs
-    # plugin imports it (see nova above). Without it nova-compute cannot plug
-    # an instance port into Open vSwitch.
-    - pyroute2
-  apt_packages:
-    # libvirt.so.0, libvirt-qemu.so.0 and libvirt-lxc.so.0, which the
-    # binding's extension modules link (nova/virt/libvirt/host.py imports it).
-    - libvirt0
-    # qemu-img create (nova/virt/libvirt/utils.py), info and convert
-    # (nova/privsep/qemu.py).
-    - qemu-utils
-    # iscsiadm (os_brick/initiator/connectors/iscsi.py). The postinst writes
-    # /etc/iscsi/initiatorname.iscsi, which the Dockerfile removes.
-    - open-iscsi
-    # multipath and multipathd (os_brick/initiator/linuxscsi.py). The package
-    # ships /etc/multipath.conf, which the Dockerfile removes.
-    - multipath-tools
-    # nvme (os_brick/initiator/connectors/nvmeof.py,
-    # os_brick/privileged/nvmeof.py). The postinst writes /etc/nvme/hostnqn
-    # and /etc/nvme/hostid, which the Dockerfile removes.
-    - nvme-cli
-    # lsscsi (os_brick/initiator/linuxscsi.py).
-    - lsscsi
-    # /lib/udev/scsi_id (os_brick/initiator/linuxscsi.py, get_scsi_wwn).
-    - udev
-    # mount.nfs, the helper mount(8) runs for `mount -t nfs`. nova mounts a
-    # Cinder NFS export itself, below [libvirt] nfs_mount_point_base
-    # ($state_path/mnt): nova/virt/libvirt/volume/nfs.py,
-    # nova/virt/libvirt/volume/mount.py and mount() in nova/privsep/fs.py.
-    # os-brick takes no part in it. The postinst bakes no node identity.
-    - nfs-common
-    # cryptsetup, run by the LUKS encryptors (os_brick/encryptors/luks.py)
-    # when an encrypted volume attaches. The compute contract enables the
-    # Barbican key manager whenever Barbican is enabled.
-    - cryptsetup-bin
-    # genisoimage, the default [DEFAULT] mkisofs_cmd
-    # (nova/conf/configdrive.py), which builds config drives.
-    - genisoimage
-    # ceph and rbd (nova/storage/rbd_utils.py): `ceph mon dump` in
-    # get_mon_addrs, `rbd import` in import_image, `rbd export` in
-    # export_image and `ceph df` in get_pool_info. The postinst adds the
-    # system user ceph and the directories /var/lib/ceph and /var/log/ceph,
-    # and installs /etc/ceph/rbdmap, /etc/default/ceph and
-    # /etc/logrotate.d/ceph-common. None of them names the node, so the
-    # Dockerfile removes nothing for it.
-    - ceph-common
-    # The rados and rbd modules. nova/storage/rbd_utils.py imports them
-    # behind a guard, and RBDDriver.__init__ raises RuntimeError("rbd python
-    # libraries not found") through _check_for_import_failure without them.
-    # ceph-common depends on both; they are named because nova imports them.
-    # Both packages install into /usr/lib/python3/dist-packages, and the
-    # Dockerfile links the two modules onto the venv's path.
-    - python3-rados
-    - python3-rbd

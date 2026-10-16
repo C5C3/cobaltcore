@@ -22,12 +22,22 @@ FAIL=0
 SERVICES="keystone horizon glance placement barbican neutron cinder nova"
 
 # Images built from another service's source pin, each with its own
-# extra-packages.yaml block and images/<name>/Dockerfile but no
-# source-refs.yaml key. Test 2 checks their block like a service's plus the
-# apt_packages key, and tests 3 and 4 check their Dockerfile's apt wiring;
+# extra-packages.yaml block and images/<name>/image.nix but no
+# source-refs.yaml key. hack/nix-lock.sh writes the block into a dependency
+# group named after the image in the lock of the service derived_parent
+# names; its DERIVED_IMAGES map is the copy of this list. Test 2 checks their
+# block like a service's, and test 3 checks their image.nix and the group;
 # tests 1, 7 and 9, which read source-refs.yaml keys, do not. nova-compute is
 # built from the nova pin.
 DERIVED_IMAGES="nova-compute"
+
+# derived_parent <image> prints the service whose source pin and lock the
+# derived image is built from.
+derived_parent() {
+  case "$1" in
+    nova-compute) echo nova ;;
+  esac
+}
 
 # ovn is deliberately absent from this list. The image is release-independent:
 # it has no source-refs.yaml key, no extra-packages.yaml entry and no PIP_* or
@@ -43,9 +53,10 @@ DERIVED_IMAGES="nova-compute"
 # tests/container-images/verify_backup_shifter.sh together with the
 # build-backup-shifter job in build-images.yaml.
 #
-# libvirt is a release-independent image absent from the list too. It takes
-# libvirt, QEMU and OVMF from the ubuntu:noble archive, so it has no
-# source-refs.yaml key, no extra-packages.yaml entry and no build args either.
+# libvirt is a release-independent image absent from the list too. It is
+# built by Nix from images/libvirt/image.nix and takes libvirt and QEMU from
+# the nixpkgs-images revision flake.lock pins, so it has no source-refs.yaml
+# key, no extra-packages.yaml entry and no build args either.
 # Its contract is tests/container-images/verify_libvirt.sh together with the
 # build-libvirt job in build-images.yaml.
 #
@@ -163,31 +174,14 @@ test_extra_packages_valid_yaml_structure() {
         FAIL=$((FAIL + 1))
       fi
 
-      # A Nix-built service names its runtime packages in its image.nix, so
-      # an apt_packages key in its block would be read by nothing.
-      if [[ " $SERVICES " == *" $service "* ]]; then
-        if [[ "$(yq ".${service} | has(\"apt_packages\")" "$extra_packages")" == "true" ]]; then
-          echo "  FAIL: [$release_name] $service: apt_packages is gone; runtime packages live in images/$service/image.nix"
-          FAIL=$((FAIL + 1))
-        else
-          echo "  PASS: [$release_name] $service has no apt_packages key"
-          PASS=$((PASS + 1))
-        fi
-      fi
-
-      # Verify <image>.apt_packages exists and is an array (: allow empty lists per review #1)
-      if [[ " $DERIVED_IMAGES " == *" $service "* ]]; then
-        local apt_tag
-        apt_tag=$(yq ".${service}.apt_packages | tag" "$extra_packages")
-        if [[ "$apt_tag" == "!!seq" ]]; then
-          local apt_count
-          apt_count=$(yq ".${service}.apt_packages | length" "$extra_packages")
-          echo "  PASS: [$release_name] $service.apt_packages is a valid array ($apt_count items)"
-          PASS=$((PASS + 1))
-        else
-          echo "  FAIL: [$release_name] $service.apt_packages must be an array (got $apt_tag)"
-          FAIL=$((FAIL + 1))
-        fi
+      # Every image names its runtime packages in its image.nix, so an
+      # apt_packages key in its block would be read by nothing.
+      if [[ "$(yq ".\"${service}\" | has(\"apt_packages\")" "$extra_packages")" == "true" ]]; then
+        echo "  FAIL: [$release_name] $service: apt_packages is gone; runtime packages live in images/$service/image.nix"
+        FAIL=$((FAIL + 1))
+      else
+        echo "  PASS: [$release_name] $service has no apt_packages key"
+        PASS=$((PASS + 1))
       fi
 
       # Verify pip_packages entries are valid if present (optional field).
@@ -222,19 +216,6 @@ test_extra_packages_valid_yaml_structure() {
         FAIL=$((FAIL + 1))
       fi
 
-      # Validate apt_packages entries match Debian package name pattern
-      if [[ " $DERIVED_IMAGES " == *" $service "* ]]; then
-        local bad_apt
-        bad_apt=$(yq ".${service}.apt_packages[]" "$extra_packages" \
-          | tr -d '"' | grep -vE '^[a-z0-9][a-z0-9.+-]+$' || true)
-        if [ -z "$bad_apt" ]; then
-          echo "  PASS: [$release_name] $service.apt_packages entries match naming pattern"
-          PASS=$((PASS + 1))
-        else
-          echo "  FAIL: [$release_name] $service.apt_packages entries violate pattern ^[a-z0-9][a-z0-9.+-]+\$: $bad_apt"
-          FAIL=$((FAIL + 1))
-        fi
-      fi
     done
   done
 
@@ -244,111 +225,56 @@ test_extra_packages_valid_yaml_structure() {
   fi
 }
 
-# --- Test 3: Dockerfile and CI workflow support extra-packages.yaml ---
-# The Nix-built services read extra-packages.yaml through hack/nix-lock.sh;
-# only the Docker-built derived images take its fields as build args.
+# --- Test 3: each derived image is built from its parent's lock ---
+# hack/nix-lock.sh writes a derived image's pip_packages into a dependency
+# group of that name in the lock of the service it derives from, and
+# images/<image>/image.nix builds the image's venv with that group.
 test_extra_packages_build_wiring() {
-  echo "Test: Dockerfiles and CI workflow support extra-packages.yaml"
+  echo "Test: each derived image has an image.nix and a group in its parent's lock"
 
-  local workflow="$PROJECT_ROOT/.github/workflows/build-images.yaml"
+  local image
+  for image in $DERIVED_IMAGES; do
+    local parent nix="$PROJECT_ROOT/images/${image}/image.nix"
+    parent=$(derived_parent "$image")
 
-  if [ ! -f "$workflow" ]; then
-    echo "  FAIL: required files missing"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-
-  local service
-  for service in $DERIVED_IMAGES; do
-    local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
-
-    if [ ! -f "$dockerfile" ]; then
-      echo "  FAIL: [$service] images/$service/Dockerfile missing"
-      FAIL=$((FAIL + 1))
-      continue
-    fi
-
-    # Verify Dockerfile declares ARG PIP_EXTRAS
-    if grep -q '^ARG PIP_EXTRAS=' "$dockerfile"; then
-      echo "  PASS: [$service] Dockerfile declares ARG PIP_EXTRAS"
+    if [ -f "$nix" ]; then
+      echo "  PASS: [$image] images/$image/image.nix exists"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: [$service] Dockerfile missing ARG PIP_EXTRAS"
+      echo "  FAIL: [$image] images/$image/image.nix missing"
       FAIL=$((FAIL + 1))
     fi
 
-    # Verify Dockerfile declares ARG PIP_PACKAGES
-    if grep -q '^ARG PIP_PACKAGES=' "$dockerfile"; then
-      echo "  PASS: [$service] Dockerfile declares ARG PIP_PACKAGES"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$service] Dockerfile missing ARG PIP_PACKAGES"
-      FAIL=$((FAIL + 1))
-    fi
+    local extra_packages
+    for extra_packages in "$PROJECT_ROOT"/releases/*/extra-packages.yaml; do
+      [ -f "$extra_packages" ] || continue
+      local release_name pyproject group pkg
+      release_name=$(basename "$(dirname "$extra_packages")")
+      pyproject="$PROJECT_ROOT/nix/locks/$release_name/$parent/pyproject.toml"
 
-    # Verify Dockerfile declares ARG EXTRA_APT_PACKAGES
-    if grep -q '^ARG EXTRA_APT_PACKAGES=' "$dockerfile"; then
-      echo "  PASS: [$service] Dockerfile declares ARG EXTRA_APT_PACKAGES"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$service] Dockerfile missing ARG EXTRA_APT_PACKAGES"
-      FAIL=$((FAIL + 1))
-    fi
+      if [ ! -f "$pyproject" ]; then
+        echo "  FAIL: [$release_name] $image: nix/locks/$release_name/$parent/pyproject.toml missing"
+        FAIL=$((FAIL + 1))
+        continue
+      fi
+      group=$(sed -n "/^${image} = \\[\$/,/^\\]\$/p" "$pyproject")
+      if [ -z "$group" ]; then
+        echo "  FAIL: [$release_name] $image: nix/locks/$release_name/$parent/pyproject.toml has no group '$image = ['; run make nix-lock"
+        FAIL=$((FAIL + 1))
+        continue
+      fi
+      while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        if grep -qxF "    \"$pkg\"," <<<"$group"; then
+          echo "  PASS: [$release_name] $image: the $parent lock's $image group names $pkg"
+          PASS=$((PASS + 1))
+        else
+          echo "  FAIL: [$release_name] $image: the $parent lock's $image group does not name $pkg; run make nix-lock"
+          FAIL=$((FAIL + 1))
+        fi
+      done < <(yq -r ".\"${image}\".pip_packages // [] | .[]" "$extra_packages")
+    done
   done
-
-  # Verify CI workflow reads extra-packages.yaml through the resolver the
-  # nova-compute build runs
-  if grep -q 'hack/ci-resolve-extra-packages.sh' "$workflow" &&
-     grep -q 'extra-packages.yaml' "$PROJECT_ROOT/hack/ci-resolve-extra-packages.sh"; then
-    echo "  PASS: CI workflow reads extra-packages.yaml through hack/ci-resolve-extra-packages.sh"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: CI workflow does not read extra-packages.yaml through hack/ci-resolve-extra-packages.sh"
-    FAIL=$((FAIL + 1))
-  fi
-}
-
-# --- Test 4: Dockerfile does not hardcode apt package names ---
-test_no_hardcoded_apt_packages() {
-  echo "Test: Dockerfiles do not hardcode apt package names"
-
-  local service
-  for service in $DERIVED_IMAGES; do
-    local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
-
-    if [ ! -f "$dockerfile" ]; then
-      echo "  FAIL: [$service] Dockerfile not found"
-      FAIL=$((FAIL + 1))
-      continue
-    fi
-
-    # Verify the apt-get install line uses the build arg rather than hardcoded package names
-    # (release-independent — only needs to run once)
-    if grep -q 'apt-get install.*\${EXTRA_APT_PACKAGES}' "$dockerfile"; then
-      echo "  PASS: [$service] Dockerfile apt-get install uses \${EXTRA_APT_PACKAGES}"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$service] Dockerfile apt-get install does not use \${EXTRA_APT_PACKAGES}"
-      FAIL=$((FAIL + 1))
-    fi
-  done
-
-  # Verify extra-packages.yaml exists for each release
-  local found_any=false
-  for extra_packages in "$PROJECT_ROOT"/releases/*/extra-packages.yaml; do
-    [ -f "$extra_packages" ] || continue
-    found_any=true
-    local release_name
-    release_name=$(basename "$(dirname "$extra_packages")")
-    local rel_path="${extra_packages#"$PROJECT_ROOT"/}"
-    echo "  PASS: [$release_name] $rel_path exists"
-    PASS=$((PASS + 1))
-  done
-
-  if [ "$found_any" = false ]; then
-    echo "  FAIL: no releases/*/extra-packages.yaml files found"
-    FAIL=$((FAIL + 1))
-  fi
 }
 
 # --- Test 5: test-excludes/*.txt files have valid stestr exclude-list format ---
@@ -583,8 +509,6 @@ echo ""
 test_extra_packages_valid_yaml_structure
 echo ""
 test_extra_packages_build_wiring
-echo ""
-test_no_hardcoded_apt_packages
 echo ""
 test_test_excludes_file_format
 echo ""

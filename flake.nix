@@ -36,7 +36,15 @@
 #                                    distroless-equivalent image of
 #                                    nix/lib/static-image.nix. Their passthru
 #                                    reaches the inner build: .ovn and
-#                                    .manager
+#                                    .manager. libvirt-image is
+#                                    images/libvirt/image.nix on the libvirt
+#                                    of nix/pkgs/libvirt.nix (.libvirt) and
+#                                    the QEMU of images/libvirt/qemu.nix
+#                                    (.qemu); nova-compute-<rel_>-image is
+#                                    images/nova-compute/image.nix for each
+#                                    nova lock, its venv with the lock's
+#                                    nova-compute group and its rootwrap.conf
+#                                    from nix/lib/rootwrap-conf.nix
 #   packages.<system>.<name>-<rel_>-test-run
 #                                    the unit tests of a service lock, a build
 #                                    that succeeds whenever the suite ran and
@@ -52,6 +60,13 @@
 #   checks.<system>.service-tests    nix/lib/service-tests.nix over a fixture
 #                                    suite with a failing test, and the check
 #                                    that fails on it
+#   checks.<system>.libvirt-pairing  fails evaluation unless the
+#                                    libvirt-python of every nova lock builds
+#                                    against the libvirt libvirt-image runs
+#   checks.<system>.libvirt-pairing-rejects-foreign
+#                                    fails evaluation unless the same
+#                                    comparison against nixpkgs' own libvirt
+#                                    throws
 #   devShells.<system>.image-tools   skopeo and vulnix for the
 #                                    build-nix-image composite action
 #
@@ -90,6 +105,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       nixpkgs-images,
       pyproject-nix,
@@ -133,6 +149,9 @@
       ) (subdirs ./nix/locks);
       # tempest has no unit tests.
       testedLocks = builtins.filter (lock: lock.name != "tempest") locks;
+      # The nova locks are the inventory of the compute image: a release that
+      # drops nova drops its nova-compute image.
+      novaLocks = builtins.filter (lock: lock.name == "nova") locks;
 
       # What the Python images of one system are built from, evaluated once
       # per system for packages and checks.
@@ -327,6 +346,21 @@
           ) locks
         )
         // lib.listToAttrs (
+          map (
+            lock:
+            lib.nameValuePair "nova-compute-${lib.removePrefix "nova-" lock.attr}-image" (
+              import ./images/nova-compute/image.nix {
+                inherit
+                  pkgs
+                  serviceImage
+                  cephBindings
+                  ;
+                env = envFor lock;
+              }
+            )
+          ) novaLocks
+        )
+        // lib.listToAttrs (
           map (lock: lib.nameValuePair "${lock.attr}-test-run" (testsFor lock).run) testedLocks
         )
       );
@@ -334,12 +368,57 @@
       checks = forImageSystems (
         system:
         let
-          inherit (imageLibs.${system}) pkgs testsFor serviceTests;
+          inherit (imageLibs.${system})
+            pkgs
+            envFor
+            testsFor
+            serviceTests
+            ;
+
+          # pairing <drvPath> — a check that builds when the libvirt-python
+          # of every nova lock builds against the libvirt <drvPath> names,
+          # and a throw otherwise.
+          pairing =
+            imageLibvirt:
+            let
+              bindingLibvirt =
+                lock:
+                let
+                  binding = (envFor lock).libvirtPython;
+                  found =
+                    if binding == null then
+                      [ ]
+                    else
+                      builtins.filter (d: (d.pname or "") == "libvirt") binding.buildInputs;
+                in
+                if found == [ ] then "no libvirt" else (builtins.head found).drvPath;
+              mismatched = builtins.filter (lock: bindingLibvirt lock != imageLibvirt) novaLocks;
+            in
+            if mismatched != [ ] then
+              throw "libvirt-pairing: libvirt-python of nova ${(builtins.head mismatched).release} builds against ${bindingLibvirt (builtins.head mismatched)}, the libvirt image runs ${imageLibvirt}"
+            else
+              pkgs.runCommand "libvirt-pairing" { } ''
+                touch "$out"
+              '';
         in
         lib.listToAttrs (
           map (lock: lib.nameValuePair "${lock.attr}-tests" (testsFor lock).check) testedLocks
         )
         // {
+          # The libvirt-python of each nova lock builds against the libvirt
+          # the libvirt image runs. A nixpkgs libvirt wired into either side
+          # fails evaluation, so nix flake check --no-build catches it.
+          libvirt-pairing = pairing self.packages.${system}.libvirt-image.libvirt.drvPath;
+
+          # The same comparison against nixpkgs' own libvirt has to throw, so
+          # libvirt-pairing compares something: at least one nova lock, and
+          # the libvirt its binding is built against.
+          libvirt-pairing-rejects-foreign =
+            assert !(builtins.tryEval (pairing pkgs.libvirt.drvPath)).success;
+            pkgs.runCommand "libvirt-pairing-rejects-foreign" { } ''
+              touch "$out"
+            '';
+
           nix-lint =
             pkgs.runCommand "nix-lint"
               {
