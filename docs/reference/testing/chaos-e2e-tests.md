@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 45 chaos test suites validate operator behavior during and after fault
+The 46 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -70,7 +70,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 45 test suites require the infrastructure stack to be deployed and healthy.
+All 46 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -459,6 +459,7 @@ with the new suites.
 | [memcached-network-partition](#memcached-network-partition) | — | `keystone-chaos-mc-part` | No-regression (NetworkChaos) | Ready and all five sub-conditions `True` on every read for 120 s under `AllInjected`, `Ready=True/AllReady` after the partition |
 | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon-chaos-dash` | Dashboard pod kill (no-regression) | `Ready=True/AllReady` with two replicas at baseline, one of the two pre-chaos dashboard pod UIDs gone, Deployment `horizon-chaos-dash` back at `readyReplicas: 2`, `Ready=True/AllReady` after the kill |
 | [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `nova-meta-chaos-agent` | Metadata agent pod kill (data path) | `BOOT-OK`, then `METADATA-OK` with the server's uuid from a network namespace on the node, the agent pod UID replaced and no metadata answer before the new agent container started (`METADATA-DOWN-OK`), the agent pod Ready again with the CR at `Ready=True/AllReady` and `numberReady: 1`, the metadata answering with the uuid within 180 s (`METADATA-RECOVERED-OK`), workload budget zero with a passing placement audit and db-sync comparison, no netns, OVS port, server, network or node label left |
+| [cert-manager-outage](#cert-manager-outage) | — | `keystone-chaos-cm` | Controller outage across a forced renewal | `HELD-OK`: Certificate `keystone-nip-io-tls` at its baseline `status.revision` with `Issuing=True`, and the leaf of its Secret and the leaf the listener serves unchanged for 120 s; `RENEWED-OK`: revision `R0 + 1` without `Issuing` within 300 s of the lift and the listener serving the new leaf within 120 s; `Ready=True/AllReady` throughout, workload budget zero |
 
 ---
 
@@ -3150,6 +3151,62 @@ network namespaces, and the logs of the three probe pods.
 
 ---
 
+### cert-manager-outage
+
+**File:** `tests/e2e-chaos/cert-manager-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds the cert-manager controller down
+while a renewal of `openstack/keystone-nip-io-tls` is requested. That Certificate
+backs listener `https` of Gateway `openstack-gw`. The request is what `cmctl renew`
+writes: an `Issuing=True` condition with reason `ManuallyTriggered`, added through
+the status subresource, since no runner carries `cmctl`. The suite pins that
+nothing renews without the controller, and that the controller finishes the
+renewal once it is back, up to the leaf the listener serves.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone behind the Gateway | `apply` + `assert` (5m) + `script` (1m) + `script` (6m) | `keystone-chaos-cm` (database `keystone_chaos_cm`, `spec.gateway` on `openstack-gw`) reaches `HTTPRouteReady=True` and `Ready=True/AllReady`; the selector of the `PodChaos` matches the one controller pod; `workload.sh start` through the listener |
+| 2 | Record the baseline | `script` (2m) | `status.revision`, and the SHA-256 of the leaf in Secret `keystone-nip-io-tls` and of the leaf the listener serves, read from the workload pod with SNI `keystone.127-0-0-1.nip.io`. The two leaves have to match. The three values go into ConfigMap `cert-manager-outage-state`, which the step cleanup deletes |
+| 3 | Hold the controller down, request the renewal | `script` (1m) + `apply` + `script` (5m) | `workload.sh mark fault-start`, `fail-cert-manager` (`mode: all`, `duration: "600s"`), `kubectl wait --for=condition=AllInjected`, the controller pod at `Ready=false`, then the `Issuing=True` condition |
+| 4 | Nothing renews | `script` (3m) | For 120 s, every 10 s: the revision unchanged, `Issuing=True`, both leaves at their baseline, the Keystone at `Ready=True` (`HELD-OK`) |
+| 5 | Lift the fault | `delete` + `script` (1m) | Removes `PodChaos/fail-cert-manager`, then `workload.sh mark fault-end` |
+| 6 | The controller renews | `script` (7m) + `assert` (5m) | Within 300 s the Certificate is `Ready=True` at revision `R0 + 1` with no `Issuing` condition and the Secret holds a new leaf; within 120 s of that the listener serves it (`RENEWED-OK`). The Keystone stays at `Ready=True/AllReady` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, and `probe-lib.sh`, the
+helpers the scripts source: the two leaf hashes and the baseline values, with the
+ClusterIP of the proxy from `lib/gateway.sh`.
+
+**Workload:** the `token` stream against `keystone-chaos-cm` through the listener,
+with `--keystone https://keystone.127-0-0-1.nip.io/v3`, `--resolve` to the
+ClusterIP of the proxy Service and `--insecure-tls` for the self-signed leaf.
+Started in step 1 and judged in step 7 against `failures=0 recovery=0s`. The suite
+runs in the `pod` matrix entry. cert-manager is on no request path, and the
+listener keeps serving the leaf it holds.
+
+**Catch blocks:** `../diagnostics.sh` with `--dep-ns=cert-manager` and
+`--dep-label=app.kubernetes.io/name=cert-manager`, the Certificate and its
+CertificateRequests as YAML with the controller log, and the workload dump. Steps
+3 to 5 delete the `PodChaos` first.
+
+**Design notes:**
+
+- Chaos Mesh sets `AllInjected` when it patches the pod spec, a few seconds before
+  the kubelet stops the running controller. The suite waits for the controller pod
+  at `Ready=false` before it writes the request, so a controller that still runs
+  cannot finish the renewal inside the held window.
+- cainjector and the webhook are Deployments of their own with other
+  `app.kubernetes.io/name` values. Admission keeps working, so the status patch is
+  accepted while the controller is down.
+- The renewal replaces the certificate of the shared listener. No other suite pins
+  that certificate: the Gateway suites read whatever leaf the listener serves.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -3451,6 +3508,11 @@ tests/e2e-chaos/
 │   ├── 02-podchaos.yaml              PodChaos targeting barbican-operator in barbican-system
 │   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── cert-manager-outage/              cert-manager controller outage across a forced renewal
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-cm behind openstack-gw
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on the cert-manager controller
+│   ├── chainsaw-test.yaml            Test: nothing renews while held, the new leaf served after
+│   └── probe-lib.sh                  Helpers the scripts source: proxy address, leaf hashes
 ├── cinder-broker-outage/             Message-bus partition under a Cinder
 │   ├── 00-rabbitmqcluster.yaml       The broker of this suite (cinder-chaos-rabbitmq)
 │   ├── 01-cinder-cr.yaml             Cinder CR cinder-broker-chaos

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding the cert-manager controller down.
+# pod-failure swaps the controller container for a pause image that its
+# runAsNonRoot context refuses to start, so the controller stays down until
+# the suite deletes this CR. duration bounds a run that dies before it does.
+# cainjector and the webhook carry other app.kubernetes.io/name values; the
+# component label keeps the selector on the controller as well.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fail-cert-manager
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - cert-manager
+    labelSelectors:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
