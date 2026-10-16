@@ -1,0 +1,9 @@
+{
+  "version": "v26.03.2",
+  "rev": "3facc3b5e99ba2c863ec5f47f37466397f735802",
+  "hash": "sha256-d5F2TxOg+smJzy66wFGA9gkYQinaQVkaJw0it/TBI1Y=",
+  "ovs": {
+    "rev": "bdb95cc1920d4ab66fe062a9470eeb33a51d33e2",
+    "hash": "sha256-3lbehoy3hbwuM4tXbtfQCXULFr1VQpjsSQ3fZzZcR4U="
+  }
+}
