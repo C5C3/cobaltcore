@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR under a VerticalPodAutoscaler for the stress chaos test:
+# keystone-chaos-vpa on the database keystone_chaos_vpa, one replica, with a
+# VPA in updateMode Off, so the recommender publishes a target the operator
+# never applies. The memory StressChaos of 03-stresschaos-memory.yaml fills
+# the keystone container to its limit; the suite then reads whether the
+# recommendation rose. A CEL rule keeps spec.autoscaling and
+# spec.deployment.verticalAutoscaling from being set together
+# (operators/keystone/api/v1alpha1/keystone_types.go), which is why the two
+# autoscalers get a Keystone each. The VPA overlay provides the CRD and the
+# recommender (WITH_VPA on the faults entry).
+#
+# The keystone container sets no memory, so it gets 16Mi plus 352Mi per
+# uWSGI process as request and limit (internal/common/types/resources.go),
+# 720Mi at the default two processes: a limit the stress can reach.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-vpa
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+    verticalAutoscaling:
+      updateMode: "Off"
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_vpa
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 68 chaos test suites validate operator behavior during and after fault
+The 69 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 68 test suites require the infrastructure stack to be deployed and healthy.
+All 69 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -541,6 +541,8 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [mariadb-io-fault](#mariadb-io-fault) | — | `keystone-chaos-io` | MariaDB data directory slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK`, then 120 s with MariaDB and the Keystone `Ready=True` and new writes acknowledged; `INJECTED-ENOSPC-OK` and MariaDB `Ready=True` within 5 minutes of the lift; `INJECTED-EIO-OK`; afterwards MariaDB `Ready=True` within 10 minutes, `mariadb-check` OK for every table (`CHECK-OK`), every project created with 201 present (`ACKED-OK`), the Keystone `Ready=True/AllReady`; no `mariadb-io-chaos` CR or claim left |
 | [glance-staging-io-fault](#glance-staging-io-fault) | — | `glance-chaos-stage` | Import staging area slow, full, then failing (IOChaos, fail-closed stage) | `INJECTED-LATENCY-OK` and an import reaching `active` (`LATENCY-IMPORT-ACTIVE`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with the stage refused, by a non-2xx status or a connection dropped before the status arrived, and the image `queued` (`ENOSPC-STAGE-REFUSED`, `EIO-STAGE-REFUSED`); after the lift `RECOVERED-OK`, no image `uploading` or `importing` (`NO-STUCK-IMPORT-OK`), no staged file of the suite's images; workload budget zero |
 | [openbao-io-fault](#openbao-io-fault) | — | `keystone-chaos-baoio` | OpenBao raft volume slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK` and ten of ten writes acknowledged (`LATENCY-WRITES-OK`); `INJECTED-ENOSPC-OK`; `INJECTED-EIO-OK`; `openbao-0` unsealed after each phase; afterwards `Sealed false`, `openbao-cluster-store` `Ready=True`, a forced sync of `keystone-admin` (`SYNC-OK`), the canary and every acknowledged write reading their values (`ACKED-OK`), no key left under `kv-v2/chaos/openbao-io`; workload budget zero |
+| [keystone-api-stress-autoscaling](#keystone-api-stress-autoscaling) | — | `keystone-chaos-hpa`, `keystone-chaos-vpa` | CPU pressure under an HPA, memory past the limit under a VPA (StressChaos, autoscaling) | `HPAReady=True`, `VPAReady=True` and a first VPA target; `INJECTED-CPU-OK` with at least 1000m reported, the HPA at two or more replicas with two Ready within 5 minutes (`SCALE-OUT-OK`) and back at one within 5 minutes of the lift (`SCALE-IN-OK`); `oom_kill` rising or an OOM restart within 120 s (`OOM-OK`); the VPA's memory target above the first within 10 minutes (`VPA-RECOMMENDATION-ROSE`); both Keystones `Ready=True/AllReady` |
+| [cinder-backup-memory-stress](#cinder-backup-memory-stress) | — | `cinder-backup-stress` | Memory pressure on cinder-backup during a backup (StressChaos, OOM path of #1003) | `BackupServiceReady=True` and `bkstress-vol` `available`; `INJECTED-MEM-OK` with `memory.current` within 128 MiB of `memory.max`; an OOM kill within 300 s of the backup's start (`OOM-OK`), never a backup that finished under the stress; `BackupServiceReady=True`, `bkstress-bk1` in `error` and `bkstress-vol` `available` within 5 minutes (`FAILCLOSED-OK`); `bkstress-bk2` `available` (`RECOVERED-OK`); workload budget zero |
 
 ---
 
@@ -4475,6 +4477,98 @@ writes and the OpenBao log, and dumps the workload.
   the fault.
 - The suite assumes the openbao chart mounts the data volume at `/openbao/data` as a
   mount root; the latency canary fails loudly otherwise.
+
+---
+
+### keystone-api-stress-autoscaling
+
+**File:** `tests/e2e-chaos/keystone-api-stress-autoscaling/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Two `StressChaos` objects, one after the other in one fault window,
+drive the two autoscalers a Keystone can run under. CPU workers in the `keystone`
+container of `keystone-chaos-hpa` make its HorizontalPodAutoscaler scale out and,
+after the lift, back in. Memory past the limit of the `keystone` container of
+`keystone-chaos-vpa` brings the OOM killer into its cgroup, and the suite reads
+whether the VerticalPodAutoscaler's recommendation rose.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Both Keystones | `apply` x2 + `assert` x2 + `script` (6m) | `keystone-chaos-hpa` (cp-autoscaling's block: one to three replicas at 150 % CPU, a 15 s scale-down window) at `Ready=True/AllReady` and `HPAReady=True`; `keystone-chaos-vpa` (one replica, `verticalAutoscaling.updateMode: "Off"`) at `Ready=True/AllReady` and `VPAReady=True`; within 5 minutes the VPA's memory target for `keystone`, recorded in ConfigMap `keystone-stress-state` |
+| 2 | Start the workload | `script` (6m) | `token` against the VPA Keystone, `http` against `GET /v3` of the HPA Keystone: the bcrypt password check of a token cycle alone would keep the HPA Keystone above one replica |
+| 3 | CPU | `script` (14m) | Within 2 minutes the HPA wants one replica and the Deployment reads `1/1`, with the completed Job pods deleted on every read; then `workload.sh mark fault-start`, applies `02-stresschaos-cpu.yaml`; within 90 s the metrics API reports at least 1000m for the container (`INJECTED-CPU-OK`, the canary); within 5 minutes the HPA wants two or more replicas and two are Ready (`SCALE-OUT-OK`); after the delete the Deployment is back at one replica within 5 minutes, with the completed Job pods deleted on every read (`SCALE-IN-OK`) |
+| 4 | Memory | `script` (15m) + `assert` x2 | The size is `memory.max` minus `memory.current` of the container plus 64 MiB; a container without the files fails with `FAIL: no cgroup v2 memory files in the keystone container`, one without a limit with `FAIL: the keystone container has no memory limit`. After `03-stresschaos-memory.yaml`, `oom_kill` in `memory.events` rises within 120 s, or the container restarts with `OOMKilled` (`OOM-OK`, the canary). 120 s later the object is deleted and `workload.sh mark fault-end` runs. Within 10 minutes the VPA's target exceeds the recorded one (`VPA-RECOMMENDATION-ROSE <before> <after>`); both Keystones `Ready=True/AllReady` |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-hpa-cr.yaml`, `01-keystone-vpa-cr.yaml`,
+`02-stresschaos-cpu.yaml` (`keystone-cpu-stress`, `cpu: {workers: 2, load: 100}`),
+`03-stresschaos-memory.yaml` (`keystone-memory-stress`,
+`memory: {workers: 1, size: "@SIZE@", oomScoreAdj: -1000}`); `probe-lib.sh`.
+
+**Workload:** the `token` and `http` streams, judged against
+`failures=100 recovery=120s`, an estimate. The suite runs in the `faults` matrix
+entry, which turns on `WITH_METRICS_SERVER` and `WITH_VPA`, the two add-ons of
+`e2e-autoscaling`; it does not run on the ControlPlane of that job.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos keystone-chaos-hpa`, prints the HPA, the VPA, the state
+ConfigMap and the pods' usage, and dumps the workload.
+
+**Design notes:**
+
+- The kernel restarts the container when the OOM killer takes its PID 1, which
+  starts a new cgroup with its counter at zero; the restart with `OOMKilled` counts
+  as the same evidence.
+- Whether the VPA raises its target after a stress that kills only uWSGI workers
+  is an assumption the step turns into a visible failure.
+
+---
+
+### cinder-backup-memory-stress
+
+**File:** `tests/e2e-chaos/cinder-backup-memory-stress/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `StressChaos` fills the `backup` container of `cinder-backup-stress`
+to 64 MiB below its 2Gi limit, so the buffers of the next backup take it past.
+#1003 records an OOM kill at that limit during one 1 GiB backup and the restart's
+`Resetting backup ... to error (was creating)`. The suite proves that the OOM path
+leaves no backup in `creating` and no volume in `backing-up`.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Cinder, workload, volume | `script` + `apply` x3 + `assert` + `script` (6m) + `script` (4m) | Vhost `cinder-backup-stress`, Cinder `cinder-backup-stress` (noauth) with CinderBackend `bkstress-nfs1` and CinderBackupBackend `bkstress-nfsbk` (NFS `/backups`) at `BackupServiceReady=True` and `Ready=True/AllReady`; `workload.sh start`; the 1 GiB volume `bkstress-vol` `available` |
+| 2 | Stress, then a backup | `script` (12m) | The size is `memory.max` minus `memory.current` of the container minus 64 MiB, with the two `FAIL` lines of a missing file and of no limit. `workload.sh mark fault-start`, applies `03-stresschaos-memory.yaml`; within 60 s `memory.current` reaches `memory.max` less 128 MiB (`INJECTED-MEM-OK`, the canary). A probe pod starts `bkstress-bk1` and prints every status change; within 300 s `oom_kill` rises or the container's `lastState` reads `OOMKilled` (`OOM-OK`). A backup that reaches `available` first fails with `FAIL: backup finished under the stress; the OOM path of #1003 was not reached`. Deletes the object, `workload.sh mark fault-end` |
+| 3 | Nothing stuck | `assert` + `script` (8m) | `BackupServiceReady=True`; `bkstress-bk1` reads `error` within 300 s and `bkstress-vol` `available` (`FAILCLOSED-OK`) |
+| 4 | Recovery | `script` (15m) | `bkstress-bk2` reaches `available` within 600 s (`RECOVERED-OK`); both backups and the volume are deleted |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`,
+`02-cinderbackupbackend-cr.yaml`, `03-stresschaos-memory.yaml`
+(`backup-memory-stress`, `containerNames: [backup]`,
+`memory: {workers: 1, size: "@SIZE@", oomScoreAdj: -1000}`).
+
+**Workload:** the `volume` stream against a zero budget. It never touches the
+backup service. The suite runs in the `network` matrix entry, beside the other
+cinder suites.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos cinder-backup-stress --cr-kind=cinder`, prints the
+current and previous log of the backup container and of the watching probe,
+dumps the cinder-operator log and the workload.
+
+**Design notes:**
+
+- The probes call the noauth Cinder with `lib/probe.py cinder`, the token
+  `admin:admin` the workload uses.
+- Fixing the memory footprint of cinder-backup is #1003's; this suite pins only
+  that its OOM path leaves no stuck state.
 
 ---
 

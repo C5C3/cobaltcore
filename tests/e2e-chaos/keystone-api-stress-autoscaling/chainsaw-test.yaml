@@ -1,0 +1,285 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: CPU pressure on a Keystone API under a
+# HorizontalPodAutoscaler, then memory pressure past the limit of one under a
+# VerticalPodAutoscaler.
+#
+# Fault: two StressChaos objects, one after the other in one fault window. 02
+# runs two CPU workers at full load in the keystone container of
+# keystone-chaos-hpa, whose HPA scales one to three replicas at 150 % of the
+# CPU request. 03 allocates memory in the keystone container of
+# keystone-chaos-vpa, whose VPA recommends in updateMode Off, past the
+# container's limit, with oomScoreAdj -1000 on the stressor.
+#
+# Claim, phase by phase:
+#   baseline  Both Keystones are Ready=True/AllReady, the HPA one reports
+#             HPAReady=True, the VPA one VPAReady=True, and within 5 minutes
+#             the VPA recommends a memory target for keystone, recorded in
+#             ConfigMap keystone-stress-state.
+#   CPU       Before the stress, the HPA wants one replica and the Deployment
+#             runs one within 2 minutes. metrics-server reports at least 1000m
+#             for the stressed container within 90 s (INJECTED-CPU-OK, the
+#             canary). The HPA wants at least two replicas and the Deployment
+#             has two Ready within 5 minutes (SCALE-OUT-OK). After the lift it
+#             is back at one replica within 5 minutes (SCALE-IN-OK).
+#   memory    The stress size is memory.max minus memory.current of the
+#             container plus 64 MiB. oom_kill in memory.events rises within
+#             120 s, or the container restarts after an OOM kill (OOM-OK, the
+#             canary). After 120 s the stress is lifted. Within 10 minutes the
+#             VPA's memory target for keystone exceeds the recorded one
+#             (VPA-RECOMMENDATION-ROSE <before> <after>), and both Keystones
+#             are Ready=True/AllReady.
+#
+# A cgroup without memory.max, or with no limit in it, fails the memory phase
+# with a line that says which.
+#
+# Blast radius: the objects select the API pods of the two Keystones of this
+# suite, the keystone container alone. Pods the HPA adds after the injection
+# carry no stressor.
+#
+# Leg: faults, with WITH_METRICS_SERVER and WITH_VPA, the two add-ons
+# e2e-autoscaling turns on. StressChaos needs no host module.
+#
+# Workload: the token stream of ../lib/workload.sh against keystone-chaos-vpa
+# and the http stream against GET /v3 of keystone-chaos-hpa. A token cycle
+# checks the admin password with bcrypt, which alone would keep the HPA
+# Keystone above one replica at 150 % of its 70m request; GET /v3 does not.
+# The CPU phase slows the http stream; each OOM kill costs the token requests
+# in flight on the uWSGI process it hits. The budget is an estimate of that
+# window: no run has measured it yet.
+# Chaos budget: failures=100 recovery=120s
+# Chaos budget measured: 2026-10-17, estimate, failures 50, recovery 90 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-api-stress-autoscaling
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 8m
+  steps:
+  # ── Step 1: Both Keystones, their autoscalers, a first recommendation ────
+  - try:
+    - apply:
+        file: 00-keystone-hpa-cr.yaml
+    - apply:
+        file: 01-keystone-vpa-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-hpa
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-vpa
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'VPAReady']):
+            - status: "True"
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          DEADLINE=$(($(date +%s) + 300))
+          until BEFORE="$(vpa_target)" && [ -n "$BEFORE" ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              kubectl get vpa -n "$NAMESPACE" -l "app.kubernetes.io/instance=${VPA_KS}" -o yaml
+              echo "FAIL: the VPA of ${VPA_KS} recommends no memory for keystone within 300 s"
+              exit 1
+            fi
+            sleep 10
+          done
+          kubectl create configmap "$STATE" -n "$NAMESPACE" --dry-run=client -o yaml \
+            --from-literal=vpa-target="$BEFORE" | kubectl apply -f -
+          echo "OK: the VPA recommends ${BEFORE} bytes for keystone"
+    catch: &stress-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no StressChaos of this suite behind, and the objects are
+    # printed before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite keystone-api-stress-autoscaling
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-hpa --dep-label=app.kubernetes.io/instance=keystone-chaos-vpa --dep-ns=openstack
+    - script:
+        timeout: 2m
+        content: |
+          kubectl get hpa,vpa -n openstack -o yaml 2>&1 | grep -A40 'keystone-chaos-' || true
+          kubectl get configmap keystone-stress-state -n openstack -o yaml 2>&1 || true
+          kubectl top pods -n openstack --containers 2>&1 | grep keystone-chaos- || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystone-api-stress-autoscaling
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap keystone-stress-state -n openstack --ignore-not-found
+  # ── Step 2: Start the workload ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start keystone-api-stress-autoscaling --
+          --streams token,http
+          --keystone http://keystone-chaos-vpa.openstack.svc:5000/v3
+          --http http://keystone-chaos-hpa.openstack.svc:5000/v3
+    catch: *stress-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystone-api-stress-autoscaling
+  # ── Step 3: CPU pressure scales the HPA Keystone out, and back in ────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 14m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          # SCALE-OUT-OK proves nothing unless the HPA Keystone runs one
+          # replica before the stress.
+          DEADLINE=$(($(date +%s) + 120))
+          while true; do
+            WANT="$(kubectl get hpa "$HPA_KS" -n "$NAMESPACE" -o jsonpath='{.status.desiredReplicas}')"
+            RUNS="$(kubectl get deployment "$HPA_KS" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}/{.status.readyReplicas}')"
+            if [ "$WANT" = 1 ] && [ "$RUNS" = 1/1 ]; then
+              break
+            fi
+            drop_job_pods
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: before the CPU stress the HPA wants ${WANT:-no} replicas and deployment ${HPA_KS} reads replicas/ready ${RUNS:-<none>}, want 1 and 1/1"
+              exit 1
+            fi
+            sleep 10
+          done
+          POD="$(api_pod "$HPA_KS")"
+          ../lib/workload.sh mark keystone-api-stress-autoscaling fault-start
+          fault_inject 02-stresschaos-cpu.yaml stresschaos/keystone-cpu-stress
+          DEADLINE=$(($(date +%s) + 90))
+          until CPU="$(cpu_millicores "$POD" keystone)" && [ "${CPU:-0}" -ge 1000 ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              canary_fail stresschaos/keystone-cpu-stress "the metrics API reports ${CPU:-no} millicores for keystone in ${POD} after 90 s"
+            fi
+            sleep 10
+          done
+          echo "the metrics API reports ${CPU}m for keystone in ${POD}"
+          echo INJECTED-CPU-OK
+
+          DEADLINE=$(($(date +%s) + 300))
+          while true; do
+            WANT="$(kubectl get hpa "$HPA_KS" -n "$NAMESPACE" -o jsonpath='{.status.desiredReplicas}')"
+            READY="$(kubectl get deployment "$HPA_KS" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')"
+            if [ "${WANT:-0}" -ge 2 ] && [ "${READY:-0}" -ge 2 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: the HPA wants ${WANT:-0} replicas and ${READY:-0} are Ready 300 s into the CPU stress, want at least 2 of each"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "the HPA wants ${WANT} replicas, ${READY} are Ready"
+          echo SCALE-OUT-OK
+
+          fault_lift stresschaos/keystone-cpu-stress
+          DEADLINE=$(($(date +%s) + 300))
+          until [ "$(kubectl get deployment "$HPA_KS" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}/{.status.readyReplicas}')" = 1/1 ]; do
+            drop_job_pods
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: deployment ${HPA_KS} is not back at one replica 300 s after the lift"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo SCALE-IN-OK
+    catch: *stress-dump
+  # ── Step 4: Memory past the limit of the VPA Keystone ────────────────────
+  # The OOM counter is the canary: a stress that reports AllInjected but runs
+  # outside the container's cgroup never reaches its limit.
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          POD="$(api_pod "$VPA_KS")"
+          MAX="$(cgroup_memory "$POD" keystone memory.max keystone)" || { echo "$MAX"; exit 1; }
+          CURRENT="$(cgroup_memory "$POD" keystone memory.current keystone)" || { echo "$CURRENT"; exit 1; }
+          OOM="$(cgroup_memory "$POD" keystone oom_kill keystone)" || { echo "$OOM"; exit 1; }
+          RESTARTS="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[?(@.name=="keystone")].restartCount}')"
+          SIZE="$(((MAX - CURRENT) / 1048576 + 64 + 1))MiB"
+          echo "memory.max ${MAX}, memory.current ${CURRENT}, oom_kill ${OOM}: the stress allocates ${SIZE}"
+          fault_inject 03-stresschaos-memory.yaml stresschaos/keystone-memory-stress SIZE="$SIZE"
+          DEADLINE=$(($(date +%s) + 120))
+          until SEEN="$(oom_seen "$POD" keystone "$OOM" "$RESTARTS")"; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              canary_fail stresschaos/keystone-memory-stress "${SEEN} for 120 s"
+            fi
+            sleep 5
+          done
+          echo "$SEEN"
+          echo OOM-OK
+          sleep 120
+          fault_lift stresschaos/keystone-memory-stress
+          ../lib/workload.sh mark keystone-api-stress-autoscaling fault-end
+
+          BEFORE="$(state vpa-target)"
+          DEADLINE=$(($(date +%s) + 600))
+          until AFTER="$(vpa_target)" && [ "${AFTER:-0}" -gt "$BEFORE" ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: the VPA's memory target for keystone is ${AFTER:-<none>} 600 s after the stress, not above ${BEFORE}"
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "VPA-RECOMMENDATION-ROSE ${BEFORE} ${AFTER}"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-hpa
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-vpa
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *stress-dump
+  # ── Step 5: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystone-api-stress-autoscaling
+    catch: *stress-dump

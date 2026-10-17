@@ -36,6 +36,7 @@ FAULTS_SUITES=(
   keystone-operator-clock-skew
   mariadb-io-fault
   glance-staging-io-fault
+  keystone-api-stress-autoscaling
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.

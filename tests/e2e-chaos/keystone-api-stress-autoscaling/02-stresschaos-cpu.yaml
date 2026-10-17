@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# StressChaos keystone-cpu-stress: two CPU workers at full load in the
+# keystone container of the API pod of keystone-chaos-hpa. Chaos Mesh starts
+# the stressors in the container's cgroup, so metrics-server counts their CPU
+# as the container's and the HPA of 00-keystone-hpa-cr.yaml scales out on it.
+# Pods the HPA adds after the injection carry no stressor.
+#
+# duration is a safety net above the suite's CPU phase; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: keystone-cpu-stress
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: keystone-api-stress-autoscaling
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-chaos-hpa
+      app.kubernetes.io/component: api
+  containerNames:
+    - keystone
+  stressors:
+    cpu:
+      workers: 2
+      load: 100
+  duration: "600s"
