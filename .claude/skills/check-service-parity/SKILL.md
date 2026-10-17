@@ -81,10 +81,10 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   an excludes file named after no source-refs key, is
   `verify_release_config.sh`'s Test 7.
 - **P2** — operator module: `operators/<svc>/go.mod`, the `go.work`
-  use entry, the Makefile `OPERATORS ?=` default, and the
-  `operators/Dockerfile` module-manifest COPY line. A miss here means
-  `make lint`/`make test` never visit the module, or the operator
-  image build fails at the COPY step.
+  use entry, the Makefile `OPERATORS ?=` default, and the vendor hash
+  in `operators/<svc>/vendor.json`. A miss here means
+  `make lint`/`make test` never visit the module, or `make nix-lock`
+  was not run and the flake cannot build the operator image.
 - **P3** — helm chart: `crds/` copy, generated `values.schema.json`,
   and the helm-unittest suite set at parity with the keystone chart.
   A missing suite is an untested template that `helm-validate` renders

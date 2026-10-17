@@ -155,9 +155,9 @@ the suggested fix. End with a per-dependency verdict.
    uses a different toolchain than the workspace.
 5. **Workspace member missing or stale.** A new `operators/<new>/` was
    added without a `use` entry (W2), or a deleted module is still listed
-   (W1). A new operator also needs the `operators/Dockerfile` COPY lines
-   and the Makefile `OPERATORS` default; [[check-service-parity]] P2
-   checks those.
+   (W1). A new operator also needs `operators/<new>/vendor.json` from
+   `make nix-lock` and the Makefile `OPERATORS` default;
+   [[check-service-parity]] P2 checks those.
 
 ## Notes
 
