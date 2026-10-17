@@ -7,17 +7,19 @@
 # the release inputs into pyproject.toml and sources.json, writes the
 # nova-compute group into the nova lock and refuses a release without its
 # block, keeps the previous lock when a step fails, writes the noVNC hash and
-# the four image pins,
-# deletes the locks nothing pins, reports stale locks and pins, resolves for
+# the four image pins and the operator vendor hashes,
+# deletes the locks nothing pins, reports stale locks and pins, reports stale
+# operator vendor hashes without running nix, resolves for
 # the interpreter flake.nix builds the images with, and that the committed
 # locks under nix/locks/ are the set the release files pin, the committed nova
 # locks carry the nova-compute group, and the committed image pins carry
 # commits and hashes.
 #
-# The generator checks the release directory first and the six tools next,
-# so those failures need no tool at all. The other runs use a throwaway git
-# repository with fixture release files for three services, the image pins,
-# a local OVN repository whose tree has an 'ovs' gitlink, and stub commands
+# The generator checks the release directory first and the tools of the mode
+# next, so those failures need no tool at all. The other runs use a throwaway
+# git repository with fixture release files for three services, the image
+# pins, two fixture operators, a local OVN repository whose tree has an 'ovs'
+# gitlink, and stub commands
 # on PATH: nix answers each prefetch with a fixture upstream tree, fails each
 # build with the vendor hash it "got" and logs its arguments, uv logs whether
 # a uv.lock was there when it ran and writes a placeholder uv.lock. They need
@@ -52,6 +54,41 @@ HVO_PIN=images/openstack-hypervisor-operator/source.json
 KNA_PIN=images/kvm-node-agent/source.json
 PROXY_PIN=images/keystone-federation-proxy/source.json
 
+# recipe_hash <root> <path...> prints the sha256 the generator records as an
+# operator's inputsHash: each path on a line of its own followed by the file,
+# in the order given.
+recipe_hash() {
+  local root="$1" path sum
+  shift
+  sum=$(cd "$root" && for path in "$@"; do
+    printf '%s\n' "$path"
+    cat "$path"
+  done | if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi)
+  echo "${sum%% *}"
+}
+
+# operator_paths <root> <op> prints, sorted, the go.mod and go.sum of
+# internal/common, of the operator and of every sibling its go.mod replaces,
+# read with a sed backreference rather than the generator's parser.
+operator_paths() {
+  local root="$1" op="$2" sib
+  {
+    echo internal/common/go.mod
+    echo internal/common/go.sum
+    for sib in "$op" $(sed -n 's#^replace github\.com/c5c3/cobaltcore/operators/\([a-z0-9]*\) => \.\./\1$#\1#p' \
+      "$root/operators/$op/go.mod"); do
+      echo "operators/$sib/go.mod"
+      echo "operators/$sib/go.sum"
+    done
+  } | LC_ALL=C sort
+}
+
+# operator_hash <root> <op> prints the inputsHash of that operator's files.
+operator_hash() {
+  # shellcheck disable=SC2046 # the paths carry no whitespace
+  recipe_hash "$1" $(operator_paths "$1" "$2")
+}
+
 # can_run prints a SKIP line and returns 1 unless yq, jq, python3 and git are
 # installed and the bash is 4 or later; $1 is the number of skipped checks.
 can_run() {
@@ -80,7 +117,10 @@ can_run() {
 # gitlink $OVS_REV, and stub nix and uv commands in stubs/. The OVN pin names
 # that repository's commit and has no ovs object yet; the hvo pin's hash is
 # the one the stub prefetches, the kna pin's is not; the proxy pin has no
-# hash yet. The constraints spell
+# hash yet. The operators alpha and beta have a go.mod and a go.sum each:
+# alpha replaces internal/common, whose go.mod and go.sum are there too, and
+# beta also replaces alpha. alpha's vendor.json carries the inputsHash of its
+# files and the vendorHash sha256-kept; beta has none. The constraints spell
 # PyMySQL as PyPI does, the base pin of nix/base-requirements.txt as pymysql.
 # Each run logs to
 # stubs/nix.log and stubs/uv.log; NIX_STUB_FAIL makes every nix call exit 9,
@@ -94,7 +134,8 @@ make_tree() {
     "$tree/nix" "$tree/images/nova" "$tree/patches/placement/2026.1" \
     "$tree/images/ovn" "$tree/images/openstack-hypervisor-operator" "$tree/images/kvm-node-agent" \
     "$tree/images/keystone-federation-proxy" \
-    "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$ovn" "$tree/stubs"
+    "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$ovn" "$tree/stubs" \
+    "$tree/internal/common" "$tree/operators/alpha" "$tree/operators/beta"
   cp "$GENERATOR" "$tree/hack/"
   cp "$PROJECT_ROOT/scripts/apply-constraint-overrides.sh" "$tree/scripts/"
 
@@ -127,6 +168,20 @@ make_tree() {
   jq -n --arg rev "$PROXY_REV" '{version: "v2.4.20.3", rev: $rev}' >"$tree/$PROXY_PIN"
   printf '%s\n' '--- a/placement/api.py' '+++ b/placement/api.py' \
     >"$tree/patches/placement/2026.1/0001-fix.patch"
+
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/internal/common' '' 'go 1.27.2' \
+    >"$tree/internal/common/go.mod"
+  echo 'example.com/common v1.0.0 h1:common=' >"$tree/internal/common/go.sum"
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/alpha' '' 'go 1.27.2' '' \
+    'replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common' \
+    >"$tree/operators/alpha/go.mod"
+  echo 'example.com/alpha v1.0.0 h1:alpha=' >"$tree/operators/alpha/go.sum"
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/beta' '' 'go 1.27.2' '' \
+    'replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common' '' \
+    'replace github.com/c5c3/cobaltcore/operators/alpha => ../alpha' >"$tree/operators/beta/go.mod"
+  echo 'example.com/beta v1.0.0 h1:beta=' >"$tree/operators/beta/go.sum"
+  jq -n --arg inputsHash "$(operator_hash "$tree" alpha)" '{inputsHash: $inputsHash, vendorHash: "sha256-kept"}' \
+    >"$tree/operators/alpha/vendor.json"
 
   printf '%s\n' '[metadata]' 'name = openstack-placement' >"$tree/upstream/placement/setup.cfg"
   printf '%s\n' '[DEFAULT]' 'test_path=./placement/tests' >"$tree/upstream/placement/.stestr.conf"
@@ -190,9 +245,22 @@ matches() {
   if [[ "$1" =~ $2 ]]; then echo true; else echo false; fi
 }
 
-# pin_state prints a checksum of the four image pins of a tree.
+# pin_state prints a checksum of the four image pins and the operator vendor
+# hashes of a tree.
 pin_state() {
-  (cd "$1" && cat "$OVN_PIN" "$HVO_PIN" "$KNA_PIN" "$PROXY_PIN") | cksum
+  (cd "$1" && cat "$OVN_PIN" "$HVO_PIN" "$KNA_PIN" "$PROXY_PIN" operators/*/vendor.json) | cksum
+}
+
+# set_vendor_hash <tree> <op> <hash> rewrites the vendorHash of that
+# operator's vendor.json and keeps its inputsHash.
+set_vendor_hash() {
+  jq --arg v "$3" '.vendorHash = $v' "$1/operators/$2/vendor.json" >"$1/pin.json"
+  mv "$1/pin.json" "$1/operators/$2/vendor.json"
+}
+
+# builds_of <tree> <op> prints the logged nix builds of that operator.
+builds_of() {
+  grep ' build ' "$1/stubs/nix.log" 2>/dev/null | grep -F "name = \"$2\";" || true
 }
 
 # lock_state prints a checksum of the names and contents of a lock directory.
@@ -706,6 +774,195 @@ test_nix_stub_fail_leaves_every_pin_byte_identical() {
   rm -rf "$tree"
 }
 
+test_an_unchanged_operator_keeps_its_vendor_hash_without_a_build() {
+  echo "Test: an operator whose Go module files did not move keeps its vendorHash and builds nothing"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "alpha's pin is unchanged" \
+    "{\"inputsHash\":\"$(operator_hash "$tree" alpha)\",\"vendorHash\":\"sha256-kept\"}" \
+    "$(jq -c . "$tree/operators/alpha/vendor.json")"
+  assert_eq "no build ran for alpha" "" "$(builds_of "$tree" alpha)"
+  rm -rf "$tree"
+}
+
+test_an_operator_without_a_pin_gets_one() {
+  echo "Test: an operator without vendor.json gets the inputsHash of its files and the vendor hash nix printed"
+  can_run 6 || return
+
+  local tree pin output exit_code=0
+  tree=$(make_tree)
+  pin="$tree/operators/beta/vendor.json"
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the pin holds inputsHash and vendorHash, in that order" '["inputsHash","vendorHash"]' \
+    "$(jq -c keys_unsorted "$pin")"
+  assert_eq "inputsHash covers beta's files, alpha's and internal/common's" \
+    "$(recipe_hash "$tree" internal/common/go.mod internal/common/go.sum operators/alpha/go.mod \
+      operators/alpha/go.sum operators/beta/go.mod operators/beta/go.sum)" "$(jq -r .inputsHash "$pin")"
+  assert_eq "vendorHash is the one the build printed" "sha256-vendor" "$(jq -r .vendorHash "$pin")"
+  assert_contains "the build reads the goModules of nix/lib/operator-image.nix for beta" \
+    "$(builds_of "$tree" beta)" "import ./nix/lib/operator-image.nix"
+  assert_contains "the write is reported" "$output" "nix-lock.sh: wrote operators/beta/vendor.json"
+  rm -rf "$tree"
+}
+
+test_a_moved_go_sum_recomputes_the_operator_and_its_dependants() {
+  echo "Test: a moved go.sum recomputes the operator and every operator that replaces it, and no other"
+  can_run 13 || return
+
+  local tree op
+  tree=$(make_tree)
+  run_generator "$tree" --all >/dev/null 2>&1
+
+  for op in alpha beta; do set_vendor_hash "$tree" "$op" sha256-kept; done
+  : >"$tree/stubs/nix.log"
+  echo 'example.com/alpha v1.1.0 h1:alpha2=' >>"$tree/operators/alpha/go.sum"
+  run_generator "$tree" --operators >/dev/null 2>&1
+  for op in alpha beta; do
+    assert_eq "alpha's go.sum moves $op's inputsHash" "$(operator_hash "$tree" "$op")" \
+      "$(jq -r .inputsHash "$tree/operators/$op/vendor.json")"
+    assert_eq "alpha's go.sum recomputes $op's vendorHash" "sha256-vendor" \
+      "$(jq -r .vendorHash "$tree/operators/$op/vendor.json")"
+    assert_not_empty "alpha's go.sum builds $op" "$(builds_of "$tree" "$op")"
+  done
+
+  for op in alpha beta; do set_vendor_hash "$tree" "$op" sha256-kept; done
+  : >"$tree/stubs/nix.log"
+  echo 'example.com/common v1.1.0 h1:common2=' >>"$tree/internal/common/go.sum"
+  run_generator "$tree" --all >/dev/null 2>&1
+  for op in alpha beta; do
+    assert_eq "internal/common's go.sum recomputes $op's vendorHash" "sha256-vendor" \
+      "$(jq -r .vendorHash "$tree/operators/$op/vendor.json")"
+    assert_not_empty "internal/common's go.sum builds $op" "$(builds_of "$tree" "$op")"
+  done
+
+  for op in alpha beta; do set_vendor_hash "$tree" "$op" sha256-kept; done
+  : >"$tree/stubs/nix.log"
+  echo 'example.com/beta v1.1.0 h1:beta2=' >>"$tree/operators/beta/go.sum"
+  run_generator "$tree" --operators >/dev/null 2>&1
+  assert_eq "beta's go.sum recomputes beta" "sha256-vendor" \
+    "$(jq -r .vendorHash "$tree/operators/beta/vendor.json")"
+  assert_eq "beta's go.sum leaves alpha, which does not replace beta" "sha256-kept" \
+    "$(jq -r .vendorHash "$tree/operators/alpha/vendor.json")"
+  assert_eq "beta's go.sum builds nothing for alpha" "" "$(builds_of "$tree" alpha)"
+  rm -rf "$tree"
+}
+
+test_an_empty_operator_vendor_hash_is_recomputed() {
+  echo "Test: an operator pin with a current inputsHash and an empty vendorHash gets the vendor hash nix printed"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  set_vendor_hash "$tree" alpha ""
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_not_empty "a build ran for alpha" "$(builds_of "$tree" alpha)"
+  assert_eq "alpha's pin holds the printed vendor hash" "sha256-vendor" \
+    "$(jq -r .vendorHash "$tree/operators/alpha/vendor.json")"
+  rm -rf "$tree"
+}
+
+test_a_build_without_got_leaves_the_operator_pin() {
+  echo "Test: an operator vendor-hash build that names no hash fails and writes no pin"
+  can_run 4 || return
+
+  # --operators, since --all stops at the kna pin's build first.
+  local tree before output exit_code=0
+  tree=$(make_tree)
+  before=$(cksum <"$tree/operators/alpha/vendor.json")
+  output=$(NIX_STUB_NO_GOT=1 run_generator "$tree" --operators 2>&1) || exit_code=$?
+  assert_eq "the run exits 1" "1" "$exit_code"
+  assert_contains "the message names the operator" "$output" \
+    "nix-lock.sh: beta: nix build printed no vendor hash"
+  assert_eq "alpha's pin is byte-identical" "$before" "$(cksum <"$tree/operators/alpha/vendor.json")"
+  assert_eq "no pin is written for beta" "false" \
+    "$([ -e "$tree/operators/beta/vendor.json" ] && echo true || echo false)"
+  rm -rf "$tree"
+}
+
+test_a_missing_input_file_fails_before_nix_runs() {
+  echo "Test: an operator whose go.sum is missing fails before any nix call"
+  can_run 3 || return
+
+  # The operators run side by side, so beta, which replaces alpha, reports
+  # the same file in a line of its own, in either order.
+  local tree output exit_code=0
+  tree=$(make_tree)
+  rm "$tree/operators/alpha/go.sum"
+  output=$(run_generator "$tree" --operators 2>&1) || exit_code=$?
+  assert_eq "the run exits 1" "1" "$exit_code"
+  assert_eq "the messages name each operator and the file" \
+    $'nix-lock.sh: alpha: operators/alpha/go.sum not found\nnix-lock.sh: beta: operators/alpha/go.sum not found' \
+    "$(LC_ALL=C sort <<<"$output")"
+  assert_eq "nix was not called" "" "$(cat "$tree/stubs/nix.log" 2>/dev/null)"
+  rm -rf "$tree"
+}
+
+test_check_operators_reports_stale_and_missing_pins() {
+  echo "Test: --check-operators names a missing, a moved and an empty pin, writes nothing and runs no nix"
+  can_run 14 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --check-operators 2>&1) || exit_code=$?
+  assert_eq "a missing pin exits 1" "1" "$exit_code"
+  assert_contains "the missing pin is listed" "$output" "operators/beta/vendor.json"
+  assert_not_contains "a current pin is not listed" "$output" "operators/alpha/vendor.json"
+  assert_contains "the stale message names make nix-lock" "$output" \
+    "nix-lock.sh: the operator vendor hashes are stale; run make nix-lock and commit the result"
+  assert_eq "nix was not called" "" "$(cat "$tree/stubs/nix.log" 2>/dev/null)"
+  assert_eq "nothing was written" "" "$(git -C "$tree" status --porcelain)"
+
+  run_generator "$tree" --operators >/dev/null 2>&1
+  : >"$tree/stubs/nix.log"
+  exit_code=0
+  output=$(run_generator "$tree" --check-operators 2>&1) || exit_code=$?
+  assert_eq "current pins exit 0" "0" "$exit_code"
+  assert_eq "the message says so" "nix-lock.sh: the operator vendor hashes are current" "$output"
+
+  echo 'example.com/alpha v1.1.0 h1:alpha2=' >>"$tree/operators/alpha/go.sum"
+  exit_code=0
+  output=$(run_generator "$tree" --check-operators 2>&1) || exit_code=$?
+  assert_eq "a moved go.sum exits 1" "1" "$exit_code"
+  assert_contains "alpha's pin is listed" "$output" "operators/alpha/vendor.json"
+  assert_contains "beta's pin, which covers alpha's go.sum, is listed" "$output" "operators/beta/vendor.json"
+
+  git -C "$tree" checkout --quiet -- operators/alpha/go.sum
+  set_vendor_hash "$tree" alpha ""
+  exit_code=0
+  output=$(run_generator "$tree" --check-operators 2>&1) || exit_code=$?
+  assert_eq "an empty vendorHash exits 1" "1" "$exit_code"
+  assert_contains "the pin with the empty vendorHash is listed" "$output" "operators/alpha/vendor.json"
+  assert_eq "no --check-operators run called nix" "" "$(cat "$tree/stubs/nix.log")"
+  rm -rf "$tree"
+}
+
+test_check_lists_an_edited_operator_pin() {
+  echo "Test: --check lists an operator vendor.json that differs from the committed one"
+  can_run 3 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  run_generator "$tree" --all >/dev/null 2>&1
+  git -C "$tree" add --all
+  git -C "$tree" -c user.name=test -c user.email=test@localhost commit --quiet --message pins
+  set_vendor_hash "$tree" alpha sha256-kepT
+
+  output=$(run_generator "$tree" --check 2>&1) || exit_code=$?
+  assert_eq "an edited pin exits 1" "1" "$exit_code"
+  assert_contains "the pin is listed" "$output" " M operators/alpha/vendor.json"
+  assert_not_contains "an unedited pin is not listed" "$output" " M operators/beta/vendor.json"
+  rm -rf "$tree"
+}
+
 test_committed_pins_carry_revs_and_sri_hashes() {
   echo "Test: the committed image pins carry 40-character commits and SRI hashes"
   if ! command -v jq >/dev/null 2>&1; then
@@ -929,6 +1186,14 @@ test_check_reports_an_edited_proxy_pin_hash
 test_an_empty_vendor_hash_is_recomputed
 test_check_reports_an_ovs_rev_that_is_not_the_gitlink
 test_nix_stub_fail_leaves_every_pin_byte_identical
+test_an_unchanged_operator_keeps_its_vendor_hash_without_a_build
+test_an_operator_without_a_pin_gets_one
+test_a_moved_go_sum_recomputes_the_operator_and_its_dependants
+test_an_empty_operator_vendor_hash_is_recomputed
+test_a_build_without_got_leaves_the_operator_pin
+test_a_missing_input_file_fails_before_nix_runs
+test_check_operators_reports_stale_and_missing_pins
+test_check_lists_an_edited_operator_pin
 test_failures_leave_the_lock_untouched
 test_nova_lock_carries_the_nova_compute_group
 test_a_missing_derived_block_fails_and_leaves_the_lock

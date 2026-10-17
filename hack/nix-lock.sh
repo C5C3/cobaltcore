@@ -12,11 +12,17 @@
 #                                       the four image pins, and delete the
 #                                       locks nothing pins
 #   hack/nix-lock.sh --check            run --all, then exit 1 when the tree
-#                                       under nix/locks/, images/nova/novnc.json
-#                                       or an image pin changed
+#                                       under nix/locks/, images/nova/novnc.json,
+#                                       an image pin or an operator vendor hash
+#                                       changed
+#   hack/nix-lock.sh --operators        write the operator vendor hashes
+#   hack/nix-lock.sh --check-operators  exit 1 when an operator vendor hash is
+#                                       stale, without running nix
 #
-# `make nix-lock` and `make nix-lock-check` run the last two in the lock-tools
-# dev shell of flake.nix, whose uv wrote the committed locks.
+# `make nix-lock` and `make nix-lock-check` run --all and --check in the
+# lock-tools dev shell of flake.nix, whose uv wrote the committed locks.
+# `make nix-lock-check-operators` runs --check-operators, which needs only jq
+# and sha256sum or shasum.
 #
 # A lock is nix/locks/<release>/<name>/ with three files:
 #   sources.json    for a service: the ref releases/<release>/source-refs.yaml
@@ -61,6 +67,20 @@
 #                   with an empty vendorHash fails and prints the hash it
 #                   got. Empty vendorHash to recompute it after a nixpkgs
 #                   update changed the module fetch.
+# and, as --operators does, the vendor hash of every operator:
+#   operators/<op>/vendor.json
+#                   inputsHash, the sha256 over the path and content of the
+#                   go.mod and go.sum of internal/common, of the operator and
+#                   of every sibling operator its go.mod replaces, and
+#                   vendorHash, the hash of the goModules build of
+#                   nix/lib/operator-image.nix. The vendor hash is
+#                   recomputed only when inputsHash moved or vendorHash is
+#                   empty; empty it to recompute it after a nixpkgs update
+#                   changed the module fetch. --check-operators runs no nix:
+#                   it fails on a missing file, an empty vendorHash or an
+#                   inputsHash the module files no longer give, so a
+#                   Renovate bump of a go.sum fails it until the regenerated
+#                   file is committed.
 #
 # The tracked releases/ and overrides/ files are only read: the constraint
 # overrides are merged into a temporary copy by
@@ -70,19 +90,21 @@
 # refused: the lock is resolved from the upstream files.
 #
 # Requires uv, nix (with the nix-command and flakes features), yq (mikefarah),
-# jq, python3 and git on PATH. `nix flake prefetch github:...` calls the GitHub
+# jq, python3 and git on PATH; --operators requires jq and nix,
+# --check-operators jq alone, and both sha256sum or shasum.
+# `nix flake prefetch github:...` calls the GitHub
 # API; set `access-tokens = github.com=<token>` in nix.conf if unauthenticated
 # runs hit its rate limit.
 
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <name> <release> | --all | --check" >&2
+  echo "Usage: $0 <name> <release> | --all | --check | --operators | --check-operators" >&2
   exit 1
 }
 
 case "$#:${1:-}" in
-  1:--all | 1:--check) MODE="${1#--}" ;;
+  1:--all | 1:--check | 1:--operators | 1:--check-operators) MODE="${1#--}" ;;
   2:-*) usage ;;
   2:*) MODE=one ;;
   *) usage ;;
@@ -104,8 +126,13 @@ check_release() {
 
 [ "$MODE" != one ] || check_release "$2"
 
+case "$MODE" in
+  check-operators) tools=(jq) ;;
+  operators) tools=(jq nix) ;;
+  *) tools=(uv nix yq jq python3 git) ;;
+esac
 missing=()
-for tool in uv nix yq jq python3 git; do
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -125,8 +152,12 @@ PYTHON_MINOR=3.12
 # after the image in the key's lock, so the image and the key's own image
 # share one resolution. tests/container-images/verify_release_config.sh
 # (DERIVED_IMAGES, derived_parent) and flake.nix (novaLocks and the
-# nova-compute-<rel_>-image attribute) keep copies.
-declare -A DERIVED_IMAGES=([nova-compute]=nova)
+# nova-compute-<rel_>-image attribute) keep copies. An associative array
+# needs Bash 4, and --check-operators reads no lock, so it skips the array
+# and runs under the Bash 3.2 of macOS.
+if [ "$MODE" != check-operators ]; then
+  declare -A DERIVED_IMAGES=([nova-compute]=nova)
+fi
 
 # PEP 503 normalisation, for comparing a requirement name with a constraint.
 normalize() {
@@ -495,12 +526,32 @@ lock_ovn() {
   echo "nix-lock.sh: wrote ${pin}"
 }
 
+# vendor_hash_of <label> <expr> prints the vendor hash of a Go module fetch:
+# <expr> is the goModules derivation of a build with an empty vendorHash, and
+# pkgs in it is the nixpkgs-images package set. The fixed-output build fails
+# on the empty hash and names the one it got; a build that names none exits 1
+# with its log and <label> in the message.
+vendor_hash_of() {
+  local line
+  "${NIX[@]}" build --impure --no-link --expr "let pkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs-images.legacyPackages.\${builtins.currentSystem}; in $2" \
+    2>"${TMP}/build.err" || true
+  while IFS= read -r line; do
+    if [[ "$line" =~ got:[[:space:]]*([^[:space:]]+) ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return
+    fi
+  done <"${TMP}/build.err"
+  cat "${TMP}/build.err" >&2
+  echo "nix-lock.sh: $1: nix build printed no vendor hash" >&2
+  exit 1
+}
+
 # lock_go_source <name> <owner/repo> writes images/<name>/source.json in the
 # key order rev, hash, vendorHash: the NAR hash of the commit it names and the
 # vendor hash of its Go modules, built only when the NAR hash moved or
 # vendorHash is empty. Every failure exits before the pin is written.
 lock_go_source() {
-  local name="$1" pin="images/$1/source.json" rev hash vendor_hash new_hash line
+  local name="$1" pin="images/$1/source.json" rev hash vendor_hash new_hash
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
   rev=$(jq -r '.rev' "$pin")
@@ -510,24 +561,9 @@ lock_go_source() {
   new_hash=$(prefetch "github:$2/${rev}" | jq -r '.hash')
 
   if [ "$new_hash" != "$hash" ] || [ -z "$vendor_hash" ]; then
-    vendor_hash=""
     jq -n --arg rev "$rev" --arg hash "$new_hash" '{rev: $rev, hash: $hash, vendorHash: ""}' \
       >"${TMP}/source.json"
-    # The fixed-output build of the modules fails on the empty hash and
-    # names the one it got.
-    "${NIX[@]}" build --impure --no-link --expr "let pkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs-images.legacyPackages.\${builtins.currentSystem}; in (import ./images/${name}/manager.nix { inherit pkgs; pin = builtins.fromJSON (builtins.readFile \"${TMP}/source.json\"); }).goModules" \
-      2>"${TMP}/build.err" || true
-    while IFS= read -r line; do
-      if [[ "$line" =~ got:[[:space:]]*([^[:space:]]+) ]]; then
-        vendor_hash="${BASH_REMATCH[1]}"
-        break
-      fi
-    done <"${TMP}/build.err"
-    if [ -z "$vendor_hash" ]; then
-      cat "${TMP}/build.err" >&2
-      echo "nix-lock.sh: ${name}: nix build printed no vendor hash" >&2
-      exit 1
-    fi
+    vendor_hash=$(vendor_hash_of "$name" "(import ./images/${name}/manager.nix { inherit pkgs; pin = builtins.fromJSON (builtins.readFile \"${TMP}/source.json\"); }).goModules")
   fi
 
   jq -n --arg rev "$rev" --arg hash "$new_hash" --arg vendorHash "$vendor_hash" \
@@ -536,8 +572,122 @@ lock_go_source() {
   echo "nix-lock.sh: wrote ${pin}"
 }
 
-# lock_all writes every lock the release files pin and deletes every
-# directory under nix/locks/ they do not name.
+# The replace line of a sibling operator, the rule nix/lib/operator-image.nix
+# applies: both captures name the same operator.
+SIBLING_REPLACE='^replace github\.com/c5c3/cobaltcore/operators/([a-z0-9]+) => \.\./([a-z0-9]+)$'
+
+# operator_inputs <op> prints, LC_ALL=C sorted, the Go module files the
+# vendor hash of operators/<op> derives from: the go.mod and go.sum of
+# internal/common, of the operator and of every sibling operator its go.mod
+# replaces. A missing file exits 1.
+operator_inputs() {
+  local op="$1" line path
+  local -a paths=(internal/common/go.mod internal/common/go.sum "operators/$op/go.mod" "operators/$op/go.sum")
+  while IFS= read -r line; do
+    if [[ "$line" =~ $SIBLING_REPLACE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+      paths+=("operators/${BASH_REMATCH[1]}/go.mod" "operators/${BASH_REMATCH[1]}/go.sum")
+    fi
+  done <"operators/$op/go.mod"
+  for path in "${paths[@]}"; do
+    if [ ! -f "$path" ]; then
+      echo "nix-lock.sh: $op: $path not found" >&2
+      exit 1
+    fi
+  done
+  printf '%s\n' "${paths[@]}" | LC_ALL=C sort
+}
+
+# operator_inputs_hash <op> prints, as 64 hex characters, the sha256 over the
+# operator_inputs files, each written as its path on a line of its own
+# followed by its content. The path line makes a rename count.
+operator_inputs_hash() {
+  local inputs path sum
+  local -a sha
+  inputs=$(operator_inputs "$1") || exit 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha=(sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    sha=(shasum -a 256)
+  else
+    echo "nix-lock.sh: neither sha256sum nor shasum on PATH" >&2
+    exit 1
+  fi
+  sum=$(while IFS= read -r path; do
+    printf '%s\n' "$path"
+    cat "$path"
+  done <<<"$inputs" | "${sha[@]}")
+  echo "${sum%% *}"
+}
+
+# lock_operator <op> writes operators/<op>/vendor.json in the key order
+# inputsHash, vendorHash, building the module fetch for the vendor hash only
+# when inputsHash moved or vendorHash is empty. Every failure exits before
+# the pin is written.
+lock_operator() {
+  local op="$1" pin="operators/$1/vendor.json" inputs_hash old_hash="" vendor_hash=""
+  inputs_hash=$(operator_inputs_hash "$op") || exit 1
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  if [ -f "$pin" ]; then
+    old_hash=$(jq -r '.inputsHash // empty' "$pin")
+    vendor_hash=$(jq -r '.vendorHash // empty' "$pin")
+  fi
+
+  if [ "$inputs_hash" != "$old_hash" ] || [ -z "$vendor_hash" ]; then
+    vendor_hash=$(vendor_hash_of "$op" "(import ./nix/lib/operator-image.nix { inherit pkgs; staticImage = import ./nix/lib/static-image.nix { inherit pkgs; }; root = ./.; } { name = \"${op}\"; pin = { vendorHash = \"\"; }; }).manager.goModules")
+  fi
+
+  jq -n --arg inputsHash "$inputs_hash" --arg vendorHash "$vendor_hash" \
+    '{inputsHash: $inputsHash, vendorHash: $vendorHash}' >"${TMP}/vendor.json"
+  cat "${TMP}/vendor.json" >"$pin"
+  echo "nix-lock.sh: wrote ${pin}"
+}
+
+# lock_operators writes the vendor hash of every operators/<op>/ with a go.mod.
+# The operators run side by side, since a bump of a module they share moves
+# every inputsHash and each module fetch is a download of its own. Each one
+# writes its pin or fails on its own, and the run exits 1 when one failed.
+lock_operators() {
+  local mod op pid status=0
+  local -a pids=()
+  for mod in operators/*/go.mod; do
+    op="${mod#operators/}"
+    (lock_operator "${op%/go.mod}") &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+  done
+  [ "$status" -eq 0 ] || exit 1
+}
+
+# check_operators lists every operators/<op>/vendor.json that is missing,
+# carries an inputsHash other than the one of the operator's Go module files,
+# or an empty vendorHash, and exits 1 when it listed one. It runs no nix.
+check_operators() {
+  local mod op pin inputs_hash
+  local -a stale_pins=()
+  for mod in operators/*/go.mod; do
+    op="${mod#operators/}"
+    op="${op%/go.mod}"
+    pin="operators/$op/vendor.json"
+    inputs_hash=$(operator_inputs_hash "$op") || exit 1
+    if [ ! -f "$pin" ] || [ "$(jq -r '.inputsHash // empty' "$pin")" != "$inputs_hash" ] ||
+      [ -z "$(jq -r '.vendorHash // empty' "$pin")" ]; then
+      stale_pins+=("$pin")
+    fi
+  done
+  if [ "${#stale_pins[@]}" -gt 0 ]; then
+    printf '%s\n' "${stale_pins[@]}"
+    echo "nix-lock.sh: the operator vendor hashes are stale; run make nix-lock and commit the result" >&2
+    exit 1
+  fi
+  echo "nix-lock.sh: the operator vendor hashes are current"
+}
+
+# lock_all writes every lock the release files pin and the operator vendor
+# hashes, and deletes every directory under nix/locks/ the release files do
+# not name.
 lock_all() {
   local refs release name dir
   local -A wanted=()
@@ -557,6 +707,7 @@ lock_all() {
   (lock_go_source openstack-hypervisor-operator cobaltcore-dev/openstack-hypervisor-operator)
   (lock_go_source kvm-node-agent cobaltcore-dev/kvm-node-agent)
   (lock_tag_pin images/keystone-federation-proxy/source.json OpenIDC/mod_auth_openidc)
+  lock_operators
 
   shopt -s nullglob
   for dir in nix/locks/*/ nix/locks/*/*/; do
@@ -576,9 +727,16 @@ case "$MODE" in
   all)
     lock_all
     ;;
+  operators)
+    lock_operators
+    ;;
+  check-operators)
+    check_operators
+    ;;
   check)
     lock_all
-    stale=$(git status --porcelain -- nix/locks images/nova/novnc.json 'images/*/source.json')
+    stale=$(git status --porcelain -- nix/locks images/nova/novnc.json 'images/*/source.json' \
+      'operators/*/vendor.json')
     if [ -n "$stale" ]; then
       echo "$stale" >&2
       echo "nix-lock.sh: the locks are stale; run make nix-lock and commit the result" >&2
