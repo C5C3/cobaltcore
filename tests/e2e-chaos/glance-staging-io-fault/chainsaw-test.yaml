@@ -13,8 +13,10 @@
 # (operators/glance/internal/controller/reconcile_config.go); a glance-direct
 # import stages its data there before Glance copies it into the store.
 #
-# Claim, phase by phase (import-probe.py, one probe pod per phase; each
-# phase's canary is a dd into the staging directory through kubectl exec):
+# Each phase's canary is a dd into the staging directory through kubectl
+# exec, and import-probe.py runs in one probe pod per phase.
+#
+# Claim, phase by phase:
 #   latency    The dd takes at least 1 s (INJECTED-LATENCY-OK), and an image
 #              staged and imported with glance-direct reaches active
 #              (LATENCY-IMPORT-ACTIVE).
