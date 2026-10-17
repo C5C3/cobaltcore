@@ -69,7 +69,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
-| `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
+| `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, `e2e-operator-upgrade`; a push publishes every operator image |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**`, and `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova) | that operator's `e2e-operator` leg |
@@ -722,11 +722,12 @@ every workspace member's `go.mod`/`go.sum` is tidy. This is a gate job — it bl
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `make verify-go-tidy` | Fails if any module's `go.mod`/`go.sum` differs from what `go mod tidy` would write |
-| 4 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
-| 5 | `make manifests && make generate` | Regenerates CRD, webhook and RBAC (`config/rbac/role.yaml`) manifests and deepcopy functions |
-| 6 | `make verify-crd-sync` | Verifies Helm chart CRD copies match controller-gen output |
-| 7 | `make verify-helm-rbac` | Verifies each chart's `templates/_rbac-rules.tpl` matches the regenerated `config/rbac/role.yaml` |
-| 8 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
+| 4 | `make nix-lock-check-operators` | Fails, without Nix, if an `operators/<op>/vendor.json` is missing or no longer matches the `go.mod` and `go.sum` files it derives from ([Operator images](./nix-image-build.md#operator-images)) |
+| 5 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
+| 6 | `make manifests && make generate` | Regenerates CRD, webhook and RBAC (`config/rbac/role.yaml`) manifests and deepcopy functions |
+| 7 | `make verify-crd-sync` | Verifies Helm chart CRD copies match controller-gen output |
+| 8 | `make verify-helm-rbac` | Verifies each chart's `templates/_rbac-rules.tpl` matches the regenerated `config/rbac/role.yaml` |
+| 9 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
 
 When the diff check fails, the job produces a GitHub Actions `::error::` annotation with
 instructions to run `make manifests && make generate` locally and commit the result.
@@ -863,14 +864,15 @@ guard.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads, and with `persist-credentials: false`, so no token lies in `/github/runner_temp` for the build users of step 5 to read |
-| 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
+| 2 | `docker/setup-buildx-action@v4` | Provides `docker buildx imagetools inspect`, which the resolver of step 4 reads digests and revision annotations with; the job runs no BuildKit build |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
 | 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true and `keystone-federation-proxy-image` when `BUILD_PROXY` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy) |
-| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>`, then the tar is removed |
-| 7 | Tag federation proxy image | Only when `BUILD_PROXY` is true. Tags `<IMAGE_PREFIX>/keystone-federation-proxy:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, the tag the keystone federation suites and step 9 address |
-| 8 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
-| 9 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`; `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true, `keystone-federation-proxy-image` when `BUILD_PROXY` is true and `<op>-operator-image` for each name in `BUILD_OPERATORS` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy, `<op>-operator-latest.tar` for an operator) |
+| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>` (`<IMAGE_PREFIX>/<op>-operator:latest` for an operator), then the tar is removed |
+| 7 | Tag federation proxy image | Only when `BUILD_PROXY` is true. Tags `<IMAGE_PREFIX>/keystone-federation-proxy:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, the tag the keystone federation suites and step 10 address |
+| 8 | Tag operator images | Tags `<IMAGE_PREFIX>/<op>-operator:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`, the tag the suites and step 10 address |
+| 9 | Verify operator images | Runs `tests/container-images/verify_operator_image.sh` on `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`: the layout of `nix/lib/static-image.nix`, `/usr/bin/manager` as `65532:65532`, and the four static labels alone |
+| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`: the operator images under `<op>-operator:dev`, `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
@@ -887,14 +889,15 @@ A source that has never been published, the state of a new operator before its f
 merge, is built instead of failing the run.
 
 An operator image is reused only when every commit in the checkout that touches the
-operator's sources is in the history of the commit its
-`org.opencontainers.image.revision` label names. Those sources are the paths of the
+operator's sources is in the history of the commit its index annotation
+`org.opencontainers.image.revision`, written by `merge-operator-images`, names. Those
+sources are the paths of the
 operator's own change filter plus `go_common`, the two filters
 `hack/ci-resolve-changes.sh` marks an operator changed by. When one `build-and-push`
 leg fails on `main`, `merge-operator-images` publishes nothing, and every
 `<op>-operator:latest` keeps its previous revision. The resolver builds such an image
-instead. It does the same for an image without a revision label and for a revision the
-checkout does not have, and a notice in the job log names the reason.
+instead. It does the same for an image without a revision annotation and for a revision
+the checkout does not have, and a notice in the job log names the reason.
 
 The OVN daemon image carries no OpenStack release and no `go.mod`; its key comes
 from the pin. The resolver builds it when `changed-ovn` is set or main has not
@@ -1988,7 +1991,7 @@ assembled by the subsequent `merge-operator-images` job.
 
 Publish-only-on-merge: the merged commit's PR was already green, so the E2E suite is
 not re-run on push. The job depends only on `changes` (for the operator matrix) and
-builds the image from its own cache scope, independent of `build-e2e-images`.
+builds the image from the flake, independent of `build-e2e-images`.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
@@ -1997,13 +2000,10 @@ builds the image from its own cache scope, independent of `build-e2e-images`.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `platform-pair` composite action | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
-| 3 | `docker/setup-buildx-action@v4` | Sets up Docker Buildx |
-| 4 | `registry-login` composite action | Authenticates to GHCR (`github.actor` / `GITHUB_TOKEN`) |
-| 5 | `docker/metadata-action@v6` | Generates OCI labels (two-layer annotation pattern) |
-| 6 | `docker/build-push-action@v7` | Builds single-platform image; `push-by-digest=true`; digest exported as artifact |
-| 7 | Export digest | Shell | Writes digest filename to `/tmp/digests/` |
-| 8 | Upload digest | `actions/upload-artifact@v7` | Artifact name: `digests-operator-<operator>-<platform-pair>`, retention: 1 day |
+| 2 | `platform-pair` composite action | Converts `linux/amd64` → `linux-amd64` for artifact names |
+| 3 | `registry-login` composite action | Authenticates to GHCR (`github.actor` / `GITHUB_TOKEN`); skopeo in step 5 reads the credentials `docker login` wrote |
+| 4 | `setup-nix` composite action | Installs Nix and reads the `cobaltcore` Cachix cache, pushing to it with `CACHIX_AUTH_TOKEN` |
+| 5 | `build-nix-image` composite action | Builds the flake attribute `<operator>-operator-image`, scans its store paths with vulnix (report artifact `vulnix-operator-<operator>-<platform-pair>`), pushes the stream by digest with skopeo as an OCI manifest (`manifest-format: oci`), so the index of `merge-operator-images` can carry an annotation, and exports the digest as the artifact `digests-operator-<operator>-<platform-pair>`, retention: 1 day |
 
 **Matrix strategy:**
 
@@ -2019,10 +2019,10 @@ strategy:
         runner: ubuntu-24.04-arm
 ```
 
-Build context is the repository root (required by `go.work`), with the shared Dockerfile
-at `operators/Dockerfile` and the operator selected through the `OPERATOR` build arg.
-GitHub Actions cache (`type=gha`) is scoped per platform
-(`<operator>-operator-linux-amd64` / `<operator>-operator-linux-arm64`).
+The image is `nix/lib/operator-image.nix` for the operator
+([Operator images](./nix-image-build.md#operator-images)). The Cachix cache of step 4
+takes the place of a layer cache: a build whose inputs the cache holds compiles nothing and
+spends its time in the vulnix scan. Timeout: 30 minutes.
 
 ### merge-operator-images
 
@@ -2037,9 +2037,9 @@ list, and pushes it with the final tags.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` + `registry-login` composite action | Authenticates to GHCR |
-| 3 | `docker/metadata-action@v6` | Generates final image tags |
+| 3 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
 | 4 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
-| 5 | Create and push manifest list | Shell | `docker buildx imagetools create` assembles per-platform digests under the final tags from step 3 |
+| 5 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 3 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 3; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
 
@@ -2227,20 +2227,22 @@ image set `hack/ci-resolve-e2e-images.sh` wrote.
 | `BUILD_OVN` | No | (empty) | `true` builds the ovn image, the flake attribute `ovn-image` |
 | `OVN_VERSION` | With `BUILD_OVN` | (empty) | The pinned OVN version, the tag `docker load` prints for the ovn image; `hack/ci-resolve-e2e-images.sh` writes it |
 | `BUILD_LIBVIRT` | No | (empty) | `true` builds the libvirt image, the flake attribute `libvirt-image` |
+| `BUILD_OPERATORS` | No | (empty) | One operator name per line; each builds the flake attribute `<op>-operator-image` |
 | `GITHUB_WORKSPACE` | Yes | - | The checkout the flake is evaluated in; set by the runner |
 
 The script writes the group `e2ebld` (gid 40000) and one build user per CPU (uids
 from 40001) to the container's account files (`NIX_E2E_ETC`, `/etc` by default), then
 builds the flake attributes `<name>-<rel_>-image` of every image (`<name>` the third
-field of a line that has one), `ovn-image` with `BUILD_OVN` and `libvirt-image` with
-`BUILD_LIBVIRT`, in one `nix build` with `--option sandbox false`,
+field of a line that has one), `ovn-image` with `BUILD_OVN`, `libvirt-image` with
+`BUILD_LIBVIRT` and `<op>-operator-image` for each name of `BUILD_OPERATORS`, in one
+`nix build` with `--option sandbox false`,
 `--option build-users-group e2ebld` and one job per CPU. The builders, which run the setup code of every sdist the locks build, run as
 those users: the runner mounts its Docker socket and the workspace into the container,
 and a build user can neither open the socket nor write the workspace. Their uids are not
 those of a host Nix daemon's build users. It then writes each image stream to
 `.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`;
-the ovn image is listed as `ovn <OVN_VERSION>`, the libvirt image as `libvirt latest`,
-the tag `docker load` prints for it. A line with four fields exits 1
+the ovn image is listed as `ovn <OVN_VERSION>`, the libvirt image as `libvirt latest`
+and an operator image as `<op>-operator latest`, the tag `docker load` prints for it. A line with four fields exits 1
 with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, a `BUILD_OVN` without
 `OVN_VERSION` with `ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is
 empty`, both before nix runs, and a missing attribute or a
@@ -2678,18 +2680,20 @@ Each component is tracked independently on the Codecov dashboard:
 
 The CI workflow depends on several Makefile targets:
 
-### docker-build
+### image
 
-Builds the operator Docker image from the shared `operators/Dockerfile`, selected per
-operator through the `OPERATOR` build arg, with the repository root as build context
-(required by `go.work`).
+Builds the operator image, the flake attribute `<operator>-operator-image`, with Nix
+and flakes ([Nix Image Build](./nix-image-build.md#build-and-load-locally)), loads it
+into Docker as `<operator>-operator:latest` and tags it `IMG`.
 
 ```
-make docker-build OPERATOR=keystone [IMG=custom:tag]
+make image OPERATOR=keystone [IMG=custom:tag]
 ```
 
 The `IMG` variable controls the image tag, defaulting to
-`ghcr.io/c5c3/<operator>-operator:latest`. The `OPERATOR` variable is required.
+`ghcr.io/c5c3/<operator>-operator:latest`. The `OPERATOR` variable is required. The
+CI workflow does not call the target: `build-e2e-images` and `build-and-push` build the
+flake attribute directly.
 
 ### helm-package
 
@@ -2762,14 +2766,15 @@ The CI workflow depends on the following artifacts:
 | `Makefile` (`test-operator` target) | `test` job (operator legs) | Runs unit tests for a single operator with coverage profile |
 | `Makefile` (`test-integration` target) | `test-integration` job (operator legs) | Runs envtest integration tests per operator with coverage profiles |
 | `Makefile` (`test-integration-common` target) | `test-integration` job (`common` leg) | Runs envtest integration tests for `internal/common` with coverage profile |
-| `Makefile` (`docker-build` target) | `build-e2e-images` job | Builds operator Docker images |
+| `Makefile` (`image` target) | none, the local build only | Builds and loads an operator image; `build-e2e-images` builds the flake attribute through `hack/ci-nix-build-e2e-images.sh` |
+| `Makefile` (`nix-lock-check-operators` target) | `verify-codegen` job | Checks the operator vendor hashes against the Go module files |
 | `Makefile` (`helm-package` target) | `helm-push` job | Packages operator Helm charts |
 | `.golangci.yml` | `lint` job | Provides linter configuration (enabled linters, exclusion rules, timeout) |
 | `go.work` | All Go-based jobs | Provides the Go version for `actions/setup-go@v7` |
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | every `e2e-*` job and the `tempest` job | Shared diagnostic dump |
-| `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built service, nova-compute, Tempest, ovn and libvirt images and writes their streams to `.nix-e2e/` |
+| `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built operator, service, nova-compute, Tempest, ovn, libvirt and federation proxy images and writes their streams to `.nix-e2e/` |
 | `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the e2e images are built from |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
