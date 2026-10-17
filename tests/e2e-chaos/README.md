@@ -112,6 +112,13 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   ClusterIP of the proxy of Gateway `openstack-gw`; the root token and `bao`
   calls into `openbao-0`, with the token on stdin; and the UID-gated wait for
   the pods of a Deployment a suite killed.
+- `lib/faults.sh` is the fault phase of the HTTPChaos, TimeChaos, IOChaos,
+  StressChaos and DNSChaos suites, sourced by their scripts. It renders an
+  object's `@NAME@` placeholders, applies it and waits for `AllInjected`,
+  lifts it and waits for the delete, runs the `dd`, resolver and cgroup
+  canaries, and starts and reads probe pods. `lib/probe.py` is the program
+  those probe pods run: HTTP checks with or without a fresh token, and the
+  Cinder volume and backup waits.
 - `unseal-openbao.sh` — OpenBao runs single-replica with Shamir sealing
   in kind; after a pod-kill the new pod starts **sealed** and stays 0/1
   forever. This helper re-unseals it (idempotent); production HA Raft
