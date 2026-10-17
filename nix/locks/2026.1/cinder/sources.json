@@ -6,6 +6,7 @@
   "patches": [
     "patches/cinder/2026.1/0001-nfs-run-qemu-img-info-as-the-service-user.patch",
     "patches/cinder/2026.1/0002-create-from-image-run-qemu-img-as-the-service-user.patch",
-    "patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch"
+    "patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch",
+    "patches/cinder/2026.1/0004-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch"
   ]
 }

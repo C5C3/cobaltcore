@@ -1,0 +1,211 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Fall back to the service registry when no backup service has reported
+
+Since the backup-host-selection series (acfc87e201 and its successors,
+Stein) the scheduler picks the host of a new backup from
+`HostManager.backup_service_states`
+(cinder/scheduler/host_manager.py, `_get_available_backup_service_host`),
+which only the capability report a backup service publishes over an RPC
+fanout fills: once from `BackupManager.init_host`, then every
+`backup_driver_stats_polling_interval` (60 s). Two cold-start orderings
+leave the scheduler without a usable entry until the next report:
+
+* The scheduler starts in the same second as the backup service. Its own
+  `request_service_capabilities` goes out before the backup service's RPC
+  server is bound, and the backup service's `init_host` report goes out
+  before the scheduler's RPC server is bound. Both casts are dropped.
+* The `init_host` report is sent while the backup driver still
+  initializes in its own thread, so it carries `backend_state: False`,
+  and `_list_backup_services` skips the entry.
+
+Either way `SchedulerManager.create_backup` answers every backup in that
+window with "Service not found for creating backup": the backup goes to
+`error` and the volume back to `available`, although the service is up
+and its heartbeat is in the registry. CobaltCore's e2e suite
+cinder-backup-nfs hit the window on CI run 39046784189, 21 s after the
+processes started, and a user who backs up a volume in the first minute
+after a cold start of the control plane hits it the same way. The
+scheduler offers no view of `backup_service_states`, so a client cannot
+wait for the report either.
+
+`_get_any_available_backup_service` now falls back to the service
+registry when no report names a ready service and no driver was asked
+for: `objects.ServiceList.get_all_by_topic` for the backup topic,
+filtered by availability zone and `Service.is_up`, keyed by cluster name
+or host like the reports. That is what `cinder.backup.api.API` reads for
+restore and delete, and what the scheduler read before the reports
+existed. A report, once received, keeps precedence, and a service whose
+driver never initializes stops sending heartbeats and leaves the registry
+after `service_down_time`. A driver constraint cannot be checked against
+the registry, so that path still raises ServiceNotFound.
+
+No upstream test pins the capability-only behaviour: the scheduler tests
+mock `get_backup_host`, and test_host_manager.py never calls the backup
+methods. The patch adds six tests to `HostManagerTestCase` in
+cinder/tests/unit/scheduler/test_host_manager.py: the fallback, its
+availability-zone and heartbeat filters, the cluster name, the not-ready
+report, the driver case and the empty registry. Three of them raise
+ServiceNotFound on the unpatched tree.
+
+tests/container-images/verify_cinder.sh asserts both halves against the
+built image with mocks: an empty report set resolves to the registered
+service, and a report wins without consulting the registry.
+
+Applies to cinder 29.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/scheduler/host_manager.py b/cinder/scheduler/host_manager.py
+index 7786c2e..95f418d 100644
+--- a/cinder/scheduler/host_manager.py
++++ b/cinder/scheduler/host_manager.py
+@@ -1022,6 +1022,9 @@ class HostManager(object):
+         """
+         services = [srv for srv in self._list_backup_services(
+             availability_zone, driver)]
++        if not services and driver is None:
++            services = self._list_registered_backup_services(
++                availability_zone)
+         random.shuffle(services)
+         return services[0] if services else None
+ 
+@@ -1060,6 +1063,36 @@ class HostManager(object):
+ 
+         return services
+ 
++    def _list_registered_backup_services(self, availability_zone) -> list:
++        """List the backup services the service registry holds as up.
++
++        A backup service reports its capabilities to the scheduler over an
++        RPC fanout: once from init_host, then every
++        backup_driver_stats_polling_interval seconds. A scheduler that
++        starts in the same second as the backup service misses the first
++        report, and a first report sent while the backup driver is still
++        initializing carries backend_state False. Either way the scheduler
++        holds no usable backup service until the next report, up to a
++        minute later, and answers every backup in between with
++        ServiceNotFound although the service is up.
++
++        The service registry is what restore and delete read to find a
++        backup service, and what the scheduler read before the capability
++        reports existed, so it is the fallback while no report names a
++        ready service. A service whose driver never initializes stops
++        sending heartbeats and drops out of the registry after
++        service_down_time.
++        """
++        ctxt = cinder_context.get_admin_context()
++        services = objects.ServiceList.get_all_by_topic(
++            ctxt, constants.BACKUP_TOPIC, disabled=False)
++        hosts = [srv.cluster_name or srv.host for srv in services
++                 if self._az_matched(srv, availability_zone) and srv.is_up]
++        if hosts:
++            LOG.info("No backup service has reported itself ready yet, "
++                     "falling back to the service registry: %s", hosts)
++        return hosts
++
+     def _az_matched(self,
+                     service: objects.Service,
+                     availability_zone: Optional[str]) -> bool:
+diff --git a/cinder/tests/unit/scheduler/test_host_manager.py b/cinder/tests/unit/scheduler/test_host_manager.py
+index 2b2b8b2..b487103 100644
+--- a/cinder/tests/unit/scheduler/test_host_manager.py
++++ b/cinder/tests/unit/scheduler/test_host_manager.py
+@@ -31,6 +31,7 @@ from cinder import objects
+ from cinder.scheduler import filters
+ from cinder.scheduler import host_manager
+ from cinder.tests.unit import fake_constants as fake
++from cinder.tests.unit import fake_service
+ from cinder.tests.unit.objects import test_service
+ from cinder.tests.unit.scheduler import helpers
+ from cinder.tests.unit import test
+@@ -1282,6 +1283,88 @@ class HostManagerTestCase(test.TestCase):
+                          self.host_manager._equal_after_convert(cap, value))
+ 
+ 
++    def _backup_service(self, host, **updates):
++        values = dict(host=host, binary='cinder-backup', topic='cinder-backup',
++                      availability_zone='zone1', cluster_name=None,
++                      updated_at=timeutils.utcnow())
++        values.update(updates)
++        return fake_service.fake_service_obj(context.get_admin_context(),
++                                             **values)
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_from_capability_report(self, mock_get_all):
++        self.host_manager.backup_service_states['host-a'] = {
++            'backend_state': True, 'driver_name': 'fake',
++            'availability_zone': 'zone1'}
++
++        host = self.host_manager._get_available_backup_service_host(
++            None, 'zone1')
++
++        self.assertEqual('host-a', host)
++        mock_get_all.assert_not_called()
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_falls_back_to_registry(self, mock_get_all):
++        self.host_manager.backup_service_states = {}
++        down = timeutils.utcnow() - timedelta(
++            seconds=cfg.CONF.service_down_time + 10)
++        mock_get_all.return_value = [
++            self._backup_service('host-a'),
++            self._backup_service('host-b', availability_zone='zone2'),
++            self._backup_service('host-c', updated_at=down),
++        ]
++
++        host = self.host_manager._get_available_backup_service_host(
++            None, 'zone1')
++
++        self.assertEqual('host-a', host)
++        mock_get_all.assert_called_once_with(mock.ANY, 'cinder-backup',
++                                             disabled=False)
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_fallback_returns_cluster_name(self, mock_get_all):
++        self.host_manager.backup_service_states = {}
++        mock_get_all.return_value = [
++            self._backup_service('host-a', cluster_name='cluster-a')]
++
++        host = self.host_manager._get_available_backup_service_host(
++            None, None)
++
++        self.assertEqual('cluster-a', host)
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_fallback_after_not_ready_report(self, mock_get_all):
++        self.host_manager.backup_service_states['host-a'] = {
++            'backend_state': False, 'driver_name': 'fake',
++            'availability_zone': 'zone1'}
++        mock_get_all.return_value = [self._backup_service('host-a')]
++
++        host = self.host_manager._get_available_backup_service_host(
++            None, 'zone1')
++
++        self.assertEqual('host-a', host)
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_no_fallback_for_driver(self, mock_get_all):
++        self.host_manager.backup_service_states = {}
++
++        self.assertRaises(
++            exception.ServiceNotFound,
++            self.host_manager._get_available_backup_service_host,
++            None, 'zone1', 'fake')
++        mock_get_all.assert_not_called()
++
++    @mock.patch('cinder.objects.ServiceList.get_all_by_topic')
++    def test_backup_host_fallback_empty_registry(self, mock_get_all):
++        self.host_manager.backup_service_states = {}
++        mock_get_all.return_value = []
++
++        self.assertRaises(
++            exception.ServiceNotFound,
++            self.host_manager._get_available_backup_service_host,
++            None, 'zone1')
++
++
+ class BackendStateTestCase(test.TestCase):
+     """Test case for BackendState class."""
+ 
