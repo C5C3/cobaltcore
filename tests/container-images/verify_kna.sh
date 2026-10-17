@@ -76,6 +76,17 @@ test_upstream_commit_label() {
   assert_eq "io.c5c3.upstream-commit equals the pinned commit" "$EXPECTED" "$label"
 }
 
+# --- Test 5: the version label is the tag ---
+test_version_label() {
+  echo "Test: org.opencontainers.image.version label is sha-$EXPECTED"
+  # nix/lib/static-image.nix sets the version label to the tag unless the
+  # caller passes another; the tag is sha-<commit>.
+  local label
+
+  label=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE")
+  assert_eq "org.opencontainers.image.version equals the sha- tag" "sha-$EXPECTED" "$label"
+}
+
 # --- Run all tests ---
 echo "=== kvm-node-agent container verification tests ==="
 echo "Image: $IMAGE"
@@ -87,6 +98,8 @@ echo ""
 test_user_and_entrypoint
 echo ""
 test_upstream_commit_label
+echo ""
+test_version_label
 echo ""
 test_static_image_layout
 echo ""

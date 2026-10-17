@@ -5,8 +5,8 @@
 # The image of a static Go binary, in place of the
 # gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 # base the Dockerfiles of these images ran on. images/<name>/image.nix calls
-# it with the manager its manager.nix builds; #1409 builds the operator
-# images on it.
+# it with the manager its manager.nix builds, and nix/lib/operator-image.nix
+# with the manager of each CobaltCore operator.
 #
 # The image carries what the distroless base gave a static binary: the
 # base's /etc/passwd and /etc/group (root with the home /root, nobody and
@@ -16,14 +16,19 @@
 # binary sits at /usr/bin/manager, a link to the store path of the build.
 # The configuration is that of the base, User, WorkingDir and Env, plus the
 # Entrypoint, without a Cmd. The labels are the licence and vendor labels of
-# nix/lib/image-defaults.nix plus title, description, version (the tag) and
-# io.c5c3.upstream-commit, the upstream commit the binary is built from.
+# nix/lib/image-defaults.nix plus title and description, and two optional
+# ones: org.opencontainers.image.version and io.c5c3.upstream-commit, the
+# upstream commit the binary is built from. The hvo and kna images pass an
+# upstream commit and keep the tag as their version; the operator images pass
+# neither, so they carry the four static labels alone.
 #
 # Arguments:
 #   name, tag        the image reference docker load prints
 #   description      the org.opencontainers.image.description label
 #   manager          a derivation with bin/manager
-#   upstreamCommit   the io.c5c3.upstream-commit label
+#   upstreamCommit   the io.c5c3.upstream-commit label; null for none
+#   version          the org.opencontainers.image.version label, the tag by
+#                    default; null for none
 #   user             Config.User, "uid:gid"; nonroot by default
 { pkgs }:
 let
@@ -35,10 +40,12 @@ in
   tag,
   description,
   manager,
-  upstreamCommit,
+  upstreamCommit ? null,
+  version ? tag,
   user ? "${nonroot}:${nonroot}",
 }:
 let
+  inherit (pkgs) lib;
   defaults = import ./image-defaults.nix;
 
   # The lines of the base's files. dockerTools.fakeNss differs: its root
@@ -89,11 +96,13 @@ pkgs.dockerTools.streamLayeredImage {
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ];
-    Labels = defaults.labels // {
-      "org.opencontainers.image.title" = name;
-      "org.opencontainers.image.description" = description;
-      "org.opencontainers.image.version" = tag;
-      "io.c5c3.upstream-commit" = upstreamCommit;
-    };
+    Labels =
+      defaults.labels
+      // {
+        "org.opencontainers.image.title" = name;
+        "org.opencontainers.image.description" = description;
+      }
+      // lib.optionalAttrs (version != null) { "org.opencontainers.image.version" = version; }
+      // lib.optionalAttrs (upstreamCommit != null) { "io.c5c3.upstream-commit" = upstreamCommit; };
   };
 }
