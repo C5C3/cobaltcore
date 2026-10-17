@@ -12,7 +12,7 @@
 #       extra-packages.yaml block) in EVERY release; a missing
 #       test-excludes/<svc>.txt is [INFO] (the file is optional)
 #   P2  operator module: operators/<svc>/go.mod, go.work use entry, Makefile
-#       OPERATORS default, operators/Dockerfile go.mod COPY line
+#       OPERATORS default, the vendor hash in operators/<svc>/vendor.json
 #   P3  helm chart: crds/, values.schema.json, helm-unittest suite set at
 #       parity with the keystone reference chart
 #   P4  observability: dashboards/<svc>-operator.json + dashboard_test.go
@@ -189,7 +189,7 @@ done
 # ---------------------------------------------------------------------------
 # P2 — operator module wiring
 # ---------------------------------------------------------------------------
-hdr "P2: operator module (go.work, Makefile OPERATORS, operators/Dockerfile)"
+hdr "P2: operator module (go.work, Makefile OPERATORS, vendor.json)"
 for svc in ${SERVICES}; do
   t=0; [[ -f "operators/${svc}/go.mod" ]] || t=1
   check "${svc}" P2 "operators/${svc}/go.mod" "${t}" "operators/${svc}/ is a Go module"
@@ -201,9 +201,11 @@ for svc in ${SERVICES}; do
   check "${svc}" P2 "Makefile-OPERATORS" "${t}" \
     "Makefile OPERATORS default includes ${svc}"
 
-  t=0; grep -qF "operators/${svc}/go.mod" operators/Dockerfile || t=1
-  check "${svc}" P2 "operators/Dockerfile" "${t}" \
-    "operators/Dockerfile copies the ${svc} module manifests"
+  t=0
+  { [[ -f "operators/${svc}/vendor.json" ]] &&
+    jq -e '.vendorHash | startswith("sha256-")' "operators/${svc}/vendor.json" >/dev/null 2>&1; } || t=1
+  check "${svc}" P2 "vendor.json" "${t}" \
+    "operators/${svc}/vendor.json carries a vendor hash"
 done
 
 # ---------------------------------------------------------------------------

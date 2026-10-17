@@ -65,10 +65,11 @@ run that paid for the lesson; the lesson itself is the part to carry.
   set, `tests/lib/ci_resolve.sh` and the `tests/unit/ci` fixtures) are
   found by `git grep -nE 'neutron[ ,]+cinder[ ,]+nova' -- ':!docs' ':!*.md'`;
   32 hits on 2026-09-23, Go comments and test literals included.
-- **The parameterized `operators/Dockerfile` (`ARG OPERATOR`) is still
-  coupled to `go.work`:** it COPYs every module's go.mod and source, so a
-  new module still edits that one Dockerfile's COPY lines (no more
-  per-operator Dockerfiles, though).
+- **The operator image needs its vendor hash:** the flake builds
+  `<op>-operator-image` for every `operators/<op>/go.mod` with no edit, and
+  `operators/<op>/vendor.json`, which `make nix-lock` writes, is the one
+  per-operator artefact of the image. Without it the flake evaluation fails
+  with `operators/<op>/vendor.json is missing; run make nix-lock`.
 - **WSGI entry points:** `uv pip install --prefix` skips PBR
   `wsgi_scripts` generation — the service images hand-write their WSGI
   launcher (see `images/keystone/image.nix`). Also verify the stock WSGI

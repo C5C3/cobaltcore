@@ -95,8 +95,8 @@ header "Layer 2: service operator"
 check "operators/${SERVICE}/go.mod" test -f "operators/${SERVICE}/go.mod"
 check "go.work 'use ./operators/${SERVICE}'" grep -Eq "operators/${SERVICE}([[:space:]]|$)" go.work
 check "Makefile OPERATORS includes '${SERVICE}'" list_has Makefile '^OPERATORS \?='
-check "operators/Dockerfile COPYs operators/${SERVICE}/go.mod (module-manifest lines)" \
-  grep -q "COPY operators/${SERVICE}/go.mod" operators/Dockerfile
+check "operators/${SERVICE}/vendor.json written by make nix-lock" \
+  test -f "operators/${SERVICE}/vendor.json"
 check "operators/${SERVICE}/helm/${SERVICE}-operator chart" \
   test -f "operators/${SERVICE}/helm/${SERVICE}-operator/Chart.yaml"
 check "CRD base under operators/${SERVICE}/config/crd/bases/" \
