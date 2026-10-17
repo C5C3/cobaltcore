@@ -13,10 +13,11 @@
 # (deploy/kind/base). Every secret the ExternalSecrets of the stack sync comes
 # from it.
 #
-# Claim, phase by phase (each phase's canary is a dd into /openbao/data
-# through kubectl exec, then ten writes kv-v2/chaos/openbao-io/<phase>-<n> at
-# 2 s intervals; every write bao answers with exit 0 is recorded in ConfigMap
-# openbao-io-acked):
+# Each phase's canary is a dd into /openbao/data through kubectl exec, then
+# ten writes kv-v2/chaos/openbao-io/<phase>-<n> follow at 2 s intervals; every
+# write bao answers with exit 0 is recorded in ConfigMap openbao-io-acked.
+#
+# Claim, phase by phase:
 #   latency    The dd takes at least 1 s (INJECTED-LATENCY-OK) and all ten
 #              writes succeed (LATENCY-WRITES-OK).
 #   ENOSPC     The dd fails with No space left on device (INJECTED-ENOSPC-OK).

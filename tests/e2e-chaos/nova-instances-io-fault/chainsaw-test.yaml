@@ -12,8 +12,10 @@
 # directory and the image cache there (nova's default instances_path under
 # state_path /var/lib/nova).
 #
-# Claim, phase by phase (each phase's canary is a dd into
-# /var/lib/nova/instances/.chaos-canary through kubectl exec):
+# Each phase's canary is a dd into /var/lib/nova/instances/.chaos-canary
+# through kubectl exec.
+#
+# Claim, phase by phase:
 #   baseline   io-base boots to ACTIVE before the fault and keeps running.
 #   latency    The dd takes at least 1 s (INJECTED-LATENCY-OK); io-latency
 #              reaches ACTIVE within 300 s and is deleted (LATENCY-BOOT-OK).

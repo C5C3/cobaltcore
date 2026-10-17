@@ -368,6 +368,11 @@ test_chaos_ovn_leg_is_wired() {
     "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'faults' }}"
   assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
     "continue-on-error: \${{ matrix.suite != 'pod' }}"
+  # The walls of the six entries, read whole: the ovn entry keeps its 45
+  # minutes with ovn-raft-clock-skew beside ovn-southbound-outage, and the
+  # six sum to the 760 minutes the author of #1391 accepted.
+  assert_contains "the ovn entry keeps a 45-minute wall among the six" "$job" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 190 || matrix.suite == 'network' && 175 || matrix.suite == 'faults' && 130 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}"
 
   # images/ovn/source.json holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).

@@ -20,7 +20,9 @@
 #   - a token minted on a fast clock outlives its lifetime by the skew once
 #     the clock is right again.
 #
-# Claim, phase by phase (token-probe.py prints one sentinel per check):
+# token-probe.py prints one sentinel per check.
+#
+# Claim, phase by phase:
 #   start   T_old, issued and waited out on the probe's clock, is rejected
 #           (EXPIRED-REJECTED 404).
 #   behind  A fresh token's issued_at is at least 3500 s behind the probe's
