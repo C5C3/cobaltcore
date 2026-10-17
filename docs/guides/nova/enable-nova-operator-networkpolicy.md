@@ -99,13 +99,35 @@ kubectl wait helmrelease/nova-operator -n nova-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The rendered policy allows egress to the kube-apiserver and to DNS, and ingress
-to the webhook port. The chart defines no
-`operator-library.chart.networkPolicyEgress` override, the hook a chart uses to
-append an egress rule of its own, so the shared set is the whole set. One
-deployment shape does need more: with a `Nova` placed on a registered target
-cluster, the operator talks to that cluster's API server too, so add its address
-and port to the same `kubeApiServer` lists.
+The rendered policy allows egress to the kube-apiserver, to DNS, to the Nova
+API, to the Keystone API and to the Placement API, and ingress to the webhook
+port. The chart adds the last three through the
+`operator-library.chart.networkPolicyEgress` hook, the hook a chart uses to
+append egress rules of its own: TCP 8774 to every pod labelled
+`app.kubernetes.io/name: nova` and
+`app.kubernetes.io/managed-by: nova-operator`, TCP 5000 and 5050 to every pod
+labelled `app.kubernetes.io/name: keystone` and
+`app.kubernetes.io/managed-by: keystone-operator`, and TCP 8778 to every pod
+labelled `app.kubernetes.io/name: placement` and
+`app.kubernetes.io/managed-by: placement-operator`, all in any namespace. None
+needs a value. The operator's health check GETs the Nova API. A `NovaCompute`
+pool authenticates against Keystone, calls the Nova API to manage its compute
+services and aggregates, and calls the Placement API to create and delete its
+custom traits. Each call goes through a Service, and the CNI judges the
+connection after the Service DNAT, at the pod and its port, so each rule selects
+the pods by the labels their operator sets on them. The Keystone and Placement
+rules therefore admit a `NovaCompute` call only when its URL reaches those pods
+in this cluster;
+[NovaCompute calls to Keystone or Placement time out](#novacompute-calls-to-keystone-or-placement-time-out)
+covers the other topologies. Keystone answers on 5050
+when federation puts its OIDC sidecar in front of the API. One deployment shape
+does need more: with a `Nova` placed on a registered target cluster, the
+operator talks to that cluster's API server too, so add its address and port to
+the same `kubeApiServer` lists.
+
+The reverse direction needs nothing: the per-CR policy appends an ingress peer
+selecting the operator's namespace to every policy it renders, so a workload
+namespace running `spec.networkPolicy` already admits the probe.
 
 Metrics ingress is opt-in and separate. `networkPolicy.allowMetricsFrom` is
 empty by default, and with the policy on, an empty list means no ingress rule
@@ -122,80 +144,18 @@ kubectl patch helmrelease nova-operator -n nova-system --type=merge \
 Each entry is rendered verbatim as a `NetworkPolicyPeer`, so a `podSelector`
 narrows it further to the Prometheus pods.
 
-### Not covered: the API health probe (port 8774)
+### Upgrading from the hand-written probe policy
 
-The operator's health-check step GETs the root of the compute API over the
-workload Service, from the operator pod in `nova-system`. On the devstack that
-is `http://controlplane-nova.openstack.svc.cluster.local:8774/`. The compute API
-ships no `/healthcheck` route, so the version document at `/` is what the probe
-reads. The shared library template renders egress to DNS, to the
-`kubeApiServer` CIDRs, and to whatever the
-`operator-library.chart.networkPolicyEgress` hook holds, and the nova chart
-leaves that hook at the library's empty default. **The chart renders no egress
-rule for 8774.** On an enforcing CNI the probe is therefore blocked, and
-`NovaAPIReady` goes `False` with `HealthCheckTimeout` once the 10-second probe
-deadline expires, since a default-deny policy drops the packet and never answers
-it. A peer that answers with a TCP reset yields `ConnectionFailed`. No other
-condition is affected, so a `Nova` whose `DeploymentReady` is `True` while
-`NovaAPIReady` times out is the fingerprint of this gap. On the ControlPlane it
-surfaces as `NovaReady=False/WaitingForNova`, and the child's own conditions
-name the cause:
+nova-operator charts before 0.5.0 rendered no rule for the health check, and
+earlier versions of this guide had you apply a second policy,
+`nova-operator-api-probe`, beside the chart's. The chart covers that traffic
+now, so delete the hand-written policy once the upgraded chart has rendered its
+own:
 
 ```bash
-kubectl get nova controlplane-nova -n openstack \
-  -o jsonpath='{.status.conditions[?(@.type=="NovaAPIReady")].reason}{"\n"}'
+kubectl delete networkpolicy nova-operator-api-probe -n nova-system \
+  --ignore-not-found
 ```
-
-NetworkPolicies on the same pod are unioned, so an additive object beside the
-chart's covers the gap with no chart change. Apply it in the operator namespace:
-
-```yaml
-# nova-operator-api-probe.yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: nova-operator-api-probe
-  namespace: nova-system
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: nova-operator
-      app.kubernetes.io/instance: nova-operator
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: openstack
-      ports:
-        - protocol: TCP
-          port: 8774
-```
-
-```bash
-kubectl apply -f nova-operator-api-probe.yaml
-```
-
-::: warning Apply this only after the chart policy is on
-Policies union, but this object is not additive on its own: it declares
-`policyTypes: [Egress]` and selects the operator pod, so applying it before the
-Step 1 patch reconciles turns unrestricted egress into egress to 8774 alone. The
-operator then loses the kube-apiserver, its leader-election lease stops
-renewing, the pod restarts into the same wall, and every `Nova` stops
-reconciling. The chart's fail-closed guard on `kubeApiServer.cidrs` does not
-catch this: it protects the chart's own template, not an object you applied by
-hand.
-:::
-
-The two selector labels are the chart's own
-(`operator-library.selectorLabels`), where the instance value is the Helm
-release name. Change `openstack` to the namespace your `Nova` runs in, and add
-one `to` peer per namespace when more than one carries a `Nova`.
-
-The reverse direction needs nothing: the per-CR policy appends an ingress peer
-selecting the operator's namespace to every policy it renders, so a workload
-namespace running `spec.networkPolicy` already admits the probe.
 
 ## Step 2: Verify
 
@@ -279,6 +239,68 @@ address.
 `networkPolicy.kubeApiServer.cidrs` to include **every** IP it returns, plus
 every port.
 
+### NovaCompute calls to Keystone or Placement time out
+
+**Symptom:** a `NovaCompute` reports `ServicesReady`, `AggregatesReady` or
+`TraitsReady` as `False` with `ComputeAPIError`, and the message names the
+Keystone token request (`POST /v3/auth/tokens`) or a Placement call with
+`context deadline exceeded`, while its `Nova` stays `Ready`.
+
+**Diagnosis:** the operator pod dials a Keystone or Placement address the chart
+rules do not select. They admit the keystone and placement pods of this cluster,
+but a `Nova` without `spec.targetClusterRef` is called from the operator pod
+itself, at the URLs it names: `spec.keystoneEndpoint`, and
+`spec.endpoints.placement.override` or else the catalog's internal Placement
+endpoint. Those resolve elsewhere when the ControlPlane places Keystone or
+Placement on another cluster (the URL is then the public one, such as the
+Gateway hostname), when the override names another host, or when the `Nova`
+points at an external Keystone. A placed `Nova` is reached through its cluster's
+API server instead, which the `kubeApiServer` lists cover.
+
+**Fix:** no chart value adds a destination. Apply a second NetworkPolicy of your
+own beside the chart's; policies on the same pod are unioned, so its egress rule
+joins the chart's. Name the address the URL resolves to and its port:
+
+```yaml
+# nova-operator-keystone-egress.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nova-operator-keystone-egress
+  namespace: nova-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nova-operator
+      app.kubernetes.io/instance: nova-operator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.10/32
+      ports:
+        - protocol: TCP
+          port: 443
+```
+
+```bash
+kubectl apply -f nova-operator-keystone-egress.yaml
+```
+
+The two selector labels are the chart's own (`operator-library.selectorLabels`),
+where the instance value is the Helm release name. Add a rule per address when
+Keystone and Placement resolve to different hosts. When an address is the
+LoadBalancer IP of a Gateway in this cluster, most CNIs judge the connection
+after the DNAT, as they do for a Service, so select the Gateway's data-plane
+pods and their container port in place of the `ipBlock`.
+
+Apply this object only while the chart policy is on. It declares
+`policyTypes: [Egress]` and selects the operator pod, so on its own it turns
+unrestricted egress into egress to this one address: the operator loses the
+kube-apiserver, its leader-election lease stops renewing, and every `Nova` stops
+reconciling. Delete it whenever you set `networkPolicy.enabled=false`.
+
 ### Every Nova write is rejected
 
 **Symptom:** `kubectl apply` on a `Nova` fails with `failed calling webhook`
@@ -307,31 +329,28 @@ kubectl patch helmrelease nova-operator -n nova-system --type=merge \
 ```
 
 If the wedge blocks you from recovering, set `networkPolicy.enabled=false` with
-the same patch shape **and** delete the additive object above, if you applied
-it:
+the same patch shape. The policy object is removed on the next reconcile, and
+the operator reverts to unrestricted pod networking without a pod restart unless
+a policy of your own still selects the pod: `nova-operator-api-probe` from an
+earlier version of this guide, which allows 8774 alone, or the one from
+[NovaCompute calls to Keystone or Placement time out](#novacompute-calls-to-keystone-or-placement-time-out).
+Delete those as well:
 
 ```bash
-kubectl delete networkpolicy nova-operator-api-probe -n nova-system \
-  --ignore-not-found
+kubectl delete networkpolicy nova-operator-api-probe \
+  nova-operator-keystone-egress -n nova-system --ignore-not-found
 ```
-
-Both have to go. Either one left selecting the pod keeps restricting it, and
-`nova-operator-api-probe` alone is the narrower of the two: it allows 8774 and
-nothing else. With no policy selecting it the operator reverts to unrestricted
-pod networking without a pod restart.
 
 ## Tested by
 
 Every operator chart includes the same chart-level NetworkPolicy template from
-the shared operator-library. The keystone chart's copy is exercised end-to-end
-on the CI e2e kind cluster by the borrowed chainsaw suite below; there is no
-nova twin of it. The nova chart's own helm-unittests cover the ClusterRole, the
-Role, the Deployment, the values schema and the webhook configurations, and
-carry no networkpolicy test, so the rendered policy every chart gets is pinned by
-the library's own helm-unittest,
-`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`
-(default-off posture, rule shape, both fail-closed guards, and the absence of an
-ingress rule for the health-probe port).
+the shared operator-library, whose helm-unittest
+(`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
+pins the shared rules. The nova chart's helm-unittest
+(`operators/nova/helm/nova-operator/tests/networkpolicy_test.yaml`) pins the
+three egress rules the chart adds, for its API health check, for the Keystone
+API and for the Placement API. The keystone chart's policy is exercised
+end-to-end on the CI e2e kind cluster by the chainsaw suite below.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

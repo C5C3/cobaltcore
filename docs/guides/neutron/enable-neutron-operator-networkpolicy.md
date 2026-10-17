@@ -97,14 +97,23 @@ kubectl wait helmrelease/neutron-operator -n neutron-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The rendered policy allows egress to the kube-apiserver and to DNS, and ingress
-to the webhook port. The chart defines no
-`operator-library.chart.networkPolicyEgress` override, the hook a chart uses to
-append an egress rule of its own (the barbican chart appends its OpenBao port),
-so the shared set is the whole set. One deployment shape does need more: with a
-`Neutron` or `NeutronMetadataAgent` placed on a registered target cluster, the
-operator talks to that cluster's API server too, so add its address and port to
-the same `kubeApiServer` lists.
+The rendered policy allows egress to the kube-apiserver, to DNS and to the
+Neutron API, and ingress to the webhook port. The chart adds the Neutron API
+rule through the `operator-library.chart.networkPolicyEgress` hook, the hook a
+chart uses to append an egress rule of its own: TCP 9696 to every pod labelled
+`app.kubernetes.io/name: neutron` and
+`app.kubernetes.io/managed-by: neutron-operator`, in any namespace. It needs no
+value. The operator's health check GETs the Neutron API over the workload
+Service, and the CNI judges that connection after the Service DNAT, at the API
+pod and its port, so the rule selects the API pods by the labels the operator
+sets on them. One deployment shape does need more: with a `Neutron` or
+`NeutronMetadataAgent` placed on a registered target cluster, the operator talks
+to that cluster's API server too, so add its address and port to the same
+`kubeApiServer` lists.
+
+The reverse direction needs nothing: the per-CR policy appends an ingress peer
+selecting the operator's namespace to every policy it renders, so a workload
+namespace running `spec.networkPolicy` already admits the probe.
 
 Metrics ingress is opt-in and separate. `networkPolicy.allowMetricsFrom` is
 empty by default, and with the policy on, an empty list means no ingress rule
@@ -121,61 +130,18 @@ kubectl patch helmrelease neutron-operator -n neutron-system --type=merge \
 Each entry is rendered verbatim as a `NetworkPolicyPeer`, so a `podSelector`
 narrows it further to the Prometheus pods.
 
-### Not covered: the API health probe (port 9696)
+### Upgrading from the hand-written probe policy
 
-The operator's health-check step GETs the Neutron API root over the workload
-Service, `http://{name}.{namespace}.svc.cluster.local:9696/`, from the operator
-pod in `neutron-system`. The shared library template renders egress to DNS, to
-the `kubeApiServer` CIDRs, and to whatever the
-`operator-library.chart.networkPolicyEgress` hook holds, and the neutron chart
-leaves that hook at the library's empty default. **The chart renders no egress
-rule for 9696.** On an enforcing CNI the probe is therefore blocked, and
-`NeutronAPIReady` goes `False` with `HealthCheckTimeout` ("health check timed
-out") once the 10-second probe deadline expires, since a default-deny policy
-drops the packet and never answers it. A peer that answers with a TCP reset
-yields `ConnectionFailed`. No other condition is affected, so a `Neutron` whose
-`DeploymentReady` is `True` while `NeutronAPIReady` times out is the fingerprint
-of this gap.
-
-NetworkPolicies on the same pod are unioned, so an additive object beside the
-chart's covers the gap with no chart change. Apply it in the operator namespace:
-
-```yaml
-# neutron-operator-api-probe.yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: neutron-operator-api-probe
-  namespace: neutron-system
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: neutron-operator
-      app.kubernetes.io/instance: neutron-operator
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: openstack
-      ports:
-        - protocol: TCP
-          port: 9696
-```
+neutron-operator charts before 0.6.0 rendered no rule for the health check, and
+earlier versions of this guide had you apply a second policy,
+`neutron-operator-api-probe`, beside the chart's. The chart covers that traffic
+now, so delete the hand-written policy once the upgraded chart has rendered its
+own:
 
 ```bash
-kubectl apply -f neutron-operator-api-probe.yaml
+kubectl delete networkpolicy neutron-operator-api-probe -n neutron-system \
+  --ignore-not-found
 ```
-
-The two selector labels are the chart's own
-(`operator-library.selectorLabels`), where the instance value is the Helm
-release name. Change `openstack` to the namespace your `Neutron` runs in, and
-add one `to` peer per namespace when more than one carries a `Neutron`.
-
-The reverse direction needs nothing: the per-CR policy appends an ingress peer
-selecting the operator's namespace to every policy it renders, so a workload
-namespace running `spec.networkPolicy` already admits the probe.
 
 ## Step 2 — Verify
 
@@ -260,15 +226,13 @@ operator reverts to unrestricted pod networking without a pod restart.
 ## Tested by
 
 Every operator chart includes the same chart-level NetworkPolicy template from
-the shared operator-library. The keystone chart's copy is exercised end-to-end
-on the CI e2e kind cluster by the borrowed chainsaw suite below; there is no
-neutron twin of it. The neutron chart's own helm-unittests cover the
-ClusterRole, the Role, the Deployment, the values schema and the webhook
-configurations, and carry no networkpolicy test, so the rendered policy every
-chart gets is pinned by the library's own helm-unittest,
-`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`
-(default-off posture, rule shape, both fail-closed guards, and the absence of an
-ingress rule for the health-probe port).
+the shared operator-library, whose helm-unittest
+(`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
+pins the shared rules. The neutron chart's helm-unittest
+(`operators/neutron/helm/neutron-operator/tests/networkpolicy_test.yaml`) pins
+the egress rule the chart adds for its API health check. The keystone chart's
+policy is exercised end-to-end on the CI e2e kind cluster by the chainsaw suite
+below.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

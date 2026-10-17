@@ -121,6 +121,15 @@ networkPolicy:
       - 6443              # replace with the ports from step 1
 ```
 
+With the policy on, the chart also renders the egress rule the operator needs
+for the Keystone API: TCP 5000 and 5050 to every pod labelled
+`app.kubernetes.io/name: keystone` and
+`app.kubernetes.io/managed-by: keystone-operator`, in any namespace. It needs no
+value. The operator's health check and its `KeystoneIdentityBackend` controller
+reach the API over the Keystone Service on 5000, and the CNI judges each
+connection after the Service DNAT, at the API pod and its port: 5000, or 5050
+when federation puts the OIDC sidecar in front of the API.
+
 Optional overrides:
 
 - **DNS peer.** If your cluster uses [CoreDNS in a non-default namespace or
