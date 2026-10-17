@@ -244,6 +244,31 @@ spec:
                    % (volume_id, want, seconds, volume))
 
 
+          # The scheduler learns the backend from the capability report the
+          # volume service publishes over the bus, and that report is a fanout
+          # rather than a record: a scheduler that binds its queue after the
+          # publish holds no backend until the next periodic report, and gives
+          # up waiting for one after scheduler_driver_init_wait_time (60s). A
+          # create issued in that window is answered with NoValidBackend and
+          # the volume goes straight to error, which is what the scheduler
+          # logged on CI run 39025828058 ("Filtering removed all hosts ...
+          # AvailabilityZoneFilter: (start: 0, end: 0)"). So ask the scheduler
+          # what it holds before the first create, as
+          # tests/e2e/cinder/backup-nfs does.
+          pools = []
+          for _ in range(60):
+              pools = json.loads(
+                  call("GET", "/v3/scheduler-stats/get_pools").read()
+              ).get("pools", [])
+              if any("@nfs-chaos-nfs1" in p.get("name", "") for p in pools):
+                  break
+              print("waiting for the scheduler to hold the backend: %s" % pools)
+              time.sleep(2)
+          else:
+              fail("the scheduler never held the nfs-chaos-nfs1 backend: %s"
+                   % pools)
+          print("the scheduler holds the nfs-chaos-nfs1 backend")
+
           # The write path end to end, on a healthy export: the API casts to
           # the scheduler, the scheduler places the volume on the one backend,
           # and the volume service writes the file into the share.
