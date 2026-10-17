@@ -4,31 +4,32 @@
 
 # Chainsaw E2E test for the keystone-operator NetworkPolicy egress restriction
 #
-# SCOPE CAVEAT — enforcement is NOT exercised here
-#   The CI kind cluster uses the default kindnet CNI, which silently ignores
-#   NetworkPolicy objects. This test therefore validates only that:
+# ENFORCEMENT
+#   The kindnetd of kind v0.32 and later (CI pins KIND_VERSION) enforces
+#   NetworkPolicy and judges egress after the Service DNAT: a connection to
+#   the kubernetes Service VIP (10.96.0.1:443) is judged as one to the API
+#   server's endpoint address on port 6443, so a rule naming the VIP never
+#   matches. Such a rule let the operator through only when its first API
+#   connection opened before kindnet added the new pod to its policy set,
+#   and failed the install whenever kindnet was faster. Step 1 therefore
+#   reads the addresses and the port from EndpointSlice default/kubernetes,
+#   the source hack/deploy-infra.sh reads for the OpenBao instance.
+#   This test validates that:
 #     1. The chart renders the NetworkPolicy (Helm install + Step 2 assert).
-#     2. The operator pod starts and reconciles a Keystone CR to Ready=True
-#        while the (unenforced) policy is present — i.e. the policy does not
-#        crash Helm or the operator on admission.
-#   It does NOT prove that packets outside the allow-list are actually
-#   dropped. Two further caveats sharpen this:
-#     - 10.96.0.1/32 is the in-cluster Service VIP; on Calico/Cilium packets
-#       are DNAT'd to real node IPs *before* policy evaluation, so even on an
-#       enforcing CNI this CIDR alone would not validate kube-apiserver
-#       egress.
-#     - With leader election enabled and a second operator release installed
-#       alongside the primary one from hack/ci-deploy-operator.sh, there is
-#       no guarantee the netpol-restricted pod (vs. the primary) is the one
-#       that drove the CR to Ready.
-#   Actual enforcement coverage is tracked as a follow-up: adding a
-#   Calico-enabled kind CI job would let this test assert on blocked egress.
+#     2. The operator pod starts and turns Ready under the enforced policy,
+#        so its DNS and API server rules admit the traffic it starts with.
+#     3. A Keystone CR reconciles to Ready=True while the policy is present.
+#   It does NOT probe that packets outside the allow-list are dropped. With
+#   leader election enabled and a second operator release installed
+#   alongside the primary one from hack/ci-deploy-operator.sh, there is also
+#   no guarantee the netpol-restricted pod (vs. the primary) is the one that
+#   drove the CR to Ready.
 #
 # Installs a second keystone-operator Helm release with networkPolicy.enabled=
-# true and the kind-specific kube-apiserver endpoint (10.96.0.1/32:6443), then
-# applies a minimal Keystone CR and asserts it reaches Ready=True under the
-# (unenforced) egress policy. A catch block dumps operator pod logs, the
-# rendered NetworkPolicy, and namespace events on failure.
+# true and the cluster's API server endpoint, then applies a minimal Keystone
+# CR and asserts it reaches Ready=True under the egress policy. A catch block
+# dumps operator pod logs, the rendered NetworkPolicy, and namespace events on
+# failure.
 #
 # webhook.enabled=false (see 00-install-operator.yaml) avoids conflicting
 # admission-webhook registration with the primary operator deployed by
@@ -54,14 +55,26 @@ spec:
     assert: 5m
   steps:
   # ── Step 1: Install operator Helm chart with networkPolicy.enabled=true ──
+  # kubeApiServer comes from EndpointSlice default/kubernetes, not from the
+  # values file (see ENFORCEMENT above).
   - try:
     - script:
         timeout: 120s
         content: |
+          set -eu
+          SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
+          CIDRS="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | . + (if contains(":") then "/128" else "/32" end)] | unique | join(",")')"
+          PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
+          if [ -z "${CIDRS}" ] || [ -z "${PORT}" ]; then
+            echo "ERROR: EndpointSlice default/kubernetes carries no address or no port"
+            exit 1
+          fi
           helm install keystone-operator-netpol \
             ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
             --namespace keystone-system --create-namespace \
             --values ${GITHUB_WORKSPACE:-.}/tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml \
+            --set "networkPolicy.kubeApiServer.cidrs={${CIDRS}}" \
+            --set "networkPolicy.kubeApiServer.ports={${PORT}}" \
             --wait --timeout 90s
     catch:
     - script:
