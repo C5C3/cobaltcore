@@ -1,0 +1,287 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Glance aborts the image download of a
+# create-volume-from-image.
+#
+# Fault: an HTTPChaos on the API pods of glance-cinder-img closes the
+# connection of every GET /v2/images/*/file before Glance sees it
+# (06-httpchaos.yaml). Cinder reaches Glance only through
+# [DEFAULT] glance_api_servers, set from spec.glanceEndpoint
+# (operators/cinder/internal/controller/reconcile_config.go), and its volume
+# service downloads the image through that request when it creates a volume
+# from it.
+#
+# Claim, phase by phase:
+#   baseline   img-base, size 1 GiB from the seed image, reaches available
+#              within 240 s and is deleted.
+#   injected   A probe's GET /v2/images/<seed>/file gets no HTTP status while
+#              GET /v2/images/<seed> answers 200 (INJECTED-ABORT-OK). The
+#              volume service cinder-img-volume-img-nfs1 is restarted, because
+#              HTTPChaos reaches only connections opened after the injection.
+#   failclosed img-abort, from the same image, reaches error within 240 s and
+#              still reads error 30 s later (FAILCLOSED-OK). A volume that
+#              turns available fails the suite with "image-to-volume succeeded
+#              through an aborted download": its content would not be the
+#              image. The Cinder keeps VolumeServicesReady=True and
+#              Ready=True/AllReady, and img-abort is gone within 120 s of its
+#              delete.
+#   recovered  After the lift img-recovered reaches available within 240 s
+#              (RECOVERED-OK) and is deleted.
+#
+# Blast radius: the HTTPChaos selects the API pods of this suite's Glance by
+# name, instance and component, and its method and path filters leave every
+# request but an image download alone. The Keystone, the Glance, the Cinder
+# and the vhost are this suite's own.
+#
+# Leg: network, with the cinder suites, which the NFS export and the cinder
+# images are loaded for. HTTPChaos needs the chaos-tproxy kernel modules
+# hack/deploy-infra.sh loads on the kind host.
+#
+# Workload: the token, volume and image streams of ../lib/workload.sh against
+# this suite's Keystone, Cinder and Glance. The volume stream creates blank
+# volumes and the image stream uploads with PUT and reads the status, so none
+# of them downloads an image and the fault itself costs them nothing. The
+# injection does: chaos-tproxy takes the Glance pod's address off eth0 and
+# puts it on a veth behind a bridge of its own
+# (chaos-tproxy-controller/src/proxy/net/bridge.rs in chaos-mesh/chaos-tproxy),
+# and an image-stream request in flight at that moment is reset or stalls for
+# TCP's retransmits. The budget is that request, the one
+# ../nova-compute-neutron-http-delay/ carries for its network stream; run
+# 39156334341 found no request in flight here. More than two failures in the
+# window are a defect to find.
+# Chaos budget: failures=2 recovery=30s
+# Chaos budget measured: 2026-10-18, kind, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-glance-http-abort
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone ───────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-cinder-img
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh baseline keystone-cinder-img
+  # ── Step 2: Apply Glance, register it in the catalog, seed the image ─────
+  # The Job registers the image service the openstack CLI resolves `image
+  # create` through, then seeds the image. It is deleted first because a Job's
+  # pod template is immutable.
+  - try:
+    - apply:
+        file: 01-glance-cr.yaml
+    - apply:
+        file: 02-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-cinder-img
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 03-image-seed-job.yaml cinder-img-image-seed 300
+    catch: &img-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no HTTPChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite cinder-glance-http-abort
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-img --cr-kind=cinder --dep-label=app.kubernetes.io/instance=glance-cinder-img --dep-ns=openstack --log-label=app.kubernetes.io/instance=cinder-img
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-cinder-img
+        namespace: openstack
+    - podLogs:
+        selector: app.kubernetes.io/instance=glance-cinder-img
+        tail: 100
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: kubectl logs -n openstack job/cinder-img-image-seed 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-glance-http-abort
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete job cinder-img-image-seed -n openstack --ignore-not-found
+  # ── Step 3: Give the suite its vhost, apply Cinder, start the workload ───
+  # One vhost per suite: Cinder's RPC topics are named after the deployment,
+  # so two suites on one vhost would share the scheduler and volume-service
+  # queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup runs at the
+  # end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create cinder-img cinder-img-messaging openstack
+    - apply:
+        file: 04-cinder-cr.yaml
+    - apply:
+        file: 05-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-img
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-glance-http-abort --
+          --streams token,volume,image
+          --keystone http://keystone-cinder-img.openstack.svc:5000/v3
+          --cinder http://cinder-img.openstack.svc:8776
+          --glance http://glance-cinder-img.openstack.svc:9292
+    catch: *img-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete cinder-img || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-glance-http-abort
+  # ── Step 4: A volume from the image before the fault ─────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run cinder-img-baseline 420 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-img.openstack.svc.cluster.local:8776 \
+            --keystone http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3 \
+            volume img-base --create --image 4e0a0000-0000-4000-8000-00000000000d \
+            --want available --within 240 --delete --ok BASELINE-OK
+    catch: *img-dump
+  # ── Step 5: Abort the download, then create a volume from the image ──────
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          SEED=4e0a0000-0000-4000-8000-00000000000d
+          GLANCE=http://glance-cinder-img.openstack.svc.cluster.local:9292
+          KS=http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3
+          PW="$(admin_password)"
+          ../lib/workload.sh mark cinder-glance-http-abort fault-start
+          fault_inject 06-httpchaos.yaml httpchaos/glance-download-abort
+          probe_run cinder-img-canary 180 --env "OS_PASSWORD=${PW}" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect --keystone "$KS" \
+            --canary httpchaos/glance-download-abort \
+            --check "GET ${GLANCE}/v2/images/${SEED}/file none" \
+            --check "GET ${GLANCE}/v2/images/${SEED} 200" --ok INJECTED-ABORT-OK
+          kubectl rollout restart deployment/cinder-img-volume-img-nfs1 -n "$NAMESPACE"
+          kubectl rollout status deployment/cinder-img-volume-img-nfs1 -n "$NAMESPACE" --timeout=5m
+          probe_run cinder-img-abort 360 --env "OS_PASSWORD=${PW}" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-img.openstack.svc.cluster.local:8776 --keystone "$KS" \
+            volume img-abort --create --image "$SEED" \
+            --want error --within 240 --hold 30 --never available \
+            --never-message "image-to-volume succeeded through an aborted download" \
+            --ok FAILCLOSED-OK
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-img
+            namespace: openstack
+          status:
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run cinder-img-abort-delete 180 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-img.openstack.svc.cluster.local:8776 \
+            --keystone http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3 \
+            volume img-abort --delete --within 120
+    catch: *img-dump
+  # ── Step 6: Lift the fault ───────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          fault_lift httpchaos/glance-download-abort
+          ../lib/workload.sh mark cinder-glance-http-abort fault-end
+    catch: *img-dump
+  # ── Step 7: A volume from the image after the fault ──────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run cinder-img-recovered 420 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-img.openstack.svc.cluster.local:8776 \
+            --keystone http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3 \
+            volume img-recovered --create --image 4e0a0000-0000-4000-8000-00000000000d \
+            --want available --within 240 --delete --ok RECOVERED-OK
+    catch: *img-dump
+  # ── Step 8: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-glance-http-abort
+    catch: *img-dump

@@ -1,0 +1,631 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Neutron holds nova-compute's port binding for
+# 330 seconds while a server builds.
+#
+# Fault: an HTTPChaos on the API pods of neutron-nova-vifd-chaos delays every
+# PUT /v2.0/ports/* by 330 s (15-httpchaos.yaml). nova-compute binds the port
+# of each server it builds with that request, so a build waits on Neutron with
+# its port unbound. 330 s is past the upstream vif_plugging_timeout default of
+# 300 s. The suite takes the fake-driver form: the fake compute sets
+# vif_plugging_timeout = 0 and vif_plugging_is_fatal = false
+# (12-fake-compute.yaml) and the fake driver waits for no
+# network-vif-plugged event, so the suite proves that a slow Neutron leaves
+# no stuck state, not the timeout path itself.
+#
+# Claim, phase by phase:
+#   baseline   vifd-net and the subnet 10.98.0.0/24 exist, and vifd-base boots
+#              with a port on it to ACTIVE before it is deleted (BASE-OK).
+#   injected   A probe's PUT /v2.0/ports/<uuid> gets no answer within 20 s
+#              while GET /v2.0/networks answers 200 within 5 s
+#              (INJECTED-DELAY-OK). The fake compute is then restarted,
+#              because HTTPChaos reaches only connections opened after the
+#              injection.
+#   held       vifd-slow, booted with a port on vifd-net, still reads BUILD
+#              120 s after its create (HELD-OK), then settles in ACTIVE or
+#              ERROR within another 570 s (SETTLED <status>).
+#   settled    For ACTIVE its port is bound to the node with a binding:vif_type
+#              other than binding_failed and unbound; for ERROR the port Nova
+#              created for it is gone or unbound. No server of any project is
+#              left in BUILD (NO-STUCK-BUILD-OK).
+#   recovered  After the lift vifd-recovered boots to ACTIVE within 150 s
+#              (RECOVERED-OK), and the servers and vifd-net are deleted.
+#
+# The fake compute registers under the node's name, because Neutron binds a
+# port only to a host with a live chassis, and the suite brings an OVNChassis
+# on the node it labels, as ../neutron-metadata-agent-pod-kill/ does. The
+# stack is that suite's, renamed to nova-vifd-chaos, without the metadata
+# agent.
+#
+# Blast radius: the HTTPChaos selects the API pods of this suite's Neutron by
+# name, instance and component, and its method and path filters let every
+# request but a port update through. The OVNChassis runs hostNetwork on the
+# labelled node, which is why spec.concurrent is false. The cleanups remove
+# the node label, every vifd-* server and vifd-net, as the metadata suite's
+# do.
+#
+# Leg: nova. HTTPChaos needs the chaos-tproxy kernel modules
+# hack/deploy-infra.sh loads on the kind host, and the OVNChassis the
+# openvswitch and geneve modules the leg asks for.
+#
+# Workload: the token and network streams of ../lib/workload.sh against this
+# suite's Keystone and Neutron. The network stream creates and deletes
+# networks and ports and never sends a port PUT, so the fault itself costs it
+# nothing. The injection and the lift do: chaos-tproxy takes the pod's
+# address off eth0 and puts it on a veth behind a bridge of its own
+# (chaos-tproxy-controller/src/proxy/net/bridge.rs in chaos-mesh/chaos-tproxy)
+# and moves it back at the lift, and the request in flight on the network
+# stream at either moment is reset or stalls until the stream's 15 s timeout.
+# A lost answer to a create costs two records, because the port it created
+# exists and the cleanup of its network answers 409 NetworkInUse. Run
+# 39156334341 lost one create-network at the injection; run 39264061866 lost
+# a create-port and its cleanup-network at the injection and a delete-port at
+# the lift, three records. The budget is twice the largest count, by the rule
+# of the chaos page. More than six failures in the window are a defect to
+# find.
+# Chaos budget: failures=6 recovery=30s
+# Chaos budget measured: 2026-10-19, ci, failures 1/3, recovery 0/0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-compute-neutron-http-delay
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-placement-outage/ needs that for the same
+    # fixtures); the rest read a deployment that is already up.
+    assert: 5m
+  steps:
+  # ── Step 1: Label the node and give the suite its vhost ───────────────────
+  # The suite labels the node itself, so it runs against any kind cluster the
+  # CI job hands it, and the step cleanup takes the label off again, so no
+  # later suite finds a node advertising a chassis role nothing serves. One
+  # vhost per suite: nova's RPC topics are named after the service, so two
+  # suites on one vhost would share the scheduler and conductor queues. Both
+  # cleanups run at the end of the test.
+  - try:
+    - script:
+        timeout: 1m
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-vifd-chaos nova-vifd-chaos-messaging openstack
+    catch: &vifd-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no HTTPChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite nova-compute-neutron-http-delay
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-vifd-chaos --cr-kind=nova --dep-label=app.kubernetes.io/instance=neutron-nova-vifd-chaos --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-vifd-chaos
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-vifd-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-vifd-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-vifd-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-vifd-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-vifd-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-vifd-chaos-s3
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNChassis
+        name: nova-vifd-chaos-chassis
+        namespace: openstack
+    # The compute, the Neutron API and the Jobs. diagnostics.sh reads the pods
+    # of the Nova itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== chassis pods ==="
+          kubectl get ds,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-vifd-chaos-chassis -o wide 2>&1 || true
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-vifd-chaos-fake-compute --tail=200 2>&1 || true
+          echo "=== Neutron API ==="
+          kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-nova-vifd-chaos,app.kubernetes.io/component=api --all-containers --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-vifd-chaos-catalog-setup nova-vifd-chaos-image-seed nova-vifd-chaos-flavor-seed \
+            nova-vifd-chaos-network nova-vifd-chaos-hold nova-vifd-chaos-recovery; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump nova-compute-neutron-http-delay
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-vifd-chaos || true
+    - script:
+        timeout: 1m
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+  # ── Step 2: Bring up Keystone ─────────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-vifd-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *vifd-dump
+  # ── Step 3: Register the four services in the catalog ─────────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 02-catalog-setup-job.yaml nova-vifd-chaos-catalog-setup 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-vifd-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *vifd-dump
+  # ── Step 4: Bring up the four services the boot path depends on ───────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-vifd-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-vifd-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-vifd-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-vifd-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-vifd-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *vifd-dump
+  # ── Step 5: Seed the image the servers boot from ──────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 09-image-seed-job.yaml nova-vifd-chaos-image-seed 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-vifd-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *vifd-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ───────────────────
+  # 8m: two schema migrations, a cell mapping and five workloads.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-vifd-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *vifd-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ──────────────────
+  # The Deployment mounts the compute-contract Secret the step above has just
+  # asserted. Discovery runs by hand rather than waiting out the scheduler's
+  # 300-second periodic.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-vifd-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          ../../e2e/nova/discover-hosts.sh nova-vifd-chaos "$NAMESPACE" "$NODE"
+    catch: *vifd-dump
+  # ── Step 8: Seed the flavor the server stream boots with ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 13-flavor-seed-job.yaml nova-vifd-chaos-flavor-seed 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-vifd-chaos-flavor-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *vifd-dump
+  # ── Step 9: Bring up the chassis on the labelled node ─────────────────────
+  - try:
+    - apply:
+        file: 14-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: nova-vifd-chaos-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 1
+            numberReady: 1
+    catch: *vifd-dump
+  # ── Step 10: Start the workload ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start nova-compute-neutron-http-delay --
+          --streams token,network
+          --keystone http://keystone-nova-vifd-chaos.openstack.svc:5000/v3
+          --neutron http://neutron-nova-vifd-chaos.openstack.svc:9696
+    catch: *vifd-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop nova-compute-neutron-http-delay
+  # ── Step 11: Create vifd-net and boot vifd-base on it ─────────────────────
+  # The step cleanup deletes every vifd-* server and the network through the
+  # API when the suite ended before its recovery step did.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          LOGS="$(job_run 16-network-job.yaml nova-vifd-chaos-network 300)" || { echo "$LOGS"; exit 1; }
+          echo "$LOGS"
+          grep -qx BASE-OK <<<"$LOGS"
+    catch: *vifd-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          . ./probe-lib.sh
+          openstack_cleanup || echo "a vifd-* server or vifd-net is left; see above"
+  # ── Step 12: Delay port updates, restart the compute ──────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          NEUTRON=http://neutron-nova-vifd-chaos.openstack.svc.cluster.local:9696
+          ../lib/workload.sh mark nova-compute-neutron-http-delay fault-start
+          fault_inject 15-httpchaos.yaml httpchaos/neutron-port-update-delay
+          probe_run nova-vifd-chaos-canary 120 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect --keystone "$KEYSTONE" \
+            --canary httpchaos/neutron-port-update-delay \
+            --body '{"port": {"name": "canary"}}' \
+            --check "PUT ${NEUTRON}/v2.0/ports/00000000-0000-4000-8000-000000000000 silent@20" \
+            --check "GET ${NEUTRON}/v2.0/networks 200@5" --ok INJECTED-DELAY-OK
+          kubectl rollout restart deployment/nova-vifd-chaos-fake-compute -n "$NAMESPACE"
+          kubectl rollout status deployment/nova-vifd-chaos-fake-compute -n "$NAMESPACE" --timeout=5m
+    catch: *vifd-dump
+  # ── Step 13: A build waits on its port binding, then settles ──────────────
+  # The Job prints SETTLED and the server id; the script copies them onto the
+  # Job as annotations, which the assert step reads.
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          LOGS="$(job_run 17-hold-job.yaml nova-vifd-chaos-hold 780)" || { echo "$LOGS"; exit 1; }
+          echo "$LOGS"
+          grep -qx HELD-OK <<<"$LOGS"
+          SETTLED="$(sed -n 's/^SETTLED //p' <<<"$LOGS" | head -n1)"
+          SERVER="$(sed -n 's/^SERVER-ID: //p' <<<"$LOGS" | head -n1)"
+          test -n "$SETTLED" && test -n "$SERVER"
+          kubectl annotate job nova-vifd-chaos-hold -n "$NAMESPACE" --overwrite \
+            "chaos.c5c3.io/settled=${SETTLED}" "chaos.c5c3.io/server-id=${SERVER}"
+          fault_lift httpchaos/neutron-port-update-delay
+          ../lib/workload.sh mark nova-compute-neutron-http-delay fault-end
+    catch: *vifd-dump
+  # ── Step 14: The settled build left no stuck state ────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          read_annotation() {
+            kubectl get job nova-vifd-chaos-hold -n "$NAMESPACE" -o "jsonpath={.metadata.annotations.chaos\.c5c3\.io/$1}"
+          }
+          # shellcheck disable=SC2016 # expanded by the probe pod's bash
+          os_run nova-vifd-chaos-assert 240 '
+            set -euo pipefail
+            # The ports Nova created for the server carry its id as device_id.
+            PORTS="$(openstack port list --device-id "$SERVER" -f value -c ID)"
+            echo "SETTLED $SETTLED, ports of $SERVER: ${PORTS:-<none>}"
+            case "$SETTLED" in
+              ACTIVE)
+                if [ "$(wc -w <<<"$PORTS")" -ne 1 ]; then
+                  echo "FAIL: ACTIVE vifd-slow has the ports [${PORTS}], want one"
+                  exit 1
+                fi
+                HOST="$(openstack port show "$PORTS" -f value -c binding_host_id)"
+                VIF="$(openstack port show "$PORTS" -f value -c binding_vif_type)"
+                echo "binding:host_id=${HOST} binding:vif_type=${VIF}"
+                if [ "$HOST" != "$NODE" ]; then
+                  echo "FAIL: the port of ACTIVE vifd-slow is bound to ${HOST:-<none>}, want ${NODE}"
+                  exit 1
+                fi
+                case "$VIF" in
+                  binding_failed | unbound | None | "")
+                    echo "FAIL: the port of ACTIVE vifd-slow has binding:vif_type ${VIF:-<empty>}"
+                    exit 1
+                    ;;
+                esac
+                ;;
+              ERROR)
+                for port in $PORTS; do
+                  HOST="$(openstack port show "$port" -f value -c binding_host_id)"
+                  if [ -n "$HOST" ] && [ "$HOST" != None ]; then
+                    echo "FAIL: ERROR vifd-slow left the port $port bound to $HOST"
+                    exit 1
+                  fi
+                done
+                ;;
+              *)
+                echo "FAIL: vifd-slow settled in ${SETTLED:-<nothing>}, want ACTIVE or ERROR"
+                exit 1
+                ;;
+            esac
+            BUILD="$(openstack server list --all-projects --status BUILD -f value -c ID)"
+            if [ -n "$BUILD" ]; then
+              echo "FAIL: servers left in BUILD: $BUILD"
+              exit 1
+            fi
+            echo NO-STUCK-BUILD-OK' \
+            "SETTLED=$(read_annotation settled)" "SERVER=$(read_annotation server-id)" "NODE=$(chassis_node)"
+    catch: *vifd-dump
+  # ── Step 15: A build is bound again, then everything of the suite goes ────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          LOGS="$(job_run 18-recovery-job.yaml nova-vifd-chaos-recovery 300)" || { echo "$LOGS"; exit 1; }
+          echo "$LOGS"
+          grep -qx RECOVERED-OK <<<"$LOGS"
+          openstack_cleanup
+    catch: *vifd-dump
+  # ── Step 16: Judge the workload, audit Placement, compare OVN ─────────────
+  # 25 minutes: the observation and the DONE wait of verify, then the audit
+  # and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify nova-compute-neutron-http-delay
+          --placement-audit nova-vifd-chaos
+          --ovn-db-sync neutron-nova-vifd-chaos
+    catch: *vifd-dump
+  # ── Step 17: Tear the deployment down ─────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself, from the bus consumers inward. The fake compute holds a broker
+  # connection of its own and is not part of the CR, so it goes before the
+  # Nova. The compute and the Jobs, which the suite applied with kubectl, are
+  # deleted best-effort: a suite that already failed must still reach the CR
+  # delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+          # The vifd-* servers and vifd-net go through the API while the Nova
+          # and the Neutron still serve it.
+          bash -c '. ./probe-lib.sh && openstack_cleanup'
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-vifd-chaos-catalog-setup nova-vifd-chaos-image-seed nova-vifd-chaos-flavor-seed \
+            nova-vifd-chaos-network nova-vifd-chaos-hold nova-vifd-chaos-recovery || true
+
+          kubectl delete nova nova-vifd-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-vifd-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-vifd-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *vifd-dump

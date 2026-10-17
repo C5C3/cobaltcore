@@ -30,7 +30,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # The seven suites of the faults entry, in the order the entry lists them.
-FAULTS_SUITES=()
+FAULTS_SUITES=(
+  keystone-validation-http-503
+)
 
 # step_if <job> <step>: the if: line of a step, without its indent.
 step_if() {

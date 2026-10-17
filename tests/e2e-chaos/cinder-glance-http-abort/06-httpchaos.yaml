@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# HTTPChaos glance-download-abort: the proxy closes the connection of every
+# GET /v2/images/*/file on port 9292 of the API pods of glance-cinder-img
+# before Glance sees it. That is the image download of a
+# create-volume-from-image; GET /v2/images/<id>, the image stream's upload
+# (PUT) and its status reads pass unchanged once the proxy is up. The
+# injection itself costs the image stream the request in flight (the suite
+# header).
+#
+# Server-side on the API pods, as the admission policy
+# chaos-mesh-httpchaos-api-workloads-only requires
+# (deploy/kind/chaos-mesh/httpchaos-policy.yaml). HTTPChaos reaches only
+# connections opened after the injection, so the suite restarts the volume
+# service once it reads AllInjected. duration is a safety net above the
+# suite's 12-minute fault step; the suite deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: glance-download-abort
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: cinder-glance-http-abort
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: glance
+      app.kubernetes.io/instance: glance-cinder-img
+      app.kubernetes.io/component: api
+  target: Request
+  port: 9292
+  method: GET
+  path: /v2/images/*/file
+  abort: true
+  duration: "600s"

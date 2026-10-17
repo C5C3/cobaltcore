@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# HTTPChaos neutron-port-update-delay: the proxy holds every
+# PUT /v2.0/ports/* on port 9696 of the API pods of neutron-nova-vifd-chaos
+# for 330 seconds before Neutron sees it. nova-compute binds the port of each
+# server it builds with that request (binding:host_id), so a build waits out
+# the delay with its port unbound. The workload's network stream creates and
+# deletes networks and ports and sends no PUT, so the fault leaves it alone;
+# the injection and the lift cost it the request in flight (the suite header).
+#
+# 330 seconds is past the 300-second upstream default of vif_plugging_timeout.
+# The fake compute sets vif_plugging_timeout = 0 and vif_plugging_is_fatal =
+# false (12-fake-compute.yaml) and the fake driver waits for no
+# network-vif-plugged event, so the suite proves that a slow Neutron leaves no
+# stuck state, not the timeout path itself. nova renders [neutron] without a
+# timeout, so the compute's PUT waits the delay out instead of giving up.
+#
+# Server-side on the API pods, as the admission policy
+# chaos-mesh-httpchaos-api-workloads-only requires
+# (deploy/kind/chaos-mesh/httpchaos-policy.yaml). HTTPChaos reaches only
+# connections opened after the injection, so the suite restarts the fake
+# compute once it reads AllInjected. duration is a safety net above the
+# suite's hold step; the suite deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: neutron-port-update-delay
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: nova-compute-neutron-http-delay
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: neutron
+      app.kubernetes.io/instance: neutron-nova-vifd-chaos
+      app.kubernetes.io/component: api
+  target: Request
+  port: 9696
+  method: PUT
+  path: /v2.0/ports/*
+  delay: "330s"
+  duration: "900s"

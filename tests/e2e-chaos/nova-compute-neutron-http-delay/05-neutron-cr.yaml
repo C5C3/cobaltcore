@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the Neutron HTTPChaos delay chaos test (2026.1 release).
+#
+# Nova needs a network service in the catalog it can reach: the API resolves
+# [neutron] on every request that touches ports, and nova-compute binds the
+# port of every server it builds with a PUT /v2.0/ports/<id>. The servers of
+# this suite carry one port on vifd-net, which the chassis binds; the
+# HTTPChaos of 15-httpchaos.yaml delays that PUT on this CR's API pods.
+#
+# spec.nova is not set: the fake compute sets vif_plugging_is_fatal = false, so
+# no boot waits for the port event Neutron would send.
+#
+# One API replica and one worker replica: neither serves a request this suite
+# makes, so more pods would only lengthen the bring-up on a node that already
+# carries five services.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-nova-vifd-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_nova_vifd_chaos
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-nova-vifd-chaos-messaging
+  ovn:
+    centralRef:
+      name: nova-vifd-chaos-ovn
+  keystoneEndpoint: http://keystone-nova-vifd-chaos.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  # The workload's verify (../lib/workload.sh --ovn-db-sync) runs this CronJob
+  # once in log mode to compare Neutron and the OVN Northbound database after
+  # the suite. Suspended, it never runs on its own and OVNDBSyncReady stays True.
+  ovnDBSync:
+    syncMode: log
+    suspend: true

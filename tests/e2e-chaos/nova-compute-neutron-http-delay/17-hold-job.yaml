@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots vifd-slow with a port on vifd-net while the HTTPChaos of
+# 15-httpchaos.yaml holds nova-compute's PUT /v2.0/ports/<id> for 330 s.
+#
+# 120 seconds after the create the server must still read BUILD (HELD-OK): a
+# build that finished inside the delay never waited for its port binding, and
+# the delay would prove nothing. The Job then polls every 10 s, for up to
+# 570 s, until the build settles in ACTIVE or ERROR, and prints
+# SETTLED <status> and the server id, which the suite's assert step reads.
+# A server still in BUILD at the end fails the Job: that is the stuck state
+# the suite exists to rule out.
+#
+# The server stays: the assert step reads its port, and the recovery step
+# deletes it. backoffLimit is 0 because the boot is not idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-vifd-chaos-hold
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-vifd-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED=4e0a0000-0000-4000-8000-00000000000c
+
+              SERVER_ID="$(openstack server create --flavor m1.nano --image "${SEED}" \
+                --network vifd-net vifd-slow -f value -c id)"
+              CREATED="$(date +%s)"
+              echo "SERVER-ID: ${SERVER_ID}"
+
+              sleep $(( CREATED + 120 - $(date +%s) > 0 ? CREATED + 120 - $(date +%s) : 0 ))
+              STATUS="$(openstack server show "${SERVER_ID}" -f value -c status)"
+              if [ "${STATUS}" != BUILD ]; then
+                echo "FAIL: vifd-slow is ${STATUS} 120 s after its create, want BUILD"
+                openstack server show "${SERVER_ID}" 2>&1 || true
+                exit 1
+              fi
+              echo HELD-OK
+
+              DEADLINE=$(( $(date +%s) + 570 ))
+              while true; do
+                STATUS="$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || true)"
+                case "${STATUS}" in
+                  ACTIVE | ERROR) break ;;
+                esac
+                if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+                  echo "FAIL: vifd-slow is still ${STATUS:-<none>} $(( $(date +%s) - CREATED )) s after its create"
+                  openstack server show "${SERVER_ID}" 2>&1 || true
+                  exit 1
+                fi
+                sleep 10
+              done
+              echo "settled $(( $(date +%s) - CREATED )) s after the create"
+              openstack server show "${SERVER_ID}" -f value -c fault 2>/dev/null || true
+              echo "SETTLED ${STATUS}"

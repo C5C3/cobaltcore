@@ -1034,7 +1034,7 @@ test_nova_leg_loads_the_tempest_image() {
 }
 
 test_chaos_nova_leg_runs_the_nova_suites() {
-  echo "Test: the e2e-chaos nova leg runs all six nova-stack suites"
+  echo "Test: the e2e-chaos nova leg runs all eight nova-stack suites"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -1061,6 +1061,11 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "tests/e2e-chaos/nova-operator-pod-kill"
   assert_contains "it runs the metadata agent pod-kill suite" "$entry" \
     "tests/e2e-chaos/neutron-metadata-agent-pod-kill"
+  # The two HTTPChaos suites of #1391 on the Nova stack.
+  assert_contains "it runs the Placement HTTPChaos suite" "$entry" \
+    "tests/e2e-chaos/nova-placement-http-fault"
+  assert_contains "it runs the Neutron port-delay HTTPChaos suite" "$entry" \
+    "tests/e2e-chaos/nova-compute-neutron-http-delay"
 
   # The health check comes first, so a Chaos Mesh that never answers is read
   # off one short suite instead of three that each stand a six-service stack up
