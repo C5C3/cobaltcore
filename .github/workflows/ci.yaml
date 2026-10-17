@@ -1225,7 +1225,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Enable BuildKit (required for type=gha cache) as the default builder.
+      # buildx provides `docker buildx imagetools inspect`, which
+      # hack/ci-resolve-e2e-images.sh reads the published digests and the
+      # revision annotations with. This job runs no BuildKit build.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - uses: ./.github/actions/registry-login
@@ -1253,8 +1255,8 @@ jobs:
           CHANGED_LIBVIRT: ${{ needs.changes.outputs.changed-libvirt }}
         run: hack/ci-resolve-e2e-images.sh
 
-      # The service, nova-compute, Tempest, ovn, libvirt and federation proxy
-      # images are flake attributes. The nixos/nix
+      # The operator, service, nova-compute, Tempest, ovn, libvirt and
+      # federation proxy images are flake attributes. The nixos/nix
       # container builds them without its sandbox, which an unprivileged
       # container cannot create, as build users of its own that can neither
       # open the Docker socket nor write the workspace the runner mounts, and
@@ -1270,13 +1272,15 @@ jobs:
           OVN_VERSION: ${{ env.OVN_VERSION }}
           BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
           BUILD_PROXY: ${{ env.BUILD_PROXY }}
+          BUILD_OPERATORS: ${{ env.BUILD_OPERATORS }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
 
       # docker load prints "Loaded image: <name>:<release>", the tag
-      # nix/lib/service-image.nix gives the image; the push step below and
-      # the consumers address it under IMAGE_PREFIX.
+      # nix/lib/service-image.nix gives the image, <op>-operator:latest for
+      # an operator image; the push step below and the consumers address it
+      # under IMAGE_PREFIX.
       - name: Load Nix images
         if: env.BUILD_NIX_IMAGES == 'true'
         run: |
@@ -1295,15 +1299,22 @@ jobs:
         if: env.BUILD_PROXY == 'true'
         run: docker tag "${IMAGE_PREFIX}/keystone-federation-proxy:latest" "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
 
-      # Build operator images for all resolved operators.
-      - name: Build operator images
+      # "Load Nix images" tagged each operator image this run built as
+      # <op>-operator:latest, the tag of its stream; the suites and the push
+      # step below address it as :dev.
+      - name: Tag operator images
         run: |
           for op in $BUILD_OPERATORS; do
-            echo "::group::Building ${op}-operator:dev"
-            make docker-build OPERATOR="${op}" IMG="${IMAGE_PREFIX}/${op}-operator:dev" \
-              DOCKER_CACHE_FROM="type=gha,scope=e2e-${op}-operator" \
-              DOCKER_CACHE_TO="type=gha,mode=max,scope=e2e-${op}-operator"
-            echo "::endgroup::"
+            docker tag "${IMAGE_PREFIX}/${op}-operator:latest" "${IMAGE_PREFIX}/${op}-operator:dev"
+          done
+
+      # Each operator image this run built carries the layout of
+      # nix/lib/static-image.nix and the four static labels alone; build-and-push
+      # publishes the same flake attribute without loading it.
+      - name: Verify operator images
+        run: |
+          for op in $BUILD_OPERATORS; do
+            bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"
           done
 
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped

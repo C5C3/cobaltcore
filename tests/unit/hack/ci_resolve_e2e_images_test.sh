@@ -15,8 +15,11 @@
 #   - everything else maps to the index digest behind its published tag;
 #   - a source that has never been published is built instead of failing the
 #     run, which is what a new operator looks like before its first merge;
-#   - an operator image is reused only when its revision label carries every
-#     commit to that operator's sources, and built otherwise.
+#   - an operator image is reused only when the revision annotation of its
+#     index carries every commit to that operator's sources, and built
+#     otherwise;
+#   - the Nix step runs whenever an image is built, an operator image alone
+#     included.
 #
 # The registry is stubbed through IMAGE_INSPECT_CMD, so the script itself runs
 # for real against the real tree; nothing here reimplements its decisions. The
@@ -62,16 +65,17 @@ DIGEST_RE='^ghcr\.io/c5c3/[a-z0-9-]+@sha256:[0-9a-f]{64}$'
 # A recording stand-in for `docker buildx imagetools inspect`: it appends the
 # reference it was asked about to $INSPECT_LOG and answers with a digest derived
 # from that reference, so each source resolves to a distinct, stable value.
-# Asked for a template that names .Image, it answers the way the real command
-# does for a two-platform index: a JSON object with the digest and both
-# platforms' image configs, which carry the revision label.
+# Asked for the template {{json .Manifest}}, it answers the way the real
+# command does for an index merge-operator-images wrote: the index
+# descriptor with its digest and the revision annotation. Every other
+# template gets the bare digest.
 # Steered from the test through the environment:
 #   STUB_MISSING     — space-separated refs that answer "not found" on stderr
 #   STUB_FLAKY       — space-separated refs that fail with a transient error
 #   STUB_BAD_DIGEST  — when non-empty, answer with something that is not a digest
-#   STUB_REVISION    — the revision label of every image
+#   STUB_REVISION    — the revision annotation of every index
 #   STUB_REVISIONS   — space-separated <ref>=<revision> pairs that override it
-#   STUB_NO_REVISION — space-separated refs whose images carry no revision label
+#   STUB_NO_REVISION — space-separated refs whose index carries no annotations
 make_inspect_stub() {
   local dir="$1"
   mkdir -p "$dir"
@@ -90,20 +94,19 @@ if [ -n "${STUB_BAD_DIGEST:-}" ]; then
   digest="not-a-digest"
 fi
 # $2 is --format and $3 the template.
-case "$3" in
-  *.Image*) ;;
-  *) printf '"%s"\n' "$digest"; exit 0 ;;
-esac
+if [ "$3" != '{{json .Manifest}}' ]; then
+  printf '"%s"\n' "$digest"
+  exit 0
+fi
 revision="${STUB_REVISION:-}"
 for pair in ${STUB_REVISIONS:-}; do
   if [ "${pair%%=*}" = "$1" ]; then
     revision="${pair#*=}"
   fi
 done
-labels="{\"org.opencontainers.image.revision\":\"${revision}\"}"
-case " ${STUB_NO_REVISION:-} " in *" $1 "*) labels='{}' ;; esac
-printf '{"digest":"%s","image":{"linux/amd64":{"config":{"Labels":%s}},"linux/arm64":{"config":{"Labels":%s}}}}\n' \
-  "$digest" "$labels" "$labels"
+annotations=",\"annotations\":{\"org.opencontainers.image.revision\":\"${revision}\"}"
+case " ${STUB_NO_REVISION:-} " in *" $1 "*) annotations='' ;; esac
+printf '{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"%s"%s}\n' "$digest" "$annotations"
 STUB
   chmod +x "$dir/inspect"
 }
@@ -323,7 +326,26 @@ test_a_changed_operator_builds_only_its_own_image() {
     "$(env_block BUILD_SERVICE_IMAGES)"
   assert_contains "the glance service image is pulled by digest" \
     "$(map_value ghcr.io/c5c3/glance:2026.1)" "ghcr.io/c5c3/glance@sha256:"
-  assert_eq "no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
+  assert_eq "the Nix step builds the operator image" "true" "$(env_value BUILD_NIX_IMAGES)"
+}
+
+test_an_operator_alone_runs_the_nix_step() {
+  echo "Test: an operator image is the only image built and the Nix step still runs"
+
+  # The fixture tree has operators and no release, so nothing but the
+  # operator image can turn the Nix step on.
+  local repo="$TMP_DIR/operator-alone"
+  make_fixture_repo "$repo"
+
+  run_resolve_in "$repo" CHANGED_OPERATORS='["keystone"]'
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "keystone is built" "keystone" "$(env_block BUILD_OPERATORS)"
+  assert_eq "no service image is built" "" "$(env_block BUILD_SERVICE_IMAGES)"
+  assert_eq "the Nix step runs for the operator image" "true" "$(env_value BUILD_NIX_IMAGES)"
+
+  run_resolve_in "$repo"
+  assert_eq "nothing changed builds no operator" "" "$(env_block BUILD_OPERATORS)"
+  assert_eq "nothing changed skips the Nix step" "false" "$(env_value BUILD_NIX_IMAGES)"
 }
 
 # ---------------------------------------------------------------------------
@@ -718,8 +740,9 @@ test_an_operator_image_behind_its_sources_is_built() {
 test_a_commit_to_shared_go_code_makes_an_older_image_stale() {
   echo "Test: a commit to the shared Go sources makes an operator image before it stale"
 
-  # operators/Dockerfile builds every operator from internal/ and go.work, which
-  # is why hack/ci-resolve-changes.sh marks every operator changed for go_common.
+  # The flake builds every operator from internal/common and the shared Nix
+  # inputs, which is why hack/ci-resolve-changes.sh marks every operator
+  # changed for go_common.
   local repo="$TMP_DIR/behind-shared-sources" published
   make_fixture_repo "$repo"
   published="$(git -C "$repo" rev-parse HEAD)"
@@ -737,7 +760,7 @@ test_a_commit_to_shared_go_code_makes_an_older_image_stale() {
 }
 
 test_an_image_whose_revision_cannot_be_checked_is_built() {
-  echo "Test: an operator image with no revision label, or one the checkout lacks, is built"
+  echo "Test: an operator image with no revision annotation, or one the checkout lacks, is built"
 
   # Neither proves the image carries the tree's commits. The second is also what
   # a shallow checkout makes of every revision but its own HEAD.
@@ -751,7 +774,7 @@ test_an_image_whose_revision_cannot_be_checked_is_built() {
 
   assert_eq "the resolver exits 0" "0" "$RC"
   assert_contains "it says the image carries no revision" "$OUTPUT" \
-    "::notice::ghcr.io/c5c3/c5c3-operator:latest carries no revision label to check; building ghcr.io/c5c3/c5c3-operator:dev"
+    "::notice::ghcr.io/c5c3/c5c3-operator:latest carries no revision annotation to check; building ghcr.io/c5c3/c5c3-operator:dev"
   assert_contains "it says the checkout lacks the revision" "$OUTPUT" \
     "::notice::ghcr.io/c5c3/keystone-operator:latest is at revision ${unknown}, which this checkout does not have; building ghcr.io/c5c3/keystone-operator:dev"
   assert_eq "both images are built" "c5c3 keystone" "$(env_block BUILD_OPERATORS)"
@@ -788,6 +811,7 @@ make_inspect_stub "$STUB_DIR"
 test_empty_inputs_reuse_every_image
 test_the_key_set_covers_every_image_in_the_tree
 test_a_changed_operator_builds_only_its_own_image
+test_an_operator_alone_runs_the_nix_step
 test_a_changed_service_builds_all_its_releases
 test_a_changed_nova_builds_the_compute_image
 test_a_changed_nova_builds_through_nix
