@@ -116,10 +116,10 @@ test_each_suite_has_its_own_wall() {
   echo "Test: each e2e-chaos suite has its own wall and only pod blocks"
 
   assert_eq "the wall is sized per suite" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 190 || matrix.suite == 'network' && 175 || matrix.suite == 'faults' && 130 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}" \
     "$(job_line e2e-chaos timeout-minutes)"
   assert_eq "every suite but pod is non-blocking, each by name" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}" \
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'faults' }}" \
     "$(job_line e2e-chaos continue-on-error)"
 }
 

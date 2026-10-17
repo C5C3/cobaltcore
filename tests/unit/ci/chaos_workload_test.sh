@@ -23,9 +23,9 @@
 #      deletion-stuck-finalizer and c5c3-operator-pod-kill say why they have
 #      none.
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
-#      pod runs on, the pod and network legs load and deploy Placement for
-#      the placement stream, and make shellcheck lints lib/*.sh and every
-#      suite's probe-lib.sh.
+#      pod runs on, the pod, network and faults legs load and deploy
+#      Placement for the placement stream, and make shellcheck lints lib/*.sh
+#      and every suite's probe-lib.sh.
 #
 # The stub serves Keystone, Nova, Neutron, Cinder, Glance, Placement,
 # Barbican and a plain HTTP target on one localhost port, each under a path
@@ -2191,23 +2191,24 @@ test_ci_loads_the_tempest_image_on_the_keystone_stack_legs() {
 }
 
 # --- Test 24 --------------------------------------------------------------
-test_ci_runs_placement_on_the_pod_and_network_legs() {
-  echo "Test: the pod and network e2e-chaos legs load and deploy Placement, the nova leg keeps its own steps"
+test_ci_runs_placement_on_the_pod_network_and_faults_legs() {
+  echo "Test: the pod, network and faults e2e-chaos legs load and deploy Placement, the nova leg keeps its own steps"
   # The placement stream needs a Placement on every leg that runs a placement
   # suite: placement-operator-pod-kill and placement-keystone-outage on pod,
-  # placement-mariadb-outage on network.
-  local expr="(matrix.suite == 'pod' || matrix.suite == 'network')"
+  # placement-mariadb-outage on network, keystone-validation-http-503 on
+  # faults.
+  local expr="(matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults')"
   local load
   load="$(job_step e2e-chaos "Load E2E images")"
-  assert_contains "the pull of the placement-operator image covers both legs" "$load" \
+  assert_contains "the pull of the placement-operator image covers the three legs" "$load" \
     "\${{ ${expr} && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}"
-  assert_contains "the pull of the placement service image covers both legs" "$load" \
+  assert_contains "the pull of the placement service image covers the three legs" "$load" \
     "\${{ ${expr} && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}"
   local name step
   for name in "Load placement images into kind" "Deploy placement operator"; do
     step="$(job_step e2e-chaos "$name")"
-    assert_eq "${name}: runs on the pod and network legs alone" \
-      "if: matrix.suite == 'pod' || matrix.suite == 'network'" \
+    assert_eq "${name}: runs on the pod, network and faults legs alone" \
+      "if: matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults'" \
       "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
   done
   assert_eq "the nova leg's placement deploy keeps its own condition" \
@@ -2254,7 +2255,7 @@ test_verify_reads_the_ovn_db_sync_log
 test_dump_and_stop_exit_0_without_a_pod
 test_every_suite_adopts_the_harness_or_declines_it
 test_ci_loads_the_tempest_image_on_the_keystone_stack_legs
-test_ci_runs_placement_on_the_pod_and_network_legs
+test_ci_runs_placement_on_the_pod_network_and_faults_legs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
