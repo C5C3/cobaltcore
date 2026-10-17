@@ -12,8 +12,8 @@
 # operator vendor hashes without running nix, resolves for
 # the interpreter flake.nix builds the images with, and that the committed
 # locks under nix/locks/ are the set the release files pin, the committed nova
-# locks carry the nova-compute group, and the committed image pins carry
-# commits and hashes.
+# locks carry the nova-compute group, and the committed image pins and
+# operator vendor hashes carry commits and hashes.
 #
 # The generator checks the release directory first and the tools of the mode
 # next, so those failures need no tool at all. The other runs use a throwaway
@@ -964,7 +964,7 @@ test_check_lists_an_edited_operator_pin() {
 }
 
 test_committed_pins_carry_revs_and_sri_hashes() {
-  echo "Test: the committed image pins carry 40-character commits and SRI hashes"
+  echo "Test: the committed image pins and operator vendor hashes carry commits and hashes"
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed"
     SKIP=$((SKIP + 1))
@@ -993,6 +993,19 @@ test_committed_pins_carry_revs_and_sri_hashes() {
   assert_eq "$PROXY_PIN carries an SRI hash" true "$(matches "$(jq -r .hash "$PROJECT_ROOT/$PROXY_PIN")" "$sri")"
   assert_eq "$PROXY_PIN names a vX.Y.Z or vX.Y.Z.W tag" true \
     "$(matches "$(jq -r .version "$PROJECT_ROOT/$PROXY_PIN")" '^v[0-9]+(\.[0-9]+){2,3}$')"
+  local mod op
+  for mod in "$PROJECT_ROOT"/operators/*/go.mod; do
+    op=$(basename "$(dirname "$mod")")
+    pin="operators/$op/vendor.json"
+    assert_eq "$pin holds inputsHash and vendorHash, in that order" '["inputsHash","vendorHash"]' \
+      "$(jq -c keys_unsorted "$PROJECT_ROOT/$pin" 2>/dev/null)"
+    value=$(jq -r .inputsHash "$PROJECT_ROOT/$pin" 2>/dev/null)
+    assert_eq "$pin carries a 64-hex inputsHash" true "$(matches "$value" '^[0-9a-f]{64}$')"
+    assert_eq "$pin's inputsHash is the hash of the operator's Go module files" \
+      "$(operator_hash "$PROJECT_ROOT" "$op")" "$value"
+    assert_eq "$pin carries an SRI vendor hash" true \
+      "$(matches "$(jq -r .vendorHash "$PROJECT_ROOT/$pin" 2>/dev/null)" "$sri")"
+  done
 }
 
 test_failures_leave_the_lock_untouched() {
