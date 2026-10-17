@@ -61,6 +61,7 @@ The custom managers cover:
 - **openstack-hypervisor-operator image pin** — the `rev` key of `images/openstack-hypervisor-operator/source.json` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source); `make nix-lock` then writes its `hash` and `vendorHash`. The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed patch phase in `build-hvo` means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
 - **kvm-node-agent image pin** — the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets** — the `version` and `rev` keys of `images/nova/novnc.json` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Nix locks](#nix-locks)). Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
+- **mod_auth_openidc of the federation proxy** — the `version` and `rev` keys of `images/keystone-federation-proxy/source.json` (github-tags on `OpenIDC/mod_auth_openidc`, regex versioning because the tags carry a `v` prefix and a fourth component). Renovate reads the fourth component as a build number, so every `2.4.x.y` release is a patch. One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Majors are disabled; minors and patches wait the 3-day cooldown in the group `mod_auth_openidc releases` and are **not** automerged. The module authenticates every federated login in front of Keystone, and a reviewer reads upstream's ChangeLog: 2.4.20, for one, changed the key derivation of the session cookies. Digest updates are disabled, as for noVNC. The PR rebuilds the image through the `proxy` filter of the build-images workflow and runs the keystone `e2e-operator` job through the `image_proxy` filter of the CI workflow.
 - **Lab libvirt image** — the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is a keeper tag. `hack/ci-tag-libvirt-keeper.sh` creates `<libvirt-version>-r<N>`, such as `12.2.0-r57`, once on `main` for the Nix-built image; `N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix` and `flake.lock`, so a `nixpkgs-images` re-lock that rebuilds QEMU while libvirt keeps its version still gets a new tag. The `<libvirt-package-version>-r<N>` keepers of the Docker-built image, such as `10.0.0-2ubuntu8.19-r2`, stay in GHCR as the lab's rollback target. `deb` reads `12.2.0-r57` as upstream `12.2.0` and revision `r57` and compares both; `docker` versioning would read `-r57` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `12.x`, so `allowedVersions` admits the Nix keeper shape alone, which also keeps out the Docker-built keepers. Every update type, majors included, moves all eight lines in one PR (`metal-stack lab libvirt image`): a pin on a Docker-built keeper moves to the newest Nix keeper as a major (10 to 12), and a libvirt major that a `nixpkgs-images` re-lock brings is one too. The lab never pins a branch build, because `cleanup-images.yaml` removes a branch's `<sha>` tag after 24 hours, so a pull request that changes the image leaves the pins alone and Renovate proposes the keeper `main` mints after the merge. The PR has no cooldown, since this repository's own `main` builds the image from a reviewed commit. It is **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump, rolled node by node as [libvirt 12 on the lab](../reference/infrastructure/infrastructure-manifests.md#libvirt-12-on-the-lab) describes, is what the pin is for.
 - **Lab Ceph image** — the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
 - **Lab soak runner image** — the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/lab/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
@@ -100,7 +101,7 @@ Separately, the native `nix` manager keeps the root flake fresh: it maintains
 Nix-built container images ([Nix Image Build](../reference/ci-cd/nix-image-build.md)),
 and `pyproject-nix`, `uv2nix` and `pyproject-build-systems` build the Python
 environments of those images. The `nix flake inputs` package rule re-locks all five on
-the Monday schedule of the ubuntu digest bump and opens one grouped PR. That PR is
+the Monday schedule of the golang and uv bumps and opens one grouped PR. That PR is
 **not** automerged: the refs are rolling branches, so the re-lock is not a version
 bump and the 3-day cooldown cannot gate it — a reviewer confirms the base-runtime bump
 instead. A re-lock of
@@ -119,7 +120,7 @@ per release for Tempest, are derived from five kinds of pin:
 `releases/<release>/upper-constraints.txt` and `extra-packages.yaml`,
 `overrides/<release>/constraints.txt`, the patches under `patches/`, and
 `nix/base-requirements.txt`. `hack/nix-lock.sh` writes them, and with them
-the noVNC hash in `images/nova/novnc.json` and the derived keys of the three image
+the noVNC hash in `images/nova/novnc.json` and the derived keys of the four image
 pins `images/<name>/source.json`. `nix/locks/**` in `ignorePaths` keeps
 every manager from reading the derived files, and a `packageRules` entry with
 `matchFileNames: ["nix/locks/**"]` disables any update to them. A Renovate PR that
@@ -277,14 +278,15 @@ example to `>=1.9.0 <2.0.0` in `deploy/kind/base/envoy-gateway.yaml`, to see
 
 ### Derived keys of the image pins
 
-Renovate moves the keys of the three image pins a datasource can name: `version` and
-`rev` of `images/ovn/source.json`, and `rev` of
-`images/openstack-hypervisor-operator/source.json` and
+Renovate moves the keys of the four image pins a datasource can name: `version` and
+`rev` of `images/ovn/source.json` and `images/keystone-federation-proxy/source.json`,
+and `rev` of `images/openstack-hypervisor-operator/source.json` and
 `images/kvm-node-agent/source.json`. `make nix-lock` writes the rest:
 
 | Pin | Derived keys |
 | --- | --- |
 | `images/ovn/source.json` | `hash`, the NAR hash of the OVN tree at `rev`; `ovs.rev`, the commit the `ovs` submodule gitlink names at `rev`; `ovs.hash`, the NAR hash of that OVS tree |
+| `images/keystone-federation-proxy/source.json` | `hash`, the NAR hash of the mod_auth_openidc tree at `rev` |
 | `images/openstack-hypervisor-operator/source.json`, `images/kvm-node-agent/source.json` | `hash`, the NAR hash of the tree at `rev`; `vendorHash`, the hash of its Go module download |
 
 No Renovate datasource can express "the `ovs` gitlink at tag X" or a NAR hash, so a
@@ -298,8 +300,9 @@ the OVN patch rule does not automerge: an automerged PR would leave nobody to ru
 and the group would stall red until someone noticed OVN security patches had stopped
 landing ([Source-built images](../reference/ci-cd/nix-image-build.md#source-built-images)).
 
-The noVNC pin `images/nova/novnc.json` follows the same flow: Renovate moves `version`
-and `rev`, and `make nix-lock` writes `hash`.
+The noVNC pin `images/nova/novnc.json` has the `{version, rev, hash}` shape of the
+proxy pin and follows the same flow: Renovate moves `version` and `rev`, and
+`make nix-lock` writes `hash`.
 
 ### Re-cutting the openstack-hypervisor-operator patch
 

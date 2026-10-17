@@ -62,10 +62,9 @@ The two path lists differ. The push list is the broad one it has always been:
 `hack/ci-*` and `.github/actions/**` as catch-alls, so any CI script or composite
 action republishes the images. The pull-request list names the inputs this workflow
 actually reads: the images and their build contexts, `releases/**`, `patches/**`,
-`scripts/**`, `overrides/**`, the option catalogs it verifies, and the eleven
-composite actions and eleven `hack/` scripts its jobs call, directly or through
-`build-push-image`, `build-nix-image`, `setup-docker-registry` and
-`merge-manifest-and-attest`. Both lists name `flake.nix`, `flake.lock`,
+`scripts/**`, `overrides/**`, the option catalogs it verifies, and the ten
+composite actions and ten `hack/` scripts its jobs call, directly or through
+`build-nix-image`, `setup-docker-registry` and `merge-manifest-and-attest`. Both lists name `flake.nix`, `flake.lock`,
 `nix/lib/**`, `nix/pkgs/**`, `nix/locks/**` and `nix/base-requirements.txt`, the
 inputs of the Nix-built images and their locks, and `hack/nix-lock.sh`, which
 `nix-lock-check` runs, so a Renovate pull request that moves only the base pins still
@@ -212,8 +211,8 @@ inline sequence that was previously duplicated for each image type.
   PRs and is where `fail-build` turns into a severity gate once one is wanted.
 
 **Usage:** Every merge job calls this composite action through
-`merge-manifest-and-attest`, and the build jobs through `build-push-image` or
-`build-nix-image`. Merge jobs use `sbom` mode; build jobs use `image` mode for PR-only
+`merge-manifest-and-attest`, and the build jobs through `build-nix-image`.
+Merge jobs use `sbom` mode; build jobs use `image` mode for PR-only
 scans. This replaces the per-image-type inline SBOM + Grype + SARIF + attest + provenance
 + cosign sequences.
 
@@ -259,18 +258,17 @@ duplicated for each image type.
 | `artifact-name` | yes | — | Name for the uploaded artifact |
 | `digest-dir` | no | `/tmp/digests` | Directory for digest files |
 
-**Usage:** `build-push-image` and `build-nix-image` call this composite action after
-a push by digest, replacing inline `mkdir`/`touch`/`upload-artifact` steps.
+**Usage:** `build-nix-image` calls this composite action after a push by digest,
+replacing inline `mkdir`/`touch`/`upload-artifact` steps.
 
 ### build-nix-image
 
-Builds a flake image attribute, the counterpart of `build-push-image` for the images
-the root flake builds. Its inputs and steps are documented under
+Builds a flake image attribute. Its inputs and steps are documented under
 [The build-nix-image action](./nix-image-build.md#the-build-nix-image-action).
 
-**Usage:** `build-backup-shifter`, `build-libvirt`, `build-ovn`, `build-hvo`,
-`build-kna`, `build-tempest`, `build-service-images` and `build-nova-compute-image`
-call this composite action.
+**Usage:** `build-keystone-federation-proxy`, `build-backup-shifter`,
+`build-libvirt`, `build-ovn`, `build-hvo`, `build-kna`, `build-tempest`,
+`build-service-images` and `build-nova-compute-image` call this composite action.
 
 ### setup-nix
 
@@ -317,8 +315,9 @@ composite action calls this script via `run:` with env vars passed through the s
 
 Writes the locks under `nix/locks/` the Python images are built from, one per
 service and release plus one per release for Tempest, the noVNC hash of
-`images/nova/novnc.json`, and the hashes of the three pins
-`images/ovn/source.json`, `images/openstack-hypervisor-operator/source.json` and
+`images/nova/novnc.json`, and the hashes of the four pins
+`images/ovn/source.json`, `images/keystone-federation-proxy/source.json`,
+`images/openstack-hypervisor-operator/source.json` and
 `images/kvm-node-agent/source.json`, with the OVS commit of the `ovs` gitlink
 ([Source-built images](./nix-image-build.md#source-built-images)). `--check`
 regenerates every lock and pin and exits 1 with
@@ -357,10 +356,9 @@ step yields on `push` and `workflow_dispatch`.
 Three inputs resolve to everything, because everything is built from them: an event
 that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
 also sets `build-tempest`, since Nix builds the Tempest image from its lock with the
-same flake inputs and library and it reads `releases/<release>/`. The federation proxy
-builds `FROM ubuntu:noble`; OVN, the backup shifter, libvirt,
-openstack-hypervisor-operator and kvm-node-agent are built by Nix from their own pins
-and `flake.lock`. None of them reads a release, so they follow their own filters,
+same flake inputs and library and it reads `releases/<release>/`. The federation proxy,
+OVN, the backup shifter, libvirt, openstack-hypervisor-operator and kvm-node-agent are
+built by Nix from their own pins and `flake.lock`. None of them reads a release, so they follow their own filters,
 which also name the flake inputs, `nix/lib/` and the two Nix actions.
 
 Every output line is echoed as well as written, so running the script prints what it
@@ -413,13 +411,14 @@ unknown service exits 1 before either is written.
 The workflow's jobs form this dependency graph:
 
 ```text
-changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
-lint-dockerfiles ─┤      └──> merge-keystone-federation-proxy-image (push only)
-prepare ──────────┘
+lint-dockerfiles
 
-changes ──────────┬──> build-backup-shifter (matrix: amd64 + arm64)
-nix-flake-check ──┤      └──> merge-backup-shifter-image (push only)
+changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
+nix-flake-check ──┤      └──> merge-keystone-federation-proxy-image (push only)
 prepare ──────────┤
+                  ├──> build-backup-shifter (matrix: amd64 + arm64)
+                  │      └──> merge-backup-shifter-image (push only)
+                  │
                   └──> build-libvirt (matrix: amd64 + arm64)
                          └──> merge-libvirt-image (push only)
 
@@ -457,8 +456,9 @@ built on a native runner and pushed by digest. The merge job of the image then
 assembles the multi-arch manifest list and runs the supply chain security pipeline via
 the `supply-chain-attest` composite action, as `build-service-images` and
 `merge-service-images` do for the service images and `build-tempest` and
-`merge-tempest-image` for Tempest. Every build job but the federation proxy's builds a
-flake attribute with `build-nix-image` instead of a Dockerfile.
+`merge-tempest-image` for Tempest. Every build job builds a flake attribute with
+`build-nix-image`. `lint-dockerfiles` lints `operators/Dockerfile`, whose images the
+CI workflow builds, and no job of this workflow needs it.
 
 The `test-service-images`
 job runs the upstream unit tests of each service as a Nix build
@@ -502,7 +502,7 @@ every pull request.
 
 ### nix-flake-check
 
-The gate of every Nix-built image, as `lint-dockerfiles` is for the Docker-built ones.
+The gate of every Nix-built image.
 
 | Property | Value |
 | --- | --- |
@@ -561,23 +561,28 @@ its branch ([Renovate](./nix-image-build.md#renovate)).
 
 ### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
 
-The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
-(OIDC) and `mod_auth_mellon` (SAML) in one image
-(`images/keystone-federation-proxy/`, single-stage `ubuntu:noble` + distro
-`apache2` + `libapache2-mod-auth-openidc` + `libapache2-mod-auth-mellon`). The
-image is release-independent — no OpenStack code — so the job pair has no
-release matrix: a two-platform build
-job that depends on `changes`, `lint-dockerfiles` and `prepare` (PR mode loads
-the amd64 image locally for the inline Grype scan and the
-`tests/container-images/verify_keystone_federation_proxy.sh` verify
-script), and a PR-skipped merge job assembling the multi-arch manifest with
-the `:latest` + `:<sha>` tag scheme, followed by the
-supply-chain pipeline (SBOM, attestation, cosign).
+The Apache federation reverse-proxy sidecar for Keystone, with `mod_auth_openidc`
+(OIDC) and `mod_auth_mellon` (SAML) in one image. The root flake builds it from
+`images/keystone-federation-proxy/image.nix`: mod_auth_openidc from the commit
+`images/keystone-federation-proxy/source.json` pins, Apache and mod_auth_mellon from
+the `nixpkgs-images` revision `flake.lock` pins
+([Nix Image Build](./nix-image-build.md#source-built-images)). The image carries no
+OpenStack code, so the job pair has no release matrix. The two-platform build job
+depends on `changes`, `nix-flake-check` and `prepare`, installs Nix, adds the Cachix
+cache `cobaltcore` and calls [`build-nix-image`](#build-nix-image) with the attribute
+`keystone-federation-proxy-image`. On a pull request the action loads the amd64 image
+locally for the inline Grype scan and the
+`tests/container-images/verify_keystone_federation_proxy.sh` verify script; on a push
+it pushes each platform by digest with skopeo. The PR-skipped merge job assembles the
+multi-arch manifest with the `:latest` + `:<sha>` tags, followed by the supply-chain
+pipeline (SBOM, attestation, cosign).
 
 Condition: `needs.changes.outputs.build-proxy == 'true'`. On a pull request the
-build job runs when `images/keystone-federation-proxy/**` or
-`tests/container-images/verify_keystone_federation_proxy.sh` changed; on a push it
-always runs.
+build job runs when `images/keystone-federation-proxy/**`,
+`tests/container-images/verify_keystone_federation_proxy.sh`,
+`tests/lib/build_tools.sh`, `flake.nix`, `flake.lock`, `nix/lib/**`,
+`.github/actions/build-nix-image/**` or `.github/actions/setup-nix/**` changed; on a
+push it always runs. The arm64 image is built on a push only.
 
 ### build-backup-shifter / merge-backup-shifter-image
 
@@ -593,7 +598,7 @@ On a pull request the action loads the amd64 image locally for the inline Grype 
 and the `tests/container-images/verify_backup_shifter.sh` verify script; on a push it
 pushes each platform by digest with skopeo. The PR-skipped merge job assembles the
 multi-arch manifest with the `:latest` + `:<sha>` tags, followed by the supply-chain
-pipeline, as for every distro-package image.
+pipeline, as for every release-independent image.
 
 Condition: `needs.changes.outputs.build-shifter == 'true'`. On a pull request the
 build job runs when `images/backup-shifter/**`,
@@ -1184,8 +1189,7 @@ The workflow behaves differently depending on the trigger event:
 | ovn image verification | Inline step in `build-ovn` (`verify_ovn.sh` on `:pr-verify`) | Separate `verify-ovn-image` job (pulled by digest from GHCR) |
 | nova-compute image verification | Inline step in `build-nova-compute-image` (`verify_nova_compute.sh`, amd64) | Separate `verify-nova-compute-image` job on `ubuntu-latest` and `ubuntu-24.04-arm` |
 
-On a pull request every Nix-built image (every image but the federation proxy) is
-scanned twice: Grype scans the loaded image, and vulnix scans the store
+On a pull request every image is scanned twice: Grype scans the loaded image, and vulnix scans the store
 paths of the image
 ([The build-nix-image action](./nix-image-build.md#the-build-nix-image-action)).
 
@@ -1195,22 +1199,8 @@ PRs build only `linux/amd64`. The arm64 images are built and verified on push.
 
 ## GHA Caching
 
-All `docker/build-push-action` steps use GitHub Actions cache for Docker layers:
-
-```yaml
-cache-from: type=gha,scope=<scope>
-cache-to: type=gha,mode=max,scope=<scope>
-```
-
-Each image has a unique cache scope per platform to prevent cross-arch cache collisions:
-
-| Image | Scope |
-| --- | --- |
-| `keystone-federation-proxy` | `keystone-federation-proxy-linux-amd64` / `keystone-federation-proxy-linux-arm64` |
-
-The `mode=max` setting caches all intermediate layers, not just the final image layer.
-
-A Nix-built image, every image but the federation proxy, uses no `type=gha` scope: its build jobs and `test-service-images` read the Cachix cache `cobaltcore`
+No job of this workflow uses a `type=gha` cache. Every image is built by Nix, and the
+build jobs and `test-service-images` read the Cachix cache `cobaltcore`
 ([Binary cache](./nix-image-build.md#binary-cache)).
 
 ## Action Pinning
@@ -1221,8 +1211,6 @@ convention in `ci.yaml`:
 ```yaml
 uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
-uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
-uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
 uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
 uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7
 uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
@@ -1551,9 +1539,9 @@ configuration:
 | Test | Validates |
 | --- | --- |
 | `test_grype_scan_steps_in_supply_chain_attest` | 2 `anchore/scan-action` steps exist in `supply-chain-attest` (SBOM + image) |
-| `test_grype_scan_step_in_build_service_images` | `build-push-image` calls `supply-chain-attest` once, and the `build-service` step passes a `grype-category` with `matrix.service` |
+| `test_grype_scan_step_in_build_service_images` | `build-nix-image` calls `supply-chain-attest` once, and the `build-service` step passes a `grype-category` with `matrix.service` |
 | `test_grype_scan_action_sha_pinned` | `anchore/scan-action` is SHA-pinned with `# v7` version comment |
-| `test_grype_scan_steps_cover_both_contexts` | The `grype-sbom` step has the `scan-mode == 'sbom'` guard and the `grype-image` step the `scan-mode == 'image'` guard; `merge-service-images` has the job-level pull-request guard; the `build-push-image` scan call is guarded on `push-by-digest == 'false'` and uses `scan-mode: image` |
+| `test_grype_scan_steps_cover_both_contexts` | The `grype-sbom` step has the `scan-mode == 'sbom'` guard and the `grype-image` step the `scan-mode == 'image'` guard; `merge-service-images` has the job-level pull-request guard |
 | `test_grype_sbom_input_wiring` | The `grype-sbom` step reads `inputs.sbom-output-file`, and the merge calls pass the filenames (`sbom-libvirt.cyclonedx.json`, etc.) |
 | `test_grype_image_input_wiring` | The `grype-image` step reads `inputs.image-ref-for-scan`; `merge-manifest-and-attest` builds it from `inputs.image` and the merged digest; the `build-service` step passes the composite tag |
 | `test_grype_severity_threshold` | Both Grype steps use `severity-cutoff: high` |
@@ -1569,32 +1557,34 @@ configuration:
 
 ## OCI Annotations
 
-Every Docker-built container image receives OCI Image Spec annotations via a two-layer
-approach: static `LABEL` instructions in Dockerfiles provide baseline metadata for local
-builds, while `docker/metadata-action` in CI generates dynamic labels that supplement the
-static ones at push time. A Nix-built image sets its labels in its Nix expression
-([Nix-Built Images](#nix-built-images)).
+Every image this workflow builds is Nix-built and sets its labels in its Nix
+expression ([Nix-Built Images](#nix-built-images)). The operator images, which the CI
+workflow builds from `operators/Dockerfile`, receive OCI Image Spec annotations via a
+two-layer approach: a static `LABEL` instruction in the Dockerfile provides baseline
+metadata for local builds, while `docker/metadata-action` in CI generates dynamic
+labels that supplement the static ones at push time.
 
 ### Static Dockerfile Labels
 
-Each Dockerfile includes a `LABEL` instruction with four OCI annotations that are always
-present, regardless of whether the image is built locally or in CI:
+`operators/Dockerfile`, the one Dockerfile left, includes a `LABEL` instruction with
+four OCI annotations that are always present, regardless of whether the image is built
+locally or in CI:
 
-| Label | Value (example for keystone-federation-proxy) |
+| Label | Value (example for keystone-operator) |
 | --- | --- |
-| `org.opencontainers.image.title` | `keystone-federation-proxy` |
-| `org.opencontainers.image.description` | `Apache/mod_auth_openidc reverse-proxy sidecar for Keystone OIDC federation` |
+| `org.opencontainers.image.title` | `keystone-operator` |
+| `org.opencontainers.image.description` | `CobaltCore keystone operator` |
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 
-The `LABEL` instruction is placed after the last `RUN` instruction. In a multi-stage
-Dockerfile such as `operators/Dockerfile`, the `LABEL` is placed in the final stage,
+The Dockerfile has several stages, so the `LABEL` is placed in the final stage,
 because Docker discards the labels of a build stage.
 
 ### CI Metadata Action
 
-In CI, each image has a `docker/metadata-action` step that generates OCI-compliant
-labels. The action auto-generates dynamic labels from the GitHub context:
+In the CI workflow, the operator image jobs run a `docker/metadata-action` step that
+generates OCI-compliant labels; no job of this workflow runs one. The action
+auto-generates dynamic labels from the GitHub context:
 
 | Auto-generated label | Source |
 | --- | --- |
@@ -1611,7 +1601,7 @@ description, licenses, vendor). These supplement the auto-generated labels.
 
 | Step ID | Job | Image input |
 | --- | --- | --- |
-| `meta` | every build job, inside the `build-push-image` composite action | <code v-pre>${{ inputs.image-name }}</code> |
+| `meta` | `build-and-push` and `merge-operator-images` in `ci.yaml` | <code v-pre>${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator</code> |
 
 Each metadata-action step's `outputs.labels` is wired into the corresponding
 `build-push-action` step via the `labels` input. At push time, CI-generated labels
@@ -1638,9 +1628,8 @@ sets `org.opencontainers.image.version` to the `ref` of the lock's `sources.json
 value `releases/<release>/source-refs.yaml` pins. The OCI version annotation therefore
 reflects the software version, not a Git-derived one, and no `type=raw` metadata
 strategy is involved. nova-compute gets nova's ref the same way, from the nova lock.
-The federation proxy, the one image `build-push-image` still builds here, uses the
-default Git-derived version strategy, which fits an image without an upstream software
-version.
+The federation proxy carries no version label, like the backup shifter: it bundles
+several upstream components, and no single version names the image.
 
 > **Note:** The `tags` input on `docker/metadata-action` controls the
 > `org.opencontainers.image.version` label, not the image tags passed to
@@ -1650,16 +1639,9 @@ version.
 
 ### Test Coverage
 
-The `verify_build_images_workflow.sh` script validates OCI annotation configuration:
-
-| Test | Validates |
-| --- | --- |
-| `test_build_push_image_has_labels_input` | `build` step of `build-push-image` wires `steps.meta.outputs.labels` |
-| `test_oci_base_labels_in_build_steps` | The federation proxy's build step passes `org.opencontainers.image.base.name` and `.base.digest` in `extra-labels` |
-| `test_metadata_action_labels_include_oci_title` | The `meta` step includes `org.opencontainers.image.title`, and the federation proxy's build step passes `labels-title` |
-| `test_metadata_action_labels_include_oci_description` | The `meta` step includes `org.opencontainers.image.description`, and the federation proxy's build step passes `labels-description` |
-| `test_metadata_action_labels_include_oci_licenses` | The `meta` step includes `org.opencontainers.image.licenses=Apache-2.0` |
-| `test_metadata_action_labels_include_oci_vendor` | The `meta` step includes `org.opencontainers.image.vendor` |
+`verify_build_images_workflow.sh` checks no label: every image of this workflow sets
+its labels in its Nix expression. `verify_hvo.sh` and `verify_kna.sh` check that the
+`io.c5c3.upstream-commit` label of their image names the pinned commit.
 
 ## Adding a New Service
 
@@ -1759,28 +1741,28 @@ steps in `build-service-images` and `verify-service-images`.
 ### Release-independent images (non-OpenStack upstream)
 
 Not every image tracks an OpenStack release. `keystone-federation-proxy`
-installs Apache and its two auth modules from the `ubuntu:noble` archive, and
-`ovn` compiles a family of C daemons from pinned upstream commits. Images on
+compiles mod_auth_openidc from a pinned upstream commit beside nixpkgs' Apache
+and mod_auth_mellon, and `ovn` compiles a family of C daemons from pinned
+upstream commits. Images on
 this path have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
 `generate-matrix` never sees them. What they need in place of that wiring:
 
 - The upstream version pinned beside the image. A Nix-built image keeps it in
   `images/<image>/source.json` with the commit and its hash, for example the
-  `version` and `rev` keys of `images/ovn/source.json`, and `hack/nix-lock.sh`
+  `version` and `rev` keys of `images/ovn/source.json` or
+  `images/keystone-federation-proxy/source.json`, and `hack/nix-lock.sh`
   writes the hashes (`make nix-lock`).
 - `hack/ci-resolve-<image>-version.sh` as the parser of that pin in CI
   outside the Nix build and `hack/nix-lock.sh`, which read the file
   themselves. The workflow and the verify script call it.
 - A build a contributor reproduces with one command: `nix build
-  .#<image>-image` for a Nix-built image.
-- A `build-<image>` job that needs `changes`, `lint-dockerfiles` and `prepare` with its
-  platform include matrix written out, a PR-skipped `merge-<image>-image` job,
-  and a `verify-<image>-image` job when the merged manifest is checked after
-  the push. The Dockerfile also joins the `lint-dockerfiles` matrix.
-- A Nix-built image has no Dockerfile and no `lint-dockerfiles` entry instead: its
-  build job needs `nix-flake-check` in place of `lint-dockerfiles` and calls
-  `build-nix-image`, and its expression lives at `images/<image>/image.nix`
-  ([Nix Image Build](./nix-image-build.md)).
+  .#<image>-image`.
+- An expression at `images/<image>/image.nix`
+  ([Nix Image Build](./nix-image-build.md)) and a `build-<image>` job that
+  needs `changes`, `nix-flake-check` and `prepare` with its platform include
+  matrix written out and calls `build-nix-image`, a PR-skipped
+  `merge-<image>-image` job, and a `verify-<image>-image` job when the merged
+  manifest is checked after the push.
 - Change detection: a paths filter for the image in the `changes` job, its
   `FILTER_<name>` env line on the resolve step and a `build-<name>` output; the
   flag in `hack/ci-resolve-image-changes.sh` (the header, both branches and the
@@ -1809,9 +1791,12 @@ An image pinned to an upstream commit instead of a version names its resolver
 `build-hvo` and `verify_hvo.sh`, and `kvm-node-agent` has
 `hack/ci-resolve-kna-commit.sh`, `build-kna` and `verify_kna.sh`.
 
-An image built from distro packages alone (`keystone-federation-proxy`) or from
-nixpkgs alone (`libvirt`, `backup-shifter`) has no upstream pin of its own and
-therefore skips the resolver script and the Renovate `customManager`.
+An image built from nixpkgs alone (`libvirt`, `backup-shifter`) has no upstream
+pin of its own and therefore skips the resolver script and the Renovate
+`customManager`. `keystone-federation-proxy` has a pin and a `customManager`
+(the mod_auth_openidc manager) but no resolver script, because no job reads its
+version: `verify_keystone_federation_proxy.sh` reads the `version` key itself,
+as `verify_nova.sh` reads `images/nova/novnc.json`.
 
 ## Adding a New Release
 

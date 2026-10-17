@@ -20,10 +20,10 @@ breaks structurally. Profile these instead of the Python questions:
   (`hack/ci-generate-build-matrix.sh:61-69`), imply per-OpenStack-release
   versioning, and obligate `verify_release_config.sh`. Use the
   `keystone-federation-proxy` precedent instead: dedicated
-  build/merge jobs outside the matrix, the verify script run inside the
-  build job (`build-images.yaml:592-695`),
+  build/merge jobs outside the matrix, built by Nix like `backup-shifter`,
+  the verify script run inside the build job (`build-images.yaml:539-634`),
   image tagged with the service's own version. `backup-shifter`
-  (`:696-799`) and `ovn` (`:800-967`, its own `verify-ovn-image` job, built
+  (`:636-729`) and `ovn` (`:862-1011`, its own `verify-ovn-image` job, built
   by Nix like `backup-shifter`, the tag read from the `version` key of
   `images/ovn/source.json` by `hack/ci-resolve-ovn-version.sh`) are two more
   decoupled images.
