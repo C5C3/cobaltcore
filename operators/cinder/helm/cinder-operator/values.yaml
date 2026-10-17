@@ -119,6 +119,10 @@ serviceAccount:
 # NetworkPolicy for operator pod egress restriction.
 # Default-off (opt-in) to preserve upgrade compatibility for clusters whose
 # kube-apiserver CIDR or DNS layout does not match the defaults below.
+# With enabled=true the chart also admits the operator's API health check:
+# egress on TCP 8776 to the pods labelled app.kubernetes.io/name=cinder and
+# app.kubernetes.io/managed-by=cinder-operator, in any namespace. No value
+# configures it.
 networkPolicy:
   # When true, a NetworkPolicy is rendered that targets the operator
   # pod and default-denies both ingress and egress except for the rules below.

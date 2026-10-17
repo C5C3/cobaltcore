@@ -1,0 +1,71 @@
+# NetworkPolicy unit tests for the keystone-operator additions.
+# The shared NetworkPolicy is pinned by the operator-library testbed suite;
+# this suite covers the API health-check egress rule the chart adds through
+# the operator-library.chart.networkPolicyEgress hook.
+suite: NetworkPolicy
+templates:
+  - templates/networkpolicy.yaml
+tests:
+  - it: should not render a NetworkPolicy by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render the API health-check egress rule after the shared rules
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["172.18.0.2/32"]
+          ports: [6443]
+    asserts:
+      # DNS, kube-apiserver, Keystone API: the API rule comes last.
+      - lengthEqual:
+          path: spec.egress
+          count: 3
+      - equal:
+          path: spec.egress[2]
+          value:
+            to:
+              - namespaceSelector: {}
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: keystone
+                    app.kubernetes.io/managed-by: keystone-operator
+            ports:
+              - protocol: TCP
+                port: 5000
+              - protocol: TCP
+                port: 5050
+
+  - it: should keep the API rule when DNS egress is disabled
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["172.18.0.2/32"]
+          ports: [6443]
+        dns:
+          enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 2
+      - equal:
+          path: spec.egress[1].ports
+          value:
+            - protocol: TCP
+              port: 5000
+            - protocol: TCP
+              port: 5050
+
+  - it: should still fail the render when kubeApiServer.cidrs is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: []
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "cidrs"
