@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pod for the network-policy-egress E2E test (Step 5 of
+# chainsaw-test.yaml). It carries the two selector labels of the
+# keystone-operator-netpol release, so the release's NetworkPolicy judges its
+# connections as it judges the operator pod's. It has no pod-template-hash
+# label, so the release's ReplicaSet does not adopt it, and chainsaw deletes it
+# when the test ends. The keystone service image brings the python3 the probes
+# run, and kind already holds it for the Keystone CR of 01-keystone-cr.yaml.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: keystone-operator-netpol-probe
+  namespace: keystone-system
+  labels:
+    app.kubernetes.io/name: keystone-operator
+    app.kubernetes.io/instance: keystone-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi

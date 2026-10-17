@@ -19,11 +19,13 @@
 #     2. The operator pod starts and turns Ready under the enforced policy,
 #        so its DNS and API server rules admit the traffic it starts with.
 #     3. A Keystone CR reconciles to Ready=True while the policy is present.
-#   It does NOT probe that packets outside the allow-list are dropped. With
-#   leader election enabled and a second operator release installed
-#   alongside the primary one from hack/ci-deploy-operator.sh, there is also
-#   no guarantee the netpol-restricted pod (vs. the primary) is the one that
-#   drove the CR to Ready.
+#     4. A pod the policy selects is dropped on a port no rule admits and
+#        reaches the Keystone API through its Service (Step 5).
+#   With leader election enabled and a second operator release installed
+#   alongside the primary one from hack/ci-deploy-operator.sh, there is no
+#   guarantee the netpol-restricted pod (vs. the primary) is the one that
+#   drove the CR to Ready, so item 3 alone does not prove the API rule;
+#   item 4 does.
 #
 # Installs a second keystone-operator Helm release with networkPolicy.enabled=
 # true and the cluster's API server endpoint, then applies a minimal Keystone
@@ -40,6 +42,8 @@
 #   - NetworkPolicy is emitted in the release namespace
 #   - Operator pod starts and stays Ready under the policy
 #   - A Keystone CR reconciles to Ready=True under the policy
+#   - The policy drops a pod it selects on the MariaDB port and admits it to
+#     the Keystone API
 #   - Failures produce enough diagnostic output to debug egress regressions
 #     without re-running locally
 #
@@ -157,7 +161,71 @@ spec:
           kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
           echo "=== Events (workload ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 5: Cleanup Helm release ─────────────────────────────────────────
+  # ── Step 5: Probe the enforced policy from a pod it selects ─────────────
+  # Step 4 cannot tell which release drove the CR to Ready (see ENFORCEMENT
+  # above). The probe pod of 02-probe-pod.yaml carries the release's selector
+  # labels, so the policy judges its connections. kindnet adds a new pod to
+  # its policy set a moment after the pod starts, so the probe first waits
+  # until a connection to the MariaDB Service, which no rule admits, is
+  # dropped. The Keystone Service the health check calls must then answer,
+  # which only the chart's Keystone API rule admits.
+  - try:
+    - apply:
+        file: 02-probe-pod.yaml
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready pod/keystone-operator-netpol-probe \
+            -n keystone-system --timeout=120s
+          kubectl exec -n keystone-system keystone-operator-netpol-probe -- python3 -c "
+          import socket, time, urllib.error, urllib.request
+
+          def dropped(host, port):
+              try:
+                  socket.create_connection((host, port), timeout=5).close()
+              except socket.timeout:
+                  return True
+              except OSError as exc:
+                  print('TCP %d to %s not dropped yet: %s' % (port, host, exc))
+                  return False
+              print('TCP %d to %s connected: the policy does not hold the pod yet' % (port, host))
+              return False
+
+          for _ in range(15):
+              if dropped('openstack-db.openstack.svc', 3306):
+                  print('TCP 3306 to openstack-db is dropped')
+                  break
+              time.sleep(2)
+          else:
+              raise SystemExit('the policy never dropped TCP 3306 to openstack-db')
+
+          last = None
+          for _ in range(5):
+              try:
+                  r = urllib.request.urlopen('http://keystone-netpol-egress.openstack.svc:5000/v3', timeout=10)
+                  print('GET /v3 -> HTTP %d' % r.status)
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /v3 -> HTTP %d' % exc.code)
+              except OSError as exc:
+                  last = exc
+                  print('GET /v3 retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('the policy dropped the Keystone API on TCP 5000: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Probe pod ==="
+          kubectl get pod keystone-operator-netpol-probe -n keystone-system -o wide --show-labels 2>&1 || true
+          kubectl describe pod keystone-operator-netpol-probe -n keystone-system 2>&1 | tail -20 || true
+          echo "=== NetworkPolicy YAML ==="
+          kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
+          echo "=== Keystone API pods and Service ==="
+          kubectl get pods,endpointslices -n openstack -l app.kubernetes.io/instance=keystone-netpol-egress -o wide --show-labels 2>&1 || true
+  # ── Step 6: Cleanup Helm release ─────────────────────────────────────────
   # Release-scoped uninstall removes the Deployment, ServiceAccount,
   # ClusterRole/Binding, and NetworkPolicy owned by this release, leaving the
   # primary operator installed by hack/ci-deploy-operator.sh intact.
