@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 65 chaos test suites validate operator behavior during and after fault
+The 68 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 65 test suites require the infrastructure stack to be deployed and healthy.
+All 68 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -538,6 +538,9 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [keystone-api-clock-skew](#keystone-api-clock-skew) | — | `keystone-chaos-clock` | Keystone API clock behind, then ahead (TimeChaos, token lifetime) | `EXPIRED-REJECTED 404` before the skew; one hour behind, `BEHIND-OFFSET` at most -3500 and `BEHIND-ACCEPTS-EXPIRED 200`; two hours ahead, `AHEAD-OFFSET` at least 7100 and `AHEAD-REJECTS-FRESH 404`; after the lift `SKEWED-TOKEN-OUTLIVES 200` with an `expires_at` at least 6900 s ahead, `RECOVERED-OK` and `Ready=True/AllReady` |
 | [keystone-operator-clock-skew](#keystone-operator-clock-skew) | — | `keystone-chaos-opclk` | Operator leader clock ahead, then past the API server's certificate (TimeChaos, leader election) | `SKEW-SEEN`: the Lease's `renewTime` at least 3500 s ahead; a replica patch reconciled with the holder and the leader's `restartCount` unchanged (`RECONCILE-UNDER-SKEW-OK`); past the certificate the Lease on the other pod within 120 s (`HANDOVER-OK`), the expired certificate in the old leader's log (`CERT-REJECTED-OK`) and a replica patch reconciled by the new leader (`RECONCILE-AFTER-HANDOVER-OK`); both operator pods Ready after the lift, workload budget zero |
 | [ovn-raft-clock-skew](#ovn-raft-clock-skew) | — | `ovn-clock-chaos` | Southbound raft member clock ahead, then past the certificates (TimeChaos, quorum) | One hour ahead the follower keeps its leader and term for 120 s (`NO-ELECTION-OK`); past the certificates it drops out with a certificate error in its log (`MEMBER-DROPPED-OK`) while a Northbound write reaches the leader's `Datapath_Binding` within 60 s (`QUORUM-WRITE-OK`); within 180 s of the lift it follows the leader and holds the write (`REJOINED-OK`), `Ready=True/AllReady`, no `clock-chaos-ls` left |
+| [mariadb-io-fault](#mariadb-io-fault) | — | `keystone-chaos-io` | MariaDB data directory slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK`, then 120 s with MariaDB and the Keystone `Ready=True` and new writes acknowledged; `INJECTED-ENOSPC-OK` and MariaDB `Ready=True` within 5 minutes of the lift; `INJECTED-EIO-OK`; afterwards MariaDB `Ready=True` within 10 minutes, `mariadb-check` OK for every table (`CHECK-OK`), every project created with 201 present (`ACKED-OK`), the Keystone `Ready=True/AllReady`; no `mariadb-io-chaos` CR or claim left |
+| [glance-staging-io-fault](#glance-staging-io-fault) | — | `glance-chaos-stage` | Import staging area slow, full, then failing (IOChaos, fail-closed stage) | `INJECTED-LATENCY-OK` and an import reaching `active` (`LATENCY-IMPORT-ACTIVE`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with the stage answered non-2xx and the image `queued` (`ENOSPC-STAGE-REFUSED`, `EIO-STAGE-REFUSED`); after the lift `RECOVERED-OK`, no image `uploading` or `importing` (`NO-STUCK-IMPORT-OK`), no staged file of the suite's images; workload budget zero |
+| [openbao-io-fault](#openbao-io-fault) | — | `keystone-chaos-baoio` | OpenBao raft volume slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK` and ten of ten writes acknowledged (`LATENCY-WRITES-OK`); `INJECTED-ENOSPC-OK`; `INJECTED-EIO-OK`; `openbao-0` unsealed after each phase; afterwards `Sealed false`, `openbao-cluster-store` `Ready=True`, a forced sync of `keystone-admin` (`SYNC-OK`), the canary and every acknowledged write reading their values (`ACKED-OK`), no key left under `kv-v2/chaos/openbao-io`; workload budget zero |
 
 ---
 
@@ -4303,6 +4306,148 @@ the ovn-operator log.
 
 - ovsdb-server writes its log to a file under `/var/log/ovn`, so the suite reads
   the file beside the container log.
+
+---
+
+### mariadb-io-fault
+
+**File:** `tests/e2e-chaos/mariadb-io-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Three `IOChaos` objects on `/var/lib/mysql` of the `mariadb` container
+of the suite's own MariaDB, `mariadb-io-chaos`, make its data directory slow, full
+and failing, one after the other in one fault window, while Keystone
+`keystone-chaos-io` writes to it. The suite pins that MariaDB comes back after each
+fault, that `mariadb-check` finds no damaged table, and that every write it acknowledged under a
+fault is still there. It brings a MariaDB of its own because `EIO` on InnoDB writes
+can crash the server, and the shared `openstack-db` serves every suite of the
+matrix entry.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | MariaDB | `apply` + `assert` (8m) | `mariadb-io-chaos`, the kind shape of `openstack-db`, `Ready=True`. The step cleanup deletes the CR and the claim `storage-mariadb-io-chaos-0` |
+| 2 | Keystone, workload, writer | `apply` + `assert` + `script` (6m) + `script` (3m) | `keystone-chaos-io` on database `keystone_chaos_io` of that MariaDB `Ready=True/AllReady`; `workload.sh start`; pod `mariadb-io-writer` runs `write-probe.py` and logs a first `WRITE <n> 201` |
+| 3 | Latency | `script` (5m) | `workload.sh mark fault-start`, applies `02-iochaos-latency.yaml`, waits for `AllInjected`; a `dd` of 40 KiB into `/var/lib/mysql/.chaos-canary` takes at least 1 s (`INJECTED-LATENCY-OK`). For 120 s MariaDB and the Keystone read `Ready=True` every 10 s and the writer gets a write acknowledged. Deletes the object |
+| 4 | ENOSPC | `script` (10m) | `03-iochaos-enospc.yaml`; the `dd` fails with `No space left on device` (`INJECTED-ENOSPC-OK`); 120 s; deletes the object; MariaDB `Ready=True` within 5 minutes |
+| 5 | EIO | `script` (10m) | `04-iochaos-eio.yaml`; the `dd` fails with `Input/output error` (`INJECTED-EIO-OK`); 60 s; deletes the object; `workload.sh mark fault-end` |
+| 6 | Recovery | `script` (15m) + `assert` | MariaDB `Ready=True` within 10 minutes; `mariadb-check` of `keystone_chaos_io`, run as root with the password on stdin, reports `OK` for every table (`CHECK-OK`); `/tmp/stop` in the writer, which then requires every project it saw created with 201 (`ACKED-OK`); the Keystone `Ready=True/AllReady` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-mariadb-cr.yaml`, `01-keystone-cr.yaml`, `02-iochaos-latency.yaml`
+(`delay: "100ms"`), `03-iochaos-enospc.yaml` (`errno: 28`, `methods: [write,
+create, mkdir]`), `04-iochaos-eio.yaml` (`errno: 5`, `methods: [write, fsync]`), all
+`volumePath: /var/lib/mysql`, `containerNames: [mariadb]`; `write-probe.py`;
+`probe-lib.sh`.
+
+**Workload:** the `token` stream, judged against `failures=600 recovery=300s`, an
+estimate. Issuing a token reads the database; it fails while the server is down
+under `EIO` and until it is back. The suite runs in the `faults` matrix entry.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos keystone-chaos-io` with the MariaDB pod as dependency,
+prints the MariaDB CR, its current and previous log and the writer's log, dumps
+the mariadb-operator log and the workload.
+
+**Design notes:**
+
+- A Keystone on a second MariaDB CR in `openstack` is an assumption no suite made
+  before; a stall there is a finding to report on #1391.
+- A write the server refused or that timed out may be there or not; only a 201
+  must be.
+
+---
+
+### glance-staging-io-fault
+
+**File:** `tests/e2e-chaos/glance-staging-io-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Three `IOChaos` objects on `/var/lib/glance/staging` of container
+`glance-api` of `glance-chaos-stage` make the import staging area slow, full and
+failing, one after the other in one fault window. A `glance-direct` import stages
+its data there before Glance copies it into the store. The suite pins that a stage
+the volume refused answers non-2xx and leaves the image `queued`, and that nothing
+is left uploading, importing or staged afterwards.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone, Glance, workload | `apply` + `assert` x2 + `script` (6m) | `keystone-chaos-stage` and `glance-chaos-stage` (one replica, `enabled_import_methods: "[glance-direct]"`) `Ready=True/AllReady`, `workload.sh start` |
+| 2 | Three phases | `script` (15m) | `workload.sh mark fault-start`, then per phase: apply, `AllInjected`, a `dd` canary into `/var/lib/glance/staging/.chaos-canary`, and the import probe of the phase. Latency: the image reaches `active` (`LATENCY-IMPORT-ACTIVE`). ENOSPC and EIO: the stage answers non-2xx and the image reads `queued` (`ENOSPC-STAGE-REFUSED <code>`, `EIO-STAGE-REFUSED <code>`); a 2xx fails with `stage answered <code> while the staging volume refused writes`. The image ids go into ConfigMap `glance-staging-state`. `workload.sh mark fault-end` after the last delete |
+| 3 | Recovery | `script` (8m) | `stage-recovered` reaches `active` (`RECOVERED-OK`); `GET /v2/images?status=uploading` and `?status=importing` are empty (`NO-STUCK-IMPORT-OK`); `ls -A /var/lib/glance/staging` names none of the recorded ids; every `stage-*` image is deleted |
+| 4 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-glance-cr.yaml`, `02-glancebackend-cr.yaml`,
+`03-iochaos-latency.yaml` (`delay: "500ms"`), `04-iochaos-enospc.yaml`
+(`errno: 28`, `methods: [write, create]`), `05-iochaos-eio.yaml` (`errno: 5`,
+`methods: [write]`), all `volumePath: /var/lib/glance/staging`,
+`containerNames: [glance-api]`; `import-probe.py`.
+
+**Workload:** the `token` and `image` streams against a zero budget. The image
+stream uploads with `PUT /file` into the S3 store and never stages. The suite runs
+in the `faults` matrix entry.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos glance-chaos-stage --cr-kind=glance`, prints the state
+ConfigMap, dumps the glance-operator log and the workload.
+
+**Design notes:**
+
+- The operator leaves `glance-direct` out because a staged file sits in the
+  emptyDir of one replica. The suite runs one replica and turns it on through
+  `spec.extraConfig`, which the CR reports as `ExtraConfigHealthy=False` without
+  gating `Ready`.
+
+---
+
+### openbao-io-fault
+
+**File:** `tests/e2e-chaos/openbao-io-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Three `IOChaos` objects on `/openbao/data` of container `openbao` of
+the shared `openbao-0` make its raft volume slow, full and failing, one after the
+other in one fault window. Every secret the stack's ExternalSecrets sync comes from
+it. The suite pins that OpenBao serves and syncs again after the faults and that
+every write it acknowledged under a fault is still there.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone, workload, canary | `apply` + `assert` + `script` (6m) + `script` (2m) | `keystone-chaos-baoio` `Ready=True/AllReady`, `workload.sh start`, `kv-v2/chaos/openbao-io/canary` written with `v=before`. The step cleanup deletes every key under `kv-v2/chaos/openbao-io`, ConfigMap `openbao-io-acked` and `/openbao/data/.chaos-canary` |
+| 2 | Three phases | `script` (25m) | `workload.sh mark fault-start`, then per phase: apply, `AllInjected`, a `dd` canary into `/openbao/data/.chaos-canary` in `shared-services`, ten `bao kv put kv-v2/chaos/openbao-io/<phase>-<n>` at 2 s intervals with the root token on stdin, each acknowledged write recorded in `openbao-io-acked`; the latency phase requires all ten (`LATENCY-WRITES-OK`). Each phase deletes its object and runs `../unseal-openbao.sh`. `workload.sh mark fault-end` |
+| 3 | Recovery | `script` (8m) | `bao status` reports `Sealed false`; `openbao-cluster-store` `Ready=True` within 5 minutes; a force-sync of `keystone-admin` reads `True/SecretSynced` with a newer `refreshTime` within 120 s (`SYNC-OK`); the canary reads `before` and every acknowledged write its value (`ACKED-OK`, else `ACKED-MISSING <keys>`); every key under `kv-v2/chaos/openbao-io` is deleted |
+| 4 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-iochaos-latency.yaml` (`delay: "200ms"`),
+`02-iochaos-enospc.yaml` (`errno: 28`, `methods: [write, create]`),
+`03-iochaos-eio.yaml` (`errno: 5`, `methods: [write, fsync]`), all
+`volumePath: /openbao/data`, `containerNames: [openbao]`, selector namespace
+`shared-services`; `probe-lib.sh`.
+
+**Workload:** the `token` stream against a zero budget. The Keystone serves from
+the Secrets its ExternalSecrets already synced. The suite runs in the `faults`
+matrix entry.
+
+**Catch blocks:** every step from the first apply prints and deletes the suite's
+chaos objects, runs `../unseal-openbao.sh`, calls `../diagnostics.sh chaos
+keystone-chaos-baoio --dep-ns=shared-services --eso`, prints the acknowledged
+writes and the OpenBao log, and dumps the workload.
+
+**Design notes:**
+
+- The selector names namespace `shared-services`, which keeps the openbao-operator
+  instance in `openstack`, labelled `app.kubernetes.io/name: openbao` too, out of
+  the fault.
+- The suite assumes the openbao chart mounts the data volume at `/openbao/data` as a
+  mount root; the latency canary fails loudly otherwise.
 
 ---
 

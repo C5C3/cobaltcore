@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# IOChaos openbao-io-enospc: every write and create below the raft directory
+# of openbao-0 fails with ENOSPC (errno 28).
+#
+# volumePath /openbao/data is the raft storage of the shared OpenBao
+# (storage "raft" { path = "/openbao/data" }, deploy/kind/base), assumed to be
+# a mount root of container openbao: the latency canary fails loudly when the
+# chart mounts it elsewhere. The selector names namespace shared-services and
+# app.kubernetes.io/name: openbao, which keeps the openbao-operator instance
+# in openstack, labelled the same, out. The object lives in the suite's
+# namespace, as every chaos object of the suites does. duration is a safety
+# net above the phase; the suite deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: openbao-io-enospc
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: openbao-io-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - shared-services
+    labelSelectors:
+      app.kubernetes.io/name: openbao
+  containerNames:
+    - openbao
+  volumePath: /openbao/data
+  action: fault
+  errno: 28
+  methods:
+    - write
+    - create
+  percent: 100
+  duration: "600s"

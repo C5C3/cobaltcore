@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Glance's import staging area turns slow, full,
+# then failing.
+#
+# Fault: three IOChaos objects on /var/lib/glance/staging of container
+# glance-api of glance-chaos-stage, one after the other in one fault window:
+# 500 ms of latency on every call (03), ENOSPC on write and create (04), and
+# EIO on write (05). The staging area is an emptyDir the operator renders as
+# [os_glance_staging_store] filesystem_store_datadir
+# (operators/glance/internal/controller/reconcile_config.go); a glance-direct
+# import stages its data there before Glance copies it into the store.
+#
+# Claim, phase by phase (import-probe.py, one probe pod per phase; each
+# phase's canary is a dd into the staging directory through kubectl exec):
+#   latency    The dd takes at least 1 s (INJECTED-LATENCY-OK), and an image
+#              staged and imported with glance-direct reaches active
+#              (LATENCY-IMPORT-ACTIVE).
+#   ENOSPC     The dd fails with No space left on device (INJECTED-ENOSPC-OK);
+#              the stage answers non-2xx and the image reads queued
+#              (ENOSPC-STAGE-REFUSED <code>).
+#   EIO        The dd fails with Input/output error (INJECTED-EIO-OK); the
+#              stage answers non-2xx and the image reads queued
+#              (EIO-STAGE-REFUSED <code>). A 2xx stage under either fault
+#              fails with "stage answered <code> while the staging volume
+#              refused writes".
+#   recovered  After the lift a fresh import reaches active (RECOVERED-OK), no
+#              image reads uploading or importing (NO-STUCK-IMPORT-OK), the
+#              staging directory names none of the suite's image ids, and the
+#              suite's images are deleted.
+#
+# Blast radius: the IOChaos objects select the API pod of this suite's Glance
+# and its staging volume alone. The Glance runs one replica, because a staged
+# file sits in the emptyDir of the replica that received it.
+#
+# Leg: faults. IOChaos injects through the fuse module hack/deploy-infra.sh
+# loads on the kind host.
+#
+# Workload: the token and image streams of ../lib/workload.sh against
+# keystone-chaos-stage and glance-chaos-stage. The image stream uploads with
+# PUT /file into the S3 store and never stages, so the budget is zero and a
+# failed cycle is a defect to find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-17, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-staging-io-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone, Glance, the workload ───────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-stage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - apply:
+        file: 01-glance-cr.yaml
+    - apply:
+        file: 02-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-chaos-stage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start glance-staging-io-fault --
+          --streams token,image
+          --keystone http://keystone-chaos-stage.openstack.svc:5000/v3
+          --glance http://glance-chaos-stage.openstack.svc:9292
+    catch: &stage-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no IOChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite glance-staging-io-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos glance-chaos-stage --cr-kind=glance --dep-label=app.kubernetes.io/instance=glance-chaos-stage --dep-ns=openstack
+    - script:
+        timeout: 1m
+        content: kubectl get configmap glance-staging-state -n openstack -o yaml 2>&1 || true
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump glance-staging-io-fault
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap glance-staging-state -n openstack --ignore-not-found
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop glance-staging-io-fault
+  # ── Step 2: Latency, ENOSPC, EIO on the staging area ─────────────────────
+  # phase <file> <object> <PHASE> <mode> <sentinel>: inject, prove it with the
+  # dd canary, run the import probe of the phase, record its image id, lift.
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PW="$(admin_password)"
+          PROBE="$(cat import-probe.py)"
+          POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=glance-chaos-stage,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          IDS=""
+          phase() {
+            local out
+            fault_inject "$1" "iochaos/$2"
+            canary_dd "iochaos/$2" "$3" "$POD" glance-api /var/lib/glance/staging/.chaos-canary "$4"
+            out="$(probe_run "glance-stage-probe-$4" 300 --env "OS_PASSWORD=${PW}" \
+              --env KEYSTONE=http://keystone-chaos-stage.openstack.svc.cluster.local:5000/v3 \
+              --env GLANCE=http://glance-chaos-stage.openstack.svc.cluster.local:9292 \
+              --env "PHASE=$4" -- python3 -u -c "$PROBE")" || { echo "$out"; return 1; }
+            echo "$out"
+            grep -qE "^$5( |$)" <<<"$out"
+            IDS="${IDS} $(sed -n 's/^IMAGE-ID //p' <<<"$out")"
+            kubectl create configmap glance-staging-state -n "$NAMESPACE" --dry-run=client -o yaml \
+              --from-literal=image-ids="${IDS# }" | kubectl apply -f -
+            fault_lift "iochaos/$2"
+          }
+          ../lib/workload.sh mark glance-staging-io-fault fault-start
+          phase 03-iochaos-latency.yaml glance-staging-latency LATENCY latency LATENCY-IMPORT-ACTIVE
+          phase 04-iochaos-enospc.yaml glance-staging-enospc ENOSPC enospc ENOSPC-STAGE-REFUSED
+          phase 05-iochaos-eio.yaml glance-staging-eio EIO eio EIO-STAGE-REFUSED
+          ../lib/workload.sh mark glance-staging-io-fault fault-end
+    catch: *stage-dump
+  # ── Step 3: An import completes, nothing is left behind ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PW="$(admin_password)"
+          PROBE="$(cat import-probe.py)"
+          POD="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=glance-chaos-stage,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          probe() {
+            probe_run "glance-stage-probe-$1" 300 --env "OS_PASSWORD=${PW}" \
+              --env KEYSTONE=http://keystone-chaos-stage.openstack.svc.cluster.local:5000/v3 \
+              --env GLANCE=http://glance-chaos-stage.openstack.svc.cluster.local:9292 \
+              --env "PHASE=$1" -- python3 -u -c "$PROBE"
+          }
+          kubectl exec "$POD" -n "$NAMESPACE" -c glance-api -- rm -f /var/lib/glance/staging/.chaos-canary
+          probe recovered
+          probe check
+          LEFT="$(kubectl exec "$POD" -n "$NAMESPACE" -c glance-api -- ls -A /var/lib/glance/staging)"
+          echo "staging holds: ${LEFT:-<nothing>}"
+          for id in $(kubectl get configmap glance-staging-state -n "$NAMESPACE" -o jsonpath='{.data.image-ids}'); do
+            if grep -qF "$id" <<<"$LEFT"; then
+              echo "FAIL: the staging directory still holds a file of image ${id}"
+              exit 1
+            fi
+          done
+          echo "OK: no staged file of the suite's images is left"
+          probe cleanup
+    catch: *stage-dump
+  # ── Step 4: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify glance-staging-io-fault
+    catch: *stage-dump

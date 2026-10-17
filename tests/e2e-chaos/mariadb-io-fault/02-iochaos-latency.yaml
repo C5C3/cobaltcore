@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# IOChaos mariadb-io-latency: every I/O call below /var/lib/mysql of the
+# mariadb container takes 100 ms longer. InnoDB keeps serving, slower.
+#
+# IOChaos mounts a FUSE file system over volumePath, which must be a mount
+# root of the container: /var/lib/mysql is the data volume of container
+# mariadb. The selector names the pod of the suite's own MariaDB, never the
+# shared openstack-db. duration is a safety net above the phase; the suite
+# deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: mariadb-io-latency
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: mariadb-io-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: mariadb-io-chaos
+  containerNames:
+    - mariadb
+  volumePath: /var/lib/mysql
+  action: latency
+  delay: "100ms"
+  percent: 100
+  duration: "600s"

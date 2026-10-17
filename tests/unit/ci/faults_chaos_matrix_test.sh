@@ -37,6 +37,9 @@ FAULTS_SUITES=(
   keystone-validation-http-503
   keystone-api-clock-skew
   keystone-operator-clock-skew
+  mariadb-io-fault
+  glance-staging-io-fault
+  openbao-io-fault
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.

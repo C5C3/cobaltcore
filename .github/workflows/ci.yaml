@@ -2035,6 +2035,9 @@ jobs:
               tests/e2e-chaos/keystone-validation-http-503
               tests/e2e-chaos/keystone-api-clock-skew
               tests/e2e-chaos/keystone-operator-clock-skew
+              tests/e2e-chaos/mariadb-io-fault
+              tests/e2e-chaos/glance-staging-io-fault
+              tests/e2e-chaos/openbao-io-fault
     runs-on: self-hosted
     # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
     # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which
