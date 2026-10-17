@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# StressChaos backup-memory-stress: one memory worker in the backup container
+# of cinder-backup-stress that allocates @SIZE@, which the suite computes at
+# run time as memory.max minus memory.current of the container minus 64 MiB:
+# the container stays just under its limit, so the next backup's buffers take
+# it past. oomScoreAdj -1000 keeps the stressor itself off the OOM killer's
+# list, so it picks the cinder-backup process: the OOM path of #1003.
+#
+# duration is a safety net above the suite's fault step; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: backup-memory-stress
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: cinder-backup-memory-stress
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: cinder
+      app.kubernetes.io/instance: cinder-backup-stress
+      app.kubernetes.io/component: backup
+  containerNames:
+    - backup
+  stressors:
+    memory:
+      workers: 1
+      size: "@SIZE@"
+      oomScoreAdj: -1000
+  duration: "600s"

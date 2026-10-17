@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the backup memory stress chaos test: cinder-backup-stress,
+# noauth, as ../cinder-broker-pod-kill/01-cinder-cr.yaml with the transport
+# URL of the vhost ../../e2e/cinder/broker-vhost.sh writes into
+# cinder-backup-stress-messaging on the kind-only shared-rabbitmq, and the
+# schema cinder_backup_stress on openstack-db.
+#
+# The backup service comes from the CinderBackupBackend of
+# 02-cinderbackupbackend-cr.yaml: the operator runs it as Deployment
+# cinder-backup-stress-backup, container backup, with 2Gi of memory as
+# request and limit and MALLOC_ARENA_MAX=2
+# (operators/cinder/internal/controller/reconcile_backupservice.go). #1003
+# records an OOM kill at that limit during one 1 GiB backup.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-backup-stress
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_backup_stress
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-backup-stress-messaging

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS backup target bkstress-nfsbk of the cinder-backup-stress CR on the kind
+# NFS export /backups (deploy/kind/nfs/nfs-server.yaml), as
+# ../../tempest/cinder-2026-1/05-cinderbackupbackend-cr.yaml. Its projection
+# is what makes the operator run the backup service.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: bkstress-nfsbk
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-backup-stress
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /backups

@@ -40,6 +40,7 @@ FAULTS_SUITES=(
   mariadb-io-fault
   glance-staging-io-fault
   openbao-io-fault
+  keystone-api-stress-autoscaling
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.
