@@ -681,10 +681,9 @@ details.
 
 `tests/unit/docs/nix_image_build_status_table_test.sh` checks the table
 against the tree: one row per `images/<name>/` directory and per operator
-image, and for an image directory a Build value that matches its files
-(`image.nix` for Nix, a `Dockerfile` for Docker). The operator images build
-from the shared `operators/Dockerfile`, so the test checks that their rows
-exist and read Nix or Docker.
+image, and a Build value that matches the files. For an image directory that
+is `image.nix` for Nix and a `Dockerfile` for Docker, for an operator image
+`operators/<op>/vendor.json` for Nix.
 
 | Image | Build | Phase | Issue |
 | --- | --- | --- | --- |
@@ -704,15 +703,15 @@ exist and read Nix or Docker.
 | `nova-compute` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `libvirt` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `keystone-federation-proxy` | Nix | Phase 5 | [#1408](https://github.com/C5C3/cobaltcore/issues/1408) |
-| `barbican-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `c5c3-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `cinder-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `glance-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `horizon-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `keystone-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `neutron-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `nova-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `ovn-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `placement-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `barbican-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `c5c3-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `cinder-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `glance-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `horizon-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `keystone-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `neutron-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `nova-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `ovn-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `placement-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
 
 :::

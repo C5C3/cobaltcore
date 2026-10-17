@@ -285,8 +285,8 @@ test_setup_nix_action() {
 # --- Nix-built image build/merge job structure ---
 # test_nix_image_jobs <image> <verify-script> <attribute> [<tags-step>]
 # A release-independent image built by Nix: build-<image> builds the flake
-# attribute through build-nix-image behind nix-flake-check instead of
-# lint-dockerfiles, and merge-<image>-image merges the per-platform digests
+# attribute through build-nix-image behind nix-flake-check, and
+# merge-<image>-image merges the per-platform digests
 # under the :latest and :<sha> tags. With <tags-step>, the merge step takes
 # its tags from that step, which tags <sha> on every branch and latest on
 # main only.
@@ -300,7 +300,6 @@ test_nix_image_jobs() {
   assert_contains "build-$img needs changes" "$needs" "changes"
   assert_contains "build-$img needs nix-flake-check" "$needs" "nix-flake-check"
   assert_contains "build-$img needs prepare" "$needs" "prepare"
-  assert_not_contains "build-$img does not need lint-dockerfiles" "$needs" "lint-dockerfiles"
 
   local matrix_platforms
   matrix_platforms=$(yq_raw "$job.strategy.matrix.include[].platform" "$WORKFLOW" || true)
@@ -324,11 +323,6 @@ test_nix_image_jobs() {
     "$(yq_raw "$step | .with[\"vulnix-artifact-name\"]" "$WORKFLOW" || true)" "vulnix-$img-"
 
   assert_cachix_step "build-$img"
-
-  local lint_matrix
-  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_not_contains "lint-dockerfiles does not list a $img Dockerfile" \
-    "$lint_matrix" "images/$img/Dockerfile"
 
   # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
   local merge_if
@@ -558,7 +552,7 @@ test_nix_lock_check_job() {
 # assert_nix_build_job <short> <image> <attribute> <verify-script>
 # build-<short> builds the flake attribute through build-nix-image behind
 # nix-flake-check and nix-lock-check, on both platforms, with the verify
-# script and the Cachix cache, and no Dockerfile of the image is linted.
+# script and the Cachix cache.
 assert_nix_build_job() {
   local short="$1" img="$2" attribute="$3" script="$4"
   local job=".jobs[\"build-$short\"]"
@@ -569,7 +563,6 @@ assert_nix_build_job() {
   assert_contains "build-$short needs nix-flake-check" "$needs" "nix-flake-check"
   assert_contains "build-$short needs nix-lock-check" "$needs" "nix-lock-check"
   assert_contains "build-$short needs prepare" "$needs" "prepare"
-  assert_not_contains "build-$short does not need lint-dockerfiles" "$needs" "lint-dockerfiles"
 
   # Release-independent: no release axis, a static multi-arch include matrix.
   local matrix_platforms
@@ -589,11 +582,6 @@ assert_nix_build_job() {
     "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)" "$img:pr-verify"
 
   assert_cachix_step "build-$short"
-
-  local lint_matrix
-  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_not_contains "lint-dockerfiles does not list the $img Dockerfile" \
-    "$lint_matrix" "images/$img/Dockerfile"
 }
 
 # --- ovn build/merge/verify job structure ---
@@ -858,11 +846,6 @@ test_nova_compute_jobs() {
   # publish under an empty name.
   assert_file_contains "derive-service-tags falls back to the service name" \
     "$ACTION_DERIVE_TAGS" 'IMAGE_NAME:-${MATRIX_SERVICE}'
-
-  # The image has no Dockerfile; the operators are what hadolint still lints.
-  local lint_matrix
-  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_eq "lint-dockerfiles lists the one Dockerfile left" "operators/Dockerfile" "$lint_matrix"
 
   # Merge job: PR-skipped, needs the build, merges only compute digests.
   local merge_if merge_needs merge_pattern merge_tags_run
@@ -1289,6 +1272,26 @@ test_no_gha_cache() {
   assert_eq "no build step passes a cache-scope" "0" \
     "$(yq_raw '[.jobs[].steps[] | select(.with["cache-scope"] != null)] | length' "$WORKFLOW" || true)"
   assert_file_not_contains "the workflow names no type=gha cache" "$WORKFLOW" "type=gha"
+}
+
+# --- No Dockerfile is left to lint ---
+test_no_dockerfile_lint_job() {
+  echo "Test: no Dockerfile lint job"
+
+  # Every image is a flake attribute, so hadolint has nothing to lint, and
+  # GitHub rejects a matrix without a value. go.work is a path of both lists:
+  # its go directive is what the go-directive check of nix-flake-check reads.
+  assert_eq "the workflow has no lint-dockerfiles job" "false" \
+    "$(yq_raw '.jobs | has("lint-dockerfiles")' "$WORKFLOW" || true)"
+  local list paths
+  for list in push pull_request; do
+    paths=$(yq_raw ".on.$list.paths[]" "$WORKFLOW" || true)
+    assert_eq "on.$list.paths lists go.work once" "1" "$(grep -cx 'go.work' <<<"$paths" || true)"
+    assert_not_contains "on.$list.paths lists no Dockerfile" "$paths" "Dockerfile"
+    assert_not_contains "on.$list.paths lists no hadolint configuration" "$paths" "hadolint"
+  done
+  assert_eq "the repository tracks no Dockerfile" "0" \
+    "$(git -C "$PROJECT_ROOT" ls-files | grep -c Dockerfile || true)"
 }
 
 # --- All jobs have timeout-minutes ---
@@ -2221,6 +2224,8 @@ echo ""
 test_actions_have_version_comments
 echo ""
 test_no_gha_cache
+echo ""
+test_no_dockerfile_lint_job
 echo ""
 test_timeout_minutes_on_all_jobs
 echo ""

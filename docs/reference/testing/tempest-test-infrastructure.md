@@ -820,7 +820,7 @@ security. The job is parameterized by release via the `generate-matrix` job.
 
 ### nix-flake-check
 
-The Tempest image has no Dockerfile and no `lint-dockerfiles` entry. Its expression
+The Tempest image has no Dockerfile. Its expression
 `images/tempest/image.nix` is linted by the `nix-lint` check that `nix-flake-check`
 builds (nixfmt, statix and deadnix), and `build-tempest` needs that job and
 `nix-lock-check` ([Lint](../ci-cd/nix-image-build.md#lint)).

@@ -18,7 +18,7 @@
 # DEVIATION from the original build-pipeline design: the image creates no
 # 'openstack' user. The operator is a static Go
 # binary, so it runs on the image that stands in for the distroless base the
-# CobaltCore operator images use (operators/Dockerfile), as that base's
+# CobaltCore operator images use (nix/lib/operator-image.nix), as that base's
 # nonroot user, uid 65532. Upstream's own image is Alpine with uid 4200; its
 # chart only sets runAsNonRoot and no command, which any non-root user and
 # the Entrypoint satisfy.
