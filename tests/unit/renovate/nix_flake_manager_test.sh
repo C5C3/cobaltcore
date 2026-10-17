@@ -8,7 +8,7 @@
 # images, and pyproject-nix, uv2nix and pyproject-build-systems build their
 # Python environments. The `nix` manager is enabled with lockFileMaintenance (scoped to nix so
 # npm's package-lock.json is untouched), and a packageRule groups the nix updates
-# on the Monday schedule of the golang and uv bumps. Without lockFileMaintenance
+# on the Monday schedule of the uv bump. Without lockFileMaintenance
 # the committed flake.lock would become the one pinned artifact Renovate stops
 # bumping — a silent regression. flake.lock must name every input as a github
 # input without a pinned rev, the shape the manager re-locks.
