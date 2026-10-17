@@ -17,7 +17,7 @@
 # the runtime default of WITH_CHAOS_MESH for each env scenario, and grep the
 # script source to lock in the four gate locations (kernel-modules, the
 # external preflight's chaos-mesh/ check, kustomize apply, helm-releases
-# array). Full main()-stubbing requires
+# array) and the two module lists the kernel-module load passes. Full main()-stubbing requires
 # shimming ~10 wait_for_* helpers, which would obscure the contract under
 # test.
 #
@@ -267,6 +267,26 @@ test_production_caller_matches_self_contained_overlay() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 9: the two module lists of load_chaos_mesh_kernel_modules
+# The first list is NetworkChaos's, which the lab DaemonSet chaos-mesh-modules
+# loads as well (tests/unit/deploy/metal_stack_chaos_mesh_test.sh reads it by
+# its purpose string). The second is HTTPChaos's (chaos-tproxy) and IOChaos's
+# (fuse), loaded on the kind host alone.
+# ---------------------------------------------------------------------------
+test_chaos_mesh_module_lists() {
+  echo "Test: load_chaos_mesh_kernel_modules loads the NetworkChaos list and the HTTPChaos and IOChaos list"
+
+  local body
+  body="$(sed -n '/^load_chaos_mesh_kernel_modules() {$/,/^}$/p' "$DEPLOY_INFRA_SH" |
+    grep -E '^[[:space:]]+load_host_kernel_modules ' | sed -E 's/^[[:space:]]+//')"
+  assert_eq "load_chaos_mesh_kernel_modules makes exactly the two calls, in order" \
+    "$(printf '%s\n' \
+      'load_host_kernel_modules "chaos-mesh NetworkChaos" ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf' \
+      'load_host_kernel_modules "chaos-mesh HTTPChaos and IOChaos" bridge ebtables ebtable_broute iptable_mangle xt_TPROXY xt_socket fuse')" \
+    "$body"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_default_is_false
@@ -277,6 +297,7 @@ test_chaos_mesh_kustomize_is_gated
 test_kernel_module_call_is_gated
 test_chaos_mesh_not_in_default_helm_releases
 test_production_caller_matches_self_contained_overlay
+test_chaos_mesh_module_lists
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

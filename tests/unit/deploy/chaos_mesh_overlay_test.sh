@@ -23,6 +23,12 @@
 #     kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease
 #     with the kind-tuning values applied and dependsOn: cert-manager
 #     preserved.
+#   - kind/chaos-mesh also renders the HTTPChaos hostNetwork guard
+#     (httpchaos-policy.yaml): a ValidatingAdmissionPolicy on
+#     chaos-mesh.org/httpchaos CREATE and UPDATE with failurePolicy Fail,
+#     its two expressions with the exact allowlist, and a binding with
+#     validationActions [Deny]; five documents in all, and the HelmRelease
+#     pins dnsServer.create: true.
 # Usage: bash tests/unit/deploy/chaos_mesh_overlay_test.sh
 
 set -uo pipefail
@@ -49,6 +55,7 @@ KIND_CHAOS_KUSTOMIZATION="$KIND_CHAOS_DIR/kustomization.yaml"
 KIND_CHAOS_NAMESPACE="$KIND_CHAOS_DIR/namespace.yaml"
 KIND_CHAOS_SOURCE="$KIND_CHAOS_DIR/source.yaml"
 KIND_CHAOS_RELEASE="$KIND_CHAOS_DIR/release.yaml"
+KIND_CHAOS_POLICY_NAME="chaos-mesh-httpchaos-api-workloads-only"
 
 # --- Test 1: production overlay no longer lists chaos-mesh source/release
 #             files in its resources block ---
@@ -195,6 +202,9 @@ test_kind_chaos_overlay_files_exist() {
   assert_file_contains "kustomization.yaml lists the inline namespace.yaml" \
     "$KIND_CHAOS_KUSTOMIZATION" \
     "namespace.yaml"
+  assert_file_contains "kustomization.yaml lists the local httpchaos-policy.yaml" \
+    "$KIND_CHAOS_KUSTOMIZATION" \
+    "^[[:space:]]*-[[:space:]]*httpchaos-policy\.yaml$"
 
   # Pin the no-parent-dir contract: a `../../` reference would re-introduce
   # the kubectl#948 load-restrictor failure documented at the top of this
@@ -375,6 +385,70 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   assert_eq "controllerManager.resources.requests.cpu is 25m" "25m" "$cm_cpu"
 }
 
+# --- Test 9: the kind overlay renders the HTTPChaos hostNetwork guard and
+#             pins the DNS server ---
+#
+# chaos-tproxy rewires the network namespace of the pod an HTTPChaos selects,
+# and for a hostNetwork pod that is the node's. The policy admits an HTTPChaos
+# only when its selector pins app.kubernetes.io/name to a workload that never
+# runs hostNetwork and names no other selector.
+test_kustomize_build_kind_chaos_overlay_renders_the_httpchaos_policy() {
+  echo "Test: kustomize build deploy/kind/chaos-mesh renders the HTTPChaos policy and its binding, and pins dnsServer.create"
+
+  if ! command -v kustomize >/dev/null 2>&1; then
+    echo "  SKIP: kustomize not installed (11 checks skipped)"
+    SKIP=$((SKIP + 11))
+    return
+  fi
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (11 checks skipped)"
+    SKIP=$((SKIP + 11))
+    return
+  fi
+
+  local rendered
+  if ! rendered="$(kustomize build "$KIND_CHAOS_DIR" 2>&1)"; then
+    echo "  FAIL: kustomize build $KIND_CHAOS_DIR failed:"
+    echo "$rendered" | head -20
+    FAIL=$((FAIL + 11))
+    return
+  fi
+
+  # pol <yq path>: the value at the path of the policy document.
+  pol() {
+    printf '%s\n' "$rendered" | yq -o json -I 0 \
+      "select(.kind == \"ValidatingAdmissionPolicy\" and .metadata.name == \"$KIND_CHAOS_POLICY_NAME\") | $1" 2>/dev/null
+  }
+
+  assert_eq "the kind overlay renders five documents" "5" \
+    "$(printf '%s\n' "$rendered" | yq -N -r 'select(. != null) | .kind' - | grep -c .)"
+  assert_eq "the policy is admissionregistration.k8s.io/v1" '"admissionregistration.k8s.io/v1"' "$(pol '.apiVersion')"
+  assert_eq "the policy matches chaos-mesh.org/httpchaos on CREATE and UPDATE in every version" \
+    '[{"apiGroups":["chaos-mesh.org"],"apiVersions":["*"],"operations":["CREATE","UPDATE"],"resources":["httpchaos"]}]' \
+    "$(pol '.spec.matchConstraints.resourceRules')"
+  assert_eq "the policy fails closed" '"Fail"' "$(pol '.spec.failurePolicy')"
+  assert_eq "the policy holds two validations" "2" "$(pol '.spec.validations | length')"
+  assert_eq "validation 1 pins app.kubernetes.io/name to the API workload allowlist" \
+    "\"has(object.spec.selector) && has(object.spec.selector.labelSelectors) && 'app.kubernetes.io/name' in object.spec.selector.labelSelectors && object.spec.selector.labelSelectors['app.kubernetes.io/name'] in ['keystone', 'placement', 'glance', 'nova', 'neutron', 'cinder', 'barbican', 'horizon']\"" \
+    "$(pol '.spec.validations[0].expression')"
+  assert_eq "validation 1 names the allowlist and the hostNetwork reason" \
+    "\"HTTPChaos must select app.kubernetes.io/name in [keystone, placement, glance, nova, neutron, cinder, barbican, horizon]: chaos-tproxy rewires the selected pod's network namespace, which for a hostNetwork pod is the node's\"" \
+    "$(pol '.spec.validations[0].message')"
+  assert_eq "validation 2 refuses every selector but namespaces and labelSelectors" \
+    '"!has(object.spec.selector.pods) && !has(object.spec.selector.nodes) && !has(object.spec.selector.nodeSelectors) && !has(object.spec.selector.fieldSelectors) && !has(object.spec.selector.annotationSelectors) && !has(object.spec.selector.expressionSelectors)"' \
+    "$(pol '.spec.validations[1].expression')"
+  assert_eq "validation 2 says why" \
+    '"HTTPChaos may select by namespaces and labelSelectors only: the policy cannot vet the pods any other selector names"' \
+    "$(pol '.spec.validations[1].message')"
+  assert_eq "the binding of the same name denies through the policy" \
+    "{\"policyName\":\"$KIND_CHAOS_POLICY_NAME\",\"validationActions\":[\"Deny\"]}" \
+    "$(printf '%s\n' "$rendered" | yq -o json -I 0 \
+      "select(.kind == \"ValidatingAdmissionPolicyBinding\" and .metadata.name == \"$KIND_CHAOS_POLICY_NAME\") | .spec" 2>/dev/null)"
+  assert_eq "the HelmRelease pins dnsServer.create: true" "true" \
+    "$(printf '%s\n' "$rendered" | yq -r \
+      'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.dnsServer.create' 2>/dev/null)"
+}
+
 # --- Run ---
 test_flux_system_kustomization_drops_chaos_mesh_entries
 test_chaos_mesh_files_local_to_overlay
@@ -384,6 +458,7 @@ test_kind_chaos_overlay_files_exist
 test_kustomize_build_flux_system_renders_no_chaos_mesh
 test_kustomize_build_kind_base_succeeds_without_chaos_mesh
 test_kustomize_build_kind_chaos_overlay_renders_full_bundle
+test_kustomize_build_kind_chaos_overlay_renders_the_httpchaos_policy
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
