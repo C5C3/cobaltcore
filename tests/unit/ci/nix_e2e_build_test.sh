@@ -16,19 +16,24 @@
 #     BUILD_OVN without OVN_VERSION exits 1 and builds nothing;
 #   - BUILD_LIBVIRT adds the attribute libvirt-image, streamed to
 #     .nix-e2e/libvirt-latest.tar and listed as "libvirt latest";
+#   - BUILD_PROXY adds the attribute keystone-federation-proxy-image,
+#     streamed to .nix-e2e/keystone-federation-proxy-latest.tar and listed as
+#     "keystone-federation-proxy latest";
 #   - the group e2ebld (gid 40000) and one user per CPU (uids 40001 and up)
 #     are written to the account files before nix runs;
 #   - git is told to trust the workspace before anything else runs;
 #   - a line with four fields exits 1 with the line named, builds nothing and
 #     writes no build user; an attribute nix cannot build exits with nix's
 #     status and writes no image;
-#   - an empty image set, BUILD_OVN=false and BUILD_LIBVIRT=false included,
-#     prints "nothing to build" and exits 0.
+#   - an empty image set, BUILD_OVN=false, BUILD_LIBVIRT=false,
+#     BUILD_PROXY=false and an unset BUILD_PROXY included, prints "nothing to
+#     build" and exits 0.
 #
 # The build-e2e-images job of .github/workflows/ci.yaml runs the script in the
 # nixos/nix container; this test checks what the script does with its input,
-# and that the job's checkout persists no token, which a build user could read
-# in /github/runner_temp.
+# that the job's checkout persists no token, which a build user could read
+# in /github/runner_temp, and that the job builds the federation proxy
+# through the script and retags it :dev.
 #
 # Usage: bash tests/unit/ci/nix_e2e_build_test.sh
 
@@ -95,20 +100,30 @@ EOF
 printf '#!/bin/sh\necho 3\n' >"$STUB_DIR/nproc"
 chmod +x "$STUB_DIR/nix" "$STUB_DIR/git" "$STUB_DIR/nproc"
 
-# run_script <workspace> [VAR=value...] runs the script in a fresh workspace
-# with fresh account files in a new ETC_DIR and sets OUTPUT and RC.
+# run_script <workspace> [--unset <NAME>] [VAR=value...] runs the script in a
+# fresh workspace with fresh account files in a new ETC_DIR and sets OUTPUT
+# and RC. Every BUILD_* input defaults to empty or false; --unset leaves NAME
+# out of the environment instead.
 run_script() {
-  local workspace="$1"
+  local workspace="$1" unset_name="" input
+  local -a inputs=()
   shift
+  if [ "${1:-}" = "--unset" ]; then
+    unset_name="$2"
+    shift 2
+  fi
+  for input in BUILD_SERVICE_IMAGES= BUILD_TEMPEST_RELEASES= BUILD_OVN=false OVN_VERSION= \
+    BUILD_LIBVIRT=false BUILD_PROXY=false; do
+    [ "${input%%=*}" = "$unset_name" ] || inputs+=("$input")
+  done
   rm -rf "$workspace" "$NIX_LOG" "$GIT_LOG"
   mkdir -p "$workspace"
   ETC_DIR=$(mktemp -d "$TMP_DIR/etc.XXXXXX")
   echo "root:x:0:0:root:/root:/bin/bash" >"$ETC_DIR/passwd"
   echo "root:x:0:" >"$ETC_DIR/group"
   RC=0
-  OUTPUT=$(cd "$workspace" && env PATH="$STUB_DIR:$PATH" GITHUB_WORKSPACE="$workspace" \
-    NIX_E2E_ETC="$ETC_DIR" BUILD_SERVICE_IMAGES="" BUILD_TEMPEST_RELEASES="" BUILD_OVN=false OVN_VERSION="" \
-    BUILD_LIBVIRT=false \
+  OUTPUT=$(cd "$workspace" && env ${unset_name:+-u "$unset_name"} PATH="$STUB_DIR:$PATH" \
+    GITHUB_WORKSPACE="$workspace" NIX_E2E_ETC="$ETC_DIR" "${inputs[@]}" \
     "$@" bash "$SCRIPT" 2>&1) || RC=$?
 }
 
@@ -165,6 +180,11 @@ test_missing_attribute_fails() {
     "does not provide attribute 'packages.x86_64-linux.swift-2026_1-image'"
   assert_eq "no image is streamed" "" "$(cd "$ws/.nix-e2e" && ls -- *.tar 2>/dev/null)"
   assert_eq "images.txt is empty" "" "$(cat "$ws/.nix-e2e/images.txt")"
+
+  run_script "$ws" BUILD_PROXY=true NIX_MISSING_ATTR=keystone-federation-proxy-image
+  assert_eq "a failing proxy build exits with nix's status" "1" "$RC"
+  assert_eq "no keystone-federation-proxy-latest.tar is written" "false" \
+    "$([ -e "$ws/.nix-e2e/keystone-federation-proxy-latest.tar" ] && echo true || echo false)"
 }
 
 test_builds_the_ovn_image() {
@@ -233,6 +253,60 @@ test_builds_the_libvirt_image() {
     "ci-nix-build-e2e-images.sh: nothing to build"
 }
 
+test_builds_the_proxy_image() {
+  echo "Test: BUILD_PROXY builds keystone-federation-proxy-image and lists it as keystone-federation-proxy latest"
+
+  local ws="$TMP_DIR/ws-proxy"
+  run_script "$ws" BUILD_PROXY=true
+
+  assert_eq "the script exits 0" "0" "$RC"
+  assert_eq "nix builds the attribute keystone-federation-proxy-image" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#keystone-federation-proxy-image --print-build-logs --out-link .nix-e2e/result" \
+    "$(cat "$NIX_LOG")"
+  assert_eq "images.txt lists the proxy image under latest, the tag docker load prints" \
+    "keystone-federation-proxy latest" "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the proxy stream is written to its tar" "stream of keystone-federation-proxy-image" \
+    "$(cat "$ws/.nix-e2e/keystone-federation-proxy-latest.tar")"
+
+  run_script "$ws" BUILD_LIBVIRT=true BUILD_PROXY=true
+  assert_eq "the libvirt image and the proxy image build in one nix call" "1" \
+    "$(wc -l <"$NIX_LOG" | tr -d ' ')"
+  assert_contains "that call names both attributes in order" "$(cat "$NIX_LOG")" \
+    ".#libvirt-image .#keystone-federation-proxy-image --print-build-logs"
+  assert_eq "the second result is the proxy stream" "stream of keystone-federation-proxy-image" \
+    "$(cat "$ws/.nix-e2e/keystone-federation-proxy-latest.tar")"
+
+  run_script "$TMP_DIR/ws-proxy-off" BUILD_PROXY=false
+  assert_contains "BUILD_PROXY=false alone builds nothing" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: nothing to build"
+  assert_eq "BUILD_PROXY=false calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
+
+  run_script "$TMP_DIR/ws-proxy-unset" --unset BUILD_PROXY
+  assert_eq "an unset BUILD_PROXY exits 0" "0" "$RC"
+  assert_contains "an unset BUILD_PROXY alone builds nothing" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: nothing to build"
+  assert_eq "an unset BUILD_PROXY calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
+}
+
+test_ci_wires_the_proxy_through_the_nix_step() {
+  echo "Test: build-e2e-images builds the federation proxy in the Nix step and retags it :dev"
+
+  local filter nix_step tag_step glob
+  filter=$(filter_block image_proxy)
+  for glob in "'images/keystone-federation-proxy/**'" "'flake.nix'" "'flake.lock'" "'nix/lib/**'" \
+    "'hack/ci-nix-build-e2e-images.sh'"; do
+    assert_contains "the image_proxy filter names $glob" "$filter" "- $glob"
+  done
+  nix_step=$(job_step build-e2e-images "Build Nix images")
+  assert_contains "Build Nix images passes BUILD_PROXY" "$nix_step" 'BUILD_PROXY: ${{ env.BUILD_PROXY }}'
+  tag_step=$(job_step build-e2e-images "Tag federation proxy image")
+  assert_contains "the tag step runs when the proxy is built" "$tag_step" "if: env.BUILD_PROXY == 'true'"
+  assert_contains "the tag step retags latest as dev" "$tag_step" \
+    'docker tag "${IMAGE_PREFIX}/keystone-federation-proxy:latest" "${IMAGE_PREFIX}/keystone-federation-proxy:dev"'
+  assert_not_contains "build-e2e-images runs no docker build of the proxy" \
+    "$(job_block build-e2e-images)" "images/keystone-federation-proxy/"
+}
+
 test_nothing_to_build() {
   echo "Test: an empty image set builds nothing and exits 0"
 
@@ -280,6 +354,8 @@ test_missing_attribute_fails
 test_builds_the_ovn_image
 test_ovn_without_a_version_fails
 test_builds_the_libvirt_image
+test_builds_the_proxy_image
+test_ci_wires_the_proxy_through_the_nix_step
 test_nothing_to_build
 test_checkout_persists_no_token
 test_script_is_shellcheck_clean

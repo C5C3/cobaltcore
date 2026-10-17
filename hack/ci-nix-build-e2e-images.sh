@@ -19,16 +19,20 @@
 #   OVN_VERSION             the pinned OVN version, the tag docker load
 #                           prints for the ovn image; required with BUILD_OVN
 #   BUILD_LIBVIRT           true when the libvirt image is built
+#   BUILD_PROXY             true when the keystone-federation-proxy image is
+#                           built
 #
 # It builds the flake attributes <name>-<rel_>-image, <rel_> the release with
 # its dot replaced by _ and <name> the service or, on a three-field line, the
-# derived image, and ovn-image and libvirt-image, which carry no release, in
-# one nix invocation that runs one job per CPU, so the derivations of every
-# image build side by side. It then writes each image stream to
+# derived image, and ovn-image, libvirt-image and
+# keystone-federation-proxy-image, which carry no release, in one nix
+# invocation that runs one job per CPU, so the derivations of every image
+# build side by side. It then writes each image stream to
 # .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
 # .nix-e2e/images.txt, which the "Load Nix images" step reads to load and tag
 # the images on the runner; for the ovn image the release is OVN_VERSION, for
-# the libvirt image latest, the tags docker load prints for them.
+# the libvirt and the keystone-federation-proxy image latest, the tags
+# docker load prints for them.
 #
 # The container is unprivileged and cannot create the namespaces of the Nix
 # sandbox, so the builds run without it. The builders, which run the setup
@@ -109,6 +113,10 @@ fi
 if [ "${BUILD_LIBVIRT:-}" = "true" ]; then
   images+=("libvirt latest")
   attrs+=(".#libvirt-image")
+fi
+if [ "${BUILD_PROXY:-}" = "true" ]; then
+  images+=("keystone-federation-proxy latest")
+  attrs+=(".#keystone-federation-proxy-image")
 fi
 
 if [ "${#images[@]}" -eq 0 ]; then
