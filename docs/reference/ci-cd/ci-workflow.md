@@ -1143,11 +1143,12 @@ its number.
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
 tests run after the happy-path operator E2E suite has passed. Gating is set per
 matrix leg via `continue-on-error: ${{ matrix.suite == 'network' || matrix.suite
-== 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}`: the
-`pod` leg is **blocking**, so an operator-restart, PDB, or rotation regression
-fails the build. The `network`, `ovn`, `nova` and `controlplane` legs stay
-**non-blocking**. The expression names those four rather than negating `pod`, so
-a leg added to the matrix later gates merges until it is argued out of that.
+== 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' ||
+matrix.suite == 'faults' }}`: the `pod` leg is **blocking**, so an
+operator-restart, PDB, or rotation regression fails the build. The `network`,
+`ovn`, `nova`, `controlplane` and `faults` entries stay **non-blocking**. The
+expression names those five rather than negating `pod`, so an entry added to the
+matrix later gates merges until it is argued out of that.
 The `network`
 leg's `ip_set`/`sch_netem` kernel-module dependency keeps it prone to
 environment flakiness, the `ovn` leg builds an OVN datapath out of the
@@ -1156,23 +1157,27 @@ suites are NetworkChaos partitions on the same `sch_netem` and `ip_set` modules
 the `network` leg's suites use, while its `neutron-metadata-agent-pod-kill`
 needs the `openvswitch` and `geneve` modules for an OVNChassis. The
 `controlplane` entry's `korc-network-partition` is a NetworkChaos partition on
-the `sch_netem` and `ip_set` modules as well, which places all four under
+the `sch_netem` and `ip_set` modules as well. The `faults` entry's HTTPChaos
+suite needs the chaos-tproxy modules `bridge`, `ebtables`, `ebtable_broute`,
+`iptable_mangle`, `xt_TPROXY` and `xt_socket`, and its IOChaos suites need `fuse`.
+That places all five under
 [Kernel-module-dependent suites](#kernel-module-dependent-suites). On-demand
 pre-validation of any leg is available via the `ci:chaos` PR label, with
 `run-chaos` kept as an alias.
 
-The job runs as a five-entry matrix, split by chaos type and by the stack each
-leg needs:
+The job runs as a six-entry matrix, split by chaos type and by the stack each
+entry needs:
 
 | Leg | Operators deployed | Suites |
 | --- | --- | --- |
 | `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, `horizon-dashboard-pod-kill`, and the eight platform suites that need only the standalone stack (`cert-manager-outage`, `eso-down`, `eso-pod-kill`, `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`, `envoy-proxy-pod-kill`, `mariadb-operator-cascading-failure`) |
-| `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
-| `ovn` | ovn | `ovn-southbound-outage` |
-| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
+| `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the nine Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`, `cinder-glance-http-abort`, `cinder-backup-memory-stress`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
+| `ovn` | ovn | `ovn-southbound-outage`, `ovn-raft-clock-skew` |
+| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill`, `nova-placement-http-fault`, `nova-compute-neutron-http-delay` |
 | `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the five suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure` |
+| `faults` | keystone, horizon, glance, placement, barbican, ovn | the six HTTPChaos, TimeChaos, IOChaos and StressChaos suites that need only the standalone stack: `keystone-validation-http-503`, `keystone-api-clock-skew`, `keystone-operator-clock-skew`, `mariadb-io-fault`, `glance-staging-io-fault`, `keystone-api-stress-autoscaling` |
 
-All five legs run on the `self-hosted` runners. The split keeps the legs
+All six entries run on the `self-hosted` runners. The split keeps the legs
 independently gated and lets them run in parallel. Each matrix entry lists its
 per-suite test directories explicitly.
 
@@ -1180,20 +1185,22 @@ A `Resolve OVN version` step reads the pin from `images/ovn/source.json` through
 `hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
 the tag itself never appears in the workflow. The `network`, `ovn` and `nova`
 legs load `ovn-operator:dev` and `ovn:$OVN_VERSION` into kind, the `network` leg
-adds `neutron-operator:dev` and `neutron:2026.1`, the `pod` and `network` legs
-load `placement-operator:dev` and `placement:2026.1` for their Placement suites,
+adds `neutron-operator:dev` and `neutron:2026.1`, the `pod`, `network` and
+`faults` entries load `placement-operator:dev` and `placement:2026.1` for their
+Placement suites,
 and the `ovn` leg loads none of the keystone stack. The keystone stack carries `tempest:2026.1`, which the
 workload pod of `tests/e2e-chaos/lib/workload.sh` runs on and whose `openstack`
 client the `nova` leg's catalog, seed and verify Jobs run. The `nova` leg names
 six images of its own: `placement-operator:dev`, `placement:2026.1`,
 `neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev` and
 `nova:2026.1`. `WITH_MESSAGING` is set on the `network` and `nova` legs, the
-first for the vhosts five Cinder suites take, the second because every Nova
+first for the vhosts seven Cinder suites take, the second because every Nova
 process dials the bus. `Setup E2E infrastructure` passes
 `WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}`,
 which is what makes `hack/deploy-infra.sh` load `openvswitch` and `geneve` for
-the chassis DaemonSets of `ovn-southbound-outage` and
-`neutron-metadata-agent-pod-kill`. The diagnostics dump follows the leg through
+the chassis DaemonSets of `ovn-southbound-outage`, `ovn-raft-clock-skew`'s
+OVNCentral pods aside, `neutron-metadata-agent-pod-kill` and
+`nova-compute-neutron-http-delay`. The diagnostics dump follows the leg through
 `OPERATOR: ${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}`, because the
 `ovn` leg has no `keystone-system` namespace to dump.
 
@@ -1213,15 +1220,28 @@ namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
 500 lines of the K-ORC log. The `!= 'pod'` OVN steps and the `!= 'ovn'` keystone
 stack run on it as well, which costs about two minutes.
 
+The `faults` entry sets `WITH_METRICS_SERVER: ${{ matrix.suite == 'faults' &&
+'true' || '' }}` and `WITH_VPA: ${{ matrix.suite == 'faults' && 'true' || '' }}`
+on `Setup E2E infrastructure`, the two add-ons `e2e-autoscaling` turns on, for the
+HPA and the VPA of `keystone-api-stress-autoscaling`. It loads and deploys the
+placement-operator with the `pod` and `network` entries.
+`Dump diagnostic info (faults leg)` repeats the dump for the placement and glance
+operators under `OPERATOR_ONLY=1`. The `!= 'pod'` OVN steps run on it as on
+`controlplane`.
+
 The wall is
-`timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}`,
-550 minutes in all, which the author of #1390 accepted on 2026-10-16. Run
+`timeout-minutes: ${{ matrix.suite == 'nova' && 190 || matrix.suite == 'network' && 175 || matrix.suite == 'faults' && 130 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}`,
+760 minutes in all, which the author of #1391 accepted on 2026-10-17 against the
+600 minutes D6 of #1386 gives the job; amending D6 is the author's edit on #1386.
+#1391 adds two suites of about 25 minutes to `nova`, three of about 15 to
+`network` and one of about 15 to `ovn`, and the `faults` entry needs about 20
+minutes for its bring-up and 8 to 12 for each of its six suites. Run
 38903206716 took 62 minutes on `pod`, 125 on `network`, 11 on `ovn` and 130 on
 `nova`. `pod` gains the eight platform suites of #1390 at about 5 minutes each.
 The `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for
 each of its five suites, from the 7 min 45 s the `keystone-service` suite took in
 run 38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads eighteen images and runs
-eight operator deploys before its first suite, and its six suites each stand up
+eight operator deploys before its first suite, and its eight suites each stand up
 a Keystone, an OVNCentral, a Neutron, a Placement, a Glance and a five-workload
 Nova, one after the other because `tests/e2e-chaos/chainsaw-config.yaml` sets
 `parallel: 1`. A wall that arrives mid-suite kills chainsaw outright: no
@@ -1236,11 +1256,11 @@ green run with them.
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), and `c5c3-operator:dev` (`controlplane`) |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs and `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane` |
-| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator` |
+| 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod`, `network` and `faults`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), and `c5c3-operator:dev` (`controlplane`) |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, and `WITH_METRICS_SERVER=true` with `WITH_VPA=true` on `faults` |
+| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, the placement-operator on the `pod`, `network` and `faults` entries; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator` |
 | 8 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
-| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log, and one on `faults` the placement and glance operators |
 | 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
 | 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
@@ -1248,11 +1268,11 @@ green run with them.
 
 | Aspect | `e2e-operator` | `e2e-chaos` |
 | --- | --- | --- |
-| Matrix | Dynamic per-operator | Five suites (`pod` / `network` / `ovn` / `nova` / `controlplane`) on different runners |
+| Matrix | Dynamic per-operator | Six suites (`pod` / `network` / `ovn` / `nova` / `controlplane` / `faults`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
-| Timeout | 68 minutes, 150 for the `nova` leg | 120 minutes for `pod`, 135 for `network`, 45 for `ovn`, 150 for `nova`, 100 for `controlplane` |
-| Blocking | Yes | `pod` leg blocking; `network`, `ovn`, `nova` and `controlplane` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' \|\| matrix.suite == 'controlplane' }}`) |
+| Timeout | 68 minutes, 150 for the `nova` leg | 120 minutes for `pod`, 175 for `network`, 45 for `ovn`, 190 for `nova`, 100 for `controlplane`, 130 for `faults` |
+| Blocking | Yes | `pod` leg blocking; `network`, `ovn`, `nova`, `controlplane` and `faults` entries non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' \|\| matrix.suite == 'controlplane' \|\| matrix.suite == 'faults' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1 only, plus the pinned OVN daemon image |
 
@@ -1298,7 +1318,9 @@ The modules come from `WITH_OVN_KERNEL_MODULES=true` in the `setup-e2e-infra`
 step's `env`, which threads through to `hack/deploy-infra.sh` and runs
 `modprobe` for `openvswitch` and `geneve` before the cluster is created. The
 load is best-effort, through the helper that also loads the chaos suite's
-`ip_set` and `sch_netem` modules. On a host without root or passwordless sudo
+`ip_set` and `sch_netem` modules, and under `WITH_CHAOS_MESH=true` the HTTPChaos
+modules `bridge`, `ebtables`, `ebtable_broute`, `iptable_mangle`, `xt_TPROXY` and
+`xt_socket` and the IOChaos module `fuse`. On a host without root or passwordless sudo
 it logs a warning and continues, and the suite then fails on its own
 assertions.
 
@@ -1309,7 +1331,8 @@ the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
 a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
 and so do the `ovn` leg of `e2e-chaos` and, for
-`neutron-metadata-agent-pod-kill`, its `nova` leg.
+`neutron-metadata-agent-pod-kill`, its `nova` leg. The `faults` entry of
+`e2e-chaos` takes it for the HTTPChaos and IOChaos modules.
 
 ### e2e-ovn-overlay
 
