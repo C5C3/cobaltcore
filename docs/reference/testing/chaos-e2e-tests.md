@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 62 chaos test suites validate operator behavior during and after fault
+The 65 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 62 test suites require the infrastructure stack to be deployed and healthy.
+All 65 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -535,6 +535,9 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [nova-compute-neutron-http-delay](#nova-compute-neutron-http-delay) | — | `nova-vifd-chaos` | Port binding held for 330 s (HTTPChaos, no stuck state) | `INJECTED-DELAY-OK`: a port `PUT` unanswered within 20 s while `GET /v2.0/networks` answers within 5 s; `vifd-slow` in `BUILD` 120 s after its create (`HELD-OK`) and settled within 570 s more, `SETTLED ACTIVE` with its port bound to the node or `SETTLED ERROR` with it gone or unbound; no server in `BUILD` (`NO-STUCK-BUILD-OK`); `vifd-recovered` `ACTIVE` after the lift (`RECOVERED-OK`); workload budget zero; no node label, `vifd-*` server or `vifd-net` left |
 | [cinder-glance-http-abort](#cinder-glance-http-abort) | — | `cinder-img` | Image download aborted (HTTPChaos, fail-closed create) | `INJECTED-ABORT-OK`; `img-abort`, created from the image, in `error` within 240 s and still 30 s later, never `available` (`FAILCLOSED-OK`); `VolumeServicesReady=True` and `Ready=True/AllReady` under the fault; `img-abort` gone within 120 s of its delete; `img-recovered` `available` after the lift (`RECOVERED-OK`); workload budget zero |
 | [keystone-validation-http-503](#keystone-validation-http-503) | — | `keystone-chaos-ks503` | Token validation answered with 503 (HTTPChaos, fail-closed validation) | `INJECTED-503-OK`: a token issued with 201 and its own validation answered 503; after Placement and Glance restart, a fresh token gets 503 from Placement and 401 from Glance, never a 2xx (`FAILCLOSED-OK`); the Keystone, Placement and Glance CRs `Ready=True/AllReady`, the Keystone at `DatabaseReady=True` and `GET /v3` 200 under the fault; 200 from both after the lift (`RECOVERY-OK`) |
+| [keystone-api-clock-skew](#keystone-api-clock-skew) | — | `keystone-chaos-clock` | Keystone API clock behind, then ahead (TimeChaos, token lifetime) | `EXPIRED-REJECTED 404` before the skew; one hour behind, `BEHIND-OFFSET` at most -3500 and `BEHIND-ACCEPTS-EXPIRED 200`; two hours ahead, `AHEAD-OFFSET` at least 7100 and `AHEAD-REJECTS-FRESH 404`; after the lift `SKEWED-TOKEN-OUTLIVES 200` with an `expires_at` at least 6900 s ahead, `RECOVERED-OK` and `Ready=True/AllReady` |
+| [keystone-operator-clock-skew](#keystone-operator-clock-skew) | — | `keystone-chaos-opclk` | Operator leader clock ahead, then past the API server's certificate (TimeChaos, leader election) | `SKEW-SEEN`: the Lease's `renewTime` at least 3500 s ahead; a replica patch reconciled with the holder and the leader's `restartCount` unchanged (`RECONCILE-UNDER-SKEW-OK`); past the certificate the Lease on the other pod within 120 s (`HANDOVER-OK`), the expired certificate in the old leader's log (`CERT-REJECTED-OK`) and a replica patch reconciled by the new leader (`RECONCILE-AFTER-HANDOVER-OK`); both operator pods Ready after the lift, workload budget zero |
+| [ovn-raft-clock-skew](#ovn-raft-clock-skew) | — | `ovn-clock-chaos` | Southbound raft member clock an hour ahead (TimeChaos, no election) | The follower's ovsdb-server stamps its log at least 3500 s ahead (`INJECTED-SKEW-OK`); it keeps its leader and term for 120 s (`NO-ELECTION-OK`); a Northbound write reaches the leader's `Datapath_Binding` within 60 s (`WRITE-UNDER-SKEW-OK`) and the skewed member's copy within 60 s more (`REPLICATED-UNDER-SKEW-OK`); within 180 s of the lift it follows the leader and holds the write (`FOLLOWER-AFTER-LIFT-OK`), `Ready=True/AllReady`, no `clock-chaos-ls` left |
 
 ---
 
@@ -570,6 +573,33 @@ database or a broker itself, and changing that is a product change outside the
 chaos suites.
 
 ---
+
+### Clock skew on the Keystone API
+
+[keystone-api-clock-skew](#keystone-api-clock-skew) pins how Keystone takes a token's
+lifetime from the clock of the API pod that validates it. A slow clock accepts an
+expired token for the length of the skew. A fast clock rejects a live token. A
+token minted on a fast clock outlives its lifetime by the skew once the clock is
+right again. Nothing in CobaltCore detects the skew: the Keystone CR stays
+`Ready=True/AllReady` throughout, and the probes of the API pod do not read the
+clock.
+
+### Clock skew past a certificate's validity
+
+[keystone-operator-clock-skew](#keystone-operator-clock-skew) moves the leader's
+clock past the `notAfter` of the API server's certificate. It computes the offset
+at run time from the certificate itself, the hours to its `notAfter` plus 24, so
+the offset does not rot with the cluster's age. A skew of an hour costs the
+operator nothing, because its timers read the monotonic clock. Past the
+certificate, TLS verification fails on the wall clock at the next connection,
+and the leader loses its Lease to the other replica.
+
+[ovn-raft-clock-skew](#ovn-raft-clock-skew) stops at an hour. Raft runs over TLS
+sessions ovsdb-server opens once and keeps, so a wall clock past the
+certificates re-verifies nothing while the cluster is steady: in CI a member
+skewed a year ahead stayed follower of its leader for 180 s without a
+certificate error in its log. The suite pins what the skew does change, the
+member's log stamps, and what it does not, the election and the replication.
 
 ## Test Suite Details
 
@@ -4159,6 +4189,146 @@ Placement and Glance logs and dumps the workload.
 
 - Glance answers 401 where Placement answers 503 because the operator renders
   `delay_auth_decision = true` into its paste pipeline.
+
+---
+
+### keystone-api-clock-skew
+
+**File:** `tests/e2e-chaos/keystone-api-clock-skew/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Two `TimeChaos` objects on the `keystone` container of the API pod of
+`keystone-chaos-clock` move its clock one hour back, then two hours forward, one
+after the other in one fault window. Fernet validation compares a token's
+`expires_at` with the API pod's clock, and the Keystone issues tokens for 300
+seconds. The suite pins the three behaviours of
+[Clock skew on the Keystone API](#clock-skew-on-the-keystone-api).
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone | `apply` + `assert` | `keystone-chaos-clock` (database `keystone_chaos_clock`, one replica, `extraConfig.token.expiration: "300"`) `Ready=True/AllReady` |
+| 2 | Workload and probe | `script` (6m) + `script` (8m) | `workload.sh start`, then pod `clock-skew-probe` runs `token-probe.py`: it issues T_old, waits past its `expires_at` plus 30 s on its own clock and validates it (`EXPIRED-REJECTED 404`). The step cleanup deletes the probe |
+| 3 | One hour behind | `script` (6m) | `workload.sh mark fault-start`, applies `01-timechaos-behind.yaml`, waits for `AllInjected`, creates `/tmp/behind` in the probe: a fresh token's `issued_at` is at least 3500 s behind the probe's clock (`BEHIND-OFFSET`, the canary), and T_old validates (`BEHIND-ACCEPTS-EXPIRED 200`). Deletes the object |
+| 4 | Two hours ahead | `script` (6m) | `/tmp/pre` issues T_pre (`PRE-ISSUED`), then `02-timechaos-ahead.yaml` and `/tmp/ahead`: T_fwd's skew is at least 7100 s (`AHEAD-OFFSET`, the canary), and T_pre is rejected (`AHEAD-REJECTS-FRESH 404`). Deletes the object, `workload.sh mark fault-end` |
+| 5 | After the lift | `script` (5m) + `assert` | `/tmp/after`: T_fwd validates with an `expires_at` at least 6900 s after the probe's clock (`SKEWED-TOKEN-OUTLIVES 200`), and a fresh token validates (`RECOVERED-OK`); `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-timechaos-behind.yaml`
+(`keystone-clock-behind`, `timeOffset: "-1h"`), `02-timechaos-ahead.yaml`
+(`keystone-clock-ahead`, `timeOffset: "2h"`), both `containerNames: [keystone]`;
+`token-probe.py`.
+
+**Workload:** the `token` stream, judged against `failures=40 recovery=60s`, an
+estimate: the cycles that straddle an injection or a lift fail. The suite runs in
+the `faults` matrix entry.
+
+**Catch blocks:** from step 2 on, one anchor prints and deletes the suite's chaos
+objects, calls `../diagnostics.sh chaos keystone-chaos-clock`, prints the probe's
+log and dumps the workload.
+
+**Design notes:**
+
+- Every validation of the probe sends a freshly issued admin token in
+  `X-Auth-Token`, so the request's own token is valid on the skewed clock, and the
+  probe keeps every token it issues in its own memory.
+- A `kubectl exec` into the container keeps the true clock, so the canary reads the
+  skew off a token's `issued_at`.
+
+---
+
+### keystone-operator-clock-skew
+
+**File:** `tests/e2e-chaos/keystone-operator-clock-skew/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `TimeChaos` on the `manager` container of the keystone-operator pod
+that holds Lease `keystone.openstack.c5c3.io` moves its clock an hour ahead, then
+past the validity of the API server's certificate. client-go writes the Lease's
+`renewTime` from the wall clock and runs the renew deadline on the monotonic clock,
+so the first skew must cost nothing. TLS verification reads the wall clock, so the
+second must hand the lead to the other replica, which then reconciles.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone and workload | `apply` + `assert` + `script` (6m) | `keystone-chaos-opclk` (one replica) `Ready=True/AllReady`, `workload.sh start` |
+| 2 | Read the leader | `script` (2m) | The Lease's `holderIdentity` up to its first `_` names one of the two Ready pods of `deployment/keystone-operator`; both pods' `restartCount` go into ConfigMap `operator-clock-skew-state`. A missing Lease fails with `FAIL: no Lease keystone.openstack.c5c3.io in keystone-system: leader election is off` |
+| 3 | One hour ahead | `script` (6m) | `workload.sh mark fault-start`, applies `01-timechaos.yaml` with `OFFSET=1h`: within 60 s `renewTime` is at least 3500 s ahead of the runner's clock (`SKEW-SEEN`, the canary). A patch to `replicas: 2` reaches Deployment `keystone-chaos-opclk` within 180 s with the holder and the leader's `restartCount` unchanged (`RECONCILE-UNDER-SKEW-OK`). Deletes the object |
+| 4 | Past the certificate | `script` (8m) | `openssl s_client` reads the `notAfter` of the API server's certificate; the offset is the hours to it, rounded up, plus 24. Without `openssl` or with a date it cannot parse, the step fails with `FAIL: cannot read the API server certificate's notAfter`. Within 120 s the Lease names the other pod (`HANDOVER-OK`), the old leader's log, with `--previous` when it restarted, holds `x509: certificate has expired or is not yet valid` (`CERT-REJECTED-OK`), and a patch to `replicas: 1` reaches the Deployment within 180 s (`RECONCILE-AFTER-HANDOVER-OK`). Deletes the object, `workload.sh mark fault-end` |
+| 5 | Recovery | `script` (6m) + `assert` | `deployment/keystone-operator` at `readyReplicas: 2` within 5 minutes; otherwise the old leader's last 50 log lines and a failure. The Keystone `Ready=True/AllReady` |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-timechaos.yaml` (`operator-leader-skew`,
+`selector.pods: {keystone-system: [@LEADER@]}`, `containerNames: [manager]`,
+`timeOffset: "@OFFSET@"`); `probe-lib.sh` (the Lease holder, the restart counts,
+the offset).
+
+**Workload:** the `token` stream against a zero budget. The operator is on no
+request path. The suite runs in the `faults` matrix entry.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos keystone-chaos-opclk` with the operator pods as dependency,
+prints the Lease, the state ConfigMap and the current and previous log of each
+operator pod, and dumps the workload.
+
+**Design notes:**
+
+- An old leader that stays unready after the lift is a finding to report on #1391:
+  a skew that outlives its `TimeChaos`. The suite fails on it and leaves the pod
+  as it is.
+
+---
+
+### ovn-raft-clock-skew
+
+**File:** `tests/e2e-chaos/ovn-raft-clock-skew/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `TimeChaos` on the `ovsdb` container of one Southbound follower of
+`ovn-clock-chaos` moves its clock an hour ahead. ovsdb's raft timers read the
+monotonic clock, which `TimeChaos` leaves alone; its log stamps read the wall
+clock, which `TimeChaos` moves. The suite pins that the skew lands on
+ovsdb-server, that it moves no election, and that the member keeps replicating
+the quorum's writes.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Three members | `apply` + `assert` (8m) + `script` (5m) | `ovn-clock-chaos` with three Southbound members `Ready=True/AllReady`; `ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound` on each names one leader; the leader, its server id, the term and the first follower go into ConfigMap `ovn-raft-clock-skew-state` |
+| 2 | One hour ahead | `script` (8m) | Applies `01-timechaos.yaml`, waits for `AllInjected`. `ovs-appctl vlog/message chaos-canary` makes the member's ovsdb-server write a line to its log file; its timestamp must be at least 3500 s ahead of the node's clock (`INJECTED-SKEW-OK`, the canary). Every 10 s for 120 s the follower reads `follower`, the recorded leader and the recorded term (`NO-ELECTION-OK`). `ovn-nbctl ls-add clock-chaos-ls`; within 60 s the leader's `Datapath_Binding` holds it (`WRITE-UNDER-SKEW-OK`) and within 60 s more `ovn-sbctl --no-leader-only` on the skewed member's socket finds it (`REPLICATED-UNDER-SKEW-OK`). Deletes the object |
+| 3 | After the lift | `script` (6m) + `assert` | Within 180 s the member follows the current leader and still finds the datapath on its own socket (`FOLLOWER-AFTER-LIFT-OK`); `Ready=True/AllReady`. The `finally` block deletes `clock-chaos-ls` |
+
+**Fixtures:** `00-ovncentral-cr.yaml` (`southbound.replicas: 3`),
+`01-timechaos.yaml` (`ovn-sb-member-skew`, `selector.pods: {openstack: [@MEMBER@]}`,
+`containerNames: [ovsdb]`, `timeOffset: "1h"`); `probe-lib.sh`.
+
+**Workload:** none. The `ovn` matrix entry runs no OpenStack API, which the suite
+header records in its `# Chaos workload: none` line.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos ovn-clock-chaos --cr-kind=ovncentral`, prints the state
+ConfigMap and each member's `cluster/status` and log, and dumps the ovn-operator
+log.
+
+**Design notes:**
+
+- ovsdb-server writes its log to a file under `/var/log/ovn`, so the suite reads
+  the file beside the container log. The canary reads the same file:
+  `vlog/message chaos-canary` makes ovsdb-server write a line the canary can
+  find, and a `TimeChaos` that reports `AllInjected` but left ovsdb-server on
+  the true clock stamps that line with the node's time. `vlog/reopen` provokes
+  no line: ovsdb-server reopens a log file that was not rotated without
+  writing anything, so the newest line would be one stamped before the fault.
+- Raft's TLS sessions are opened once and kept, so a skew past the
+  certificates' `notAfter` re-verifies nothing while the cluster is steady; see
+  [Clock skew past a certificate's validity](#clock-skew-past-a-certificates-validity).
 
 ---
 

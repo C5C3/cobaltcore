@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# TimeChaos operator-leader-skew: the clock of the manager container of the
+# keystone-operator pod that holds the leader Lease, moved by @OFFSET@. The
+# suite reads the leader off Lease keystone.openstack.c5c3.io and applies this
+# file through ../lib/faults.sh fault_inject, which fills @LEADER@ and
+# @OFFSET@: 1h in the first phase, and in the second the whole hours to the
+# notAfter of the API server's certificate plus 24, computed at run time so
+# the offset does not rot with the cluster's age.
+#
+# The container runs the static binary /manager as PID 1 (operators/Dockerfile),
+# which TimeChaos reaches. client-go writes the Lease's renewTime from the
+# wall clock and runs the renew deadline on the monotonic clock; TLS
+# verification of the API server reads the wall clock at the handshake, which
+# the leader's one connection never repeats.
+#
+# duration is a safety net above the suite's phases; the suite deletes the
+# object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata:
+  name: operator-leader-skew
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: keystone-operator-clock-skew
+spec:
+  mode: all
+  selector:
+    pods:
+      keystone-system:
+        - "@LEADER@"
+  containerNames:
+    - manager
+  timeOffset: "@OFFSET@"
+  duration: "900s"

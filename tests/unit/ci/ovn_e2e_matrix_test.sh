@@ -354,6 +354,8 @@ test_chaos_ovn_leg_is_wired() {
     "runs-on: self-hosted"
   assert_contains "it runs the southbound-outage suite" "$entry" \
     "tests/e2e-chaos/ovn-southbound-outage"
+  assert_contains "it runs the raft clock-skew suite" "$entry" \
+    "tests/e2e-chaos/ovn-raft-clock-skew"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
   # The expression names the five non-blocking legs instead of negating the
