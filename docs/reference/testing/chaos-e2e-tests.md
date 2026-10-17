@@ -28,7 +28,11 @@ with a [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`.
 `deletion-stuck-finalizer`, `cinder-nfs-outage` and `eso-down` scale a
 Deployment to zero with `kubectl scale` instead, `openbao-sealed` seals OpenBao
 with `bao operator seal`, and `openbao-tenant-policy-narrowed` writes a narrowed
-policy with `bao policy write`. Tests use
+policy with `bao policy write`. The sixteen suites of #1391 inject HTTP, clock,
+I/O, resource-pressure and DNS faults with `HTTPChaos`, `TimeChaos`, `IOChaos`,
+`StressChaos` and `DNSChaos`;
+[Fault Kinds Beyond PodChaos and NetworkChaos](#fault-kinds-beyond-podchaos-and-networkchaos)
+describes how they inject, prove and lift a fault. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion
 lifecycle.
 
@@ -72,7 +76,7 @@ step under its number.
 steps without a chaos resource: step 2 scales a Deployment to zero, and step 5
 scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
-one back. The suites of the first four matrix entries run in the namespace
+one back. The suites of every matrix entry but `controlplane` run in the namespace
 `openstack`. The five of the `controlplane` entry each bring up a ControlPlane in a
 short namespace of their own, `chaos-korc-out` and its siblings. The c5c3-operator
 names the DB-credential client certificate of a plane
@@ -150,15 +154,17 @@ overrides the image), marks the fault window on the pod clock, and judges the
 records against the error budget in the suite header. The directory holds no
 `chainsaw-test.yaml`, so `make e2e-chaos` does not run it as a suite.
 
-Forty-six suites start a workload: the fifteen pod and network suites that send
+Sixty-one suites start a workload: the fifteen pod and network suites that send
 no OpenStack traffic of their own, `nova-placement-outage`, which runs it after its
 partition as the proof run of the server, network and image streams, the eighteen
 dependency-fault suites of #1389, from `glance-keystone-outage` to
-`neutron-metadata-agent-pod-kill`, and twelve of the thirteen platform suites of
-#1390, from `cert-manager-outage` to `rabbitmq-operator-cascading-failure`. The
-last two groups run it through their fault. `deletion-stuck-finalizer` and
-`c5c3-operator-pod-kill` start none and say why in a `# Chaos workload: none`
-line. The `Workload` line of each suite section below names its streams and its
+`neutron-metadata-agent-pod-kill`, twelve of the thirteen platform suites of
+#1390, from `cert-manager-outage` to `rabbitmq-operator-cascading-failure`, and
+fifteen of the sixteen fault-kind suites of #1391, from
+`nova-placement-http-fault` to `placement-keystone-dns-fault`. The last three
+groups run it through their fault. `deletion-stuck-finalizer`,
+`c5c3-operator-pod-kill` and `ovn-raft-clock-skew` start none and say why in a
+`# Chaos workload: none` line. The `Workload` line of each suite section below names its streams and its
 budget.
 
 ### Streams
@@ -275,14 +281,17 @@ set `failures` to twice the largest in-window count and `recovery` to the
 largest observed recovery plus 30 seconds, rounded up to ten seconds, and record
 the three observations in the measured line. A measured line whose environment
 reads `estimate` carries an estimate of the fault window that no run has measured
-yet, which is where the eighteen suites of #1389 start; three runs replace it. The
-budget is zero where the fault does not touch the request path of the stream: the
-ten operator pod kills, `cronjob-rotation-failure`, `openbao-pod-kill`,
-`nova-placement-outage`, `neutron-metadata-agent-pod-kill`, and eight platform
-suites of #1390: `cert-manager-outage`, `eso-down`, `eso-pod-kill`,
+yet, which is where the eighteen suites of #1389 and the fifteen of #1391 start;
+three runs replace it. The budget is zero where the fault does not touch the
+request path of the stream: the ten operator pod kills, `cronjob-rotation-failure`,
+`openbao-pod-kill`, `nova-placement-outage`, `neutron-metadata-agent-pod-kill`,
+eight platform suites of #1390 (`cert-manager-outage`, `eso-down`, `eso-pod-kill`,
 `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`,
-`korc-provisioning-outage` and `korc-network-partition`. A failure in one of them
-is a defect to find, and raising the budget does not fix it.
+`korc-provisioning-outage` and `korc-network-partition`), and seven suites of
+#1391: `nova-compute-neutron-http-delay`, `cinder-glance-http-abort`,
+`keystone-operator-clock-skew`, `glance-staging-io-fault`, `openbao-io-fault`,
+`nova-instances-io-fault` and `cinder-backup-memory-stress`. A failure in one of
+them is a defect to find, and raising the budget does not fix it.
 
 ### Consistency checks
 
@@ -346,9 +355,9 @@ always exit 0. A local run pulls the Tempest image from GHCR unless
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered, and its five matrix entries gate differently. The
-`pod` entry is blocking; the `network`, `ovn`, `nova` and `controlplane` entries
-are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
+The job is path-filtered, and its six matrix entries gate differently. The
+`pod` entry is blocking; the `network`, `ovn`, `nova`, `controlplane` and `faults`
+entries are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
 for full job documentation.
 
 **Path filter (`tests_chaos`):** Only changes under `tests/e2e-chaos/**` trigger the job.
@@ -371,15 +380,18 @@ a pull request that changes something else.
 `e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
 cancelled.
 
-**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}</code>):**
+**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'faults' }}</code>):**
 The `pod` entry is **blocking**: a failure in any PodChaos suite (operator
 restart, PDB, rotation) fails the build. The `network`, `ovn`, `nova` and
 `controlplane` entries stay **non-blocking**, because the `ip_set`/`sch_netem`
 kernel-module dependency their NetworkChaos partitions carry remains prone to
 environment flakiness; their failures are visible but do not block merges. In
-the `controlplane` entry that partition is `korc-network-partition`. The
-expression names the four non-blocking entries instead of negating the blocking
-one, so a sixth entry gates merges until it is argued out of that. The `ci:chaos`
+the `controlplane` entry that partition is `korc-network-partition`. The `faults`
+entry is non-blocking for the host modules of its own kinds: `HTTPChaos` needs
+`bridge`, `ebtables`, `ebtable_broute`, `iptable_mangle`, `xt_TPROXY` and
+`xt_socket`, `IOChaos` needs `fuse`, and `hack/deploy-infra.sh` loads them best
+effort. The expression names the five non-blocking entries instead of negating the
+blocking one, so a seventh entry gates merges until it is argued out of that. The `ci:chaos`
 PR label runs every entry on demand for pre-validation. `run-chaos` still works as
 an alias for it.
 
@@ -395,15 +407,16 @@ operators: the four Neutron suites (`neutron-mariadb-outage`,
 `ovn-operator-pod-kill`, the database outages of Glance, Placement, Barbican and
 Cinder, and `memcached-network-partition`. It therefore deploys the
 neutron-operator, the ovn-operator and the placement-operator alongside keystone,
-the last for `placement-mariadb-outage`. The seven Cinder suites
+the last for `placement-mariadb-outage`. The ten Cinder suites
 (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`,
 `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`,
-`cinder-broker-pod-kill`) run in that entry alone, so it deploys the
-cinder-operator into `cinder-system` as well and sets `WITH_NFS=true` and
-`WITH_MESSAGING=true` on the infrastructure bring-up: each of the seven attaches
-an NFS backend the operator mounts as an inline CSI volume, five of them take a
-vhost on the shared broker, and the two broker suites bring a RabbitmqCluster of
-their own. Several of them run there for the Cinder stack of the entry, and their
+`cinder-broker-pod-kill`, `cinder-glance-http-abort`,
+`cinder-backup-memory-stress`, `cinder-broker-dns-fault`) run in that entry alone,
+so it deploys the cinder-operator into `cinder-system` as well and sets
+`WITH_NFS=true` and `WITH_MESSAGING=true` on the infrastructure bring-up: each of
+the ten attaches an NFS backend the operator mounts as an inline CSI volume, seven
+of them take a vhost on the shared broker, and the three broker suites bring a
+RabbitmqCluster of their own. Several of them run there for the Cinder stack of the entry, and their
 fault class would not put them there, so they inherit a `continue-on-error` the
 gate below justifies with a kernel-module dependency they do not have:
 `cinder-operator-pod-kill`, `cinder-volume-pod-kill` and `cinder-broker-pod-kill`
@@ -421,25 +434,28 @@ keeps the operator logs in the job log. The `ovn` entry is the third one, on the
 runners as well and `continue-on-error` like the network one. It sets
 `WITH_OVN_KERNEL_MODULES=true` so `hack/deploy-infra.sh` modprobes `openvswitch`
 and `geneve` on the host (the chassis DaemonSets cannot start without them),
-deploys the ovn-operator alone, and runs `ovn-southbound-outage`. It is separate
+deploys the ovn-operator alone, and runs `ovn-southbound-outage` and
+`ovn-raft-clock-skew`. It is separate
 from the `network` entry because it builds a datapath on the node itself: its
 probe pods own `/run/openvswitch` and `/run/netns`, which no other suite may hold
 at the same time.
 
 The `nova` entry is the fourth, on the `self-hosted` runners and
 `continue-on-error` like the other two. It carries the heaviest stack in the job:
-each of its six suites (`nova-broker-outage`, `nova-mariadb-outage`,
+each of its eight suites (`nova-broker-outage`, `nova-mariadb-outage`,
 `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
-`neutron-metadata-agent-pod-kill`) brings up a Keystone, and all but
+`neutron-metadata-agent-pod-kill`, `nova-placement-http-fault`,
+`nova-compute-neutron-http-delay`) brings up a Keystone, and all but
 `nova-mariadb-outage` add an OVNCentral, a Neutron, a Placement, a Glance and a
 fake-driver compute behind the Nova. On top of the keystone stack it deploys the
 placement, ovn, neutron and nova operators, and it sets `WITH_MESSAGING=true`:
-every Nova process dials the bus, five of the six suites take a vhost on the
+every Nova process dials the bus, seven of the eight suites take a vhost on the
 shared broker, and `nova-broker-outage` brings a RabbitmqCluster of its own,
 because its fault severs a whole broker. It also sets
-`WITH_OVN_KERNEL_MODULES=true`: `neutron-metadata-agent-pod-kill` runs an
-OVNChassis and a metadata agent on the node, and the chassis DaemonSets need the
-`openvswitch` and `geneve` modules. The suites run in a matrix entry of their own
+`WITH_OVN_KERNEL_MODULES=true`: `neutron-metadata-agent-pod-kill` and
+`nova-compute-neutron-http-delay` run an OVNChassis on the node, the first with a
+metadata agent beside it, and the chassis DaemonSets need the `openvswitch` and
+`geneve` modules. The suites run in a matrix entry of their own
 because their stack does not fit beside the suites of the `network` entry.
 
 The `controlplane` entry is the fifth, on the `self-hosted` runners and
@@ -458,16 +474,45 @@ and deploys the c5c3-operator into `c5c3-system` at the chart default of two
 replicas. A `Dump diagnostic info (controlplane leg)` step dumps the
 c5c3-operator and 500 lines of the K-ORC log.
 
+The `faults` entry is the sixth, on the `self-hosted` runners and
+`continue-on-error` like the other four. It runs the nine suites of #1391 that
+need only the standalone stack: `keystone-validation-http-503`,
+`keystone-api-clock-skew`, `keystone-operator-clock-skew`, `mariadb-io-fault`,
+`glance-staging-io-fault`, `openbao-io-fault`, `keystone-api-stress-autoscaling`,
+`keystone-database-dns-fault` and `placement-keystone-dns-fault`. On top of the
+keystone stack it loads and deploys the placement-operator, and it sets
+`WITH_METRICS_SERVER=true` and `WITH_VPA=true` on the infrastructure bring-up, the
+two add-ons `e2e-autoscaling` turns on, for the HPA and the VPA of
+`keystone-api-stress-autoscaling`. A `Dump diagnostic info (faults leg)` step
+dumps the placement and glance operators with `OPERATOR_ONLY=1`. The `!= 'pod'`
+steps load the OVN images and deploy the ovn-operator here too, as on
+`controlplane`.
+
+The `e2e-nova-libvirt` job runs one chaos suite outside the matrix:
+`nova-instances-io-fault`, in its step `Run the libvirt chaos suite` after the
+libvirt suite, with `tests/e2e/infrastructure/chaos-mesh-health` first and
+`tests/e2e-chaos/chainsaw-config.yaml` as configuration. The job sets
+`WITH_CHAOS_MESH=true` for it, uploads both JUnit reports from
+`_output/reports/`, and runs within a wall of 120 minutes. Its `tests_nova_libvirt`
+path filter covers the suite, `tests/e2e-chaos/lib/**` and the chaos
+configuration.
+
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 150 minutes for the `nova` entry, 135 for `network`, 120 for `pod`,
-100 for `controlplane` and 45 for `ovn`, 550 minutes in all, to accommodate serial
-test execution and longer recovery assertion windows. The author of #1390
-accepted that sum on 2026-10-16. Run 38903206716 took 62, 125, 11 and 130 minutes
-on `pod`, `network`, `ovn` and `nova`. The eight platform suites of #1390 add
-about 5 minutes each to `pod`, and the `controlplane` entry needs about 15
-minutes for its bring-up and 8 to 12 for each of its five suites.
+**Timeout:** 190 minutes for the `nova` entry, 175 for `network`, 130 for
+`faults`, 120 for `pod`, 100 for `controlplane` and 45 for `ovn`, 760 minutes in
+all, to accommodate serial test execution and longer recovery assertion windows.
+The author of #1391 accepted that sum on 2026-10-17, against the 600 minutes D6
+of #1386 gives the job; amending D6 is the author's edit on #1386. Run
+38903206716 took 62, 125, 11 and 130 minutes on `pod`, `network`, `ovn` and
+`nova`. The eight platform suites of #1390 add about 5 minutes each to `pod`, and
+the `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for
+each of its five suites. #1391 adds two suites of about 25 minutes to `nova`,
+three of about 15 to `network` and one of about 15 to `ovn`, and the `faults`
+entry needs about 20 minutes for its bring-up and 8 to 12 for each of its nine
+suites. The wall comment in `.github/workflows/ci.yaml` carries the derivation;
+the first green runs with the new suites replace these estimates.
 
 ## Test Suite Inventory
 
@@ -541,7 +586,7 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [mariadb-io-fault](#mariadb-io-fault) | — | `keystone-chaos-io` | MariaDB data directory slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK`, then 120 s with MariaDB and the Keystone `Ready=True` and new writes acknowledged; `INJECTED-ENOSPC-OK` and MariaDB `Ready=True` within 5 minutes of the lift; `INJECTED-EIO-OK`; afterwards MariaDB `Ready=True` within 10 minutes, `mariadb-check` OK for every table (`CHECK-OK`), every project created with 201 present (`ACKED-OK`), the Keystone `Ready=True/AllReady`; no `mariadb-io-chaos` CR or claim left |
 | [glance-staging-io-fault](#glance-staging-io-fault) | — | `glance-chaos-stage` | Import staging area slow, full, then failing (IOChaos, fail-closed stage) | `INJECTED-LATENCY-OK` and an import reaching `active` (`LATENCY-IMPORT-ACTIVE`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with the stage answered non-2xx and the image `queued` (`ENOSPC-STAGE-REFUSED`, `EIO-STAGE-REFUSED`); after the lift `RECOVERED-OK`, no image `uploading` or `importing` (`NO-STUCK-IMPORT-OK`), no staged file of the suite's images; workload budget zero |
 | [openbao-io-fault](#openbao-io-fault) | — | `keystone-chaos-baoio` | OpenBao raft volume slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK` and ten of ten writes acknowledged (`LATENCY-WRITES-OK`); `INJECTED-ENOSPC-OK`; `INJECTED-EIO-OK`; `openbao-0` unsealed after each phase; afterwards `Sealed false`, `openbao-cluster-store` `Ready=True`, a forced sync of `keystone-admin` (`SYNC-OK`), the canary and every acknowledged write reading their values (`ACKED-OK`), no key left under `kv-v2/chaos/openbao-io`; workload budget zero |
-| [nova-instances-io-fault](#nova-instances-io-fault) | — | `pool-libvirt` | Instances directory of a libvirt pool slow, full, then failing (IOChaos, build outcome) | `INJECTED-LATENCY-OK` and `io-latency` `ACTIVE` within 300 s (`LATENCY-BOOT-OK`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with `io-enospc` and `io-eio` in `ERROR` with a non-empty fault (`ENOSPC-BOOT-ERROR-OK`, `EIO-BOOT-ERROR-OK`); `io-base`'s domain running after each phase (`BASE-GUEST-RUNNING-OK`); no instance directory of the failed builds left (`NO-LEFTOVER-DIR-OK`), `io-recovered` `ACTIVE` (`RECOVERED-OK`), a clean placement audit, workload budget zero |
+| [nova-instances-io-fault](#nova-instances-io-fault) | — | `pool-libvirt` | Instances directory of a libvirt pool slow, full, then failing (IOChaos, build outcome) | `INJECTED-LATENCY-OK` and `io-latency` `ACTIVE` within 300 s (`LATENCY-BOOT-OK`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with `io-enospc` and `io-eio` in `ERROR` with a non-empty fault (`ENOSPC-BOOT-ERROR-OK`, `EIO-BOOT-ERROR-OK`); `io-base`'s domain running after each phase (`BASE-GUEST-RUNNING-OK`); no instance directory of the failed builds left (`NO-LEFTOVER-DIR-OK`), `io-recovered` `ACTIVE` (`RECOVERED-OK`), a placement audit without findings, workload budget zero |
 | [keystone-api-stress-autoscaling](#keystone-api-stress-autoscaling) | — | `keystone-chaos-hpa`, `keystone-chaos-vpa` | CPU pressure under an HPA, memory past the limit under a VPA (StressChaos, autoscaling) | `HPAReady=True`, `VPAReady=True` and a first VPA target; `INJECTED-CPU-OK` with at least 1000m reported, the HPA at two or more replicas with two Ready within 5 minutes (`SCALE-OUT-OK`) and back at one within 5 minutes of the lift (`SCALE-IN-OK`); `oom_kill` rising or an OOM restart within 120 s (`OOM-OK`); the VPA's memory target above the first within 10 minutes (`VPA-RECOMMENDATION-ROSE`); both Keystones `Ready=True/AllReady` |
 | [cinder-backup-memory-stress](#cinder-backup-memory-stress) | — | `cinder-backup-stress` | Memory pressure on cinder-backup during a backup (StressChaos, OOM path of #1003) | `BackupServiceReady=True` and `bkstress-vol` `available`; `INJECTED-MEM-OK` with `memory.current` within 128 MiB of `memory.max`; an OOM kill within 300 s of the backup's start (`OOM-OK`), never a backup that finished under the stress; `BackupServiceReady=True`, `bkstress-bk1` in `error` and `bkstress-vol` `available` within 5 minutes (`FAILCLOSED-OK`); `bkstress-bk2` `available` (`RECOVERED-OK`); workload budget zero |
 | [keystone-database-dns-fault](#keystone-database-dns-fault) | — | `keystone-chaos-dbdns` | Database name unresolvable (DNSChaos, depool and repool) | `INJECTED-DNS-OK`: the database name fails to resolve in the `keystone` container while `openstack-memcached` resolves; within 240 s the pod not Ready and `DeploymentReady=False` with `restartCount` unchanged (`DEPOOLED-OK`); `Ready=True/AllReady` within 180 s of the lift (`REPOOLED-OK`) |
@@ -4940,6 +4985,123 @@ spec:
 The test explicitly deletes the PodChaos CR before asserting recovery. This ensures the
 fault is lifted before the recovery assertion window begins.
 
+## Fault Kinds Beyond PodChaos and NetworkChaos
+
+The sixteen suites of #1391 inject with five more Chaos Mesh kinds: `HTTPChaos`
+(four suites), `TimeChaos` (three), `IOChaos` (four), `StressChaos` (two) and
+`DNSChaos` (three). They share one shape, which `tests/e2e-chaos/lib/faults.sh`
+holds and `tests/e2e-chaos/lib/probe.py` serves with the HTTP and Cinder checks
+of the probe pods:
+
+- Every chaos object carries the label `chaos.c5c3.io/suite: <suite>`, lives in
+  the suite's namespace and names its targets in `selector.namespaces` with
+  `labelSelectors`, or in `selector.pods`.
+- A phase applies its object, runs
+  `kubectl wait <kind>/<name> -n <ns> --for=condition=AllInjected --timeout=120s`,
+  runs its canary, asserts, then deletes the object and waits with
+  `kubectl wait --for=delete` before the next phase (`fault_inject`, `fault_lift`).
+- Every step from the first injection to the lift has, in its `catch`,
+  `fault_lift_suite <suite>`, which prints the suite's objects and then runs
+  `kubectl delete podchaos,networkchaos,httpchaos,timechaos,iochaos,stresschaos,dnschaos -n <ns> -l chaos.c5c3.io/suite=<suite> --ignore-not-found --wait=true --timeout=120s`,
+  plus the suite's own restore of shared state where it touches one:
+  `openbao-io-fault` unseals OpenBao.
+- An object that needs a run-time value (a pod name, an offset, a size) carries
+  `@NAME@` placeholders, which `fault_render` fills with
+  `sed -e "s|@NAME@|${VALUE}|g"`; a placeholder left without a value fails the
+  render.
+- `diagnostics.sh` lists all seven kinds, `CHAOS_KINDS` of `lib/faults.sh`,
+  in the suite's namespace and with `-A -l chaos.c5c3.io/suite`, so a chaos
+  object is shown wherever its suite put it.
+
+### HTTPChaos and hostNetwork
+
+chaos-tproxy, the injector of `HTTPChaos`, creates a bridge in the network
+namespace of the pod it selects and moves the pod's device onto it. For a
+`hostNetwork` pod that namespace is the node's. Chaos Mesh reads
+`controllerManager.allowHostNetworkTesting` in its NetworkChaos controller alone,
+so the refusal that keeps `NetworkChaos` off such pods does not cover `HTTPChaos`.
+
+`deploy/kind/chaos-mesh/httpchaos-policy.yaml` closes that gap with a
+ValidatingAdmissionPolicy, `chaos-mesh-httpchaos-api-workloads-only`, and its
+binding with `validationActions: [Deny]`. It matches `chaos-mesh.org/httpchaos`
+on `CREATE` and `UPDATE`, fails closed, and denies every `HTTPChaos` whose
+selector does not pin `app.kubernetes.io/name` to one of `keystone`, `placement`,
+`glance`, `nova`, `neutron`, `cinder`, `barbican` and `horizon`, and every one that
+selects by `pods`, `nodes`, `nodeSelectors`, `fieldSelectors`,
+`annotationSelectors` or `expressionSelectors`. The names are the workloads of the
+service CRs, none of which runs `hostNetwork`; the NovaCompute pool is
+`novacompute`, the OVNChassis `ovnchassis`, the metadata agent
+`neutronmetadataagent`, and none of them is on the list. The guard is a label
+allowlist because no admission mechanism resolves a selector to the pods it
+matches, and a `spec.hostNetwork` field selector selects nothing in Chaos Mesh
+2.8.4. Matching `UPDATE` keeps a selector from widening after admission, and the
+`HTTPChaos` objects a Schedule or a Workflow creates pass the same check. The lab
+overlay inherits the policy from its kind base. `chaos-mesh-health` proves nine
+denials, one for each refused selector field among them, and one admission with
+server-side dry runs. `tests/unit/deploy/chaos_mesh_overlay_test.sh` holds every
+`HTTPChaos` fixture of the suites to the allowlist and to the two selectors.
+
+Every `HTTPChaos` of the suites sits server-side on the API pods of a service and
+filters by method and path, which keeps it inside the allowlist and leaves every
+other request of the pod alone. chaos-tproxy matches the path without its query
+string.
+
+### The injection canary
+
+`AllInjected` says that Chaos Mesh set the fault up, and the kinds of #1391 reach
+less than their selector suggests. `TimeChaos` reaches PID 1 of the container and
+its children, and a `kubectl exec` keeps the true clock. `HTTPChaos` reaches only
+connections opened after the injection. `IOChaos` reaches only the paths below
+`volumePath`. A fault that reports `AllInjected` but misses its target would pass
+every claim that nothing happened, so every phase proves its injection before it
+asserts anything.
+
+A canary prints `INJECTED-<PHASE>-OK` when it sees the fault, and
+`FAIL: <kind>/<name> reports AllInjected but <observation>` with exit 1 when it
+does not. The suites read:
+
+| Kind | Canary |
+| --- | --- |
+| `HTTPChaos` | A probe pod sends the filtered request (a 503, no HTTP status, or no answer within 20 s) and an unfiltered one beside it (200) |
+| `TimeChaos` | The skew of a token's `issued_at` against the probe's clock, the Lease's `renewTime` against the runner's clock, or the raft member dropping out with a certificate error |
+| `IOChaos` | A `dd` of 40 KiB with `conv=fsync` into the volume through `kubectl exec`: at least 1 s beyond an empty `kubectl exec` into the same container under latency, `No space left on device` under `ENOSPC`, `Input/output error` (glibc) or `I/O error` (musl) under `EIO` |
+| `StressChaos` | The metrics API reporting at least 1000m, `memory.current` near `memory.max`, or `oom_kill` in `memory.events` rising |
+| `DNSChaos` | `getaddrinfo` of the faulted name raising `gaierror` in the container while another name resolves |
+
+Make a canary see no effect, for example a `TimeChaos` pointed at a container
+name that does not exist, and the step fails with the `FAIL:` line, and the label
+lift in its `catch` leaves no chaos object of the suite behind.
+
+### Connections opened before injection
+
+`HTTPChaos` "does not affect requests sent over a connection established before
+fault injection", and every API serves with uWSGI keep-alive on by default
+(`internal/common/deployment/uwsgi.go`). A client whose connection pool predates
+the fault would bypass it, so each `HTTPChaos` suite restarts the client after
+`AllInjected` and its new pods connect through the proxy: the scheduler in
+`nova-placement-http-fault`, the fake compute in
+`nova-compute-neutron-http-delay`, the volume service in
+`cinder-glance-http-abort`, Placement and Glance in
+`keystone-validation-http-503`.
+
+DNS has the same blind spot: it is consulted only when a connection opens, and
+the services hold pooled database, broker and Keystone connections. Each
+`DNSChaos` suite relies on a probe that resolves on every period
+(`keystone-database-dns-fault` reads Keystone's database readiness probe) or forces
+a reconnect under the fault: `cinder-broker-dns-fault` closes the broker's
+connections, and `placement-keystone-dns-fault` restarts the Keystone.
+
+### Several phases in one fault window
+
+`verify` reads one `fault-start` and one `fault-end` mark
+(`tests/e2e-chaos/lib/workload.sh`). A suite with several phases, 503 then abort,
+or latency then `ENOSPC` then `EIO`, applies and deletes them one after the other
+inside that window: `workload.sh mark fault-start` runs right before the first
+apply and `workload.sh mark fault-end` right after the last delete. Every write
+probe of the I/O suites records each write the target acknowledged under the fault
+and requires every one of them to read back after recovery; a refused or
+timed-out write may be there afterwards or not.
+
 ## Keystone CR Fixtures
 
 Each scenario uses a unique CR name and database name to enable parallel execution:
@@ -4987,7 +5149,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The forty-six suites that start a workload also call `../lib/workload.sh dump <id>`
+The sixty-one suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -5036,6 +5198,18 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos pod-failure on the cert-manager controller
 │   ├── chainsaw-test.yaml            Test: nothing renews while held, the new leaf served after
 │   └── probe-lib.sh                  Helpers the scripts source: proxy address, leaf hashes
+├── cinder-backup-memory-stress/      Memory pressure on cinder-backup during a backup
+│   ├── 00-cinder-cr.yaml             Cinder cinder-backup-stress, noauth, on a vhost
+│   ├── 01-cinderbackend-cr.yaml      NFS backend bkstress-nfs1
+│   ├── 02-cinderbackupbackend-cr.yaml NFS backup target bkstress-nfsbk on /backups
+│   ├── 03-stresschaos-memory.yaml    StressChaos filling the backup container (@SIZE@)
+│   └── chainsaw-test.yaml            Test: an OOM kill leaves no backup creating, no volume backing-up
+├── cinder-broker-dns-fault/          Broker name unresolvable for a Cinder scheduler
+│   ├── 00-rabbitmqcluster.yaml       RabbitmqCluster cinder-dns-rabbitmq
+│   ├── 01-cinder-cr.yaml             Cinder cinder-broker-dns, managed messaging, noauth
+│   ├── 02-cinderbackend-cr.yaml      NFS backend brokerdns-nfs1
+│   ├── 03-dnschaos.yaml              DNSChaos on the broker name for the scheduler pods
+│   └── chainsaw-test.yaml            Test: the scheduler is cut, reconnects and serves the queued create
 ├── cinder-broker-outage/             Message-bus partition under a Cinder
 │   ├── 00-rabbitmqcluster.yaml       The broker of this suite (cinder-chaos-rabbitmq)
 │   ├── 01-cinder-cr.yaml             Cinder CR cinder-broker-chaos
@@ -5048,6 +5222,15 @@ tests/e2e-chaos/
 │   ├── 02-cinderbackend-cr.yaml      NFS backend broker-kill-nfs1
 │   ├── 03-podchaos.yaml              PodChaos pod-kill of the broker pod
 │   └── chainsaw-test.yaml            Test: the bus consumers reconnect, the API never restarts
+├── cinder-glance-http-abort/         Image download aborted under a create-volume-from-image
+│   ├── 00-keystone-cr.yaml           Keystone keystone-cinder-img
+│   ├── 01-glance-cr.yaml             Glance glance-cinder-img
+│   ├── 02-glancebackend-cr.yaml      S3 store glance-cinder-img-s3
+│   ├── 03-image-seed-job.yaml        Job seeding image 4e0a0000-0000-4000-8000-00000000000d
+│   ├── 04-cinder-cr.yaml             Cinder cinder-img with spec.glanceEndpoint
+│   ├── 05-cinderbackend-cr.yaml      NFS backend img-nfs1
+│   ├── 06-httpchaos.yaml             HTTPChaos aborting GET /v2/images/*/file on the Glance API
+│   └── chainsaw-test.yaml            Test: the volume ends in error, never available
 ├── cinder-keystone-outage/           Keystone outage under an authenticated Cinder
 │   ├── 00-keystone-cr.yaml           Keystone keystone-cinder-ks-outage
 │   ├── 01-cinder-cr.yaml             Cinder cinder-ks-outage with keystoneEndpoint and serviceUser
@@ -5129,6 +5312,15 @@ tests/e2e-chaos/
 │   ├── 02-podchaos.yaml              PodChaos targeting glance-operator in glance-system
 │   ├── 03-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── glance-staging-io-fault/          Glance import staging area slow, full, failing
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-stage
+│   ├── 01-glance-cr.yaml             Glance glance-chaos-stage, one replica, glance-direct on
+│   ├── 02-glancebackend-cr.yaml      S3 store glance-chaos-stage-s3
+│   ├── 03-iochaos-latency.yaml       IOChaos latency on /var/lib/glance/staging
+│   ├── 04-iochaos-enospc.yaml        IOChaos ENOSPC on /var/lib/glance/staging
+│   ├── 05-iochaos-eio.yaml           IOChaos EIO on /var/lib/glance/staging
+│   ├── chainsaw-test.yaml            Test: a refused stage answers non-2xx, nothing stays staged
+│   └── import-probe.py               The import probe of each phase
 ├── horizon-dashboard-pod-kill/       Dashboard pod kill under a Horizon
 │   ├── 00-horizon-cr.yaml            Horizon CR fixture (horizon-chaos-dash, replicas: 2)
 │   ├── 01-podchaos.yaml              PodChaos killing one of the two dashboard pods
@@ -5142,12 +5334,41 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos targeting horizon-operator in horizon-system
 │   ├── 02-patch-scale.yaml           Patch replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, replica patch
+├── keystone-api-clock-skew/          Keystone API clock behind, then ahead
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-clock, tokens of 300 s
+│   ├── 01-timechaos-behind.yaml      TimeChaos -1h on the keystone container
+│   ├── 02-timechaos-ahead.yaml       TimeChaos +2h on the keystone container
+│   ├── chainsaw-test.yaml            Test: token lifetime follows the API pod's clock
+│   └── token-probe.py                The long-running token probe, driven by marker files
+├── keystone-api-stress-autoscaling/  CPU and memory pressure under an HPA and a VPA
+│   ├── 00-keystone-hpa-cr.yaml       Keystone keystone-chaos-hpa with spec.autoscaling
+│   ├── 01-keystone-vpa-cr.yaml       Keystone keystone-chaos-vpa with a VPA in updateMode Off
+│   ├── 02-stresschaos-cpu.yaml       StressChaos CPU workers on the HPA Keystone
+│   ├── 03-stresschaos-memory.yaml    StressChaos memory past the limit (@SIZE@)
+│   ├── chainsaw-test.yaml            Test: scale out and in, an OOM kill, a higher VPA target
+│   └── probe-lib.sh                  Helpers the scripts source: metrics, quantities, the VPA target
+├── keystone-database-dns-fault/      Database name unresolvable for a Keystone
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-dbdns, one replica
+│   ├── 01-dnschaos.yaml              DNSChaos on openstack-db.openstack.svc* for the API pod
+│   └── chainsaw-test.yaml            Test: the pod is depooled without a restart, then repooled
 ├── keystone-federation/              Federation sidecar kill and IdP outage
 │   ├── 00-keycloak.yaml              In-suite Keycloak (keycloak-chaos) importing one realm
 │   ├── 01-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-fed, replicas: 2)
 │   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
 │   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
 │   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── keystone-operator-clock-skew/     keystone-operator leader clock ahead, then past a certificate
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-opclk
+│   ├── 01-timechaos.yaml             TimeChaos on the leader's manager container (@LEADER@, @OFFSET@)
+│   ├── chainsaw-test.yaml            Test: no handover at 1h, a handover past the certificate
+│   └── probe-lib.sh                  Helpers the scripts source: the Lease holder, the offset
+├── keystone-validation-http-503/     Keystone answers token validation with 503
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-ks503
+│   ├── 01-placement-cr.yaml          Placement placement-ks503
+│   ├── 02-glance-cr.yaml             Glance glance-ks503
+│   ├── 03-glancebackend-cr.yaml      S3 store glance-ks503-s3
+│   ├── 04-httpchaos.yaml             HTTPChaos 503 on GET /v3/auth/tokens
+│   └── chainsaw-test.yaml            Test: Placement answers 503 and Glance 401, never 2xx
 ├── korc-network-partition/           K-ORC partitioned from a ControlPlane Keystone
 │   ├── 00-controlplane-cr.yaml       ControlPlane cp-korc-part, Keystone only
 │   ├── 01-keystoneservice.yaml       KeystoneService korc-part, applied under the partition
@@ -5161,11 +5382,22 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: the blind window, then one credential in Keystone
 ├── lib/                              Shared helpers of the suites, no suite
 │   ├── controlplane.sh               ControlPlane bring-up, waits, @NS@ fixtures, teardown and dump (controlplane entry)
+│   ├── faults.sh                     The fault phase: @NAME@ rendering, inject, lift, canaries, probe pods, Jobs
 │   ├── gateway.sh                    The ClusterIP of the proxy of Gateway openstack-gw
 │   ├── openbao.sh                    The root token and the bao calls into openbao-0
 │   ├── pods.sh                       The UID-gated wait for the replaced pods of a Deployment
+│   ├── probe.py                      The HTTP and Cinder checks of the probe pods (expect, cinder)
 │   ├── workload.py                   The workload streams (run) and the verdict (evaluate)
 │   └── workload.sh                   start, mark, verify, dump and stop, called by the suites
+├── mariadb-io-fault/                 MariaDB data directory slow, full, failing
+│   ├── 00-mariadb-cr.yaml            MariaDB mariadb-io-chaos, the kind shape of openstack-db
+│   ├── 01-keystone-cr.yaml           Keystone keystone-chaos-io on that MariaDB
+│   ├── 02-iochaos-latency.yaml       IOChaos latency on /var/lib/mysql
+│   ├── 03-iochaos-enospc.yaml        IOChaos ENOSPC on /var/lib/mysql
+│   ├── 04-iochaos-eio.yaml           IOChaos EIO on /var/lib/mysql
+│   ├── chainsaw-test.yaml            Test: tables check OK, no acknowledged write lost
+│   ├── probe-lib.sh                  Helpers the scripts source: readiness holds, mariadb-check
+│   └── write-probe.py                The write probe creating io-chaos-<n> projects
 ├── mariadb-network-latency/          SC-CHAOS-007: MariaDB network latency
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-net-lat)
 │   ├── 01-networkchaos.yaml          NetworkChaos injecting 10s latency on keystone→mariadb
@@ -5249,6 +5481,20 @@ tests/e2e-chaos/
 │   ├── 15-blocked-job.yaml           GET / serves while a create stalls (BLOCKED-OK)
 │   ├── 16-recovered-job.yaml         The stalled create finishes, a new one runs (RECOVERED-OK)
 │   └── chainsaw-test.yaml            Test: both bus consumers NotReady → recovery
+├── nova-compute-neutron-http-delay/  Port binding held 330 s under a booting server
+│   ├── 01-keystone-cr.yaml … 14-ovnchassis-cr.yaml The stack of neutron-metadata-agent-pod-kill, renamed nova-vifd-chaos
+│   ├── 15-httpchaos.yaml             HTTPChaos delaying PUT /v2.0/ports/* by 330 s
+│   ├── 16-network-job.yaml           Job creating vifd-net and booting vifd-base
+│   ├── 17-hold-job.yaml              Job booting vifd-slow under the delay
+│   ├── 18-recovery-job.yaml          Job booting vifd-recovered
+│   ├── chainsaw-test.yaml            Test: the build settles, no server stays in BUILD
+│   └── probe-lib.sh                  Helpers the scripts source: the openstack client, the cleanup
+├── nova-instances-io-fault/          libvirt instances directory slow, full, failing (e2e-nova-libvirt)
+│   ├── 00-iochaos-latency.yaml       IOChaos latency on /var/lib/nova/instances
+│   ├── 01-iochaos-enospc.yaml        IOChaos ENOSPC on /var/lib/nova/instances
+│   ├── 02-iochaos-eio.yaml           IOChaos EIO on /var/lib/nova/instances
+│   ├── 03-boot-job.yaml              Boot Job template (@NAME@, @WANT@, @DELETE@, @SENTINEL@)
+│   └── chainsaw-test.yaml            Test: builds succeed or fail cleanly, the running guest stays
 ├── nova-keystone-outage/             Keystone outage under a Nova deployment
 │   ├── 01-… to 12-*.yaml             The nova-placement-outage stack as nova-ks-chaos
 │   ├── 13-flavor-seed-job.yaml       The flavor m1.nano, and the compute up
@@ -5269,6 +5515,12 @@ tests/e2e-chaos/
 │   ├── 14-podchaos.yaml              PodChaos targeting nova-operator in nova-system
 │   ├── 15-patch-scale.yaml           Patch API replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── nova-placement-http-fault/        Placement answers the scheduler with 503, then aborts
+│   ├── 01-keystone-cr.yaml … 13-flavor-seed-job.yaml The stack of nova-keystone-outage, renamed nova-plhttp-chaos
+│   ├── 14-httpchaos-503.yaml         HTTPChaos 503 on GET /allocation_candidates
+│   ├── 15-httpchaos-abort.yaml       HTTPChaos aborting GET /allocation_candidates
+│   ├── 16-boot-job.yaml              Boot Job template (@NAME@, @WANT@, @FAULT@, @SENTINEL@)
+│   └── chainsaw-test.yaml            Test: both builds end in ERROR with No valid host
 ├── nova-placement-outage/            Placement partition under the scheduler
 │   ├── 01-keystone-cr.yaml           Keystone keystone-nova-placement-chaos
 │   ├── 02-catalog-setup-job.yaml     Compute, placement, image and network catalog rows
@@ -5287,6 +5539,13 @@ tests/e2e-chaos/
 │   ├── 15-failclosed-job.yaml        The build ends in ERROR, nothing else fails (FAILCLOSED-OK)
 │   ├── 16-recovered-job.yaml         The scheduler places servers again (RECOVERED-OK)
 │   └── chainsaw-test.yaml            Test: Ready maintained, the build fails closed
+├── openbao-io-fault/                 OpenBao raft volume slow, full, failing
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-baoio
+│   ├── 01-iochaos-latency.yaml       IOChaos latency on /openbao/data
+│   ├── 02-iochaos-enospc.yaml        IOChaos ENOSPC on /openbao/data
+│   ├── 03-iochaos-eio.yaml           IOChaos EIO on /openbao/data
+│   ├── chainsaw-test.yaml            Test: unsealed, synced, no acknowledged write lost
+│   └── probe-lib.sh                  Helpers the scripts source: KV writes, acknowledgements, purge
 ├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
 │   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
@@ -5316,12 +5575,22 @@ tests/e2e-chaos/
 │   ├── 04-podchaos.yaml              PodChaos targeting ovn-operator in ovn-system
 │   ├── 05-patch-scale.yaml           Patch northd replicas 1→2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── ovn-raft-clock-skew/              Southbound raft member clock ahead, then past the certificates
+│   ├── 00-ovncentral-cr.yaml         OVNCentral ovn-clock-chaos with three Southbound members
+│   ├── 01-timechaos.yaml             TimeChaos on one follower's ovsdb container (@MEMBER@, @OFFSET@)
+│   ├── chainsaw-test.yaml            Test: no election at 1h, the member drops, the quorum writes
+│   └── probe-lib.sh                  Helpers the scripts source: cluster/status, the offset
 ├── ovn-southbound-outage/            Southbound database outage under a chassis
 │   ├── 01-ovncentral-cr.yaml         OVNCentral ovn-sb-chaos
 │   ├── 02-ovnchassis-cr.yaml         OVNChassis ovn-sb-chaos-chassis
 │   ├── 03-podchaos.yaml              PodChaos pod-failure on every Southbound member
 │   ├── 04-probe-scripts.yaml         ConfigMap of the scripts the probe Pods run
 │   └── chainsaw-test.yaml            Test: ping answers under the fault, chassis recovers
+├── placement-keystone-dns-fault/     Keystone name unresolvable for Placement
+│   ├── 00-keystone-cr.yaml           Keystone keystone-placement-dns
+│   ├── 01-placement-cr.yaml          Placement placement-dns-chaos
+│   ├── 02-dnschaos.yaml              DNSChaos on keystone-placement-dns.* for the API pods
+│   └── chainsaw-test.yaml            Test: a fresh token gets 503, never 2xx
 ├── placement-keystone-outage/        Keystone outage under the Placement API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-placement-ks-outage
 │   ├── 01-placement-cr.yaml          Placement placement-ks-outage
@@ -5354,7 +5623,15 @@ tests/e2e-chaos/
 6. To send OpenStack traffic through the fault, call `../lib/workload.sh` as
    [Adopting the harness](#adopting-the-harness) describes, put the measured
    `# Chaos budget:` line in the header, and add `dump` to the catch blocks
-7. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
+7. For a fault of a kind beyond `PodChaos` and `NetworkChaos`, label every chaos
+   object `chaos.c5c3.io/suite: <suite>`, source `../lib/faults.sh` for
+   `fault_inject`, `fault_lift` and the canaries, prove each phase with a canary
+   before it asserts, and put the label lift into the catch of every step from the
+   first injection to the lift, as
+   [Fault Kinds Beyond PodChaos and NetworkChaos](#fault-kinds-beyond-podchaos-and-networkchaos)
+   describes. An `HTTPChaos` selects an API workload by `app.kubernetes.io/name`, or
+   the admission policy denies it
+8. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
    in place of the Keystone CR and set a short fixed `spec.namespace`: the plane
    name and the namespace share 32 characters, because cert-manager caps the
    commonName of the plane's DB client certificate at 64 bytes. Source
@@ -5362,7 +5639,7 @@ tests/e2e-chaos/
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
    and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
-8. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+9. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests
