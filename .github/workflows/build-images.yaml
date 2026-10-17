@@ -38,8 +38,8 @@ name: Build Images
       - hack/nix-lock.sh
   # The pull-request list is exactly what this workflow reads: the images and
   # their build inputs, the composite actions it reaches (directly or through
-  # build-push-image, build-nix-image, setup-docker-registry and
-  # merge-manifest-and-attest), the hack scripts it calls, the flake inputs,
+  # build-nix-image, setup-docker-registry and merge-manifest-and-attest),
+  # the hack scripts it calls, the flake inputs,
   # shared library, packages and locks the Nix-built images are built from with
   # the generator nix-lock-check runs, and the per-image verify scripts with
   # the helpers they source. The four structural scripts under
@@ -62,7 +62,6 @@ name: Build Images
       - hack/ci-resolve-ovn-version.sh
       - hack/ci-resolve-hvo-commit.sh
       - hack/ci-resolve-kna-commit.sh
-      - hack/ci-resolve-ubuntu-digest.sh
       - hack/resolve-test-ref.sh
       - hack/gen-option-catalog.sh
       - operators/keystone/api/v1alpha1/catalogs/**
@@ -71,7 +70,6 @@ name: Build Images
       - operators/cinder/api/v1alpha1/catalogs/**
       - operators/nova/api/v1alpha1/catalogs/**
       - .github/actions/build-nix-image/**
-      - .github/actions/build-push-image/**
       - .github/actions/checkout-service-source/**
       - .github/actions/derive-service-tags/**
       - .github/actions/export-digest/**
@@ -229,7 +227,7 @@ jobs:
               - 'images/tempest/**'
               - 'nix/locks/*/tempest/**'
               - 'tests/container-images/verify_tempest.sh'
-            # ovn, shifter, libvirt, hvo and kna are Nix-built: each is
+            # ovn, proxy, shifter, libvirt, hvo and kna are Nix-built: each is
             # rebuilt when its flake inputs, the shared library or the actions
             # that build it move. Their filters include this list through the
             # anchor; on its own it steers nothing.
@@ -239,16 +237,18 @@ jobs:
               - 'nix/lib/**'
               - '.github/actions/build-nix-image/**'
               - '.github/actions/setup-nix/**'
-            # ovn's and libvirt's verify scripts also source the build-tools
-            # check, hvo's and kna's the static-image check.
+            # ovn's, the proxy's and libvirt's verify scripts also source the
+            # build-tools check, hvo's and kna's the static-image check.
             ovn:
               - *nix_image_inputs
               - 'images/ovn/**'
               - 'tests/container-images/verify_ovn.sh'
               - 'tests/lib/build_tools.sh'
             proxy:
+              - *nix_image_inputs
               - 'images/keystone-federation-proxy/**'
               - 'tests/container-images/verify_keystone_federation_proxy.sh'
+              - 'tests/lib/build_tools.sh'
             shifter:
               - *nix_image_inputs
               - 'images/backup-shifter/**'
@@ -275,7 +275,6 @@ jobs:
             plumbing:
               - '.github/workflows/build-images.yaml'
               - '.hadolint.yaml'
-              - '.github/actions/build-push-image/**'
               - '.github/actions/checkout-service-source/**'
               - '.github/actions/derive-service-tags/**'
               - '.github/actions/export-digest/**'
@@ -291,7 +290,6 @@ jobs:
               - 'hack/ci-resolve-ovn-version.sh'
               - 'hack/ci-resolve-hvo-commit.sh'
               - 'hack/ci-resolve-kna-commit.sh'
-              - 'hack/ci-resolve-ubuntu-digest.sh'
               - 'hack/resolve-test-ref.sh'
               - 'hack/gen-option-catalog.sh'
 
@@ -327,7 +325,6 @@ jobs:
     strategy:
       matrix:
         dockerfile:
-          - images/keystone-federation-proxy/Dockerfile
           - operators/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -539,13 +536,17 @@ jobs:
           sbom-output-file: sbom-tempest-${{ matrix.release }}.cyclonedx.json
           grype-category: grype-tempest-${{ matrix.release }}
 
-  # Release-independent Apache/mod_auth_openidc federation sidecar. The
-  # module comes from the ubuntu:noble archive, so the image has no release
-  # axis: per-platform builds pushed by digest and merged by the merge job,
-  # verified inline on PRs (tempest pattern), merged + attested with the
-  # :latest / :<sha> tag scheme on push events.
+  # Release-independent Apache federation sidecar for Keystone,
+  # images/keystone-federation-proxy/image.nix, built by build-nix-image
+  # (docs/reference/ci-cd/nix-image-build.md). mod_auth_openidc is built
+  # from the commit images/keystone-federation-proxy/source.json pins,
+  # Apache and mod_auth_mellon come from the nixpkgs-images revision
+  # flake.lock pins, so the image has no release axis: per-platform builds
+  # pushed by digest and merged by the merge job, verified inline on PRs
+  # (tempest pattern), merged + attested with the :latest / :<sha> tag
+  # scheme on push events.
   build-keystone-federation-proxy:
-    needs: [changes, lint-dockerfiles, prepare]
+    needs: [changes, nix-flake-check, prepare]
     if: needs.changes.outputs.build-proxy == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -580,36 +581,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           install-cosign: 'false'
 
-      - name: Resolve ubuntu:noble digest
-        id: ubuntu-base
-        run: hack/ci-resolve-ubuntu-digest.sh
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build keystone-federation-proxy
         id: build-keystone-federation-proxy
         # PR mode loads locally for the inline scan+verify; ARM64 is skipped
         # on PRs because docker load supports a single platform.
         if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
-        uses: ./.github/actions/build-push-image
+        uses: ./.github/actions/build-nix-image
         with:
+          attribute: keystone-federation-proxy-image
           image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/keystone-federation-proxy
-          context: images/keystone-federation-proxy
-          platform: ${{ matrix.platform }}
-          platform-pair: ${{ steps.platform-pair.outputs.value }}
-          build-args: |
-            APT_MIRROR=http://azure.archive.ubuntu.com
-          labels-title: keystone-federation-proxy
-          labels-description: Apache/mod_auth_openidc reverse-proxy sidecar for Keystone OIDC federation
-          extra-labels: |
-            org.opencontainers.image.base.name=ubuntu:noble
-            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
-          cache-scope: keystone-federation-proxy
           push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/keystone-federation-proxy:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/keystone-federation-proxy', needs.prepare.outputs.image-owner) }}
           artifact-name: digests-keystone-federation-proxy-${{ steps.platform-pair.outputs.value }}
           grype-category: grype-keystone-federation-proxy-${{ steps.platform-pair.outputs.value }}
-          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/keystone-federation-proxy:pr-verify
           verify-script: tests/container-images/verify_keystone_federation_proxy.sh
           verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/keystone-federation-proxy:pr-verify
+          vulnix-artifact-name: vulnix-keystone-federation-proxy-${{ steps.platform-pair.outputs.value }}
 
   merge-keystone-federation-proxy-image:
     if: github.event_name != 'pull_request'
@@ -649,7 +639,7 @@ jobs:
   # nixpkgs-images revision flake.lock pins, so the image has no release axis:
   # per-platform builds pushed by digest and merged by the merge job, verified
   # inline on PRs (tempest pattern), merged + attested with the :latest /
-  # :<sha> tag scheme on push events, like the Docker-built images.
+  # :<sha> tag scheme on push events.
   build-backup-shifter:
     needs: [changes, nix-flake-check, prepare]
     if: needs.changes.outputs.build-shifter == 'true'

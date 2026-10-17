@@ -8,7 +8,8 @@
 #   - a push, a workflow_dispatch, and a plumbing change all build everything,
 #     so the publish path keeps the behaviour it has today;
 #   - a base or release-config change builds every service and the Tempest
-#     image, but not the images built FROM ubuntu:noble or golang;
+#     image, but not the release-independent images, which follow their own
+#     filters;
 #   - a service filter builds that service alone, in ALL_SERVICES order;
 #   - an image filter builds that image with an empty service list, which is
 #     what has-services exists to gate;
