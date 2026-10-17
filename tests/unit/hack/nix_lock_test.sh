@@ -7,7 +7,7 @@
 # the release inputs into pyproject.toml and sources.json, writes the
 # nova-compute group into the nova lock and refuses a release without its
 # block, keeps the previous lock when a step fails, writes the noVNC hash and
-# the three image pins,
+# the four image pins,
 # deletes the locks nothing pins, reports stale locks and pins, resolves for
 # the interpreter flake.nix builds the images with, and that the committed
 # locks under nix/locks/ are the set the release files pin, the committed nova
@@ -46,9 +46,11 @@ NOVNC_REV=63107bd06d9e1f6136ff21aeda8cd62cbf0d433e
 OVS_REV=fedcba9876543210fedcba9876543210fedcba98
 HVO_REV=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 KNA_REV=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+PROXY_REV=cccccccccccccccccccccccccccccccccccccccc
 OVN_PIN=images/ovn/source.json
 HVO_PIN=images/openstack-hypervisor-operator/source.json
 KNA_PIN=images/kvm-node-agent/source.json
+PROXY_PIN=images/keystone-federation-proxy/source.json
 
 # can_run prints a SKIP line and returns 1 unless yq, jq, python3 and git are
 # installed and the bash is 4 or later; $1 is the number of skipped checks.
@@ -73,14 +75,16 @@ can_run() {
 # services placement (a setup.cfg naming openstack-placement, a
 # .stestr.conf, a test-requirements.txt and a patch), horizon (no
 # .stestr.conf) and barbican (no test-requirements.txt, a pyproject.toml
-# naming openstack-barbican), the tempest pins, the noVNC pin, the three
+# naming openstack-barbican), the tempest pins, the noVNC pin, the four
 # image pins, a local OVN repository in upstream/ovn whose tree has the 'ovs'
 # gitlink $OVS_REV, and stub nix and uv commands in stubs/. The OVN pin names
 # that repository's commit and has no ovs object yet; the hvo pin's hash is
-# the one the stub prefetches, the kna pin's is not. The constraints spell
+# the one the stub prefetches, the kna pin's is not; the proxy pin has no
+# hash yet. The constraints spell
 # PyMySQL as PyPI does, the base pin of nix/base-requirements.txt as pymysql.
 # Each run logs to
 # stubs/nix.log and stubs/uv.log; NIX_STUB_FAIL makes every nix call exit 9,
+# NIX_STUB_FAIL_REF every nix call whose arguments contain its value,
 # NIX_STUB_NO_GOT keeps a failing nix build from naming a hash.
 make_tree() {
   local tree ovn
@@ -89,6 +93,7 @@ make_tree() {
   mkdir -p "$tree/hack" "$tree/scripts" "$tree/releases/2026.1" "$tree/overrides/2026.1" \
     "$tree/nix" "$tree/images/nova" "$tree/patches/placement/2026.1" \
     "$tree/images/ovn" "$tree/images/openstack-hypervisor-operator" "$tree/images/kvm-node-agent" \
+    "$tree/images/keystone-federation-proxy" \
     "$tree/upstream/placement" "$tree/upstream/horizon" "$tree/upstream/barbican" "$ovn" "$tree/stubs"
   cp "$GENERATOR" "$tree/hack/"
   cp "$PROJECT_ROOT/scripts/apply-constraint-overrides.sh" "$tree/scripts/"
@@ -119,6 +124,7 @@ make_tree() {
   jq -n --arg rev "$HVO_REV" '{rev: $rev, hash: "sha256-go", vendorHash: "sha256-kept"}' >"$tree/$HVO_PIN"
   jq -n --arg rev "$KNA_REV" '{rev: $rev, hash: "sha256-old", vendorHash: "sha256-old-vendor"}' \
     >"$tree/$KNA_PIN"
+  jq -n --arg rev "$PROXY_REV" '{version: "v2.4.20.3", rev: $rev}' >"$tree/$PROXY_PIN"
   printf '%s\n' '--- a/placement/api.py' '+++ b/placement/api.py' \
     >"$tree/patches/placement/2026.1/0001-fix.patch"
 
@@ -135,6 +141,7 @@ make_tree() {
 #!/bin/sh
 echo "\$*" >>"$tree/stubs/nix.log"
 [ -z "\${NIX_STUB_FAIL:-}" ] || exit 9
+[ -z "\${NIX_STUB_FAIL_REF:-}" ] || case "\$*" in *"\$NIX_STUB_FAIL_REF"*) exit 9 ;; esac
 case " \$* " in
   *" build "*)
     [ -n "\${NIX_STUB_NO_GOT:-}" ] || echo "         got:    sha256-vendor" >&2
@@ -147,6 +154,7 @@ case "\$ref" in
   github:ovn-org/*) echo '{"hash":"sha256-ovn","storePath":"/nonexistent"}' ;;
   github:openvswitch/*) echo '{"hash":"sha256-ovs","storePath":"/nonexistent"}' ;;
   github:cobaltcore-dev/*) echo '{"hash":"sha256-go","storePath":"/nonexistent"}' ;;
+  github:OpenIDC/*) echo '{"hash":"sha256-openidc","storePath":"/nonexistent"}' ;;
   github:openstack/*)
     repo=\${ref#github:openstack/}
     echo "{\"locked\":{\"rev\":\"$FIXTURE_REV\"},\"hash\":\"sha256-fixture\",\"storePath\":\"$tree/upstream/\${repo%%/*}\"}"
@@ -182,9 +190,9 @@ matches() {
   if [[ "$1" =~ $2 ]]; then echo true; else echo false; fi
 }
 
-# pin_state prints a checksum of the three image pins of a tree.
+# pin_state prints a checksum of the four image pins of a tree.
 pin_state() {
-  (cd "$1" && cat "$OVN_PIN" "$HVO_PIN" "$KNA_PIN") | cksum
+  (cd "$1" && cat "$OVN_PIN" "$HVO_PIN" "$KNA_PIN" "$PROXY_PIN") | cksum
 }
 
 # lock_state prints a checksum of the names and contents of a lock directory.
@@ -570,6 +578,84 @@ test_check_reports_an_edited_pin_hash() {
   rm -rf "$tree"
 }
 
+test_all_writes_the_proxy_pin_in_key_order() {
+  echo "Test: --all writes the hash of the mod_auth_openidc commit into the proxy pin"
+  can_run 5 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "$output"
+  assert_eq "the run exits 0" "0" "$exit_code"
+  assert_eq "the pin holds version, rev and the added hash, in that order" '["version","rev","hash"]' \
+    "$(jq -c keys_unsorted "$tree/$PROXY_PIN")"
+  assert_eq "the hash is the prefetched one" "sha256-openidc" "$(jq -r .hash "$tree/$PROXY_PIN")"
+  assert_eq "the version stays" "v2.4.20.3" "$(jq -r .version "$tree/$PROXY_PIN")"
+  assert_contains "the prefetch names the commit" "$(cat "$tree/stubs/nix.log")" \
+    "github:OpenIDC/mod_auth_openidc/$PROXY_REV"
+  rm -rf "$tree"
+}
+
+test_a_tag_pin_without_a_commit_fails_and_leaves_the_pin() {
+  echo "Test: an empty and a malformed rev of the proxy and noVNC pins fail before the prefetch and leave the pin"
+  can_run 16 || return
+
+  local tree entry pin ref rev before output exit_code
+  for entry in "$PROXY_PIN github:OpenIDC/" "images/nova/novnc.json github:novnc/"; do
+    pin=${entry% *} ref=${entry#* }
+    for rev in "" abc; do
+      tree=$(make_tree)
+      jq --arg rev "$rev" '.rev = $rev' "$tree/$pin" >"$tree/pin.json"
+      mv "$tree/pin.json" "$tree/$pin"
+      before=$(cksum <"$tree/$pin")
+      exit_code=0
+      output=$(run_generator "$tree" --all 2>&1) || exit_code=$?
+      assert_eq "$pin: rev '$rev' exits 1" "1" "$exit_code"
+      assert_contains "$pin: rev '$rev' is named as no commit" "$output" \
+        "nix-lock.sh: $pin: rev is not a 40-character commit"
+      assert_not_contains "$pin: rev '$rev' prefetches nothing for the pin" "$(cat "$tree/stubs/nix.log")" \
+        "$ref"
+      assert_eq "$pin: rev '$rev' leaves the pin byte-identical" "$before" "$(cksum <"$tree/$pin")"
+      rm -rf "$tree"
+    done
+  done
+}
+
+test_a_failing_proxy_prefetch_leaves_the_pin() {
+  echo "Test: a failing mod_auth_openidc prefetch exits with nix's status and leaves the proxy pin"
+  can_run 3 || return
+
+  local tree before exit_code=0
+  tree=$(make_tree)
+  before=$(cksum <"$tree/$PROXY_PIN")
+  NIX_STUB_FAIL_REF=github:OpenIDC/ run_generator "$tree" --all >/dev/null 2>&1 || exit_code=$?
+  assert_contains "the run reaches the mod_auth_openidc prefetch" "$(cat "$tree/stubs/nix.log")" \
+    "github:OpenIDC/mod_auth_openidc/$PROXY_REV"
+  assert_eq "a failing prefetch exits with nix's status" "9" "$exit_code"
+  assert_eq "the proxy pin is byte-identical" "$before" "$(cksum <"$tree/$PROXY_PIN")"
+  rm -rf "$tree"
+}
+
+test_check_reports_an_edited_proxy_pin_hash() {
+  echo "Test: --check reports a committed proxy pin whose hash differs from the prefetched one"
+  can_run 2 || return
+
+  local tree output exit_code=0
+  tree=$(make_tree)
+  run_generator "$tree" --all >/dev/null 2>&1
+  git -C "$tree" add --all
+  git -C "$tree" -c user.name=test -c user.email=test@localhost commit --quiet --message pins
+  jq '.hash = "sha256-edited"' "$tree/$PROXY_PIN" >"$tree/pin.json"
+  mv "$tree/pin.json" "$tree/$PROXY_PIN"
+  git -C "$tree" add --all
+  git -C "$tree" -c user.name=test -c user.email=test@localhost commit --quiet --message "edited hash"
+
+  output=$(run_generator "$tree" --check 2>&1) || exit_code=$?
+  assert_eq "an edited proxy pin exits 1" "1" "$exit_code"
+  assert_contains "the pin is listed" "$output" " M $PROXY_PIN"
+  rm -rf "$tree"
+}
+
 test_an_empty_vendor_hash_is_recomputed() {
   echo "Test: a Go pin with an unchanged hash and an empty vendorHash gets the vendor hash the build printed"
   can_run 3 || return
@@ -608,7 +694,7 @@ test_check_reports_an_ovs_rev_that_is_not_the_gitlink() {
 }
 
 test_nix_stub_fail_leaves_every_pin_byte_identical() {
-  echo "Test: a failing nix leaves the three image pins byte-identical"
+  echo "Test: a failing nix leaves the four image pins byte-identical"
   can_run 2 || return
 
   local tree before exit_code=0
@@ -616,7 +702,7 @@ test_nix_stub_fail_leaves_every_pin_byte_identical() {
   before=$(pin_state "$tree")
   NIX_STUB_FAIL=1 run_generator "$tree" --all >/dev/null 2>&1 || exit_code=$?
   assert_eq "a failing nix exits with its status" "9" "$exit_code"
-  assert_eq "the three pins are unchanged" "$before" "$(pin_state "$tree")"
+  assert_eq "the four pins are unchanged" "$before" "$(pin_state "$tree")"
   rm -rf "$tree"
 }
 
@@ -644,6 +730,12 @@ test_committed_pins_carry_revs_and_sri_hashes() {
     assert_eq "$pin carries an SRI hash" true "$(matches "$(jq -r .hash "$PROJECT_ROOT/$pin")" "$sri")"
     assert_eq "$pin carries an SRI vendor hash" true "$(matches "$(jq -r .vendorHash "$PROJECT_ROOT/$pin")" "$sri")"
   done
+  assert_eq "$PROXY_PIN holds version, rev and hash, in that order" '["version","rev","hash"]' \
+    "$(jq -c keys_unsorted "$PROJECT_ROOT/$PROXY_PIN")"
+  assert_eq "$PROXY_PIN carries a commit" true "$(matches "$(jq -r .rev "$PROJECT_ROOT/$PROXY_PIN")" "$commit")"
+  assert_eq "$PROXY_PIN carries an SRI hash" true "$(matches "$(jq -r .hash "$PROJECT_ROOT/$PROXY_PIN")" "$sri")"
+  assert_eq "$PROXY_PIN names a vX.Y.Z or vX.Y.Z.W tag" true \
+    "$(matches "$(jq -r .version "$PROJECT_ROOT/$PROXY_PIN")" '^v[0-9]+(\.[0-9]+){2,3}$')"
 }
 
 test_failures_leave_the_lock_untouched() {
@@ -830,6 +922,10 @@ test_an_unchanged_go_hash_keeps_the_vendor_hash_without_a_build
 test_a_moved_go_hash_writes_the_vendor_hash_nix_printed
 test_a_build_without_got_fails_and_leaves_the_pin
 test_check_reports_an_edited_pin_hash
+test_all_writes_the_proxy_pin_in_key_order
+test_a_tag_pin_without_a_commit_fails_and_leaves_the_pin
+test_a_failing_proxy_prefetch_leaves_the_pin
+test_check_reports_an_edited_proxy_pin_hash
 test_an_empty_vendor_hash_is_recomputed
 test_check_reports_an_ovs_rev_that_is_not_the_gitlink
 test_nix_stub_fail_leaves_every_pin_byte_identical
