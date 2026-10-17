@@ -33,7 +33,7 @@
 # against cp-ks-degraded-keystone, the Keystone the fault takes, so the budget
 # is measured.
 # Chaos budget: failures=214 recovery=70s
-# Chaos budget measured: 2026-10-16, kind, failures 107, recovery 39 s
+# Chaos budget measured: 2026-10-17, kind, failures 107/106/106, recovery 39/37/37 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
