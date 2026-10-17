@@ -1,0 +1,173 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Placement cannot resolve the Keystone it validates
+# tokens against.
+#
+# Fault: a DNSChaos on the API pods of placement-dns-chaos answers every
+# lookup of a name that starts with keystone-placement-dns. with an error
+# (02-dnschaos.yaml). Placement's keystoneEndpoint names Keystone by its fully
+# qualified name without a trailing dot, which the resolver expands through
+# the search path first, so every lookup it sends starts with that string. DNS
+# is consulted only when a connection opens, so the suite restarts the
+# Keystone once the fault is in place: the restart drops the connections
+# Placement's keystonemiddleware holds, and its reconnect meets the fault.
+#
+# Claim, phase by phase:
+#   injected    In container placement-api getaddrinfo of the Keystone host
+#               raises gaierror while that of openstack-memcached answers
+#               (INJECTED-DNS-OK, the canary).
+#   failclosed  A probe whose own DNS is untouched issues a fresh token, and
+#               GET /resource_providers answers 503; a 2xx fails with
+#               "answered <code> with a token Keystone could not validate",
+#               and anything else is retried every 5 s for up to 120 s. The
+#               Placement CR keeps Ready=True/AllReady (FAILCLOSED-OK).
+#   recovered   After the lift a fresh token gets 200 within 180 s
+#               (RECOVERY-OK).
+#
+# Blast radius: the DNSChaos selects the API pods of this suite's Placement and
+# the Keystone's name alone. The Keystone restart is of this suite's Keystone.
+#
+# Leg: faults. DNSChaos answers through the Chaos Mesh DNS server the kind
+# HelmRelease patch pins (dnsServer.create).
+#
+# Workload: the token and placement streams of ../lib/workload.sh against
+# keystone-placement-dns and placement-dns-chaos. The token stream fails while
+# the Keystone restarts, and the placement stream from then until the lift
+# for every token Placement has not cached. The budget is an estimate of that
+# window: no run has measured it yet.
+# Chaos budget: failures=600 recovery=180s
+# Chaos budget measured: 2026-10-17, estimate, failures 300, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-keystone-dns-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone, Placement, the workload ────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-placement-dns
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - apply:
+        file: 01-placement-cr.yaml
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-dns-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start placement-keystone-dns-fault --
+          --streams token,placement
+          --keystone http://keystone-placement-dns.openstack.svc:5000/v3
+          --placement http://placement-dns-chaos.openstack.svc:8778
+    catch: &plcdns-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no DNSChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite placement-keystone-dns-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos placement-dns-chaos --cr-kind=placement --dep-label=app.kubernetes.io/instance=keystone-placement-dns --dep-ns=openstack
+    - podLogs:
+        selector: app.kubernetes.io/instance=placement-dns-chaos
+        tail: 100
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump placement-keystone-dns-fault
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop placement-keystone-dns-fault
+  # ── Step 2: Keystone's name stops resolving for Placement ────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          POD="$(kubectl get pods -n "$NAMESPACE" --field-selector=status.phase=Running \
+            -l app.kubernetes.io/instance=placement-dns-chaos,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          ../lib/workload.sh mark placement-keystone-dns-fault fault-start
+          fault_inject 02-dnschaos.yaml dnschaos/placement-keystone-dns-error
+          canary_resolve dnschaos/placement-keystone-dns-error DNS "$POD" placement-api \
+            keystone-placement-dns.openstack.svc.cluster.local 5000 openstack-memcached 11211
+          kubectl rollout restart deployment/keystone-placement-dns -n "$NAMESPACE"
+          kubectl rollout status deployment/keystone-placement-dns -n "$NAMESPACE" --timeout=5m
+          probe_run placement-dns-failclosed 240 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --keystone http://keystone-placement-dns.openstack.svc.cluster.local:5000/v3 --within 120 \
+            --refuse-2xx "answered {code} with a token Keystone could not validate" \
+            --check "GET http://placement-dns-chaos.openstack.svc.cluster.local:8778/resource_providers 503"
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-dns-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          echo FAILCLOSED-OK
+          fault_lift dnschaos/placement-keystone-dns-error
+          ../lib/workload.sh mark placement-keystone-dns-fault fault-end
+    catch: *plcdns-dump
+  # ── Step 3: A fresh token is served again ────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run placement-dns-recovery 270 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --keystone http://keystone-placement-dns.openstack.svc.cluster.local:5000/v3 --within 180 \
+            --check "GET http://placement-dns-chaos.openstack.svc.cluster.local:8778/resource_providers 200" \
+            --ok RECOVERY-OK
+    catch: *plcdns-dump
+  # ── Step 4: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify placement-keystone-dns-fault
+    catch: *plcdns-dump

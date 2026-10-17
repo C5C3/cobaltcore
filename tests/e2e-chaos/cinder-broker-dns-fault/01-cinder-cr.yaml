@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the broker DNS fault chaos test: cinder-broker-dns, noauth, on
+# the schema cinder_broker_dns of openstack-db, with managed messaging on the
+# RabbitmqCluster of 00-rabbitmqcluster.yaml, as
+# ../cinder-broker-pod-kill/01-cinder-cr.yaml. Its scheduler runs as
+# Deployment cinder-broker-dns-scheduler, component scheduler, and is Ready
+# while a process holds a socket established to the broker port
+# (operators/cinder/internal/controller/reconcile_scheduler.go).
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-broker-dns
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_broker_dns
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: cinder-dns-rabbitmq

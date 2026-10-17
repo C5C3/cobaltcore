@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 71 chaos test suites validate operator behavior during and after fault
+The 74 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 71 test suites require the infrastructure stack to be deployed and healthy.
+All 74 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -544,6 +544,9 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [nova-instances-io-fault](#nova-instances-io-fault) | — | `pool-libvirt` | Instances directory of a libvirt pool slow, full, then failing (IOChaos, build outcome) | `INJECTED-LATENCY-OK` and `io-latency` `ACTIVE` within 300 s (`LATENCY-BOOT-OK`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with `io-enospc` and `io-eio` in `ERROR` with a non-empty fault (`ENOSPC-BOOT-ERROR-OK`, `EIO-BOOT-ERROR-OK`); `io-base`'s domain running after each phase (`BASE-GUEST-RUNNING-OK`); no instance directory of the failed builds left (`NO-LEFTOVER-DIR-OK`), `io-recovered` `ACTIVE` (`RECOVERED-OK`), a clean placement audit, workload budget zero |
 | [keystone-api-stress-autoscaling](#keystone-api-stress-autoscaling) | — | `keystone-chaos-hpa`, `keystone-chaos-vpa` | CPU pressure under an HPA, memory past the limit under a VPA (StressChaos, autoscaling) | `HPAReady=True`, `VPAReady=True` and a first VPA target; `INJECTED-CPU-OK` with at least 1000m reported, the HPA at two or more replicas with two Ready within 5 minutes (`SCALE-OUT-OK`) and back at one within 5 minutes of the lift (`SCALE-IN-OK`); `oom_kill` rising or an OOM restart within 120 s (`OOM-OK`); the VPA's memory target above the first within 10 minutes (`VPA-RECOMMENDATION-ROSE`); both Keystones `Ready=True/AllReady` |
 | [cinder-backup-memory-stress](#cinder-backup-memory-stress) | — | `cinder-backup-stress` | Memory pressure on cinder-backup during a backup (StressChaos, OOM path of #1003) | `BackupServiceReady=True` and `bkstress-vol` `available`; `INJECTED-MEM-OK` with `memory.current` within 128 MiB of `memory.max`; an OOM kill within 300 s of the backup's start (`OOM-OK`), never a backup that finished under the stress; `BackupServiceReady=True`, `bkstress-bk1` in `error` and `bkstress-vol` `available` within 5 minutes (`FAILCLOSED-OK`); `bkstress-bk2` `available` (`RECOVERED-OK`); workload budget zero |
+| [keystone-database-dns-fault](#keystone-database-dns-fault) | — | `keystone-chaos-dbdns` | Database name unresolvable (DNSChaos, depool and repool) | `INJECTED-DNS-OK`: the database name fails to resolve in the `keystone` container while `openstack-memcached` resolves; within 240 s the pod not Ready and `DeploymentReady=False` with `restartCount` unchanged (`DEPOOLED-OK`); `Ready=True/AllReady` within 180 s of the lift (`REPOOLED-OK`) |
+| [cinder-broker-dns-fault](#cinder-broker-dns-fault) | — | `cinder-broker-dns` | Broker name unresolvable for the scheduler (DNSChaos, queued request) | The broker host matching the pattern; `INJECTED-DNS-OK`; after `rabbitmqctl close_all_connections`, `SchedulerReady=False` while `VolumeServicesReady=True` within 120 s (`SCHEDULER-CUT-OK`); `dns-held` in `creating` for 60 s (`HELD-OK`); within 180 s of the lift `SchedulerReady=True` with `restartCount` unchanged (`RECONNECTED-OK`) and `dns-held` `available` within 240 s (`QUEUED-REQUEST-SERVED-OK`) |
+| [placement-keystone-dns-fault](#placement-keystone-dns-fault) | — | `placement-dns-chaos` | Keystone name unresolvable for Placement (DNSChaos, fail-closed validation) | `INJECTED-DNS-OK`; after a Keystone restart a fresh token gets 503 on `GET /resource_providers` and never a 2xx, the Placement CR `Ready=True/AllReady` (`FAILCLOSED-OK`); 200 within 180 s of the lift (`RECOVERY-OK`) |
 
 ---
 
@@ -4593,6 +4596,133 @@ dumps the cinder-operator log and the workload.
   `admin:admin` the workload uses.
 - Fixing the memory footprint of cinder-backup is #1003's; this suite pins only
   that its OOM path leaves no stuck state.
+
+---
+
+### keystone-database-dns-fault
+
+**File:** `tests/e2e-chaos/keystone-database-dns-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `DNSChaos` on the API pod of `keystone-chaos-dbdns` answers every
+lookup of a name that starts with `openstack-db.openstack.svc`, the managed
+database host, with an error. Keystone holds pooled database connections, but its
+readiness probe resolves the host and connects on every 30-second period, so the
+probe meets the fault without a forced reconnect. The suite pins that the pod
+leaves the Service without a restart and comes back after the lift.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone and workload | `apply` + `assert` + `script` (6m) | `keystone-chaos-dbdns` (one replica) `Ready=True/AllReady`, `workload.sh start` |
+| 2 | Inject | `script` (8m) | `workload.sh mark fault-start`, applies `01-dnschaos.yaml`, waits for `AllInjected`. In the `keystone` container `getaddrinfo('openstack-db.openstack.svc', 3306)` raises `gaierror` and `getaddrinfo('openstack-memcached', 11211)` answers (`INJECTED-DNS-OK`, the canary). Within 240 s the pod reads `Ready=False` and the CR `DeploymentReady=False`, with the container's `restartCount` unchanged (`DEPOOLED-OK`). Deletes the object, `workload.sh mark fault-end` |
+| 3 | Repooled | `assert` (3m) + `script` (1m) | `Ready=True/AllReady` within 180 s (`REPOOLED-OK`) |
+| 4 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-dnschaos.yaml` (`keystone-db-dns-error`,
+`action: error`, `patterns: ["openstack-db.openstack.svc*"]`).
+
+**Workload:** the `token` stream, judged against `failures=800 recovery=180s`, an
+estimate: it fails from the depool until the pod is back in the Service. The suite
+runs in the `faults` matrix entry.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos keystone-chaos-dbdns`, prints the Chaos Mesh DNS server's
+log and dumps the workload.
+
+**Design notes:**
+
+- Patterns take a trailing `*` only and act on A and AAAA records. Every
+  search-path expansion of the database host starts with the pattern, so the
+  lookup fails whichever of them the resolver tries.
+
+---
+
+### cinder-broker-dns-fault
+
+**File:** `tests/e2e-chaos/cinder-broker-dns-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `DNSChaos` on the scheduler pods of `cinder-broker-dns` answers
+every lookup of the broker's name with an error. DNS is consulted only when a
+connection opens, so the suite closes every connection of the broker once the
+fault is in place, and the scheduler's reconnect meets it. The suite pins that the
+CR reports the cut scheduler, that a create waits in its queue, and that the
+scheduler reconnects without a restart and serves the queued request.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Broker | `apply` + `script` (11m) | RabbitmqCluster `cinder-dns-rabbitmq` at `AllReplicasReady=True` |
+| 2 | Cinder and workload | `apply` x2 + `assert` + `script` (1m) + `script` (6m) | `cinder-broker-dns` (noauth, managed messaging on that broker) with CinderBackend `brokerdns-nfs1` `Ready=True/AllReady`; the `host` of Secret `cinder-dns-rabbitmq-default-user` starts with `cinder-dns-rabbitmq.openstack.svc`; `workload.sh start` |
+| 3 | Inject and cut | `script` (10m) | `workload.sh mark fault-start`, applies `03-dnschaos.yaml`, waits for `AllInjected`; `getaddrinfo` of the broker host fails in the scheduler container (`INJECTED-DNS-OK`, the canary). The scheduler's `restartCount` goes into ConfigMap `cinder-broker-dns-state`, then `rabbitmqctl close_all_connections "chaos dns fault"` in the broker pod. Within 120 s `SchedulerReady=False` while `VolumeServicesReady=True` (`SCHEDULER-CUT-OK`); `dns-held` stays `creating` for 60 s (`HELD-OK`). Deletes the object, `workload.sh mark fault-end` |
+| 4 | Recovery | `script` (10m) | `SchedulerReady=True` within 180 s with the `restartCount` unchanged (`RECONNECTED-OK`); `dns-held` `available` within 240 s (`QUEUED-REQUEST-SERVED-OK`), then deleted |
+| 5 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-rabbitmqcluster.yaml`, `01-cinder-cr.yaml`,
+`02-cinderbackend-cr.yaml`, `03-dnschaos.yaml` (`broker-dns-error`,
+`patterns: ["cinder-dns-rabbitmq.openstack.svc*"]`, selector component
+`scheduler`).
+
+**Workload:** the `volume` stream, judged against `failures=20 recovery=240s`, an
+estimate: its creates wait in the queue while the scheduler is cut. The suite runs
+in the `network` matrix entry, beside the other cinder suites.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos cinder-broker-dns --cr-kind=cinder` with the broker pod as
+dependency, prints the broker's status, the scheduler's log and the DNS server's
+log, dumps the cinder-operator log and the workload.
+
+**Design notes:**
+
+- The suite brings a broker of its own, as `cinder-broker-pod-kill` does: closing
+  every connection of the shared broker would cut every other suite of the matrix
+  entry.
+
+---
+
+### placement-keystone-dns-fault
+
+**File:** `tests/e2e-chaos/placement-keystone-dns-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `DNSChaos` on the API pods of `placement-dns-chaos` answers every
+lookup of a name that starts with `keystone-placement-dns.` with an error. The
+suite restarts the Keystone once the fault is in place, which drops the connections
+Placement's keystonemiddleware holds, and pins that Placement answers 503 to a
+token it cannot validate, never a 2xx, while the probe's own DNS is untouched.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone, Placement, workload | `apply` x2 + `assert` x2 + `script` (6m) | `keystone-placement-dns` and `placement-dns-chaos` `Ready=True/AllReady`, `workload.sh start` |
+| 2 | Inject | `script` (10m) + `assert` + `script` (4m) | `workload.sh mark fault-start`, applies `02-dnschaos.yaml`, waits for `AllInjected`; `getaddrinfo` of the Keystone host fails in `placement-api` (`INJECTED-DNS-OK`, the canary). `deployment/keystone-placement-dns` is restarted. A fresh token gets 503 on `GET /resource_providers`; a 2xx fails with `answered <code> with a token Keystone could not validate`, anything else is retried every 5 s for up to 120 s. The Placement CR `Ready=True/AllReady` (`FAILCLOSED-OK`). Deletes the object, `workload.sh mark fault-end` |
+| 3 | Recovery | `script` (5m) | A fresh token gets 200 within 180 s (`RECOVERY-OK`) |
+| 4 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-placement-cr.yaml`, `02-dnschaos.yaml`
+(`placement-keystone-dns-error`, `patterns: ["keystone-placement-dns.*"]`).
+
+**Workload:** the `token` and `placement` streams, judged against
+`failures=600 recovery=180s`, an estimate. The suite runs in the `faults` matrix
+entry.
+
+**Catch blocks:** one anchor prints and deletes the suite's chaos objects, calls
+`../diagnostics.sh chaos placement-dns-chaos --cr-kind=placement`, dumps the
+Placement and placement-operator logs and the workload.
+
+**Design notes:**
+
+- The `keystoneEndpoint` names Keystone by its fully qualified name without a
+  trailing dot. With four dots it is below the resolver's `ndots` of five, so the
+  resolver tries the search path first, and every lookup starts with
+  `keystone-placement-dns.`.
 
 ---
 

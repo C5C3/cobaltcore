@@ -1971,6 +1971,7 @@ jobs:
               tests/e2e-chaos/memcached-network-partition
               tests/e2e-chaos/cinder-glance-http-abort
               tests/e2e-chaos/cinder-backup-memory-stress
+              tests/e2e-chaos/cinder-broker-dns-fault
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -2040,6 +2041,8 @@ jobs:
               tests/e2e-chaos/glance-staging-io-fault
               tests/e2e-chaos/openbao-io-fault
               tests/e2e-chaos/keystone-api-stress-autoscaling
+              tests/e2e-chaos/keystone-database-dns-fault
+              tests/e2e-chaos/placement-keystone-dns-fault
     runs-on: self-hosted
     # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
     # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which
@@ -2155,7 +2158,7 @@ jobs:
             # ovn-operator-pod-kill; the nova leg loads its own pair below.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The nine cinder suites run on the network leg alone. Each
+            # The ten cinder suites run on the network leg alone. Each
             # deploys a Cinder, so each needs the service image beside the
             # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
@@ -2254,12 +2257,13 @@ jobs:
         env:
           WITH_CHAOS_MESH: "true"
           WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}
-          # The nine cinder suites attach an NFS backend, which the operator
+          # The ten cinder suites attach an NFS backend, which the operator
           # mounts as an inline CSI volume from the kind NFS export, and seven
-          # of them take a vhost on the shared broker; cinder-broker-outage and
-          # cinder-broker-pod-kill bring a RabbitmqCluster of their own,
-          # because their faults take the whole broker away and doing that to
-          # the shared one would take the rest of the leg down with it. Seven
+          # of them take a vhost on the shared broker; cinder-broker-outage,
+          # cinder-broker-pod-kill and cinder-broker-dns-fault bring a
+          # RabbitmqCluster of their own, because their faults take the whole
+          # broker away and doing that to the shared one would take the rest
+          # of the leg down with it. Seven
           # of the eight nova-stack suites take a vhost there too;
           # nova-broker-outage brings its own broker for the same reason. The
           # NFS export stays on the network leg alone. Empty elsewhere, where deploy-infra.sh
@@ -2403,7 +2407,7 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
-      # The nine cinder suites run on the network leg alone, so the
+      # The ten cinder suites run on the network leg alone, so the
       # cinder-operator deploys there alone. Like the sibling operators it
       # lands in its own cinder-system namespace, not the script's
       # keystone-system default: that is where the Flux/deploy-infra path

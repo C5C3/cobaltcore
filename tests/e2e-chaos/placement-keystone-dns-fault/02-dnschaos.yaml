@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# DNSChaos placement-keystone-dns-error: every A and AAAA lookup of a name
+# that starts with keystone-placement-dns. fails for the API pods of
+# placement-dns-chaos, so its keystonemiddleware cannot resolve the Keystone
+# it validates tokens against. The probes keep their own DNS.
+#
+# duration is a safety net above the suite's fault step; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: DNSChaos
+metadata:
+  name: placement-keystone-dns-error
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: placement-keystone-dns-fault
+spec:
+  action: error
+  mode: all
+  patterns:
+    - "keystone-placement-dns.*"
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: placement
+      app.kubernetes.io/instance: placement-dns-chaos
+      app.kubernetes.io/component: api
+  duration: "600s"

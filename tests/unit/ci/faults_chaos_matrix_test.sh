@@ -41,6 +41,8 @@ FAULTS_SUITES=(
   glance-staging-io-fault
   openbao-io-fault
   keystone-api-stress-autoscaling
+  keystone-database-dns-fault
+  placement-keystone-dns-fault
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.
@@ -59,7 +61,7 @@ test_faults_entry_runs_its_nine_suites() {
   tests="$(awk '/^            test_dirs:/ { on = 1; next }
     on && /^              tests\// { print $1; next }
     on { exit }' <<<"$entry")"
-  assert_eq "the entry lists the health check and its suites, nothing else" \
+  assert_eq "the entry lists the health check and nine suites, nothing else" \
     "$(printf '%s\n' tests/e2e/infrastructure/chaos-mesh-health ${FAULTS_SUITES[@]+"${FAULTS_SUITES[@]/#/tests/e2e-chaos/}"})" \
     "$tests"
 

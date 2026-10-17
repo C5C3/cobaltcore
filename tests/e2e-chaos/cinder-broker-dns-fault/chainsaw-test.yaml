@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the Cinder scheduler cannot resolve its broker's
+# name when the broker drops its connections.
+#
+# Fault: a DNSChaos on the scheduler pods of cinder-broker-dns answers every
+# lookup of a name that starts with cinder-dns-rabbitmq.openstack.svc with an
+# error (03-dnschaos.yaml). The managed transport host is the host key of the
+# broker's default-user Secret (internal/common/messaging/messaging.go), and
+# the suite checks that it starts with that string. DNS is consulted only
+# when a connection opens, so once the fault is in place the suite closes
+# every connection of the broker with rabbitmqctl, and the scheduler's
+# reconnect meets it.
+#
+# Claim, phase by phase:
+#   injected   In the scheduler container getaddrinfo of the broker host
+#              raises gaierror while that of openstack-memcached answers
+#              (INJECTED-DNS-OK, the canary).
+#   cut        Within 120 s of the close the CR reads SchedulerReady=False
+#              while VolumeServicesReady=True (SCHEDULER-CUT-OK): the scheduler
+#              is Ready only while a process holds a socket to the broker port
+#              (operators/cinder/internal/controller/reconcile_scheduler.go),
+#              and the volume service, whose DNS is untouched, reconnects.
+#   held       The volume dns-held stays creating for 60 s (HELD-OK): its
+#              request waits in the scheduler's queue.
+#   recovered  Within 180 s of the lift SchedulerReady=True with the
+#              scheduler's restartCount unchanged (RECONNECTED-OK), and
+#              dns-held reaches available within 240 s
+#              (QUEUED-REQUEST-SERVED-OK) before it is deleted.
+#
+# Blast radius: the DNSChaos selects the scheduler pods of this suite's Cinder
+# and the broker's name alone. The broker is the suite's own: closing every
+# connection of the shared one would cut every other suite of the entry.
+#
+# Leg: network, with the cinder suites, which the NFS export and the cinder
+# images are loaded for. DNSChaos answers through the Chaos Mesh DNS server
+# the kind HelmRelease patch pins (dnsServer.create).
+#
+# Workload: the volume stream of ../lib/workload.sh against cinder-broker-dns,
+# noauth. Its creates wait in the queue while the scheduler is cut, and the
+# cycles that do not finish within the stream's 120-second wait fail. The
+# budget is an estimate of that window: no run has measured it yet.
+# Chaos budget: failures=20 recovery=240s
+# Chaos budget measured: 2026-10-17, estimate, failures 10, recovery 210 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-broker-dns-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Bring up the broker ──────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady, as ../cinder-broker-pod-kill/ does.
+  - try:
+    - apply:
+        file: 00-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=cinder-dns-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch:
+    - script:
+        timeout: 1m
+        content: kubectl get rabbitmqcluster cinder-dns-rabbitmq -n openstack -o yaml 2>&1 || true
+    - script:
+        timeout: 1m
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=cinder-dns-rabbitmq 2>&1 || true
+  # ── Step 2: The Cinder, the broker host, the workload ────────────────────
+  - try:
+    - apply:
+        file: 01-cinder-cr.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-broker-dns
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -euo pipefail
+          HOST="$(kubectl get secret cinder-dns-rabbitmq-default-user -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+          case "$HOST" in
+            cinder-dns-rabbitmq.openstack.svc*) echo "OK: the broker host ${HOST} matches the DNSChaos pattern" ;;
+            *) echo "FAIL: the broker host ${HOST} does not match the DNSChaos pattern cinder-dns-rabbitmq.openstack.svc*"; exit 1 ;;
+          esac
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-broker-dns-fault --
+          --streams volume
+          --cinder http://cinder-broker-dns.openstack.svc:8776
+    catch: &brokerdns-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no DNSChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite cinder-broker-dns-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-broker-dns --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-dns-rabbitmq --dep-ns=openstack --log-label=app.kubernetes.io/instance=cinder-broker-dns
+    - script:
+        timeout: 2m
+        content: |
+          kubectl get rabbitmqcluster cinder-dns-rabbitmq -n openstack -o yaml 2>&1 | sed -n '/^status:/,$p' || true
+          kubectl logs -n openstack -l app.kubernetes.io/instance=cinder-broker-dns,app.kubernetes.io/component=scheduler --all-containers --tail=100 2>&1 || true
+          kubectl logs -n chaos-mesh deployment/chaos-dns-server --tail=50 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-broker-dns-fault
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-broker-dns-fault
+  # ── Step 3: The broker name stops resolving; the broker drops everyone ───
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          HOST="$(kubectl get secret cinder-dns-rabbitmq-default-user -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+          POD="$(kubectl get pods -n "$NAMESPACE" --field-selector=status.phase=Running \
+            -l app.kubernetes.io/instance=cinder-broker-dns,app.kubernetes.io/component=scheduler \
+            -o jsonpath='{.items[0].metadata.name}')"
+          ../lib/workload.sh mark cinder-broker-dns-fault fault-start
+          fault_inject 03-dnschaos.yaml dnschaos/broker-dns-error
+          CONTAINER="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].name}')"
+          canary_resolve dnschaos/broker-dns-error DNS "$POD" "$CONTAINER" "$HOST" 5672 openstack-memcached 11211
+          RESTARTS="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+          kubectl create configmap cinder-broker-dns-state -n "$NAMESPACE" --dry-run=client -o yaml \
+            --from-literal=pod="$POD" --from-literal=restarts="$RESTARTS" | kubectl apply -f -
+          kubectl exec cinder-dns-rabbitmq-server-0 -n "$NAMESPACE" -c rabbitmq -- \
+            rabbitmqctl close_all_connections "chaos dns fault"
+          DEADLINE=$(($(date +%s) + 120))
+          while true; do
+            SCHED="$(kubectl get cinder cinder-broker-dns -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="SchedulerReady")].status}')"
+            VOL="$(kubectl get cinder cinder-broker-dns -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="VolumeServicesReady")].status}')"
+            if [ "$SCHED" = False ] && [ "$VOL" = True ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: 120 s after the close the CR reads SchedulerReady=${SCHED} and VolumeServicesReady=${VOL}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo SCHEDULER-CUT-OK
+          probe_run cinder-dns-held 180 -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-broker-dns.openstack.svc.cluster.local:8776 \
+            volume dns-held --create --want creating --within 30 --hold 60 --ok HELD-OK
+          fault_lift dnschaos/broker-dns-error
+          ../lib/workload.sh mark cinder-broker-dns-fault fault-end
+    catch: *brokerdns-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap cinder-broker-dns-state -n openstack --ignore-not-found
+  # ── Step 4: The scheduler reconnects and serves the queued request ───────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          POD="$(kubectl get configmap cinder-broker-dns-state -n "$NAMESPACE" -o jsonpath='{.data.pod}')"
+          RESTARTS="$(kubectl get configmap cinder-broker-dns-state -n "$NAMESPACE" -o jsonpath='{.data.restarts}')"
+          kubectl wait cinder/cinder-broker-dns -n "$NAMESPACE" --for=condition=SchedulerReady --timeout=180s
+          NOW="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+          if [ "$NOW" != "$RESTARTS" ]; then
+            echo "FAIL: the scheduler ${POD} restarted: restartCount ${NOW}, was ${RESTARTS}"
+            exit 1
+          fi
+          echo RECONNECTED-OK
+          probe_run cinder-dns-held-served 420 -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-broker-dns.openstack.svc.cluster.local:8776 \
+            volume dns-held --want available --within 240 --delete --ok QUEUED-REQUEST-SERVED-OK
+    catch: *brokerdns-dump
+  # ── Step 5: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-broker-dns-fault
+    catch: *brokerdns-dump
