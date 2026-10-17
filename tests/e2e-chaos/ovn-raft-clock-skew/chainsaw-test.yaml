@@ -1,0 +1,262 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the clock of one OVN Southbound raft member runs an
+# hour ahead, then past the validity of the cluster's certificates.
+#
+# Fault: a TimeChaos on the ovsdb container of one Southbound follower of
+# ovn-clock-chaos (01-timechaos.yaml), applied twice. Raft runs over TLS on
+# cert-manager certificates of 8760 hours; ovsdb's raft timers read the
+# monotonic clock and its TLS verification the wall clock, which TimeChaos
+# moves.
+#
+# Claim, phase by phase:
+#   baseline   Three Ready Southbound members report one leader and one term
+#              in cluster/status; the leader, its server id, the term and the
+#              first follower go into ConfigMap ovn-raft-clock-skew-state.
+#   +1h        For 120 s, read every 10 s, the follower stays follower, names
+#              the recorded leader and stays in the recorded term
+#              (NO-ELECTION-OK): a wall clock an hour off moves no election.
+#   past cert  With the offset at the hours to the latest notAfter of the
+#              cluster's Certificates plus 24, the follower reports
+#              Leader: unknown or a role other than follower within 180 s,
+#              and its log names a certificate that failed verification or
+#              expired (MEMBER-DROPPED-OK, the canary). A logical switch added
+#              through the Northbound reaches the leader's Datapath_Binding
+#              table within 60 s (QUORUM-WRITE-OK): the two members left keep
+#              the quorum.
+#   recovered  Within 180 s of the lift the member is a follower of the
+#              current leader and finds the switch in its own copy of the
+#              database (REJOINED-OK); the CR is Ready=True/AllReady.
+#
+# Blast radius: the TimeChaos names one Southbound member and its ovsdb
+# container alone. The suite's switch clock-chaos-ls is removed in the last
+# step's finally block.
+#
+# Leg: ovn, the entry that deploys the ovn-operator alone. TimeChaos needs no
+# host module.
+#
+# Chaos workload: none (the ovn leg runs no OpenStack API)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-raft-clock-skew
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 8m
+  steps:
+  # ── Step 1: Three members, one leader ────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-ovncentral-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-clock-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          kubectl wait pod -n "$NAMESPACE" -l "app.kubernetes.io/instance=${CR},app.kubernetes.io/component=sb" \
+            --for=condition=Ready --timeout=3m
+          PODS="$(sb_pods)"
+          if [ "$(grep -c . <<<"$PODS")" -ne 3 ]; then
+            echo "FAIL: want three Southbound members, found: $(xargs <<<"$PODS")"
+            exit 1
+          fi
+          LEADER="" LEADER_SID="" TERM="" MEMBER=""
+          for pod in $PODS; do
+            STATUS="$(sb_status "$pod")"
+            echo "--- ${pod}: role $(field "$STATUS" Role) term $(field "$STATUS" Term) leader $(field "$STATUS" Leader)"
+            case "$(field "$STATUS" Role)" in
+              leader)
+                if [ -n "$LEADER" ]; then
+                  echo "FAIL: two members report Role: leader, ${LEADER} and ${pod}"
+                  exit 1
+                fi
+                LEADER="$pod" LEADER_SID="$(field "$STATUS" 'Server ID')" TERM="$(field "$STATUS" Term)"
+                ;;
+              follower)
+                MEMBER="${MEMBER:-$pod}"
+                ;;
+            esac
+          done
+          if [ -z "$LEADER" ] || [ -z "$MEMBER" ]; then
+            echo "FAIL: no leader and follower among the Southbound members"
+            exit 1
+          fi
+          kubectl create configmap "$STATE" -n "$NAMESPACE" --dry-run=client -o yaml \
+            --from-literal=leader="$LEADER" --from-literal=leader-sid="$LEADER_SID" \
+            --from-literal=term="$TERM" --from-literal=member="$MEMBER" | kubectl apply -f -
+          echo "OK: ${LEADER} (${LEADER_SID}) leads term ${TERM}; ${MEMBER} is the follower the suite skews"
+    catch: &raft-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no TimeChaos of this suite behind, and the objects are
+    # printed before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite ovn-raft-clock-skew
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos ovn-clock-chaos --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-clock-chaos --dep-ns=openstack
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          . ./probe-lib.sh
+          kubectl get configmap "$STATE" -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl get certificate -n "$NAMESPACE" -l "app.kubernetes.io/instance=${CR}" -o wide 2>&1 || true
+          for pod in $(sb_pods); do
+            echo "=== ${pod} ==="
+            sb_status "$pod" 2>&1 || true
+            member_log "$pod" | tail -n 100
+          done
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap ovn-raft-clock-skew-state -n openstack --ignore-not-found
+  # ── Step 2: One hour ahead: no election ──────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          MEMBER="$(state member)"
+          fault_inject 01-timechaos.yaml timechaos/ovn-sb-member-skew MEMBER="$MEMBER" OFFSET=1h
+          for _ in $(seq 1 12); do
+            STATUS="$(sb_status "$MEMBER")"
+            ROLE="$(field "$STATUS" Role)" LEADER="$(field "$STATUS" Leader)" TERM="$(field "$STATUS" Term)"
+            if [ "$ROLE" != follower ] || [ "$LEADER" != "$(state leader-sid)" ] || [ "$TERM" != "$(state term)" ]; then
+              echo "$STATUS"
+              echo "FAIL: ${MEMBER} reads role ${ROLE}, leader ${LEADER}, term ${TERM} under a skew of 1h; want follower of $(state leader-sid) in term $(state term)"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo NO-ELECTION-OK
+          fault_lift timechaos/ovn-sb-member-skew
+    catch: *raft-dump
+  # ── Step 3: Past the certificates: the member drops, the quorum writes ───
+  # MEMBER-DROPPED-OK is the canary: a TimeChaos that reports AllInjected but
+  # left ovsdb-server on the true clock keeps the member in the cluster.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          MEMBER="$(state member)"
+          LEADER="$(state leader)"
+          HOURS="$(cert_offset_hours)" || { echo "$HOURS"; exit 1; }
+          echo "offset: ${HOURS}h, 24 h past the latest notAfter of the cluster's Certificates"
+          fault_inject 01-timechaos.yaml timechaos/ovn-sb-member-skew MEMBER="$MEMBER" OFFSET="${HOURS}h"
+
+          DEADLINE=$(($(date +%s) + 180))
+          while true; do
+            STATUS="$(sb_status "$MEMBER" 2>&1 || true)"
+            ROLE="$(field "$STATUS" Role)" SEEN="$(field "$STATUS" Leader)"
+            if [ "$SEEN" = unknown ] || [ "$ROLE" != follower ]; then
+              LOG="$(member_log "$MEMBER")"
+              if grep -qE 'certificate (verify failed|has expired)' <<<"$LOG"; then
+                break
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "$STATUS"
+              member_log "$MEMBER" | tail -n 50
+              canary_fail timechaos/ovn-sb-member-skew "${MEMBER} still reads role ${ROLE:-<none>} with leader ${SEEN:-<none>} after 180 s, without a certificate error in its log"
+            fi
+            sleep 10
+          done
+          echo "${MEMBER} reads role ${ROLE:-<none>} with leader ${SEEN:-<none>}"
+          echo MEMBER-DROPPED-OK
+
+          kubectl exec "$(nb_pod)" -n "$NAMESPACE" -c ovsdb -- \
+            ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock ls-add clock-chaos-ls
+          DEADLINE=$(($(date +%s) + 60))
+          until [ -n "$(kubectl exec "$LEADER" -n "$NAMESPACE" -c ovsdb -- \
+            ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --bare --columns=_uuid \
+            find Datapath_Binding external_ids:name=clock-chaos-ls 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: clock-chaos-ls has no Datapath_Binding on the leader ${LEADER} after 60 s"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo QUORUM-WRITE-OK
+          fault_lift timechaos/ovn-sb-member-skew
+    catch: *raft-dump
+  # ── Step 4: The member rejoins ───────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          MEMBER="$(state member)"
+          DEADLINE=$(($(date +%s) + 180))
+          while true; do
+            LEADER_SID=""
+            for pod in $(sb_pods); do
+              STATUS="$(sb_status "$pod" 2>/dev/null || true)"
+              if [ "$(field "$STATUS" Role)" = leader ]; then
+                LEADER_SID="$(field "$STATUS" 'Server ID')"
+              fi
+            done
+            STATUS="$(sb_status "$MEMBER" 2>&1 || true)"
+            ROW="$(kubectl exec "$MEMBER" -n "$NAMESPACE" -c ovsdb -- \
+              ovn-sbctl --no-leader-only --db=unix:/var/run/ovn/ovnsb_db.sock --bare --columns=_uuid \
+              find Datapath_Binding external_ids:name=clock-chaos-ls 2>/dev/null || true)"
+            if [ -n "$LEADER_SID" ] && [ "$(field "$STATUS" Role)" = follower ] &&
+              [ "$(field "$STATUS" Leader)" = "$LEADER_SID" ] && [ -n "$ROW" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "$STATUS"
+              echo "FAIL: ${MEMBER} is not a follower of ${LEADER_SID:-<no leader>} holding clock-chaos-ls 180 s after the lift"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo REJOINED-OK
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-clock-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *raft-dump
+    finally:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          . ./probe-lib.sh
+          kubectl exec "$(nb_pod)" -n "$NAMESPACE" -c ovsdb -- \
+            ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock --if-exists ls-del clock-chaos-ls 2>&1 || true

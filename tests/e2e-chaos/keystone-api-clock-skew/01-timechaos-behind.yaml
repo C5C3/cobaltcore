@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# TimeChaos keystone-clock-behind: the clock of the Keystone API one hour behind. TimeChaos moves CLOCK_REALTIME of PID 1 of the
+# container and its children: the uWSGI master and the workers it forks
+# (operators/keystone/internal/controller/reconcile_deployment.go). A
+# kubectl exec into the container is a process of its own and keeps the true
+# clock, so the probe reads the skew off the issued_at of a token instead.
+#
+# duration is a safety net above the suite's phase; the suite deletes the
+# object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata:
+  name: keystone-clock-behind
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: keystone-api-clock-skew
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-chaos-clock
+      app.kubernetes.io/component: api
+  containerNames:
+    - keystone
+  timeOffset: "-1h"
+  duration: "900s"

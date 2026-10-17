@@ -1974,12 +1974,15 @@ jobs:
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
           # below). That kernel-module dependency is what keeps the leg
-          # non-blocking. No suite here touches Keystone, so this leg deploys
-          # the ovn-operator alone and skips the keystone stack.
+          # non-blocking. ovn-raft-clock-skew skews the clock of one
+          # Southbound raft member with a TimeChaos. No suite here touches
+          # Keystone, so this leg deploys the ovn-operator alone and skips the
+          # keystone stack.
           - suite: ovn
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
+              tests/e2e-chaos/ovn-raft-clock-skew
           # The eight nova-stack suites bring up the heaviest stack in this
           # job: a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and
           # a Nova with a fake compute behind it, and
@@ -2030,6 +2033,8 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/keystone-validation-http-503
+              tests/e2e-chaos/keystone-api-clock-skew
+              tests/e2e-chaos/keystone-operator-clock-skew
     runs-on: self-hosted
     # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
     # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which

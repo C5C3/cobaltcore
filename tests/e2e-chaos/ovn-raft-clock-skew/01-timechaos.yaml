@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# TimeChaos ovn-sb-member-skew: the clock of the ovsdb container of one
+# Southbound follower, moved by @OFFSET@. The suite applies this file through
+# ../lib/faults.sh fault_inject, which fills @MEMBER@, the follower it recorded
+# in step 1, and @OFFSET@: 1h in the first phase, and in the second the whole
+# hours to the latest notAfter of the cluster's Certificates plus 24, computed
+# at run time.
+#
+# PID 1 of the container is a shell and ovsdb-server its child
+# (operators/ovn/internal/controller/reconcile_database.go); TimeChaos reaches
+# both. ovsdb's raft timers read the monotonic clock and its TLS verification
+# the wall clock, which is the one TimeChaos moves.
+#
+# duration is a safety net above the suite's phases; the suite deletes the
+# object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata:
+  name: ovn-sb-member-skew
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: ovn-raft-clock-skew
+spec:
+  mode: all
+  selector:
+    pods:
+      openstack:
+        - "@MEMBER@"
+  containerNames:
+    - ovsdb
+  timeOffset: "@OFFSET@"
+  duration: "900s"

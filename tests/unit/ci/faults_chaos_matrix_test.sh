@@ -35,6 +35,8 @@ source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 # The nine suites of the faults entry, in the order the entry lists them.
 FAULTS_SUITES=(
   keystone-validation-http-503
+  keystone-api-clock-skew
+  keystone-operator-clock-skew
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.

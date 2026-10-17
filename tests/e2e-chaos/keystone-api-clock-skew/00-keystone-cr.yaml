@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the API clock-skew chaos test. Unique name
+# (keystone-chaos-clock) and database (keystone_chaos_clock) to avoid
+# conflicts with other test suites.
+#
+# One replica, so every request of the probe reaches the one API pod whose
+# clock the TimeChaos objects move. [token] expiration is 300 seconds instead
+# of the default 3600: the probe waits a token out before the first skew, and
+# the skews of -1 h and +2 h each exceed the lifetime. The operator owns
+# [token] provider alone (operators/keystone/api/v1alpha1/config_ownership.go),
+# so expiration passes through spec.extraConfig.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-clock
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_clock
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    token:
+      expiration: "300"

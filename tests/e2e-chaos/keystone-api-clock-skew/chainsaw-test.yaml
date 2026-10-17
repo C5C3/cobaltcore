@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the clock of the Keystone API runs one hour behind,
+# then two hours ahead.
+#
+# Fault: two TimeChaos objects on the keystone container of the API pod of
+# keystone-chaos-clock, one after the other in one fault window:
+# 01-timechaos-behind.yaml moves its clock back by an hour and
+# 02-timechaos-ahead.yaml forward by two. The operator renders [token]
+# provider = fernet (operators/keystone/internal/controller/reconcile_config.go),
+# and Fernet validation compares a token's expires_at with the API pod's
+# clock. The Keystone issues tokens for 300 s (00-keystone-cr.yaml).
+#
+# The suite pins three behaviours, each a fail-open or fail-closed risk that
+# nothing in CobaltCore detects:
+#   - a slow clock accepts an expired token for the length of the skew;
+#   - a fast clock rejects a live token;
+#   - a token minted on a fast clock outlives its lifetime by the skew once
+#     the clock is right again.
+#
+# Claim, phase by phase (token-probe.py prints one sentinel per check):
+#   start   T_old, issued and waited out on the probe's clock, is rejected
+#           (EXPIRED-REJECTED 404).
+#   behind  A fresh token's issued_at is at least 3500 s behind the probe's
+#           clock (BEHIND-OFFSET, the canary), and T_old validates
+#           (BEHIND-ACCEPTS-EXPIRED 200).
+#   ahead   T_pre, issued just before the injection, is rejected
+#           (AHEAD-REJECTS-FRESH 404), and T_fwd's issued_at is at least
+#           7100 s ahead (AHEAD-OFFSET, the canary).
+#   after   T_fwd validates with an expires_at at least 6900 s after the
+#           probe's clock (SKEWED-TOKEN-OUTLIVES 200), a fresh token issues
+#           and validates (RECOVERED-OK), and the CR is Ready=True/AllReady.
+#
+# Blast radius: both objects select the API pod of this suite's Keystone by
+# name, instance and component, and the keystone container alone. TimeChaos
+# reaches PID 1 of the container and its children; a kubectl exec into the
+# container keeps the true clock.
+#
+# Leg: faults. TimeChaos needs no host module; the leg is where the suites
+# of #1391 that need only the standalone stack run.
+#
+# Workload: the token stream of ../lib/workload.sh against
+# keystone-chaos-clock. The token cycles that straddle each injection and
+# each lift fail: a token issued on one clock and validated on the other. The
+# budget is an estimate of that window: no run has measured it yet.
+# Chaos budget: failures=40 recovery=60s
+# Chaos budget measured: 2026-10-17, estimate, failures 20, recovery 30 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-api-clock-skew
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone whose clock the faults move ───────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-clock
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh baseline keystone-chaos-clock
+  # ── Step 2: Start the workload and the probe; a token expires on time ────
+  # The probe runs through every later step and advances on the marker files
+  # the steps create; the step cleanup deletes it at the end of the test.
+  - try:
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start keystone-api-clock-skew -- --streams token --keystone http://keystone-chaos-clock.openstack.svc:5000/v3
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_start clock-skew-probe --env "OS_PASSWORD=$(admin_password)" \
+            --env KEYSTONE=http://keystone-chaos-clock.openstack.svc.cluster.local:5000/v3 \
+            -- python3 -u -c "$(cat token-probe.py)"
+          wait_sentinel clock-skew-probe '^EXPIRED-REJECTED 404$' 450
+    catch: &clock-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no TimeChaos of this suite behind, and the objects are
+    # printed before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite keystone-api-clock-skew
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-clock --dep-label=app.kubernetes.io/instance=keystone-chaos-clock --dep-ns=openstack
+    - script:
+        timeout: 1m
+        content: kubectl logs clock-skew-probe -n openstack 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystone-api-clock-skew
+    cleanup:
+    - script:
+        timeout: 2m
+        content: kubectl delete pod clock-skew-probe -n openstack --ignore-not-found
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystone-api-clock-skew
+  # ── Step 3: One hour behind ──────────────────────────────────────────────
+  # BEHIND-OFFSET is the canary: a TimeChaos that reports AllInjected but left
+  # the uWSGI workers on the true clock shows an offset near zero.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          ../lib/workload.sh mark keystone-api-clock-skew fault-start
+          fault_inject 01-timechaos-behind.yaml timechaos/keystone-clock-behind
+          kubectl exec clock-skew-probe -n "$NAMESPACE" -- touch /tmp/behind
+          if ! line="$(wait_sentinel clock-skew-probe '^BEHIND-OFFSET ' 120)"; then
+            echo "$line"
+            canary_fail timechaos/keystone-clock-behind "the probe read no skew of at least -3500 s from a token's issued_at"
+          fi
+          echo "$line"
+          echo INJECTED-BEHIND-OK
+          wait_sentinel clock-skew-probe '^BEHIND-ACCEPTS-EXPIRED 200$' 120
+          fault_lift timechaos/keystone-clock-behind
+    catch: *clock-dump
+  # ── Step 4: Two hours ahead ──────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          kubectl exec clock-skew-probe -n "$NAMESPACE" -- touch /tmp/pre
+          wait_sentinel clock-skew-probe '^PRE-ISSUED$' 120
+          fault_inject 02-timechaos-ahead.yaml timechaos/keystone-clock-ahead
+          kubectl exec clock-skew-probe -n "$NAMESPACE" -- touch /tmp/ahead
+          if ! line="$(wait_sentinel clock-skew-probe '^AHEAD-OFFSET ' 120)"; then
+            echo "$line"
+            canary_fail timechaos/keystone-clock-ahead "the probe read no skew of at least 7100 s from a token's issued_at"
+          fi
+          echo "$line"
+          echo INJECTED-AHEAD-OK
+          wait_sentinel clock-skew-probe '^AHEAD-REJECTS-FRESH 404$' 120
+          fault_lift timechaos/keystone-clock-ahead
+          ../lib/workload.sh mark keystone-api-clock-skew fault-end
+    catch: *clock-dump
+  # ── Step 5: The clock is right again ─────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          kubectl exec clock-skew-probe -n "$NAMESPACE" -- touch /tmp/after
+          wait_sentinel clock-skew-probe '^SKEWED-TOKEN-OUTLIVES 200$' 180
+          wait_sentinel clock-skew-probe '^RECOVERED-OK$' 120
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-clock
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *clock-dump
+  # ── Step 6: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystone-api-clock-skew
+    catch: *clock-dump
