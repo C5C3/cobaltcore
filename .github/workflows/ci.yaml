@@ -4252,7 +4252,7 @@ jobs:
       - name: Run the libvirt chaos suite
         run: |
           mkdir -p _output/reports
-          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health
+          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health tests/e2e-chaos/nova-instances-io-fault
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh

@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots one server onto pool pool-libvirt with --nic none, from the image the
+# stack of ../../e2e/nova/compute-node-pool seeds, and waits for the status
+# the step wants. The suite applies it with ../lib/faults.sh job_run, which
+# fills the placeholders:
+#   @NAME@      the server, and the suffix of the Job's name
+#   @WANT@      ACTIVE or ERROR, which the server must reach within 300 s; an
+#               ERROR server must carry a non-empty fault
+#   @DELETE@    yes deletes the server once it reached @WANT@
+#   @SENTINEL@  the line printed once the server reached @WANT@
+#
+# The Job prints SERVER-ID: <uuid>, which the steps record: the uuid names the
+# libvirt domain and the instance directory. 300 s is the bound server-boot's
+# boot Job gives a build under TCG emulation. The fault is read by server id:
+# a build buried in cell0 carries it only in the answer to GET /servers/<id>.
+# backoffLimit is 0 because the script is not idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-chaos-boot-@NAME@
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              SEED=4e0a0000-0000-4000-8000-000000000005
+              NAME='@NAME@'
+              WANT='@WANT@'
+              DELETE='@DELETE@'
+
+              openstack flavor show m1.nano >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 128 --disk 1 m1.nano >/dev/null
+              SERVER_ID="$(openstack server create --image "${SEED}" --flavor m1.nano \
+                --nic none "${NAME}" -f value -c id)"
+              echo "SERVER-ID: ${SERVER_ID}"
+
+              STATUS=""
+              DEADLINE=$(( $(date +%s) + 300 ))
+              while true; do
+                STATUS="$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || true)"
+                if [ "${STATUS}" = "${WANT}" ]; then
+                  break
+                fi
+                if [ "${STATUS}" = ERROR ] || [ "${STATUS}" = ACTIVE ] || [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+                  echo "FAIL: server ${NAME} is ${STATUS:-<none>}, want ${WANT} within 300s"
+                  openstack server show "${SERVER_ID}" 2>&1 || true
+                  exit 1
+                fi
+                sleep 5
+              done
+              echo "OK: server ${NAME} reached ${WANT}"
+
+              if [ "${WANT}" = ERROR ]; then
+                # Captured before it is read: under pipefail a pipeline into a
+                # reader that exits early fails.
+                SHOWN="$(openstack server show "${SERVER_ID}" -f json)"
+                MESSAGE="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("fault") or {}).get("message", ""))' <<<"${SHOWN}")"
+                echo "fault of ${NAME}: ${MESSAGE}"
+                if [ -z "${MESSAGE}" ]; then
+                  echo "FAIL: server ${NAME} reached ERROR without a fault"
+                  exit 1
+                fi
+              fi
+              echo '@SENTINEL@'
+
+              if [ "${DELETE}" = yes ]; then
+                openstack server delete --wait "${SERVER_ID}"
+                echo "OK: server ${NAME} deleted"
+              fi

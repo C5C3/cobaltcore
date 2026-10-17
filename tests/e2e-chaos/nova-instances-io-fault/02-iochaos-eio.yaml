@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# IOChaos nova-instances-eio: every write and fsync nova-compute makes below
+# /var/lib/nova/instances fails with EIO (errno 5).
+#
+# volumePath /var/lib/nova is the hostPath nova-compute mounts with
+# MountPropagation Bidirectional
+# (operators/nova/internal/controller/reconcile_novacompute_daemonset.go), a
+# mount root of container nova-compute; path narrows the fault to the files
+# below /var/lib/nova/instances, where nova's default instances_path keeps
+# every instance directory and the image cache _base. Chaos Mesh matches it
+# as a glob whose **/ also matches no directory at all. The selector names
+# the pod of pool pool-libvirt. duration is a safety net above the phase; the
+# suite deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: nova-instances-eio
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: nova-instances-io-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: novacompute
+      app.kubernetes.io/instance: pool-libvirt
+  containerNames:
+    - nova-compute
+  volumePath: /var/lib/nova
+  path: /var/lib/nova/instances/**/*
+  action: fault
+  errno: 5
+  methods:
+    - write
+    - fsync
+  percent: 100
+  duration: "600s"

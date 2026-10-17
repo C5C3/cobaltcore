@@ -23,8 +23,10 @@
 # libvirt nodes are proven by the lab run of docs/quick-start-metal-stack.md.
 #
 # The stack is the one of ../../e2e/nova/compute-node-pool under the nova-pool
-# prefix, and the suite applies its fixtures 00 to 11, 15 and 16 from there. No
-# other suite runs on the job's cluster, so the names cannot collide.
+# prefix, and the suite applies its fixtures 00 to 11, 15 and 16 from there.
+# The job runs ../../e2e-chaos/nova-instances-io-fault/ after this suite on the
+# same cluster and under the same names, once this suite's cleanups have taken
+# the stack down, so the names cannot collide.
 #
 # ── concurrent: false ────────────────────────────────────────────────
 # libvirtd, the chassis and the nova-compute pod run with hostNetwork and own

@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 68 chaos test suites validate operator behavior during and after fault
+The 69 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 68 test suites require the infrastructure stack to be deployed and healthy.
+All 69 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -541,6 +541,7 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [mariadb-io-fault](#mariadb-io-fault) | — | `keystone-chaos-io` | MariaDB data directory slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK`, then 120 s with MariaDB and the Keystone `Ready=True` and new writes acknowledged; `INJECTED-ENOSPC-OK` and MariaDB `Ready=True` within 5 minutes of the lift; `INJECTED-EIO-OK`; afterwards MariaDB `Ready=True` within 10 minutes, `mariadb-check` OK for every table (`CHECK-OK`), every project created with 201 present (`ACKED-OK`), the Keystone `Ready=True/AllReady`; no `mariadb-io-chaos` CR or claim left |
 | [glance-staging-io-fault](#glance-staging-io-fault) | — | `glance-chaos-stage` | Import staging area slow, full, then failing (IOChaos, fail-closed stage) | `INJECTED-LATENCY-OK` and an import reaching `active` (`LATENCY-IMPORT-ACTIVE`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with the stage answered non-2xx and the image `queued` (`ENOSPC-STAGE-REFUSED`, `EIO-STAGE-REFUSED`); after the lift `RECOVERED-OK`, no image `uploading` or `importing` (`NO-STUCK-IMPORT-OK`), no staged file of the suite's images; workload budget zero |
 | [openbao-io-fault](#openbao-io-fault) | — | `keystone-chaos-baoio` | OpenBao raft volume slow, full, then failing (IOChaos, acknowledged writes) | `INJECTED-LATENCY-OK` and ten of ten writes acknowledged (`LATENCY-WRITES-OK`); `INJECTED-ENOSPC-OK`; `INJECTED-EIO-OK`; `openbao-0` unsealed after each phase; afterwards `Sealed false`, `openbao-cluster-store` `Ready=True`, a forced sync of `keystone-admin` (`SYNC-OK`), the canary and every acknowledged write reading their values (`ACKED-OK`), no key left under `kv-v2/chaos/openbao-io`; workload budget zero |
+| [nova-instances-io-fault](#nova-instances-io-fault) | — | `pool-libvirt` | Instances directory of a libvirt pool slow, full, then failing (IOChaos, build outcome) | `INJECTED-LATENCY-OK` and `io-latency` `ACTIVE` within 300 s (`LATENCY-BOOT-OK`); `INJECTED-ENOSPC-OK` and `INJECTED-EIO-OK` with `io-enospc` and `io-eio` in `ERROR` with a non-empty fault (`ENOSPC-BOOT-ERROR-OK`, `EIO-BOOT-ERROR-OK`); `io-base`'s domain running after each phase (`BASE-GUEST-RUNNING-OK`); no instance directory of the failed builds left (`NO-LEFTOVER-DIR-OK`), `io-recovered` `ACTIVE` (`RECOVERED-OK`), a clean placement audit, workload budget zero |
 
 ---
 
@@ -4448,6 +4449,56 @@ writes and the OpenBao log, and dumps the workload.
   the fault.
 - The suite assumes the openbao chart mounts the data volume at `/openbao/data` as a
   mount root; the latency canary fails loudly otherwise.
+
+---
+
+### nova-instances-io-fault
+
+**File:** `tests/e2e-chaos/nova-instances-io-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Three `IOChaos` objects on `/var/lib/nova/instances` of container
+`nova-compute` of the libvirt pool `pool-libvirt` make the instances directory
+slow, full and failing, one after the other in one fault window, while the guest
+`io-base` keeps running. nova-compute keeps each instance directory and the image
+cache `_base` there. The suite pins that a build completes under latency, that a
+build the disk refuses ends in `ERROR` with a fault and leaves no directory, and
+that the running guest is not touched.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1-4 | Bring up the stack | as `tests/e2e-nova-libvirt/server-boot` | The node labels, the stack of `tests/e2e/nova/compute-node-pool` (`00`-`11`) by path, libvirtd from `server-boot/00-libvirt.yaml` and the pool from `server-boot/01-novacompute-libvirt.yaml`, with that suite's cleanups |
+| 5 | Workload and `io-base` | `script` (6m) + `script` (8m) | `workload.sh start`; Job `nova-pool-chaos-boot-io-base` boots `io-base` with `--nic none` to `ACTIVE`; its uuid goes into ConfigMap `nova-pool-verify` |
+| 6 | Three phases | `script` (25m) | `workload.sh mark fault-start`, then per phase: apply, `AllInjected`, a `dd` canary into `/var/lib/nova/instances/.chaos-canary`, and a build. Latency: `io-latency` `ACTIVE` within 300 s, deleted (`LATENCY-BOOT-OK`). ENOSPC and EIO: `io-enospc` and `io-eio` in `ERROR` with a non-empty fault within 300 s, deleted (`ENOSPC-BOOT-ERROR-OK`, `EIO-BOOT-ERROR-OK`). After each phase `virsh list --state-running --uuid` in the libvirtd pod lists `io-base` (`BASE-GUEST-RUNNING-OK`). `workload.sh mark fault-end` after the last delete |
+| 7 | Recovery | `script` (10m) | No directory `/var/lib/nova/instances/<uuid>` of `io-enospc` or `io-eio` (`NO-LEFTOVER-DIR-OK`); `io-recovered` `ACTIVE` (`RECOVERED-OK`); both servers deleted |
+| 8 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-pool` |
+
+**Fixtures:** `00-iochaos-latency.yaml` (`delay: "200ms"`), `01-iochaos-enospc.yaml`
+(`errno: 28`, `methods: [write, create, mkdir]`), `02-iochaos-eio.yaml`
+(`errno: 5`, `methods: [write, fsync]`), all `volumePath: /var/lib/nova`,
+`path: /var/lib/nova/instances/**/*`, `containerNames: [nova-compute]`;
+`03-boot-job.yaml`, the boot Job template. The stack's files come by path from
+`tests/e2e/nova/compute-node-pool/` and `tests/e2e-nova-libvirt/server-boot/`.
+
+**Workload:** the `token` stream against a zero budget. The suite runs in the
+`e2e-nova-libvirt` job, after `server-boot`, in the step `Run the libvirt chaos
+suite`, which runs `tests/e2e/infrastructure/chaos-mesh-health` first.
+
+**Catch blocks:** the anchor of `server-boot`, with the label lift of the suite's
+chaos objects in front and the workload dump behind.
+
+**Design notes:**
+
+- nova-compute mounts the hostPath `/var/lib/nova` with `MountPropagation:
+  Bidirectional`, so the FUSE mount of the `IOChaos` reaches the kind node.
+  libvirtd mounts the same hostPath without propagation, so QEMU's disk I/O stays
+  outside the fault. The node is the job's own throwaway cluster.
+- `make e2e-chaos` sweeps every directory under `tests/e2e-chaos/`, this one
+  included; it needs the libvirt stack of the job and fails at its bring-up on a
+  cluster without it.
 
 ---
 

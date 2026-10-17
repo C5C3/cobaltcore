@@ -122,7 +122,7 @@ test_libvirt_job_runs_the_chaos_suite() {
   step="$(job_step e2e-nova-libvirt "Run the libvirt chaos suite")"
   assert_not_empty "the job has a libvirt chaos step" "$step"
   assert_contains "it runs the chaos configuration, the health check and the suite" "$step" \
-    "chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health"
+    "chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health tests/e2e-chaos/nova-instances-io-fault"
 
   steps="$(grep -E '^      - name: ' <<<"$job" | sed 's/^      - name: //')"
   assert_contains "it follows the libvirt suite and comes before the report upload" \
