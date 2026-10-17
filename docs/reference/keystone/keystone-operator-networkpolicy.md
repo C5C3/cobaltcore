@@ -100,22 +100,33 @@ ingress posture.
 ## Values snippet: kind cluster
 
 The following snippet enables the policy on a local
-[kind](https://kind.sigs.k8s.io/) cluster, whose API server endpoint is
-reachable at `10.96.0.1:6443` via the built-in `kubernetes` Service:
+[kind](https://kind.sigs.k8s.io/) cluster. It names the API server's endpoint,
+the control-plane node on the kind bridge, and not the `10.96.0.1` VIP of the
+`kubernetes` Service: kind's kindnet CNI judges egress after the Service DNAT,
+so a rule naming the VIP never matches. Read the address and the port with:
+
+```bash
+kubectl get endpointslice kubernetes -n default \
+  -o jsonpath='{.endpoints[*].addresses[*]} {.ports[0].port}{"\n"}'
+```
+
+A single-node kind cluster prints one address, for example `172.18.0.2 6443`:
 
 ```yaml
 networkPolicy:
   enabled: true
   kubeApiServer:
     cidrs:
-      - 10.96.0.1/32
+      - 172.18.0.2/32
     ports:
       - 6443
   # dns, allowMetricsFrom, webhookClients left at defaults
 ```
 
-This same snippet is the fixture used by the chart-level E2E test at
-`tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml` and is the minimum viable configuration on kind.
+The chart-level E2E test
+`tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` reads the
+same EndpointSlice and passes the result with `--set`, because the node address
+changes whenever the kind cluster is re-created.
 
 ### Production example
 
