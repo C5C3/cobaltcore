@@ -11,6 +11,14 @@
 #   - DaemonSet/chaos-daemon in chaos-mesh is rolled out with at least
 #     one ready node (mirrors today's `(numberReady >= 1): true`
 # assertion)
+#   - The ValidatingAdmissionPolicy chaos-mesh-httpchaos-api-workloads-only
+#     (deploy/kind/chaos-mesh/httpchaos-policy.yaml) denies nine HTTPChaos
+#     server-side dry runs: one selecting app.kubernetes.io/name:
+#     novacompute, one without labelSelectors, one whose labelSelectors lack
+#     the name key, and one each selecting by pods, nodes, nodeSelectors,
+#     fieldSelectors, annotationSelectors and expressionSelectors beside an
+#     allowlisted name. It admits one selecting the Keystone API pods. A dry
+#     run persists nothing.
 #
 # Scope gating — two independent mechanisms, mirroring the
 # flux-web-health pattern:
@@ -60,23 +68,24 @@ metadata:
 spec:
   # Timeout budget the script's sequential kubectl waits
   # have per-call upper bounds of 2m (Deployment Available) + 2m
-  # (DaemonSet rollout) = 4m worst case. In the realistic success
-  # path both return in <1s because deploy-infra's Phase 3
+  # (DaemonSet rollout) = 4m worst case,
+  # and the five dry runs 20s each. In the realistic success
+  # path the waits return in <1s because deploy-infra's Phase 3
   # `wait_for_helmreleases` already blocks until HelmRelease/chaos-mesh
   # is Ready=True before this test runs. `timeouts.exec` and the
-  # matching script-level `timeout` are 5m, leaving a safety margin
+  # matching script-level `timeout` are 8m, leaving a safety margin
   # above the 4m worst case so chainsaw does not kill the script
   # mid-execution and surface a confusing timeout failure instead of
   # a useful per-resource signal.
   timeouts:
     assert: 5m
-    exec: 5m
+    exec: 8m
   steps:
   - try:
     - script:
         # Matches spec.timeouts.exec above; kept explicit so the
         # per-step bound is visible at the call site.
-        timeout: 5m
+        timeout: 8m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`
         # with "Illegal option -o pipefail" (exit 2). All other infra/
         # keystone e2e scripts pin bash for the same reason.
@@ -117,6 +126,106 @@ spec:
           kubectl rollout status daemonset/chaos-daemon \
             -n chaos-mesh --timeout=2m
           echo "OK: DaemonSet/chaos-daemon is rolled out"
+
+          # ──: HTTPChaos admission ───────────────────────────
+          # httpchaos <name> <selector lines>: an HTTPChaos that is
+          # valid but for its selector, for the server-side dry runs
+          # below. A dry run passes every admission check and
+          # persists nothing.
+          httpchaos() {
+            cat <<EOF
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: HTTPChaos
+          metadata:
+            name: $1
+            namespace: ${NAMESPACE}
+          spec:
+            mode: all
+            selector:
+          $2
+            target: Request
+            port: 5000
+            method: GET
+            path: /v3
+            abort: true
+            duration: "60s"
+          EOF
+          }
+          policy=chaos-mesh-httpchaos-api-workloads-only
+
+          # deny <label> <name> <selector lines>: the dry run fails,
+          # and its stderr names the policy.
+          deny() {
+            local err rc=0
+            err="$(httpchaos "$2" "$3" |
+              kubectl apply --dry-run=server --request-timeout=20s -f - 2>&1 >/dev/null)" || rc=$?
+            if [ "$rc" -eq 0 ] || ! grep -qF "$policy" <<<"$err"; then
+              echo "FAIL: $1: the dry run was not denied by ${policy} (exit ${rc})"
+              echo "$err"
+              exit 1
+            fi
+            echo "OK: $1: denied by ${policy}"
+          }
+          deny "an HTTPChaos on the hostNetwork NovaCompute pool" \
+            health-novacompute "$(printf '%s\n' \
+              '    namespaces: [openstack]' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: novacompute')"
+          deny "an HTTPChaos without labelSelectors" \
+            health-no-labels "$(printf '%s\n' \
+              '    namespaces: [openstack]')"
+          deny "an HTTPChaos whose labelSelectors lack the name key" \
+            health-no-name "$(printf '%s\n' \
+              '    namespaces: [openstack]' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/component: api')"
+          deny "an HTTPChaos selecting by pods" \
+            health-pods "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    pods:' \
+              '      openstack: [keystone-x]')"
+          deny "an HTTPChaos selecting by nodes" \
+            health-nodes "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    nodes: [kind-control-plane]')"
+          deny "an HTTPChaos selecting by nodeSelectors" \
+            health-node-selectors "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    nodeSelectors:' \
+              '      kubernetes.io/hostname: kind-control-plane')"
+          deny "an HTTPChaos selecting by fieldSelectors" \
+            health-field-selectors "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    fieldSelectors:' \
+              '      spec.nodeName: kind-control-plane')"
+          deny "an HTTPChaos selecting by annotationSelectors" \
+            health-annotation-selectors "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    annotationSelectors:' \
+              '      example.com/any: x')"
+          deny "an HTTPChaos selecting by expressionSelectors" \
+            health-expression-selectors "$(printf '%s\n' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '    expressionSelectors:' \
+              '      - {key: app.kubernetes.io/name, operator: In, values: [novacompute]}')"
+
+          if ! out="$(httpchaos health-keystone-api "$(printf '%s\n' \
+              '    namespaces: [openstack]' \
+              '    labelSelectors:' \
+              '      app.kubernetes.io/name: keystone' \
+              '      app.kubernetes.io/component: api')" |
+              kubectl apply --dry-run=server --request-timeout=20s -f - 2>&1)"; then
+            echo "FAIL: an HTTPChaos on the Keystone API pods was not admitted"
+            echo "$out"
+            exit 1
+          fi
+          echo "OK: an HTTPChaos on the Keystone API pods is admitted"
     catch:
     # On failure, dump post-mortem state to help CI triage (mirrors
     # the diagnostic pattern used by other infra tests). Each
@@ -132,3 +241,7 @@ spec:
         kind: DaemonSet
         name: chaos-daemon
         namespace: chaos-mesh
+    - script:
+        timeout: 30s
+        content: |
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding chaos-mesh-httpchaos-api-workloads-only -o yaml 2>&1 || true

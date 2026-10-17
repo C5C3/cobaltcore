@@ -8,15 +8,16 @@
 # EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true:
 #   1. Both files carry SPDX headers, and the kustomization lists exactly
 #      ../../../kind/chaos-mesh and modules-daemonset.yaml.
-#   2. The render holds four objects: the Namespace chaos-mesh, the
-#      HelmRepository and the HelmRelease of the kind overlay, and the
-#      DaemonSet chaos-mesh-modules.
+#   2. The render holds six objects: the Namespace chaos-mesh, the
+#      HelmRepository, the HelmRelease and the HTTPChaos
+#      ValidatingAdmissionPolicy with its binding of the kind overlay, and
+#      the DaemonSet chaos-mesh-modules.
 #   3. The Namespace carries the Gardener opt-out label and the privileged
 #      PodSecurity level, and no chaos-mesh.org/inject annotation, so no
 #      experiment selects a pod of Chaos Mesh itself.
 #   4. The HelmRelease turns the namespace filter on and keeps the kind values
-#      beside it (containerd runtime and socket, no dashboard, the reduced
-#      requests, the chart range); no line of the render names
+#      beside it (containerd runtime and socket, no dashboard, the DNS server,
+#      the reduced requests, the chart range); no line of the render names
 #      allowHostNetworkTesting or clusterScoped.
 #   5. chaos-mesh-modules mounts no token, shares no host namespace, rolls out
 #      with RollingUpdate, tolerates every taint, loads in a privileged init
@@ -28,7 +29,7 @@
 #      modules of the kind mode's host load (hack/deploy-infra.sh) in order
 #      and reports them, or names the module that failed and exits 1 without
 #      loading the next one.
-#   7. deploy/kind/chaos-mesh still renders three documents, with the filter
+#   7. deploy/kind/chaos-mesh still renders five documents, with the filter
 #      off, no annotation and no Gardener label.
 #
 # Checks 2 to 7 are counted as SKIP when kustomize or yq is not on PATH; a
@@ -92,9 +93,9 @@ test_files_have_spdx_and_two_resources() {
     "$(resource_entries "$CHAOS_DIR/kustomization.yaml" 2>/dev/null)"
 }
 
-# --- Test 2: the four objects ---
-test_render_holds_the_four_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/chaos-mesh renders the four objects"
+# --- Test 2: the six objects ---
+test_render_holds_the_six_objects() {
+  echo "Test: kustomize build deploy/lab/metal-stack/chaos-mesh renders the six objects"
 
   render "$CHAOS_DIR" 2 || return
 
@@ -102,12 +103,14 @@ test_render_holds_the_four_objects() {
   objects="$(printf '%s\n' "$RENDERED" |
     yq -N -r 'select(. != null) | .kind + " " + (.metadata.namespace // "") + "/" + .metadata.name' - |
     LC_ALL=C sort)"
-  assert_eq "the render holds four documents" "4" "$(grep -c . <<<"$objects")"
-  assert_eq "the render holds the three objects of the kind overlay and the DaemonSet" \
+  assert_eq "the render holds six documents" "6" "$(grep -c . <<<"$objects")"
+  assert_eq "the render holds the five objects of the kind overlay and the DaemonSet" \
     "$(printf '%s\n' \
       'Namespace /chaos-mesh' \
       'HelmRepository flux-system/chaos-mesh' \
       'HelmRelease chaos-mesh/chaos-mesh' \
+      'ValidatingAdmissionPolicy /chaos-mesh-httpchaos-api-workloads-only' \
+      'ValidatingAdmissionPolicyBinding /chaos-mesh-httpchaos-api-workloads-only' \
       'DaemonSet chaos-mesh/chaos-mesh-modules' | LC_ALL=C sort)" \
     "$objects"
 }
@@ -130,7 +133,7 @@ test_namespace_labels_without_the_annotation() {
 test_release_filters_namespaces_and_keeps_the_kind_values() {
   echo "Test: the HelmRelease turns the namespace filter on and keeps the kind values"
 
-  render "$CHAOS_DIR" 8 || return
+  render "$CHAOS_DIR" 9 || return
 
   assert_eq "controllerManager.enableFilterNamespace is true" "true" \
     "$(val HelmRelease chaos-mesh '.spec.values.controllerManager.enableFilterNamespace')"
@@ -276,7 +279,7 @@ test_kind_overlay_unchanged() {
 
   render "$KIND_CHAOS_DIR" 4 || return
 
-  assert_eq "the kind overlay renders three documents" "3" \
+  assert_eq "the kind overlay renders five documents" "5" \
     "$(printf '%s\n' "$RENDERED" | yq -N -r 'select(. != null) | .kind' - | grep -c .)"
   assert_eq "the kind release leaves the namespace filter off" "0" \
     "$(grep -c 'enableFilterNamespace' <<<"$RENDERED")"
@@ -288,7 +291,7 @@ test_kind_overlay_unchanged() {
 
 # --- Run ---
 test_files_have_spdx_and_two_resources
-test_render_holds_the_four_objects
+test_render_holds_the_six_objects
 test_namespace_labels_without_the_annotation
 test_release_filters_namespaces_and_keeps_the_kind_values
 test_modules_daemonset

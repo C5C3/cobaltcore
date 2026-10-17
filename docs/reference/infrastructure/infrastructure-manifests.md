@@ -2118,6 +2118,18 @@ target to live in the same overlay):
 | `dashboard.create` | `false` | Dashboard is unnecessary in CI |
 | `controllerManager.resources` | `25m / 64Mi` requests | Reduce footprint on single-node kind |
 
+**HTTPChaos admission policy** (`deploy/kind/chaos-mesh/httpchaos-policy.yaml`,
+listed in the overlay's `resources`):
+
+| Object | Value |
+| --- | --- |
+| `ValidatingAdmissionPolicy` `chaos-mesh-httpchaos-api-workloads-only` | matches `chaos-mesh.org/httpchaos` on `CREATE` and `UPDATE` in every version, `failurePolicy: Fail`. Validation 1 requires `spec.selector.labelSelectors` to pin `app.kubernetes.io/name` to one of `keystone`, `placement`, `glance`, `nova`, `neutron`, `cinder`, `barbican` and `horizon`. Validation 2 refuses `pods`, `nodes`, `nodeSelectors`, `fieldSelectors`, `annotationSelectors` and `expressionSelectors` |
+| `ValidatingAdmissionPolicyBinding` of the same name | `validationActions: [Deny]`, cluster-wide |
+| Pinned by | `tests/unit/deploy/chaos_mesh_overlay_test.sh`; `tests/e2e/infrastructure/chaos-mesh-health` proves nine denials, one for each refused selector field among them, and one admission with server-side dry runs |
+
+[HTTPChaos and `hostNetwork`](#lab-chaos-mesh) under Lab Chaos Mesh gives the
+reason for the policy.
+
 These overrides diverge intentionally from the upstream chart defaults
 (dashboard enabled, larger resource requests, auto-detected runtime), which
 target multi-node production clusters. Because the patch and the
@@ -2127,7 +2139,7 @@ the kind-tuning values.
 
 **No load-restrictor flag required.** The overlay has no parent-directory
 `../../` references — every resource (`namespace.yaml`, `source.yaml`,
-`release.yaml`) lives under `deploy/kind/chaos-mesh/`. Kustomize's default
+`release.yaml`, `httpchaos-policy.yaml`) lives under `deploy/kind/chaos-mesh/`. Kustomize's default
 `LoadRestrictionsRootOnly` security check is therefore satisfied without
 `--load-restrictor=LoadRestrictionsNone`, which matters because kubectl's
 embedded kustomize does not expose that flag (kubernetes/kubectl#948) and
@@ -3413,8 +3425,9 @@ EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_CHAOS_MESH=true
 ```
 
 The kustomization takes `deploy/kind/chaos-mesh` as its base and adds the
-DaemonSet `chaos-mesh-modules`. Its render holds four objects: the Namespace
-`chaos-mesh`, the HelmRepository, the HelmRelease and the DaemonSet. The first
+DaemonSet `chaos-mesh-modules`. Its render holds six objects: the Namespace
+`chaos-mesh`, the HelmRepository, the HelmRelease, the HTTPChaos
+ValidatingAdmissionPolicy with its binding, and the DaemonSet. The first
 three rows below are its differences from kind; the namespace filter and the
 loader follow the decisions D2 and D3 of #1219.
 
@@ -3423,7 +3436,7 @@ loader follow the decisions D2 and D3 of #1219.
 | Namespace label | `apiserver-proxy.networking.gardener.cloud/inject: disable` on `chaos-mesh`, the lab's rule for every namespace it declares (see [Lab overlay](#lab-overlay)), beside the privileged PodSecurity level of the kind overlay |
 | Namespace filter | `controllerManager.enableFilterNamespace: true`: the controller selects a pod only when its Namespace carries the annotation `chaos-mesh.org/inject: enabled`. On kind the filter is off |
 | NetworkChaos modules | the DaemonSet `chaos-mesh-modules` in `chaos-mesh`, on every node, tolerating every taint. A privileged init container `load` on the image of `host-prepare` in [Lab hypervisors](#lab-hypervisors) loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` from the node's `/lib/modules`, and an unprivileged container `hold` keeps the pod running, so the load repeats after a reboot. The chart renders `chaos-daemon`, so it cannot carry an init container from this repository (D3) |
-| Inherited from kind | the HelmRepository; the HelmRelease in `chaos-mesh` with the chart range `>=2.6.0 <3.0.0` and its dependency on `cert-manager`; `chaosDaemon.runtime: containerd` with the socket `/run/containerd/containerd.sock`, which the [Node probe](#node-probe) found on both workers; no dashboard; the reduced requests |
+| Inherited from kind | the HelmRepository; the HelmRelease in `chaos-mesh` with the chart range `>=2.6.0 <3.0.0` and its dependency on `cert-manager`; `chaosDaemon.runtime: containerd` with the socket `/run/containerd/containerd.sock`, which the [Node probe](#node-probe) found on both workers; no dashboard; the reduced requests; the HTTPChaos admission policy `chaos-mesh-httpchaos-api-workloads-only` and its binding |
 | Namespaces | `chaos-mesh` for the release and the loader, `flux-system` for the HelmRepository |
 | Pinned by | `tests/unit/deploy/metal_stack_chaos_mesh_test.sh` |
 
@@ -3481,6 +3494,27 @@ controller then refuses such an experiment with the event
 The overlay sets neither that value nor `clusterScoped`, and its test fails
 when the render names either.
 
+**HTTPChaos and `hostNetwork`.** Chaos Mesh reads
+`allowHostNetworkTesting` in its NetworkChaos controller alone, so the refusal
+above does not cover HTTPChaos. Its injector, chaos-tproxy, creates a bridge
+in the network namespace of the pod it selects and moves the pod's device onto
+it; for a `hostNetwork` pod that namespace is the node's. The
+ValidatingAdmissionPolicy `chaos-mesh-httpchaos-api-workloads-only`, which
+the lab inherits from its kind base, denies every HTTPChaos whose selector
+does not pin `app.kubernetes.io/name` to `keystone`, `placement`, `glance`,
+`nova`, `neutron`, `cinder`, `barbican` or `horizon`, and every HTTPChaos that
+selects by `pods`, `nodes`, `nodeSelectors`, `fieldSelectors`,
+`annotationSelectors` or `expressionSelectors`. The guard is a label
+allowlist because no admission mechanism resolves a selector to its pods, and
+a `spec.hostNetwork` field selector selects nothing in Chaos Mesh 2.8.4. The
+names are the workloads of the service CRs, none of which runs `hostNetwork`;
+`nova` covers the Nova CR's API, scheduler, conductor, metadata and console
+proxy, while the pool of a NovaCompute is `novacompute`. The policy matches
+`UPDATE` as well, so a selector cannot widen after admission, and it covers
+the HTTPChaos objects a Schedule or a Workflow creates.
+`EXTERNAL_CLUSTER=true make teardown-infra` deletes it with the overlay
+render.
+
 **Posture.** `chaos-daemon` runs privileged with `hostPID` and the containerd
 socket on every untainted node. Whoever may create a `chaos-mesh.org` object
 in an annotated namespace therefore acts as root on every node, which the lab
@@ -3511,7 +3545,9 @@ in chart 2.8.4), which Helm never deletes.
 - `chaos-mesh-modules` loads `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`,
   `xt_set`, `sch_netem`, `sch_tbf` and their dependencies on every node.
   Nothing unloads them; they stay until the node reboots, also after a
-  teardown. `calico-node` uses the ipset family as well.
+  teardown. `calico-node` uses the ipset family as well. The lab loads no
+  HTTPChaos or IOChaos module, which the kind host load adds, because no
+  suite runs HTTPChaos or IOChaos on the lab.
 - `chaos-daemon` mounts `/run/containerd`, `/sys` and `/lib/modules` from the
   node and goes with the release.
 - The deploy script itself runs no `modprobe` and writes no file on a node.

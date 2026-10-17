@@ -2220,7 +2220,8 @@ load_host_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
-# load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
+# load_chaos_mesh_kernel_modules — Ensure NetworkChaos, HTTPChaos and IOChaos
+# prerequisites on the host.
 #
 # The kind mode's module load. chaos-mesh's NetworkChaos uses ipset/iptables/tc
 # inside the target pod's network namespace via nsenter. The underlying kernel
@@ -2228,8 +2229,15 @@ load_host_kernel_modules() {
 # chaos-daemon fails with "unable to flush ip sets for pod …" and AllInjected
 # stays False. Under EXTERNAL_CLUSTER=true main() does not call it: the
 # DaemonSet chaos-mesh-modules of the overlay's chaos-mesh/ loads the same
-# list on the nodes (deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml);
-# change both together.
+# NetworkChaos list on the nodes
+# (deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml); change both
+# together.
+#
+# The second list is for HTTPChaos and IOChaos. chaos-tproxy, the HTTPChaos
+# injector, lists bridge, ebtables, ebtable_broute, iptable_mangle, xt_TPROXY
+# and xt_socket under its Requirements; fuse is the filesystem IOChaos injects
+# through. The lab loader keeps the NetworkChaos six alone, because no suite
+# runs HTTPChaos or IOChaos on the lab.
 #
 # Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
 # modprobe is unavailable or fails — PodChaos-only flows still work.
@@ -2240,6 +2248,7 @@ load_chaos_mesh_kernel_modules() {
   # by the same linux-modules-extra package. Keep the list aligned with what
   # chaos-daemon actually invokes via ipset/tc.
   load_host_kernel_modules "chaos-mesh NetworkChaos" ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf
+  load_host_kernel_modules "chaos-mesh HTTPChaos and IOChaos" bridge ebtables ebtable_broute iptable_mangle xt_TPROXY xt_socket fuse
 }
 
 # ---------------------------------------------------------------------------
