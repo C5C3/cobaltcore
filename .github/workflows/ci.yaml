@@ -226,12 +226,21 @@ jobs:
             # ---------------------------------------------------------------
             # Shared code and shared image inputs.
             # ---------------------------------------------------------------
-            # Every operator's binary is built from this.
+            # Every operator's binary and image is built from this: the
+            # shared Go code and workspace, the flake inputs and the Nix
+            # expressions of the operator images, and the script that builds
+            # them for e2e. A change here runs every operator's Go gates and
+            # e2e legs and publishes every operator image.
             go_common:
               - 'internal/**'
               - 'go.work'
-              - 'operators/Dockerfile'
               - '.golangci.yml'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/operator-image.nix'
+              - 'nix/lib/static-image.nix'
+              - 'nix/lib/image-defaults.nix'
+              - 'hack/ci-nix-build-e2e-images.sh'
             # Every service image and both Tempest images are built from this:
             # the flake inputs, the Nix library and packages, the release
             # pins, and the scripts that build and place the images.

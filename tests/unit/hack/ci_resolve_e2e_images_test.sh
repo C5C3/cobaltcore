@@ -738,25 +738,40 @@ test_an_operator_image_behind_its_sources_is_built() {
 }
 
 test_a_commit_to_shared_go_code_makes_an_older_image_stale() {
-  echo "Test: a commit to the shared Go sources makes an operator image before it stale"
+  echo "Test: a commit to the shared Go sources or the shared Nix inputs makes an operator image before it stale"
 
   # The flake builds every operator from internal/common and the shared Nix
   # inputs, which is why hack/ci-resolve-changes.sh marks every operator
-  # changed for go_common.
-  local repo="$TMP_DIR/behind-shared-sources" published
+  # changed for go_common. The resolver reads that filter from the ci.yaml
+  # copy of the fixture, so each path here has to be in it.
+  local path repo published
+  for path in internal/common/conditions.go flake.nix flake.lock nix/lib/operator-image.nix \
+    nix/lib/static-image.nix nix/lib/image-defaults.nix hack/ci-nix-build-e2e-images.sh; do
+    repo="$TMP_DIR/behind-${path//\//-}"
+    make_fixture_repo "$repo"
+    published="$(git -C "$repo" rev-parse HEAD)"
+    fixture_commit "$repo" "change $path" "$path"
+
+    run_resolve_in "$repo" STUB_REVISIONS="ghcr.io/c5c3/keystone-operator:latest=${published}"
+
+    assert_eq "the resolver exits 0 after a commit to $path" "0" "$RC"
+    assert_contains "a commit to $path makes keystone stale" "$OUTPUT" \
+      "::notice::ghcr.io/c5c3/keystone-operator:latest is stale: revision ${published} lacks 1 commit(s) touching the keystone sources; building ghcr.io/c5c3/keystone-operator:dev"
+    assert_eq "only the image before the commit to $path is built" "keystone" \
+      "$(env_block BUILD_OPERATORS)"
+    assert_contains "an image published after the commit to $path is pulled by digest" \
+      "$(map_value ghcr.io/c5c3/c5c3-operator:dev)" "ghcr.io/c5c3/c5c3-operator@sha256:"
+  done
+
+  # A service lock is a Nix input of the service images only.
+  repo="$TMP_DIR/behind-service-lock"
   make_fixture_repo "$repo"
   published="$(git -C "$repo" rev-parse HEAD)"
-  fixture_commit "$repo" "change shared code" internal/common/conditions.go
-
-  run_resolve_in "$repo" STUB_REVISIONS="ghcr.io/c5c3/keystone-operator:latest=${published}"
-
-  assert_eq "the resolver exits 0" "0" "$RC"
-  assert_contains "it says why the image is being built" "$OUTPUT" \
-    "::notice::ghcr.io/c5c3/keystone-operator:latest is stale: revision ${published} lacks 1 commit(s) touching the keystone sources; building ghcr.io/c5c3/keystone-operator:dev"
-  assert_eq "only the image before the commit is built" "keystone" \
-    "$(env_block BUILD_OPERATORS)"
-  assert_contains "an image published after the commit is pulled by digest" \
-    "$(map_value ghcr.io/c5c3/c5c3-operator:dev)" "ghcr.io/c5c3/c5c3-operator@sha256:"
+  fixture_commit "$repo" "change a service lock" nix/locks/2026.1/glance/pyproject.toml
+  run_resolve_in "$repo" STUB_REVISION="$published"
+  assert_eq "the resolver exits 0 after a commit to a service lock" "0" "$RC"
+  assert_contains "a service lock leaves keystone current" \
+    "$(map_value ghcr.io/c5c3/keystone-operator:dev)" "ghcr.io/c5c3/keystone-operator@sha256:"
 }
 
 test_an_image_whose_revision_cannot_be_checked_is_built() {
