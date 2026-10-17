@@ -125,6 +125,19 @@ test_shared_go_change() {
   expect_all false $EXPENSIVE
 }
 
+test_nova_chart_egress_change_runs_the_tests_that_read_it() {
+  # The keystone and placement unit tests check the nova chart's Keystone and
+  # Placement egress rules against their own Service ports and pod labels, so
+  # an edit to that hook runs their test legs. Their e2e legs, image builds and
+  # the upgrade suite stay off: the hook ships in the nova chart.
+  scenario "a nova chart egress hook change" refs/heads/main FILTER_nova=true FILTER_nova_chart_egress=true
+  expect go true
+  expect test-targets '{"target":["keystone","placement","nova"]}'
+  expect e2e-operators '{"operator":["nova"]}'
+  expect changed-operators '["nova"]'
+  expect e2e-operator-upgrade false
+}
+
 # ---------------------------------------------------------------------------
 # Suite and image classes
 # ---------------------------------------------------------------------------
@@ -582,6 +595,7 @@ test_operator_change
 test_c5c3_change_runs_the_controlplane_jobs
 test_keystone_change_runs_the_upgrade_suite
 test_shared_go_change
+test_nova_chart_egress_change_runs_the_tests_that_read_it
 test_suite_edit_runs_one_leg
 test_service_image_change
 test_base_image_change_covers_every_service
