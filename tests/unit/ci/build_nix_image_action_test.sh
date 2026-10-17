@@ -21,7 +21,8 @@
 #   - push: a failed skopeo run fails with its exit status, whether or not a
 #     digest was written; a run that exits 0 without a sha256 digest fails,
 #     also when a digest of an earlier run is left in RUNNER_TEMP; only a
-#     clean run writes digest= to GITHUB_OUTPUT.
+#     clean run writes digest= to GITHUB_OUTPUT; an empty MANIFEST_FORMAT
+#     passes skopeo no --format, 'oci' passes --format oci.
 #
 # verify_build_images_workflow.sh checks the step order and conditions;
 # this test checks what the steps do.
@@ -353,15 +354,17 @@ test_load() {
   assert_not_contains "nothing is tagged" "$(cat "$DOCKER_LOG")" "docker tag"
 }
 
-# push_case <status> <digest skopeo writes> — run the push step with a
-# digest of an earlier run left in RUNNER_TEMP.
+# push_case <status> <digest skopeo writes> [VAR=value ...] — run the push
+# step with a digest of an earlier run left in RUNNER_TEMP.
 push_case() {
+  local status="$1" digest="$2"
+  shift 2
   reset_logs
   mkdir -p "$TMP_DIR/runner-temp"
   printf '%s' "$STALE_DIGEST" >"$TMP_DIR/runner-temp/digest"
   run_step push IMAGE_NAME=ghcr.io/c5c3/backup-shifter \
     RUNNER_TEMP="$TMP_DIR/runner-temp" GITHUB_OUTPUT="$TMP_DIR/output" \
-    STUB_STATUS="$1" STUB_DIGEST="$2"
+    STUB_STATUS="$status" STUB_DIGEST="$digest" "$@"
 }
 
 test_push() {
@@ -398,6 +401,17 @@ test_push() {
   out=$(push_case 0 "sha256:xyz") || rc=$?
   assert_nonzero_exit "a clean exit with a malformed digest fails" "$rc"
   assert_eq "no digest is exported" "" "$(cat "$TMP_DIR/output")"
+
+  rc=0
+  out=$(push_case 0 "$DIGEST" MANIFEST_FORMAT=oci) || rc=$?
+  assert_eq "an OCI push passes" "0" "$rc"
+  assert_contains "skopeo writes an OCI manifest" "$(cat "$NIX_LOG")" \
+    "skopeo copy --retry-times 3 --format oci --digestfile $TMP_DIR/runner-temp/digest docker-archive:"
+  assert_eq "the digest of the OCI push goes to GITHUB_OUTPUT" "digest=$DIGEST" "$(cat "$TMP_DIR/output")"
+
+  rc=0
+  out=$(push_case 0 "$DIGEST" MANIFEST_FORMAT=) || rc=$?
+  assert_not_contains "an empty manifest-format passes no --format" "$(cat "$NIX_LOG")" "--format"
 }
 
 make_stubs
