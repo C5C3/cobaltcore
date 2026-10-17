@@ -246,9 +246,11 @@ The `networkPolicy` block (default-off operator pod hardening with fail-closed
 render guards) is validated by the schema on every chart that ships a
 `templates/networkpolicy.yaml` — every operator chart but the c5c3-operator,
 which does not ship the template, so the key is rejected there. The template
-itself is the shared `operator-library.networkPolicy`; the barbican-operator
-adds an OpenBao egress rule (`networkPolicy.openBao`) through the
-`operator-library.chart.networkPolicyEgress` hook. Its fields are documented in
+itself is the shared `operator-library.networkPolicy`; every service operator
+chart adds an egress rule for its operator's API health check through the
+`operator-library.chart.networkPolicyEgress` hook, and the barbican-operator one
+for OpenBao (`networkPolicy.openBao`, the only one with a value). Its fields are
+documented in
 [Keystone Operator NetworkPolicy](../keystone/keystone-operator-networkpolicy.md).
 
 ### federation
