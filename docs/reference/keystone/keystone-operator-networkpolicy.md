@@ -28,9 +28,14 @@ When `networkPolicy.enabled=true`, the chart renders one `networking.k8s.io/v1`
    controller-runtime clients and leader election).
 3. Opens explicit egress to cluster DNS (required to resolve Service DNS
    names used by ESO, MariaDB, and any hostname-based client config).
-4. When `webhook.enabled=true`, opens explicit ingress on TCP 9443 from the
+4. Opens explicit egress to the operator's own API pods for its API health
+   check: TCP 5000 and 5050 to the pods labelled
+   `app.kubernetes.io/name: keystone` and
+   `app.kubernetes.io/managed-by: keystone-operator` in any namespace (see
+   [Egress](#egress) for the other charts).
+5. When `webhook.enabled=true`, opens explicit ingress on TCP 9443 from the
    API-server CIDRs so admission webhooks are reachable.
-5. When `networkPolicy.allowMetricsFrom` is non-empty, opens explicit
+6. When `networkPolicy.allowMetricsFrom` is non-empty, opens explicit
    ingress on the metrics port from the listed peers (opt-in).
 
 Two failure modes are explicitly refused by the template at render time
@@ -70,12 +75,25 @@ All rules below are emitted on a single `NetworkPolicy` object named after
 | --- | --- | --- | --- | --- | --- |
 | Egress | UDP 53 + TCP 53 | `namespaceSelector` + `podSelector` | `networkPolicy.dns.namespaceSelector`, `networkPolicy.dns.podSelector` | `kubernetes.io/metadata.name: kube-system` + `k8s-app: kube-dns` | `networkPolicy.dns.enabled` (default `true`) |
 | Egress | TCP `<ports[*]>` | `ipBlock[*]` | `networkPolicy.kubeApiServer.cidrs`, `networkPolicy.kubeApiServer.ports` | `[]` (must be set when `enabled=true`) | Always when `networkPolicy.enabled=true` |
+| Egress | TCP 5000, 5050 | `namespaceSelector: {}` + `podSelector` (`app.kubernetes.io/name: keystone`, `app.kubernetes.io/managed-by: keystone-operator`) | none | none | Always when `networkPolicy.enabled=true` |
 
 > **One rule, N×M tuples.** The kube-apiserver rule emits a **single**
 > `egress` entry with all CIDRs under `to:` and all ports under `ports:`. By
 > NetworkPolicy semantics this permits every (cidr, port) combination — one
 > rule with three CIDRs and two ports covers six tuples. Do not expand the
 > list into one rule per tuple.
+
+Every service operator chart renders the same kind of rule for its own API
+through the `operator-library.chart.networkPolicyEgress` hook, so the health
+check reaches the API pods on the port the CNI sees after the Service DNAT:
+horizon 8080, glance 9292, placement 8778, neutron 9696, nova 8774, cinder 8776
+and barbican 9311, each to the pods labelled with its service name and
+`<service>-operator`. The keystone rule names 5050 too, because federation
+switches the Keystone Service's target port to the OIDC sidecar. The
+nova-operator chart adds TCP 5000 and 5050 to the keystone pods and TCP 8778 to
+the placement pods for its `NovaCompute` controller, and the barbican-operator
+chart adds a ports-only TCP 8200 rule for OpenBao (`networkPolicy.openBao`). The
+ovn-operator chart probes no API and adds no rule.
 
 ### Ingress
 
@@ -185,7 +203,7 @@ defense-in-depth backstop that catches that case.
 
 | File | Scope |
 | --- | --- |
-| `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, enabled-on, DNS rule, kube-apiserver rule, webhook ingress, metrics ingress, no 8081 rule, fail-closed guards |
+| `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, the Keystone API health-check egress rule (TCP 5000 and 5050) the chart adds through the hook, its position with DNS egress off, the `cidrs` fail-closed guard; the shared rules are pinned by `operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml` |
 | `operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml` | Schema tests for `networkPolicy` (invalid CIDR, out-of-range port, non-boolean `enabled`) |
 | `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True` |
 
