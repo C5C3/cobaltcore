@@ -429,7 +429,7 @@ test_changed_tempest_builds_every_release() {
 }
 
 test_a_changed_proxy_builds_only_the_proxy() {
-  echo "Test: a changed federation proxy builds the proxy and nothing through Nix"
+  echo "Test: a changed federation proxy builds the proxy through the Nix step"
 
   run_resolve CHANGED_PROXY=true
 
@@ -438,8 +438,9 @@ test_a_changed_proxy_builds_only_the_proxy() {
   assert_eq "the proxy carries the run-scoped tag" \
     "ghcr.io/c5c3/keystone-federation-proxy:e2e-test-dev" \
     "$(map_value ghcr.io/c5c3/keystone-federation-proxy:dev)"
-  # The proxy builds FROM ubuntu:noble, so nothing else has to be built for it.
-  assert_eq "no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
+  # images/keystone-federation-proxy/image.nix is a flake attribute, so the
+  # Nix step builds it.
+  assert_eq "the Nix images are built" "true" "$(env_value BUILD_NIX_IMAGES)"
   assert_eq "no operator image is built" "" "$(env_block BUILD_OPERATORS)"
 }
 

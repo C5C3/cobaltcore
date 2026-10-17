@@ -202,9 +202,18 @@ jobs:
               - 'flake.lock'
               - 'nix/lib/**'
               - 'hack/ci-nix-build-e2e-images.sh'
-            # The keystone oidc-federation suite projects this sidecar.
+            # The federation sidecar the keystone oidc-federation and
+            # saml-federation suites project. build-e2e-images builds it from
+            # the flake (images/keystone-federation-proxy/, flake.nix,
+            # flake.lock, nix/lib/) with hack/ci-nix-build-e2e-images.sh when
+            # this filter matches, and pulls the image main published as
+            # latest otherwise.
             image_proxy:
               - 'images/keystone-federation-proxy/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/lib/**'
+              - 'hack/ci-nix-build-e2e-images.sh'
             image_tempest:
               - 'images/tempest/**'
               - 'nix/locks/*/tempest/**'
@@ -1244,8 +1253,8 @@ jobs:
           CHANGED_LIBVIRT: ${{ needs.changes.outputs.changed-libvirt }}
         run: hack/ci-resolve-e2e-images.sh
 
-      # The service, nova-compute, Tempest, ovn and libvirt images are flake
-      # attributes. The nixos/nix
+      # The service, nova-compute, Tempest, ovn, libvirt and federation proxy
+      # images are flake attributes. The nixos/nix
       # container builds them without its sandbox, which an unprivileged
       # container cannot create, as build users of its own that can neither
       # open the Docker socket nor write the workspace the runner mounts, and
@@ -1260,6 +1269,7 @@ jobs:
           BUILD_OVN: ${{ env.BUILD_OVN }}
           OVN_VERSION: ${{ env.OVN_VERSION }}
           BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
+          BUILD_PROXY: ${{ env.BUILD_PROXY }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
@@ -1277,17 +1287,13 @@ jobs:
             rm -f ".nix-e2e/${name}-${release}.tar"
           done < .nix-e2e/images.txt
 
-      # The keystone oidc-federation e2e projects the mod_auth_openidc sidecar.
-      # The image is built when images/keystone-federation-proxy/** changed and
-      # otherwise comes from the map.
-      - name: Build federation proxy image
+      # The keystone federation suites project the federation proxy sidecar.
+      # "Build Nix images" builds it as keystone-federation-proxy:latest when
+      # the image_proxy filter matched; the suites, the push step and the kind
+      # loads address it as :dev. Otherwise it comes from the map.
+      - name: Tag federation proxy image
         if: env.BUILD_PROXY == 'true'
-        run: |
-          docker build -t "${IMAGE_PREFIX}/keystone-federation-proxy:dev" \
-            --cache-from type=gha,scope=e2e-keystone-federation-proxy \
-            --cache-to type=gha,mode=max,scope=e2e-keystone-federation-proxy \
-            --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
-            images/keystone-federation-proxy/
+        run: docker tag "${IMAGE_PREFIX}/keystone-federation-proxy:latest" "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
 
       # Build operator images for all resolved operators.
       - name: Build operator images

@@ -44,7 +44,8 @@
 #   CHANGED_SERVICES    — JSON array of services whose image sources changed,
 #                         same empty forms
 #   CHANGED_TEMPEST     — "true" when the Tempest image sources changed
-#   CHANGED_PROXY       — "true" when the federation proxy sources changed
+#   CHANGED_PROXY       — "true" when the federation proxy sources or the
+#                         flake inputs it is built from changed
 #   CHANGED_OVN         — "true" when the OVN image sources or the flake
 #                         inputs it is built from changed
 #   CHANGED_LIBVIRT     — "true" when the libvirt image sources or the flake
@@ -67,9 +68,9 @@
 #   OVN_VERSION            — the pinned OVN version, the tag of the ovn image
 #   BUILD_LIBVIRT          — true or false
 #   BUILD_NIX_IMAGES       — true when a BUILD_SERVICE_IMAGES line, a Tempest
-#                            image, the ovn image or the libvirt image is
-#                            built; Nix builds those from their locks and
-#                            pins, and the proxy builds FROM ubuntu:noble
+#                            image, the federation proxy, the ovn image or
+#                            the libvirt image is built; Nix builds all of
+#                            them from their locks and pins
 #
 # Written to GITHUB_OUTPUT:
 #   image-map — JSON object mapping each canonical local reference to the
@@ -417,7 +418,7 @@ fi
 # ---------------------------------------------------------------------------
 build_nix_images=false
 if [[ ${#build_service_images[@]} -gt 0 || ${#build_tempest_releases[@]} -gt 0 ||
-  "${build_ovn}" == "true" || "${build_libvirt}" == "true" ]]; then
+  "${build_proxy}" == "true" || "${build_ovn}" == "true" || "${build_libvirt}" == "true" ]]; then
   build_nix_images=true
 fi
 
