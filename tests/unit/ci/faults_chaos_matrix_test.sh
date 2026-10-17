@@ -6,7 +6,7 @@
 # Verify the CI placement of the HTTPChaos, TimeChaos, IOChaos and StressChaos
 # suites of #1391 in .github/workflows/ci.yaml:
 #   1. The e2e-chaos matrix has a faults entry that health-checks Chaos Mesh
-#      first and runs the seven suites that need only the standalone stack,
+#      first and runs the six suites that need only the standalone stack,
 #      none of which another entry lists.
 #   2. The faults entry gets metrics-server and the VPA, Placement's images
 #      and operator, its diagnostics step, a 130-minute wall and a place in
@@ -29,11 +29,13 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The seven suites of the faults entry, in the order the entry lists them.
+# The six suites of the faults entry, in the order the entry lists them.
 FAULTS_SUITES=(
   keystone-validation-http-503
   keystone-api-clock-skew
   keystone-operator-clock-skew
+  mariadb-io-fault
+  glance-staging-io-fault
 )
 
 # step_if <job> <step>: the if: line of a step, without its indent.
@@ -42,8 +44,8 @@ step_if() {
 }
 
 # --- Test 1 ---------------------------------------------------------------
-test_faults_entry_runs_its_seven_suites() {
-  echo "Test: the faults entry health-checks Chaos Mesh, then runs its seven suites and only those"
+test_faults_entry_runs_its_six_suites() {
+  echo "Test: the faults entry health-checks Chaos Mesh, then runs its six suites and only those"
   local entry tests
   entry="$(e2e_chaos_matrix_entry faults)"
   assert_not_empty "the matrix carries a faults entry" "$entry"
@@ -106,7 +108,7 @@ test_faults_entry_gets_its_stack_wall_and_gate() {
 
 # --- Test 3 ---------------------------------------------------------------
 # --- Run ---
-test_faults_entry_runs_its_seven_suites
+test_faults_entry_runs_its_six_suites
 test_faults_entry_gets_its_stack_wall_and_gate
 
 echo ""

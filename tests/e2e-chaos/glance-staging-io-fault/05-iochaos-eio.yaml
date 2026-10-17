@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# IOChaos glance-staging-eio: every write below the staging directory of
+# glance-api fails with EIO (errno 5).
+#
+# volumePath /var/lib/glance/staging is the staging emptyDir, a mount root of
+# container glance-api. The selector names the API pod of the suite's own
+# Glance. The image stream of the workload uploads with PUT /file into the S3
+# store and never stages, so it stays outside the fault. duration is a safety
+# net above the phase; the suite deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: glance-staging-eio
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: glance-staging-io-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: glance
+      app.kubernetes.io/instance: glance-chaos-stage
+      app.kubernetes.io/component: api
+  containerNames:
+    - glance-api
+  volumePath: /var/lib/glance/staging
+  action: fault
+  errno: 5
+  methods:
+    - write
+  percent: 100
+  duration: "600s"

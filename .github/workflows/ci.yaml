@@ -2065,6 +2065,8 @@ jobs:
               tests/e2e-chaos/keystone-validation-http-503
               tests/e2e-chaos/keystone-api-clock-skew
               tests/e2e-chaos/keystone-operator-clock-skew
+              tests/e2e-chaos/mariadb-io-fault
+              tests/e2e-chaos/glance-staging-io-fault
     runs-on: self-hosted
     # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
     # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which
@@ -2081,7 +2083,7 @@ jobs:
     # three cinder suites to network at about 15 minutes each;
     # ovn-raft-clock-skew to ovn at about 15 minutes; and the faults leg,
     # about 20 minutes of bring-up with the placement-operator, metrics-server
-    # and the VPA recommender, and seven suites of 8 to 12 minutes each. Every
+    # and the VPA recommender, and six suites of 8 to 12 minutes each. Every
     # suite runs one after the other:
     # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
     # e2e-operator nova leg fits comparable suites into 90 minutes only because
