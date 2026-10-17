@@ -6,7 +6,7 @@ quadrant: backend
 # Keystone Operator Packaging
 
 Reference documentation for the Keystone operator packaging artifacts. This covers
-the multi-stage Dockerfile, Helm chart configuration, FluxCD HelmRelease integration,
+the operator image, Helm chart configuration, FluxCD HelmRelease integration,
 dependency chain, and CRD installation behavior. These artifacts package the Keystone
 operator for deployment into Kubernetes clusters via the GitOps pipeline.
 
@@ -14,7 +14,7 @@ operator for deployment into Kubernetes clusters via the GitOps pipeline.
 
 ```text
 operators/keystone/
-├── Dockerfile                          Multi-stage operator image build
+├── vendor.json                         Vendor hash of the operator image (make nix-lock)
 ├── config/rbac/role.yaml               controller-gen ClusterRole from the RBAC markers (make manifests)
 ├── helm/
 │   └── keystone-operator/
@@ -50,104 +50,72 @@ deploy/flux-system/
     └── keystone-operator.yaml          FluxCD HelmRelease
 ```
 
-## Dockerfile
+## Image
 
-**Location:** `operators/Dockerfile` (shared by all operators; select the binary via `--build-arg OPERATOR=keystone`)
+**Location:** `nix/lib/operator-image.nix` (shared by all operators) and
+`operators/keystone/vendor.json`, the vendor hash of the keystone module
 
-The Dockerfile uses a multi-stage build to produce a minimal, statically-linked operator
-binary in a distroless runtime image. The build context must be the workspace root
-(`/workspace`) because the Go workspace (`go.work`) uses `replace` directives that
-reference sibling modules.
+The root flake builds the image as the attribute `keystone-operator-image`, a
+`dockerTools.streamLayeredImage` around a statically linked operator binary
+([Operator images](../ci-cd/nix-image-build.md#operator-images)).
 
-### Build Stages
+### Source
 
-| Stage | Base Image | Purpose |
-| --- | --- | --- |
-| `builder` | `golang:1.27` (digest-pinned) | Compiles the operator binary with CGO disabled |
-| runtime | `gcr.io/distroless/static:nonroot` | Minimal runtime with no shell or package manager |
+The build runs the keystone module on its own with `GOWORK=off`, so
+`operators/keystone/go.mod` and its `replace` directive for `internal/common`
+decide the module graph. The source holds `internal/common` and
+`operators/keystone`, without the `_test.go` files and the `helm/`,
+`dashboards/` and `config/` directories, which no `go:embed` reads. The embedded
+option catalogs under `api/v1alpha1/catalogs/` and the scripts under
+`internal/controller/scripts/` are part of it. A commit to another operator or to
+the chart leaves the image unchanged.
 
-### Image Layers
+### Toolchain
 
-The builder stage is structured for optimal Docker layer caching:
-
-1. **Layer 1 — Dependency manifests:** Copies `go.work` and all
-   `go.mod`/`go.sum` files for workspace modules. This layer is cached as long as
-   dependency versions do not change. `go.work.sum` is not tracked in git, so
-   `go mod download` verifies the `go.mod` checksums that only the workspace needs
-   against the Go checksum database.
-
-   ```dockerfile
-   COPY go.work ./
-   COPY internal/common/go.mod internal/common/go.sum ./internal/common/
-   COPY operators/keystone/go.mod operators/keystone/go.sum ./operators/keystone/
-   COPY operators/c5c3/go.mod operators/c5c3/go.sum ./operators/c5c3/
-   ```
-
-2. **Layer 2 — Module download:** Runs `go mod download` to fetch all dependencies.
-   Cached when dependency manifests are unchanged.
-
-3. **Layer 3 — Source code:** Copies the full source trees for `internal/common/`,
-   `operators/keystone/`, and `operators/c5c3/`. Invalidated on any source change.
-
-4. **Layer 4 — Compilation:** Builds the static binary from `operators/keystone/main.go`.
-
-   ```dockerfile
-   CGO_ENABLED=0 GOOS=linux go build -o manager main.go
-   ```
-
-The runtime stage copies only the compiled `/manager` binary from the builder stage.
-
-### Build Context
-
-The build context **must** be the workspace root, not the operator directory. The Go
-workspace file (`go.work`) contains `replace` directives pointing to relative paths
-(`internal/common`, `operators/c5c3`) that must be resolvable at build time.
-
-```bash
-# Correct: build from workspace root
-docker build -f operators/Dockerfile --build-arg OPERATOR=keystone .
-
-# Incorrect: will fail because go.work references are unresolvable
-docker build operators/keystone/
-```
-
-### Build Arguments
-
-The Dockerfile does not declare any `ARG` instructions. All build configuration is
-determined by the Go workspace and module files.
+`buildGo127Module` of the locked `nixpkgs-images` compiles the binary with
+`CGO_ENABLED=0` and the ldflags `-s -w`. `proxyVendor` keeps the fixed-output
+derivation to the module download, whose hash is the `vendorHash` of
+`operators/keystone/vendor.json`; `make nix-lock` writes it when the `go.mod` or
+`go.sum` files it derives from move. The unit tests run under `make test`, not in
+the build.
 
 ### Runtime Image Properties
 
+The image is `nix/lib/static-image.nix`, the stand-in for
+`gcr.io/distroless/static:nonroot`:
+
 | Property | Value |
 | --- | --- |
-| Base image | `gcr.io/distroless/static:nonroot` |
-| Binary | `/manager` |
+| Binary | `/usr/bin/manager` |
 | User | `65532:65532` (nonroot) |
-| Entrypoint | `["/manager"]` |
-| Shell | None (distroless) |
-| Package manager | None (distroless) |
+| Working directory | `/home/nonroot` |
+| Entrypoint | `["/usr/bin/manager"]` |
+| Shell | None |
+| Package manager | None |
 
 ### OCI Annotations
 
-Static OCI Image Spec annotations are embedded in the runtime stage via `LABEL` instructions:
+The image carries four static labels and no per-build label:
 
 | Annotation | Value |
 | --- | --- |
 | `org.opencontainers.image.title` | `keystone-operator` |
-| `org.opencontainers.image.description` | `CobaltCore Keystone Operator for managing OpenStack Identity Service` |
+| `org.opencontainers.image.description` | `CobaltCore keystone operator` |
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 
-In CI, `docker/metadata-action` supplements these with dynamic labels (`created`,
-`revision`, `source`, `url`, `version`) at push time.
+The `merge-operator-images` job of the CI workflow records the per-build
+metadata on the published manifest list as index annotations: the commit
+(`org.opencontainers.image.revision`), the version, the creation time, and the
+source and URL of the repository.
 
 ### Local Build
 
 ```bash
-# From workspace root
-docker build -f operators/Dockerfile --build-arg OPERATOR=keystone -t keystone-operator:dev .
+# From the repository root, with Nix and flakes
+make image OPERATOR=keystone IMG=keystone-operator:dev
 
-# Verify
+# Verify: prints the flags of the manager
 docker run --rm keystone-operator:dev --help
 ```
 
@@ -183,7 +151,7 @@ dependencies:
 The library holds, in one place, the naming and label helpers
 (`operator-library.fullname`, `operator-library.labels`,
 `operator-library.selectorLabels`, `operator-library.serviceAccountName`) and
-every manifest template the operator charts render — the `Deployment`
+every manifest template the operator charts render: the `Deployment`
 skeleton, the ClusterRole and Role, the NetworkPolicy, certificate, Service,
 ServiceAccount, bindings, PDB, ServiceMonitor and webhook configurations. Each
 `templates/*.yaml` in this chart is a one-line `include`. What only this chart
@@ -207,7 +175,7 @@ change is released to every consumer with `make helm-bump-library VERSION=x`.
 
 `Chart.lock` pins the dependency and is committed; the vendored copy under
 `charts/` is a build artifact (git-ignored). `helm dependency build` vendors it
-from the local path — run `make helm-deps` before `helm lint`/`template`/
+from the local path. Run `make helm-deps` before `helm lint`/`template`/
 `unittest`, and `make helm-package` does it automatically so the published
 tarball is self-contained.
 
@@ -273,7 +241,7 @@ concurrently. Disable only for single-replica development deployments.
 
 When disabled, the webhook container port (9443) is omitted from the Deployment and no
 webhook configuration resources are created. The operator continues to function without
-admission validation — CRs are not validated or defaulted at admission time.
+admission validation; CRs are not validated or defaulted at admission time.
 A namespace-scoped install sets `webhook.enabled=false`, which the values schema
 requires beside `rbac.namespaceScoped=true`.
 
@@ -440,11 +408,11 @@ configurable via Helm values.
 
 The pod template carries a best-effort topology spread constraint (`maxSkew: 1`,
 `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`) so
-replicas land on different nodes where possible while single-node clusters
+replicas are scheduled on different nodes where possible while single-node clusters
 (kind) stay schedulable. Together with the `PodDisruptionBudget`
 (`minAvailable: 1`, rendered only when `replicas > 1`), a voluntary disruption
-such as a node drain can never evict every replica — and with it the in-process
-admission webhook — at once. `nodeSelector`, `tolerations` and
+such as a node drain can never evict every replica, and with it the in-process
+admission webhook, at once. `nodeSelector`, `tolerations` and
 `priorityClassName` render on the pod spec only when set (see
 [Scheduling](#scheduling)).
 
@@ -496,14 +464,14 @@ resources and their dependencies:
 
 **Notable verb restrictions:**
 
-- **`events`** has only `create` and `patch` — the operator emits events but never reads
+- **`events`** has only `create` and `patch`: the operator emits events but never reads
   or deletes them.
-- **`externalsecrets`** has no `delete` verb — ExternalSecret cleanup is left to
+- **`externalsecrets`** has no `delete` verb: ExternalSecret cleanup is left to
   owner-reference garbage collection. **`pushsecrets`** does include `delete`: the
   OpenBao finalizer deletes the key-backup PushSecrets when a Keystone CR is
   deleted so ESO stops pushing to OpenBao.
 - **`mariadbs`, `clustersecretstores`, `priorityclasses`, `pods`, and
-  `httproutes/status`** are read-only — the operator observes them but never
+  `httproutes/status`** are read-only: the operator observes them but never
   mutates them.
 
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the
@@ -577,7 +545,7 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 
 Neither configuration intercepts `DELETE`: the webhook is served in-process by
 the operator, or by the standalone webhook release, so with `failurePolicy: Fail`
-a `DELETE` rule would let a down webhook pod block CR — and thereby namespace —
+a `DELETE` rule would let a down webhook pod block CR (and thereby namespace)
 deletion.
 
 Both configurations include the annotation:
@@ -697,7 +665,7 @@ CRDs in `crds/` with special behavior:
    when the chart version is upgraded.
 
 3. **On uninstall:** Helm does **not** delete CRDs from the `crds/` directory on
-   `helm uninstall`. This is intentional — CRDs are cluster-scoped resources and
+   `helm uninstall`. This is intentional: CRDs are cluster-scoped resources and
    deleting them would destroy all custom resources of that type across all namespaces.
 
 ### CRD Source

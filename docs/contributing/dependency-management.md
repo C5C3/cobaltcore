@@ -101,7 +101,7 @@ Separately, the native `nix` manager keeps the root flake fresh: it maintains
 Nix-built container images ([Nix Image Build](../reference/ci-cd/nix-image-build.md)),
 and `pyproject-nix`, `uv2nix` and `pyproject-build-systems` build the Python
 environments of those images. The `nix flake inputs` package rule re-locks all five on
-the Monday schedule of the golang and uv bumps and opens one grouped PR. That PR is
+the Monday schedule of the uv bump and opens one grouped PR. That PR is
 **not** automerged: the refs are rolling branches, so the re-lock is not a version
 bump and the 3-day cooldown cannot gate it — a reviewer confirms the base-runtime bump
 instead. A re-lock of
@@ -304,6 +304,13 @@ The noVNC pin `images/nova/novnc.json` has the `{version, rev, hash}` shape of t
 proxy pin and follows the same flow: Renovate moves `version` and `rev`, and
 `make nix-lock` writes `hash`.
 
+`operators/<op>/vendor.json` is derived from the Go modules of the operator:
+`inputsHash` covers the `go.mod` and `go.sum` of `internal/common`, the operator and
+the siblings its `go.mod` replaces, and `vendorHash` is the hash of their download. No
+manager reads the file. A Renovate `gomod` PR fails the `verify-codegen` job
+(`make nix-lock-check-operators`) until someone runs `make nix-lock` on its branch and
+pushes the result ([Operator images](../reference/ci-cd/nix-image-build.md#operator-images)).
+
 ### Re-cutting the openstack-hypervisor-operator patch
 
 The four patches under `images/openstack-hypervisor-operator/patches/` are cut
@@ -409,12 +416,12 @@ fail CI because `go.work` and the per-module `go.mod` directives must agree.
 | `internal/common/go.mod`           | `go 1.X.Y`                           | Shared library module.                                                       |
 | `operators/keystone/go.mod`        | `go 1.X.Y`                           | Keystone operator module.                                                    |
 | `operators/c5c3/go.mod`            | `go 1.X.Y`                           | C5C3 ControlPlane orchestrator module.                                       |
-| `operators/Dockerfile`             | `FROM golang:1.X@sha256:…`           | Renovate maintains the floating tag and digest; the single parameterized Dockerfile builds every operator. |
+| `flake.lock`                       | *No change* for a patch bump.        | The operator images build with `go_1_27` of the locked `nixpkgs-images`; `nix eval --raw .#packages.x86_64-linux.keystone-operator-image.manager.go.version` prints its version. |
 | `.github/workflows/ci.yaml`        | *No change.*                         | All `actions/setup-go` steps use `go-version-file: go.work`.                 |
 
 There is **no `toolchain` directive** anywhere in the workspace. We rely on
 the directive in `go.mod`/`go.work` plus the toolchain that ships with the CI
-runner and the builder image. If the team ever needs to support contributors
+runner and the `go_1_27` the operator images build with. If the team ever needs to support contributors
 on an older local Go, add a `toolchain go1.X.Y` line to `go.work` rather than
 to individual `go.mod` files.
 
@@ -450,11 +457,14 @@ go work sync
 (cd operators/c5c3     && go test -short -timeout 5m ./...)
 ```
 
-The shared operator Dockerfile (`operators/Dockerfile`, parameterized via
-`--build-arg OPERATOR=<op>`) carries the `FROM golang:1.27@sha256:…` builder line,
-maintained by Renovate — confirm that the digest update has landed on `main` *before*
-opening the minor-bump PR, otherwise the builder image lags behind the `go.mod`
-directive and CI fails on the image-build job.
+The operator images build with `go_1_27` of the locked `nixpkgs-images`, and
+`buildGoModule` sets `GOTOOLCHAIN=local`. Before opening the bump PR, confirm that the
+`nix eval` of the table above prints a version at or above the new directive.
+Otherwise `checks.<system>.go-directive` fails `nix flake check` in `nix-flake-check`,
+and every operator image build fails; wait for the Monday re-lock of `flake.lock` to
+bring the channel's newer Go. A minor bump also moves `buildGo127Module` in
+`nix/lib/operator-image.nix` and the `go_1_27` of the `go-directive` check in
+`flake.nix` to the new minor.
 
 Commit messages follow the repository convention (English, no Co-Authored-By,
 SAP AI-assisted / On-behalf-of / Signed-off-by trailers).
@@ -491,7 +501,8 @@ notes for:
   open a follow-up.
 - **Toolchain selection changes.** `go.work` and `go.mod` only set the
   *minimum* required Go. They do not pin the toolchain that builds the
-  binary. Production builds use the Dockerfile `FROM golang:1.X` tag.
+  binary. Production builds use the `go_1_27` of `nixpkgs-images`, with
+  `GOTOOLCHAIN=local`.
 
 ### Rollback
 
@@ -570,23 +581,11 @@ markers). Treat this as a major-style review:
 
 ### Docker base image digests
 
-Renovate maintains both the floating tag and the SHA digest, e.g.
-
-```dockerfile
-FROM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea AS builder
-```
-
-The pattern (recently exercised in #330 and #342): the floating tag is
-human-readable and survives across minor bumps; the digest is the
-verifiable, immutable pin that production builds resolve. Both move
-together in Renovate PRs. Manual edits should preserve this shape — never
-drop the digest.
-
-Distroless and other runtime base images follow the same convention:
-
-```dockerfile
-FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
-```
+No Dockerfile is left in the repository; the flake builds every image. An image
+reference Renovate maintains keeps the floating tag and the SHA digest together, as
+the `docker://nixos/nix:<tag>@sha256:…` container of the `build-e2e-images` job does:
+the tag is human-readable, the digest is the immutable pin, and both move together
+in Renovate PRs. Manual edits should preserve this shape and never drop the digest.
 
 ### GitHub Actions pinned by SHA
 
