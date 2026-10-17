@@ -18,33 +18,17 @@ FAIL=0
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
-# --- Test 1: All Dockerfiles have SPDX headers ---
-test_all_dockerfiles_have_spdx() {
-  echo "Test: all Dockerfiles have SPDX headers"
-  local all_pass=true
+# --- Test 1: operators/Dockerfile has SPDX headers ---
+# The one Dockerfile of the repository; the images under images/ are built by
+# Nix.
+test_dockerfile_has_spdx() {
+  echo "Test: operators/Dockerfile has SPDX headers"
+  local dockerfile="$PROJECT_ROOT/operators/Dockerfile" line1 line3
+  line1=$(sed -n '1p' "$dockerfile")
+  line3=$(sed -n '3p' "$dockerfile")
 
-  for dockerfile in "$PROJECT_ROOT"/images/*/Dockerfile; do
-    local name
-    name="$(basename "$(dirname "$dockerfile")")"
-    local line1 line3
-    line1=$(sed -n '1p' "$dockerfile")
-    line3=$(sed -n '3p' "$dockerfile")
-
-    if [[ "$line1" == *"SPDX-FileCopyrightText"* ]] && [[ "$line3" == *"SPDX-License-Identifier"* ]]; then
-      echo "  PASS: images/$name/Dockerfile has SPDX header"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: images/$name/Dockerfile missing SPDX header"
-      echo "    line 1: $line1"
-      echo "    line 3: $line3"
-      FAIL=$((FAIL + 1))
-      all_pass=false
-    fi
-  done
-
-  if $all_pass; then
-    echo "  All Dockerfiles passed SPDX check"
-  fi
+  assert_contains "line 1 has SPDX-FileCopyrightText" "$line1" "SPDX-FileCopyrightText"
+  assert_contains "line 3 has SPDX-License-Identifier" "$line3" "SPDX-License-Identifier"
 }
 
 # --- Test 2: YAML configs have SPDX headers ---
@@ -135,7 +119,7 @@ test_nix_files_have_spdx() {
 # --- Run all tests ---
 echo "=== SPDX header verification tests ==="
 echo ""
-test_all_dockerfiles_have_spdx
+test_dockerfile_has_spdx
 echo ""
 test_yaml_configs_have_spdx
 echo ""

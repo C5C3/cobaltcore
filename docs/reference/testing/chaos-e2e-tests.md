@@ -1048,9 +1048,10 @@ First, the repository's first **container-kill**: Chaos Mesh kills the
 kubelet restarts it in place, so recovery is gated on the named container's
 `restartCount` before asserting `readyReplicas`, `Ready=True`, and a working
 federated bearer flow. Second, a bounded **IdP outage** (pod-failure on
-Keycloak): federated login must fail **closed** (non-2xx — the introspection
-path cannot validate bearers) while password auth through the very same
-proxy keeps answering 201; after the outage the federated flow recovers.
+Keycloak): federated login with a bearer the sidecar has not introspected
+yet must fail **closed** (non-2xx — the introspection path cannot validate
+it) while password auth through the very same proxy keeps answering 201;
+after the outage the federated flow recovers.
 
 **Steps:**
 
@@ -1061,7 +1062,7 @@ proxy keeps answering 201; after the outage the federated flow recovers.
 | 3 | Kill the sidecar container | `apply` + `script` (120s) | PodChaos `container-kill`, `containerNames: [federation-proxy]`, `mode: one`; the script waits for `AllInjected=True` and deletes and re-applies the experiment up to three times when it is not injected |
 | 4 | Restart observed + recovery | `script` (210s) + `assert` + `script` (120s) | `federation-proxy` `restartCount >= 1` (the kill is provably observed), `readyReplicas` back to desired, `Ready=True/AllReady`, federated bearer auth answers 201 again |
 | 5 | Delete container-kill chaos | `delete` | Removes PodChaos `kill-federation-proxy` |
-| 6 | IdP outage fails closed | `script` (150s) | Fetches a bearer BEFORE applying a bounded (60s) pod-failure on Keycloak inline, then asserts federated auth turns non-2xx while password auth via the proxy stays 201 |
+| 6 | IdP outage fails closed | `script` (150s) | Fetches a bearer BEFORE applying a bounded (60s) pod-failure on Keycloak inline, waits until Keycloak's introspection listener refuses connections from the pod, then asserts the first federated auth with that bearer is non-2xx while password auth via the proxy stays 201 |
 | 7 | Outage ends, federation recovers | `delete` + `assert` + `script` (240s) | Keycloak available again; the full ROPC + federated-auth flow retried until 201 |
 
 **Fixtures:** `00-keycloak.yaml` (single-realm Keycloak with a self-signed
@@ -1076,7 +1077,11 @@ Keycloak dependency label; steps 3, 4, 6 and 7 add the keystone instance log lab
 script (not a fixture apply) so the probe bearer token is provably fetched
 before the IdP disappears; the chaos carries a bounded `duration` so the
 fixture heals itself even if the test is interrupted before the explicit
-delete.
+delete. mod_auth_openidc caches an introspection result until the bearer's
+`exp`, so the script presents the bearer only after Keycloak's
+introspection listener refuses connections: a bearer introspected while
+Keycloak was still shutting down would authenticate through the whole
+outage.
 
 ---
 

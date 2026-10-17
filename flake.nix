@@ -36,7 +36,13 @@
 #                                    distroless-equivalent image of
 #                                    nix/lib/static-image.nix. Their passthru
 #                                    reaches the inner build: .ovn and
-#                                    .manager. libvirt-image is
+#                                    .manager. keystone-federation-proxy-image
+#                                    loads the mod_auth_openidc of
+#                                    images/keystone-federation-proxy/mod_auth_openidc.nix,
+#                                    built from the source.json beside it,
+#                                    and nixpkgs' mod_auth_mellon, both
+#                                    stripped (.modAuthOpenidc and
+#                                    .modAuthMellon). libvirt-image is
 #                                    images/libvirt/image.nix on the libvirt
 #                                    of nix/pkgs/libvirt.nix (.libvirt) and
 #                                    the QEMU of images/libvirt/qemu.nix
@@ -325,6 +331,9 @@
         in
         {
           backup-shifter-image = import ./images/backup-shifter/image.nix {
+            inherit pkgs fhsLayout;
+          };
+          keystone-federation-proxy-image = import ./images/keystone-federation-proxy/image.nix {
             inherit pkgs fhsLayout;
           };
           ovn-image = import ./images/ovn/image.nix { inherit pkgs fhsLayout; };

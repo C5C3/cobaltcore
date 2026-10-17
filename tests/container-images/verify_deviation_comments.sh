@@ -18,10 +18,11 @@ FAIL=0
 # DEVIATION comment and points at the full paragraph in
 # nix/lib/service-image.nix, which builds them all on the user entry
 # nix/lib/fhs-layout.nix writes. nova-compute is built on the same library
-# without a source-refs.yaml key of its own, so it has its own function. ovn
-# and backup-shifter carry the same decision but are built by Nix without
-# service-image.nix: their functions check the comment in
-# images/<name>/image.nix and the user entry nix/lib/fhs-layout.nix writes.
+# without a source-refs.yaml key of its own, so it has its own function. ovn,
+# backup-shifter and keystone-federation-proxy carry the same decision but
+# are built by Nix without service-image.nix: their functions check the
+# comment in images/<name>/image.nix and the user entry
+# nix/lib/fhs-layout.nix writes.
 # libvirt keeps root and creates no user at all, and has its own function
 # too. The openstack-hypervisor-operator image
 # is a static Go binary that Nix builds on the distroless-equivalent image of
@@ -157,6 +158,20 @@ test_kna_deviation_comment() {
     "$nix" 'user = "0:0";'
 }
 
+# --- Test 8: the Nix-built keystone-federation-proxy image carries the generic user itself ---
+test_keystone_federation_proxy_deviation_comment() {
+  echo "Test: keystone-federation-proxy image.nix has DEVIATION comment (user written by the FHS façade)"
+
+  local nix="$PROJECT_ROOT/images/keystone-federation-proxy/image.nix"
+  local fhs="$PROJECT_ROOT/nix/lib/fhs-layout.nix"
+
+  assert_file_contains "keystone-federation-proxy/image.nix contains DEVIATION comment" "$nix" "# DEVIATION"
+  assert_contains "DEVIATION comment references the generic openstack user" \
+    "$(deviation_block "$nix")" "openstack"
+  assert_file_contains_fixed "fhs-layout.nix writes the openstack user" \
+    "$fhs" 'openstack:x:${uid}:${gid}'
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -178,6 +193,8 @@ echo ""
 test_hvo_deviation_comment
 echo ""
 test_kna_deviation_comment
+echo ""
+test_keystone_federation_proxy_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

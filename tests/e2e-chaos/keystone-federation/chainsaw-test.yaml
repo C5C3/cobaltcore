@@ -9,9 +9,10 @@
 #      gated), the Keystone recovers Ready, and federated bearer auth works
 #      again.
 #   2. IdP outage: a bounded pod-failure takes Keycloak away; federated
-#      login fails CLOSED (non-2xx — the introspection path cannot validate
-#      bearers) while password auth through the very same proxy keeps
-#      answering 201. After the outage the federated flow recovers.
+#      login with a bearer the sidecar has not introspected yet fails CLOSED
+#      (non-2xx — the introspection path cannot validate it) while password
+#      auth through the very same proxy keeps answering 201. After the
+#      outage the federated flow recovers.
 #
 # This is the repository's first container-kill suite: recovery is gated on
 # the named container's restartCount (the UID/restart-count convention from
@@ -286,8 +287,9 @@ spec:
   # ── Step 6: IdP outage — federated fails closed, password auth survives ─
   - try:
     - script:
-        # Budget: token fetch (~5s) + chaos apply + fail-closed probe with
-        # retries (~60s) — the 60s outage duration bounds the window.
+        # Budget: token fetch (~5s) + chaos apply + outage gate (up to
+        # ~40s) + fail-closed probe — the 60s outage duration bounds the
+        # window once the gate has passed.
         timeout: 150s
         shell: bash
         content: |
@@ -339,31 +341,45 @@ spec:
                 app.kubernetes.io/name: keycloak-chaos
           EOF
 
-          # Federated auth must FAIL CLOSED (non-2xx) while the IdP is gone:
-          # the sidecar cannot introspect the bearer, so no token is minted.
-          # Retry until the outage is observable (the pause swap takes a
-          # few seconds).
+          # mod_auth_openidc caches an introspection result until the
+          # bearer's exp, so a bearer presented while Keycloak is still
+          # shutting down is introspected once and then authenticates through
+          # the whole outage. The bearer is therefore presented only after
+          # the introspection listener refuses connections from this pod,
+          # whose network namespace the sidecar shares.
           kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
-          import http.client, sys, time
+          import socket, time
 
-          token = sys.argv[1]
           for attempt in range(20):
-              conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=15)
               try:
-                  conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
-                               headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
-                                        "Authorization": "Bearer " + token})
-                  resp = conn.getresponse()
-                  resp.read()
-                  status = resp.status
+                  socket.create_connection(("keycloak-chaos.openstack.svc.cluster.local", 8443), timeout=3).close()
               except OSError:
-                  status = 599
-              if status < 200 or status >= 300:
-                  print(f"OK: federated auth fails closed during the IdP outage (HTTP {status})")
+                  print("Keycloak introspection listener refuses connections")
                   break
               time.sleep(2)
           else:
-              raise AssertionError("federated auth kept succeeding — the outage never became observable")
+              raise AssertionError("Keycloak kept accepting introspection connections; the outage never took effect")
+          '
+
+          # Federated auth must FAIL CLOSED (non-2xx) while the IdP is gone:
+          # the sidecar holds no introspection result for this bearer and
+          # cannot fetch one, so no token is minted.
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, sys
+
+          token = sys.argv[1]
+          conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+          try:
+              conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
+                           headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                    "Authorization": "Bearer " + token})
+              resp = conn.getresponse()
+              resp.read()
+              status = resp.status
+          except OSError:
+              status = 599
+          assert status < 200 or status >= 300, f"federated auth answered {status} during the IdP outage"
+          print(f"OK: federated auth fails closed during the IdP outage (HTTP {status})")
           ' "$TOKEN"
 
           # Password auth through the SAME proxy keeps working: the IdP is
