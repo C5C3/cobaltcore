@@ -19,3 +19,26 @@ when the list is empty so the operator keeps its hardened default.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+API health-check egress for the shared NetworkPolicy (operator-library chart
+hook). The operator GETs the Keystone API over its Service, and an enforcing
+CNI judges that connection after the Service DNAT, at the API pod and its
+port. The rule therefore selects the API pods in any namespace by the two
+labels the operator sets on them (naming.CommonLabels in internal/common).
+The KeystoneIdentityBackend controller dials the same Service. Port 5050 is
+the OIDC sidecar the Service targets while federation is active.
+*/}}
+{{- define "operator-library.chart.networkPolicyEgress" -}}
+- to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/managed-by: keystone-operator
+  ports:
+    - protocol: TCP
+      port: 5000
+    - protocol: TCP
+      port: 5050
+{{- end }}
