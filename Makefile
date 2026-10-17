@@ -576,10 +576,11 @@ verify-option-catalogs:
 	done
 
 .PHONY: nix-lock
-# nix-lock regenerates every lock under nix/locks/ from the release pins and
-# writes the noVNC hash into images/nova/novnc.json (hack/nix-lock.sh --all),
-# with the uv of the lock-tools dev shell. Needs Nix with flakes and network
-# access to GitHub and PyPI. Commit what it changes.
+# nix-lock regenerates every lock under nix/locks/ from the release pins,
+# writes the noVNC hash into images/nova/novnc.json and the operator vendor
+# hashes into operators/<op>/vendor.json (hack/nix-lock.sh --all), with the uv
+# of the lock-tools dev shell. Needs Nix with flakes and network access to
+# GitHub, PyPI and the Go module proxy. Commit what it changes.
 nix-lock:
 	nix develop .#lock-tools --command bash hack/nix-lock.sh --all
 
@@ -588,6 +589,14 @@ nix-lock:
 # the committed ones, the check of the nix-lock-check job in build-images.yaml.
 nix-lock-check:
 	nix develop .#lock-tools --command bash hack/nix-lock.sh --check
+
+.PHONY: nix-lock-check-operators
+# nix-lock-check-operators fails when an operators/<op>/vendor.json no longer
+# matches the go.mod and go.sum files it derives from, the check of the
+# verify-codegen job in ci.yaml. It runs no nix and needs no tool of the
+# lock-tools shell, only jq and sha256sum or shasum.
+nix-lock-check-operators:
+	bash hack/nix-lock.sh --check-operators
 
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or
