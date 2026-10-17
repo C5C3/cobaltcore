@@ -40,4 +40,10 @@
 }).overrideAttrs
   (old: {
     configureFlags = old.configureFlags ++ [ "--disable-curl" ];
+
+    # nixpkgs' postInstall links bin/qemu-kvm to the host architecture's
+    # emulator, qemu-system-aarch64 on arm64, which the target list above
+    # does not build; the dangling link fails the noBrokenSymlinks check.
+    # Nothing uses the link: the image names /usr/bin/qemu-system-x86_64.
+    postInstall = "";
   })
