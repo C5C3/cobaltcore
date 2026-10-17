@@ -64,6 +64,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | Change class | Paths | What it schedules |
 | --- | --- | --- |
 | `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
+| `nova_chart_egress` | `operators/nova/helm/nova-operator/templates/_helpers.tpl` | the `keystone` and `placement` `test` and `test-integration` legs, whose unit tests check the nova chart's Keystone and Placement egress rules |
 | `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg |
 | `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |

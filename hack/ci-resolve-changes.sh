@@ -411,6 +411,12 @@ for op in $ALL_OPERATORS; do
     test_targets=$(set_add "$test_targets" "$op")
   fi
 done
+# The keystone and placement unit tests read the nova chart's egress hook, so an
+# edit to it runs their test legs too. Nothing else of theirs: the hook ships in
+# the nova chart.
+if filter_on nova_chart_egress; then
+  test_targets=$(set_add "$test_targets" keystone placement)
+fi
 
 # changed-operators: the operators whose own sources changed.
 # hack/ci-resolve-e2e-images.sh reads this to decide which operator images

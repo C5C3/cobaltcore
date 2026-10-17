@@ -139,6 +139,12 @@ jobs:
               - 'operators/cinder/**'
             nova:
               - 'operators/nova/**'
+            # The keystone and placement unit tests check the nova chart's
+            # Keystone and Placement egress rules against their own Service
+            # ports and pod labels, so an edit to that hook adds their unit
+            # and envtest legs to the nova change. Nothing else of theirs.
+            nova_chart_egress:
+              - 'operators/nova/helm/nova-operator/templates/_helpers.tpl'
             # ---------------------------------------------------------------
             # Service image sources. A change runs that service's e2e leg
             # against a freshly built image; the operator binary is untouched.
@@ -470,6 +476,7 @@ jobs:
           FILTER_neutron: ${{ steps.filter.outputs.neutron }}
           FILTER_cinder: ${{ steps.filter.outputs.cinder }}
           FILTER_nova: ${{ steps.filter.outputs.nova }}
+          FILTER_nova_chart_egress: ${{ steps.filter.outputs.nova_chart_egress }}
           FILTER_image_keystone: ${{ steps.filter.outputs.image_keystone }}
           FILTER_image_horizon: ${{ steps.filter.outputs.image_horizon }}
           FILTER_image_glance: ${{ steps.filter.outputs.image_glance }}
