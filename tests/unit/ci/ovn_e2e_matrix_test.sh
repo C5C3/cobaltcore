@@ -354,17 +354,25 @@ test_chaos_ovn_leg_is_wired() {
     "runs-on: self-hosted"
   assert_contains "it runs the southbound-outage suite" "$entry" \
     "tests/e2e-chaos/ovn-southbound-outage"
+  assert_contains "it runs the raft clock-skew suite" "$entry" \
+    "tests/e2e-chaos/ovn-raft-clock-skew"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
-  # The expression names the four non-blocking legs instead of negating the
-  # blocking one. The fifth leg, controlplane, was argued out of gating by
-  # #1390 for the NetworkChaos partition of korc-network-partition, so a
-  # sixth gates merges until someone argues it out of that here rather than
-  # arriving silently non-blocking.
+  # The expression names the five non-blocking legs instead of negating the
+  # blocking one. The controlplane leg was argued out of gating by #1390 for
+  # the NetworkChaos partition of korc-network-partition, and the faults leg
+  # by #1391 for the HTTPChaos and IOChaos modules, so a seventh gates merges
+  # until someone argues it out of that here rather than arriving silently
+  # non-blocking.
   assert_contains "the non-blocking legs are named, not derived" "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}"
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'faults' }}"
   assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
     "continue-on-error: \${{ matrix.suite != 'pod' }}"
+  # The walls of the six entries, read whole: the ovn entry keeps its 45
+  # minutes with ovn-raft-clock-skew beside ovn-southbound-outage, and the
+  # six sum to the 760 minutes the author of #1391 accepted.
+  assert_contains "the ovn entry keeps a 45-minute wall among the six" "$job" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 190 || matrix.suite == 'network' && 175 || matrix.suite == 'faults' && 130 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}"
 
   # images/ovn/source.json holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).

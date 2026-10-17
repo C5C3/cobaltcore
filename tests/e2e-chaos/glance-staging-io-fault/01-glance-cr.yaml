@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the staging I/O fault chaos test: glance-chaos-stage, as
+# ../glance-keystone-outage/01-glance-cr.yaml with the Keystone of
+# 00-keystone-cr.yaml, on the database glance_chaos_stage.
+#
+# The import probe stages image data with PUT /v2/images/{id}/stage, which
+# Glance serves only while glance-direct is an enabled import method. The
+# operator renders [web-download,copy-image] and leaves glance-direct out,
+# because a staged file sits in the emptyDir of one replica
+# (operators/glance/internal/controller/reconcile_config.go). This CR runs one
+# replica, so spec.extraConfig turns glance-direct on, as
+# ../../e2e/glance/gateway-large-upload/01-glance-cr.yaml does. The key is
+# operator-owned but reported rather than rejected: the CR reads
+# ExtraConfigHealthy=False (OwnedKeysOverridden), which does not gate Ready.
+#
+# [os_glance_staging_store] filesystem_store_datadir is
+# /var/lib/glance/staging, an emptyDir mounted at that path in container
+# glance-api, which the IOChaos objects of 03 to 05 take as volumePath.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-chaos-stage
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_chaos_stage
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-chaos-stage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  extraConfig:
+    DEFAULT:
+      enabled_import_methods: "[glance-direct]"

@@ -1,0 +1,256 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the clock of the keystone-operator leader runs an
+# hour ahead, then past the validity of the API server's certificate.
+#
+# Fault: a TimeChaos on the manager container of the keystone-operator pod
+# that holds Lease keystone.openstack.c5c3.io in keystone-system
+# (01-timechaos.yaml), applied twice in one fault window. The operator runs two
+# replicas (operators/keystone/helm/keystone-operator/values.yaml) that elect a
+# leader at controller-runtime's 15/10/2 s defaults
+# (operators/keystone/main.go). client-go writes the Lease's renewTime from the
+# leader's wall clock and runs the renew deadline on the monotonic clock; TLS
+# verification of the API server reads the wall clock.
+#
+# Claim, phase by phase:
+#   leader     The Lease names one of the two Ready operator pods; its name
+#              and both pods' restartCount go into ConfigMap
+#              operator-clock-skew-state.
+#   +1h        Within 60 s the Lease's renewTime is at least 3500 s ahead of
+#              the runner's clock (SKEW-SEEN, the canary). A replica patch to
+#              2 reaches Deployment keystone-chaos-opclk within 180 s, with
+#              the Lease holder and the leader's restartCount unchanged
+#              (RECONCILE-UNDER-SKEW-OK): a wall clock an hour off does not
+#              cost the lead.
+#   past cert  With the offset at the hours to the certificate's notAfter
+#              plus 24, the Lease names the other pod within 120 s
+#              (HANDOVER-OK) and the old leader's log names the expired
+#              certificate (CERT-REJECTED-OK). A replica patch back to 1
+#              reaches the Deployment within 180 s
+#              (RECONCILE-AFTER-HANDOVER-OK).
+#   recovered  The operator Deployment is back at readyReplicas 2 within 5
+#              minutes and the Keystone at Ready=True/AllReady. An old leader
+#              that is not Ready fails the suite with its last 50 log lines: a
+#              skew that outlives its TimeChaos is a finding to report on
+#              #1391, not a pod to delete.
+#
+# Blast radius: the TimeChaos names the leader pod and its manager container
+# alone. The other replica, every other operator and the Keystone keep their
+# clocks. The keystone-operator pods serve no OpenStack request.
+#
+# Leg: faults. TimeChaos needs no host module.
+#
+# Workload: the token stream of ../lib/workload.sh against
+# keystone-chaos-opclk. The operator is on no request path, so the budget is
+# zero and a failed cycle is a defect to find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-17, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-clock-skew
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone, start the workload ───────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-opclk
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start keystone-operator-clock-skew -- --streams token --keystone http://keystone-chaos-opclk.openstack.svc:5000/v3
+    catch: &opclk-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no TimeChaos of this suite behind, and the objects are
+    # printed before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite keystone-operator-clock-skew
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-opclk --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system
+    - script:
+        timeout: 2m
+        content: |
+          kubectl get lease keystone.openstack.c5c3.io -n keystone-system -o yaml 2>&1 || true
+          kubectl get configmap operator-clock-skew-state -n openstack -o yaml 2>&1 || true
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n keystone-system "$pod" -c manager --tail=100 2>&1 || true
+            kubectl logs -n keystone-system "$pod" -c manager --previous --tail=50 2>&1 || true
+          done
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystone-operator-clock-skew
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap operator-clock-skew-state -n openstack --ignore-not-found
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystone-operator-clock-skew
+  # ── Step 2: Read the leader ──────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          LEADER="$(lease_holder)"
+          if [ -z "$LEADER" ]; then
+            echo "FAIL: no Lease ${LEASE} in ${OPERATOR_NS}: leader election is off"
+            exit 1
+          fi
+          READY="$(kubectl get pods -n "$OPERATOR_NS" -l app.kubernetes.io/name=keystone-operator \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' |
+            awk '$2 == "True" { print $1 }')"
+          echo "Ready operator pods: $(xargs <<<"$READY")"
+          if [ "$(grep -c . <<<"$READY")" -ne 2 ] || ! grep -qx "$LEADER" <<<"$READY"; then
+            echo "FAIL: the leader ${LEADER} is not one of two Ready keystone-operator pods"
+            exit 1
+          fi
+          OTHER="$(grep -vx "$LEADER" <<<"$READY")"
+          kubectl create configmap "$STATE" -n "$NAMESPACE" --dry-run=client -o yaml \
+            --from-literal=leader="$LEADER" --from-literal=other="$OTHER" \
+            --from-literal=leader-restarts="$(restarts "$LEADER")" \
+            --from-literal=other-restarts="$(restarts "$OTHER")" | kubectl apply -f -
+          echo "OK: ${LEADER} leads, ${OTHER} stands by"
+    catch: *opclk-dump
+  # ── Step 3: One hour ahead ───────────────────────────────────────────────
+  # The renewTime the leader writes is the canary: a TimeChaos that reports
+  # AllInjected but left /manager on the true clock writes the true time.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          LEADER="$(state leader)"
+          ../lib/workload.sh mark keystone-operator-clock-skew fault-start
+          fault_inject 01-timechaos.yaml timechaos/operator-leader-skew LEADER="$LEADER" OFFSET=1h
+          DEADLINE=$(($(date +%s) + 60))
+          while true; do
+            RENEW="$(kubectl get lease "$LEASE" -n "$OPERATOR_NS" -o jsonpath='{.spec.renewTime}')"
+            AHEAD=$(($(date -u -d "$RENEW" +%s) - $(date -u +%s)))
+            if [ "$AHEAD" -ge 3500 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              canary_fail timechaos/operator-leader-skew "the Lease renewTime ${RENEW} is ${AHEAD} s from the runner's clock after 60 s"
+            fi
+            sleep 5
+          done
+          echo "renewTime ${RENEW} is ${AHEAD} s ahead of the runner's clock"
+          echo SKEW-SEEN
+
+          kubectl patch keystone keystone-chaos-opclk -n "$NAMESPACE" --type=merge \
+            -p '{"spec":{"deployment":{"replicas":2}}}'
+          wait_available keystone-chaos-opclk 2 180
+          if [ "$(lease_holder)" != "$LEADER" ]; then
+            echo "FAIL: the Lease moved from ${LEADER} to $(lease_holder) under a skew of 1h"
+            exit 1
+          fi
+          if [ "$(restarts "$LEADER")" != "$(state leader-restarts)" ]; then
+            echo "FAIL: ${LEADER} restarted under a skew of 1h: restartCount $(restarts "$LEADER")"
+            exit 1
+          fi
+          echo RECONCILE-UNDER-SKEW-OK
+          fault_lift timechaos/operator-leader-skew
+    catch: *opclk-dump
+  # ── Step 4: Past the validity of the API server's certificate ────────────
+  # The offset comes from the certificate itself, so it does not rot with the
+  # cluster's age.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          LEADER="$(state leader)"
+          OTHER="$(state other)"
+          HOURS="$(cert_offset_hours)" || { echo "$HOURS"; exit 1; }
+          echo "offset: ${HOURS}h, 24 h past the notAfter of the API server's certificate"
+          fault_inject 01-timechaos.yaml timechaos/operator-leader-skew LEADER="$LEADER" OFFSET="${HOURS}h"
+
+          DEADLINE=$(($(date +%s) + 120))
+          until [ "$(lease_holder)" = "$OTHER" ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: the Lease still names $(lease_holder) 120 s after the skew past the certificate, want ${OTHER}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo HANDOVER-OK
+
+          LOGS="$(kubectl logs "$LEADER" -n "$OPERATOR_NS" -c manager 2>&1 || true)
+          $(kubectl logs "$LEADER" -n "$OPERATOR_NS" -c manager --previous 2>&1 || true)"
+          if ! grep -q 'x509: certificate has expired or is not yet valid' <<<"$LOGS"; then
+            tail -n 50 <<<"$LOGS"
+            echo "FAIL: the log of ${LEADER} does not name the expired certificate"
+            exit 1
+          fi
+          echo CERT-REJECTED-OK
+
+          kubectl patch keystone keystone-chaos-opclk -n "$NAMESPACE" --type=merge \
+            -p '{"spec":{"deployment":{"replicas":1}}}'
+          wait_available keystone-chaos-opclk 1 180
+          echo RECONCILE-AFTER-HANDOVER-OK
+          fault_lift timechaos/operator-leader-skew
+          ../lib/workload.sh mark keystone-operator-clock-skew fault-end
+    catch: *opclk-dump
+  # ── Step 5: Both operator pods serve again ───────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          LEADER="$(state leader)"
+          DEADLINE=$(($(date +%s) + 300))
+          until [ "$(kubectl get deployment keystone-operator -n "$OPERATOR_NS" -o jsonpath='{.status.readyReplicas}')" = 2 ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              kubectl logs "$LEADER" -n "$OPERATOR_NS" -c manager --tail=50 2>&1 || true
+              echo "FAIL: the old leader ${LEADER} is not Ready 300 s after the lift: a skew that outlives its TimeChaos is a finding for #1391"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: deployment/keystone-operator is at readyReplicas 2"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-opclk
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *opclk-dump
+  # ── Step 6: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystone-operator-clock-skew
+    catch: *opclk-dump

@@ -8,10 +8,12 @@
 # A chaos suite is a directory directly under tests/e2e-chaos/ that holds a
 # chainsaw-test.yaml. docs/reference/testing/chaos-e2e-tests.md lists every
 # suite in the table under `## Test Suite Inventory` and describes it in a
-# `### <suite>` section. The matrix of the e2e-chaos job in
-# .github/workflows/ci.yaml runs every suite in exactly one entry: a line
-# `- suite: <leg>` starts an entry, and the `tests/e2e-chaos/<suite>` tokens
-# on the lines below it are its suites. check_chaos_suites prints one problem
+# `### <suite>` section. .github/workflows/ci.yaml runs every suite in exactly
+# one place: an entry of the e2e-chaos matrix, where a line `- suite: <leg>`
+# starts an entry and the `tests/e2e-chaos/<suite>` tokens on the lines below
+# it are its suites, or the step `Run the libvirt chaos suite` of the
+# e2e-nova-libvirt job, whose `tests/e2e-chaos/<suite>` tokens count as the
+# place e2e-nova-libvirt. check_chaos_suites prints one problem
 # per line and nothing for a consistent tree. The fixture tests prove each
 # check on a scratch tree before the last test runs it on the repository.
 #
@@ -52,6 +54,24 @@ MATRIX_AWK='
     suite = substr(line, RSTART, RLENGTH)
     sub(/^tests\/e2e-chaos\//, "", suite)
     print leg "\t" suite
+    line = substr(line, RSTART + RLENGTH)
+  }
+}
+'
+
+# Read the body of the step `Run the libvirt chaos suite`, as job_step prints
+# it, and print one line per suite it runs: e2e-nova-libvirt, a tab and the
+# suite. Comment lines and the path after --config do not count.
+# shellcheck disable=SC2016 # an awk program, not shell
+STEP_AWK='
+{
+  line = $0
+  if (line ~ /^[ \t]*#/) next
+  gsub(/--config[ \t]+[^ \t]+/, "", line)
+  while (match(line, /tests\/e2e-chaos\/[A-Za-z0-9_.-]+/)) {
+    suite = substr(line, RSTART, RLENGTH)
+    sub(/^tests\/e2e-chaos\//, "", suite)
+    print "e2e-nova-libvirt\t" suite
     line = substr(line, RSTART + RLENGTH)
   }
 }
@@ -149,12 +169,14 @@ check_chaos_suites() {
     echo "missing $workflow"
     return
   fi
-  local legs
+  local legs libvirt
   legs="$(CI_YAML="$workflow" job_block e2e-chaos | awk "$MATRIX_AWK")"
   if [[ -z "$legs" ]]; then
     echo "no e2e-chaos matrix in $workflow"
     return
   fi
+  libvirt="$(CI_YAML="$workflow" job_step e2e-nova-libvirt "Run the libvirt chaos suite" | awk "$STEP_AWK")"
+  legs="$legs${libvirt:+$'\n'}$libvirt"
   if [[ ! -f "$page" ]]; then
     echo "missing $page"
     return
@@ -182,14 +204,16 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # build_fixture: write a consistent tree and print its root. suites/ holds
-# three suites. The workflow runs them in two legs, with a comment line that
+# four suites. The workflow runs three in two legs, with a comment line that
 # names a suite, a token outside tests/e2e-chaos/ and a comment after the
-# matrix. The page counts the suites, lists them in a table whose first
-# cells are links or plain text, and gives each a section.
+# matrix, and the fourth in the libvirt chaos step of e2e-nova-libvirt, after
+# a --config path under tests/e2e-chaos/. The page counts the suites, lists
+# them in a table whose first cells are links or plain text, and gives each a
+# section.
 build_fixture() {
   local root s
   root="$(mktemp -d "$TMP_ROOT/fixture.XXXXXX")"
-  for s in alpha-pod-kill beta-network-partition gamma-pod-kill; do
+  for s in alpha-pod-kill beta-network-partition gamma-pod-kill delta-io-fault; do
     mkdir -p "$root/suites/$s"
     echo "kind: Test" >"$root/suites/$s/chainsaw-test.yaml"
   done
@@ -219,13 +243,24 @@ jobs:
     # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1
     steps:
       - run: chainsaw test tests/e2e-chaos/alpha-pod-kill
+  e2e-nova-libvirt:
+    runs-on: self-hosted
+    steps:
+      - name: Run the libvirt suite
+        run: make e2e-nova-libvirt
+      # tests/e2e-chaos/gamma-pod-kill runs in the matrix
+      - name: Run the libvirt chaos suite
+        run: |
+          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health tests/e2e-chaos/delta-io-fault
+      - name: Upload JUnit report
+        run: echo tests/e2e-chaos/alpha-pod-kill
   tempest:
     runs-on: ubuntu-latest
 EOF
   cat >"$root/page.md" <<'EOF'
 # Chaos E2E Test Suites
 
-The 3 chaos test suites validate operator behavior.
+The 4 chaos test suites validate operator behavior.
 
 ## Test Suite Inventory
 
@@ -234,6 +269,7 @@ The 3 chaos test suites validate operator behavior.
 | [alpha-pod-kill](#alpha-pod-kill) | — | `alpha` |
 | beta-network-partition | — | `beta` |
 | [gamma-pod-kill](#gamma-pod-kill) | — | `gamma` |
+| [delta-io-fault](#delta-io-fault) | — | `delta` |
 
 ## Test Suite Details
 
@@ -242,6 +278,8 @@ The 3 chaos test suites validate operator behavior.
 ### beta-network-partition
 
 ### gamma-pod-kill
+
+### delta-io-fault
 EOF
   printf '%s\n' "$root"
 }
@@ -423,17 +461,43 @@ test_comment_line_token_does_not_count() {
   assert_eq "gamma-pod-kill only in comments" "suite in no leg: gamma-pod-kill" "$(check "$root")"
 }
 
+test_libvirt_step_counts_as_a_place() {
+  echo "Test: the libvirt chaos step of e2e-nova-libvirt is the place of the suites it runs"
+
+  local root
+  root="$(build_fixture)"
+  rewrite "$root/ci.yaml" 's# tests/e2e-chaos/delta-io-fault$##'
+  assert_eq "delta-io-fault without its token" "suite in no leg: delta-io-fault" "$(check "$root")"
+
+  root="$(build_fixture)"
+  rewrite "$root/ci.yaml" 's#^              tests/e2e-chaos/beta-network-partition$#&\
+              tests/e2e-chaos/delta-io-fault#'
+  assert_eq "delta-io-fault in the matrix and the step" \
+    "suite in two legs: delta-io-fault: network, e2e-nova-libvirt" "$(check "$root")"
+
+  root="$(build_fixture)"
+  rewrite "$root/ci.yaml" 's#chaos-mesh-health tests/e2e-chaos/delta-io-fault$#chaos-mesh-health tests/e2e-chaos/epsilon-io-fault#'
+  assert_eq "a step token without a suite directory" \
+    "leg lists a missing suite: e2e-nova-libvirt: epsilon-io-fault"$'\n'"suite in no leg: delta-io-fault" \
+    "$(check "$root")"
+
+  root="$(build_fixture)"
+  rewrite "$root/ci.yaml" '/^  e2e-nova-libvirt:$/,/^  tempest:$/{/^  tempest:$/!d;}'
+  assert_eq "a workflow without the job reads the matrix alone" \
+    "suite in no leg: delta-io-fault" "$(check "$root")"
+}
+
 test_wrong_suite_count() {
   echo "Test: a sentence that counts the suites wrongly is reported with its line"
 
   local root
   root="$(build_fixture)"
-  rewrite "$root/page.md" 's/The 3 chaos test suites/The 4 chaos test suites/'
+  rewrite "$root/page.md" 's/The 4 chaos test suites/The 5 chaos test suites/'
   rewrite "$root/page.md" 's/^## Test Suite Details$/&\
 \
 All 2 test suites run on kind./'
-  assert_eq "four and two said, three in the tree" \
-    "$root/page.md:15: says 2 suites, the tree has 3"$'\n'"$root/page.md:3: says 4 suites, the tree has 3" \
+  assert_eq "five and two said, four in the tree" \
+    "$root/page.md:16: says 2 suites, the tree has 4"$'\n'"$root/page.md:3: says 5 suites, the tree has 4" \
     "$(check "$root")"
 }
 
@@ -474,6 +538,7 @@ test_suite_in_no_leg
 test_suite_in_two_legs
 test_leg_lists_a_missing_suite
 test_comment_line_token_does_not_count
+test_libvirt_step_counts_as_a_place
 test_wrong_suite_count
 test_repository_page_and_matrix_name_every_suite
 

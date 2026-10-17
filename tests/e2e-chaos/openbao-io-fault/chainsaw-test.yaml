@@ -1,0 +1,239 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the raft volume of the shared OpenBao turns slow,
+# full, then failing.
+#
+# Fault: three IOChaos objects on /openbao/data of container openbao of
+# openbao-0 in shared-services, one after the other in one fault window:
+# 200 ms of latency on every call (01), ENOSPC on write and create (02), and
+# EIO on write and fsync (03). OpenBao runs one replica with
+# storage "raft" { path = "/openbao/data" } on the standard class
+# (deploy/kind/base). Every secret the ExternalSecrets of the stack sync comes
+# from it.
+#
+# Each phase's canary is a dd into /openbao/data through kubectl exec, then
+# ten writes kv-v2/chaos/openbao-io/<phase>-<n> follow at 2 s intervals; every
+# write bao answers with exit 0 is recorded in ConfigMap openbao-io-acked.
+#
+# Claim, phase by phase:
+#   latency    The dd takes at least 1 s (INJECTED-LATENCY-OK) and all ten
+#              writes succeed (LATENCY-WRITES-OK).
+#   ENOSPC     The dd fails with No space left on device (INJECTED-ENOSPC-OK).
+#   EIO        The dd fails with Input/output error (INJECTED-EIO-OK).
+#              After each phase the object is deleted and ../unseal-openbao.sh
+#              unseals openbao-0 when the fault sealed or restarted it.
+#   recovered  bao status reports Sealed false and
+#              clustersecretstore/openbao-cluster-store is Ready=True within 5
+#              minutes; a force-sync of ExternalSecret keystone-admin reads
+#              SecretSynced within 120 s (SYNC-OK); the canary written before
+#              the fault still reads before, and every acknowledged write
+#              reads its value (ACKED-OK): a write OpenBao acknowledged is not
+#              lost to the I/O errors that followed it. Every key under
+#              kv-v2/chaos/openbao-io is deleted.
+#
+# Blast radius: the IOChaos objects select namespace shared-services and
+# app.kubernetes.io/name: openbao; the openbao-operator instance in openstack
+# carries the same name label and stays out by its namespace. The shared
+# OpenBao is shared state: every step from the first apply lifts the IOChaos
+# and runs ../unseal-openbao.sh in its catch block, as ../openbao-sealed/
+# does, so the next suite does not find it sealed.
+#
+# Leg: faults. IOChaos injects through the fuse module hack/deploy-infra.sh
+# loads on the kind host.
+#
+# Workload: the token stream of ../lib/workload.sh against
+# keystone-chaos-baoio. The Keystone serves from the Secrets the
+# ExternalSecrets already synced, so the budget is zero and a failed cycle is
+# a defect to find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-17, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: openbao-io-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Keystone, the workload, the canary key ───────────────────────
+  # The step cleanup deletes every key under kv-v2/chaos/openbao-io and the
+  # dd canary file when the suite ended before its recovery step did.
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-baoio
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start openbao-io-fault -- --streams token --keystone http://keystone-chaos-baoio.openstack.svc:5000/v3
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          kv_put canary before
+          echo "OK: ${KV}/canary reads $(kv_get canary)"
+    catch: &bao-dump
+    # The lift goes first, then the unseal: every step from the first apply
+    # must leave no IOChaos of this suite behind and OpenBao unsealed.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite openbao-io-fault
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          # A fault that sealed openbao-0 or restarted it leaves the pod
+          # unready; unseal-openbao.sh skips a pod that reads Ready.
+          ../unseal-openbao.sh 2>&1 || true
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-baoio --dep-ns=shared-services --dep-label=app.kubernetes.io/name=openbao --eso
+    - script:
+        timeout: 2m
+        content: |
+          kubectl get configmap openbao-io-acked -n openstack -o yaml 2>&1 || true
+          kubectl logs openbao-0 -n shared-services -c openbao --tail=100 2>&1 || true
+          kubectl logs openbao-0 -n shared-services -c openbao --previous --tail=50 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump openbao-io-fault
+    cleanup:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ./probe-lib.sh
+          LEFT="$(kv_purge)"
+          kubectl delete configmap "$ACKED" -n "$NAMESPACE" --ignore-not-found
+          kubectl exec openbao-0 -n shared-services -c openbao -- rm -f /openbao/data/.chaos-canary 2>/dev/null || true
+          if [ -n "$LEFT" ]; then
+            echo "keys left under ${KV}: $(xargs <<<"$LEFT")"
+          fi
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop openbao-io-fault
+  # ── Step 2: Latency, ENOSPC, EIO on the raft volume ──────────────────────
+  # phase <file> <object> <PHASE> <mode>: inject, prove it with the dd canary,
+  # write ten keys and record the acknowledged ones, lift, unseal. The dd runs
+  # in shared-services, the namespace of openbao-0.
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          phase() {
+            local n ok=0
+            fault_inject "$1" "iochaos/$2"
+            NAMESPACE=shared-services canary_dd "iochaos/$2" "$3" openbao-0 openbao /openbao/data/.chaos-canary "$4"
+            for n in $(seq 1 10); do
+              if kv_put "$4-$n" "$n"; then
+                ack "$4-$n" "$n"
+                ok=$((ok + 1))
+                echo "WRITE $4-$n acknowledged"
+              else
+                echo "WRITE $4-$n refused"
+              fi
+              sleep 2
+            done
+            echo "$3: ${ok} of 10 writes acknowledged"
+            if [ "$4" = latency ]; then
+              if [ "$ok" -ne 10 ]; then
+                echo "FAIL: ${ok} of 10 writes succeeded under latency alone"
+                return 1
+              fi
+              echo LATENCY-WRITES-OK
+            fi
+            fault_lift "iochaos/$2"
+            ../unseal-openbao.sh
+          }
+          ../lib/workload.sh mark openbao-io-fault fault-start
+          phase 01-iochaos-latency.yaml openbao-io-latency LATENCY latency
+          phase 02-iochaos-enospc.yaml openbao-io-enospc ENOSPC enospc
+          phase 03-iochaos-eio.yaml openbao-io-eio EIO eio
+          ../lib/workload.sh mark openbao-io-fault fault-end
+    catch: *bao-dump
+  # ── Step 3: Unsealed, syncing, and no acknowledged write lost ────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          SEALED="$(bao_exec bao status -format=json </dev/null 2>/dev/null | jq -r '.sealed' || true)"
+          if [ "$SEALED" != false ]; then
+            echo "FAIL: bao status reports sealed=${SEALED:-<nothing>} after the lift"
+            exit 1
+          fi
+          echo "OK: openbao-0 reports Sealed false"
+          kubectl wait clustersecretstore/openbao-cluster-store --for=condition=Ready --timeout=300s
+
+          requested="$(date -u +%s)"
+          kubectl annotate externalsecret keystone-admin -n "$NAMESPACE" force-sync="$requested" --overwrite
+          deadline=$((requested + 120))
+          while true; do
+            refreshed="$(kubectl get externalsecret keystone-admin -n "$NAMESPACE" -o jsonpath='{.status.refreshTime}')"
+            status="$(kubectl get externalsecret keystone-admin -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}')"
+            at=0
+            if [ -n "$refreshed" ]; then
+              at="$(date -u -d "$refreshed" +%s)"
+            fi
+            if [ "$at" -ge "$requested" ] && [ "$status" = "True/SecretSynced" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no sync of keystone-admin within 120 s of the force-sync (refreshTime ${refreshed:-<none>}, Ready ${status})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo SYNC-OK
+
+          MISSING=""
+          if [ "$(kv_get canary 2>&1 || true)" != before ]; then
+            MISSING="canary"
+          fi
+          for pair in $(acked); do
+            if [ "$(kv_get "${pair%%=*}" 2>&1 || true)" != "${pair#*=}" ]; then
+              MISSING="${MISSING} ${pair%%=*}"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "ACKED-MISSING ${MISSING# }"
+            echo "FAIL: acknowledged writes under ${KV} do not read their value: ${MISSING# }"
+            exit 1
+          fi
+          echo "ACKED-OK $(wc -w <<<"$(acked)")"
+
+          kubectl exec openbao-0 -n shared-services -c openbao -- rm -f /openbao/data/.chaos-canary
+          LEFT="$(kv_purge)"
+          if [ -n "$LEFT" ]; then
+            echo "FAIL: keys left under ${KV}: $(xargs <<<"$LEFT")"
+            exit 1
+          fi
+          echo "OK: no key is left under ${KV}"
+    catch: *bao-dump
+  # ── Step 4: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify openbao-io-fault
+    catch: *bao-dump

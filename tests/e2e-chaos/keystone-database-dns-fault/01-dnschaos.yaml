@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# DNSChaos keystone-db-dns-error: every A and AAAA lookup of a name that
+# starts with openstack-db.openstack.svc fails for the API pod of
+# keystone-chaos-dbdns. Chaos Mesh points the pod at its DNS server
+# (dnsServer.create in deploy/kind/chaos-mesh), which answers the matching
+# names with an error and forwards the rest. Patterns take a trailing * only;
+# every search-path expansion of the database host starts with that string,
+# so the lookup fails whichever of them the resolver tries.
+#
+# duration is a safety net above the suite's fault step; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: DNSChaos
+metadata:
+  name: keystone-db-dns-error
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: keystone-database-dns-fault
+spec:
+  action: error
+  mode: all
+  patterns:
+    - "openstack-db.openstack.svc*"
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-chaos-dbdns
+      app.kubernetes.io/component: api
+  duration: "600s"

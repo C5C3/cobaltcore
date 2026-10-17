@@ -1,0 +1,265 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Keystone answers 503 to token validation while it
+# keeps issuing tokens.
+#
+# Fault: an HTTPChaos on the API pods of keystone-chaos-ks503 replaces the
+# response to every GET /v3/auth/tokens with a 503 (04-httpchaos.yaml).
+# Placement and Glance validate their callers' tokens with that request, so
+# they cannot validate any token, while a POST that issues one passes.
+# placement-keystone-outage and glance-keystone-outage prove 503 and 401 for a
+# Keystone that refuses the connection; keystonemiddleware turns a Keystone
+# error during validation into the same ServiceError, which this suite pins.
+#
+# Claim, phase by phase:
+#   injected    A probe issues a token T0 (POST, 201) and validates it itself
+#               (GET, 503): INJECTED-503-OK. Placement and Glance are then
+#               restarted, because HTTPChaos reaches only connections opened
+#               after the injection and keystonemiddleware keeps its own.
+#   failclosed  A fresh token T1 gets 503 from Placement on
+#               GET /resource_providers and 401 from Glance on GET /v2/images
+#               (delay_auth_decision): FAILCLOSED-OK. A 2xx fails at once with
+#               "answered <code> with a token Keystone could not validate".
+#   steady      The Keystone, Placement and Glance CRs stay
+#               Ready=True/AllReady, the Keystone answers GET /v3 and keeps
+#               DatabaseReady=True: the fault touches validation alone.
+#   recovered   After the lift a fresh token gets 200 from both within 180 s:
+#               RECOVERY-OK.
+#
+# Blast radius: the HTTPChaos selects the API pods of this suite's Keystone by
+# name, instance and component, and the method and path filters leave every
+# other request alone. Placement and Glance are this suite's own.
+#
+# Leg: faults. HTTPChaos needs the chaos-tproxy kernel modules
+# hack/deploy-infra.sh loads on the kind host, and the leg deploys the
+# placement-operator.
+#
+# Workload: the token, placement and image streams of ../lib/workload.sh
+# against keystone-chaos-ks503, placement-ks503 and glance-ks503. The token
+# stream's validate and both authenticated streams fail from the injection to
+# the lift, about four minutes. The budget is an estimate of that window: no
+# run has measured it yet.
+# Chaos budget: failures=1500 recovery=180s
+# Chaos budget measured: 2026-10-17, estimate, failures 750, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-validation-http-503
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone whose token validation the fault answers ───
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh baseline keystone-chaos-ks503
+  # ── Step 2: Apply Placement and Glance, then start the workload ──────────
+  - try:
+    - apply:
+        file: 01-placement-cr.yaml
+    - apply:
+        file: 02-glance-cr.yaml
+    - apply:
+        file: 03-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start keystone-validation-http-503 --
+          --streams token,placement,image
+          --keystone http://keystone-chaos-ks503.openstack.svc:5000/v3
+          --placement http://placement-ks503.openstack.svc:8778
+          --glance http://glance-ks503.openstack.svc:9292
+    catch:
+    - &diag
+      script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-ks503 --dep-label=app.kubernetes.io/instance=placement-ks503 --dep-ns=openstack
+    - &glance-logs
+      podLogs:
+        selector: app.kubernetes.io/instance=glance-ks503
+        tail: 100
+    - &placement-logs
+      podLogs:
+        selector: app.kubernetes.io/instance=placement-ks503
+        tail: 100
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystone-validation-http-503
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystone-validation-http-503
+  # ── Step 3: Answer validation with 503, then validate a fresh token ──────
+  # The canary validates a token through the fault before anything relies on
+  # it. The restart moves the keystonemiddleware connections of Placement and
+  # Glance behind the proxy; without it they would keep connections opened
+  # before the injection, which HTTPChaos does not reach.
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PW="$(admin_password)"
+          KS=http://keystone-chaos-ks503.openstack.svc.cluster.local:5000/v3
+          PROBE="$(cat ../lib/probe.py)"
+          ../lib/workload.sh mark keystone-validation-http-503 fault-start
+          fault_inject 04-httpchaos.yaml httpchaos/keystone-validate-503
+          probe_run ks503-canary 180 --env "OS_PASSWORD=${PW}" -- \
+            python3 -u -c "$PROBE" expect --keystone "$KS" --subject \
+            --canary httpchaos/keystone-validate-503 \
+            --check "GET ${KS}/auth/tokens 503" --ok INJECTED-503-OK
+          kubectl rollout restart deployment/placement-ks503 deployment/glance-ks503 -n "$NAMESPACE"
+          kubectl rollout status deployment/placement-ks503 -n "$NAMESPACE" --timeout=5m
+          kubectl rollout status deployment/glance-ks503 -n "$NAMESPACE" --timeout=5m
+          probe_run ks503-failclosed 300 --env "OS_PASSWORD=${PW}" -- \
+            python3 -u -c "$PROBE" expect --keystone "$KS" --within 120 \
+            --refuse-2xx "answered {code} with a token Keystone could not validate" \
+            --check "GET http://placement-ks503.openstack.svc.cluster.local:8778/resource_providers 503" \
+            --check "GET http://glance-ks503.openstack.svc.cluster.local:9292/v2/images 401" \
+            --ok FAILCLOSED-OK
+    catch:
+    - &lift
+      script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite keystone-validation-http-503
+    - *diag
+    - *glance-logs
+    - *placement-logs
+    - *workload-dump
+  # ── Step 4: Everything but validation stays up under the fault ───────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-ks503
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run ks503-version 180 -- python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --check "GET http://keystone-chaos-ks503.openstack.svc.cluster.local:5000/v3 200" \
+            --ok VERSION-OK
+    catch:
+    - *lift
+    - *diag
+    - *glance-logs
+    - *placement-logs
+    - *workload-dump
+  # ── Step 5: Lift the fault ───────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          fault_lift httpchaos/keystone-validate-503
+          ../lib/workload.sh mark keystone-validation-http-503 fault-end
+    catch:
+    - *lift
+    - *diag
+    - *workload-dump
+  # ── Step 6: A fresh token is served again ────────────────────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run ks503-recovery 270 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --keystone http://keystone-chaos-ks503.openstack.svc.cluster.local:5000/v3 --within 180 \
+            --check "GET http://placement-ks503.openstack.svc.cluster.local:8778/resource_providers 200" \
+            --check "GET http://glance-ks503.openstack.svc.cluster.local:9292/v2/images 200" \
+            --ok RECOVERY-OK
+    catch:
+    - *diag
+    - *glance-logs
+    - *placement-logs
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystone-validation-http-503
+    catch:
+    - *diag
+    - *workload-dump

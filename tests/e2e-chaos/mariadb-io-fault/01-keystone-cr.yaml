@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the MariaDB I/O fault chaos test: keystone-chaos-io on the
+# database keystone_chaos_io of the suite's own MariaDB, mariadb-io-chaos
+# (00-mariadb-cr.yaml), with the ESO-synced keystone-db credentials. The
+# managed database host is <clusterRef>.<namespace>.svc
+# (internal/common/database/resolve.go), mariadb-io-chaos.openstack.svc here.
+#
+# Every project the write probe creates is a row in this database, and the
+# probe reads them back after the fault: an acknowledged write must be there.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-io
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: mariadb-io-chaos
+    database: keystone_chaos_io
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

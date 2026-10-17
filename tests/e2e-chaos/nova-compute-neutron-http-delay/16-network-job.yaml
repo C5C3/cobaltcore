@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Creates the network vifd-net with the subnet 10.98.0.0/24 the suite's
+# servers take a port on, then boots vifd-base with a port on it before the
+# fault: ACTIVE within 150 s says the chassis binds the port and the compute
+# builds through Neutron. The server is deleted again; the network stays for
+# the later steps and goes in the recovery step's cleanup
+# (probe-lib.sh openstack_cleanup).
+#
+# The network and the subnet are created only when they are missing, so a
+# Job retry converges. backoffLimit is 0 because the boot is not idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-vifd-chaos-network
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-vifd-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED=4e0a0000-0000-4000-8000-00000000000c
+
+              # wait_settled <name> <seconds>: poll the server every 5 s until ACTIVE or
+              # ERROR and print the status; on the deadline print what it reads.
+              wait_settled() {
+                ws_deadline=$(( $(date +%s) + $2 ))
+                while true; do
+                  ws_status="$(openstack server show "$1" -f value -c status 2>/dev/null || true)"
+                  case "${ws_status}" in
+                    ACTIVE | ERROR) echo "${ws_status}"; return 0 ;;
+                  esac
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "${ws_status:-<none>}"
+                    return 0
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack network show vifd-net >/dev/null 2>&1 || openstack network create vifd-net -f value -c id
+              openstack subnet show vifd-subnet >/dev/null 2>&1 || openstack subnet create \
+                --network vifd-net --subnet-range 10.98.0.0/24 vifd-subnet -f value -c id
+              echo "OK: vifd-net and vifd-subnet"
+
+              openstack server create --flavor m1.nano --image "${SEED}" --network vifd-net vifd-base -f value -c id
+              STATUS="$(wait_settled vifd-base 150)"
+              if [ "${STATUS}" != ACTIVE ]; then
+                echo "FAIL: vifd-base is ${STATUS}, not ACTIVE, after 150s"
+                openstack server show vifd-base 2>&1 || true
+                exit 1
+              fi
+              echo "OK: vifd-base is ACTIVE"
+              openstack server delete --wait vifd-base
+              echo BASE-OK

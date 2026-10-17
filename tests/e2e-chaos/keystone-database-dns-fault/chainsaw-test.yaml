@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the Keystone API cannot resolve its database's
+# name.
+#
+# Fault: a DNSChaos on the API pod of keystone-chaos-dbdns answers every
+# lookup of a name that starts with openstack-db.openstack.svc with an error
+# (01-dnschaos.yaml). The managed database host is that name
+# (internal/common/database/resolve.go). DNS is consulted only when a
+# connection opens, and Keystone holds pooled database connections, but its
+# readiness probe resolves the host and connects on every 30-second period
+# (operators/keystone/internal/controller/reconcile_deployment.go), so the
+# probe meets the fault without a forced reconnect.
+#
+# Claim, phase by phase:
+#   injected   In the keystone container getaddrinfo of
+#              openstack-db.openstack.svc raises gaierror while that of
+#              openstack-memcached answers (INJECTED-DNS-OK, the canary).
+#   depooled   Within 240 s the pod is not Ready and the CR reports
+#              DeploymentReady=False, with the container's restartCount
+#              unchanged (DEPOOLED-OK): three failed probes take the pod out
+#              of the Service, and the TCP liveness probe on 5000 keeps it
+#              running.
+#   repooled   Within 180 s of the lift the CR is Ready=True/AllReady
+#              (REPOOLED-OK).
+#
+# Blast radius: the DNSChaos selects the API pod of this suite's Keystone and
+# the database name alone; every other lookup goes to the cluster DNS.
+#
+# Leg: faults. DNSChaos answers through the Chaos Mesh DNS server the kind
+# HelmRelease patch pins (dnsServer.create).
+#
+# Workload: the token stream of ../lib/workload.sh against
+# keystone-chaos-dbdns. It fails from the depool until the pod is back in the
+# Service. The budget is an estimate of that window: no run has measured it
+# yet.
+# Chaos budget: failures=800 recovery=180s
+# Chaos budget measured: 2026-10-17, estimate, failures 400, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-database-dns-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone, start the workload ───────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-dbdns
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start keystone-database-dns-fault -- --streams token --keystone http://keystone-chaos-dbdns.openstack.svc:5000/v3
+    catch: &dbdns-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no DNSChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite keystone-database-dns-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-dbdns --dep-label=app.kubernetes.io/instance=keystone-chaos-dbdns --dep-ns=openstack
+    - script:
+        timeout: 1m
+        content: kubectl logs -n chaos-mesh deployment/chaos-dns-server --tail=50 2>&1 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystone-database-dns-fault
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystone-database-dns-fault
+  # ── Step 2: The database name stops resolving; the pod leaves the Service ─
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          POD="$(kubectl get pods -n "$NAMESPACE" --field-selector=status.phase=Running \
+            -l app.kubernetes.io/instance=keystone-chaos-dbdns,app.kubernetes.io/component=api \
+            -o jsonpath='{.items[0].metadata.name}')"
+          restarts() {
+            kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[?(@.name=="keystone")].restartCount}'
+          }
+          RESTARTS="$(restarts)"
+          ../lib/workload.sh mark keystone-database-dns-fault fault-start
+          fault_inject 01-dnschaos.yaml dnschaos/keystone-db-dns-error
+          canary_resolve dnschaos/keystone-db-dns-error DNS "$POD" keystone \
+            openstack-db.openstack.svc 3306 openstack-memcached 11211
+          DEADLINE=$(($(date +%s) + 240))
+          while true; do
+            READY="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            DEPLOY="$(kubectl get keystone keystone-chaos-dbdns -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="DeploymentReady")].status}')"
+            if [ "$READY" = False ] && [ "$DEPLOY" = False ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "FAIL: 240 s into the fault ${POD} reads Ready=${READY} and the CR DeploymentReady=${DEPLOY}"
+              exit 1
+            fi
+            sleep 10
+          done
+          if [ "$(restarts)" != "$RESTARTS" ]; then
+            echo "FAIL: ${POD} restarted under the DNS fault: restartCount $(restarts), was ${RESTARTS}"
+            exit 1
+          fi
+          echo DEPOOLED-OK
+          fault_lift dnschaos/keystone-db-dns-error
+          ../lib/workload.sh mark keystone-database-dns-fault fault-end
+    catch: *dbdns-dump
+  # ── Step 3: Back in the Service ──────────────────────────────────────────
+  - try:
+    - assert:
+        timeout: 3m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-dbdns
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 1m
+        content: echo REPOOLED-OK
+    catch: *dbdns-dump
+  # ── Step 4: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystone-database-dns-fault
+    catch: *dbdns-dump

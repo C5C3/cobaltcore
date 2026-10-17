@@ -12,10 +12,12 @@
 #   2. The HelmRepository source.
 #   3. The HelmRelease.
 #   4. The kind-tuning HelmRelease patch (containerd runtime, dashboard
-#      disabled, reduced resource requests) that previously lived in
-#      deploy/kind/base/kustomization.yaml. Kustomize requires the patch
-#      target to exist in the same overlay, which is why the patch moves
-#      here rather than staying in the base.
+#      disabled, reduced resource requests, the DNS server pinned on) that
+#      previously lived in deploy/kind/base/kustomization.yaml. Kustomize
+#      requires the patch target to exist in the same overlay, which is why
+#      the patch moves here rather than staying in the base.
+#   5. The ValidatingAdmissionPolicy that keeps HTTPChaos off hostNetwork
+#      pods, with its binding (httpchaos-policy.yaml).
 #
 # All resource references are local to this overlay (no parent-directory
 # `../../` paths). The overlay therefore renders cleanly under kustomize's
@@ -44,6 +46,9 @@ resources:
   # overlays no longer include them.
   - source.yaml
   - release.yaml
+  # The HTTPChaos hostNetwork guard: a ValidatingAdmissionPolicy and its
+  # binding. The lab overlay inherits it through this directory.
+  - httpchaos-policy.yaml
 
 patches:
   # Chaos Mesh: configure containerd runtime for kind, disable the dashboard
@@ -76,6 +81,11 @@ patches:
                 memory: 128Mi
           dashboard:
             create: false
+          # The DNS server DNSChaos answers through. The chart creates it by
+          # default since 2.6.0; the pin keeps a change of that default from
+          # removing it silently.
+          dnsServer:
+            create: true
           controllerManager:
             resources:
               requests:

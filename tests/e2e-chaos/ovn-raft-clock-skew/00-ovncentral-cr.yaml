@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral for the raft clock-skew chaos test: ../ovn-southbound-outage/
+# 01-ovncentral-cr.yaml renamed to ovn-clock-chaos, with three Southbound
+# members instead of one, so a member whose clock is skewed has a quorum of
+# two to fall out of. Replicas must be odd and cannot change after creation
+# (operators/ovn/api/v1alpha1/ovncentral_types.go). The Northbound and northd
+# keep one replica each: the suite writes through the Northbound once and
+# reads what northd wrote to the Southbound.
+#
+# Raft runs over TLS on cert-manager certificates of 8760 hours
+# (operators/ovn/internal/controller/reconcile_tls.go), labelled
+# app.kubernetes.io/instance=ovn-clock-chaos, issued by the cluster-scoped
+# issuer the kind overlay ships. The three members schedule on the one kind
+# node: the operator's topology spread is ScheduleAnyway.
+#
+# The backup CronJob is suspended: the suite asserts nothing about it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-clock-chaos
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 3
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

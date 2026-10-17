@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS volume backend bkstress-nfs1 of the cinder-backup-stress CR on the kind
+# NFS export /volumes: the 1 GiB volume the suite backs up lives here.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: bkstress-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-backup-stress
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# MariaDB of the I/O fault chaos test, of its own because EIO on InnoDB writes
+# can crash the server: the shared openstack-db serves every suite on the leg
+# (tests/e2e-chaos/chainsaw-config.yaml runs them one after the other).
+#
+# The shape is that of the kind openstack-db (deploy/kind/infrastructure,
+# over deploy/flux-system/infrastructure/mariadb.yaml): one replica with
+# Galera and MaxScale off, 1Gi of memory, 1Gi on the standard class, TLS off,
+# the relaxed probes, and the root password from Secret mariadb-root-password.
+# The metrics exporter is left out: nothing here reads it. mariadb-operator
+# mounts the data volume at /var/lib/mysql as a mount root of container
+# mariadb, labels the pod app.kubernetes.io/name: mariadb and
+# app.kubernetes.io/instance: mariadb-io-chaos, and names the claim
+# storage-mariadb-io-chaos-0, which the suite deletes in its cleanup.
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: mariadb-io-chaos
+  namespace: openstack
+spec:
+  rootPasswordSecretKeyRef:
+    name: mariadb-root-password
+    key: password
+  replicas: 1
+  galera:
+    enabled: false
+  maxScale:
+    enabled: false
+  livenessProbe:
+    failureThreshold: 6
+    timeoutSeconds: 10
+  readinessProbe:
+    timeoutSeconds: 10
+  resources:
+    requests:
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+  storage:
+    size: 1Gi
+    storageClassName: standard
+  tls:
+    enabled: false
+    required: false

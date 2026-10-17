@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the token-validation HTTPChaos suite. Unique name
+# (keystone-chaos-ks503) and database (keystone_chaos_ks503) to avoid
+# conflicts with other test suites.
+#
+# The HTTPChaos of 04-httpchaos.yaml answers 503 to every GET /v3/auth/tokens
+# on the API pods of this CR, so the suite brings its own Keystone: a fault on
+# one another suite runs would fail that suite's token validation as well.
+# Placement and Glance validate their tokens against this Keystone, and the
+# bootstrap admin password of the pre-seeded keystone-admin Secret is their
+# serviceUser's as well as the probes'.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-ks503
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_ks503
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

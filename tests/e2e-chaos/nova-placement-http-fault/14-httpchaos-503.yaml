@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# HTTPChaos placement-candidates-503: every response to
+# GET /allocation_candidates on port 8778 of the API pods of
+# placement-nova-plhttp-chaos becomes a 503. Only the scheduler asks for
+# allocation candidates; the fake compute reports its inventory with
+# GET and PUT on /resource_providers, which pass unchanged, and so do the
+# probes' GET / and every other Placement request.
+#
+# Server-side on the API pods, as the admission policy
+# chaos-mesh-httpchaos-api-workloads-only requires
+# (deploy/kind/chaos-mesh/httpchaos-policy.yaml). chaos-tproxy matches the
+# path without its query string. HTTPChaos reaches only connections opened
+# after the injection, and nova-scheduler keeps a pooled one, so the suite
+# restarts the scheduler once it reads AllInjected.
+#
+# duration is a safety net above the phase's 12 minutes; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: placement-candidates-503
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: nova-placement-http-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: placement
+      app.kubernetes.io/instance: placement-nova-plhttp-chaos
+      app.kubernetes.io/component: api
+  target: Response
+  port: 8778
+  method: GET
+  path: /allocation_candidates
+  replace:
+    code: 503
+  duration: "900s"

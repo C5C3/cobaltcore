@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# DNSChaos broker-dns-error: every A and AAAA lookup of a name that starts
+# with cinder-dns-rabbitmq.openstack.svc fails for the scheduler pods of
+# cinder-broker-dns. The suite checks first that the host of Secret
+# cinder-dns-rabbitmq-default-user starts with that string. DNS is consulted
+# only when a connection opens, so the suite closes the broker's connections
+# once the fault is in place, and the scheduler's reconnect meets it.
+#
+# duration is a safety net above the suite's fault step; the suite deletes
+# the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: DNSChaos
+metadata:
+  name: broker-dns-error
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: cinder-broker-dns-fault
+spec:
+  action: error
+  mode: all
+  patterns:
+    - "cinder-dns-rabbitmq.openstack.svc*"
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: cinder
+      app.kubernetes.io/instance: cinder-broker-dns
+      app.kubernetes.io/component: scheduler
+  duration: "600s"

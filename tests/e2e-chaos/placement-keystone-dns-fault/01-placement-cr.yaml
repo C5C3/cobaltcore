@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR for the Keystone DNS fault chaos test: placement-dns-chaos on
+# the schema placement_dns_chaos, as
+# ../placement-keystone-outage/01-placement-cr.yaml with keystoneEndpoint at
+# the Keystone of 00-keystone-cr.yaml. The endpoint names Keystone by its
+# fully qualified name without a trailing dot; with four dots it is below the
+# resolver's ndots of five, so the resolver tries the search path first, and
+# every lookup it sends starts with keystone-placement-dns.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-dns-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_dns_chaos
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-placement-dns.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

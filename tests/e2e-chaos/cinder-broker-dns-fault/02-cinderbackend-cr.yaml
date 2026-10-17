@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS backend brokerdns-nfs1 of the cinder-broker-dns CR on the kind NFS
+# export /volumes. Its volume service keeps its own DNS: only the scheduler
+# loses the broker's name.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: brokerdns-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-broker-dns
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

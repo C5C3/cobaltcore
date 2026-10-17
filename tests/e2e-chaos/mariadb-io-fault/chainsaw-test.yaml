@@ -1,0 +1,220 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the data directory of a MariaDB turns slow, full,
+# then failing, under a Keystone that writes to it.
+#
+# Fault: three IOChaos objects on /var/lib/mysql of the mariadb container of
+# the suite's own MariaDB, mariadb-io-chaos, one after the other in one fault
+# window: 100 ms of latency on every call (02), ENOSPC on write, create and
+# mkdir (03), and EIO on write and fsync (04). The suite brings a MariaDB of
+# its own because EIO on InnoDB writes can crash the server, and the shared
+# openstack-db serves every suite on the leg.
+#
+# Claim, phase by phase:
+#   latency  A dd of 40 KiB into the data directory takes at least 1 s
+#            (INJECTED-LATENCY-OK). For 120 s MariaDB and the Keystone stay
+#            Ready=True, and the writer gets at least one write acknowledged.
+#   ENOSPC   The dd fails with No space left on device (INJECTED-ENOSPC-OK).
+#            After 120 s the fault is lifted and MariaDB is Ready=True again
+#            within 5 minutes.
+#   EIO      The dd fails with Input/output error (INJECTED-EIO-OK). After
+#            60 s the fault is lifted.
+#   after    MariaDB is Ready=True within 10 minutes, mariadb-check reports OK
+#            for every table of keystone_chaos_io (CHECK-OK), the Keystone is
+#            Ready=True/AllReady, and every project the writer saw created
+#            with 201 is there (ACKED-OK): a write MariaDB acknowledged is not
+#            lost to the I/O errors that followed it. A refused or timed-out
+#            write may be there or not.
+#
+# Assumption: a Keystone on a second MariaDB CR in openstack reaches Ready.
+# Nothing did that before this suite; a stall on any condition there is a
+# finding to report on #1391 with its reason, not something to work around.
+#
+# Blast radius: the IOChaos objects select the pod of mariadb-io-chaos alone.
+# The Keystone, the MariaDB and its claim storage-mariadb-io-chaos-0 are the
+# suite's own and go in its cleanups.
+#
+# Leg: faults. IOChaos injects through the fuse module hack/deploy-infra.sh
+# loads on the kind host.
+#
+# Workload: the token stream of ../lib/workload.sh against keystone-chaos-io.
+# Issuing a token reads the database and writes nothing; it fails while the
+# server is down under EIO and until it is back. The budget is an estimate of
+# that window: no run has measured it yet.
+# Chaos budget: failures=600 recovery=300s
+# Chaos budget measured: 2026-10-17, estimate, failures 300, recovery 240 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mariadb-io-fault
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 8m
+  steps:
+  # ── Step 1: The suite's own MariaDB ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-mariadb-cr.yaml
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: mariadb-io-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch: &io-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no IOChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite mariadb-io-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-io --dep-label=app.kubernetes.io/instance=mariadb-io-chaos --dep-ns=openstack
+    - script:
+        timeout: 2m
+        content: |
+          kubectl get mariadb mariadb-io-chaos -n openstack -o yaml 2>&1 || true
+          kubectl logs mariadb-io-chaos-0 -n openstack -c mariadb --tail=100 2>&1 || true
+          kubectl logs mariadb-io-chaos-0 -n openstack -c mariadb --previous --tail=50 2>&1 || true
+          kubectl logs mariadb-io-writer -n openstack --tail=60 2>&1 || true
+    - podLogs:
+        namespace: mariadb-system
+        selector: app.kubernetes.io/name=mariadb-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump mariadb-io-fault
+    cleanup:
+    - script:
+        timeout: 6m
+        content: |
+          kubectl delete mariadb mariadb-io-chaos -n openstack --ignore-not-found --wait=true --timeout=3m || true
+          kubectl delete pvc storage-mariadb-io-chaos-0 -n openstack --ignore-not-found --wait=true --timeout=2m
+  # ── Step 2: The Keystone on it, the workload and the writer ──────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-io
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: ../lib/workload.sh start mariadb-io-fault -- --streams token --keystone http://keystone-chaos-io.openstack.svc:5000/v3
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          probe_start "$WRITER" --env "OS_PASSWORD=$(admin_password)" \
+            --env KEYSTONE=http://keystone-chaos-io.openstack.svc.cluster.local:5000/v3 \
+            -- python3 -u -c "$(cat write-probe.py)"
+          wait_sentinel "$WRITER" '^WRITE [0-9]+ 201$' 120
+    catch: *io-dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: kubectl delete pod mariadb-io-writer -n openstack --ignore-not-found
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop mariadb-io-fault
+  # ── Step 3: Latency ──────────────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          ../lib/workload.sh mark mariadb-io-fault fault-start
+          fault_inject 02-iochaos-latency.yaml iochaos/mariadb-io-latency
+          canary_dd iochaos/mariadb-io-latency LATENCY "${MARIADB}-0" mariadb /var/lib/mysql/.chaos-canary latency
+          hold 120 yes want-new-writes
+          fault_lift iochaos/mariadb-io-latency
+    catch: *io-dump
+  # ── Step 4: ENOSPC ───────────────────────────────────────────────────────
+  # 10m: the 120 s hold and the 300 s readiness wait after the lift, with the
+  # inject, the canary and the lift around them.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          fault_inject 03-iochaos-enospc.yaml iochaos/mariadb-io-enospc
+          canary_dd iochaos/mariadb-io-enospc ENOSPC "${MARIADB}-0" mariadb /var/lib/mysql/.chaos-canary enospc
+          hold 120 no
+          fault_lift iochaos/mariadb-io-enospc
+          wait_mariadb_ready 300
+    catch: *io-dump
+  # ── Step 5: EIO ──────────────────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          fault_inject 04-iochaos-eio.yaml iochaos/mariadb-io-eio
+          canary_dd iochaos/mariadb-io-eio EIO "${MARIADB}-0" mariadb /var/lib/mysql/.chaos-canary eio
+          hold 60 no
+          fault_lift iochaos/mariadb-io-eio
+          ../lib/workload.sh mark mariadb-io-fault fault-end
+    catch: *io-dump
+  # ── Step 6: Every table is sound and no acknowledged write is lost ───────
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          wait_mariadb_ready 600
+          CHECK="$(mariadb_check keystone_chaos_io)"
+          echo "$CHECK"
+          BAD="$(grep -vE '[[:space:]]OK$' <<<"$CHECK" || true)"
+          if [ -z "$CHECK" ] || [ -n "$BAD" ]; then
+            echo "FAIL: mariadb-check reports tables of keystone_chaos_io that are not OK: ${BAD:-<no output>}"
+            exit 1
+          fi
+          echo CHECK-OK
+          kubectl wait keystone/"$KEYSTONE_CR" -n "$NAMESPACE" --for=condition=Ready --timeout=5m
+          kubectl exec "$WRITER" -n "$NAMESPACE" -- touch /tmp/stop
+          wait_sentinel "$WRITER" '^ACKED-OK ' 300
+          kubectl exec "${MARIADB}-0" -n "$NAMESPACE" -c mariadb -- rm -f /var/lib/mysql/.chaos-canary
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-io
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *io-dump
+  # ── Step 7: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify mariadb-io-fault
+    catch: *io-dump

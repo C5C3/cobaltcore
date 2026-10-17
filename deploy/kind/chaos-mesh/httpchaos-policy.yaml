@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The hostNetwork guard of HTTPChaos (#1391).
+#
+# chaos-tproxy, the HTTPChaos injector, rewires the network namespace of the
+# pod it selects: it creates a bridge there and moves the pod's device onto
+# it. For a hostNetwork pod that namespace is the node's. NetworkChaos refuses
+# hostNetwork pods while controllerManager.allowHostNetworkTesting is false,
+# but Chaos Mesh reads that value in controllers/podnetworkchaos alone, so the
+# refusal does not cover HTTPChaos.
+#
+# No admission mechanism resolves a selector to the pods it matches, and
+# Chaos Mesh 2.8.4 cannot select on spec.hostNetwork (its client-side field
+# matcher lacks the field). The policy therefore admits an HTTPChaos only when
+# its selector pins app.kubernetes.io/name to a workload that never runs
+# hostNetwork, and only when it selects by namespaces and labelSelectors, the
+# two selectors the policy can vet:
+#   - The allowlist names the workloads of the service CRs. nova covers the
+#     Nova CR's API, scheduler, conductor, metadata and console proxy, none
+#     of them hostNetwork; the NovaCompute pool is novacompute and stays out,
+#     as do ovnchassis, neutronmetadataagent and the test DaemonSet
+#     libvirt-e2e.
+#   - UPDATE is matched as well, so a selector cannot be widened after
+#     admission. The controller's own updates (finalizers) leave the selector
+#     alone and pass.
+#   - A Schedule or a Workflow of HTTPChaos is covered too: the controller
+#     creates HTTPChaos objects that pass the same admission.
+#
+# The lab overlay takes this directory as its base
+# (deploy/lab/metal-stack/chaos-mesh), so the lab gets the policy without a
+# file of its own, and EXTERNAL_CLUSTER=true make teardown-infra deletes it
+# with the overlay render.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: chaos-mesh-httpchaos-api-workloads-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [chaos-mesh.org]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [httpchaos]
+  validations:
+    - expression: >-
+        has(object.spec.selector) &&
+        has(object.spec.selector.labelSelectors) &&
+        'app.kubernetes.io/name' in object.spec.selector.labelSelectors &&
+        object.spec.selector.labelSelectors['app.kubernetes.io/name'] in
+        ['keystone', 'placement', 'glance', 'nova', 'neutron', 'cinder', 'barbican', 'horizon']
+      message: >-
+        HTTPChaos must select app.kubernetes.io/name in [keystone, placement,
+        glance, nova, neutron, cinder, barbican, horizon]: chaos-tproxy
+        rewires the selected pod's network namespace, which for a hostNetwork
+        pod is the node's
+    - expression: >-
+        !has(object.spec.selector.pods) &&
+        !has(object.spec.selector.nodes) &&
+        !has(object.spec.selector.nodeSelectors) &&
+        !has(object.spec.selector.fieldSelectors) &&
+        !has(object.spec.selector.annotationSelectors) &&
+        !has(object.spec.selector.expressionSelectors)
+      message: >-
+        HTTPChaos may select by namespaces and labelSelectors only: the policy
+        cannot vet the pods any other selector names
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: chaos-mesh-httpchaos-api-workloads-only
+spec:
+  policyName: chaos-mesh-httpchaos-api-workloads-only
+  validationActions: [Deny]

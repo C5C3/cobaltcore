@@ -178,6 +178,15 @@ reports `ACTIVE`:
 Deleting the server leaves `virsh list --all --uuid` empty and removes the
 instance directory.
 
+The job runs a second suite after this one, `tests/e2e-chaos/nova-instances-io-fault/`,
+under the chaos Chainsaw configuration and after `tests/e2e/infrastructure/chaos-mesh-health`.
+Once the cleanups of `server-boot` have taken the stack down, it brings the same
+stack, libvirtd and pool up again from the same files, by path and under the same
+names. It then puts IOChaos latency, `ENOSPC` and `EIO` on `/var/lib/nova/instances`
+of the pool's `nova-compute` container while a server keeps running. Its local run
+needs `WITH_CHAOS_MESH=true` on top of the infrastructure below.
+[Chaos E2E Test Suites](chaos-e2e-tests.md#nova-instances-io-fault) describes it.
+
 A local run needs one amd64 node, the stack's infrastructure
 (`WITH_OVN_KERNEL_MODULES=true WITH_MESSAGING=true make deploy-infra`) and the
 six operators the nova leg deploys. `make e2e-nova-libvirt` checks the three

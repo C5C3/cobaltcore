@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# RabbitmqCluster of the broker DNS fault chaos test, as
+# ../cinder-broker-pod-kill/00-rabbitmqcluster.yaml under the name
+# cinder-dns-rabbitmq. The suite brings a broker of its own because it closes
+# every connection of it; doing that to the shared one would cut every other
+# suite of the matrix entry. The cluster operator publishes the transport host
+# in the host key of Secret cinder-dns-rabbitmq-default-user, which the
+# cinder-operator copies verbatim (internal/common/messaging/messaging.go) and
+# which the DNSChaos of 03-dnschaos.yaml matches.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: cinder-dns-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi

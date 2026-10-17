@@ -1,0 +1,248 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: memory pressure takes cinder-backup past its limit
+# during a backup, the OOM path #1003 hit in CI.
+#
+# Fault: a StressChaos in the backup container of cinder-backup-stress
+# (03-stresschaos-memory.yaml) that allocates the container's free memory
+# less 64 MiB, so the next backup's buffers take it past its 2Gi limit
+# (operators/cinder/internal/controller/reconcile_backupservice.go). #1003
+# records an OOM kill at that limit during one 1 GiB backup and the restart's
+# "Resetting backup ... to error (was creating)". This suite proves that the
+# OOM path leaves no backup or volume stuck; fixing the footprint is #1003's.
+#
+# Claim, phase by phase:
+#   baseline   The Cinder is Ready=True/AllReady with BackupServiceReady=True,
+#              and the 1 GiB volume bkstress-vol reads available.
+#   stressed   memory.current of the backup container reaches memory.max less
+#              128 MiB within 60 s (INJECTED-MEM-OK, the canary). The backup
+#              bkstress-bk1 of bkstress-vol starts, and within 300 s oom_kill
+#              in memory.events rises or the container's lastState reads
+#              OOMKilled (OOM-OK). A backup that reaches available first fails
+#              with "backup finished under the stress; the OOM path of #1003
+#              was not reached".
+#   failclosed Within 5 minutes of the lift BackupServiceReady=True,
+#              bkstress-bk1 reads error and not creating, and bkstress-vol
+#              reads available and not backing-up (FAILCLOSED-OK).
+#   recovered  The backup bkstress-bk2 reaches available within 600 s
+#              (RECOVERED-OK); the backups and the volume are deleted.
+#
+# A cgroup without memory.max, or with no limit in it, fails the fault step
+# with a line that says which.
+#
+# Blast radius: the StressChaos selects the backup pod of this suite's Cinder,
+# container backup alone. The Cinder and its vhost are the suite's own.
+#
+# Leg: network, with the cinder suites, which the NFS export and the cinder
+# images are loaded for. StressChaos needs no host module.
+#
+# Workload: the volume stream of ../lib/workload.sh against
+# cinder-backup-stress, noauth. It creates, attaches and deletes volumes and
+# never touches the backup service, so the budget is zero and a failed cycle
+# is a defect to find.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-17, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-backup-memory-stress
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: The Cinder with its backup service, the workload, the volume ─
+  # One vhost per suite: Cinder's RPC topics are named after the deployment.
+  # See ../../e2e/cinder/broker-vhost.sh. The step cleanup runs at the end of
+  # the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create cinder-backup-stress cinder-backup-stress-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    - apply:
+        file: 02-cinderbackupbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-backup-stress
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupServiceReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-backup-memory-stress --
+          --streams volume
+          --cinder http://cinder-backup-stress.openstack.svc:8776
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run cinder-bkstress-vol 200 -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-backup-stress.openstack.svc.cluster.local:8776 \
+            volume bkstress-vol --create --size 1 --want available --within 120
+    catch: &bkstress-dump
+    # The lift goes first: every step from the injection to the lift must
+    # leave no StressChaos of this suite behind, and the objects are printed
+    # before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite cinder-backup-memory-stress
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-backup-stress --cr-kind=cinder --dep-label=app.kubernetes.io/instance=cinder-backup-stress --dep-ns=openstack
+    - script:
+        timeout: 2m
+        content: |
+          kubectl logs deployment/cinder-backup-stress-backup -n openstack -c backup --tail=100 2>&1 || true
+          kubectl logs deployment/cinder-backup-stress-backup -n openstack -c backup --previous --tail=50 2>&1 || true
+          kubectl logs cinder-bkstress-backup-watch -n openstack 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 100
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-backup-memory-stress
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete cinder-backup-stress || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-backup-memory-stress
+  # ── Step 2: Fill the backup container, then back the volume up ───────────
+  # memory.current is the canary: a stress that reports AllInjected but runs
+  # outside the container's cgroup leaves it where it was.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          POD="$(kubectl get pods -n "$NAMESPACE" --field-selector=status.phase=Running \
+            -l app.kubernetes.io/instance=cinder-backup-stress,app.kubernetes.io/component=backup \
+            -o jsonpath='{.items[0].metadata.name}')"
+          MAX="$(cgroup_memory "$POD" backup memory.max backup)" || { echo "$MAX"; exit 1; }
+          CURRENT="$(cgroup_memory "$POD" backup memory.current backup)" || { echo "$CURRENT"; exit 1; }
+          OOM="$(cgroup_memory "$POD" backup oom_kill backup)" || { echo "$OOM"; exit 1; }
+          RESTARTS="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[?(@.name=="backup")].restartCount}')"
+          MIB=1048576
+          SIZE="$(((MAX - CURRENT) / MIB - 64))MiB"
+          echo "memory.max ${MAX}, memory.current ${CURRENT}, oom_kill ${OOM}: the stress allocates ${SIZE}"
+          ../lib/workload.sh mark cinder-backup-memory-stress fault-start
+          fault_inject 03-stresschaos-memory.yaml stresschaos/backup-memory-stress SIZE="$SIZE"
+          DEADLINE=$(($(date +%s) + 60))
+          until NOW="$(cgroup_memory "$POD" backup memory.current backup)" && [ "$NOW" -ge $((MAX - 128 * MIB)) ]; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              canary_fail stresschaos/backup-memory-stress "memory.current is ${NOW} of ${MAX} after 60 s"
+            fi
+            sleep 5
+          done
+          echo "memory.current ${NOW} of ${MAX}"
+          echo INJECTED-MEM-OK
+
+          # The probe starts bkstress-bk1 and prints STATUS <status> on every
+          # change until the backup settles; the script watches the cgroup
+          # beside it.
+          probe_start cinder-bkstress-backup-watch -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-backup-stress.openstack.svc.cluster.local:8776 \
+            backup bkstress-bk1 --create --volume bkstress-vol --watch 330
+          DEADLINE=$(($(date +%s) + 300))
+          until SEEN="$(oom_seen "$POD" backup "$OOM" "$RESTARTS")"; do
+            WATCH="$(kubectl logs cinder-bkstress-backup-watch -n "$NAMESPACE" 2>/dev/null || true)"
+            if grep -qx 'STATUS available' <<<"$WATCH"; then
+              echo "$WATCH"
+              echo "FAIL: backup finished under the stress; the OOM path of #1003 was not reached"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "$WATCH"
+              echo "FAIL: no OOM kill in the backup container within 300 s of the backup's start"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "$SEEN"
+          echo OOM-OK
+          fault_lift stresschaos/backup-memory-stress
+          ../lib/workload.sh mark cinder-backup-memory-stress fault-end
+    catch: *bkstress-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete pod cinder-bkstress-backup-watch -n openstack --ignore-not-found
+  # ── Step 3: Nothing is left creating or backing-up ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-backup-stress
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupServiceReady
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          probe_run cinder-bkstress-failclosed 420 -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-backup-stress.openstack.svc.cluster.local:8776 \
+            backup bkstress-bk1 --want error --within 300 --never available \
+            --never-message "bkstress-bk1 reached available after the OOM kill"
+          probe_run cinder-bkstress-volume 180 -- python3 -u -c "$(cat ../lib/probe.py)" cinder \
+            --cinder http://cinder-backup-stress.openstack.svc.cluster.local:8776 \
+            volume bkstress-vol --want available --within 120 --ok FAILCLOSED-OK
+    catch: *bkstress-dump
+  # ── Step 4: A backup completes, then everything of the suite goes ────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PROBE="$(cat ../lib/probe.py)"
+          CINDER=http://cinder-backup-stress.openstack.svc.cluster.local:8776
+          probe_run cinder-bkstress-bk2 720 -- python3 -u -c "$PROBE" cinder --cinder "$CINDER" \
+            backup bkstress-bk2 --create --volume bkstress-vol --want available --within 600 \
+            --ok RECOVERED-OK
+          for backup in bkstress-bk1 bkstress-bk2; do
+            probe_run "cinder-bkstress-delete-${backup#bkstress-}" 360 -- python3 -u -c "$PROBE" cinder \
+              --cinder "$CINDER" backup "$backup" --delete --within 300
+          done
+          probe_run cinder-bkstress-delete-vol 200 -- python3 -u -c "$PROBE" cinder --cinder "$CINDER" \
+            volume bkstress-vol --delete --within 120
+    catch: *bkstress-dump
+  # ── Step 5: Judge the workload against the budget ────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-backup-memory-stress
+    catch: *bkstress-dump

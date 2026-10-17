@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the database DNS fault chaos test. Unique name
+# (keystone-chaos-dbdns) and database (keystone_chaos_dbdns) to avoid
+# conflicts with other test suites. One replica: the DNSChaos of
+# 01-dnschaos.yaml takes the database name away from its one API pod, and the
+# suite reads that pod's readiness.
+#
+# The managed database host is <clusterRef>.<namespace>.svc
+# (internal/common/database/resolve.go), openstack-db.openstack.svc here, and
+# the readiness probe resolves it and connects on every 30-second period
+# (operators/keystone/internal/controller/reconcile_deployment.go).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-dbdns
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_dbdns
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
