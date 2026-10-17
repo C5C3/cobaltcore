@@ -378,16 +378,17 @@ without a pod restart.
 
 ## Tested by
 
-The operator installed with `networkPolicy.enabled=true` and one Keystone CR
-reaching `Ready=True` is exercised on the CI e2e kind cluster by this chainsaw
-suite:
+The operator installed with `networkPolicy.enabled=true` is exercised on the CI
+e2e kind cluster by this chainsaw suite:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 ```
 
-Like the verification steps above, this suite runs on the default `kindnet` CI
-cluster, so it validates that the chart **renders** the policy and that the
-operator **reconciles to Ready** while the (unenforced) policy is present — it
-does **not** assert that blocked egress is actually dropped. Enforcement
-coverage would require a CI job with a NetworkPolicy-enforcing CNI.
+The suite checks that the chart renders the policy and that a Keystone CR
+reaches `Ready=True` while it is present. The primary operator release competes
+for the same leader lease, so a last step runs a probe pod the policy selects:
+its connection to the MariaDB port must be dropped, and the Keystone API must
+answer it through the Keystone Service on 5000. The step waits for the drop
+first and fails when it never comes, so it passes only on a cluster that
+enforces the policy, as the CI kind cluster does.

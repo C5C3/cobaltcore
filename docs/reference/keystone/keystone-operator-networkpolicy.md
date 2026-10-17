@@ -205,7 +205,7 @@ defense-in-depth backstop that catches that case.
 | --- | --- |
 | `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, the Keystone API health-check egress rule (TCP 5000 and 5050) the chart adds through the hook, its position with DNS egress off, the `cidrs` fail-closed guard; the shared rules are pinned by `operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml` |
 | `operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml` | Schema tests for `networkPolicy` (invalid CIDR, out-of-range port, non-boolean `enabled`) |
-| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True` |
+| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True`, and a probe pod the policy selects is dropped on the MariaDB port and reaches the Keystone API through its Service |
 
 Run the helm-unittest suite locally with:
 
