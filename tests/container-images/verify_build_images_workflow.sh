@@ -10,9 +10,9 @@
 # note: the build-images workflow was refactored to delegate step-level
 # logic to composite actions under .github/actions/ and helper scripts under
 # hack/. Many assertions below therefore traverse those composite-action YAML
-# files (supply-chain-attest, merge-manifest-and-attest, build-push-image,
-# build-nix-image, checkout-service-source, derive-service-tags,
-# setup-docker-registry) and the hack/ci-merge-manifest.sh helper, instead of
+# files (supply-chain-attest, merge-manifest-and-attest, build-nix-image,
+# checkout-service-source, derive-service-tags, setup-docker-registry) and
+# the hack/ci-merge-manifest.sh helper, instead of
 # inspecting the workflow itself. The workflow is still verified for job
 # topology, permissions, concurrency, and correct composite-action wiring.
 
@@ -25,7 +25,6 @@ WORKFLOW="$PROJECT_ROOT/.github/workflows/build-images.yaml"
 # Composite actions and hack scripts that now host step-level logic.
 ACTION_SUPPLY_CHAIN="$PROJECT_ROOT/.github/actions/supply-chain-attest/action.yaml"
 ACTION_MERGE_MANIFEST="$PROJECT_ROOT/.github/actions/merge-manifest-and-attest/action.yaml"
-ACTION_BUILD_PUSH="$PROJECT_ROOT/.github/actions/build-push-image/action.yaml"
 ACTION_BUILD_NIX="$PROJECT_ROOT/.github/actions/build-nix-image/action.yaml"
 ACTION_CHECKOUT_SOURCE="$PROJECT_ROOT/.github/actions/checkout-service-source/action.yaml"
 ACTION_DERIVE_TAGS="$PROJECT_ROOT/.github/actions/derive-service-tags/action.yaml"
@@ -171,52 +170,6 @@ test_all_jobs_defined() {
   done
 }
 
-# --- distro-package image build/merge job structure ---
-# test_distro_image_jobs <image> <verify-script>
-# The release-independent images built from distro packages alone share one
-# job shape: build-<image> and merge-<image>-image, the merge step id
-# merge-<image>.
-test_distro_image_jobs() {
-  local img="$1" script="$2"
-  echo "Test: $img job structure"
-
-  local needs
-  needs=$(yq_raw ".jobs[\"build-$img\"][\"needs\"][]" "$WORKFLOW" || true)
-  assert_contains "build-$img needs lint-dockerfiles" "$needs" "lint-dockerfiles"
-  assert_contains "build-$img needs prepare" "$needs" "prepare"
-
-  # Release-independent: no release axis, a static multi-arch include matrix.
-  local matrix_platforms
-  matrix_platforms=$(yq_raw ".jobs[\"build-$img\"][\"strategy\"][\"matrix\"][\"include\"][][\"platform\"]" "$WORKFLOW" || true)
-  assert_contains "build-$img matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
-  assert_contains "build-$img matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
-
-  # PR-inline verification wiring (the tempest pattern).
-  local verify_script
-  verify_script=$(yq_raw ".jobs[\"build-$img\"][\"steps\"][] | select(.id == \"build-$img\") | .with[\"verify-script\"]" "$WORKFLOW" || echo "null")
-  assert_eq "build step wires the verify script" "$script" "$verify_script"
-
-  # The lint matrix covers the new Dockerfile.
-  local lint_matrix
-  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_contains "lint-dockerfiles covers the $img Dockerfile" \
-    "$lint_matrix" "images/$img/Dockerfile"
-
-  # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
-  local merge_if
-  merge_if=$(yq_raw ".jobs[\"merge-$img-image\"][\"if\"]" "$WORKFLOW" || echo "null")
-  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
-
-  local merge_needs
-  merge_needs=$(yq_raw ".jobs[\"merge-$img-image\"][\"needs\"][]" "$WORKFLOW" || true)
-  assert_contains "merge job needs the build job" "$merge_needs" "build-$img"
-
-  local merge_tags
-  merge_tags=$(yq_raw ".jobs[\"merge-$img-image\"][\"steps\"][] | select(.id == \"merge-$img\") | .with[\"tags\"]" "$WORKFLOW" || echo "null")
-  assert_contains "merge tags include :latest" "$merge_tags" "$img:latest"
-  assert_contains "merge tags include the commit SHA" "$merge_tags" "$img"':${{ github.sha }}'
-}
-
 # --- libvirt keeper tag: minted once on main, from the full history ---
 test_libvirt_keeper_tag() {
   echo "Test: merge-libvirt-image mints the keeper tag on main from the full history"
@@ -333,9 +286,10 @@ test_setup_nix_action() {
 # test_nix_image_jobs <image> <verify-script> <attribute> [<tags-step>]
 # A release-independent image built by Nix: build-<image> builds the flake
 # attribute through build-nix-image behind nix-flake-check instead of
-# lint-dockerfiles, and merge-<image>-image has the shape of the merge job of
-# every distro-package image. With <tags-step>, the merge step takes its tags
-# from that step, which tags <sha> on every branch and latest on main only.
+# lint-dockerfiles, and merge-<image>-image merges the per-platform digests
+# under the :latest and :<sha> tags. With <tags-step>, the merge step takes
+# its tags from that step, which tags <sha> on every branch and latest on
+# main only.
 test_nix_image_jobs() {
   local img="$1" script="$2" attribute="$3" tags_step="${4:-}"
   echo "Test: $img job structure (Nix-built)"
@@ -366,6 +320,8 @@ test_nix_image_jobs() {
     "$(yq_raw "$step | .with[\"verify-image-ref\"]" "$WORKFLOW" || true)" "$img:pr-verify"
   assert_contains "build step exports digests the merge job collects" \
     "$(yq_raw "$step | .with[\"artifact-name\"]" "$WORKFLOW" || true)" "digests-$img-"
+  assert_contains "build step uploads a vulnix report per platform" \
+    "$(yq_raw "$step | .with[\"vulnix-artifact-name\"]" "$WORKFLOW" || true)" "vulnix-$img-"
 
   assert_cachix_step "build-$img"
 
@@ -373,9 +329,6 @@ test_nix_image_jobs() {
   lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
   assert_not_contains "lint-dockerfiles does not list a $img Dockerfile" \
     "$lint_matrix" "images/$img/Dockerfile"
-
-  assert_eq "build-$img does not resolve the ubuntu:noble digest" "0" \
-    "$(yq_raw "[$job.steps[] | select(.run == \"hack/ci-resolve-ubuntu-digest.sh\")] | length" "$WORKFLOW" || true)"
 
   # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
   local merge_if
@@ -491,14 +444,30 @@ test_nix_inputs_in_triggers() {
 
   # The other Nix-built release-independent images rebuild on the same inputs.
   local name globs
-  for name in ovn hvo kna; do
+  for name in ovn proxy hvo kna; do
     globs=$(yq_raw ".${name}[]" - <<<"$filters" || true)
     for glob in flake.nix flake.lock 'nix/lib/**' '.github/actions/build-nix-image/**' '.github/actions/setup-nix/**'; do
       assert_eq "the $name filter names $glob" "1" "$(grep -cxF "$glob" <<<"$globs" || true)"
     done
   done
-  assert_eq "the ovn filter names tests/lib/build_tools.sh" "1" \
-    "$(grep -cxF 'tests/lib/build_tools.sh' <<<"$(yq_raw '.ovn[]' - <<<"$filters" || true)" || true)"
+  for name in ovn proxy; do
+    assert_eq "the $name filter names tests/lib/build_tools.sh" "1" \
+      "$(grep -cxF 'tests/lib/build_tools.sh' <<<"$(yq_raw ".${name}[]" - <<<"$filters" || true)" || true)"
+  done
+  globs=$(yq_raw '.proxy[]' - <<<"$filters" || true)
+  for glob in 'images/keystone-federation-proxy/**' 'tests/container-images/verify_keystone_federation_proxy.sh'; do
+    assert_eq "the proxy filter names $glob" "1" "$(grep -cxF "$glob" <<<"$globs" || true)"
+  done
+}
+
+# --- No step resolves the ubuntu:noble digest any more ---
+test_ubuntu_digest_script_retired() {
+  echo "Test: no job resolves the ubuntu:noble digest"
+
+  assert_eq "no workflow step runs hack/ci-resolve-ubuntu-digest.sh" "0" \
+    "$(yq_raw '[.jobs[].steps[] | select(.run == "hack/ci-resolve-ubuntu-digest.sh")] | length' "$WORKFLOW" || true)"
+  assert_eq "hack/ci-resolve-ubuntu-digest.sh does not exist" "false" \
+    "$([ -e "$PROJECT_ROOT/hack/ci-resolve-ubuntu-digest.sh" ] && echo true || echo false)"
 }
 
 # --- The service images build from their flake attribute through build-nix-image ---
@@ -632,8 +601,6 @@ test_ovn_jobs() {
   echo "Test: ovn job structure"
 
   assert_nix_build_job ovn ovn ovn-image tests/container-images/verify_ovn.sh
-  assert_eq "build-ovn does not resolve the ubuntu:noble digest" "0" \
-    "$(yq_raw '[.jobs["build-ovn"].steps[] | select(.run == "hack/ci-resolve-ubuntu-digest.sh")] | length' "$WORKFLOW" || true)"
 
   # Merge job: PR-skipped, needs the build.
   local merge_if
@@ -892,12 +859,10 @@ test_nova_compute_jobs() {
   assert_file_contains "derive-service-tags falls back to the service name" \
     "$ACTION_DERIVE_TAGS" 'IMAGE_NAME:-${MATRIX_SERVICE}'
 
-  # The image has no Dockerfile; the proxy and the operators are what hadolint
-  # still lints.
+  # The image has no Dockerfile; the operators are what hadolint still lints.
   local lint_matrix
   lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
-  assert_eq "lint-dockerfiles lists the two Dockerfiles left" \
-    "$(printf '%s\n' images/keystone-federation-proxy/Dockerfile operators/Dockerfile)" "$lint_matrix"
+  assert_eq "lint-dockerfiles lists the one Dockerfile left" "operators/Dockerfile" "$lint_matrix"
 
   # Merge job: PR-skipped, needs the build, merges only compute digests.
   local merge_if merge_needs merge_pattern merge_tags_run
@@ -1104,7 +1069,7 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "the pull-request trigger names the kna commit resolver" \
     "$pr_paths" "hack/ci-resolve-kna-commit.sh"
   assert_contains "the pull-request trigger names one composite action" \
-    "$pr_paths" ".github/actions/build-push-image/**"
+    "$pr_paths" ".github/actions/build-nix-image/**"
   assert_contains "the pull-request trigger names the setup-nix action" \
     "$pr_paths" ".github/actions/setup-nix/**"
   assert_contains "the pull-request trigger names the build-tools helper" \
@@ -1217,9 +1182,7 @@ test_pr_single_arch_load() {
   assert_file_contains "build-matrix script branches on pull_request" "$HACK_GEN_MATRIX" "pull_request"
   assert_file_contains "build-matrix script references linux/arm64" "$HACK_GEN_MATRIX" "linux/arm64"
 
-  # PR single-arch "load" branch lives in build-push-image composite;
-  # workflow passes push-by-digest=false on PR to activate the load path.
-  assert_file_contains "build-push-image toggles load on push-by-digest" "$ACTION_BUILD_PUSH" "push-by-digest == 'false'"
+  # The workflow passes push-by-digest=false on PR to activate the load path.
   local pbd
   pbd=$(yq_raw '.jobs["build-service-images"]["steps"][] | select(.id == "build-service") | .with["push-by-digest"]' "$WORKFLOW" || true)
   assert_contains "build-service push-by-digest conditioned on pull_request" "$pbd" "pull_request"
@@ -1317,24 +1280,15 @@ test_actions_have_version_comments() {
   fi
 }
 
-# --- GHA caching present for the Docker-built base images ---
-test_gha_caching_present() {
-  echo "Test: GHA caching present"
+# --- No GHA cache: every image of the workflow builds with Nix ---
+test_no_gha_cache() {
+  echo "Test: no GHA cache"
 
-  # cache-from / cache-to live in the build-push-image composite, which
-  # derives the scope from the cache-scope input. The Nix-built images cache
-  # through Cachix instead, so only the proxy names a GHA cache scope.
-  assert_file_contains "cache-from: type=gha present" "$ACTION_BUILD_PUSH" "cache-from: type=gha"
-  assert_file_contains "cache-to: type=gha present" "$ACTION_BUILD_PUSH" "cache-to: type=gha"
-
-  local proxy_scope scopes
-  proxy_scope=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["cache-scope"]' "$WORKFLOW" || true)
-  assert_eq "build-keystone-federation-proxy passes cache-scope keystone-federation-proxy" \
-    "keystone-federation-proxy" "$proxy_scope"
-  # The libvirt and nova-compute builds left BuildKit with their
-  # Dockerfiles, and so did the base images they were built from.
-  scopes=$(yq_raw '.jobs[].steps[] | select(.with["cache-scope"] != null) | .with["cache-scope"]' "$WORKFLOW" || true)
-  assert_eq "the proxy is the one build step with a GHA cache scope" "keystone-federation-proxy" "$scopes"
+  # The Nix-built images cache through Cachix, so no step names a GHA cache
+  # scope.
+  assert_eq "no build step passes a cache-scope" "0" \
+    "$(yq_raw '[.jobs[].steps[] | select(.with["cache-scope"] != null)] | length' "$WORKFLOW" || true)"
+  assert_file_not_contains "the workflow names no type=gha cache" "$WORKFLOW" "type=gha"
 }
 
 # --- All jobs have timeout-minutes ---
@@ -1819,77 +1773,6 @@ test_build_provenance_push_to_registry() {
   assert_eq "supply-chain-attest provenance push-to-registry is true" "true" "$push"
 }
 
-# --- build-push-image forwards the generated labels ---
-test_build_push_image_has_labels_input() {
-  echo "Test: build-push-image forwards meta.outputs.labels to docker/build-push-action"
-
-  local labels
-  labels=$(yq_raw '.runs.steps[] | select(.id == "build") | .with.labels' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "docker/build-push-action labels references steps.meta.outputs.labels" "$labels" "steps.meta.outputs.labels"
-}
-
-# --- OCI base image labels present via extra-labels input ---
-test_oci_base_labels_in_build_steps() {
-  echo "Test: OCI base image labels present via extra-labels"
-
-  # build-push-image exposes an extra-labels input, used to inject
-  # org.opencontainers.image.base.{name,digest} per call site.
-  local proxy_extra
-  proxy_extra=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["extra-labels"]' "$WORKFLOW" || true)
-
-  assert_contains "build-keystone-federation-proxy extra-labels include base.name" "$proxy_extra" "org.opencontainers.image.base.name"
-  assert_contains "build-keystone-federation-proxy extra-labels include base.digest" "$proxy_extra" "org.opencontainers.image.base.digest"
-
-  # build-push-image forwards extra-labels into docker/build-push-action labels input.
-  assert_file_contains "build-push-image forwards extra-labels" "$ACTION_BUILD_PUSH" "inputs.extra-labels"
-}
-
-# --- metadata-action labels include OCI title ---
-test_metadata_action_labels_include_oci_title() {
-  echo "Test: metadata-action labels include OCI title"
-
-  local labels
-  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image meta labels include OCI title" "$labels" "org.opencontainers.image.title"
-
-  # The build-push-image caller must pass a labels-title input so
-  # metadata-action can render it.
-  local proxy
-  proxy=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["labels-title"]' "$WORKFLOW" || true)
-  assert_eq "build-keystone-federation-proxy passes labels-title" "keystone-federation-proxy" "$proxy"
-}
-
-# --- metadata-action labels include OCI description ---
-test_metadata_action_labels_include_oci_description() {
-  echo "Test: metadata-action labels include OCI description"
-
-  local labels
-  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image meta labels include OCI description" "$labels" "org.opencontainers.image.description"
-
-  local proxy
-  proxy=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["labels-description"]' "$WORKFLOW" || true)
-  assert_not_empty "build-keystone-federation-proxy passes labels-description" "$proxy"
-}
-
-# --- metadata-action labels include OCI licenses ---
-test_metadata_action_labels_include_oci_licenses() {
-  echo "Test: metadata-action labels include OCI licenses"
-
-  local labels
-  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image meta labels include Apache-2.0 license" "$labels" "org.opencontainers.image.licenses=Apache-2.0"
-}
-
-# --- metadata-action labels include OCI vendor ---
-test_metadata_action_labels_include_oci_vendor() {
-  echo "Test: metadata-action labels include OCI vendor"
-
-  local labels
-  labels=$(yq_raw '.runs.steps[] | select(.id == "meta") | .with.labels' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image meta labels include vendor" "$labels" "org.opencontainers.image.vendor"
-}
-
 # --- cosign-installer gate for merge-service-images ---
 test_cosign_installer_in_build_service_images() {
   echo "Test: merge-service-images installs cosign via setup-docker-registry"
@@ -2030,17 +1913,11 @@ test_grype_scan_steps_cover_both_contexts() {
   assert_contains "grype-sbom step guarded by scan-mode sbom" "$sbom_if" "scan-mode == 'sbom'"
   assert_contains "grype-image step guarded by scan-mode image" "$image_if" "scan-mode == 'image'"
 
-  # merge-service-images is PR-gated at the job level; build-push-image
-  # handles service-image PR scans in image mode.
+  # merge-service-images is PR-gated at the job level; test_build_nix_image_action
+  # covers the PR scan of build-nix-image in image mode.
   local service_merge_job_if
   service_merge_job_if=$(yq_raw '.jobs["merge-service-images"]["if"]' "$WORKFLOW" || true)
   assert_contains "service SBOM scan has push-only guard (job-level)" "$service_merge_job_if" "!= 'pull_request'"
-
-  local build_push_scan_if build_push_scan_mode
-  build_push_scan_if=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .if' "$ACTION_BUILD_PUSH" || true)
-  build_push_scan_mode=$(yq_raw '.runs.steps[] | select(.uses and (.uses | test("./.github/actions/supply-chain-attest"))) | .with["scan-mode"]' "$ACTION_BUILD_PUSH" || true)
-  assert_contains "build-push-image supply-chain call guarded on push-by-digest=false (PR)" "$build_push_scan_if" "push-by-digest == 'false'"
-  assert_eq "build-push-image supply-chain call uses scan-mode=image" "image" "$build_push_scan_mode"
 }
 
 # --- Grype scan SBOM input is wired through supply-chain-attest ---
@@ -2278,7 +2155,7 @@ test_pull_request_trigger
 echo ""
 test_all_jobs_defined
 echo ""
-test_distro_image_jobs keystone-federation-proxy tests/container-images/verify_keystone_federation_proxy.sh
+test_nix_image_jobs keystone-federation-proxy tests/container-images/verify_keystone_federation_proxy.sh keystone-federation-proxy-image
 echo ""
 test_nix_image_jobs backup-shifter tests/container-images/verify_backup_shifter.sh backup-shifter-image
 echo ""
@@ -2292,6 +2169,8 @@ echo ""
 test_build_nix_image_action
 echo ""
 test_nix_inputs_in_triggers
+echo ""
+test_ubuntu_digest_script_retired
 echo ""
 test_nix_lock_check_job
 echo ""
@@ -2341,7 +2220,7 @@ test_actions_pinned_to_sha
 echo ""
 test_actions_have_version_comments
 echo ""
-test_gha_caching_present
+test_no_gha_cache
 echo ""
 test_timeout_minutes_on_all_jobs
 echo ""
@@ -2398,18 +2277,6 @@ echo ""
 test_build_provenance_steps_pr_skip_guard
 echo ""
 test_build_provenance_push_to_registry
-echo ""
-test_build_push_image_has_labels_input
-echo ""
-test_oci_base_labels_in_build_steps
-echo ""
-test_metadata_action_labels_include_oci_title
-echo ""
-test_metadata_action_labels_include_oci_description
-echo ""
-test_metadata_action_labels_include_oci_licenses
-echo ""
-test_metadata_action_labels_include_oci_vendor
 echo ""
 test_cosign_installer_in_build_service_images
 echo ""

@@ -73,7 +73,7 @@ test_normalize_owner_count() {
 }
 
 # --- Test 4: supply-chain-attest composite action usage ---
-# supply-chain-attest is now used via build-push-image and
+# supply-chain-attest is now used via build-nix-image and
 # merge-manifest-and-attest composites, so search all action files.
 test_supply_chain_attest_usage() {
   echo "Test: supply-chain-attest composite action used >= 2 times (across actions)"
@@ -122,7 +122,7 @@ test_checkout_service_source_usage() {
 }
 
 # --- Test 7: export-digest composite action usage ---
-# export-digest is now used via build-push-image composite.
+# export-digest is now used via build-nix-image composite.
 test_export_digest_usage() {
   echo "Test: export-digest composite action used >= 1 time (across actions)"
 
@@ -198,19 +198,18 @@ test_no_inline_scripts_over_5_lines() {
   fi
 }
 
-# --- Test 11: build-push-image composite action usage ---
-test_build_push_image_usage() {
-  echo "Test: build-push-image composite action used >= 1 time"
+# --- Test 11: the build-push-image composite action is retired ---
+test_build_push_image_retired() {
+  echo "Test: build-push-image composite action is gone and unused"
 
-  # keystone-federation-proxy is the one image left on a Dockerfile in this
-  # workflow; every other image builds through build-nix-image.
+  # Every image of this workflow builds through build-nix-image.
   local count
-  count=$(grep -c '\./.github/actions/build-push-image' "$WORKFLOW" || true)
-  if [[ "$count" -ge 1 ]]; then
-    echo "  PASS: build-push-image used $count times (>= 1)"
+  count=$(grep -c 'build-push-image' "$WORKFLOW" || true)
+  if [[ ! -e "$PROJECT_ROOT/.github/actions/build-push-image" ]] && [[ "$count" -eq 0 ]]; then
+    echo "  PASS: .github/actions/build-push-image is absent and the workflow names it 0 times"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: build-push-image used $count times (expected >= 1)"
+    echo "  FAIL: .github/actions/build-push-image exists or the workflow names it $count times (expected absent, 0)"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -250,7 +249,7 @@ test_path_triggers_include_extracted_components() {
   # The pull-request trigger names the components this workflow actually
   # reaches, one entry each, so a change to a component it never calls no
   # longer starts an image build.
-  for pattern in '.github/actions/build-push-image/\*\*' 'hack/ci-generate-build-matrix.sh'; do
+  for pattern in '.github/actions/build-nix-image/\*\*' 'hack/ci-generate-build-matrix.sh'; do
     if ! grep -q "$pattern" "$WORKFLOW"; then
       echo "  FAIL: $pattern missing from the pull_request trigger"
       missing=$((missing + 1))
@@ -284,7 +283,7 @@ test_ci_merge_manifest_usage
 echo ""
 test_no_inline_scripts_over_5_lines
 echo ""
-test_build_push_image_usage
+test_build_push_image_retired
 echo ""
 test_merge_manifest_and_attest_usage
 echo ""

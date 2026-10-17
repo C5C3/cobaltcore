@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Composite action building a container image from a flake attribute, the
-# Nix counterpart of build-push-image (docs/reference/ci-cd/nix-image-build.md).
+# Composite action building a container image from a flake attribute
+# (docs/reference/ci-cd/nix-image-build.md).
 # `nix build` yields a dockerTools.streamLayeredImage: a script that writes
 # the image as a tar stream, not a BuildKit build. Every run scans the store
 # paths of the image with vulnix against NVD feeds fetched from a GitHub
@@ -12,8 +12,7 @@
 #   pull request  load the stream into Docker, scan the loaded image with
 #                 Grype and run the verify script against it
 #   push          write the stream to a tar and push it by digest with skopeo,
-#                 then export the digest the merge job reads, exactly as for a
-#                 Docker-built image
+#                 then export the digest the merge job reads
 #
 # The push goes through skopeo because there is no BuildKit build to push.
 # The docker transport's `@@unknown-digest@@` suffix pushes without a tag

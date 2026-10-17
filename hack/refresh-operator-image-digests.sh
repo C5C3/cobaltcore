@@ -96,8 +96,7 @@ have_curl() {
 # $1: image reference (e.g. ghcr.io/c5c3/keystone-operator:latest)
 #
 # Echoes the digest (sha256:...) on stdout; returns non-zero when the
-# registry is unreachable or the resolved digest is empty. Same idiom as
-# hack/ci-resolve-ubuntu-digest.sh.
+# registry is unreachable or the resolved digest is empty.
 # ---------------------------------------------------------------------------
 resolve_image_digest_via_docker() {
   local image="$1"
