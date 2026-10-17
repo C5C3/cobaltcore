@@ -16,11 +16,11 @@ run that paid for the lesson; the lesson itself is the part to carry.
   **libraries** too, not just the service: glance itself is unpinned, but
   `glance_store`/`boto3` are — the driver extra must resolve against the
   existing pins.
-- **hadolint matrix is static** in `build-images.yaml` — new Dockerfiles
-  must be added by hand even though the build matrix auto-discovers. So
-  are the changes job's `ALL_SERVICES` list, the `svc_<svc>` paths filter
-  and the `FILTER_svc_<svc>` env line (plus the option-catalog trigger
-  lists when the build re-derives the service's catalog);
+- **The service lists of `build-images.yaml` are static** even though the
+  build matrix auto-discovers: the changes job's `ALL_SERVICES` list, the
+  `svc_<svc>` paths filter and the `FILTER_svc_<svc>` env line (plus the
+  option-catalog trigger lists when the build re-derives the service's
+  catalog) are added by hand;
   `tests/unit/ci/build_images_services_lockstep_test.sh` fails when one is
   missing.
 - **Image patches need upstream test hunks:** `test-service-images (<svc>,

@@ -12,9 +12,9 @@
 # says Nix or Docker. Every directory under images/ and every operator with an
 # operators/<op>/go.mod (as <op>-operator) needs a row. An image row that says
 # Nix needs images/<name>/image.nix and no Dockerfile; a row that says Docker
-# needs the Dockerfile and no image.nix. An operator row that says Nix needs
-# the vendor hash operators/<op>/vendor.json the flake builds it with; one
-# that says Docker needs the shared operators/Dockerfile.
+# needs the Dockerfile and no image.nix. An operator row says Nix, the only
+# build of an operator image, and needs the vendor hash
+# operators/<op>/vendor.json the flake builds it with.
 # check_status_table prints one problem per line, sorted, and nothing for a
 # consistent tree. The fixture tests prove each message on a scratch tree
 # before the last test runs the check on the repository.
@@ -120,10 +120,6 @@ check_status_table() {
           Nix)
             [[ -f "$root/operators/$op/vendor.json" ]] ||
               echo "$name says Nix but operators/$op/vendor.json is missing"
-            ;;
-          Docker)
-            [[ -f "$root/operators/Dockerfile" ]] ||
-              echo "$name says Docker but operators/Dockerfile is missing"
             ;;
           *) echo "$name has no build column" ;;
         esac
@@ -297,17 +293,14 @@ test_nix_operator_row_without_vendor_json() {
     "$(check_status_table "$root")"
 }
 
-test_docker_operator_row_without_the_dockerfile() {
-  echo "Test: an operator row that says Docker without operators/Dockerfile is reported"
+test_docker_operator_row() {
+  echo "Test: an operator row that says Docker is reported"
 
   local root
   root="$(build_fixture)"
   rewrite "$root/$PAGE" 's/^| `x-operator` | Nix |/| `x-operator` | Docker |/'
-  assert_eq "operators/Dockerfile missing" "x-operator says Docker but operators/Dockerfile is missing" \
+  assert_eq "an operator image builds with Nix only" "x-operator has no build column" \
     "$(check_status_table "$root")"
-
-  : >"$root/operators/Dockerfile"
-  assert_eq "the shared Dockerfile satisfies a Docker row" "" "$(check_status_table "$root")"
 }
 
 test_unknown_build_value() {
@@ -364,7 +357,7 @@ test_nix_row_with_a_dockerfile
 test_docker_row_with_image_nix
 test_docker_row_without_a_dockerfile
 test_nix_operator_row_without_vendor_json
-test_docker_operator_row_without_the_dockerfile
+test_docker_operator_row
 test_unknown_build_value
 test_row_naming_no_directory
 test_repository_table_matches_the_tree
