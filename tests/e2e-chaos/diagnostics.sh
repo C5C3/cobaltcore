@@ -28,6 +28,9 @@
 
 set -euo pipefail
 
+# shellcheck source=tests/e2e-chaos/lib/faults.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/faults.sh"
+
 MODE="${1:?Usage: diagnostics.sh <baseline|chaos> <cr-name> [options]}"
 CR_NAME="${2:?Usage: diagnostics.sh <baseline|chaos> <cr-name> [options]}"
 shift 2
@@ -81,9 +84,13 @@ case "$MODE" in
     fi
 
     # ── Chaos: Chaos Mesh experiment status ──────────────────────────────────
-    # Report both PodChaos and NetworkChaos experiments.
+    # Report the experiments of every kind the suites inject (CHAOS_KINDS of
+    # lib/faults.sh), in the suite's namespace and, by the chaos.c5c3.io/suite
+    # label, in every namespace, so a chaos object is shown wherever its suite
+    # put it.
     echo "=== Chaos Mesh experiment status ==="
-    kubectl get podchaos,networkchaos -n "$NAMESPACE" -o wide 2>&1 || true
+    kubectl get "$CHAOS_KINDS" -n "$NAMESPACE" -o wide 2>&1 || true
+    kubectl get "$CHAOS_KINDS" -A -l chaos.c5c3.io/suite -o wide 2>&1 || true
 
     # ── Chaos: ESO ExternalSecret conditions (optional) ──────────────────────
     if [ "$INCLUDE_ESO" = true ]; then
