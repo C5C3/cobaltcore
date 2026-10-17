@@ -118,6 +118,15 @@ serviceAccount:
 # NetworkPolicy for operator pod egress restriction.
 # Default-off (opt-in) to preserve upgrade compatibility for clusters whose
 # kube-apiserver CIDR or DNS layout does not match the defaults below.
+# With enabled=true the chart also admits the operator's API health check:
+# egress on TCP 8774 to the pods labelled app.kubernetes.io/name=nova and
+# app.kubernetes.io/managed-by=nova-operator, in any namespace. No value
+# configures it.
+# Two more rules admit TCP 5000 and 5050 to the keystone pods and TCP 8778
+# to the placement pods for NovaCompute. They match pods in this cluster
+# only: a Keystone or Placement URL that resolves elsewhere (a public Gateway
+# hostname, an endpoint override, an external Keystone) needs a second
+# NetworkPolicy of your own selecting the operator pod.
 networkPolicy:
   # When true, a NetworkPolicy is rendered that targets the operator
   # pod and default-denies both ingress and egress except for the rules below.
