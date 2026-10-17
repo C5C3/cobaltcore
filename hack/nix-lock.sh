@@ -9,7 +9,7 @@
 # Usage, from anywhere in the repository:
 #   hack/nix-lock.sh <name> <release>   write one lock
 #   hack/nix-lock.sh --all              write every lock, the noVNC hash and
-#                                       the three image pins, and delete the
+#                                       the four image pins, and delete the
 #                                       locks nothing pins
 #   hack/nix-lock.sh --check            run --all, then exit 1 when the tree
 #                                       under nix/locks/, images/nova/novnc.json
@@ -39,9 +39,12 @@
 #                   the committed uv.lock so a rerun with unchanged inputs
 #                   writes the same lock
 #
-# --all also prefetches the noVNC commit images/nova/novnc.json names and
-# writes its hash into that file, and writes the pins of the three images
-# built from an upstream commit:
+# --all also prefetches the commits of the two {version, rev, hash} pins,
+# images/nova/novnc.json (noVNC) and
+# images/keystone-federation-proxy/source.json (the mod_auth_openidc of the
+# federation proxy), and writes each hash into its file. A rev that is not a
+# 40-character commit stops the run before the prefetch. It also writes the
+# pins of the other three images built from an upstream commit:
 #   images/ovn/source.json
 #                   the NAR hash of the OVN commit "rev" names, and under
 #                   "ovs" the commit the 'ovs' gitlink names at that commit
@@ -430,25 +433,29 @@ lock() {
   echo "nix-lock.sh: wrote ${DEST}"
 }
 
-# lock_novnc writes the NAR hash of the noVNC commit images/nova/novnc.json
-# names into that file, in the key order version, rev, hash.
-lock_novnc() {
-  local pin=images/nova/novnc.json rev hash
-  TMP=$(mktemp -d)
-  trap 'rm -rf "$TMP"' EXIT
-  rev=$(jq -r '.rev' "$pin")
-  hash=$(prefetch "github:novnc/noVNC/${rev}" | jq -r '.hash')
-  jq --arg hash "$hash" '{version: .version, rev: .rev, hash: $hash}' "$pin" >"${TMP}/novnc.json"
-  cat "${TMP}/novnc.json" >"$pin"
-  echo "nix-lock.sh: wrote ${pin}"
-}
-
 # check_rev exits 1 unless $2 is a 40-character commit; $1 is the pin file.
 check_rev() {
   if [[ ! "$2" =~ ^[0-9a-f]{40}$ ]]; then
     echo "nix-lock.sh: $1: rev is not a 40-character commit" >&2
     exit 1
   fi
+}
+
+# lock_tag_pin <pin> <owner/repo> writes the NAR hash of the commit a
+# {version, rev, hash} pin names into that pin, in the key order version,
+# rev, hash: images/nova/novnc.json and
+# images/keystone-federation-proxy/source.json. Every failure exits before
+# the pin is written.
+lock_tag_pin() {
+  local pin="$1" rev hash
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  rev=$(jq -r '.rev' "$pin")
+  check_rev "$pin" "$rev"
+  hash=$(prefetch "github:$2/${rev}" | jq -r '.hash')
+  jq --arg hash "$hash" '{version: .version, rev: .rev, hash: $hash}' "$pin" >"${TMP}/pin.json"
+  cat "${TMP}/pin.json" >"$pin"
+  echo "nix-lock.sh: wrote ${pin}"
 }
 
 # lock_ovn writes images/ovn/source.json in the key order version, rev, hash,
@@ -545,10 +552,11 @@ lock_all() {
     wanted["$release/tempest"]=1
     (lock tempest "$release")
   done
-  (lock_novnc)
+  (lock_tag_pin images/nova/novnc.json novnc/noVNC)
   (lock_ovn)
   (lock_go_source openstack-hypervisor-operator cobaltcore-dev/openstack-hypervisor-operator)
   (lock_go_source kvm-node-agent cobaltcore-dev/kvm-node-agent)
+  (lock_tag_pin images/keystone-federation-proxy/source.json OpenIDC/mod_auth_openidc)
 
   shopt -s nullglob
   for dir in nix/locks/*/ nix/locks/*/*/; do
