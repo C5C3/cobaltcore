@@ -105,43 +105,30 @@ kubectl wait helmrelease/barbican-operator -n barbican-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The rendered policy declares `policyTypes: [Ingress, Egress]`, so both directions
-default-deny and only the rules the chart emits get through: egress to the
-kube-apiserver, to DNS, and to OpenBao on TCP 8200, plus ingress to the webhook
-and metrics ports.
+The rendered policy declares `policyTypes: [Ingress, Egress]`, so both
+directions default-deny and only the rules the chart emits get through: egress
+to the kube-apiserver, to DNS, to OpenBao on TCP 8200 and to the Barbican API on
+TCP 9311, plus ingress to the webhook and metrics ports.
 
-### API egress is not in the chart
+### Barbican API egress
 
-The barbican-operator probes `/healthcheck` on the Barbican Service over TCP 9311
-in the workload namespace to set `BarbicanAPIReady`. The chart emits **no** egress
-rule for that port and offers no value to add one, so on an enforcing CNI the
-probe is dropped and every Barbican parks on `BarbicanAPIReady=False` /
-`APIUnhealthy` while the API itself is serving normally. Cover it with a second
-NetworkPolicy of your own selecting the operator pod — policies are additive, so
-its egress rule joins the chart's:
+The barbican-operator probes `/healthcheck` on the Barbican Service over TCP
+9311 to set `BarbicanAPIReady`. The chart admits it with a rule of its own: TCP
+9311 to every pod labelled `app.kubernetes.io/name: barbican` and
+`app.kubernetes.io/managed-by: barbican-operator`, in any namespace. It needs no
+value, and the CNI judges the probe after the Service DNAT, at the API pod and
+its port, so the rule selects the API pods by the labels the operator sets on
+them.
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: barbican-operator-api-egress
-  namespace: barbican-system
-spec:
-  podSelector:
-    matchLabels:
-      # The chart's own selector, so this policy attaches to the same pod.
-      app.kubernetes.io/name: barbican-operator
-      app.kubernetes.io/instance: barbican-operator
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: openstack
-      ports:
-        - protocol: TCP
-          port: 9311
+barbican-operator charts before 0.6.0 rendered no rule for the health check, and
+earlier versions of this guide had you apply a second policy,
+`barbican-operator-api-egress`, beside the chart's. The chart covers that
+traffic now, so delete the hand-written policy once the upgraded chart has
+rendered its own:
+
+```bash
+kubectl delete networkpolicy barbican-operator-api-egress -n barbican-system \
+  --ignore-not-found
 ```
 
 The ingress leg of that same probe needs nothing from you: when the workload
@@ -314,12 +301,14 @@ operator reverts to unrestricted pod networking without a pod restart.
 
 ## Tested by
 
-Every operator chart carries an equivalent chart-level NetworkPolicy template
-(each chart ships its own copy, not a shared operator-library helper). The
-keystone chart's copy is exercised end-to-end on the CI e2e kind cluster by the
-chainsaw suite below; the barbican chart's copy, including its OpenBao egress
-rule, is pinned by its helm-unittest
-(`operators/barbican/helm/barbican-operator/tests/networkpolicy_test.yaml`).
+Every operator chart includes the same chart-level NetworkPolicy template from
+the shared operator-library, whose helm-unittest
+(`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
+pins the shared rules. The barbican chart's helm-unittest
+(`operators/barbican/helm/barbican-operator/tests/networkpolicy_test.yaml`) pins
+the two egress rules the chart adds, for OpenBao and for its API health check.
+The keystone chart's policy is exercised end-to-end on the CI e2e kind cluster
+by the chainsaw suite below.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

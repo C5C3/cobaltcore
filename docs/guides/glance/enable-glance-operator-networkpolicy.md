@@ -96,12 +96,16 @@ kubectl wait helmrelease/glance-operator -n glance-system \
 ```
 
 The chart-level policy allows what the operator needs: egress to the
-kube-apiserver and DNS, ingress to the webhook and metrics ports. The
-glance-operator's health check reaches the Glance Service on TCP 9292 in
-the workload namespace; when the workload namespace itself runs a per-CR
-NetworkPolicy, the operator's namespace is admitted automatically by the
-sub-reconciler (an operator-namespace ingress peer is appended to every
-rendered policy).
+kube-apiserver, to DNS and to the Glance API, ingress to the webhook and metrics
+ports. The Glance API rule admits TCP 9292 to every pod labelled
+`app.kubernetes.io/name: glance` and
+`app.kubernetes.io/managed-by: glance-operator`, in any namespace, and needs no
+value. The operator's health check GETs the API over the Glance Service, and the
+CNI judges that connection after the Service DNAT, at the API pod and its port,
+so the rule selects the API pods by the labels the operator sets on them. When
+the workload namespace itself runs a per-CR NetworkPolicy, the operator's
+namespace is admitted automatically by the sub-reconciler (an operator-namespace
+ingress peer is appended to every rendered policy).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
@@ -204,11 +208,13 @@ the operator reverts to unrestricted pod networking without a pod restart.
 
 ## Tested by
 
-Both operator charts carry an equivalent chart-level NetworkPolicy template
-(each chart ships its own copy — it is not a shared operator-library helper).
-The keystone chart's copy is exercised end-to-end on the CI e2e kind cluster by
-the chainsaw suite below; the glance chart's copy is pinned by its helm-unittest
-(`operators/glance/helm/glance-operator/tests/networkpolicy_test.yaml`).
+Every operator chart includes the same chart-level NetworkPolicy template from
+the shared operator-library, whose helm-unittest
+(`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
+pins the shared rules. The glance chart's helm-unittest
+(`operators/glance/helm/glance-operator/tests/networkpolicy_test.yaml`) pins the
+egress rule the chart adds for its API health check. The keystone chart's policy
+is exercised end-to-end on the CI e2e kind cluster by the chainsaw suite below.
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
