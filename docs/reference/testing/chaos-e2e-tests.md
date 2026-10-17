@@ -3704,7 +3704,7 @@ operator](#status-left-by-a-dead-dependency-operator) gives the limit it records
 **Workload:** the `token` stream against `cp-rmq-cascade-keystone`, with the admin
 password from `cp-rmq-cascade-keystone-admin-credentials`. Started in step 1 and
 judged in step 6 against `failures=0 recovery=30s`: the plane's Keystone runs no
-service on the broker, and the kind runs failed no record. The suite runs in the
+service on the broker, and three kind runs failed no record. The suite runs in the
 `controlplane` matrix entry, in its own namespace, `chaos-rmq-cascade`.
 
 **Catch blocks:** steps 2 to 4 delete the three `PodChaos` first. Every catch calls
@@ -3808,9 +3808,9 @@ reports itself Ready over a Keystone that is not.
 **Workload:** the `token` stream against `cp-ks-degraded-keystone`, the Keystone the
 fault takes, with the admin password from
 `cp-ks-degraded-keystone-admin-credentials`. Started in step 1 and judged in step 6
-against `failures=214 recovery=70s`, from a kind run that failed 107 records, the
-last 39 seconds after the lift. The suite runs in the `controlplane` matrix entry,
-in its own namespace, `chaos-ks-degraded`.
+against `failures=214 recovery=70s`, measured in three kind runs: 107, 106 and 106
+failed records, the last 39, 37 and 37 seconds after the lift. The suite runs in the
+`controlplane` matrix entry, in its own namespace, `chaos-ks-degraded`.
 
 **Catch blocks:** steps 2 to 4 delete the `PodChaos` first. Every catch calls
 `cp_dump` of `lib/controlplane.sh` and dumps the Keystone CR and the workload.

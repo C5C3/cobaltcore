@@ -34,7 +34,7 @@
 # self-signed leaf. cert-manager is on no request path, and the listener keeps
 # serving the leaf it holds, so the budget is zero.
 # Chaos budget: failures=0 recovery=0s
-# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+# Chaos budget measured: 2026-10-16, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

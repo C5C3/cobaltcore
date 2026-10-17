@@ -41,7 +41,7 @@
 # against cp-rmq-cascade-keystone through the fault. The plane's Keystone runs
 # no service on the broker, and the budget is what the kind runs measured.
 # Chaos budget: failures=0 recovery=30s
-# Chaos budget measured: 2026-10-16, kind, failures 0, recovery 0 s
+# Chaos budget measured: 2026-10-17, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
