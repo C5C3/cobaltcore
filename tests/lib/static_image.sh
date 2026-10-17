@@ -4,7 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared check of the images nix/lib/static-image.nix builds, for
-# verify_hvo.sh and verify_kna.sh under tests/container-images/.
+# verify_hvo.sh, verify_kna.sh and verify_operator_image.sh under
+# tests/container-images/.
 #
 # static-image.nix stands in for gcr.io/distroless/static:nonroot, so the
 # image has to carry what that base gave a static binary: the CA bundle and

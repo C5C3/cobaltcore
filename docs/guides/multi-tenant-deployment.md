@@ -396,10 +396,12 @@ Keystone CR reaches `Ready=True` in a namespace-scoped test.
 Deploy the operator into the `team-alpha` namespace with namespace-scoped RBAC.
 Build the operator image and load it into the kind cluster first. This mirrors
 the install form of the guide's namespace-scoped-rbac chainsaw suite (a local
-`dev` image with `pullPolicy=Never`, no registry needed):
+`dev` image with `pullPolicy=Never`, no registry needed). `make image` builds
+the image with Nix, so it needs Nix with flakes on a Linux host
+([Build and load locally](../reference/ci-cd/nix-image-build.md#build-and-load-locally)):
 
 ```bash
-make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
+make image OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
 kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
 ```
 

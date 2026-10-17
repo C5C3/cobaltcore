@@ -51,12 +51,21 @@
 #                                    nova lock, its venv with the lock's
 #                                    nova-compute group and its rootwrap.conf
 #                                    from nix/lib/rootwrap-conf.nix
+#   packages.<system>.<op>-operator-image
+#                                    nix/lib/operator-image.nix for every
+#                                    operators/<op>/go.mod, on the image of
+#                                    nix/lib/static-image.nix; .manager is
+#                                    the binary, .manager.siblings the
+#                                    operators its go.mod replaces
 #   packages.<system>.<name>-<rel_>-test-run
 #                                    the unit tests of a service lock, a build
 #                                    that succeeds whenever the suite ran and
 #                                    holds the results
 #   checks.<system>.<name>-<rel_>-tests
 #                                    fails unless that run passed
+#   checks.<system>.go-directive     fails evaluation unless go_1_27 of
+#                                    nixpkgs-images is at or above the go
+#                                    directive of go.work
 #   checks.<system>.nix-lint         nixfmt, statix and deadnix over flake.nix,
 #                                    nix/lib/, nix/pkgs/ and images/;
 #                                    nix/spike/ is the Phase 0 record and
@@ -158,6 +167,12 @@
       # The nova locks are the inventory of the compute image: a release that
       # drops nova drops its nova-compute image.
       novaLocks = builtins.filter (lock: lock.name == "nova") locks;
+      # Every operators/<op>/ with a go.mod builds <op>-operator-image, the rule
+      # hack/ci-generate-cleanup-matrix.sh and hack/ci-resolve-e2e-images.sh
+      # apply; operators/shared/ has no go.mod.
+      operators = builtins.filter (op: builtins.pathExists (./operators + "/${op}/go.mod")) (
+        subdirs ./operators
+      );
 
       # What the Python images of one system are built from, evaluated once
       # per system for packages and checks.
@@ -191,6 +206,7 @@
           );
           envFor = lock: envs.${lock.attr};
           serviceTests = import ./nix/lib/service-tests.nix { inherit pkgs; };
+          staticImage = import ./nix/lib/static-image.nix { inherit pkgs; };
         in
         {
           inherit
@@ -199,9 +215,13 @@
             envFor
             serviceTests
             libvirt
+            staticImage
             ;
           serviceImage = import ./nix/lib/service-image.nix { inherit pkgs fhsLayout; };
-          staticImage = import ./nix/lib/static-image.nix { inherit pkgs; };
+          operatorImage = import ./nix/lib/operator-image.nix {
+            inherit pkgs staticImage;
+            root = ./.;
+          };
           # horizon's unit tests run under pytest without a database.
           testsFor =
             lock:
@@ -324,6 +344,7 @@
             envFor
             serviceImage
             staticImage
+            operatorImage
             testsFor
             cephBindings
             libvirt
@@ -371,6 +392,14 @@
         )
         // lib.listToAttrs (
           map (lock: lib.nameValuePair "${lock.attr}-test-run" (testsFor lock).run) testedLocks
+        )
+        // lib.listToAttrs (
+          map (
+            op:
+            lib.nameValuePair "${op}-operator-image" (operatorImage {
+              name = op;
+            })
+          ) operators
         )
       );
 
@@ -427,6 +456,28 @@
             pkgs.runCommand "libvirt-pairing-rejects-foreign" { } ''
               touch "$out"
             '';
+
+          # The Go of the operator images is go_1_27 of nixpkgs-images, and
+          # buildGoModule sets GOTOOLCHAIN=local, so a go directive ahead of
+          # it fails every operator build. This check fails evaluation first,
+          # so nix flake check --no-build names the two versions.
+          go-directive =
+            let
+              goLine = lib.findFirst (lib.hasPrefix "go ") null (
+                lib.splitString "\n" (builtins.readFile ./go.work)
+              );
+              directive =
+                if goLine == null then
+                  throw "go-directive: go.work has no go line"
+                else
+                  lib.removePrefix "go " goLine;
+            in
+            if lib.versionAtLeast pkgs.go_1_27.version directive then
+              pkgs.runCommand "go-directive" { } ''
+                touch "$out"
+              ''
+            else
+              throw "go-directive: go.work asks for go ${directive}, nixpkgs-images carries go_1_27 ${pkgs.go_1_27.version}; wait for the channel or pin a newer nixpkgs-images";
 
           nix-lint =
             pkgs.runCommand "nix-lint"

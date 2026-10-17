@@ -12,8 +12,9 @@
 # says Nix or Docker. Every directory under images/ and every operator with an
 # operators/<op>/go.mod (as <op>-operator) needs a row. An image row that says
 # Nix needs images/<name>/image.nix and no Dockerfile; a row that says Docker
-# needs the Dockerfile and no image.nix. An operator row builds from the shared
-# operators/Dockerfile, so it is checked for its Build value only.
+# needs the Dockerfile and no image.nix. An operator row says Nix, the only
+# build of an operator image, and needs the vendor hash
+# operators/<op>/vendor.json the flake builds it with.
 # check_status_table prints one problem per line, sorted, and nothing for a
 # consistent tree. The fixture tests prove each message on a scratch tree
 # before the last test runs the check on the repository.
@@ -114,8 +115,12 @@ check_status_table() {
           *) echo "$name has no build column" ;;
         esac
       elif grep -qxF -- "$name" <<<"$operators"; then
+        local op="${name%-operator}"
         case "$build" in
-          Nix | Docker) ;;
+          Nix)
+            [[ -f "$root/operators/$op/vendor.json" ]] ||
+              echo "$name says Nix but operators/$op/vendor.json is missing"
+            ;;
           *) echo "$name has no build column" ;;
         esac
       else
@@ -138,8 +143,8 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # build_fixture: write a consistent tree and print its root. images/a builds
-# from a Dockerfile, images/b from image.nix, and operators/x is an operator.
-# The page has a second table with the same header above the status section,
+# from a Dockerfile, images/b from image.nix, and operators/x is an operator
+# with its vendor hash. The page has a second table with the same header above the status section,
 # which the check must not read, and text after the table.
 build_fixture() {
   local root
@@ -148,6 +153,7 @@ build_fixture() {
   : >"$root/images/a/Dockerfile"
   : >"$root/images/b/image.nix"
   : >"$root/operators/x/go.mod"
+  : >"$root/operators/x/vendor.json"
   cat >"$root/$PAGE" <<'EOF'
 # Nix Image Build
 
@@ -163,7 +169,7 @@ build_fixture() {
 | --- | --- | --- | --- |
 | `a` | Docker | Phase 2 | #2 |
 | `b` | Nix | Phase 1 | #1 |
-| `x-operator` | Docker | Phase 6 | #6 |
+| `x-operator` | Nix | Phase 6 | #6 |
 
 | `after` | Nix | Phase 9 | #9 |
 EOF
@@ -277,13 +283,33 @@ test_docker_row_without_a_dockerfile() {
     "$(check_status_table "$root")"
 }
 
+test_nix_operator_row_without_vendor_json() {
+  echo "Test: an operator row that says Nix without operators/<op>/vendor.json is reported"
+
+  local root
+  root="$(build_fixture)"
+  rm "$root/operators/x/vendor.json"
+  assert_eq "vendor.json missing" "x-operator says Nix but operators/x/vendor.json is missing" \
+    "$(check_status_table "$root")"
+}
+
+test_docker_operator_row() {
+  echo "Test: an operator row that says Docker is reported"
+
+  local root
+  root="$(build_fixture)"
+  rewrite "$root/$PAGE" 's/^| `x-operator` | Nix |/| `x-operator` | Docker |/'
+  assert_eq "an operator image builds with Nix only" "x-operator has no build column" \
+    "$(check_status_table "$root")"
+}
+
 test_unknown_build_value() {
   echo "Test: a Build cell that is neither Nix nor Docker is reported"
 
   local root
   root="$(build_fixture)"
   rewrite "$root/$PAGE" 's/^| `a` | Docker |/| `a` | docker |/'
-  rewrite "$root/$PAGE" 's/^| `x-operator` | Docker |/| `x-operator` |  |/'
+  rewrite "$root/$PAGE" 's/^| `x-operator` | Nix |/| `x-operator` |  |/'
   assert_eq "a lower-case value and an empty cell" "a has no build column
 x-operator has no build column" "$(check_status_table "$root")"
 }
@@ -293,7 +319,7 @@ test_row_naming_no_directory() {
 
   local root
   root="$(build_fixture)"
-  rewrite "$root/$PAGE" 's/^| `x-operator` | Docker | Phase 6 | #6 |$/&\
+  rewrite "$root/$PAGE" 's/^| `x-operator` | Nix | Phase 6 | #6 |$/&\
 | `z` | Docker | Phase 6 | #6 |\
 | `x` | Docker | Phase 6 | #6 |/'
   assert_eq "two rows without a directory" "row for x names no directory
@@ -330,6 +356,8 @@ test_nix_row_without_image_nix
 test_nix_row_with_a_dockerfile
 test_docker_row_with_image_nix
 test_docker_row_without_a_dockerfile
+test_nix_operator_row_without_vendor_json
+test_docker_operator_row
 test_unknown_build_value
 test_row_naming_no_directory
 test_repository_table_matches_the_tree

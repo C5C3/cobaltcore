@@ -6,23 +6,23 @@ quadrant: infrastructure
 # Container Images
 
 Reference documentation for the container image build system. This covers
-the one Dockerfile left, the contents of every service image, release
-configuration file formats, constraint override tooling, and local build
-instructions. The eight Python service images (keystone, horizon, glance,
-placement, barbican, neutron, cinder, nova), `nova-compute`, the Tempest image
-and the release-independent `ovn`, `keystone-federation-proxy`,
-`backup-shifter`, `libvirt`, `openstack-hypervisor-operator` and
-`kvm-node-agent` are built by the root flake from `images/<name>/image.nix`,
-as
+the contents of every service image, release configuration file formats,
+constraint override tooling, and local build instructions. The eight Python
+service images (keystone, horizon, glance, placement, barbican, neutron,
+cinder, nova), `nova-compute`, the Tempest image and the release-independent
+`ovn`, `keystone-federation-proxy`, `backup-shifter`, `libvirt`,
+`openstack-hypervisor-operator` and `kvm-node-agent` are built by the root
+flake from `images/<name>/image.nix`, and the operator images from
+`nix/lib/operator-image.nix`, as
 [Nix Image Build](./nix-image-build.md) describes; the sections below name
 what each of them carries.
 
 ## Dockerfile Hierarchy
 
-One Dockerfile is left: `operators/Dockerfile`, which builds every operator
-image ([#1409](https://github.com/C5C3/cobaltcore/issues/1409)). Every other
-image has no Dockerfile: the root flake builds it from
-`images/<name>/image.nix` ([Nix Image Build](./nix-image-build.md)).
+No Dockerfile is left. Every image is an output of the root flake: an image
+under `images/` is built from `images/<name>/image.nix`, an operator image
+from `nix/lib/operator-image.nix`
+([Nix Image Build](./nix-image-build.md#operator-images)).
 
 The figure shows the Docker lineage of the service images,
 `ubuntu:noble` to `python-base` to `venv-builder`, which #1407 retired with the
@@ -2114,8 +2114,9 @@ accounts noble's libvirt packages created, with noble's IDs: the
 `images/openstack-hypervisor-operator/image.nix` creates no `openstack` user, and carries a `# DEVIATION`
 comment saying so. The operator is a static Go binary, so it runs on
 `nix/lib/static-image.nix`, the stand-in for the
-`gcr.io/distroless/static:nonroot` base the CobaltCore operator images use
-(`operators/Dockerfile`), as that base's `nonroot` user, UID 65532. Upstream's
+`gcr.io/distroless/static:nonroot` base and the image the CobaltCore operator
+images run on (`nix/lib/operator-image.nix`), as that base's `nonroot` user,
+UID 65532. Upstream's
 own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
 no command, which any non-root user and the image's `Entrypoint` satisfy.
 

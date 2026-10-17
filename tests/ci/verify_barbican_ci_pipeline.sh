@@ -46,8 +46,8 @@ extract_yaml_job_section() {
 
 # Extract a single paths-filter block from ci.yaml by filter name. Filter keys
 # sit at 12-space indent and their path entries deeper, so the next 12-space key
-# ends the block. Scoping matters for shared entries such as
-# operators/Dockerfile, which every operator filter lists.
+# ends the block. Scoping matters for shared entries such as flake.lock, which
+# go_common and the image filters list.
 extract_paths_filter_block() {
   local file="$1" filter_name="$2"
   sed -n "/^            ${filter_name}:/,/^            [a-z]/p" "$file"
@@ -119,13 +119,13 @@ test_barbican_filter_block() {
     "$filter_block" \
     "operators/barbican/**"
 
-  # The shared Dockerfile builds every operator binary, so it belongs to
-  # go_common; listing it per operator made a change to it look like a change to
-  # each of them in turn.
+  # The shared Nix inputs build every operator image, so they belong to
+  # go_common; listing them per operator would make a change to them look like
+  # a change to each operator in turn.
   assert_not_contains \
-    "barbican filter does not carry the shared operator Dockerfile" \
+    "barbican filter does not carry the shared operator image inputs" \
     "$filter_block" \
-    "operators/Dockerfile"
+    "flake.lock"
 
   assert_file_contains \
     "ci.yaml declares an image_barbican filter" \

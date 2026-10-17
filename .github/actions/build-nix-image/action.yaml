@@ -19,6 +19,11 @@
 # (containers/image#2209, skopeo 1.15.0 and later; the image-tools shell pins
 # the skopeo of flake.lock). Two pushes of one stream give one manifest
 # digest (nix/spike/README.md, D12), so a re-run of the push path is safe.
+# skopeo keeps the Docker v2s2 manifest of the stream unless manifest-format
+# names another: from Docker manifests, `docker buildx imagetools create`
+# builds a Docker manifest list, which has no annotations and drops an
+# --annotation without an error, so a caller that annotates its index pushes
+# OCI manifests.
 
 name: Build Nix image
 description: >
@@ -55,6 +60,10 @@ inputs:
     default: ''
   vulnix-artifact-name:
     description: Artifact name for the vulnix JSON report (empty = skip the upload)
+    required: false
+    default: ''
+  manifest-format:
+    description: "Manifest format of the push, skopeo's --format: empty keeps the stream's Docker v2s2 manifest, 'oci' writes an OCI manifest"
     required: false
     default: ''
 
@@ -223,11 +232,13 @@ runs:
       shell: bash
       env:
         IMAGE_NAME: ${{ inputs.image-name }}
+        MANIFEST_FORMAT: ${{ inputs.manifest-format }}
       run: |
         rm -f "${RUNNER_TEMP}/digest"
         ./result-image > "${RUNNER_TEMP}/image.tar"
         status=0
         nix develop .#image-tools --command skopeo copy --retry-times 3 \
+          ${MANIFEST_FORMAT:+--format "${MANIFEST_FORMAT}"} \
           --digestfile "${RUNNER_TEMP}/digest" \
           "docker-archive:${RUNNER_TEMP}/image.tar" \
           "docker://${IMAGE_NAME}@@unknown-digest@@" || status=$?

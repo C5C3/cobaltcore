@@ -38,7 +38,7 @@ GOFUMPT ?= $(LOCALBIN)/gofumpt
 # Pin to a specific version for reproducible integration tests across runs.
 ENVTEST_K8S_VERSION ?= 1.37
 
-# Image tag for docker-build. Uses deferred evaluation so $(OPERATOR) is resolved
+# Image tag for image. Uses deferred evaluation so $(OPERATOR) is resolved
 # at recipe expansion time.
 IMG ?= ghcr.io/c5c3/$(OPERATOR)-operator:latest
 
@@ -49,7 +49,7 @@ IMG ?= ghcr.io/c5c3/$(OPERATOR)-operator:latest
 .PHONY: build
 # common has no main package, so go build produces no binary — no -o flag needed.
 # Operator modules contain main packages; -o /dev/null discards the binary since
-# this target verifies compilation only (production builds use docker-build).
+# this target verifies compilation only (production builds use make image).
 build:
 	@echo "Building internal/common module..."
 	@cd internal/common && go build ./...
@@ -409,19 +409,16 @@ verify-helm-schema:
 # Deployment and Docker Targets
 # ============================================================================
 
-.PHONY: docker-build
-# docker-build builds the operator Docker image from operators/$(OPERATOR)/Dockerfile.
-# Build context is the repository root (required by go.work).
-# Usage: make docker-build OPERATOR=keystone [IMG=custom:tag]
-# Optional: DOCKER_CACHE_FROM=type=gha,scope=... DOCKER_CACHE_TO=type=gha,mode=max,scope=...
-DOCKER_CACHE_FROM ?=
-DOCKER_CACHE_TO ?=
-docker-build:
-	$(if $(OPERATOR),,$(error docker-build requires OPERATOR, e.g. make docker-build OPERATOR=keystone))
-	docker build -t $(IMG) -f operators/Dockerfile --build-arg OPERATOR=$(OPERATOR) \
-		$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM)) \
-		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO)) \
-		.
+.PHONY: image
+# image builds the operator image, the flake attribute $(OPERATOR)-operator-image,
+# loads it into Docker and tags it $(IMG). Needs Nix with flakes
+# (docs/reference/ci-cd/nix-image-build.md). A failed nix build ends the
+# target with nix's error, before docker runs.
+# Usage: make image OPERATOR=keystone [IMG=custom:tag]
+image:
+	$(if $(OPERATOR),,$(error image requires OPERATOR, e.g. make image OPERATOR=keystone))
+	out=$$(nix build --no-link --print-out-paths .#$(OPERATOR)-operator-image) && "$$out" | docker load
+	docker tag $(OPERATOR)-operator:latest $(IMG)
 
 # HELM_LIBRARY_CONSUMERS lists every chart that depends on the operator-library
 # library chart: one operator chart per operator, plus the library's own test
@@ -576,10 +573,11 @@ verify-option-catalogs:
 	done
 
 .PHONY: nix-lock
-# nix-lock regenerates every lock under nix/locks/ from the release pins and
-# writes the noVNC hash into images/nova/novnc.json (hack/nix-lock.sh --all),
-# with the uv of the lock-tools dev shell. Needs Nix with flakes and network
-# access to GitHub and PyPI. Commit what it changes.
+# nix-lock regenerates every lock under nix/locks/ from the release pins,
+# writes the noVNC hash into images/nova/novnc.json and the operator vendor
+# hashes into operators/<op>/vendor.json (hack/nix-lock.sh --all), with the uv
+# of the lock-tools dev shell. Needs Nix with flakes and network access to
+# GitHub, PyPI and the Go module proxy. Commit what it changes.
 nix-lock:
 	nix develop .#lock-tools --command bash hack/nix-lock.sh --all
 
@@ -588,6 +586,14 @@ nix-lock:
 # the committed ones, the check of the nix-lock-check job in build-images.yaml.
 nix-lock-check:
 	nix develop .#lock-tools --command bash hack/nix-lock.sh --check
+
+.PHONY: nix-lock-check-operators
+# nix-lock-check-operators fails when an operators/<op>/vendor.json no longer
+# matches the go.mod and go.sum files it derives from, the check of the
+# verify-codegen job in ci.yaml. It runs no nix and needs no tool of the
+# lock-tools shell, only jq and sha256sum or shasum.
+nix-lock-check-operators:
+	bash hack/nix-lock.sh --check-operators
 
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or

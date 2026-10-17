@@ -674,11 +674,13 @@ deploys 2 replicas with leader election enabled.
 
 ### Option B — From the local Helm chart (recommended for development)
 
-Build the operator image, load it into kind, and install the chart directly from the repository:
+Build the operator image, load it into kind, and install the chart directly from the repository.
+Step 1 builds the image with Nix, so it needs Nix with flakes on a Linux host; on macOS, use
+Option A. See [Build and load locally](./reference/ci-cd/nix-image-build.md#build-and-load-locally).
 
 ```bash
 # 1. Build the operator image
-make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
+make image OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
 
 # 2. Load the image into the kind cluster (no registry needed)
 kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore

@@ -76,9 +76,10 @@ bottom when scaffolding `operators/<op>/`:
 - **`go.work`** — add `./operators/<op>`; keep the Go directive and the
   controller-runtime/k8s.io dependency versions in lockstep with the other
   modules (see [Dependency Management](./dependency-management.md)).
-- **`operators/Dockerfile`** — the parameterized Dockerfile builds every
-  operator via `--build-arg OPERATOR=<op>`; add the new module's
-  `go.mod`/`go.sum` and source `COPY` lines (two lines total).
+- **`operators/<op>/vendor.json`** — run `make nix-lock` after the module
+  builds and commit the file. The flake builds `<op>-operator-image` for every
+  `operators/<op>/go.mod` and needs no edit
+  ([Operator images](../reference/ci-cd/nix-image-build.md#operator-images)).
 - **`Makefile`** — append the operator to the `OPERATORS ?=` list; every
   build/test/generate/lint target iterates it, provided the chart lives at
   `operators/<op>/helm/<op>-operator/`.
@@ -113,7 +114,7 @@ bottom when scaffolding `operators/<op>/`:
   service image landing a phase before its operator stays out of the list until
   the operator is added.
 - **`.github/workflows/build-images.yaml`** — nothing to do for the operator
-  image (the shared `operators/Dockerfile` is already wired). A new service
+  image: it is a flake attribute, which the CI workflow builds. A new service
   image is an `images/<service>/image.nix` over `nix/lib/service-image.nix`,
   built from the locks `make nix-lock` writes under `nix/locks/`
   ([Nix Image Build](../reference/ci-cd/nix-image-build.md)). It needs three

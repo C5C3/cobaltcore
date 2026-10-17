@@ -179,7 +179,7 @@ that was previously inlined in every job.
 | `install-cosign` | no | `'true'` | Whether to install cosign |
 
 **Usage:** Every job that pulls or pushes images calls this composite action: 23 of the
-30 jobs, all but `changes`, `lint-dockerfiles`, `nix-flake-check`, `nix-lock-check`,
+29 jobs, all but `changes`, `nix-flake-check`, `nix-lock-check`,
 `prepare`, `generate-matrix` and `test-service-images`. Jobs
 that do not need cosign (build jobs, verification jobs) pass `install-cosign: 'false'`.
 Only merge jobs (which run attestation and signing) leave it at the default `'true'`.
@@ -411,8 +411,6 @@ unknown service exits 1 before either is written.
 The workflow's jobs form this dependency graph:
 
 ```text
-lint-dockerfiles
-
 changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
 nix-flake-check ──┤      └──> merge-keystone-federation-proxy-image (push only)
 prepare ──────────┤
@@ -457,8 +455,9 @@ assembles the multi-arch manifest list and runs the supply chain security pipeli
 the `supply-chain-attest` composite action, as `build-service-images` and
 `merge-service-images` do for the service images and `build-tempest` and
 `merge-tempest-image` for Tempest. Every build job builds a flake attribute with
-`build-nix-image`. `lint-dockerfiles` lints `operators/Dockerfile`, whose images the
-CI workflow builds, and no job of this workflow needs it.
+`build-nix-image`. Every image this repository publishes is a flake attribute:
+the CI workflow builds the operator images through the same action
+([CI Workflow](./ci-workflow.md#build-and-push)).
 
 The `test-service-images`
 job runs the upstream unit tests of each service as a Nix build
@@ -1557,18 +1556,10 @@ configuration:
 
 ## OCI Annotations
 
-Every image this workflow builds is Nix-built and sets its labels in its Nix
+Every image this repository publishes is Nix-built and sets its labels in its Nix
 expression ([Nix-Built Images](#nix-built-images)). The operator images, which the CI
-workflow builds from `operators/Dockerfile`, receive OCI Image Spec annotations via a
-two-layer approach: a static `LABEL` instruction in the Dockerfile provides baseline
-metadata for local builds, while `docker/metadata-action` in CI generates dynamic
-labels that supplement the static ones at push time.
-
-### Static Dockerfile Labels
-
-`operators/Dockerfile`, the one Dockerfile left, includes a `LABEL` instruction with
-four OCI annotations that are always present, regardless of whether the image is built
-locally or in CI:
+workflow builds from `nix/lib/operator-image.nix`, carry the four static labels of
+`nix/lib/static-image.nix` and no per-build label:
 
 | Label | Value (example for keystone-operator) |
 | --- | --- |
@@ -1577,36 +1568,14 @@ locally or in CI:
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 
-The Dockerfile has several stages, so the `LABEL` is placed in the final stage,
-because Docker discards the labels of a build stage.
-
-### CI Metadata Action
-
-In the CI workflow, the operator image jobs run a `docker/metadata-action` step that
-generates OCI-compliant labels; no job of this workflow runs one. The action
-auto-generates dynamic labels from the GitHub context:
-
-| Auto-generated label | Source |
-| --- | --- |
-| `org.opencontainers.image.created` | Build timestamp (ISO 8601) |
-| `org.opencontainers.image.revision` | `GITHUB_SHA` (40-character Git SHA) |
-| `org.opencontainers.image.source` | GitHub repository URL |
-| `org.opencontainers.image.url` | GitHub repository URL |
-| `org.opencontainers.image.version` | Git-derived version |
-
-The `labels` input of each metadata-action step provides the four custom labels (title,
-description, licenses, vendor). These supplement the auto-generated labels.
-
-**Metadata-action steps:**
-
-| Step ID | Job | Image input |
-| --- | --- | --- |
-| `meta` | `build-and-push` and `merge-operator-images` in `ci.yaml` | <code v-pre>${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator</code> |
-
-Each metadata-action step's `outputs.labels` is wired into the corresponding
-`build-push-action` step via the `labels` input. At push time, CI-generated labels
-(created, revision, source, url, version) override any matching static Dockerfile labels,
-while the static labels serve as fallback for local builds where no metadata-action runs.
+`merge-operator-images` in `ci.yaml` records the per-build metadata on the manifest list
+instead. Its `docker/metadata-action` step runs with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`
+and gives the tags and the index annotations `created`, `revision`, `source`, `url` and
+`version`, plus the four values of the table above; `docker buildx imagetools create`
+writes them with `--annotation`. The step also passes
+`--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` itself, which
+`hack/ci-resolve-e2e-images.sh` reads to decide whether a published `:latest` is current.
+No job of this workflow runs `docker/metadata-action`.
 
 ### Nix-Built Images
 
@@ -1615,7 +1584,7 @@ metadata-action step runs for it. A service or Tempest image adds
 `org.opencontainers.image.version`, the upstream ref its lock pins (`29.0.0` for
 keystone 2026.1, the tempest version for Tempest); that label changes only with the
 lock. The ovn, hvo and kna images add it from their pin, and hvo and kna also carry
-`io.c5c3.upstream-commit`. Without the per-build labels (`created`, `revision`, `source`, `url`) and the
+`io.c5c3.upstream-commit`; an operator image adds neither. Without the per-build labels (`created`, `revision`, `source`, `url`) and the
 `base.name` / `base.digest` pair, the digest of a Nix-built image moves only when an
 input of the flake moves; the build-provenance attestation of the merge job records the
 commit. See

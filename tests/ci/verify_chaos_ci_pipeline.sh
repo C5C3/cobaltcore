@@ -385,26 +385,26 @@ test_e2e_chaos_if_condition() {
 }
 
 test_e2e_chaos_timeout() {
-  echo "Test: e2e-chaos job timeout is 90 minutes, 150 on the nova leg"
+  echo "Test: e2e-chaos job timeout is sized per suite"
 
-  # The nova leg loads eighteen images, runs eight operator deploys and then
-  # three full-stack suites one after the other, which does not fit the wall
-  # the network leg was sized for. A leg that hits the wall is killed outright:
-  # no catch block, no JUnit report, and a non-blocking leg reporting a
-  # cancellation that names no suite.
+  # Each of the five suites runs one chaos test after the other, so its wall
+  # is its own: nova 150 minutes, network 135, controlplane 100, ovn 45 and
+  # pod 120. A leg that hits the wall is killed outright: no catch block, no
+  # JUnit report, and a non-blocking leg reporting a cancellation that names
+  # no suite.
   assert_contains \
-    "e2e-chaos timeout-minutes is 90, with the nova leg at 150" \
+    "e2e-chaos timeout-minutes names the wall of each suite" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || 90 }}"
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}"
 }
 
 test_e2e_chaos_continue_on_error() {
-  echo "Test: e2e-chaos job has continue-on-error: true"
+  echo "Test: e2e-chaos keeps every suite but pod non-blocking"
 
   assert_contains \
-    "e2e-chaos continue-on-error is true" \
+    "e2e-chaos continue-on-error names the four non-blocking suites" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "continue-on-error: true"
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}"
 }
 
 test_e2e_chaos_chainsaw_command() {
@@ -413,7 +413,12 @@ test_e2e_chaos_chainsaw_command() {
   assert_contains \
     "e2e-chaos runs chainsaw with chaos config" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/"
+    "chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \\"
+
+  assert_contains \
+    "e2e-chaos runs the test directories of its suite" \
+    "$E2E_CHAOS_JOB_SECTION" \
+    "\${{ matrix.test_dirs }}"
 
   assert_contains \
     "e2e-chaos creates _output/reports directory" \
@@ -425,9 +430,9 @@ test_e2e_chaos_kind_cluster() {
   echo "Test: e2e-chaos creates kind cluster and deploys infra"
 
   assert_contains \
-    "e2e-chaos uses kind-action" \
+    "e2e-chaos uses the create-kind-cluster composite" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "helm/kind-action@"
+    "./.github/actions/create-kind-cluster"
 
   assert_contains \
     "e2e-chaos uses kind-config.yaml" \
@@ -437,7 +442,7 @@ test_e2e_chaos_kind_cluster() {
   assert_contains \
     "e2e-chaos cluster name resolves to the shared KIND_CLUSTER env" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "cluster_name: \${{ env.KIND_CLUSTER }}"
+    "cluster-name: \${{ env.KIND_CLUSTER }}"
 
   assert_contains \
     "e2e-chaos uses setup-e2e-infra composite" \
@@ -445,17 +450,23 @@ test_e2e_chaos_kind_cluster() {
     "./.github/actions/setup-e2e-infra"
 }
 
-test_e2e_chaos_builds_keystone() {
-  echo "Test: e2e-chaos builds and deploys keystone operator"
+test_e2e_chaos_loads_the_e2e_images() {
+  echo "Test: build-e2e-images builds the images and e2e-chaos deploys keystone operator"
+
+  # e2e-chaos builds no image: build-e2e-images builds the operator and
+  # service images through Nix and pushes them under the run tag, and the
+  # chaos job loads them into kind.
+  local build_section
+  build_section=$(extract_yaml_job_section "$CI_YAML" "build-e2e-images")
 
   assert_contains \
-    "e2e-chaos builds keystone operator image" \
-    "$E2E_CHAOS_JOB_SECTION" \
-    "make docker-build OPERATOR=keystone"
+    "build-e2e-images tags each operator image it built as :dev" \
+    "$build_section" \
+    'docker tag "${IMAGE_PREFIX}/${op}-operator:latest"'
 
   assert_contains \
-    "e2e-chaos builds service image" \
-    "$E2E_CHAOS_JOB_SECTION" \
+    "build-e2e-images builds the images through the Nix script" \
+    "$build_section" \
     "hack/ci-nix-build-e2e-images.sh"
 
   assert_contains \
@@ -573,7 +584,7 @@ test_e2e_chaos_chainsaw_command
 echo ""
 test_e2e_chaos_kind_cluster
 echo ""
-test_e2e_chaos_builds_keystone
+test_e2e_chaos_loads_the_e2e_images
 echo ""
 test_e2e_chaos_junit_report
 echo ""

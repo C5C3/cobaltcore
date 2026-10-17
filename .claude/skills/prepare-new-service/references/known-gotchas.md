@@ -16,11 +16,11 @@ run that paid for the lesson; the lesson itself is the part to carry.
   **libraries** too, not just the service: glance itself is unpinned, but
   `glance_store`/`boto3` are — the driver extra must resolve against the
   existing pins.
-- **hadolint matrix is static** in `build-images.yaml` — new Dockerfiles
-  must be added by hand even though the build matrix auto-discovers. So
-  are the changes job's `ALL_SERVICES` list, the `svc_<svc>` paths filter
-  and the `FILTER_svc_<svc>` env line (plus the option-catalog trigger
-  lists when the build re-derives the service's catalog);
+- **The service lists of `build-images.yaml` are static** even though the
+  build matrix auto-discovers: the changes job's `ALL_SERVICES` list, the
+  `svc_<svc>` paths filter and the `FILTER_svc_<svc>` env line (plus the
+  option-catalog trigger lists when the build re-derives the service's
+  catalog) are added by hand;
   `tests/unit/ci/build_images_services_lockstep_test.sh` fails when one is
   missing.
 - **Image patches need upstream test hunks:** `test-service-images (<svc>,
@@ -65,10 +65,11 @@ run that paid for the lesson; the lesson itself is the part to carry.
   set, `tests/lib/ci_resolve.sh` and the `tests/unit/ci` fixtures) are
   found by `git grep -nE 'neutron[ ,]+cinder[ ,]+nova' -- ':!docs' ':!*.md'`;
   32 hits on 2026-09-23, Go comments and test literals included.
-- **The parameterized `operators/Dockerfile` (`ARG OPERATOR`) is still
-  coupled to `go.work`:** it COPYs every module's go.mod and source, so a
-  new module still edits that one Dockerfile's COPY lines (no more
-  per-operator Dockerfiles, though).
+- **The operator image needs its vendor hash:** the flake builds
+  `<op>-operator-image` for every `operators/<op>/go.mod` with no edit, and
+  `operators/<op>/vendor.json`, which `make nix-lock` writes, is the one
+  per-operator artefact of the image. Without it the flake evaluation fails
+  with `operators/<op>/vendor.json is missing; run make nix-lock`.
 - **WSGI entry points:** `uv pip install --prefix` skips PBR
   `wsgi_scripts` generation — the service images hand-write their WSGI
   launcher (see `images/keystone/image.nix`). Also verify the stock WSGI

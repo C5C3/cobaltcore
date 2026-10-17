@@ -11,7 +11,6 @@ name: Build Images
       - stable/**
     paths:
       - images/**
-      - operators/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -28,9 +27,11 @@ name: Build Images
       - tests/lib/build_tools.sh
       - tests/lib/static_image.sh
       - .github/workflows/build-images.yaml
-      - .hadolint.yaml
       - flake.nix
       - flake.lock
+      # The go directive the go-directive check of nix-flake-check compares
+      # with the Go of nixpkgs-images.
+      - go.work
       - nix/lib/**
       - nix/pkgs/**
       - nix/locks/**
@@ -39,7 +40,8 @@ name: Build Images
   # The pull-request list is exactly what this workflow reads: the images and
   # their build inputs, the composite actions it reaches (directly or through
   # build-nix-image, setup-docker-registry and merge-manifest-and-attest),
-  # the hack scripts it calls, the flake inputs,
+  # the hack scripts it calls, the flake inputs, the go.work whose go directive
+  # nix-flake-check compares with the Go of nixpkgs-images, the
   # shared library, packages and locks the Nix-built images are built from with
   # the generator nix-lock-check runs, and the per-image verify scripts with
   # the helpers they source. The four structural scripts under
@@ -50,7 +52,6 @@ name: Build Images
   pull_request:
     paths:
       - images/**
-      - operators/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -88,9 +89,11 @@ name: Build Images
       - tests/lib/build_tools.sh
       - tests/lib/static_image.sh
       - .github/workflows/build-images.yaml
-      - .hadolint.yaml
       - flake.nix
       - flake.lock
+      # The go directive the go-directive check of nix-flake-check compares
+      # with the Go of nixpkgs-images.
+      - go.work
       - nix/lib/**
       - nix/pkgs/**
       - nix/locks/**
@@ -274,7 +277,6 @@ jobs:
             # ---------------------------------------------------------------
             plumbing:
               - '.github/workflows/build-images.yaml'
-              - '.hadolint.yaml'
               - '.github/actions/checkout-service-source/**'
               - '.github/actions/derive-service-tags/**'
               - '.github/actions/export-digest/**'
@@ -317,29 +319,10 @@ jobs:
           FILTER_plumbing: ${{ steps.filter.outputs.plumbing }}
         run: hack/ci-resolve-image-changes.sh
 
-  lint-dockerfiles:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        dockerfile:
-          - operators/Dockerfile
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Lint ${{ matrix.dockerfile }}
-        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
-        with:
-          dockerfile: ${{ matrix.dockerfile }}
-          failure-threshold: warning
-          config: .hadolint.yaml
-
-  # The gate of every Nix-built image, the counterpart of lint-dockerfiles:
-  # nix flake check --no-build evaluates every output of the runner's system,
-  # and the build step builds the three checks that need no service lock
-  # (nix-lint runs nixfmt, statix and deadnix); without --no-build the check
+  # The gate of every Nix-built image: nix flake check --no-build evaluates
+  # every output of the runner's system, and the build step builds the three
+  # checks that need no service lock (nix-lint runs nixfmt, statix and
+  # deadnix); without --no-build the check
   # would also run the unit tests of every lock, which test-service-images
   # runs one leg each. The nix eval instantiates every arm64 output without
   # building it, which --all-systems cannot do on an x86 runner. The Cachix
@@ -373,7 +356,8 @@ jobs:
   # the hashes in images/ovn/source.json,
   # images/openstack-hypervisor-operator/source.json and
   # images/kvm-node-agent/source.json, with the OVS commit of the 'ovs'
-  # gitlink, from the commits those pins name: hack/nix-lock.sh --check
+  # gitlink, from the commits those pins name, and operators/<op>/vendor.json
+  # from the go.mod and go.sum files of the operator: hack/nix-lock.sh --check
   # regenerates them with the uv of the lock-tools shell and fails when the
   # result differs from the committed files. A Renovate pull request that
   # moves a pin fails here until `make nix-lock` is pushed to its branch. The

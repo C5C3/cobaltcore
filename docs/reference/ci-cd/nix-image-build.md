@@ -47,8 +47,10 @@ on, the images input adds these outputs:
 | `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `keystone-federation-proxy-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`, `libvirt-image`) |
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
 | `packages.<system>.nova-compute-<rel_>-image` | the compute image for each nova lock, built from that lock with its `nova-compute` dependency group ([Hypervisor images](#hypervisor-images)) |
+| `packages.<system>.<op>-operator-image` | the image of a CobaltCore operator, built from `nix/lib/operator-image.nix` for every `operators/<op>/go.mod` (`keystone-operator-image`, [Operator images](#operator-images)) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
 | `checks.<system>.<name>-<rel_>-tests` | fails unless that run passed |
+| `checks.<system>.go-directive` | fails evaluation unless `go_1_27` of `nixpkgs-images` is at or above the `go` directive of `go.work` ([Operator images](#operator-images)) |
 | `checks.<system>.nix-lint` | nixfmt, statix and deadnix over the Nix files ([Lint](#lint)) |
 | `checks.<system>.fhs-layout` | builds `nix/lib/fhs-layout.nix` with a Python environment, an `extraRoots` and a `rootLinks` entry, and checks the paths of the result |
 | `checks.<system>.service-tests` | runs `nix/lib/service-tests.nix` over the fixture suite under `nix/lib/fixtures/service-tests/`, which has one failing test, and checks that the run still writes its results |
@@ -65,7 +67,9 @@ OVS and OVN, `nix build .#openstack-hypervisor-operator-image.manager` or
 mod_auth_openidc module ([Source-built images](#source-built-images)).
 `.#keystone-federation-proxy-image.modAuthMellon` is the stripped
 mod_auth_mellon of the same image. `.#libvirt-image.libvirt` and
-`.#libvirt-image.qemu` are the libvirt and the QEMU of the libvirt image. `<rel_>` is the release with its dot replaced
+`.#libvirt-image.qemu` are the libvirt and the QEMU of the libvirt image.
+`.#keystone-operator-image.manager` is the keystone operator binary, and its
+`siblings` attribute lists the operators its `go.mod` replaces. `<rel_>` is the release with its dot replaced
 by `_`, since an unquoted flake attribute cannot contain a dot. The
 directories under `nix/locks/` are the inventory of the Python images: one
 output per `<release>/<name>/` directory.
@@ -85,6 +89,7 @@ sdist asks for before uv can read its metadata.
 | `nix/lib/python-env.nix` | the uv2nix environment of one lock: the venv, `venvWith`, the venv with named dependency groups (`test`, `nova-compute`), and the patched source |
 | `nix/lib/service-image.nix` | the image of a Python service or of tempest around that venv ([Service images](#service-images)) |
 | `nix/lib/static-image.nix` | the image of a static Go binary, the stand-in for the distroless base of the Docker builds ([Source-built images](#source-built-images)) |
+| `nix/lib/operator-image.nix` | the image of one CobaltCore operator: the manager built from the operator's Go module, on the image of `nix/lib/static-image.nix` ([Operator images](#operator-images)) |
 | `nix/lib/service-tests.nix` | the unit-test run and check of a lock |
 | `nix/lib/subunit-crc.py` | recomputes the packet checksums of a subunit stream after `nuke-refs` |
 | `nix/lib/rootwrap-conf.nix` | the text of nova-compute's `/etc/nova/rootwrap.conf`, with the image's store bin directories as `exec_dirs` |
@@ -95,6 +100,7 @@ sdist asks for before uv can read its metadata.
 | `images/<name>/image.nix` | the image; backup-shifter's, keystone-federation-proxy's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, libvirt's of `pkgs` and `libvirt`, a Python image's of `serviceImage`, its environment `env` and what else it names (nova-compute's also `libvirt`) |
 | `images/libvirt/qemu.nix` | the QEMU of the libvirt image |
 | `images/<name>/source.json` | the pin of an image built from an upstream commit (ovn, keystone-federation-proxy, openstack-hypervisor-operator, kvm-node-agent), written by `hack/nix-lock.sh` |
+| `operators/<op>/vendor.json` | the vendor hash of an operator image and the hash of the Go module files it derives from, written by `hack/nix-lock.sh` |
 | `images/ovn/ovn.nix` | OVS and OVN compiled from the commits of `images/ovn/source.json` |
 | `images/keystone-federation-proxy/mod_auth_openidc.nix` | mod_auth_openidc compiled from the commit of `images/keystone-federation-proxy/source.json` |
 | `images/keystone-federation-proxy/httpd-base.conf` | the Apache scaffold of the federation proxy, whose `LoadModule` lines `image.nix` fills with store paths |
@@ -312,6 +318,95 @@ nix log .#openstack-hypervisor-operator-image.manager   # the PASS lines of the 
 
 `<commit>` is the `rev` of the image's `source.json`.
 
+## Operator images
+
+`nix/lib/operator-image.nix` builds the image of every CobaltCore operator.
+`flake.nix` reads `operators/` and calls it for each directory with a
+`go.mod`, so a new operator gets its `<op>-operator-image` without a flake
+edit. The function builds the manager with `buildGo127Module`, the `go_1_27`
+of `nixpkgs-images`, and puts it on the image of `nix/lib/static-image.nix`.
+
+The build runs one operator as its own Go module with `GOWORK=off`.
+`buildGoModule` has no `go.work` support, so `operators/<op>/go.mod` and its
+relative `replace` directives decide the module graph, and the source holds
+every module they name: `internal/common`, the operator, and every sibling
+operator its `go.mod` replaces (`c5c3` replaces the nine others, `neutron`
+replaces `ovn`). The source leaves out `go.work`, the `_test.go` files, and the
+`helm/`, `dashboards/` and `config/` directories, which no `go:embed` reads. A
+commit to another operator, a chart, a dashboard, a kustomize file or a test
+therefore leaves the derivation unchanged.
+`nix eval --json .#packages.x86_64-linux.c5c3-operator-image.manager.siblings`
+prints the siblings. A `replace` line that names neither a sibling by a
+relative path nor `internal/common`, a `replace (` block for instance, fails
+evaluation:
+
+```text
+operator-image: operators/<op>/go.mod: replace line not understood: <line>
+```
+
+`proxyVendor` keeps the fixed-output derivation of the modules to the module
+download cache. `go mod vendor` would copy the replaced `internal/common` into
+`vendor/`, and the vendor hash would move with every commit to it. The hash
+lives in `operators/<op>/vendor.json`:
+
+| Key | Content |
+| --- | --- |
+| `inputsHash` | the sha256 over the path and content of the `go.mod` and `go.sum` of `internal/common`, of the operator and of its siblings |
+| `vendorHash` | the hash of the module download, the output of the `goModules` build |
+
+`make nix-lock` (`hack/nix-lock.sh --all`, or `--operators` for the operators
+alone) recomputes `vendorHash` only when `inputsHash` moved or `vendorHash` is
+empty, from the hash mismatch the `goModules` build prints for an empty one.
+Without the file, evaluation fails with
+`operator-image: operators/<op>/vendor.json is missing; run make nix-lock`. A
+nixpkgs update that changes the module download fails `build-and-push` and
+`build-e2e-images` with a hash mismatch; empty `vendorHash` and run
+`make nix-lock` to recover.
+
+The `verify-codegen` job of the CI workflow runs
+`make nix-lock-check-operators` (`hack/nix-lock.sh --check-operators`), which
+compares each `inputsHash` with the module files and runs no Nix. A Renovate
+`gomod` bump fails there until `make nix-lock` is pushed to its branch:
+
+```text
+nix-lock.sh: the operator vendor hashes are stale; run make nix-lock and commit the result
+```
+
+`buildGoModule` sets `GOTOOLCHAIN=local`, so a `go` directive ahead of
+`go_1_27` fails the build instead of downloading a toolchain.
+`checks.<system>.go-directive` compares the directive of `go.work` with that
+version, and `nix flake check --no-build` in `nix-flake-check` fails at
+evaluation with:
+
+```text
+go-directive: go.work asks for go <directive>, nixpkgs-images carries go_1_27 <version>; wait for the channel or pin a newer nixpkgs-images
+```
+
+Bump the directive after the locked channel carries that Go
+([Dependency Management](../../contributing/dependency-management.md)).
+
+The manager is built with `CGO_ENABLED=0` and the ldflags `-s -w`, and sits at
+`/usr/bin/manager`, the `Entrypoint` of the image. The image runs as
+`65532:65532` and carries the four static labels with the description
+`CobaltCore <op> operator`, without a version or an upstream commit. The unit
+tests need envtest and run under `make test`, so the build runs none.
+
+`build-and-push` of the CI workflow builds `<op>-operator-image` for each
+platform through the `build-nix-image` action and pushes it by digest as an
+OCI manifest (`manifest-format: oci`).
+`merge-operator-images` writes the per-build metadata onto the manifest list
+as index annotations: the merge commit as `org.opencontainers.image.revision`,
+`created`, `source`, `url` and `version`, and the values of the four static
+labels. In a pull request,
+`hack/ci-resolve-e2e-images.sh` reuses a published `:latest` only when the
+commit of that annotation has every commit to the operator's sources in its
+history ([CI Workflow](./ci-workflow.md)).
+
+```bash
+make image OPERATOR=keystone IMG=keystone-operator:dev
+docker inspect keystone-operator:dev --format '{{.Config.User}} {{.Config.Entrypoint}}'   # 65532:65532 [/usr/bin/manager]
+```
+
 ## Hypervisor images
 
 `nova-compute` and `libvirt` run on the hypervisor nodes and share one libvirt
@@ -453,8 +548,9 @@ nix build .#checks.x86_64-linux.keystone-2026_1-tests
 
 ## e2e builds
 
-The `build-e2e-images` job of the CI workflow builds the changed service and
-Tempest images on its self-hosted runner without installing Nix there. Its
+The `build-e2e-images` job of the CI workflow builds the changed operator,
+service and Tempest images on its self-hosted runner without installing Nix
+there. Its
 `Build Nix images` step runs `hack/ci-nix-build-e2e-images.sh` in the
 `nixos/nix` container image, pinned by tag and digest. The script builds the
 `<name>-<rel_>-image` attributes of every image in one `nix build` with one job
@@ -479,7 +575,12 @@ and the `Tag federation proxy image` step tags it `:dev`, the tag the keystone
 federation suites and the push step address. Otherwise the map resolves the
 `:dev` reference to the digest behind `ghcr.io/c5c3/keystone-federation-proxy:latest`.
 A `BUILD_SERVICE_IMAGES` line with a third field (`nova 2026.1 nova-compute`)
-builds the attribute of that derived image, `nova-compute-2026_1-image`.
+builds the attribute of that derived image, `nova-compute-2026_1-image`. Each
+name in `BUILD_OPERATORS` builds `<op>-operator-image` in the same call. Its
+stream loads as `<op>-operator:latest`, and the `Tag operator images` step
+tags it `:dev`, the tag the suites and the push step address. The
+`Verify operator images` step runs `tests/container-images/verify_operator_image.sh`
+on it.
 
 The container is unprivileged and cannot create the namespaces of the build
 sandbox, so the builds run with `--option sandbox false`. The builders, which
@@ -527,7 +628,14 @@ bash tests/container-images/verify_backup_shifter.sh backup-shifter:latest
 
 nix build .#keystone-2026_1-image && ./result | docker load
 bash tests/container-images/verify_keystone.sh keystone:2026.1
+
+make image OPERATOR=keystone
+nix build .#keystone-operator-image.manager
 ```
+
+`make image OPERATOR=keystone` loads `keystone-operator:latest` and tags it
+`ghcr.io/c5c3/keystone-operator:latest`, or the `IMG` it is given. The second
+command builds the operator binary alone, at `result/bin/manager`.
 
 `./result` is the stream script. `docker load` prints
 `Loaded image: backup-shifter:latest` or `Loaded image: keystone:2026.1`, the
@@ -557,6 +665,7 @@ attribute.
 | `verify-script` | `''` | verify script; empty skips the verify |
 | `verify-image-ref` | `''` | the local tag the loaded image gets on pull requests |
 | `vulnix-artifact-name` | `''` | artifact of the vulnix report; empty skips the upload |
+| `manifest-format` | `''` | skopeo's `--format` for the push; empty keeps the stream's Docker v2s2 manifest, `oci` writes an OCI manifest |
 
 The action runs `nix build ".#<attribute>"` and scans the store paths of the
 image with vulnix (`nix develop .#image-tools --command vulnix --closure
@@ -599,7 +708,11 @@ Then the action takes one of two paths:
   `docker://<image-name>@@unknown-digest@@`, the docker transport's form of a
   push without a tag ([containers/image#2209](https://github.com/containers/image/pull/2209)).
   skopeo reads the credentials of the job's `setup-docker-registry` login.
-  The digest goes to `export-digest`.
+  The digest goes to `export-digest`. With `manifest-format: oci` skopeo
+  writes an OCI manifest instead of the Docker v2s2 manifest of the stream.
+  `docker buildx imagetools create` builds a Docker manifest list from Docker
+  manifests, which has no annotations and drops an `--annotation` without an
+  error, so the operator images push OCI manifests.
 
 skopeo pushes the image because a `streamLayeredImage` is a tar stream and
 there is no BuildKit build to push. Two pushes of one stream give one digest,
@@ -637,7 +750,10 @@ A Nix-built image carries four static labels:
 keystone 2026.1), which changes only with the lock. The ovn, hvo and kna
 images add it too, fixed per pin: the OVN version (`26.03.2`) or
 `sha-<commit>`. hvo and kna also carry `io.c5c3.upstream-commit`, the commit
-of their pin, which `verify_hvo.sh` and `verify_kna.sh` check. The five labels
+of their pin, which `verify_hvo.sh` and `verify_kna.sh` check. An operator
+image carries the four static labels alone; its commit, version and source
+are the index annotations `merge-operator-images` writes
+([Operator images](#operator-images)). The five labels
 `docker/metadata-action` adds to a Docker-built image (`created`, `revision`,
 `source`, `url`, `version`) and the `base.name` and `base.digest` pair are
 absent. A label that changes with every commit would change the digest with
@@ -654,13 +770,16 @@ attribute.
 
 Renovate's `nix` manager re-locks the five inputs of `flake.lock` through
 `lockFileMaintenance`. The `nix flake inputs` package rule opens the re-lock
-as one pull request on the Monday schedule of the golang and uv bumps, never
+as one pull request on the Monday schedule of the uv bump, never
 automerged; the re-lock is not a version bump, so the three-day release age
 cannot gate it. A re-lock changes `flake.lock`, which the `base`, `ovn`, `proxy`,
 `shifter`, `libvirt`, `hvo` and `kna` filters of the build-images workflow
-cover, so its pull request rebuilds the images. Separate rules disable every update under
+cover, so its pull request rebuilds the images. The `go_common` filter of the
+CI workflow covers it too, so the pull request also builds every operator
+image and runs every operator's e2e job. Separate rules disable every update under
 `nix/spike/**` and under `nix/locks/**`: the locks are derived files that only
-`hack/nix-lock.sh` writes. `ignorePaths` also keeps `nix/locks/**` out of
+`hack/nix-lock.sh` writes. `operators/<op>/vendor.json` is derived the same
+way, and no manager reads it. `ignorePaths` also keeps `nix/locks/**` out of
 extraction, and repeats the paths of the `config:recommended` preset, which a
 repository value replaces.
 
@@ -668,7 +787,8 @@ A Renovate pull request that moves a pin the locks are derived from (under
 `releases/`, `overrides/`, `patches/` or `nix/base-requirements.txt`,
 the noVNC pin in `images/nova/novnc.json`, or one of the four
 `images/<name>/source.json` pins) fails `nix-lock-check` until someone runs
-`make nix-lock` on its branch and pushes the result. The OVN manager moves
+`make nix-lock` on its branch and pushes the result. A `gomod` bump fails
+`verify-codegen` the same way. The OVN manager moves
 `version` and `rev` together; a rule disables its digest updates, so a tag
 moved upstream does not arrive as an ungrouped digest pull request. The
 mod_auth_openidc manager of the federation proxy does the same, and its
@@ -681,10 +801,9 @@ details.
 
 `tests/unit/docs/nix_image_build_status_table_test.sh` checks the table
 against the tree: one row per `images/<name>/` directory and per operator
-image, and for an image directory a Build value that matches its files
-(`image.nix` for Nix, a `Dockerfile` for Docker). The operator images build
-from the shared `operators/Dockerfile`, so the test checks that their rows
-exist and read Nix or Docker.
+image, and a Build value that matches the files. For an image directory that
+is `image.nix` for Nix and a `Dockerfile` for Docker, for an operator image
+`operators/<op>/vendor.json` for Nix.
 
 | Image | Build | Phase | Issue |
 | --- | --- | --- | --- |
@@ -704,15 +823,15 @@ exist and read Nix or Docker.
 | `nova-compute` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `libvirt` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
 | `keystone-federation-proxy` | Nix | Phase 5 | [#1408](https://github.com/C5C3/cobaltcore/issues/1408) |
-| `barbican-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `c5c3-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `cinder-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `glance-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `horizon-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `keystone-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `neutron-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `nova-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `ovn-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `placement-operator` | Docker | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `barbican-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `c5c3-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `cinder-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `glance-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `horizon-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `keystone-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `neutron-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `nova-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `ovn-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
+| `placement-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
 
 :::
