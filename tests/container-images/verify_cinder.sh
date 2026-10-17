@@ -508,6 +508,65 @@ if fetch_verify_run_as_root():
   assert_eq "the create-from-image qemu-img calls run unprivileged" "0" "$exit_code"
 }
 
+# --- Test 11b: the backup placement patch is applied ---
+test_backup_placement_patch_applied() {
+  echo "Test: the scheduler falls back to the service registry for a backup host"
+  # Proves both build paths applied
+  # patches/cinder/<release>/000N-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch.
+  # The scheduler picks a backup host from the capability reports the
+  # backup service publishes over an RPC fanout. A scheduler that starts in
+  # the same second misses the first report and holds no backup host until
+  # the next one, up to a minute later; an unpatched image answers every
+  # backup in that window with ServiceNotFound. The patched
+  # HostManager._get_available_backup_service_host reads the service
+  # registry instead while it holds no ready report, and keeps preferring a
+  # report once one has arrived. Both halves are driven with mocks, because
+  # the image carries no database and no scheduler configuration:
+  # HostManager is built without __init__ and the registry call is bound to
+  # a fake service. Stderr is echoed on failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+import cinder.objects
+cinder.objects.register_all()
+from cinder import exception
+from cinder.scheduler import host_manager
+
+
+def placed(states):
+    """Report the backup host the scheduler picks with the given reports."""
+    manager = host_manager.HostManager.__new__(host_manager.HostManager)
+    manager.backup_service_states = states
+    registered = mock.Mock(host="cinder-backup-backup", cluster_name=None,
+                           availability_zone="nova", is_up=True)
+    with mock.patch("cinder.objects.ServiceList.get_all_by_topic",
+                    return_value=[registered]) as listing:
+        try:
+            host = manager._get_available_backup_service_host(None, "nova")
+        except exception.ServiceNotFound:
+            host = None
+    return host, listing.called
+
+
+host, asked = placed({})
+if host != "cinder-backup-backup":
+    sys.exit("without a capability report the scheduler picked %r, "
+             "want the registered cinder-backup-backup" % (host,))
+report = {"backend_state": True, "driver_name": "fake",
+          "availability_zone": "nova"}
+host, asked = placed({"reported-host": report})
+if host != "reported-host" or asked:
+    sys.exit("with a capability report the scheduler picked %r "
+             "(registry consulted: %s), want reported-host alone"
+             % (host, asked))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "HostManager falls back to the service registry without a backup report" "0" "$exit_code"
+}
+
 # --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
@@ -665,6 +724,8 @@ echo ""
 test_nfs_patch_applied
 echo ""
 test_create_from_image_patch_applied
+echo ""
+test_backup_placement_patch_applied
 echo ""
 test_runs_as_openstack_user
 echo ""

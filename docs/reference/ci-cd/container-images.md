@@ -593,6 +593,41 @@ proposed; master replaced both tests when the backup service moved to native
 threads (`c07c49c586`). Cinder 29.0.0 carries that commit, so 2026.2 needs no
 twin.
 
+`patches/cinder/2026.1/0004-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
+and its 2026.2 twin
+`patches/cinder/2026.2/0003-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
+(the same hunks, cut from 29.0.0) let the scheduler place a backup before
+the backup service has reported itself. Since
+the backup-host-selection series (upstream `acfc87e201` and its successors,
+Stein), `HostManager._get_available_backup_service_host` in
+`cinder/scheduler/host_manager.py` picks the host from
+`backup_service_states`, which only the capability report a backup service
+publishes over an RPC fanout fills: once from `init_host`, then every
+`backup_driver_stats_polling_interval` (60 s). A scheduler that starts in the
+same second as the backup service misses the first report, and a first
+report sent while the backup driver still initializes carries
+`backend_state: False`; either way the scheduler holds no usable backup
+service until the next report, and `create_backup` in
+`cinder/scheduler/manager.py` answers every backup in between with
+`Service not found for creating backup`, the backup goes to `error`, and the
+volume returns to `available`. CI run 39046784189 hit that window 21 s after
+the processes started, in `cinder-backup-nfs` step 6, and a user who backs
+up a volume in the first minute after a cold start of the control plane hits
+it the same way. With the patch, `_get_any_available_backup_service` falls
+back to the service registry (`objects.ServiceList.get_all_by_topic` for
+`cinder-backup`, filtered by availability zone and `is_up`) when no report
+names a ready service and no driver was asked for, which is what restore and
+delete read in `cinder/backup/api.py` and what the scheduler read before the
+reports existed; a report, once received, keeps precedence. No upstream test
+pins the capability-only behaviour, so the patch adds six tests to
+`HostManagerTestCase` in `cinder/tests/unit/scheduler/test_host_manager.py`
+for the fallback, its availability-zone and heartbeat filters, the cluster
+name, the driver case and the empty registry.
+`tests/container-images/verify_cinder.sh` asserts both halves against the
+built image with mocks: an empty report set resolves to the registered
+service, and a report wins without consulting the registry. Upstream status:
+not yet proposed.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
