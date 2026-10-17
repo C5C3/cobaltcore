@@ -885,6 +885,13 @@ jobs:
       # anonymous line in the diff at the end of this job.
       - name: Verify Go modules are tidy
         run: make verify-go-tidy
+      # The vendor hash of each operator image (operators/<op>/vendor.json)
+      # derives from the go.mod and go.sum files of the operator, its
+      # siblings and internal/common. The check runs no Nix, so a Renovate
+      # gomod bump fails here in seconds, naming make nix-lock, until the
+      # regenerated files are pushed.
+      - name: Verify the operator vendor hashes
+        run: make nix-lock-check-operators
       - uses: actions/cache@v6
         id: controller-gen-cache
         with:
@@ -4961,13 +4968,18 @@ jobs:
   # Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.
   # Runs only on push events (main branch or v* tags) after E2E passed.
+  # The image is the flake attribute <op>-operator-image, built, scanned with
+  # vulnix and pushed by digest through build-nix-image; the cobaltcore Cachix
+  # cache of setup-nix serves the build. merge-operator-images reads the
+  # digests-operator-<op>-<platform-pair> artifacts and writes the index
+  # annotations.
   build-and-push:
     runs-on: ${{ matrix.platform.runner }}
-    timeout-minutes: 23
+    timeout-minutes: 30
     # Publish-only-on-merge: the merged commit's PR was already green, so we do
     # not re-run the E2E suite on push. This job depends only on `changes` (for
-    # the operator matrix) and builds the image from its own cache scope,
-    # independent of build-e2e-images.
+    # the operator matrix) and builds the image from the flake, independent of
+    # build-e2e-images.
     needs: [changes]
     if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'
     permissions:
@@ -4991,52 +5003,29 @@ jobs:
         with:
           platform: ${{ matrix.platform.name }}
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      # skopeo in build-nix-image pushes with the credentials docker login
+      # writes here.
       - uses: ./.github/actions/registry-login
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Generate OCI annotations consistent with the two-layer OCI annotation
-      # pattern in build-images.yaml. type=semver strips the v prefix (v0.1.0 -> 0.1.0).
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+      - uses: ./.github/actions/setup-nix
         with:
-          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
-          labels: |
-            org.opencontainers.image.title=${{ matrix.operator }}-operator
-            org.opencontainers.image.description=Kubernetes operator for OpenStack ${{ matrix.operator }}
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.vendor=SAP SE
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        id: build
+      - id: build
+        uses: ./.github/actions/build-nix-image
         with:
-          context: .
-          file: operators/Dockerfile
-          build-args: |
-            OPERATOR=${{ matrix.operator }}
-          platforms: ${{ matrix.platform.name }}
-          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.operator }}-operator-${{ steps.platform-pair.outputs.value }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.operator }}-operator-${{ steps.platform-pair.outputs.value }}
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
+          attribute: ${{ matrix.operator }}-operator-image
+          image-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          push-by-digest: 'true'
+          artifact-name: digests-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
+          vulnix-artifact-name: vulnix-operator-${{ matrix.operator }}-${{ steps.platform-pair.outputs.value }}
+          # OCI manifests, so the manifest list merge-operator-images creates
+          # is an OCI index, which can carry the revision annotation.
+          manifest-format: oci
 
   # Assemble per-platform digests into multi-arch manifest lists
   # and push with final tags (SHA, latest, semver).
@@ -5060,20 +5049,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Generate OCI tags via docker/metadata-action.
-      # type=semver strips the v prefix (v0.1.0 -> 0.1.0).
+      # Generate OCI tags and index annotations via docker/metadata-action.
+      # The image carries its four static labels and nothing that changes per
+      # build, so the per-build metadata goes onto the index: the source,
+      # url, version, created and revision annotations of the action, with the
+      # title, description, licenses and vendor of the image labels in place
+      # of the repository's. type=semver strips the v prefix
+      # (v0.1.0 -> 0.1.0).
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
           tags: |
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
-          labels: |
+          annotations: |
             org.opencontainers.image.title=${{ matrix.operator }}-operator
-            org.opencontainers.image.description=Kubernetes operator for OpenStack ${{ matrix.operator }}
+            org.opencontainers.image.description=CobaltCore ${{ matrix.operator }} operator
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.vendor=SAP SE
 
@@ -5091,8 +5087,21 @@ jobs:
           cd /tmp/digests
           # shellcheck disable=SC2012 # deliberate: counting entries, not parsing names
           [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for ${{ matrix.operator }}-operator"; exit 1; }
+          # The commit goes onto the index as an annotation:
+          # hack/ci-resolve-e2e-images.sh reads it to decide whether :latest
+          # is current. The metadata annotations carry the same revision; the
+          # explicit one keeps that contract out of the action's defaults.
+          # The platform manifests stay the OCI manifests skopeo pushed, so
+          # the image digests move only with an input; from Docker manifests
+          # imagetools create would build a Docker manifest list and drop the
+          # annotations. The assignment fails the step when jq does, which a
+          # process substitution feeding mapfile would not.
+          annotations=$(jq -er '.annotations // error("docker/metadata-action wrote no annotations") | .[] | ("--annotation", .)' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          mapfile -t annotation_args <<< "$annotations"
           # shellcheck disable=SC2046 # deliberate: both substitutions expand to argument lists
           docker buildx imagetools create \
+            "${annotation_args[@]}" \
+            --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE}@sha256:%s " *)
 
