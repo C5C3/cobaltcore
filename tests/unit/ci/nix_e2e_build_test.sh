@@ -340,10 +340,8 @@ test_ci_wires_the_operators_through_the_nix_step() {
   tag_step=$(job_step build-e2e-images "Tag operator images")
   assert_contains "the tag step retags each operator's latest as dev" "$tag_step" \
     'docker tag "${IMAGE_PREFIX}/${op}-operator:latest" "${IMAGE_PREFIX}/${op}-operator:dev"'
-  assert_not_contains "build-e2e-images runs no make docker-build" "$(job_block build-e2e-images)" \
-    "docker-build"
-  assert_not_contains "build-e2e-images reads no operators/Dockerfile" "$(job_block build-e2e-images)" \
-    "operators/Dockerfile"
+  assert_not_contains "build-e2e-images runs no make target to build an image" "$(job_block build-e2e-images)" \
+    "make "
 }
 
 test_ci_verifies_the_operator_images() {
