@@ -20,8 +20,8 @@
 #
 # Echo the paths-filter block of the given filter key. Filter keys sit at
 # 12-space indent and their entries deeper, so the next key at that indent ends
-# the block. Scoping matters for shared entries such as operators/Dockerfile,
-# which every operator filter lists.
+# the block. Scoping matters for shared entries such as flake.lock, which
+# go_common and the image filters list.
 filter_block() {
   awk -v key="            $1:" '
     $0 == key { in_block = 1; next }
