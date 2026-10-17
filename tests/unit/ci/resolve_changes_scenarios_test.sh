@@ -181,6 +181,13 @@ test_special_suites_run_only_their_own_job() {
   expect e2e-chaos true
   expect_all false e2e-controlplane e2e-multicluster e2e-prometheus tempest
 
+  # The libvirt chaos suite matches tests_nova_libvirt as well as tests_chaos,
+  # and the first runs the e2e-nova-libvirt job it lives in.
+  scenario "a libvirt chaos suite edit" refs/heads/main FILTER_tests_chaos=true FILTER_tests_nova_libvirt=true
+  expect e2e-chaos true
+  expect e2e-nova-libvirt true
+  expect_all false e2e-controlplane e2e-multicluster tempest
+
   scenario "a multicluster suite edit" refs/heads/main FILTER_tests_multicluster=true
   expect e2e-multicluster true
   expect_all false e2e-chaos e2e-controlplane tempest e2e-orders-multicluster

@@ -174,6 +174,14 @@ test_filter_names_the_suite_and_its_fixtures() {
     "$block" "tests/e2e/nova/compute-node-pool/**"
   assert_contains "the filter lists the vhost script the suite runs by path" \
     "$block" "tests/e2e/cinder/broker-vhost.sh"
+  # The job's second suite, the IOChaos suite of #1391, with the harness it
+  # sources and the chainsaw configuration it runs under.
+  assert_contains "the filter lists the libvirt chaos suite" \
+    "$block" "tests/e2e-chaos/nova-instances-io-fault/**"
+  assert_contains "the filter lists the chaos harness" \
+    "$block" "tests/e2e-chaos/lib/**"
+  assert_contains "the filter lists the chaos chainsaw configuration" \
+    "$block" "tests/e2e-chaos/chainsaw-config.yaml"
   # The operator and the images reach the job through the nova, image_nova
   # and image_libvirt filters the resolver reads, and the deploy stack and the
   # hack scripts

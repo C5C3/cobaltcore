@@ -351,6 +351,11 @@ jobs:
               - 'tests/e2e/nova/compute-node-pool/**'
               # The suite creates and deletes its vhost with this script.
               - 'tests/e2e/cinder/broker-vhost.sh'
+              # The job's chaos suite, the harness and the helpers it sources,
+              # and the chainsaw configuration it runs under.
+              - 'tests/e2e-chaos/nova-instances-io-fault/**'
+              - 'tests/e2e-chaos/lib/**'
+              - 'tests/e2e-chaos/chainsaw-config.yaml'
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/**'
               - 'hack/ci-fetch-released-operator.sh'
@@ -1892,10 +1897,10 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The split into five matrix entries is kept so PodChaos, NetworkChaos, the
-    # OVN datapath suite, the Nova stack and the ControlPlane suites stay
-    # independently gated (see continue-on-error below) and so the suites run
-    # in parallel.
+    # The split into six matrix entries is kept so PodChaos, NetworkChaos, the
+    # OVN datapath suite, the Nova stack, the ControlPlane suites and the
+    # HTTP, clock, I/O, resource-pressure and DNS faults stay independently
+    # gated (see continue-on-error below) and so the suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -2008,25 +2013,41 @@ jobs:
               tests/e2e-chaos/controlplane-keystone-degraded
               tests/e2e-chaos/korc-network-partition
               tests/e2e-chaos/c5c3-operator-pod-kill
+          # The suites of #1391 that need only the standalone stack: the
+          # keystone stack, a Placement, metrics-server and the VPA
+          # recommender (WITH_METRICS_SERVER and WITH_VPA below, the two
+          # add-ons e2e-autoscaling turns on). The HTTPChaos, TimeChaos,
+          # IOChaos, StressChaos and DNSChaos suites that need the cinder,
+          # nova or ovn stack join the network, nova and ovn entries instead.
+          # Non-blocking (see continue-on-error below): HTTPChaos and IOChaos
+          # need the chaos-tproxy and fuse modules on the runner host.
+          - suite: faults
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
     runs-on: self-hosted
-    # 150 minutes for the nova leg, 135 for network, 120 for pod, 100 for
-    # controlplane and 45 for ovn: 550 minutes for the five, which the author
-    # of #1390 accepted on 2026-10-16 against the seven hours D6 of #1386 gave
-    # the four legs before it. Run 38903206716 (PR #1420) took 62 minutes on
-    # pod, 125 on network, 11 on ovn and 130 on nova. The pod leg gains the
-    # eight suites of #1390 that need only the standalone stack, at about 5
-    # minutes each: a kind run took 105 to 334 seconds per suite, most of it
-    # in fixed hold and observe windows. The controlplane leg brings up the
-    # keystone stack, K-ORC and the c5c3-operator, and each of its five suites
-    # a Keystone-only ControlPlane: about 15 minutes for the bring-up and 8 to
-    # 12 per suite, the 7 min 45 s the keystone-service suite took in run
-    # 38788542824 plus the fault and a teardown of up to 12 minutes. Every
-    # suite runs one after the other: tests/e2e-chaos/chainsaw-config.yaml
-    # sets parallel: 1, where the e2e-operator nova leg fits comparable suites
-    # into 90 minutes only because it runs them two at a time. The nova leg
-    # loads eighteen images and runs eight operator deploys before its first
-    # suite, and each of its six suites stands up a Keystone, an OVNCentral, a
-    # Neutron, a Placement, a Glance and a five-workload Nova.
+    # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
+    # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which
+    # the author of #1391 accepted on 2026-10-17 against the 600 minutes D6 of
+    # #1386 gives the job; amending D6 is the author's edit on #1386. Run
+    # 38903206716 (PR #1420) took 62 minutes on pod, 125 on network, 11 on ovn
+    # and 130 on nova, and a kind run of the pod suites of #1390 took 105 to
+    # 334 seconds per suite. The controlplane leg brings up the keystone
+    # stack, K-ORC and the c5c3-operator, about 15 minutes, and each of its
+    # five suites a Keystone-only ControlPlane, 8 to 12 minutes with its
+    # teardown. #1391 adds two HTTPChaos suites to nova, each about 25
+    # minutes: a six-service stack per suite, and
+    # nova-compute-neutron-http-delay holds a boot for up to 690 seconds;
+    # three cinder suites to network at about 15 minutes each;
+    # ovn-raft-clock-skew to ovn at about 15 minutes; and the faults leg,
+    # about 20 minutes of bring-up with the placement-operator, metrics-server
+    # and the VPA recommender, and nine suites of 8 to 12 minutes each. Every
+    # suite runs one after the other:
+    # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
+    # e2e-operator nova leg fits comparable suites into 90 minutes only because
+    # it runs them two at a time. The nova leg loads eighteen images and runs
+    # eight operator deploys before its first suite, and each of its eight
+    # suites stands up a Keystone, an OVNCentral, a Neutron, a Placement, a
+    # Glance and a five-workload Nova.
     #
     # The wall has to outlast that bring-up plus the suites that pass plus the
     # step a stalling suite times out in and the catch block after it —
@@ -2039,7 +2060,7 @@ jobs:
     # times of the new suites are the estimate in these sums; read each leg's
     # duration off the first green run with them and re-derive if one
     # overruns.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}
+    timeout-minutes: ${{ matrix.suite == 'nova' && 190 || matrix.suite == 'network' && 175 || matrix.suite == 'faults' && 130 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}
     # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
     # (their kernel-module dependency keeps them flakiness-prone). See the
     # gating note above the job. The nova leg is the third of them because
@@ -2047,13 +2068,17 @@ jobs:
     # ip_set modules, the same dependency the network leg's suites have, and
     # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
     # needs. The controlplane leg is the fourth: korc-network-partition is a
-    # NetworkChaos partition on the same sch_netem and ip_set modules.
+    # NetworkChaos partition on the same sch_netem and ip_set modules. The
+    # faults leg is the fifth: its HTTPChaos suites need the chaos-tproxy
+    # modules bridge, ebtables, ebtable_broute, iptable_mangle, xt_TPROXY and
+    # xt_socket, and its IOChaos suites fuse, all loaded best effort on the
+    # runner host.
     #
-    # The four non-blocking legs are named, rather than negating the blocking
-    # one: a sixth leg added to the matrix above then gates merges by default
+    # The five non-blocking legs are named, rather than negating the blocking
+    # one: a seventh leg added to the matrix above then gates merges by default
     # and has to be argued out of it here, instead of arriving silently
     # non-blocking and passing green while it fails.
-    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}
+    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'faults' }}
     permissions:
       contents: read
       packages: read
@@ -2100,10 +2125,11 @@ jobs:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             # placement-operator-pod-kill and placement-keystone-outage run on
-            # the pod leg, placement-mariadb-outage on the network leg (see the
-            # placement load and deploy steps below).
-            ${{ (matrix.suite == 'pod' || matrix.suite == 'network') && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
-            ${{ (matrix.suite == 'pod' || matrix.suite == 'network') && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
+            # the pod leg, placement-mariadb-outage on the network leg, and
+            # keystone-validation-http-503 and placement-keystone-dns-fault on
+            # the faults leg (see the placement load and deploy steps below).
+            ${{ (matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults') && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults') && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
             # Both the ovn leg and the network leg's neutron suites bring up an
             # OVNCentral, so both need the operator image and the OVN daemon
             # image that operator rolls out.
@@ -2150,14 +2176,15 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # The pod leg's two placement suites and the network leg's
-      # placement-mariadb-outage need both images on the node. The ovn leg runs
-      # no Placement, and the nova leg loads the pair in its own step below.
+      # The pod leg's two placement suites, the network leg's
+      # placement-mariadb-outage and the faults leg's two Placement suites
+      # need both images on the node. The ovn leg runs no Placement, and the
+      # nova leg loads the pair in its own step below.
       # `kind load docker-image` is a docker save piped into the node's
       # containerd, and the placement service image is the expensive half of
       # the pair, so the load stays off the legs that do not use it.
       - name: Load placement images into kind
-        if: matrix.suite == 'pod' || matrix.suite == 'network'
+        if: matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
@@ -2230,6 +2257,13 @@ jobs:
           # below. Each suite seeds and provisions a plane of its own.
           WITH_CONTROLPLANE: ${{ matrix.suite == 'controlplane' && 'true' || '' }}
           CONTROLPLANE_OPERATORS: ${{ matrix.suite == 'controlplane' && 'external' || '' }}
+          # The faults leg's keystone-api-stress-autoscaling scales a Keystone
+          # out under an HPA and reads a VPA recommendation, so it takes the
+          # two add-ons e2e-autoscaling turns on: metrics-server for the HPA's
+          # CPU utilization and the VPA overlay for the CRD and the
+          # recommender.
+          WITH_METRICS_SERVER: ${{ matrix.suite == 'faults' && 'true' || '' }}
+          WITH_VPA: ${{ matrix.suite == 'faults' && 'true' || '' }}
       # Use shared operator deployment script. The ovn leg skips it along with
       # the rest of the keystone stack: no suite there creates a Keystone.
       - name: Deploy operator
@@ -2274,12 +2308,13 @@ jobs:
       # horizon and glance it must land in its own placement-system namespace,
       # not the script's keystone-system default: that is where the
       # Flux/deploy-infra path installs it and where placement-operator-pod-kill's
-      # pod selector and PodChaos look. The pod leg runs two of the suites and
-      # the network leg runs placement-mariadb-outage; the ovn leg would
-      # `helm install --wait` an operator that reconciles nothing, and the nova
-      # leg deploys it in its own step below.
+      # pod selector and PodChaos look. The pod leg runs two of the suites, the
+      # network leg runs placement-mariadb-outage and the faults leg
+      # keystone-validation-http-503 and placement-keystone-dns-fault; the ovn
+      # leg would `helm install --wait` an operator that reconciles nothing,
+      # and the nova leg deploys it in its own step below.
       - name: Deploy placement operator
-        if: matrix.suite == 'pod' || matrix.suite == 'network'
+        if: matrix.suite == 'pod' || matrix.suite == 'network' || matrix.suite == 'faults'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: placement
@@ -2441,6 +2476,14 @@ jobs:
         run: |
           OPERATOR=c5c3 OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true
+      # The faults leg's two operators beyond keystone that its suites drive:
+      # the placement-operator and the glance-operator.
+      - name: Dump diagnostic info (faults leg)
+        if: always() && matrix.suite == 'faults'
+        run: |
+          for op in placement glance; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -4069,7 +4112,10 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 90
+    # Two suites, each bringing the Nova stack and the libvirt pool up and
+    # down: tests/e2e-nova-libvirt/server-boot, then the IOChaos suite
+    # tests/e2e-chaos/nova-instances-io-fault.
+    timeout-minutes: 120
     continue-on-error: true
     permissions:
       contents: read
@@ -4135,12 +4181,14 @@ jobs:
             --name "${{ env.KIND_CLUSTER }}"
       # The pool's chassis gate needs an OVNChassis on the node, which needs
       # the openvswitch module on the host, and every Nova process dials the
-      # message bus.
+      # message bus. WITH_CHAOS_MESH installs Chaos Mesh for the libvirt chaos
+      # suite and loads the fuse module its IOChaos injects through.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_OVN_KERNEL_MODULES: "true"
           WITH_MESSAGING: "true"
+          WITH_CHAOS_MESH: "true"
       # The operators of the nova leg of e2e-operator, in its order: the
       # ovn-operator before the neutron-operator, whose reconcilers watch the
       # OVN kinds, and both before the nova-operator.
@@ -4184,6 +4232,13 @@ jobs:
         run: |
           mkdir -p _output/reports
           make e2e-nova-libvirt
+      # The IOChaos suite of #1391 on the instances directory of the libvirt
+      # pool. It brings the stack of server-boot up again under the same
+      # names, which the suite above has taken down in its cleanups.
+      - name: Run the libvirt chaos suite
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e/infrastructure/chaos-mesh-health
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -4198,6 +4253,8 @@ jobs:
           for op in keystone placement glance ovn neutron; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # _output/reports/ holds both reports: chainsaw-nova-libvirt-report of
+      # the libvirt suite and chainsaw-chaos-report of the chaos suite.
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
