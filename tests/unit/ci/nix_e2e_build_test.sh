@@ -19,6 +19,9 @@
 #   - BUILD_PROXY adds the attribute keystone-federation-proxy-image,
 #     streamed to .nix-e2e/keystone-federation-proxy-latest.tar and listed as
 #     "keystone-federation-proxy latest";
+#   - each BUILD_OPERATORS line adds the attribute <op>-operator-image after
+#     every other image, streamed to .nix-e2e/<op>-operator-latest.tar and
+#     listed as "<op>-operator latest";
 #   - the group e2ebld (gid 40000) and one user per CPU (uids 40001 and up)
 #     are written to the account files before nix runs;
 #   - git is told to trust the workspace before anything else runs;
@@ -26,14 +29,15 @@
 #     writes no build user; an attribute nix cannot build exits with nix's
 #     status and writes no image;
 #   - an empty image set, BUILD_OVN=false, BUILD_LIBVIRT=false,
-#     BUILD_PROXY=false and an unset BUILD_PROXY included, prints "nothing to
-#     build" and exits 0.
+#     BUILD_PROXY=false, an unset BUILD_PROXY and an empty BUILD_OPERATORS
+#     included, prints "nothing to build" and exits 0.
 #
 # The build-e2e-images job of .github/workflows/ci.yaml runs the script in the
 # nixos/nix container; this test checks what the script does with its input,
 # that the job's checkout persists no token, which a build user could read
-# in /github/runner_temp, and that the job builds the federation proxy
-# through the script and retags it :dev.
+# in /github/runner_temp, and that the job builds the federation proxy and
+# the operator images through the script, retags them :dev and verifies the
+# operator images.
 #
 # Usage: bash tests/unit/ci/nix_e2e_build_test.sh
 
@@ -113,7 +117,7 @@ run_script() {
     shift 2
   fi
   for input in BUILD_SERVICE_IMAGES= BUILD_TEMPEST_RELEASES= BUILD_OVN=false OVN_VERSION= \
-    BUILD_LIBVIRT=false BUILD_PROXY=false; do
+    BUILD_LIBVIRT=false BUILD_PROXY=false BUILD_OPERATORS=; do
     [ "${input%%=*}" = "$unset_name" ] || inputs+=("$input")
   done
   rm -rf "$workspace" "$NIX_LOG" "$GIT_LOG"
@@ -288,6 +292,68 @@ test_builds_the_proxy_image() {
   assert_eq "an unset BUILD_PROXY calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
 }
 
+test_builds_the_operator_images() {
+  echo "Test: BUILD_OPERATORS builds <op>-operator-image and lists it as <op>-operator latest"
+
+  local ws="$TMP_DIR/ws-operators"
+  run_script "$ws" BUILD_OPERATORS=$'keystone\nc5c3'
+
+  assert_eq "the script exits 0" "0" "$RC"
+  assert_eq "nix builds both operator images in one call" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#keystone-operator-image .#c5c3-operator-image --print-build-logs --out-link .nix-e2e/result" \
+    "$(cat "$NIX_LOG")"
+  assert_eq "images.txt lists the operator images under latest, the tag docker load prints" \
+    $'keystone-operator latest\nc5c3-operator latest' "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the keystone stream is written to its tar" "stream of keystone-operator-image" \
+    "$(cat "$ws/.nix-e2e/keystone-operator-latest.tar")"
+  assert_eq "the c5c3 stream is written to its tar" "stream of c5c3-operator-image" \
+    "$(cat "$ws/.nix-e2e/c5c3-operator-latest.tar")"
+
+  run_script "$ws" BUILD_SERVICE_IMAGES=$'glance 2026.1\n' BUILD_PROXY=true BUILD_OPERATORS=$'keystone\n'
+  assert_contains "the service comes first and the operator after the proxy" "$(cat "$NIX_LOG")" \
+    ".#glance-2026_1-image .#keystone-federation-proxy-image .#keystone-operator-image --print-build-logs"
+  assert_eq "images.txt follows the attribute order" \
+    $'glance 2026.1\nkeystone-federation-proxy latest\nkeystone-operator latest' \
+    "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the third result is the operator stream" "stream of keystone-operator-image" \
+    "$(cat "$ws/.nix-e2e/keystone-operator-latest.tar")"
+
+  run_script "$TMP_DIR/ws-operators-missing" BUILD_OPERATORS=$'keystone\nswift' \
+    NIX_MISSING_ATTR=swift-operator-image
+  assert_eq "an operator the flake lacks exits with nix's status" "1" "$RC"
+  assert_eq "no operator image is streamed" "" \
+    "$(cd "$TMP_DIR/ws-operators-missing/.nix-e2e" && ls -- *.tar 2>/dev/null)"
+
+  run_script "$TMP_DIR/ws-operators-empty" BUILD_OPERATORS=$'\n'
+  assert_contains "an empty BUILD_OPERATORS alone builds nothing" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: nothing to build"
+  assert_eq "an empty BUILD_OPERATORS calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
+}
+
+test_ci_wires_the_operators_through_the_nix_step() {
+  echo "Test: build-e2e-images builds the operator images in the Nix step and retags them :dev"
+
+  local nix_step tag_step
+  nix_step=$(job_step build-e2e-images "Build Nix images")
+  assert_contains "Build Nix images passes BUILD_OPERATORS" "$nix_step" \
+    'BUILD_OPERATORS: ${{ env.BUILD_OPERATORS }}'
+  tag_step=$(job_step build-e2e-images "Tag operator images")
+  assert_contains "the tag step retags each operator's latest as dev" "$tag_step" \
+    'docker tag "${IMAGE_PREFIX}/${op}-operator:latest" "${IMAGE_PREFIX}/${op}-operator:dev"'
+  assert_not_contains "build-e2e-images runs no make docker-build" "$(job_block build-e2e-images)" \
+    "docker-build"
+  assert_not_contains "build-e2e-images reads no operators/Dockerfile" "$(job_block build-e2e-images)" \
+    "operators/Dockerfile"
+}
+
+test_ci_verifies_the_operator_images() {
+  echo "Test: build-e2e-images verifies each operator image it built"
+
+  assert_contains "the verify step runs verify_operator_image.sh on each operator's dev image" \
+    "$(job_step build-e2e-images "Verify operator images")" \
+    'bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"'
+}
+
 test_ci_wires_the_proxy_through_the_nix_step() {
   echo "Test: build-e2e-images builds the federation proxy in the Nix step and retags it :dev"
 
@@ -355,6 +421,9 @@ test_builds_the_ovn_image
 test_ovn_without_a_version_fails
 test_builds_the_libvirt_image
 test_builds_the_proxy_image
+test_builds_the_operator_images
+test_ci_wires_the_operators_through_the_nix_step
+test_ci_verifies_the_operator_images
 test_ci_wires_the_proxy_through_the_nix_step
 test_nothing_to_build
 test_checkout_persists_no_token

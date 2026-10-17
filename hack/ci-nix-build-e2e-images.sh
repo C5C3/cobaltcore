@@ -21,18 +21,20 @@
 #   BUILD_LIBVIRT           true when the libvirt image is built
 #   BUILD_PROXY             true when the keystone-federation-proxy image is
 #                           built
+#   BUILD_OPERATORS         one operator name per line, each built as
+#                           <op>-operator-image
 #
 # It builds the flake attributes <name>-<rel_>-image, <rel_> the release with
 # its dot replaced by _ and <name> the service or, on a three-field line, the
-# derived image, and ovn-image, libvirt-image and
-# keystone-federation-proxy-image, which carry no release, in one nix
-# invocation that runs one job per CPU, so the derivations of every image
-# build side by side. It then writes each image stream to
-# .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
+# derived image, and ovn-image, libvirt-image,
+# keystone-federation-proxy-image and <op>-operator-image, which carry no
+# release, in one nix invocation that runs one job per CPU, so the
+# derivations of every image build side by side. It then writes each image
+# stream to .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
 # .nix-e2e/images.txt, which the "Load Nix images" step reads to load and tag
 # the images on the runner; for the ovn image the release is OVN_VERSION, for
-# the libvirt and the keystone-federation-proxy image latest, the tags
-# docker load prints for them.
+# the libvirt, the keystone-federation-proxy and the <op>-operator images
+# latest, the tags docker load prints for them.
 #
 # The container is unprivileged and cannot create the namespaces of the Nix
 # sandbox, so the builds run without it. The builders, which run the setup
@@ -118,6 +120,10 @@ if [ "${BUILD_PROXY:-}" = "true" ]; then
   images+=("keystone-federation-proxy latest")
   attrs+=(".#keystone-federation-proxy-image")
 fi
+for op in ${BUILD_OPERATORS:-}; do
+  images+=("${op}-operator latest")
+  attrs+=(".#${op}-operator-image")
+done
 
 if [ "${#images[@]}" -eq 0 ]; then
   echo "ci-nix-build-e2e-images.sh: nothing to build"

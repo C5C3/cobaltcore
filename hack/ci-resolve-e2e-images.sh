@@ -23,14 +23,15 @@
 # minutes rebuilding it. Consumers keep their canonical local references either
 # way: load-e2e-images looks each one up in the map written here.
 #
-# An operator image is reused only when the commit it was built from, its
-# org.opencontainers.image.revision label, has in its history every commit of
-# this checkout that touches the operator's sources: the paths of the operator's
-# own change filter and of go_common in the changes job of
-# .github/workflows/ci.yaml. When one build-and-push leg fails on main,
-# merge-operator-images publishes nothing and :latest keeps an older revision;
-# such an image is built instead. The check needs the checkout's full history,
-# and an image whose revision it cannot find is built too.
+# An operator image is reused only when the commit it was built from, the
+# org.opencontainers.image.revision annotation merge-operator-images writes on
+# its manifest list, has in its history every commit of this checkout that
+# touches the operator's sources: the paths of the operator's own change
+# filter and of go_common in the changes job of .github/workflows/ci.yaml.
+# When one build-and-push leg fails on main, merge-operator-images publishes
+# nothing and :latest keeps an older revision; such an image is built instead.
+# The check needs the checkout's full history, and an image whose revision it
+# cannot find, or whose index carries no annotation, is built too.
 #
 # Required env vars:
 #   IMAGE_PREFIX   — Registry and owner, e.g. ghcr.io/c5c3
@@ -67,10 +68,11 @@
 #   BUILD_OVN              — true or false
 #   OVN_VERSION            — the pinned OVN version, the tag of the ovn image
 #   BUILD_LIBVIRT          — true or false
-#   BUILD_NIX_IMAGES       — true when a BUILD_SERVICE_IMAGES line, a Tempest
-#                            image, the federation proxy, the ovn image or
-#                            the libvirt image is built; Nix builds all of
-#                            them from their locks and pins
+#   BUILD_NIX_IMAGES       — true when an operator image, a
+#                            BUILD_SERVICE_IMAGES line, a Tempest image, the
+#                            federation proxy, the ovn image or the libvirt
+#                            image is built; Nix builds all of them from the
+#                            flake
 #
 # Written to GITHUB_OUTPUT:
 #   image-map — JSON object mapping each canonical local reference to the
@@ -202,9 +204,8 @@ RESOLVED_REVISION=""
 
 # resolve_digest <published source> [revision] — set RESOLVED_DIGEST to the index
 # digest of that source. Given "revision", the same inspect call also sets
-# RESOLVED_REVISION to the org.opencontainers.image.revision label the platform
-# images of the index agree on, or to "" when they carry none or disagree.
-# Returns 1 when the source is not published yet, so the caller builds the image
+# RESOLVED_REVISION to the org.opencontainers.image.revision annotation of the
+# index, or to "" when it carries none. Returns 1 when the source is not published yet, so the caller builds the image
 # instead. Exits the step when the registry keeps failing or answers with
 # something that is not a digest.
 resolve_digest() {
@@ -212,18 +213,17 @@ resolve_digest() {
   # No --platform, so this is the multi-arch index digest.
   format='{{json .Manifest.Digest}}'
   if [[ "${mode}" == "revision" ]]; then
-    # .Image is the image config of each platform in the index, keyed by
-    # platform, which is where build-and-push writes the revision label.
-    format='{"digest":{{json .Manifest.Digest}},"image":{{json .Image}}}'
+    # .Manifest is the index descriptor: its digest and, when set, the
+    # annotations merge-operator-images writes with imagetools create.
+    format='{{json .Manifest}}'
   fi
   delay="${INSPECT_RETRY_DELAY}"
   for attempt in $(seq 1 "${INSPECT_ATTEMPTS}"); do
     if out=$("${INSPECT_CMD[@]}" "${source}" --format "${format}" 2>"${INSPECT_STDERR}"); then
       if [[ "${mode}" == "revision" ]]; then
         digest=$(jq -r '.digest' <<<"${out}" 2>/dev/null) || digest="${out}"
-        RESOLVED_REVISION=$(jq -r '[.image[].config.Labels["org.opencontainers.image.revision"] // ""]
-          | unique | if length == 1 then .[0] else "" end' <<<"${out}" 2>/dev/null) ||
-          RESOLVED_REVISION=""
+        RESOLVED_REVISION=$(jq -r '.annotations["org.opencontainers.image.revision"] // ""' \
+          <<<"${out}" 2>/dev/null) || RESOLVED_REVISION=""
       else
         digest=$(tr -d '"' <<<"${out}")
       fi
@@ -275,7 +275,7 @@ add_pathspecs() {
 image_is_current() {
   local source="$1" operator="$2" key="$3" missing
   if [[ ! "${RESOLVED_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "::notice::${source} carries no revision label to check; building ${key}"
+    echo "::notice::${source} carries no revision annotation to check; building ${key}"
     return 1
   fi
   if ! git -C "${REPO_ROOT}" cat-file -e "${RESOLVED_REVISION}^{commit}" 2>/dev/null; then
@@ -417,8 +417,9 @@ fi
 # 4. Emit
 # ---------------------------------------------------------------------------
 build_nix_images=false
-if [[ ${#build_service_images[@]} -gt 0 || ${#build_tempest_releases[@]} -gt 0 ||
-  "${build_proxy}" == "true" || "${build_ovn}" == "true" || "${build_libvirt}" == "true" ]]; then
+if [[ ${#build_operators[@]} -gt 0 || ${#build_service_images[@]} -gt 0 ||
+  ${#build_tempest_releases[@]} -gt 0 || "${build_proxy}" == "true" || "${build_ovn}" == "true" ||
+  "${build_libvirt}" == "true" ]]; then
   build_nix_images=true
 fi
 
